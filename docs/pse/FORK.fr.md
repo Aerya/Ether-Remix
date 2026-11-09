@@ -97,3 +97,7 @@ La navigation et les catégories résident dans `web/src/pse/navigation.tsx`, `R
 Le script de synchronisation fusionne les conflits de traductions JSON par clé uniquement lorsque les modifications sont indépendantes. Deux traductions différentes du même message restent un conflit bloquant ; le point de référence n’avance pas. L’interface et les catalogues sont régénérés avant les contrôles. Les consignes `AGENTS.md`, les fichiers Remix et les workflows restent protégés. Le retard historique de 775 commits a été intégré depuis `6d9bb9f17adb661540fdf292fee42ac0bb8ac353`.
 
 L’adaptateur `internal/catalog/pse_tier_sources.go` classe les tables du fork pour la migration de catalogue d’Ether : les exceptions de langue restent protégées, les caches d’indexation ne retiennent pas tout le catalogue. Cet adaptateur est protégé du delta automatique.
+
+### Blocs repliables des sources
+
+Les onglets Stremio, Indexeurs et Indexation activent le contexte `CollapsibleSections` pour leurs blocs de réglages et listes. Chaque titre est un `summary` natif, utilisable à la souris et au clavier. Le contenu reste monté pour conserver les saisies. Les nouveaux blocs sont ouverts par défaut ; StreamFusion et Priorité de recherche conservent leur ouverture manuelle. Les autres onglets gardent leur présentation habituelle.

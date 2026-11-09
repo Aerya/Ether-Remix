@@ -69,7 +69,9 @@ it("does not show the IPTV delivery again when migrating the latest legacy marke
   localStorage.setItem(legacyKey, "2026-11-09-iptv-editor");
   render(<RemixUpdates version={version} />);
   expect(await screen.findByRole("dialog")).toHaveAttribute("open");
-  expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(3);
+  expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(
+    REMIX_UPDATES.findIndex((entry) => entry.id === "2026-11-09-iptv-editor"),
+  );
   expect(screen.getByText(/v0.2.37-remix.20.1/)).toBeTruthy();
 });
 

@@ -42,6 +42,8 @@ Ether-Remix extends [Ether](https://github.com/braedonsaunders/ether) with a Fre
 
 Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio compatibility, along with debrid/Usenet video streaming, come from **Ether**. Ether-Remix extends these capabilities; you do not need to build a local music-file library.
 
+Under **Sources → Stremio, Indexers and Indexing**, each section can be collapsed or expanded from its title. Collapsing a section preserves unsaved settings.
+
 ## SeerrCatalog: from requests to available titles
 
 [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog) turns Seerr requests into Stremio catalogues and checks their sources. Its optional [Ether Remix](https://github.com/Aerya/Ether-Remix) integration shares these results to avoid duplicate searches.

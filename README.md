@@ -42,6 +42,8 @@ Les **Nouveautés** affichent uniquement les notes non lues depuis votre derniè
 
 Les compatibilités Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo et Stremio, ainsi que le streaming vidéo debrid/Usenet, proviennent d’**Ether**. Ether-Remix complète ces fonctions ; il ne nécessite pas de constituer une bibliothèque de fichiers musicaux locaux.
 
+Dans **Sources → Stremio, Indexeurs et Indexation**, chaque bloc est pliable/dépliable depuis son titre. Replier un bloc conserve les réglages en cours de saisie.
+
 ## SeerrCatalog : des demandes aux contenus disponibles
 
 [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog) transforme vos demandes Seerr en catalogues Stremio et contrôle leurs sources. Son intégration facultative avec [Ether Remix](https://github.com/Aerya/Ether-Remix) transmet ces résultats pour éviter de rechercher deux fois les mêmes contenus.

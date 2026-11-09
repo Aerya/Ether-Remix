@@ -1,3 +1,4 @@
+import { SettingsSection } from "../../components/CollapsibleSections";
 import { MoreOptions } from "../../components/ConfigSection";
 import {
   Alert,
@@ -7,7 +8,6 @@ import {
   EmptyState,
   Input,
   SearchSelect,
-  SettingsSection,
   Textarea,
   confirmDialog,
   toast,
