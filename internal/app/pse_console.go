@@ -319,6 +319,7 @@ func (a *App) pseStatus(ctx context.Context, rt *pseRuntime) map[string]any {
 		out["playable"] = map[string]any{"active": playable.Enabled}
 	}
 	out["indexer"] = indexer
+	out["sfr"] = map[string]any{"active": releasedb.LoadSFRSettings().Enabled, "import": releasedb.NewStore(a.db).LoadSFRStatus(ctx)}
 	m := map[string]any{"active": rt.music.Load() != nil, "path": "/rest/", "source": music.LoadSettings().Mode()}
 	if totals, err := music.NewLibrary(a.db).Totals(ctx); err == nil {
 		m["library"] = totals

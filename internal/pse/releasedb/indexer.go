@@ -35,11 +35,13 @@ type Settings struct {
 	Pace time.Duration
 	// Types : PSE_INDEXER_TYPES, "movie", "show" ou les deux (défaut).
 	Types []core.MediaType
+	// SFR : import depuis une base StreamFusion Reborn (sfr.go).
+	SFR SFRSettings
 }
 
 // LoadSettings lit la configuration depuis l'environnement.
 func LoadSettings() Settings {
-	s := Settings{Daily: 1000, Pace: 10 * time.Second, Types: []core.MediaType{core.TypeMovie, core.TypeShow}}
+	s := Settings{Daily: 1000, Pace: 10 * time.Second, Types: []core.MediaType{core.TypeMovie, core.TypeShow}, SFR: LoadSFRSettings()}
 	switch strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_INDEXER"))) {
 	case "on", "1", "true", "yes", "oui":
 		s.Enabled = true
@@ -101,6 +103,8 @@ type Service struct {
 	turn     int
 	done     int
 	stop     context.CancelFunc
+	sfrStop  context.CancelFunc
+	openSFR  func(context.Context, string) (sfrReader, error)
 	wg       sync.WaitGroup
 }
 
@@ -144,6 +148,15 @@ func (s *Service) Start() {
 		s.syncPlayable(context.Background())
 		s.maintain(context.Background())
 	}()
+	if cfg := s.d.Settings.SFR; cfg.Enabled {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.sfrStop = cancel
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.runSFR(ctx, cfg)
+		}()
+	}
 	if !s.d.Settings.Enabled || len(s.d.Settings.Types) == 0 {
 		s.d.Logger.Info("pse release indexer disabled (set PSE_INDEXER=on to enable)")
 		return
@@ -205,6 +218,9 @@ func (s *Service) activeSourceIDs() []string {
 			ids = append(ids, ix.ID)
 		}
 	}
+	if s.d.Settings.SFR.Enabled {
+		ids = append(ids, SFRSourceID)
+	}
 	return ids
 }
 
@@ -226,6 +242,9 @@ func (s *Service) maintain(ctx context.Context) {
 
 // Close arrête la boucle.
 func (s *Service) Close() {
+	if s.sfrStop != nil {
+		s.sfrStop()
+	}
 	if s.stop != nil {
 		s.stop()
 	}

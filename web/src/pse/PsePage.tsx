@@ -22,6 +22,7 @@ import { MusicPlaylists } from "./MusicPlaylists";
 import { IndexerDetails } from "./IndexerDetails";
 import { MusicSourceSettings } from "./MusicSourceSettings";
 import { SourceOrder } from "./SourceOrder";
+import { SfrHelp } from "./SfrHelp";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
@@ -231,9 +232,12 @@ function PseSettings() {
         {tab === "sources" ? (
           <RemixSources
             music={musicPart("source")}
+            stremio={current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
             indexing={
               <>
-                {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
+                {featuresOfTab(tab, current.features)
+                  .filter((f) => f.id !== "sfr")
+                  .map((f) => renderFeature(f))}
                 <SearchPriority />
               </>
             }
@@ -431,6 +435,7 @@ function FeatureSection({
       <SettingsSection title={T(feature.title)} description={T(feature.description)}>
         <StatusLine feature={feature} />
         {basic.map(row)}
+        {feature.id === "sfr" ? <SfrHelp /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
         {feature.id === "music" && placement === "content" ? <MusicPlaylists /> : null}
         {advanced.length ? (
@@ -806,6 +811,29 @@ function StatusLine({ feature }: { feature: Feature }) {
         {active ? L("Actif", "On") : L("Inactif", "Off")}
       </Badge>,
     );
+  if (feature.id === "sfr" && s.import && typeof s.import === "object") {
+    const run = s.import as { state?: string; releases?: number; titles?: number; error?: string };
+    if (run.state === "running")
+      items.push(
+        <span key="sfr">
+          {L(
+            `Import en cours : ${num(run.releases)} releases`,
+            `Importing: ${num(run.releases)} releases`,
+          )}
+        </span>,
+      );
+    if (run.state === "ok")
+      items.push(
+        <span key="sfr">
+          {L(
+            `${num(run.releases)} releases importées pour ${num(run.titles)} titres`,
+            `${num(run.releases)} releases imported for ${num(run.titles)} titles`,
+          )}
+        </span>,
+      );
+    if (run.state === "error")
+      items.push(<span key="sfr">{L(`Échec : ${run.error}`, `Failed: ${run.error}`)}</span>);
+  }
   if (feature.id === "notify")
     items.push(
       <span key="lang">
