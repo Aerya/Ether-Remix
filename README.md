@@ -46,12 +46,13 @@ Dans **Sources → Stremio, Indexeurs et Indexation**, chaque bloc est pliable/d
 
 ## SeerrCatalog : des demandes aux contenus disponibles
 
+**Connexion :** saisissez l’adresse de base (ex. `https://seerrcatalog.example`, sans `/api/…`) et la clé, enregistrez puis cliquez sur **Tester la connexion**. Le test vérifie l’accès au flux sans importer de contenus ; Remix synchronise automatiquement chaque minute.
+
 [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog) transforme vos demandes Seerr en catalogues Stremio et contrôle leurs sources. Son intégration facultative avec [Ether Remix](https://github.com/Aerya/Ether-Remix) transmet ces résultats pour éviter de rechercher deux fois les mêmes contenus.
 
 1. Dans SeerrCatalog, ouvrez **Paramètres → Intégration Ether Remix**, générez une clé et activez l’export.
 2. Dans Remix, ouvrez **Sources → Stremio → SeerrCatalog → Ether Remix**, saisissez l’adresse de base de SeerrCatalog et la clé, activez puis enregistrez.
-3. Facultatif : dans SeerrCatalog, indiquez l’adresse de Remix suivie de `/api/integrations/seerrcatalog/v1/events`. Sans notification, la synchronisation reste automatique chaque minute.
-4. Revérifiez les anciens contenus dans SeerrCatalog pour créer leurs premiers résultats exportables.
+3. Revérifiez les anciens contenus dans SeerrCatalog pour créer leurs premiers résultats exportables.
 
 Remix fait confiance aux critères de SeerrCatalog : les titres disponibles passent le filtre **« lisible uniquement »**, et leur contrôle d’indexation n’interroge pas à nouveau les addons. Les autres filtres de visibilité et les règles de lecture des spectateurs restent actifs. L’import récupère les fiches TMDB ; aucune collection n’est créée automatiquement.
 

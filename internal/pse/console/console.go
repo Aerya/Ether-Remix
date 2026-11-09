@@ -129,6 +129,7 @@ func Handler(d Deps) http.Handler {
 	mux.HandleFunc("GET /{$}", h.get)
 	mux.HandleFunc("PUT /{$}", h.put)
 	mux.HandleFunc("POST /music/test", h.testMusic)
+	mux.HandleFunc("POST /seerrcatalog/test", h.testSeerrCatalog)
 	return mux
 }
 

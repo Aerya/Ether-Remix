@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-09-collapsible-source-blocks",
+    id: "2026-11-09-seerrcatalog-connection-test",
     version: "current",
+    date: "2026-11-09",
+    title: ["Tester la connexion à SeerrCatalog", "Test the SeerrCatalog connection"],
+    items: [
+      [
+        "Un bouton vérifie la clé et le flux avec les réglages enregistrés. Les champs adresse et clé sont alignés ; seule l’adresse de base est nécessaire.",
+        "A button checks the token and feed using saved settings. Address and token fields are aligned; only the base address is required.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-09-collapsible-source-blocks",
+    version: "0.2.37-remix.22.1",
     date: "2026-11-09",
     title: ["Des blocs repliables dans les sources", "Collapsible source sections"],
     items: [

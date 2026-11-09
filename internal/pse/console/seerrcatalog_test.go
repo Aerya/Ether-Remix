@@ -1,6 +1,9 @@
 package console
 
 import (
+	"github.com/braedonsaunders/ether/internal/pse/pseenv"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -26,5 +29,28 @@ func TestSeerrCatalogEnableRequiresConnection(t *testing.T) {
 	code, _ := do(t, h, "PUT", "/", `{"values":{"PSE_SEERRCATALOG":"on"}}`)
 	if code != 422 || *applied != 0 {
 		t.Fatal("incomplete configuration accepted", code, *applied)
+	}
+}
+
+func TestSeerrCatalogProbeUsesSavedSettingsWithoutApplying(t *testing.T) {
+	h, applied, _ := newHandler(t)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("x", 32) {
+			t.Error("wrong saved token")
+		}
+		w.Write([]byte(`{"schema":"seerrcatalog.availability.v1","revision":0,"items":[]}`))
+	}))
+	defer server.Close()
+	pseenv.Replace(map[string]string{"PSE_SEERRCATALOG_URL": server.URL, "PSE_SEERRCATALOG_TOKEN": strings.Repeat("x", 32)})
+	code, body := do(t, h, "POST", "/seerrcatalog/test", `{}`)
+	if code != 200 || body["code"] != "ok" || calls != 1 || *applied != 0 {
+		t.Fatalf("code %d body %v calls %d applied %d", code, body, calls, *applied)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/seerrcatalog/test", nil))
+	if rec.Code != 405 {
+		t.Fatalf("GET accepted: %d", rec.Code)
 	}
 }
