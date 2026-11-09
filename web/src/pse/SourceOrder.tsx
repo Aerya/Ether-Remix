@@ -1,4 +1,4 @@
-import { Badge, Button, SettingsSection } from "@braedonsaunders/appkit-ui";
+import { Button, SettingsSection } from "@braedonsaunders/appkit-ui";
 import { useEffect, useMemo, useState } from "react";
 import { getLocale } from "../i18n";
 import { api } from "../lib/api";
@@ -11,7 +11,6 @@ type Content = (typeof CONTENTS)[number];
 interface Row {
   id: string;
   label: string;
-  badge?: string;
 }
 
 const familyLabel = (id: string) =>
@@ -47,6 +46,23 @@ export function applyPriorities<T extends { id: string; priority: number }>(
   });
 }
 
+/** Déplace une source dans sa famille, sans changer la place des autres familles. */
+export function movedInFamily(
+  ids: string[],
+  familyOf: (id: string) => string,
+  family: string,
+  at: number,
+  delta: -1 | 1,
+): string[] {
+  const next = moved(
+    ids.filter((id) => familyOf(id) === family),
+    at,
+    delta,
+  );
+  let index = 0;
+  return ids.map((id) => (familyOf(id) === family ? (next[index++] as string) : id));
+}
+
 function OrderList({ rows, onMove }: { rows: Row[]; onMove: (at: number, delta: -1 | 1) => void }) {
   return (
     <ol className="divide-y divide-border rounded border border-border">
@@ -54,7 +70,6 @@ function OrderList({ rows, onMove }: { rows: Row[]; onMove: (at: number, delta: 
         <li className="flex items-center gap-2 p-2 text-sm" key={row.id}>
           <span className="w-6 text-fg-muted">{at + 1}</span>
           <span className="min-w-0 flex-1 truncate">{row.label}</span>
-          {row.badge ? <Badge variant="outline">{row.badge}</Badge> : null}
           <Button
             aria-label={L(`Monter ${row.label}`, `Move ${row.label} up`)}
             disabled={at === 0}
@@ -76,6 +91,37 @@ function OrderList({ rows, onMove }: { rows: Row[]; onMove: (at: number, delta: 
         </li>
       ))}
     </ol>
+  );
+}
+
+function FamilyLists({
+  families,
+  ids,
+  familyOf,
+  rowOf,
+  onChange,
+}: {
+  families: string[];
+  ids: string[];
+  familyOf: (id: string) => string;
+  rowOf: (id: string) => Row;
+  onChange: (ids: string[]) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {families.map((family) => {
+        const group = ids.filter((id) => familyOf(id) === family);
+        return group.length ? (
+          <div className="space-y-1" key={family}>
+            <h4 className="text-xs font-medium text-fg-muted">{familyLabel(family)}</h4>
+            <OrderList
+              rows={group.map(rowOf)}
+              onMove={(at, delta) => onChange(movedInFamily(ids, familyOf, family, at, delta))}
+            />
+          </div>
+        ) : null;
+      })}
+    </div>
   );
 }
 
@@ -104,14 +150,10 @@ export function SourceOrder() {
   const custom = (content[selected] ?? []).filter((id) => labels.has(id));
   const orderedIds = globalIds ?? indexers.map((ix) => ix.id);
   const contentIds = [...custom, ...orderedIds.filter((id) => !custom.includes(id))];
-  const sourceRow = (id: string): Row => {
+  const sourceRow = (id: string): Row => ({ id, label: labels.get(id)?.name ?? id });
+  const familyOfId = (id: string) => {
     const ix = labels.get(id);
-    return {
-      id,
-      label: ix?.name ?? id,
-      badge:
-        ix?.kind === "stremio" ? "Stremio" : ix?.protocol === "torrent" ? "BitTorrent" : "Usenet",
-    };
+    return ix?.kind === "stremio" ? "stremio" : ix?.protocol === "torrent" ? "torrent" : "usenet";
   };
   const familyIds = families.length ? families : FAMILIES;
 
@@ -174,9 +216,12 @@ export function SourceOrder() {
             <h3 className="text-sm font-medium">
               {L("Ordre global des sources", "Global source order")}
             </h3>
-            <OrderList
-              rows={orderedIds.map(sourceRow)}
-              onMove={(at, delta) => setGlobalIds(moved(orderedIds, at, delta))}
+            <FamilyLists
+              families={familyIds}
+              ids={orderedIds}
+              familyOf={familyOfId}
+              rowOf={sourceRow}
+              onChange={setGlobalIds}
             />
           </section>
           <section className="space-y-2">
@@ -195,11 +240,12 @@ export function SourceOrder() {
                 </Button>
               ))}
             </nav>
-            <OrderList
-              rows={contentIds.map(sourceRow)}
-              onMove={(at, delta) =>
-                setContent({ ...content, [selected]: moved(contentIds, at, delta) })
-              }
+            <FamilyLists
+              families={familyIds}
+              ids={contentIds}
+              familyOf={familyOfId}
+              rowOf={sourceRow}
+              onChange={(ids) => setContent({ ...content, [selected]: ids })}
             />
             {custom.length ? (
               <Button
