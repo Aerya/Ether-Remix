@@ -76,6 +76,7 @@ function remix(search = "?source=iptv") {
 it("opens the existing IPTV provider without treating its category as a provider ID", async () => {
   remix();
   await screen.findByText("King");
+  expect(screen.queryByText(/Suggested providers/)).toBeNull();
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Edit King" }));
   expect(await screen.findByText("Editing King")).toBeTruthy();

@@ -271,8 +271,8 @@ function PseSettings() {
             {content === "animes" ? (
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Les animés utilisent vos critères de langue habituels. UwU+ et les autres addons se configurent dans Sources.",
-                  "Anime uses your usual language criteria. Configure UwU+ and other addons in Sources.",
+                  "Les animés utilisent vos critères de langue habituels. Les addons Stremio se configurent dans Sources.",
+                  "Anime uses your usual language criteria. Configure Stremio addons in Sources.",
                 )}{" "}
                 <Link className="underline" to="/accent/sources?source=stremio">
                   {L("Gérer les sources Stremio", "Manage Stremio sources")}

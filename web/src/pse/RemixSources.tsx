@@ -11,7 +11,6 @@ import { IPTVProviders } from "../pages/sources/IPTV";
 import { ProwlarrImport } from "../components/ProwlarrImport";
 import { Drawer } from "../components/Drawer";
 import { NewReleaseBudgetSection } from "../pages/catalog/NewReleasesSettings";
-import { AnimeSources } from "./AnimeSources";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const CATEGORIES = [
   ["stremio", "Stremio", "Stremio"],
@@ -131,17 +130,6 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
       {category === "stremio" ? (
         <>
           <IndexerList view="stremio" addRequest={add} />
-          <details className="rounded-xl border border-border p-4">
-            <summary className="cursor-pointer font-medium">
-              {L(
-                "Fournisseurs suggérés : UwU+ et autres addons",
-                "Suggested providers: UwU+ and other addons",
-              )}
-            </summary>
-            <div className="mt-4">
-              <AnimeSources onAdd={setAdd} />
-            </div>
-          </details>
         </>
       ) : null}
       {category === "indexeurs" ? (

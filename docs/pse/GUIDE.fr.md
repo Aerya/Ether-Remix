@@ -166,7 +166,7 @@ Dans **Sources → IPTV**, le bouton **Modifier** ouvre le fournisseur sélectio
 
 Dans **Ether-Remix → Contenus et bibliothèques → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
 
-Dans **Sources → Stremio**, ouvrez **Fournisseurs suggérés : UwU+ et autres addons**. Utilisez **Configurer UwU+** pour choisir vos préférences chez le fournisseur, puis **Ajouter UwU+** et collez le lien `manifest.json` généré. **Ajouter un autre addon Stremio** accepte les autres fournisseurs. UwU+ fournit les flux, pas les catalogues : utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues pour la découverte. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. La disponibilité et la lecture dépendent des fournisseurs et de vos réglages de lecture.
+Dans **Sources → Stremio**, utilisez **Ajouter un addon**, puis collez le lien `manifest.json` généré chez le fournisseur de votre choix. Aucune sélection de fournisseurs n’est imposée ou suggérée. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. Pour la découverte, utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues.
 
 Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir les notes de livraison. Les nouvelles notes s’affichent une fois par navigateur après connexion ; leur fermeture mémorise localement la livraison consultée. La version dans le menu est fournie par le serveur exécuté ; les images officielles incluent un numéro de build Remix automatiquement croissant. Le pied du menu mène aux dépôts Ether et Ether-Remix.
 
@@ -176,7 +176,7 @@ Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir le
 
 ### Instances publiques ou auto-hébergement
 
-Les pages de configuration hébergées chez les fournisseurs portent la mention **Instance publique proposée**. Lorsqu’il existe, le lien **Héberger sa propre instance (GitHub)** mène au projet concerné : [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music), [HiFi API](https://github.com/binimum/hifi-api), [AIOStreams](https://github.com/Viren070/AIOStreams) et [Comet](https://github.com/g0ldyy/comet). AIOStreams propose aussi sa liste officielle d’instances publiques. Aucun lien d’auto-hébergement n’est déduit pour un fournisseur non documenté. Votre manifest personnel reste votre configuration, que le serveur soit public ou privé.
+Les sources musicales identifient les instances publiques et proposent les liens d’auto-hébergement disponibles : [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music) et [HiFi API](https://github.com/binimum/hifi-api). Pour Stremio, collez le manifest de votre instance publique ou privée ; aucun fournisseur n’est recommandé. Votre manifest personnel reste votre configuration.
 
 ## Organisation des réglages
 
