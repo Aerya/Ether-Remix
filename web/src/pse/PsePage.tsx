@@ -430,12 +430,33 @@ function FeatureSection({
         }))}
       />
     );
+  if (feature.id === "sfr")
+    return (
+      <details className="rounded border border-border" id="pse-sfr">
+        <summary className="cursor-pointer select-none px-4 py-3 font-medium">
+          {T(feature.title)}
+        </summary>
+        <p className="border-t border-border px-4 py-3 text-sm text-fg-muted">
+          {T(feature.description)}
+        </p>
+        <StatusLine feature={feature} />
+        {basic.map(row)}
+        <SfrHelp />
+        {advanced.length ? (
+          <details className="border-t border-border">
+            <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-fg-muted hover:text-fg">
+              {L("Options avancées", "Advanced options")} ({advanced.length})
+            </summary>
+            {advanced.map(row)}
+          </details>
+        ) : null}
+      </details>
+    );
   return (
     <div id={`pse-${feature.id}`}>
       <SettingsSection title={T(feature.title)} description={T(feature.description)}>
         <StatusLine feature={feature} />
         {basic.map(row)}
-        {feature.id === "sfr" ? <SfrHelp /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
         {feature.id === "music" && placement === "content" ? <MusicPlaylists /> : null}
         {advanced.length ? (
