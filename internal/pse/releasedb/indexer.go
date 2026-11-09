@@ -15,6 +15,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
 )
 
 // Settings règle l'indexeur (variables d'environnement PSE_INDEXER_*).
@@ -409,6 +410,10 @@ func (s *Service) fill(ctx context.Context, typ core.MediaType) error {
 // IndexTitle interroge chaque source pour un titre et enregistre ce qui
 // est trouvé.
 func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source) error {
+	// A recent SeerrCatalog availability replaces this duplicate catalogue check.
+	if seerrcatalog.Trusted(ctx, s.st.db, t.Key) {
+		return nil
+	}
 	req := core.SearchRequest{Anime: t.IsAnime(), AbsoluteEpisode: t.AbsoluteEpisode, Type: t.Type, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, Year: t.Year, AlternativeTitles: t.AlternativeTitles, Released: t.Released}
 	season, episode := 0, 0
 	if t.Type == core.TypeShow {

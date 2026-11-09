@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-09-client-browsing",
+    id: "2026-11-09-seerrcatalog-integration",
     version: "current",
+    date: "2026-11-09",
+    title: [
+      "SeerrCatalog partage ses résultats avec Remix",
+      "SeerrCatalog shares its results with Remix",
+    ],
+    items: [
+      [
+        "Dans Sources → Stremio, activez l’intégration facultative SeerrCatalog : disponibilités sans recherche en double, sources récentes réutilisées à la lecture, reprise des modifications et suppressions après une coupure.",
+        "Under Sources → Stremio, enable the optional SeerrCatalog integration: availability without duplicate searches, recent streams reused for playback, and recovery of changes and deletions after outages.",
+      ],
+      [
+        "Les deux interfaces et les README proposent les liens GitHub SeerrCatalog et Ether Remix, ainsi que les étapes de connexion.",
+        "Both interfaces and READMEs include SeerrCatalog and Ether Remix GitHub links and connection instructions.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-09-client-browsing",
+    version: "0.2.37-remix.10.1",
     date: "2026-11-09",
     title: ["Navigation plus rapide dans Plex et Jellyfin", "Faster browsing in Plex and Jellyfin"],
     items: [

@@ -50,6 +50,7 @@ type touchSource struct {
 
 var tierTouchSources = []touchSource{
 	// Tier A: viewer or owner intent.
+	{table: "pse_seerrcatalog", column: "title_key", tierA: true},
 	{table: "state_watch", column: "rating_key", tierA: true},
 	{table: "state_history", column: "rating_key", tierA: true},
 	{table: "state_history_events", column: "rating_key"},

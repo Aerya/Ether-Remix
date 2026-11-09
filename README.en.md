@@ -42,6 +42,23 @@ Ether-Remix extends [Ether](https://github.com/braedonsaunders/ether) with a Fre
 
 Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio compatibility, along with debrid/Usenet video streaming, come from **Ether**. Ether-Remix extends these capabilities; you do not need to build a local music-file library.
 
+## SeerrCatalog: from requests to available titles
+
+[SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog) turns Seerr requests into Stremio catalogues and checks their sources. Its optional [Ether Remix](https://github.com/Aerya/Ether-Remix) integration shares these results to avoid duplicate searches.
+
+1. In SeerrCatalog, open **Settings → Ether Remix integration**, generate a token and enable export.
+2. In Remix, open **Sources → Stremio → SeerrCatalog → Ether Remix**, enter the SeerrCatalog base address and token, enable and save.
+3. Optionally configure the Remix address followed by `/api/integrations/seerrcatalog/v1/events` in SeerrCatalog. Without notifications, automatic synchronization still runs every minute.
+4. Recheck existing titles in SeerrCatalog to generate their first exportable observations.
+
+Remix trusts SeerrCatalog criteria: available titles pass the **playable-only** filter and background indexing does not query their addons again. Other visibility filters and viewer playback policies remain active. The importer retrieves TMDB metadata; it does not create a collection automatically.
+
+SeerrCatalog rechecks exported titles after 24 h with an hourly wake-up. Availability lasts **26 h**; playback URLs and headers are reused for at most **30 min**, torrent hashes until the observation expires. Expired, rejected or failed sources fall back to normal playback discovery. Links may expire earlier or depend on the provider’s IP restrictions. For shows, only the episodes actually checked provide reusable sources.
+
+Complete paginated reconciliation recovers changes and deletions after outages; incomplete imports keep the previous valid observations. Sensitive streams live only in Remix memory, outside catalogue APIs, and are fetched again after restarting. Disabling removes integration trust. The token shares sources belonging to all SeerrCatalog users: connect only a trusted Remix instance and use HTTPS outside a private network.
+
+Equivalent variables: `PSE_SEERRCATALOG=on`, `PSE_SEERRCATALOG_URL=http://seerrcatalog:7000`, `PSE_SEERRCATALOG_TOKEN=…`. Disabled by default.
+
 ## Music sources
 
 Enable sources independently in **Console → Ether-Remix → Sources → Music streaming**. Existing debrid accounts and indexers are reused.
