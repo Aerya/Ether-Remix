@@ -173,7 +173,7 @@ func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubC
 	}
 	mh := model.Hub{
 		Key:           s.shelfURL(key, generation),
-		Title:         h.Title,
+		Title:         localizedHubTitle(s.viewerLanguage(pr), h.Title),
 		Type:          typ,
 		HubIdentifier: h.ID,
 		Context:       ctxName,
