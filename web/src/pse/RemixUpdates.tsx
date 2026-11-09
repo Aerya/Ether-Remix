@@ -8,6 +8,24 @@ const SEEN_KEY = "ether-remix.updates.seen";
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
+    id: "2026-11-09-iptv-editor",
+    date: "2026-11-09",
+    title: [
+      "Sources Stremio simplifiées et IPTV corrigé",
+      "Simpler Stremio sources and IPTV fixed",
+    ],
+    items: [
+      [
+        "Les fournisseurs IPTV s’ouvrent et s’enregistrent depuis Sources → IPTV ; la catégorie reste sélectionnée à la fermeture du formulaire.",
+        "IPTV providers open and save under Sources → IPTV; the category stays selected when closing the editor.",
+      ],
+      [
+        "Ajoutez librement vos addons dans Sources → Stremio avec leur manifest. Les suggestions de fournisseurs ont été retirées.",
+        "Add any addon under Sources → Stremio using its manifest. Provider suggestions have been removed.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-09-sources-sync",
     date: "2026-11-09",
     title: ["Sources réunies et navigation simplifiée", "Unified sources and simpler navigation"],
@@ -48,8 +66,8 @@ export const REMIX_UPDATES = [
         "Anime tab: TMDB libraries and collections, respecting your language criteria.",
       ],
       [
-        "UwU+ et ajout libre d’autres addons Stremio, avec priorité et sources partagées.",
-        "UwU+ and any other Stremio addon, with shared sources and priorities.",
+        "Ajout libre des addons Stremio, avec priorité et sources partagées.",
+        "Add any Stremio addon, with shared sources and priorities.",
       ],
       [
         "Ce panneau présente les nouveautés après chaque livraison et reste accessible avec le bouton Nouveautés.",

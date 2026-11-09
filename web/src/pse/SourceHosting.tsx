@@ -55,39 +55,6 @@ export function StremioHostingOptions() {
           "You can paste a public or private instance's manifest. A public configuration page does not imply that the software can be self-hosted.",
         )}
       </p>
-      <ul className="mt-2 space-y-2">
-        <li>
-          AIOStreams ·{" "}
-          <a
-            className="underline"
-            href="https://docs.aiostreams.viren070.me/getting-started/public-instances"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {L("Instances publiques", "Public instances")} ↗
-          </a>
-          {" · "}
-          <a
-            className="underline"
-            href="https://github.com/Viren070/AIOStreams"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {L("Héberger sa propre instance (GitHub)", "Host your own instance (GitHub)")} ↗
-          </a>
-        </li>
-        <li>
-          Comet ·{" "}
-          <a
-            className="underline"
-            href="https://github.com/g0ldyy/comet"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {L("Héberger sa propre instance (GitHub)", "Host your own instance (GitHub)")} ↗
-          </a>
-        </li>
-      </ul>
     </details>
   );
 }

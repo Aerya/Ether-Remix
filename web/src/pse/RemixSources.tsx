@@ -11,7 +11,6 @@ import { IPTVProviders } from "../pages/sources/IPTV";
 import { ProwlarrImport } from "../components/ProwlarrImport";
 import { Drawer } from "../components/Drawer";
 import { NewReleaseBudgetSection } from "../pages/catalog/NewReleasesSettings";
-import { AnimeSources } from "./AnimeSources";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const CATEGORIES = [
   ["stremio", "Stremio", "Stremio"],
@@ -53,6 +52,8 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
     setParams((p) => {
       const n = new URLSearchParams(p);
       n.set("source", target);
+      n.delete("iptvSource");
+      n.delete("new");
       if (choice.type === "iptv") n.set("new", choice.kind);
       return n;
     });
@@ -90,6 +91,8 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
               setParams((p) => {
                 const next = new URLSearchParams(p);
                 next.set("source", id);
+                next.delete("iptvSource");
+                next.delete("new");
                 return next;
               })
             }
@@ -127,17 +130,6 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
       {category === "stremio" ? (
         <>
           <IndexerList view="stremio" addRequest={add} />
-          <details className="rounded-xl border border-border p-4">
-            <summary className="cursor-pointer font-medium">
-              {L(
-                "Fournisseurs suggérés : UwU+ et autres addons",
-                "Suggested providers: UwU+ and other addons",
-              )}
-            </summary>
-            <div className="mt-4">
-              <AnimeSources onAdd={setAdd} />
-            </div>
-          </details>
         </>
       ) : null}
       {category === "indexeurs" ? (
@@ -186,7 +178,7 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
       ) : null}
       {category === "debrid" ? <DebridSources addKind={debridAdd} /> : null}
       {category === "usenet" ? <UsenetProviders addNonce={usenetAdd} /> : null}
-      {category === "iptv" ? <IPTVProviders /> : null}
+      {category === "iptv" ? <IPTVProviders sourceParam="iptvSource" /> : null}
       {category === "musique" ? music : null}
       {category === "indexation" ? indexing : null}
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />

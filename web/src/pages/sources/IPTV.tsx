@@ -13,7 +13,7 @@ import { addonChannelsKind, emptySource, plexLineupName, tv, type Source } from 
 
 /** The canonical connection editor for provider, playlist and guide sources.
  * Live TV links here and reads the same source records for its lineup. */
-export function IPTVProviders() {
+export function IPTVProviders({ sourceParam = "source" }: { sourceParam?: string } = {}) {
   const [params, setParams] = useSearchParams();
   const [sources, setSources] = useState<Source[] | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -25,7 +25,21 @@ export function IPTVProviders() {
       setError(e);
     }
   }, []);
-  const id = params.get("source");
+  // Embedded consoles may use `source` to select a category of providers.
+  const setEditorParams = (next: URLSearchParams) => {
+    if (sourceParam === "source") {
+      setParams(next);
+      return;
+    }
+    setParams((current) => {
+      const merged = new URLSearchParams(current);
+      merged.delete(sourceParam);
+      merged.delete("new");
+      next.forEach((value, key) => merged.set(key === "source" ? sourceParam : key, value));
+      return merged;
+    });
+  };
+  const id = params.get(sourceParam);
   const adding = params.get("new");
   useEffect(() => {
     void reload();
@@ -38,13 +52,13 @@ export function IPTVProviders() {
   }, [reload, id, adding]);
   const selected = sources?.find((s) => s.id === id) ?? null;
   const open = Boolean(id || (adding && adding !== "addon"));
-  const close = () => setParams(new URLSearchParams());
+  const close = () => setEditorParams(new URLSearchParams());
   const addAddonSource = async (addon: AddonSummary) => {
     const kind = addonChannelsKind(addon.id);
     const existing = (sources ?? []).find((s) => s.kind === kind || s.playlistUrl === kind);
     if (existing) {
       toast.info(t("{name} is already in Live TV", { name: existing.name }));
-      setParams(new URLSearchParams({ source: existing.id }));
+      setEditorParams(new URLSearchParams({ source: existing.id }));
       return;
     }
     if (!addon.roles?.some((r) => r.role === "livetv_channels" && r.on)) {
@@ -66,7 +80,7 @@ export function IPTVProviders() {
         description: t("Channel numbers, mappings and access rules are kept."),
       });
       await reload();
-      setParams(new URLSearchParams({ source: saved.id }));
+      setEditorParams(new URLSearchParams({ source: saved.id }));
     } catch (e) {
       toast.error(t("Couldn't import channels from {name}", { name: addon.name }), {
         id: importing,
@@ -137,7 +151,7 @@ export function IPTVProviders() {
                 variant="outline"
                 size="sm"
                 aria-label={t("Edit {name}", { name: source.name })}
-                onClick={() => setParams(new URLSearchParams({ source: source.id }))}
+                onClick={() => setEditorParams(new URLSearchParams({ source: source.id }))}
               >
                 <Pencil size={13} />
                 {t("Edit")}
@@ -172,7 +186,7 @@ export function IPTVProviders() {
             initialXtream={adding === "xtream"}
             onSaved={async (s) => {
               await reload();
-              setParams(new URLSearchParams({ source: s.id }));
+              setEditorParams(new URLSearchParams({ source: s.id }));
             }}
             onDeleted={async () => {
               close();
