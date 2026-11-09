@@ -21,7 +21,15 @@ const CATEGORIES = [
   ["iptv", "IPTV", "IPTV"],
   ["indexation", "Indexation", "Indexing"],
 ] as const;
-export function RemixSources({ music, indexing }: { music: ReactNode; indexing: ReactNode }) {
+export function RemixSources({
+  music,
+  indexing,
+  stremio,
+}: {
+  music: ReactNode;
+  indexing: ReactNode;
+  stremio?: ReactNode;
+}) {
   const [params, setParams] = useSearchParams();
   const raw = params.get("source");
   const category = CATEGORIES.find(([id]) => id === raw)?.[0] ?? "stremio";
@@ -130,6 +138,7 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
       {category === "stremio" ? (
         <>
           <IndexerList view="stremio" addRequest={add} />
+          {stremio}
         </>
       ) : null}
       {category === "indexeurs" ? (

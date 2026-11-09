@@ -426,6 +426,12 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 			return "", errors.New("ressaisissez le mot de passe de l'adresse")
 		}
 		u, err := url.Parse(v)
+		if fd.Key == "PSE_SFR_URL" {
+			if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" {
+				return "", errors.New("adresse postgres://… attendue")
+			}
+			return v, nil
+		}
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return "", errors.New("adresse http(s)://… attendue")
 		}

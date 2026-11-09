@@ -113,6 +113,21 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID:          "sfr",
+		Title:       tx("Base StreamFusion Reborn auto-hébergée", "Self-hosted StreamFusion Reborn database"),
+		Description: tx("Met à jour le catalogue et la détection VF depuis votre base, sans interroger les sources titre par titre. La lecture continue de passer par vos sources.", "Updates the catalogue and French detection from your database, without querying sources title by title. Playback still goes through your sources."),
+		Fields: []Field{
+			{Key: "PSE_SFR", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
+				Help: tx("Désactivé par défaut. Le premier import lit toute la base, par lots.", "Off by default. The first import reads the whole database in batches.")},
+			{Key: "PSE_SFR_URL", Kind: KindURL, Secret: true, Default: "", Placeholder: "postgres://remix_lecture:mot-de-passe@sfr-stremio-postgres:5432/streamfusion", Label: tx("Adresse PostgreSQL", "PostgreSQL address"),
+				Help: tx("Compte en lecture seule, voir les étapes ci-dessous. Le mot de passe n'est jamais réaffiché.", "Read-only account, see the steps below. The password is never shown again.")},
+			{Key: "PSE_SFR_PRIVATE", Kind: KindToggle, Default: "off", Label: tx("Inclure les trackers privés", "Include private trackers"),
+				Help: tx("Désactivé par défaut. Un changement refait un import complet.", "Off by default. Changing this runs a full import again.")},
+			{Key: "PSE_SFR_INTERVAL", Advanced: true, Kind: KindDuration, Default: "6h", Placeholder: "6h", Label: tx("Intervalle", "Interval"),
+				Help: tx("Minimum 30m.", "At least 30m.")},
+		},
+	},
+	{
 		ID:          "playable",
 		Title:       tx("Catalogue « lisible uniquement »", "“Playable only” catalogue"),
 		Description: tx("Ne liste que les titres ayant assez de releases indexées correspondant à vos critères. Nécessite l'indexation.", "Only lists titles with enough indexed releases matching your criteria. Needs indexing."),
