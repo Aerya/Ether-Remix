@@ -210,6 +210,22 @@ func (h *handler) put(w http.ResponseWriter, r *http.Request) {
 		}
 		values[key] = norm
 	}
+	effective := func(key string) string {
+		if v, ok := values[key]; ok {
+			return v
+		}
+		v, _ := pseenv.Env(key)
+		return v
+	}
+	switch strings.ToLower(effective("PSE_SEERRCATALOG")) {
+	case "on", "1", "true", "yes", "oui":
+		if effective("PSE_SEERRCATALOG_URL") == "" {
+			errs["PSE_SEERRCATALOG_URL"] = "Adresse de SeerrCatalog requise"
+		}
+		if len(effective("PSE_SEERRCATALOG_TOKEN")) < 32 {
+			errs["PSE_SEERRCATALOG_TOKEN"] = "Clé partagée requise (32 caractères minimum)"
+		}
+	}
 	if len(errs) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "Certains réglages sont invalides", "fields": errs})
 		return
@@ -307,6 +323,15 @@ func splitList(v string) []string {
 }
 
 func validate(fd Field, v string, sources []Option) (string, error) {
+	if fd.Key == "PSE_SEERRCATALOG_URL" && v != "" {
+		u, e := url.Parse(v)
+		if e != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return "", errors.New("adresse de base sans identifiants, paramètres ni fragment attendue")
+		}
+	}
+	if fd.Key == "PSE_SEERRCATALOG_TOKEN" && v != "" && len(v) < 32 {
+		return "", errors.New("clé de 32 caractères minimum")
+	}
 	switch fd.Kind {
 	case KindToggle:
 		switch strings.ToLower(v) {

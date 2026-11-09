@@ -96,6 +96,9 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	mux := http.NewServeMux()
 	mux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
 	a.mountExtensibility(mux)
+	if s := pseRuntimeOf(a).seerr; s != nil {
+		mux.Handle("/api/integrations/seerrcatalog/v1/events", s)
+	}
 	a.mountPSEMusic(mux) // PSE-HOOK: API Subsonic (musique) — voir docs/pse/FORK.fr.md
 	mux.HandleFunc("/ether", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ether/", http.StatusFound)

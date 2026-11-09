@@ -23,6 +23,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/pse/notifyfr"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 	"github.com/braedonsaunders/ether/internal/pse/scrobpush"
+	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
 	"github.com/braedonsaunders/ether/internal/pse/statistics"
 	"github.com/braedonsaunders/ether/internal/pse/themes"
 )
@@ -34,6 +35,7 @@ type pseRuntime struct {
 	statistics    statistics.Service
 	once          sync.Once
 	mu            sync.Mutex
+	seerr         *seerrcatalog.Service
 	indexer       *releasedb.Service
 	music         atomic.Pointer[music.Server]
 	musicConf     music.Settings
@@ -153,6 +155,9 @@ func (rt *pseRuntime) reloadMusic(a *App) {
 
 // apply rend effectifs les réglages enregistrés depuis la console.
 func (rt *pseRuntime) apply(a *App) {
+	if rt.seerr != nil {
+		rt.seerr.Wake()
+	}
 	frenchcat.Override(frenchcat.Load())
 	releasedb.OverridePlayable(releasedb.LoadPlayable())
 	rt.reloadMusic(a)
@@ -308,6 +313,9 @@ func (a *App) pseStatus(ctx context.Context, rt *pseRuntime) map[string]any {
 		"notify": map[string]any{"language": lang},
 		"french": map[string]any{"active": frenchcat.Current().Enabled},
 		"scrob":  map[string]any{"active": scrobview.Enabled() || scrobpush.Enabled(), "views": scrobview.Enabled(), "push": scrobpush.Enabled()},
+	}
+	if rt.seerr != nil {
+		out["seerrcatalog"] = map[string]any{"active": seerrcatalog.Load().Enabled, "sync": rt.seerr.Status()}
 	}
 	idx := releasedb.LoadSettings()
 	playable := releasedb.Playable()

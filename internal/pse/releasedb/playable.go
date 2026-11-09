@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
+	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -155,7 +156,8 @@ func (p PlayableSettings) PlayableSQL(keyCol string) (string, []any) {
 	if p.Pending {
 		clause += " OR NOT EXISTS (SELECT 1 FROM pse_index_titles pi WHERE pi.title_key=" + keyCol + ")"
 	}
-	return "(" + clause + ")", []any{p.Min, p.Min}
+	trusted, args := seerrcatalog.TrustedSQL(keyCol)
+	return "(" + clause + " OR " + trusted + ")", append([]any{p.Min, p.Min}, args...)
 }
 
 // LangExemptSQL renvoie la condition SQL « le titre échappe au filtre de
