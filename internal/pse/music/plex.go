@@ -899,6 +899,11 @@ func (q *psemReq) playQueue(rest string, v url.Values) bool {
 			tracks, ok = q.tracksForURI(v.Get("uri"))
 		}
 		if !ok {
+			// Les autres rangées (classements, radio…) ont un uri propre à la
+			// rangée : on lance alors l'élément choisi.
+			tracks, ok = q.tracksForURI(v.Get("key"))
+		}
+		if !ok {
 			return false
 		}
 		pq := &psemQueue{owner: q.viewer, tracks: tracks, uri: v.Get("uri"), version: 1}
