@@ -17,6 +17,7 @@ vi.mock("./RemixSources", () => ({
   RemixSources: ({ indexing }: { indexing: React.ReactNode }) => indexing,
 }));
 vi.mock("./SearchPriority", () => ({ SearchPriority: () => null }));
+vi.mock("./SourceOrder", () => ({ SourceOrder: () => null }));
 const txt = (s: string) => ({ fr: s, en: s });
 
 it("orders tabs and lets vertically listed imported sources be selected and saved", async () => {

@@ -225,6 +225,7 @@ type Service struct {
 	debridCachedOnly bool
 	scorer           *FormatScorer
 	indexerPriority  map[string]int // indexer id → Priority (lower ranks first)
+	indexerFamily    map[string]string
 	scorerErr        error
 	sources          string // sourcesKey of the applied config
 
@@ -316,8 +317,17 @@ func (s *Service) UpdateConfig(cfg config.Config) {
 	s.debridCachedOnly = cfg.Debrid.CachedOnly
 	s.scorer, s.scorerErr = NewFormatScorer(cfg.Resolver.CustomFormats)
 	s.indexerPriority = make(map[string]int, len(cfg.Indexers))
+	s.indexerFamily = make(map[string]string, len(cfg.Indexers))
 	for _, ix := range cfg.Indexers {
 		s.indexerPriority[ix.ID] = ix.Priority
+		switch {
+		case ix.Kind == config.IndexerKindStremio:
+			s.indexerFamily[ix.ID] = "stremio"
+		case ix.Protocol == core.ProtocolTorrent:
+			s.indexerFamily[ix.ID] = "torrent"
+		default:
+			s.indexerFamily[ix.ID] = "usenet"
+		}
 	}
 	changed := s.sources != "" && s.sources != key
 	s.sources = key
@@ -1517,7 +1527,7 @@ func (s *Service) orderCandidates(cands []candidate, title *core.Title, trace *T
 // rankContext gathers what the comparer keys read for one ranking pass.
 func (s *Service) rankContext(profile core.QualityProfile, t *core.Title, rcfg config.Resolver, now time.Time) rankContext {
 	s.cfgMu.RLock()
-	scorer, priority := s.scorer, s.indexerPriority
+	scorer, priority, familyOf := s.scorer, s.indexerPriority, s.indexerFamily
 	s.cfgMu.RUnlock()
 	return rankContext{
 		profile:        profile,
@@ -1526,6 +1536,9 @@ func (s *Service) rankContext(profile core.QualityProfile, t *core.Title, rcfg c
 		preferSource:   preferredSource(rcfg.SourcePreference),
 		preferRevision: !scorer.scoresRevision(profile.CustomFormatScores),
 		priority:       priority,
+		families:       rcfg.SourceOrder.Families,
+		familyOf:       familyOf,
+		contentOrder:   rcfg.SourceOrder.Content,
 		reliability: func(indexer string) float64 {
 			s.mu.RLock()
 			defer s.mu.RUnlock()

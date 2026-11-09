@@ -170,7 +170,8 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 	if mode == PreferDebrid {
 		preferredProtocol = core.ProtocolTorrent
 	}
-	if explicit && rcfg.SourceAlwaysFirst {
+	ownerOrder := len(rcfg.SourceOrder.Families) > 0
+	if explicit && rcfg.SourceAlwaysFirst && !ownerOrder {
 		return s.sourceAlwaysFirst(cands, preferredProtocol, trace)
 	}
 	// Automatic routing reuses a verified source. An explicit owner change
@@ -236,6 +237,9 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 		return cands
 	}
 
+	if ownerOrder {
+		return cands
+	}
 	var want, why string
 	switch mode {
 	case PreferUsenet:

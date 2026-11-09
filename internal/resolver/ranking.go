@@ -35,6 +35,7 @@ type rankKeys struct {
 	height      int     // graded height (a starved or upscaled release one step down)
 	revision    int     // Proper/Repack, when the profile prefers revisions
 	protocol    bool    // the owner's preferred source protocol
+	family      int     // place in the owner's family order: lower is better
 	pack        bool    // a season pack streamed for one episode
 	priority    int     // indexer priority: lower is better
 	torrent     bool    // a torrent (seeders and peers compare)
@@ -72,6 +73,9 @@ func compareCandidates(a, b candidate) bool {
 	}
 	if x.protocol != y.protocol {
 		return x.protocol
+	}
+	if x.family != y.family {
+		return x.family < y.family
 	}
 	if x.priority != y.priority {
 		return x.priority < y.priority
@@ -112,7 +116,41 @@ type rankContext struct {
 	preferSource   string // the owner's source preference: PreferUsenet, PreferDebrid or "" for none
 	preferRevision bool
 	priority       map[string]int // indexer id → priority
+	families       []string
+	familyOf       map[string]string   // indexer id → stremio, usenet or torrent
+	contentOrder   map[string][]string // movie, show or anime → indexer ids
 	reliability    func(indexer string) float64
+}
+
+// contentKind classifies a title for the owner's per-content source order.
+func contentKind(t *core.Title) string {
+	switch {
+	case t == nil:
+		return ""
+	case isAnime(t):
+		return "anime"
+	case t.Type == core.TypeMovie:
+		return "movie"
+	}
+	return "show"
+}
+
+// familyRank is the release's place in the owner's family order.
+func (rc rankContext) familyRank(rel core.Release) int {
+	if len(rc.families) == 0 {
+		return 0
+	}
+	family := rc.familyOf[rel.IndexerID]
+	if family == "" {
+		family = "usenet"
+		if protocolOf(rel) == core.ProtocolTorrent {
+			family = "torrent"
+		}
+	}
+	if at := slices.Index(rc.families, family); at >= 0 {
+		return at
+	}
+	return len(rc.families)
 }
 
 // keysFor computes a candidate's comparer keys.
@@ -123,7 +161,7 @@ func keysFor(rel core.Release, starved bool, rc rankContext) rankKeys {
 	if rc.preferRevision {
 		k.revision = revisionRank(info)
 	}
-	if rc.preferSource != "" {
+	if rc.preferSource != "" && len(rc.families) == 0 {
 		k.protocol = sourceName(protocolOf(rel)) == rc.preferSource
 	}
 	if rc.title != nil && (rc.title.Type == core.TypeEpisode || rc.title.Key.Kind() == core.KindEpisode) {
@@ -131,6 +169,13 @@ func keysFor(rel core.Release, starved bool, rc rankContext) rankKeys {
 	}
 	if p, ok := rc.priority[rel.IndexerID]; ok {
 		k.priority = p
+	}
+	k.family = rc.familyRank(rel)
+	if listed := rc.contentOrder[contentKind(rc.title)]; len(listed) > 0 {
+		// Listed indexers rank ahead of every global priority (>= 0).
+		if at := slices.Index(listed, rel.IndexerID); at >= 0 {
+			k.priority = at - len(listed)
+		}
 	}
 	switch rel.Protocol {
 	case core.ProtocolTorrent:
