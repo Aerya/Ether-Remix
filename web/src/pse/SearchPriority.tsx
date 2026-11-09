@@ -1,4 +1,4 @@
-import { Badge, Button, Input, Select, SettingsSection, toast } from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Input, Select, toast } from "@braedonsaunders/appkit-ui";
 import { useEffect, useMemo, useState } from "react";
 import { getLocale } from "../i18n";
 import { api, apiFetch } from "../lib/api";
@@ -153,89 +153,94 @@ export function SearchPriority() {
   const total = prio.data.total ?? 0;
   const max = prio.data.max ?? 0;
   return (
-    <SettingsSection
-      title={L("Priorité de recherche", "Search priority")}
-      description={L(
-        "Cherche les releases de certaines collections ou bibliothèques avant le reste. Les limites de chaque source restent appliquées.",
-        "Searches releases for chosen collections or libraries before the rest. Each source's limits still apply.",
-      )}
-    >
-      <div className="space-y-3">
-        <p className="text-sm">
-          {L(`${total} titre(s) prioritaire(s)`, `${total} priority title(s)`)}
-          {max > 0 && total > max
-            ? L(
-                ` : seuls les ${max} premiers sont traités en priorité.`,
-                `: only the first ${max} are prioritized.`,
-              )
-            : ""}
+    <details className="rounded-xl border border-border bg-surface">
+      <summary className="cursor-pointer px-4 py-3 font-medium">
+        {L("Priorité de recherche", "Search priority")}
+      </summary>
+      <div className="border-t border-border p-4">
+        <p className="mb-4 text-sm text-fg-muted">
+          {L(
+            "Cherche les releases de certaines collections ou bibliothèques avant le reste. Les limites de chaque source restent appliquées.",
+            "Searches releases for chosen collections or libraries before the rest. Each source’s limits still apply.",
+          )}
         </p>
-        <Input
-          className="h-9 w-full max-w-md"
-          aria-label={L("Filtrer", "Filter")}
-          placeholder={L("Filtrer par nom…", "Filter by name…")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        {targets.slice(0, VISIBLE).map((t) => {
-          const key = `${t.kind}:${t.id}`;
-          return (
-            <div
-              key={key}
-              data-priority-target={key}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-3"
-            >
-              <span className="flex min-w-0 flex-wrap items-center gap-2 text-sm font-medium">
-                {t.name}
-                <Badge variant="secondary">
-                  {t.kind === "library"
-                    ? L("Bibliothèque", "Library")
-                    : L("Collection", "Collection")}
-                </Badge>
-                {t.titles !== undefined ? (
-                  <span className="text-xs font-normal text-fg-muted">
-                    {L(`${t.titles} titre(s)`, `${t.titles} title(s)`)}
-                  </span>
-                ) : null}
-              </span>
-              <span className="flex flex-wrap items-center gap-2">
-                <Select
-                  className="h-9 w-72 max-w-full text-sm"
-                  aria-label={L(`Priorité de ${t.name}`, `${t.name} priority`)}
-                  value={String(t.level)}
-                  disabled={busy !== null}
-                  onChange={(e) => void changeLevel(t, Number(e.target.value))}
-                >
-                  {levelOptions().map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-                <Button size="sm" disabled={busy !== null} onClick={() => void searchNow(t)}>
-                  {L("Chercher maintenant", "Search now")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy !== null}
-                  onClick={() => void refresh(t)}
-                >
-                  {L("Actualiser", "Refresh")}
-                </Button>
-              </span>
-            </div>
-          );
-        })}
-        {targets.length > VISIBLE ? (
-          <p className="text-xs text-fg-muted">
-            {L(
-              `${VISIBLE} affichées sur ${targets.length} : filtrez pour trouver les autres.`,
-              `Showing ${VISIBLE} of ${targets.length}: filter to find the others.`,
-            )}
+        <div className="space-y-3">
+          <p className="text-sm">
+            {L(`${total} titre(s) prioritaire(s)`, `${total} priority title(s)`)}
+            {max > 0 && total > max
+              ? L(
+                  ` : seuls les ${max} premiers sont traités en priorité.`,
+                  `: only the first ${max} are prioritized.`,
+                )
+              : ""}
           </p>
-        ) : null}
+          <Input
+            className="h-9 w-full max-w-md"
+            aria-label={L("Filtrer", "Filter")}
+            placeholder={L("Filtrer par nom…", "Filter by name…")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          {targets.slice(0, VISIBLE).map((t) => {
+            const key = `${t.kind}:${t.id}`;
+            return (
+              <div
+                key={key}
+                data-priority-target={key}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-3"
+              >
+                <span className="flex min-w-0 flex-wrap items-center gap-2 text-sm font-medium">
+                  {t.name}
+                  <Badge variant="secondary">
+                    {t.kind === "library"
+                      ? L("Bibliothèque", "Library")
+                      : L("Collection", "Collection")}
+                  </Badge>
+                  {t.titles !== undefined ? (
+                    <span className="text-xs font-normal text-fg-muted">
+                      {L(`${t.titles} titre(s)`, `${t.titles} title(s)`)}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="flex flex-wrap items-center gap-2">
+                  <Select
+                    className="h-9 w-72 max-w-full text-sm"
+                    aria-label={L(`Priorité de ${t.name}`, `${t.name} priority`)}
+                    value={String(t.level)}
+                    disabled={busy !== null}
+                    onChange={(e) => void changeLevel(t, Number(e.target.value))}
+                  >
+                    {levelOptions().map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                  <Button size="sm" disabled={busy !== null} onClick={() => void searchNow(t)}>
+                    {L("Chercher maintenant", "Search now")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== null}
+                    onClick={() => void refresh(t)}
+                  >
+                    {L("Actualiser", "Refresh")}
+                  </Button>
+                </span>
+              </div>
+            );
+          })}
+          {targets.length > VISIBLE ? (
+            <p className="text-xs text-fg-muted">
+              {L(
+                `${VISIBLE} affichées sur ${targets.length} : filtrez pour trouver les autres.`,
+                `Showing ${VISIBLE} of ${targets.length}: filter to find the others.`,
+              )}
+            </p>
+          ) : null}
+        </div>
       </div>
-    </SettingsSection>
+    </details>
   );
 }

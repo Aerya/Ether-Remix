@@ -21,7 +21,7 @@ Ether-Remix enrichit [Ether](https://github.com/braedonsaunders/ether) avec un c
   <img src="https://img.shields.io/badge/licence-GPL--3.0-green" alt="GPL-3.0">
 </p>
 
-Les **Nouveautés** s’affichent après une livraison et restent consultables depuis le bouton du même nom dans la console.
+Les **Nouveautés** affichent uniquement les notes non lues depuis votre dernière version consultée. Le bouton du même nom permet aussi d’ouvrir l’historique complet.
 
 ## Fonctionnalités
 
@@ -36,7 +36,7 @@ Les **Nouveautés** s’affichent après une livraison et restent consultables d
 | **La musique dans vos applications** | Bibliothèque musicale dans Plex/Plexamp et les clients Jellyfin, plus une API Subsonic pour Symfonium, Feishin, Supersonic, DSub… Catalogue Deezer public, favoris et historique propres à chaque utilisateur. |
 | **Des playlists et de la découverte** | Import Deezer, Last.fm et ListenBrainz ; playlists personnelles éditables via Subsonic ; favoris, écoutes récentes, titres les plus écoutés, tops par pays, découvertes et nouveautés des artistes suivis. Navigation par genre, artistes similaires, radios et mix selon le client. |
 | **Le suivi avec Scrob et Last.fm** | Envoi des événements vidéo à Scrob et bibliothèques « Vus et notés » pour importer l’historique sans parcourir tout le catalogue. Liaison Last.fm par utilisateur pour les écoutes musicales, avec statistiques dans la Vue d’ensemble. |
-| **Des réglages et notifications adaptés** | Six onglets Remix, une configuration unique des sources Ether et musicales, sélection d’indexation triable par catégorie, filtres de langue et qualité regroupés, popup Nouveautés et notifications en français. |
+| **Des réglages et notifications adaptés** | Six onglets Remix, une configuration unique des sources Ether et musicales, sources musicales regroupées par famille, affichage ponctuel des clés debrid, sélection d’indexation triable par catégorie et contenu, priorités repliables, filtres de langue et qualité regroupés et nouveautés non lues. |
 | **Un fork qui suit Ether** | Synchronisation quotidienne avec contrôles avant fusion, signalement des échecs et images Docker `amd64`/`arm64`. Les fonctions et correctifs d’Ether restent la base du projet. |
 
 Les compatibilités Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo et Stremio, ainsi que le streaming vidéo debrid/Usenet, proviennent d’**Ether**. Ether-Remix complète ces fonctions ; il ne nécessite pas de constituer une bibliothèque de fichiers musicaux locaux.
@@ -88,7 +88,7 @@ Les flux sont relayés sans conversion audio ni stockage local. La disponibilit�
 
 Ces délais sont des minimums. La recherche dépend du budget quotidien de chaque source (1000 requêtes par défaut), de l’intervalle entre deux titres (10 s par défaut) et se met en pause pendant la lecture : sur un grand catalogue, un titre peut attendre plus longtemps. Une release non revue depuis 60 jours ne compte plus.
 
-Dans **Bibliothèques**, **Priorité de recherche** permet de faire passer une collection ou une bibliothèque avant le reste : *Prioritaire* retente un titre sans release après 1 jour, *Maximale* après 6 h. **Chercher maintenant** ignore ces délais pour la sélection. Les budgets par source restent appliqués. À l’import, SeerrCatalog (mise à jour toutes les heures, priorité maximale) et RSS Catalog (toutes les 3 h, prioritaire) sont reconnus et préréglés ; ces réglages restent modifiables.
+Dans **Sources → Indexation**, le bloc repliable **Priorité de recherche** permet de faire passer une collection ou une bibliothèque avant le reste : *Prioritaire* retente un titre sans release après 1 jour, *Maximale* après 6 h. **Chercher maintenant** ignore ces délais pour la sélection. Les budgets par source restent appliqués. À l’import, SeerrCatalog (mise à jour toutes les heures, priorité maximale) et RSS Catalog (toutes les 3 h, prioritaire) sont reconnus et préréglés ; ces réglages restent modifiables.
 
 Cette priorité concerne la recherche de releases. Le rafraîchissement du contenu d’une collection suit sa propre cadence, réglable collection par collection (en direct, toutes les N heures, chaque jour, chaque semaine). Pour le lancer sans attendre, le bouton **Actualiser** de la même section relance la collection, ou toutes les collections d’une bibliothèque.
 

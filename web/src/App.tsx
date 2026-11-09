@@ -467,7 +467,7 @@ function Shell() {
         headerMiddle={<CommandSearch />}
         header={
           <>
-            <RemixUpdates />
+            <RemixUpdates version={boot.version} />
             <span
               className="inline-flex h-9 min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted sm:max-w-[14rem]"
               title={serverName}

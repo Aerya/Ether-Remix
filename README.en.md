@@ -21,7 +21,7 @@ Ether-Remix extends [Ether](https://github.com/braedonsaunders/ether) with a Fre
   <img src="https://img.shields.io/badge/licence-GPL--3.0-green" alt="GPL-3.0">
 </p>
 
-**What’s new** appears after a release and remains available from the console header.
+**What’s new** only shows unread notes since your last viewed version. The same button also provides access to the full history.
 
 ## Features
 
@@ -36,7 +36,7 @@ Ether-Remix extends [Ether](https://github.com/braedonsaunders/ether) with a Fre
 | **Music in your apps** | A music library in Plex/Plexamp and Jellyfin clients, plus a Subsonic API for Symfonium, Feishin, Supersonic, DSub… Public Deezer catalogue, with each user’s own favourites and listening history. |
 | **Playlists and discovery** | Deezer, Last.fm and ListenBrainz imports; personal playlists editable through Subsonic; favourites, recent plays, most-played tracks, country charts, discoveries and new releases from followed artists. Browse genres, similar artists, radios and mixes where supported by the client. |
 | **Tracking with Scrob and Last.fm** | Send video events to Scrob and expose “Watched and rated” libraries to import history without scanning the whole catalogue. Per-user Last.fm linking for music plays, with listening statistics in Overview. |
-| **Convenient settings and notifications** | Six Remix tabs, one configuration for Ether and music sources, indexing selection sortable by category, grouped language and quality filters, a What’s new popup and French owner notifications. |
+| **Convenient settings and notifications** | Six Remix tabs, one configuration for Ether and music sources, music sources grouped by family, on-demand debrid key display, indexing-source sorting by category and content, collapsible priorities, grouped language and quality filters, and unread update notes. |
 | **A fork that follows Ether** | Daily synchronization with checks before merging, failure reporting and `amd64`/`arm64` Docker images. Ether’s features and fixes remain the project’s foundation. |
 
 Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio compatibility, along with debrid/Usenet video streaming, come from **Ether**. Ether-Remix extends these capabilities; you do not need to build a local music-file library.
@@ -88,7 +88,7 @@ Streams are relayed without audio conversion or local storage. Audio availabilit
 
 These intervals are minimums. Searching depends on each source's daily budget (1000 requests by default) and the delay between two titles (10 s by default), and pauses during playback: on a large catalogue, a title may wait longer. A release not seen again for 60 days no longer counts.
 
-In **Libraries**, **Search priority** moves a collection or library ahead of the rest: *High* retries a title without releases after 1 day, *Maximum* after 6 h. **Search now** skips these delays for the selection. Per-source budgets still apply. On import, SeerrCatalog (hourly refresh, maximum priority) and RSS Catalog (every 3 h, high priority) are recognized and preset; you can change these settings.
+Under **Sources → Indexing**, the collapsible **Search priority** block moves a collection or library ahead of the rest: *High* retries a title without releases after 1 day, *Maximum* after 6 h. **Search now** skips these delays for the selection. Per-source budgets still apply. On import, SeerrCatalog (hourly refresh, maximum priority) and RSS Catalog (every 3 h, high priority) are recognized and preset; you can change these settings.
 
 This priority applies to release search. A collection's content refresh follows its own schedule, set per collection (live, every N hours, daily, weekly). To run it right away, the **Refresh** button in the same section restarts the collection, or every collection in a library.
 

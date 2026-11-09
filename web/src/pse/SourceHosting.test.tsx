@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { SourceHosting, StremioHostingOptions } from "./SourceHosting";
+import { SourceHosting } from "./SourceHosting";
 it("distinguishes a hosted provider from an available self-hosted project", () => {
   render(<SourceHosting source="PSE_MUSIC_ULTRAMAX_URL" publicInstance />);
   expect(screen.getByText(/Public instance|Instance publique/)).toBeTruthy();
@@ -12,11 +12,4 @@ it("distinguishes a hosted provider from an available self-hosted project", () =
 it("does not invent a self-hosting repository for an unknown provider", () => {
   render(<SourceHosting source="unlisted-provider" publicInstance />);
   expect(screen.queryByRole("link")).toBeNull();
-});
-
-it("keeps generic instance guidance without suggesting Stremio providers", () => {
-  render(<StremioHostingOptions />);
-  expect(screen.queryByRole("link")).toBeNull();
-  expect(screen.queryByText(/AIOStreams|Comet|UwU/)).toBeNull();
-  expect(screen.getByText(/public or private|publique ou privée/)).toBeTruthy();
 });

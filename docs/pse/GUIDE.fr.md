@@ -96,7 +96,7 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Correspondance et repli** : Eclipse et Audius comparent les enregistrements par ISRC ou par titre, artiste et durée, avec rejet des versions live, remix, reprises, acoustiques ou karaoké non demandées. Les sources debrid recherchent l’album puis rapprochent les noms et numéros de pistes ; elles ne vérifient pas l’ISRC du fichier ni son master. Si un lien audio est expiré ou refusé, Ether-Remix passe à la source suivante (jusqu'à trois). Les liens audio visant la machine elle-même ou des adresses réservées sont refusés.
 
-**Nouveautés et test des sources** : la playlist automatique **Nouveautés de vos artistes** réunit les albums sortis ces 4 derniers mois par les artistes favoris et les plus écoutés du spectateur (calculée en arrière-plan, mise à jour toutes les 6 h). Dans la console, onglet Musique, **Tester les sources audio** essaie chaque source réglée, seule, sur le même titre et affiche le format réellement envoyé (FLAC, MP3…), pas celui annoncé, ou la raison de l'échec. Il montre l'ordre réel de lecture, la raison de chaque source inactive et, pour chaque source, les étapes franchies : titre trouvé au catalogue, résultat de la source, lien obtenu, premiers octets vérifiés. La lecture complète n'est pas testée. **Réessayer cette source** relance une seule source, sans cache. Les liens d'addons ne sont affichés que par leur hôte ; aucune clé ni lien audio n'est affiché.
+**Nouveautés et test des sources** : la playlist automatique **Nouveautés de vos artistes** réunit les albums sortis ces 4 derniers mois par les artistes favoris et les plus écoutés du spectateur (calculée en arrière-plan, mise à jour toutes les 6 h). Dans la console, Sources → Streaming musical, **Tester les sources audio** essaie chaque source réglée, seule, sur le même titre et affiche le format réellement envoyé (FLAC, MP3…), pas celui annoncé, ou la raison de l'échec. Il montre l'ordre réel de lecture, la raison de chaque source inactive et, pour chaque source, les étapes franchies : titre trouvé au catalogue, résultat de la source, lien obtenu, premiers octets vérifiés. La lecture complète n'est pas testée. **Réessayer cette source** relance une seule source, sans cache. Les liens d'addons ne sont affichés que par leur hôte ; aucune clé ni lien audio n'est affiché.
 
 **Titres en VOSTFR à la demande** : dans **Ether-Remix → VOSTFR à la demande**, cherchez un film ou une série et ajoutez-le. Il apparaît dans Films et Séries même sans VF, et dans la bibliothèque **« VOSTFR »** de Plex et Jellyfin (créée au premier ajout).
 
@@ -162,13 +162,19 @@ Le bouton **Tester** de DMM utilise désormais un échantillon du catalogue DMM,
 
 Dans **Sources → IPTV**, le bouton **Modifier** ouvre le fournisseur sélectionné. La création, l’enregistrement et la fermeture de son formulaire conservent la catégorie IPTV. Les liens provenant de Télévision en direct ouvrent ce même éditeur.
 
+Dans **Sources → Streaming musical**, les réglages sont regroupés par famille : **Eclipse** (manifests et registre), **DMM / Real-Debrid** (catalogue DMM, recherche par indexeurs et comptes partagés), puis **Autres sources** (AllDebrid, TorBox, Audius et HiFi API). Le diagnostic audio teste toutes les familles depuis un bloc distinct.
+
+Dans **Sources → Debrid → Modifier**, **Afficher la clé API** révèle seulement celle du compte sélectionné au propriétaire connecté. **Masquer la clé API** ou la fermeture du formulaire retire cet affichage sans modifier la clé enregistrée.
+
+Dans **Sources → Indexation**, **Sources importées** se filtre et se trie par catégorie, nom ou contenus concernés. **Priorité de recherche** se déplie à la demande.
+
 ## Animes
 
 Dans **Ether-Remix → Contenus et bibliothèques → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
 
 Dans **Sources → Stremio**, utilisez **Ajouter un addon**, puis collez le lien `manifest.json` généré chez le fournisseur de votre choix. Aucune sélection de fournisseurs n’est imposée ou suggérée. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. Pour la découverte, utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues.
 
-Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir les notes de livraison. Les nouvelles notes s’affichent une fois par navigateur après connexion ; leur fermeture mémorise localement la livraison consultée. La version dans le menu est fournie par le serveur exécuté ; les images officielles incluent un numéro de build Remix automatiquement croissant. Le pied du menu mène aux dépôts Ether et Ether-Remix.
+Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir les notes de livraison. La popup ne présente que les notes non lues depuis la dernière version consultée. Fermer ou valider mémorise la version et les notes lues dans ce navigateur ; une reconstruction Docker ne les réaffiche pas. L’ancien repère est repris automatiquement. **Historique complet** permet de consulter les notes précédentes à la demande. La version dans le menu est fournie par le serveur exécuté ; les images officielles incluent un numéro de build Remix automatiquement croissant. Le pied du menu mène aux dépôts Ether et Ether-Remix.
 
 ### Exceptions VOSTFR à la demande
 

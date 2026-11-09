@@ -10,3 +10,5 @@
 ./internal/core
 ./internal/resolver
 ./internal/stremio
+
+./internal/admin

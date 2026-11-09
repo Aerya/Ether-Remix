@@ -20,8 +20,7 @@ import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { MusicPlaylists } from "./MusicPlaylists";
 import { IndexerDetails } from "./IndexerDetails";
-import { MusicAddons } from "./MusicAddons";
-import { MusicSources } from "./MusicSources";
+import { MusicSourceSettings } from "./MusicSourceSettings";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
@@ -413,20 +412,24 @@ function FeatureSection({
       }
     />
   );
+  if (feature.id === "music" && placement === "source")
+    return (
+      <MusicSourceSettings
+        status={<StatusLine feature={feature} />}
+        fields={feature.fields.map((fd) => ({
+          key: fd.key,
+          advanced: fd.advanced,
+          community: fd.community,
+          control: row(fd),
+        }))}
+      />
+    );
   return (
     <div id={`pse-${feature.id}`}>
       <SettingsSection title={T(feature.title)} description={T(feature.description)}>
         <StatusLine feature={feature} />
         {basic.map(row)}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
-        {feature.id === "music" && placement === "source" ? (
-          <MusicAddons
-            fields={feature.fields
-              .filter((fd) => fd.community)
-              .map((fd) => ({ key: fd.key, control: row(fd) }))}
-          />
-        ) : null}
-        {feature.id === "music" && placement === "source" ? <MusicSources /> : null}
         {feature.id === "music" && placement === "content" ? <MusicPlaylists /> : null}
         {advanced.length ? (
           <details className="border-t border-border">

@@ -16,7 +16,8 @@ export function ImportedSources({
 }) {
   const cfg = useAsync(() => api.getConfig(), []);
   const [filter, setFilter] = useState("all");
-  const [sort, setSort] = useState<"name" | "category">("category");
+  const [sort, setSort] = useState<"name" | "category" | "content">("category");
+  const [content, setContent] = useState("all");
   const selected = value.split(",").filter(Boolean);
   const choices: Option[] = cfg.data?.indexers
     ? [
@@ -42,14 +43,25 @@ export function ImportedSources({
           : ix
             ? "Usenet"
             : L("Autres indexeurs", "Other indexers");
-    return { ...o, name, category, enabled: ix?.enabled ?? true };
+    const contents = ["movie", "show", "anime", ...(category === "BitTorrent" ? ["music"] : [])];
+    const contentLabel =
+      L("Films · Séries · Animes", "Movies · Shows · Anime") +
+      (contents.includes("music") ? L(" · Albums via debrid", " · Albums via debrid") : "");
+    return { ...o, name, category, contents, contentLabel, enabled: ix?.enabled ?? true };
   });
   const rows = allRows
-    .filter((r) => filter === "all" || r.category === filter)
+    .filter(
+      (r) =>
+        (filter === "all" || r.category === filter) &&
+        (content === "all" || r.contents.includes(content)),
+    )
     .sort(
       (a, b) =>
-        (sort === "category" ? a.category.localeCompare(b.category) : 0) ||
-        a.name.localeCompare(b.name),
+        (sort === "category"
+          ? a.category.localeCompare(b.category)
+          : sort === "content"
+            ? a.contentLabel.localeCompare(b.contentLabel)
+            : 0) || a.name.localeCompare(b.name),
     );
   return (
     <div className="w-full space-y-3">
@@ -67,10 +79,24 @@ export function ImportedSources({
         <Select
           aria-label={L("Trier les sources", "Sort sources")}
           value={sort}
-          onChange={(e) => setSort(e.target.value as "name" | "category")}
+          onChange={(e) => setSort(e.target.value as "name" | "category" | "content")}
         >
           <option value="category">{L("Par catégorie puis nom", "Category then name")}</option>
           <option value="name">{L("Par nom", "Name")}</option>
+          <option value="content">
+            {L("Par contenus concernés puis nom", "Content then name")}
+          </option>
+        </Select>
+        <Select
+          aria-label={L("Contenus concernés", "Source content")}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+        >
+          <option value="all">{L("Tous les contenus", "All content")}</option>
+          <option value="movie">{L("Films", "Movies")}</option>
+          <option value="show">{L("Séries", "Shows")}</option>
+          <option value="anime">{L("Animes", "Anime")}</option>
+          <option value="music">{L("Albums via debrid", "Albums via debrid")}</option>
         </Select>
       </div>
       {choices.length === 0 ? (
@@ -118,12 +144,7 @@ export function ImportedSources({
                   ) : null}
                 </td>
                 <td className="p-2">{row.category}</td>
-                <td className="p-2 text-xs text-fg-muted">
-                  {L("Films · Séries · Animes", "Movies · Shows · Anime")}
-                  {row.category === "BitTorrent"
-                    ? L(" · Albums via debrid", " · Albums via debrid")
-                    : null}
-                </td>
+                <td className="p-2 text-xs text-fg-muted">{row.contentLabel}</td>
               </tr>
             ))}
           </tbody>

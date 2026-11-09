@@ -11,7 +11,7 @@ BASE_FILE = Path(".github/pse/upstream-base")
 # Les workflows upstream sont examinés séparément, jamais publiés par le robot.
 PROTECTED = [
     ".github", "AGENTS.md", "README.md", "README.fr.md", "README.en.md",
-    "docs/pse", "internal/pse", "internal/catalog/pse_tier_sources.go", "web/src/pse", "internal/admin/dist",
+    "docs/pse", "internal/pse", "internal/catalog/pse_tier_sources.go", "web/src/pse", "internal/admin/dist", "internal/admin/pse_debrid_keys.go", "internal/admin/pse_debrid_keys_test.go",
     "web/public/brand", "web/src/components/brand.tsx", "web/src/lib/brand-art.json", "web/index.html",
 ]
 
