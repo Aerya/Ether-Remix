@@ -79,7 +79,7 @@ describe("sign-in", () => {
   it("shows only the logo, keeping the server name for screen readers", async () => {
     vi.spyOn(api, "bootstrap").mockResolvedValue(remoteBoot);
     renderApp();
-    expect(await screen.findByRole("img", { name: "Ether" })).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: "Ether Remix" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ether" })).toHaveClass("sr-only");
   });
 

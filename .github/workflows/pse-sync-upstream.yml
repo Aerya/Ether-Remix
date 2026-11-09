@@ -22,6 +22,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # gh doit toujours cibler le fork, même après l’ajout du remote upstream.
+  GH_REPO: ${{ github.repository }}
   UPSTREAM_URL: https://github.com/braedonsaunders/ether.git
   UPSTREAM_BRANCH: main
   SYNC_BRANCH: sync/upstream-main
