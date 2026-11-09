@@ -49,6 +49,9 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if t := q.Get("type"); t != "video" {
+		if s.log != nil {
+			s.log.Warn("play queue refused", "type", t, "uri", q.Get("uri"), "playlistID", q.Get("playlistID"), "key", q.Get("key"))
+		}
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
