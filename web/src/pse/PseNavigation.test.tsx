@@ -13,6 +13,10 @@ vi.mock("../i18n", async (original) => ({
   getLocale: () => "fr",
 }));
 vi.mock("./VostfrTitles", () => ({ VostfrTitles: () => <div>Titres en VOSTFR à la demande</div> }));
+vi.mock("./RemixSources", () => ({
+  RemixSources: ({ indexing }: { indexing: React.ReactNode }) => indexing,
+}));
+vi.mock("./SearchPriority", () => ({ SearchPriority: () => null }));
 const txt = (s: string) => ({ fr: s, en: s });
 
 it("orders tabs and lets vertically listed imported sources be selected and saved", async () => {
@@ -42,7 +46,7 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   };
   apiFetch.mockResolvedValue(data);
   render(
-    <MemoryRouter initialEntries={["/accent/films"]}>
+    <MemoryRouter initialEntries={["/accent/sources?source=indexation"]}>
       <Routes>
         <Route path="/accent/:tab" element={<PsePage />} />
       </Routes>
@@ -51,16 +55,14 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   await screen.findByLabelText("Prowlarr");
   const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
   expect(tabs).toEqual([
-    "Films & Séries",
-    "Animes",
-    "À la demande",
-    "Musique",
-    "Bibliothèques",
-    "Stats",
-    "Notif & suivi",
+    "Sources",
+    "Langues et qualité",
+    "VOSTFR à la demande",
+    "Contenus et bibliothèques",
+    "Statistiques",
+    "Notifications et suivi",
   ]);
-  const label = screen.getByLabelText("Prowlarr").closest("label")!;
-  expect(label.parentElement!.className).toContain("flex-col");
+  expect(screen.getByRole("table")).toBeTruthy();
   fireEvent.click(screen.getByLabelText("Prowlarr"));
   fireEvent.click(screen.getByRole("button", { name: /Save|Enregistrer/ }));
   await waitFor(() =>
@@ -85,4 +87,18 @@ it("isolates VOSTFR exceptions in the on-demand tab", async () => {
     </MemoryRouter>,
   );
   expect(await screen.findByText("Titres en VOSTFR à la demande")).toBeTruthy();
+});
+
+it("redirects a legacy indexing anchor to its new source category", async () => {
+  apiFetch.mockResolvedValue({
+    features: [{ id: "indexer", title: txt("Indexation"), description: txt(""), fields: [] }],
+  });
+  render(
+    <MemoryRouter initialEntries={["/accent/films#pse-indexer"]}>
+      <Routes>
+        <Route path="/accent/:tab" element={<PsePage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(await screen.findByRole("heading", { name: "Indexation" })).toBeTruthy();
 });

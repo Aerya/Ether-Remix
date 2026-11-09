@@ -156,7 +156,7 @@ func TestHistoryUTCPeriodsTypesSourcesAndLifetimeCumulative(t *testing.T) {
 	}
 	for _, period := range []string{"day", "week", "month", "year"} {
 		t.Run(period, func(t *testing.T) {
-			got, err := s.History(t.Context(), period, "a")
+			got, err := s.History(t.Context(), period, "a", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,11 +175,47 @@ func TestHistoryUTCPeriodsTypesSourcesAndLifetimeCumulative(t *testing.T) {
 			}
 		})
 	}
-	got, err := s.History(t.Context(), "day", "")
+	got, err := s.History(t.Context(), "day", "", false)
 	if err != nil || got.History[len(got.History)-1].CumulativeMovieSearches != 14 {
 		t.Fatal(got, err)
 	}
-	if _, err = s.History(t.Context(), "invalid", ""); err == nil {
+	if _, err = s.History(t.Context(), "invalid", "", false); err == nil {
 		t.Fatal("invalid period accepted")
+	}
+}
+
+func TestAnimeHistoryFiltersCatalogueAndSourcesAcrossPeriods(t *testing.T) {
+	db := store.OpenTest(t)
+	var s Service
+	if err := s.Load(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	s.Now = func() time.Time { return time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC) }
+	for _, q := range []string{
+		`INSERT INTO catalog_titles(key,type,title,browsable,language,added_at) VALUES(1,'movie','Anime film',1,'ja',1794182400),(2,'show','Anime show',1,'en',1794182400),(3,'movie','Cartoon',1,'en',1794182400)`,
+		`INSERT INTO catalog_genres(key,genre) VALUES(1,'Animation'),(3,'Animation')`,
+		`INSERT INTO catalog_keywords(key,keyword) VALUES(2,'ANIME')`,
+		`INSERT INTO pse_index_source_history(day,source_id,media_type,searches,anime_searches,anime_since) VALUES('2026-11-09','a','movie',10,2,'2026-11-09'),('2026-11-09','b','show',8,3,'2026-11-09'),('2020-01-01','a','show',50,0,'')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, period := range []string{"day", "week", "month", "year"} {
+		got, err := s.History(t.Context(), period, "a", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := got.History[len(got.History)-1]
+		if b.CumulativeMovies != 1 || b.CumulativeShows != 1 || b.CumulativeMovieSearches != 2 || b.CumulativeShowSearches != 0 || got.SearchTrackingSince != "2026-11-09" {
+			t.Fatalf("%s: %+v", period, got)
+		}
+	}
+	all, err := s.History(t.Context(), "day", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := all.History[len(all.History)-1]; b.CumulativeShowSearches != 3 {
+		t.Fatal(b)
 	}
 }

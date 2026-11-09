@@ -99,5 +99,46 @@ class UpstreamTests(unittest.TestCase):
         self.assertEqual((self.root / "local.txt").read_text(), "unsaved work\n")
 
 
+
+    def test_independent_json_changes_merge_without_losing_translations(self):
+        self.put("web/src/i18n/locales/fr.json", '{"a":"un", "b":"deux", "c":"trois"}\n')
+        self.base = self.commit()
+        self.put("web/src/i18n/locales/fr.json", '{"a":"amélioré", "b":"deux", "c":"trois"}\n')
+        target = self.commit()
+        self.fork()
+        self.put("web/src/i18n/locales/fr.json", '{"a":"un", "b":"Remix", "c":"trois"}\n')
+        self.commit()
+        result = self.apply(target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import json
+        self.assertEqual(json.loads((self.root / "web/src/i18n/locales/fr.json").read_text()), {"a":"amélioré", "b":"Remix", "c":"trois"})
+
+    def test_same_message_conflict_stays_blocking(self):
+        self.put("web/src/i18n/locales/fr.json", '{"a":"un"}\n')
+        self.base = self.commit()
+        self.put("web/src/i18n/locales/fr.json", '{"a":"upstream"}\n')
+        target = self.commit()
+        self.fork()
+        self.put("web/src/i18n/locales/fr.json", '{"a":"Remix"}\n')
+        self.commit()
+        result = self.apply(target)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual((self.root / ".github/pse/upstream-base").read_text().strip(), self.base)
+
+    def test_non_merge_error_cannot_be_hidden_by_catalog_resolution(self):
+        self.put("web/src/i18n/locales/fr.json", '{"a":"un", "b":"deux"}\n')
+        self.base = self.commit()
+        self.put("web/src/i18n/locales/fr.json", '{"a":"upstream", "b":"deux"}\n')
+        self.put("code.txt", "new upstream code\n")
+        target = self.commit()
+        self.fork()
+        self.put("web/src/i18n/locales/fr.json", '{"a":"un", "b":"Remix"}\n')
+        (self.root / "code.txt").unlink()
+        self.commit()
+        result = self.apply(target)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual((self.root / ".github/pse/upstream-base").read_text().strip(), self.base)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -57,7 +57,7 @@ func (s *Service) Vostfr(ctx context.Context) ([]string, error) {
 
 func vostfrNewSpec(typ string, keys []string) core.CollectionSpec {
 	sp := specFor(Entry{Name: VostfrName}, typ)
-	sp.Description = "Titres choisis en VOSTFR, gérés par Ether-Remix (Ether-Remix › Films & séries)."
+	sp.Description = "Titres choisis en VOSTFR, gérés par Ether-Remix (Ether-Remix › VOSTFR à la demande)."
 	sp.Sources = []core.CollectionSource{{Kind: "titles", Keys: keys}}
 	sp.Refresh = "hourly"
 	return sp

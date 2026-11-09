@@ -8,6 +8,29 @@ const SEEN_KEY = "ether-remix.updates.seen";
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
+    id: "2026-11-09-sources-sync",
+    date: "2026-11-09",
+    title: ["Sources réunies et navigation simplifiée", "Unified sources and simpler navigation"],
+    items: [
+      [
+        "Un seul accès aux sources dans Remix : les comptes et addons Ether sont réutilisés, avec les sources musicales et l’indexation.",
+        "One source entry in Remix reuses Ether accounts and addons, alongside music sources and background indexing.",
+      ],
+      [
+        "Statistiques Animes : carte dédiée, historique par période ou cumulé et filtre par source, sans double comptage. Six onglets : Sources, Langues et qualité, VOSTFR à la demande, Contenus et bibliothèques, Statistiques, Notifications et suivi.",
+        "Anime statistics: dedicated card, period or cumulative history and source filtering, without double counting. Six tabs: Sources, Languages & quality, On-demand subtitles, Content & libraries, Statistics, Notifications & tracking.",
+      ],
+      [
+        "Sélection des sources d’indexation regroupée par catégorie, avec tri et indication des contenus concernés.",
+        "Background indexing sources can be filtered and sorted by category, with their relevant content shown.",
+      ],
+      [
+        "Les anciens liens restent utilisables. Les nouveautés d’Ether sont intégrées ; la synchronisation conserve mieux les traductions du fork.",
+        "Existing links keep working. Ether changes are integrated; synchronization better preserves fork translations.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-09-animes",
     date: "2026-11-09",
     title: ["Les animés rejoignent Ether-Remix", "Anime joins Ether-Remix"],

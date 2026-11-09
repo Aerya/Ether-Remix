@@ -23,6 +23,11 @@ func (a *App) pseIndexHistoryHandler() http.Handler {
 			http.Error(w, "méthode non prise en charge", 405)
 			return
 		}
+		media := r.URL.Query().Get("media")
+		if media != "" && media != "anime" {
+			http.Error(w, "type de média invalide", 400)
+			return
+		}
 		period, source := r.URL.Query().Get("period"), r.URL.Query().Get("source")
 		if period == "" {
 			period = "day"
@@ -34,12 +39,12 @@ func (a *App) pseIndexHistoryHandler() http.Handler {
 		rt := pseRuntimeOf(a)
 		mu.Lock()
 		defer mu.Unlock()
-		key := period + "|" + source
+		key := period + "|" + source + "|" + media
 		value, ok := cache[key]
 		if !ok || r.URL.Query().Get("refresh") == "1" || time.Since(value.at) >= time.Minute {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
-			data, err := rt.statistics.History(ctx, period, source)
+			data, err := rt.statistics.History(ctx, period, source, media == "anime")
 			if err != nil {
 				http.Error(w, "Historique indisponible", 503)
 				return

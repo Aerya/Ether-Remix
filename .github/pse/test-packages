@@ -7,3 +7,6 @@
 ./internal/plex
 ./internal/collections
 ./internal/debrid
+./internal/core
+./internal/resolver
+./internal/stremio

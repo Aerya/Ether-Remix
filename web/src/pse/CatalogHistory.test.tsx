@@ -93,3 +93,21 @@ it("marks unmeasured searches as unknown instead of inventing historical zeros",
       .every((cell) => cell.textContent === "—"),
   ).toBe(true);
 });
+
+it("requests the anime subset with a source and marks older searches as unmeasured", async () => {
+  apiFetch.mockResolvedValue({ ...snapshot, searchTrackingSince: "2026-11-09" });
+  render(<CatalogHistory localMovies={100} localShows={50} />);
+  await screen.findByRole("img");
+  fireEvent.change(screen.getByLabelText("History media type"), { target: { value: "anime" } });
+  fireEvent.change(screen.getByLabelText("History metric"), { target: { value: "searches" } });
+  fireEvent.change(screen.getByLabelText("History source"), { target: { value: "b" } });
+  await waitFor(() =>
+    expect(
+      apiFetch.mock.calls.some(([path]) => String(path).includes("source=b&media=anime")),
+    ).toBe(true),
+  );
+  expect(await screen.findByText(/Anime: a subset/)).toBeTruthy();
+  await waitFor(() =>
+    expect(screen.getByRole("img").getAttribute("aria-label")).toContain("not measured"),
+  );
+});

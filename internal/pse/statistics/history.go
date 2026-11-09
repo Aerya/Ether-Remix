@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sort"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/pse/animecatalog"
 )
 
 type Source struct {
@@ -60,7 +62,7 @@ func stepPeriod(t time.Time, period string, n int) time.Time {
 		return t.AddDate(0, 0, n)
 	}
 }
-func (s *Service) History(ctx context.Context, period, source string) (Dashboard, error) {
+func (s *Service) History(ctx context.Context, period, source string, anime bool) (Dashboard, error) {
 	d := Dashboard{At: s.now().Unix(), Period: period, TMDB: s.Snapshot(), History: []Bucket{}, Sources: []Source{}}
 	count := 0
 	switch period {
@@ -87,7 +89,11 @@ func (s *Service) History(ctx context.Context, period, source string) (Dashboard
 	cumulativeMovies, cumulativeShows, cumulativeMovieSearches, cumulativeShowSearches := 0, 0, 0, 0
 	// Les dates d'ajout sont conservées par Ether lors des rafraîchissements.
 	// Grouper dans SQL évite de renvoyer une ligne par média.
-	rows, err := s.db.QueryContext(ctx, `SELECT CAST(added_at/86400 AS INTEGER),type,COUNT(*) FROM catalog_titles WHERE type IN ('movie','show') AND browsable=1 GROUP BY CAST(added_at/86400 AS INTEGER),type`)
+	catalogFilter := ""
+	if anime {
+		catalogFilter = " AND " + animecatalog.Predicate
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT CAST(c.added_at/86400 AS INTEGER),c.type,COUNT(*) FROM catalog_titles c WHERE c.type IN ('movie','show') AND c.browsable=1`+catalogFilter+` GROUP BY CAST(c.added_at/86400 AS INTEGER),c.type`)
 	if err != nil {
 		return d, err
 	}
@@ -126,7 +132,11 @@ func (s *Service) History(ctx context.Context, period, source string) (Dashboard
 		return d, rowErr
 	}
 	var tracking sql.NullString
-	if err = s.db.QueryRowContext(ctx, "SELECT MIN(day) FROM pse_index_source_history").Scan(&tracking); err != nil {
+	trackingQuery := "SELECT MIN(day) FROM pse_index_source_history"
+	if anime {
+		trackingQuery = "SELECT MIN(NULLIF(anime_since,'')) FROM pse_index_source_history"
+	}
+	if err = s.db.QueryRowContext(ctx, trackingQuery).Scan(&tracking); err != nil {
 		return d, err
 	}
 	d.SearchTrackingSince = tracking.String
@@ -136,7 +146,11 @@ func (s *Service) History(ctx context.Context, period, source string) (Dashboard
 		filter = " WHERE source_id=?"
 		args = append(args, source)
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT day,media_type,SUM(searches),SUM(failed),SUM(denied) FROM pse_index_source_history`+filter+` GROUP BY day,media_type`, args...)
+	searchColumns := "SUM(searches),SUM(failed),SUM(denied)"
+	if anime {
+		searchColumns = "SUM(anime_searches),SUM(anime_failed),SUM(anime_denied)"
+	}
+	rows, err = s.db.QueryContext(ctx, `SELECT day,media_type,`+searchColumns+` FROM pse_index_source_history`+filter+` GROUP BY day,media_type`, args...)
 	if err != nil {
 		return d, err
 	}

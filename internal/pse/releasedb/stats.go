@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/animecatalog"
 )
 
 // ConsoleStats résume l'état de l'indexation pour la console PSE.
@@ -75,7 +76,7 @@ func (s *Store) TypeCounts(ctx context.Context, min int) (map[string]Counts, err
 	}
 	since := s.now().Add(-24 * time.Hour).Unix()
 	stale := s.now().Add(-Stale).Unix()
-	rows, err := s.db.QueryContext(ctx, `SELECT c.type, COUNT(*),
+	query := `SELECT c.type, COUNT(*),
   COALESCE(SUM(CASE WHEN t.last_indexed>0 THEN 1 ELSE 0 END),0),
   COALESCE(SUM(CASE WHEN t.found>0 THEN 1 ELSE 0 END),0),
   COALESCE(SUM(CASE WHEN p.releases>=? THEN 1 ELSE 0 END),0),
@@ -86,21 +87,35 @@ FROM catalog_titles c
 LEFT JOIN pse_index_titles t ON t.title_key=c.key
 LEFT JOIN pse_playable p ON p.title_key=c.key
 WHERE c.type IN ('movie','show') AND c.browsable=1
-GROUP BY c.type`, min, since, min, stale)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+GROUP BY c.type`
 	out := map[string]Counts{}
-	for rows.Next() {
-		var typ string
-		var c Counts
-		if err := rows.Scan(&typ, &c.Titles, &c.Indexed, &c.Found, &c.Playable, &c.Recent, &c.Stale, &c.Failing); err != nil {
+	for _, anime := range []bool{false, true} {
+		q := query
+		if anime {
+			q = strings.Replace(q, "SELECT c.type", "SELECT 'anime'", 1)
+			q = strings.Replace(q, "GROUP BY c.type", "AND "+animecatalog.Predicate, 1)
+		}
+		rows, err := s.db.QueryContext(ctx, q, min, since, min, stale)
+		if err != nil {
 			return nil, err
 		}
-		out[typ] = c
+
+		for rows.Next() {
+			var typ string
+			var c Counts
+			if err := rows.Scan(&typ, &c.Titles, &c.Indexed, &c.Found, &c.Playable, &c.Recent, &c.Stale, &c.Failing); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[typ] = c
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // KeyCounts compte l'avancement d'une liste de titres (collection,

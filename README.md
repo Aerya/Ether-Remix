@@ -30,20 +30,20 @@ Les **Nouveautés** s’affichent après une livraison et restent consultables d
 | **Un catalogue orienté VF** | Films et séries filtrés selon leur disponibilité française et les releases détectées : VFF, VFQ, VFi, MULTi… Pays et langues réglables, exceptions par collection ou bibliothèque, et onglet **À la demande** pour ajouter explicitement des titres en VOSTFR avec recherche prioritaire. |
 | **Un catalogue « lisible uniquement »** | Affiche les titres disposant d’un nombre minimum de releases indexées, selon vos critères de langue, résolution, codec et cache. La recherche, la watchlist et la reprise de lecture restent accessibles sans ce filtre. |
 | **Une recherche de sources anticipée** | Indexation en arrière-plan des addons Stremio et des indexeurs Prowlarr, Jackett ou NZBHydra2, avec budgets quotidiens et pause pendant la lecture. |
-| **Un tableau de bord dédié** | Onglet Stats avec comparaison TMDB, historique par jour, semaine, mois et année, valeurs par période ou cumulées, filtres films/séries et source, suivi en direct et journal d’activité. |
+| **Un tableau de bord dédié** | Onglet Stats avec comparaison TMDB, historique par jour, semaine, mois et année, valeurs par période ou cumulées, filtres films/séries/animes et source, suivi en direct et journal d’activité. |
 | **Des bibliothèques à votre image** | Bibliothèques Plex par service, studio, anime, documentaire, concert ou spectacle, avec rangées de collections et exceptions de langue. Import des catalogues Stremio en collections, modèles prêts à l’emploi et actualisation réglable de 1 à 168 heures. |
-| **Un onglet Animes dédié** | Bibliothèques et collections d’animés issues de TMDB, critères de langue FR/MULTi respectés, UwU+ et ajout libre d’autres addons Stremio avec priorités partagées. |
+| **Des animés dans vos bibliothèques** | Dans Contenus et bibliothèques → Animes : collections TMDB, critères de langue FR/MULTi respectés, UwU+ et ajout libre d’autres addons Stremio avec priorités partagées. |
 | **La musique dans vos applications** | Bibliothèque musicale dans Plex/Plexamp et les clients Jellyfin, plus une API Subsonic pour Symfonium, Feishin, Supersonic, DSub… Catalogue Deezer public, favoris et historique propres à chaque utilisateur. |
 | **Des playlists et de la découverte** | Import Deezer, Last.fm et ListenBrainz ; playlists personnelles éditables via Subsonic ; favoris, écoutes récentes, titres les plus écoutés, tops par pays, découvertes et nouveautés des artistes suivis. Navigation par genre, artistes similaires, radios et mix selon le client. |
 | **Le suivi avec Scrob et Last.fm** | Envoi des événements vidéo à Scrob et bibliothèques « Vus et notés » pour importer l’historique sans parcourir tout le catalogue. Liaison Last.fm par utilisateur pour les écoutes musicales, avec statistiques dans la Vue d’ensemble. |
-| **Des réglages et notifications adaptés** | Page Ether-Remix pour activer et régler les fonctions sans redémarrer, onglet Stremio dédié, diagnostic des sources audio, repères instances publiques/auto-hébergement et notifications du propriétaire en français. |
+| **Des réglages et notifications adaptés** | Six onglets Remix, une configuration unique des sources Ether et musicales, sélection d’indexation triable par catégorie, filtres de langue et qualité regroupés, popup Nouveautés et notifications en français. |
 | **Un fork qui suit Ether** | Synchronisation quotidienne avec contrôles avant fusion, signalement des échecs et images Docker `amd64`/`arm64`. Les fonctions et correctifs d’Ether restent la base du projet. |
 
 Les compatibilités Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo et Stremio, ainsi que le streaming vidéo debrid/Usenet, proviennent d’**Ether**. Ether-Remix complète ces fonctions ; il ne nécessite pas de constituer une bibliothèque de fichiers musicaux locaux.
 
 ## Les sources musicales
 
-Les sources s’activent séparément dans **Console → Ether-Remix → Musique**. Les comptes debrid et les indexeurs déjà configurés sont réutilisés.
+Les sources s’activent séparément dans **Console → Ether-Remix → Sources → Streaming musical**. Les comptes debrid et les indexeurs déjà configurés sont réutilisés.
 
 | Source | Accès et rôle |
 | --- | --- |

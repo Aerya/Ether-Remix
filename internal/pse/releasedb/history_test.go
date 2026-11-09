@@ -37,3 +37,22 @@ func TestSourceHistorySurvivesActivityRetentionAndSeparatesMedia(t *testing.T) {
 		t.Fatal("long history pruned", n, err)
 	}
 }
+
+func TestAnimeHistoryTracksSubsetAndStartWithoutBackfilling(t *testing.T) {
+	e := newFreshEnv(t)
+	if _, err := e.s.st.db.Exec(`INSERT INTO pse_index_source_history(day,source_id,media_type,searches) VALUES('2020-01-01','a','show',100)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []core.Title{{Type: core.TypeShow, Language: "ja", Genres: []string{"Animation"}}, {Type: core.TypeShow, Language: "en", Genres: []string{"Animation"}}} {
+		event := e.s.beginSearch(title, source{id: "a"})
+		e.s.finishSearch(e.ctx, event, 0, nil)
+	}
+	var total, anime int
+	var since string
+	if err := e.s.st.db.QueryRow(`SELECT SUM(searches),SUM(anime_searches),MIN(NULLIF(anime_since,'')) FROM pse_index_source_history`).Scan(&total, &anime, &since); err != nil {
+		t.Fatal(err)
+	}
+	if total != 102 || anime != 1 || since != e.now.UTC().Format("2006-01-02") {
+		t.Fatal(total, anime, since)
+	}
+}

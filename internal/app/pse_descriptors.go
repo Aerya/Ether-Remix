@@ -10,7 +10,7 @@ func (a *App) registerPSEDescriptors(r *extend.Registry) error {
 	label := extend.Text{Source: "Ether-Remix"}
 	meta := extend.PageMeta{
 		Route: "/accent", NavGroup: extend.NavGroupTop, InNav: true,
-		Keywords: extend.Text{Source: "accent pse vf french français catalogue indexer indexation playable lisible scrob music musique subsonic hifi monochrome notifications"},
+		Keywords: extend.Text{Source: "remix accent sources stremio torrent usenet debrid vf french français langues qualité catalogue indexer indexation animes bibliothèques statistiques scrob music musique subsonic hifi notifications"},
 	}
 	return r.Register(
 		extend.Descriptor{Kind: extend.KindPage, ID: "pse", Owner: extend.Builtin, Label: label, Icon: "Languages", Group: meta.NavGroup, Order: 15}.WithMeta(meta),

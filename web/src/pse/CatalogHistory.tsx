@@ -46,7 +46,8 @@ export function CatalogHistory({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const requestedSource = metric === "searches" ? source : "";
-  const key = period + "|" + requestedSource;
+  const requestedMedia = media === "anime" ? "anime" : "";
+  const key = period + "|" + requestedSource + "|" + requestedMedia;
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -58,7 +59,11 @@ export function CatalogHistory({
         return;
       }
       setBusy(true);
-      const params = new URLSearchParams({ period, source: requestedSource });
+      const params = new URLSearchParams({
+        period,
+        source: requestedSource,
+        media: requestedMedia,
+      });
       if (first && refresh) params.set("refresh", "1");
       first = false;
       try {
@@ -91,7 +96,7 @@ export function CatalogHistory({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [period, requestedSource, refresh, key]);
+  }, [period, requestedSource, requestedMedia, refresh, key]);
   const buckets = dataKey === key ? (data?.history ?? []) : [];
   const measured = (start: string) => {
     if (metric === "catalogue") return true;
@@ -267,6 +272,7 @@ export function CatalogHistory({
             <option value="both">{L("Films et séries", "Movies and shows")}</option>
             <option value="movie">{L("Films", "Movies")}</option>
             <option value="show">{L("Séries", "Shows")}</option>
+            <option value="anime">{L("Animes", "Anime")}</option>
           </select>
           {metric === "searches" ? (
             <select
@@ -302,6 +308,14 @@ export function CatalogHistory({
             </Button>
           </div>
         </div>
+        {media === "anime" ? (
+          <p className="mt-3 text-xs text-fg-muted">
+            {L(
+              "Animes : sous-ensemble des films et séries, sans double comptage. Le cumul des recherches couvre uniquement la période mesurée.",
+              "Anime: a subset of movies and shows, without double counting. Cumulative searches cover only the measured period.",
+            )}
+          </p>
+        ) : null}
         {error ? (
           <p role="alert" className="mt-3 text-sm text-warning">
             {error}

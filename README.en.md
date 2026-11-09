@@ -30,20 +30,20 @@ Ether-Remix extends [Ether](https://github.com/braedonsaunders/ether) with a Fre
 | **A French-oriented catalogue** | Movies and shows filtered by French availability and detected releases: VFF, VFQ, VFi, MULTi… Configurable countries and languages, exceptions for collections or libraries, and an **On demand** tab for explicit French-subtitled exceptions with priority searches. |
 | **A “playable only” catalogue** | Shows titles with a minimum number of indexed releases matching your language, resolution, codec and cache criteria. Search, watchlist and continue watching remain accessible without this filter. |
 | **Source searches ahead of playback** | Background indexing of Stremio addons and Prowlarr, Jackett or NZBHydra2 indexers, with daily budgets and pauses during playback. |
-| **A dedicated dashboard** | A Stats tab with TMDB comparison, daily, weekly, monthly and yearly history, period or cumulative values, movie/show and source filters, live tracking and an activity log. |
+| **A dedicated dashboard** | A Stats tab with TMDB comparison, daily, weekly, monthly and yearly history, period or cumulative values, movie/show/anime and source filters, live tracking and an activity log. |
 | **Libraries tailored to you** | Plex libraries for services, studios, anime, documentaries, concerts or live shows, with collection rows and language exceptions. Import Stremio catalogues as collections, use ready-made presets and set refresh intervals from 1 to 168 hours. |
-| **Anime in its own tab** | Anime libraries and collections from TMDB, your language criteria including French/MULTi, UwU+ and any other Stremio addon with shared source priorities. |
+| **Anime in your libraries** | Anime libraries and collections from TMDB, your language criteria including French/MULTi, UwU+ and any other Stremio addon with shared source priorities. |
 | **Music in your apps** | A music library in Plex/Plexamp and Jellyfin clients, plus a Subsonic API for Symfonium, Feishin, Supersonic, DSub… Public Deezer catalogue, with each user’s own favourites and listening history. |
 | **Playlists and discovery** | Deezer, Last.fm and ListenBrainz imports; personal playlists editable through Subsonic; favourites, recent plays, most-played tracks, country charts, discoveries and new releases from followed artists. Browse genres, similar artists, radios and mixes where supported by the client. |
 | **Tracking with Scrob and Last.fm** | Send video events to Scrob and expose “Watched and rated” libraries to import history without scanning the whole catalogue. Per-user Last.fm linking for music plays, with listening statistics in Overview. |
-| **Convenient settings and notifications** | An Ether-Remix page to enable and configure features without restarting, a dedicated Stremio tab, audio-source diagnostics, public instance/self-hosting links and owner notifications in French. |
+| **Convenient settings and notifications** | Six Remix tabs, one configuration for Ether and music sources, indexing selection sortable by category, grouped language and quality filters, a What’s new popup and French owner notifications. |
 | **A fork that follows Ether** | Daily synchronization with checks before merging, failure reporting and `amd64`/`arm64` Docker images. Ether’s features and fixes remain the project’s foundation. |
 
 Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio compatibility, along with debrid/Usenet video streaming, come from **Ether**. Ether-Remix extends these capabilities; you do not need to build a local music-file library.
 
 ## Music sources
 
-Enable sources independently in **Console → Ether-Remix → Music**. Existing debrid accounts and indexers are reused.
+Enable sources independently in **Console → Ether-Remix → Sources → Music streaming**. Existing debrid accounts and indexers are reused.
 
 | Source | Access and role |
 | --- | --- |

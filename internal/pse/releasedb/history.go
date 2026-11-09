@@ -18,6 +18,12 @@ CREATE TABLE pse_index_source_history(
  PRIMARY KEY(day,source_id,media_type)
 );
 CREATE INDEX pse_index_source_history_source ON pse_index_source_history(source_id,day,media_type);`)
+	store.Register("pse_index_source_history", 2, `
+ALTER TABLE pse_index_source_history ADD COLUMN anime_searches INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pse_index_source_history ADD COLUMN anime_failed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pse_index_source_history ADD COLUMN anime_denied INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pse_index_source_history ADD COLUMN anime_since TEXT NOT NULL DEFAULT '';
+`)
 }
 
 // Agrégats durables : une recherche par titre et par source, séparée par
@@ -30,8 +36,14 @@ func (s *Service) recordSourceHistory(ctx context.Context, e SearchEvent, now ti
 	if e.Status == "error" || e.Status == "partial" {
 		failed = 1
 	}
-	_, err := s.st.db.ExecContext(ctx, `INSERT INTO pse_index_source_history(day,source_id,media_type,searches,results,failed,denied) VALUES(?,?,?,?,?,?,?)
-ON CONFLICT(day,source_id,media_type) DO UPDATE SET searches=searches+excluded.searches,results=results+excluded.results,failed=failed+excluded.failed,denied=denied+excluded.denied`,
-		now.UTC().Format("2006-01-02"), e.SourceID, string(e.Type), searches, e.Results, failed, denied)
+	animeSearches, animeFailed, animeDenied := 0, 0, 0
+	if e.Anime {
+		animeSearches, animeFailed, animeDenied = searches, failed, denied
+	}
+	_, err := s.st.db.ExecContext(ctx, `INSERT INTO pse_index_source_history(day,source_id,media_type,searches,results,failed,denied,anime_searches,anime_failed,anime_denied,anime_since) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(day,source_id,media_type) DO UPDATE SET searches=searches+excluded.searches,results=results+excluded.results,failed=failed+excluded.failed,denied=denied+excluded.denied,
+anime_searches=anime_searches+excluded.anime_searches,anime_failed=anime_failed+excluded.anime_failed,anime_denied=anime_denied+excluded.anime_denied,
+anime_since=CASE WHEN anime_since='' THEN excluded.anime_since ELSE anime_since END`,
+		now.UTC().Format("2006-01-02"), e.SourceID, string(e.Type), searches, e.Results, failed, denied, animeSearches, animeFailed, animeDenied, now.UTC().Format("2006-01-02"))
 	return err
 }
