@@ -489,6 +489,26 @@ func (q *psemReq) playlistTracksFor(v url.Values) ([]Track, bool) {
 	if !ok || kind != psemPlaylist {
 		return nil, false
 	}
-	pl, ok := q.m.playlist(q.ctx(), q.viewer, id)
+	pl, ok := q.playlistForQueue(key, id)
 	return pl.Tracks, ok
+}
+
+// playlistForQueue retrouve la playlist d'une file de lecture. Les clés
+// musique dépassent 2^53 : un client JavaScript qui lit playlistID comme un
+// nombre renvoie une valeur arrondie, qu'on compare donc aussi après le même
+// arrondi.
+func (q *psemReq) playlistForQueue(key string, id int64) (Playlist, bool) {
+	if pl, ok := q.m.playlist(q.ctx(), q.viewer, id); ok {
+		return pl, true
+	}
+	received, err := strconv.ParseFloat(key, 64)
+	if err != nil {
+		return Playlist{}, false
+	}
+	for _, pl := range q.m.playlistsOf(q.ctx(), q.viewer) {
+		if float64(int64(psemPlaylist)*psemBase+pl.ID) == received {
+			return pl, true
+		}
+	}
+	return Playlist{}, false
 }
