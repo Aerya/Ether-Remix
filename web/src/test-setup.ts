@@ -1,6 +1,7 @@
+import { REMIX_UPDATES } from "./pse/RemixUpdates";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, configure } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 
 // Page tests render lazy routes against the mock backend. On a loaded
 // machine (parallel builds, CI runners) that can take longer than Testing
@@ -68,4 +69,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   localStorage.clear();
+});
+
+// Les tests de pages démarrent après lecture des nouveautés. Le popup possède ses propres tests.
+beforeEach(() => {
+  localStorage.setItem("ether-remix.updates.seen", REMIX_UPDATES[0].id);
 });

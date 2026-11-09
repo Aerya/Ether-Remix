@@ -390,12 +390,12 @@ func (s *Service) fill(ctx context.Context, typ core.MediaType) error {
 // IndexTitle interroge chaque source pour un titre et enregistre ce qui
 // est trouvé.
 func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source) error {
-	req := core.SearchRequest{Type: t.Type, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, Year: t.Year, AlternativeTitles: t.AlternativeTitles, Released: t.Released}
+	req := core.SearchRequest{Anime: t.IsAnime(), AbsoluteEpisode: t.AbsoluteEpisode, Type: t.Type, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, Year: t.Year, AlternativeTitles: t.AlternativeTitles, Released: t.Released}
 	season, episode := 0, 0
 	if t.Type == core.TypeShow {
 		// Une série est représentée par son premier épisode.
 		season, episode = 1, 1
-		req.Type, req.Season, req.Episode = core.TypeEpisode, 1, 1
+		req.Type, req.Season, req.Episode, req.AbsoluteEpisode = core.TypeEpisode, 1, 1, 1
 	}
 	now := s.d.Now()
 	// Issue de chaque source : réussie (complète, éventuellement sans

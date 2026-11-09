@@ -52,10 +52,10 @@ export function VostfrTitles() {
 
   return (
     <SettingsSection
-      title={L("Titres en VOSTFR", "Titles in original version")}
+      title={L("Titres en VOSTFR à la demande", "On-demand subtitled titles")}
       description={L(
-        "Ajoutez un film ou une série précise : il apparaît dans Films et Séries même sans VF, et dans la bibliothèque « VOSTFR » de Plex et Jellyfin. Chaque ajout priorise une recherche de releases, si l’indexation est active, dans les limites des budgets et des pauses de lecture.",
-        "Add a specific movie or show: it appears in Movies and Shows even without a French version, and in the “VOSTFR” library in Plex and Jellyfin. Each addition queues a priority release search when indexing is enabled, subject to budgets and playback pauses.",
+        "Une exception volontaire à vos critères FR/MULTi. Ajoutez un film, une série ou un animé précis : il apparaît dans Films et Séries même sans VF, et dans la bibliothèque « VOSTFR » de Plex et Jellyfin. Chaque ajout priorise une recherche de releases, si l’indexation est active, dans les limites des budgets et des pauses de lecture.",
+        "An explicit exception to your French/MULTi criteria. Add a specific movie, show or anime: it appears in Movies and Shows even without a French version, and in the “VOSTFR” library in Plex and Jellyfin. Each addition queues a priority release search when indexing is enabled, subject to budgets and playback pauses.",
       )}
     >
       <div className="space-y-3 px-4 py-3">

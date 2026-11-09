@@ -278,7 +278,7 @@ func (s *Service) view(ctx context.Context) (map[string]any, error) {
 		out = append(out, map[string]any{
 			"id": l.ID, "name": l.Name, "type": l.Type, "collections": l.Collections,
 			"position": l.Position, "section": l.Section(), "showSection": l.ShowSection(),
-			"allLanguages": l.AllLanguages,
+			"allLanguages": l.AllLanguages, "preset": l.Preset,
 		})
 	}
 	return map[string]any{"libraries": out, "collections": cols, "presets": Presets(), "max": MaxLibraries,

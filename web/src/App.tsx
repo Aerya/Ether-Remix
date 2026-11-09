@@ -1,3 +1,4 @@
+import { RemixUpdates } from "./pse/RemixUpdates";
 import { McpAuthorize } from "./components/agent/McpAuthorize";
 import {
   AppShell,
@@ -89,7 +90,7 @@ import { theme } from "./theme";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Startup, { isStarting } from "./pages/Startup";
-import { PseVersionLink } from "./pse/VersionLink"; // PSE-HOOK: voir docs/pse/FORK.fr.md
+import { PseVersionLink, RemixRepositoryLinks } from "./pse/VersionLink"; // PSE-HOOK: voir docs/pse/FORK.fr.md
 
 const CollectionsGallery = lazy(() => import("./pages/collections/Gallery"));
 const CollectionEditor = lazy(() => import("./pages/collections/Editor"));
@@ -458,6 +459,7 @@ function Shell() {
         headerMiddle={<CommandSearch />}
         header={
           <>
+            <RemixUpdates />
             <span
               className="inline-flex h-9 min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted sm:max-w-[14rem]"
               title={serverName}
@@ -517,19 +519,23 @@ function Shell() {
           </>
         }
         sidebarFooter={
-          <div className="flex min-w-0 items-center justify-between gap-2">
-            {/* PSE-HOOK: version cliquable vers GitHub — voir docs/pse/FORK.fr.md */}
-            <PseVersionLink
-              version={version}
-              className="block min-w-0 truncate px-1 text-xs text-fg-subtle"
-            />
-            <LanguagePicker className="h-7 shrink-0 px-1.5 text-xs" />
+          <div className="space-y-2">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              {/* PSE-HOOK: version cliquable vers GitHub — voir docs/pse/FORK.fr.md */}
+              <PseVersionLink
+                version={version}
+                className="block min-w-0 truncate px-1 text-xs text-fg-subtle"
+              />
+              <LanguagePicker className="h-7 shrink-0 px-1.5 text-xs" />
+            </div>
+            <RemixRepositoryLinks />
           </div>
         }
         sidebarCollapsedFooter={
           <div className="flex flex-col items-center gap-2">
             <LanguagePicker iconOnly className="h-7 px-1.5" />
             <EtherMark size={20} />
+            <RemixRepositoryLinks />
             {/* PSE-HOOK: version cliquable vers GitHub — voir docs/pse/FORK.fr.md */}
             <PseVersionLink
               version={version}

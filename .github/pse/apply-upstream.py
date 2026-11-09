@@ -8,7 +8,7 @@ from pathlib import Path
 BASE_FILE = Path(".github/pse/upstream-base")
 # Les workflows upstream sont examinés séparément, jamais publiés par le robot.
 PROTECTED = [
-    ".github", "README.md", "README.fr.md", "README.en.md",
+    ".github", "AGENTS.md", "README.md", "README.fr.md", "README.en.md",
     "docs/pse", "internal/pse", "web/src/pse", "internal/admin/dist",
     "web/public/brand", "web/src/components/brand.tsx", "web/src/lib/brand-art.json", "web/index.html",
 ]

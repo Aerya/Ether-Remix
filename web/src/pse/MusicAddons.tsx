@@ -1,3 +1,4 @@
+import { SourceHosting } from "./SourceHosting";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { useEffect, useState, type ReactNode } from "react";
 import { getLocale } from "../i18n";
@@ -94,6 +95,7 @@ export function MusicAddons({ fields }: { fields: { key: string; control: ReactN
                   {L("Configurer ", "Configure ")}
                   {addon.name} ↗
                 </a>
+                <SourceHosting source={addon.key} publicInstance />
                 {addon.account ? <span> · {L("Compte requis", "Account required")}</span> : null}
                 {addon.changed ? (
                   <p role="status">

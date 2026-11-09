@@ -12,7 +12,7 @@ vi.mock("../i18n", async (original) => ({
   ...(await original<typeof import("../i18n")>()),
   getLocale: () => "fr",
 }));
-vi.mock("./VostfrTitles", () => ({ VostfrTitles: () => null }));
+vi.mock("./VostfrTitles", () => ({ VostfrTitles: () => <div>Titres en VOSTFR à la demande</div> }));
 const txt = (s: string) => ({ fr: s, en: s });
 
 it("orders tabs and lets vertically listed imported sources be selected and saved", async () => {
@@ -50,7 +50,15 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   );
   await screen.findByLabelText("Prowlarr");
   const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
-  expect(tabs).toEqual(["Films & Séries", "Musique", "Bibliothèques", "Stats", "Notif & suivi"]);
+  expect(tabs).toEqual([
+    "Films & Séries",
+    "Animes",
+    "À la demande",
+    "Musique",
+    "Bibliothèques",
+    "Stats",
+    "Notif & suivi",
+  ]);
   const label = screen.getByLabelText("Prowlarr").closest("label")!;
   expect(label.parentElement!.className).toContain("flex-col");
   fireEvent.click(screen.getByLabelText("Prowlarr"));
@@ -65,4 +73,16 @@ it("orders tabs and lets vertically listed imported sources be selected and save
       ),
     ).toBe(true),
   );
+});
+
+it("isolates VOSTFR exceptions in the on-demand tab", async () => {
+  apiFetch.mockResolvedValue({ features: [] });
+  render(
+    <MemoryRouter initialEntries={["/accent/demande"]}>
+      <Routes>
+        <Route path="/accent/:tab" element={<PsePage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Titres en VOSTFR à la demande")).toBeTruthy();
 });

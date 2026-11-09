@@ -1,3 +1,4 @@
+import { SourceHosting } from "./SourceHosting";
 import {
   Badge,
   Button,
@@ -24,11 +25,12 @@ import { MusicSources } from "./MusicSources";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
+import { AnimeSources } from "./AnimeSources";
 import { VostfrTitles } from "./VostfrTitles";
 
 /**
  * Page « Ether-Remix » de la console (nom public du fork), en onglets : Films et
- * séries, Musique, Bibliothèques, Stats, Notifications et suivi. Réglages : réglages des ajouts du fork, enregistrés par
+ * séries, Animes, Musique, Bibliothèques, Stats, Notifications et suivi. Réglages : réglages des ajouts du fork, enregistrés par
  * /ether/api/pse/ (internal/pse/console). Les textes viennent du serveur en
  * français et en anglais ; la page choisit selon la langue de la console.
  * Voir docs/pse/FORK.fr.md.
@@ -87,6 +89,8 @@ const TABS = [
     en: "Movies & shows",
     features: ["french", "playable", "indexer"],
   },
+  { key: "animes", fr: "Animes", en: "Anime", features: [] },
+  { key: "demande", fr: "À la demande", en: "On demand", features: [] },
   { key: "musique", fr: "Musique", en: "Music", features: ["music"] },
   { key: "bibliotheques", fr: "Bibliothèques", en: "Libraries", features: [] },
   { key: "statistiques", fr: "Stats", en: "Stats", features: [] },
@@ -171,14 +175,20 @@ export default function PsePage() {
       tabs={TABS.map((t) => ({ key: t.key, label: L(t.fr, t.en) }))}
       active={tab}
       description={L(
-        "Ether en VF, avec la musique. Les réglages s'appliquent sans redémarrer.",
-        "Ether in French, with music. Settings apply without a restart.",
+        "Films, séries, animés et musique. Les réglages s'appliquent sans redémarrer.",
+        "Movies, shows, anime and music. Settings apply without a restart.",
       )}
     >
       <div className="space-y-6">
+        {tab === "animes" ? (
+          <>
+            <AnimeSources />
+            <ThemeLibraries preset="anime" />
+          </>
+        ) : null}
         {tab === "bibliotheques" ? <ThemeLibraries /> : null}
         {tab === "bibliotheques" ? <SearchPriority /> : null}
-        {tab === "films" ? <VostfrTitles /> : null}
+        {tab === "demande" ? <VostfrTitles /> : null}
         {tab === "statistiques" ? <IndexerDetails /> : null}
         {featuresOfTab(tab, current.features).map((f) => (
           <FeatureSection
@@ -238,7 +248,12 @@ function FeatureSection({
           <SourceBadge field={fd} pendingReset={resets.includes(fd.key)} />
         </span>
       }
-      description={T(fd.help)}
+      description={
+        <>
+          {T(fd.help)}
+          <SourceHosting source={fd.key} />
+        </>
+      }
       control={
         <div className="flex flex-wrap items-center gap-2">
           <Control field={fd} value={draft[fd.key] ?? ""} onChange={(v) => onChange(fd.key, v)} />

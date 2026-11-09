@@ -117,3 +117,46 @@ it("saves language exceptions", async () => {
   expect(put.init?.method).toBe("PUT");
   expect(JSON.parse(String(put.init!.body))).toEqual({ collections: ["2", "3"] });
 });
+
+it("keeps renamed anime libraries in the anime tab and excludes other libraries", async () => {
+  apiFetch.mockResolvedValue({
+    libraries: [
+      {
+        id: 1,
+        name: "Mes séries japonaises",
+        preset: "anime",
+        type: "mixed",
+        collections: ["2"],
+        position: 0,
+      },
+      {
+        id: 2,
+        name: "Services",
+        preset: "services",
+        type: "movie",
+        collections: ["1"],
+        position: 1,
+      },
+    ],
+    collections: cols,
+    presets: [],
+    max: 99,
+  });
+  render(<ThemeLibraries preset="anime" />);
+  expect(await screen.findByDisplayValue("Mes séries japonaises")).toBeTruthy();
+  expect(screen.queryByDisplayValue("Services")).toBeNull();
+  const adds = screen.getAllByLabelText(/^(Add a collection|Ajouter une collection)$/);
+  fireEvent.click(adds[adds.length - 1]!);
+  fireEvent.click(await screen.findByRole("option", { name: /Concerts/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Create library|Créer la bibliothèque/ }));
+  await waitFor(() =>
+    expect(
+      apiFetch.mock.calls.some(
+        ([path, init]) =>
+          path === "/pse/themes/" &&
+          init?.method === "POST" &&
+          JSON.parse(init.body).preset === "anime",
+      ),
+    ).toBe(true),
+  );
+});
