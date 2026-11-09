@@ -28,6 +28,7 @@ type Manager struct {
 
 	mu             sync.RWMutex
 	clients        []*Client
+	retained       func(context.Context, core.SearchRequest) ([]core.Release, bool)
 	searchTimingMu sync.RWMutex
 	searchTimings  []SearchTiming
 }
@@ -243,7 +244,25 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 // soon as that indexer answers (concurrently, from its own goroutine), so
 // callers can start follow-up work, such as debrid cache checks, before
 // the slowest indexer is done.
+// SetRetainedSearch installs an optional local observation provider.
+func (m *Manager) SetRetainedSearch(fn func(context.Context, core.SearchRequest) ([]core.Release, bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.retained = fn
+}
+
 func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
+	m.mu.RLock()
+	retained := m.retained
+	m.mu.RUnlock()
+	if retained != nil && core.IndexerPurpose(ctx) != core.IndexerPurposeRescue {
+		if rs, ok := retained(ctx, req); ok {
+			if arrived != nil && len(rs) > 0 {
+				arrived(rs)
+			}
+			return rs, nil
+		}
+	}
 	clients := m.Clients()
 	type slot struct {
 		results  []core.Release

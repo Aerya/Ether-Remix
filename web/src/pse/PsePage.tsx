@@ -23,6 +23,7 @@ import { IndexerDetails } from "./IndexerDetails";
 import { MusicSourceSettings } from "./MusicSourceSettings";
 import { SourceOrder } from "./SourceOrder";
 import { SfrHelp } from "./SfrHelp";
+import { SeerrCatalogHelp } from "./SeerrCatalogHelp";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
@@ -232,11 +233,13 @@ function PseSettings() {
         {tab === "sources" ? (
           <RemixSources
             music={musicPart("source")}
-            stremio={current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
+            stremio={current.features
+              .filter((f) => ["sfr", "seerrcatalog"].includes(f.id))
+              .map((f) => renderFeature(f))}
             indexing={
               <>
                 {featuresOfTab(tab, current.features)
-                  .filter((f) => f.id !== "sfr")
+                  .filter((f) => !["sfr", "seerrcatalog"].includes(f.id))
                   .map((f) => renderFeature(f))}
                 <SearchPriority />
               </>
@@ -457,6 +460,7 @@ function FeatureSection({
       <SettingsSection title={T(feature.title)} description={T(feature.description)}>
         <StatusLine feature={feature} />
         {basic.map(row)}
+        {feature.id === "seerrcatalog" ? <SeerrCatalogHelp status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
         {feature.id === "music" && placement === "content" ? <MusicPlaylists /> : null}
         {advanced.length ? (

@@ -193,6 +193,16 @@ var Features = communityFields([]Feature{
 				Help: tx("Rarement à modifier. Avec un addon Eclipse, les pochettes viennent de Deezer.", "Rarely needs changing. With an Eclipse addon, artwork comes from Deezer.")},
 		},
 	},
+	{
+		ID:          "seerrcatalog",
+		Title:       tx("SeerrCatalog → Ether Remix", "SeerrCatalog → Ether Remix"),
+		Description: tx("Réutilise les disponibilités vérifiées par votre SeerrCatalog sans rechercher les mêmes sources. Les règles de disponibilité de SeerrCatalog font foi pour ces titres, y compris dans le catalogue lisible uniquement.", "Reuse availability checked by your SeerrCatalog without searching the same sources. SeerrCatalog availability rules are trusted for these titles, including the playable-only catalogue."),
+		Fields: []Field{
+			{Key: "PSE_SEERRCATALOG", Kind: KindToggle, Default: "off", Label: tx("Faire confiance à SeerrCatalog", "Trust SeerrCatalog"), Help: tx("Désactivé par défaut. Partage les sources des utilisateurs de SeerrCatalog avec cette instance Remix de confiance. La lecture conserve les règles du spectateur.", "Off by default. Shares SeerrCatalog users’ sources with this trusted Remix instance. Playback retains viewer policies.")},
+			{Key: "PSE_SEERRCATALOG_URL", Kind: KindURL, Label: tx("Adresse de SeerrCatalog", "SeerrCatalog address"), Placeholder: "http://seerrcatalog:7000", Help: tx("Adresse de base, sans manifest ni chemin API. Synchronisation chaque minute, sans requête aux addons.", "Base address, without manifest or API path. Synchronizes every minute without addon requests.")},
+			{Key: "PSE_SEERRCATALOG_TOKEN", Kind: KindKey, Secret: true, Label: tx("Clé partagée", "Shared token"), Help: tx("Générez la clé dans les paramètres SeerrCatalog, puis collez-la ici. Elle reste masquée.", "Generate the token in SeerrCatalog settings and paste it here. It remains masked.")},
+		},
+	},
 })
 
 func communityFields(features []Feature) []Feature {
