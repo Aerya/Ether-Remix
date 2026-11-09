@@ -4,11 +4,7 @@
 
 ## Installation
 
-L'image est privée, comme le dépôt. Connectez une fois l'hôte à GHCR avec un jeton GitHub disposant du droit `read:packages` :
-
-```bash
-echo "<jeton>" | docker login ghcr.io -u Aerya --password-stdin
-```
+L’image Docker est publique. Aucune connexion à GHCR ni aucun jeton GitHub ne sont nécessaires pour la télécharger.
 
 ```yaml
 # compose.yaml — à déployer via Dockge-Enhanced

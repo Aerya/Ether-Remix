@@ -4,11 +4,7 @@
 
 ## Installation
 
-The image is private, like the repository. Log in to GHCR once on the host with a GitHub token that has the `read:packages` scope:
-
-```bash
-echo "<token>" | docker login ghcr.io -u Aerya --password-stdin
-```
+The Docker image is public. No GHCR login or GitHub token is needed to download it.
 
 ```yaml
 # compose.yaml — deploy through Dockge-Enhanced

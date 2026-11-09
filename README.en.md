@@ -95,7 +95,7 @@ Each collection has its own schedule: `live` (on demand), `hourly`, `daily` (def
 
 ## Get started
 
-1. **Install** `ghcr.io/aerya/ether-remix:latest` using the [provided Compose file](docs/pse/GUIDE.en.md#installation), through Dockge-Enhanced. The image is private: the host must be logged into GHCR with a token granting `read:packages`.
+1. **Install** `ghcr.io/aerya/ether-remix:latest` using the [provided Compose file](docs/pse/GUIDE.en.md#installation), through Dockge-Enhanced. The image is public; no GHCR login is required.
 2. **Open the console** at `http://<host>:32400/ether/` and follow the setup assistant. Set the port with `ETHER_PORT`.
 3. **Configure your sources**—debrid, Usenet, indexers and addons—in Ether’s pages, then enable the features you want under **Ether-Remix**.
 4. **Connect your clients**. For Subsonic, use the server address, a local password account and **legacy** authentication; prefer HTTPS for remote access.
