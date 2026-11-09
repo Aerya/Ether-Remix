@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPriorities, moved } from "./SourceOrder";
+import { applyPriorities, moved, movedInFamily } from "./SourceOrder";
 
 describe("moved", () => {
   it("échange deux sources voisines", () => {
@@ -23,6 +23,18 @@ describe("applyPriorities", () => {
       { id: "a", priority: 2 },
       { id: "b", priority: 1 },
       { id: "off", priority: 9 },
+    ]);
+  });
+});
+
+describe("movedInFamily", () => {
+  const familyOf = (id: string) => id[0] as string;
+  it("déplace dans la famille sans toucher les autres", () => {
+    expect(movedInFamily(["s1", "u1", "s2", "u2"], familyOf, "s", 1, -1)).toEqual([
+      "s2",
+      "u1",
+      "s1",
+      "u2",
     ]);
   });
 });
