@@ -68,6 +68,19 @@ const stateLabel = (state: string) =>
     no_sources: L("Aucune source sélectionnée", "No selected sources"),
   })[state] ?? state;
 
+type ReleaseOrder = "count" | "name";
+
+/** Ordre du graphique des releases : plus grand nombre d'abord, ou alphabétique. */
+export function sourcesByReleases<T extends { id: string; name: string; releases: number }>(
+  sources: T[],
+  order: ReleaseOrder,
+): T[] {
+  const byName = (a: T, b: T) => (a.name || a.id).localeCompare(b.name || b.id);
+  return [...sources].sort((a, b) =>
+    order === "name" ? byName(a, b) : b.releases - a.releases || byName(a, b),
+  );
+}
+
 export function IndexerActivity() {
   const [live, setLive] = useState<Live | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -76,6 +89,7 @@ export function IndexerActivity() {
   const [error, setError] = useState("");
   const [source, setSource] = useState("");
   const [busy, setBusy] = useState(false);
+  const [releaseOrder, setReleaseOrder] = useState<ReleaseOrder>("count");
   const [sort, setSort] = useState<{ key: SourceSort; descending: boolean }>({
     key: "name",
     descending: false,
@@ -362,9 +376,29 @@ export function IndexerActivity() {
           )}
         </article>
         <article className="rounded-xl border border-border p-5">
-          <h4 className="text-sm font-semibold">
-            {L("Releases conservées par source", "Stored releases by source")}
-          </h4>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold">
+              {L("Releases conservées par source", "Stored releases by source")}
+            </h4>
+            <div className="flex gap-1" aria-label={L("Trier les sources", "Sort sources")}>
+              {(
+                [
+                  ["count", L("Nombre", "Count")],
+                  ["name", L("Nom", "Name")],
+                ] as const
+              ).map(([id, label]) => (
+                <Button
+                  key={id}
+                  aria-pressed={releaseOrder === id}
+                  onClick={() => setReleaseOrder(id)}
+                  size="sm"
+                  variant={releaseOrder === id ? "default" : "outline"}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
           <p className="mt-1 text-xs text-fg-muted">
             {L(
               "État de l’index · un titre peut apparaître dans plusieurs sources",
@@ -372,7 +406,7 @@ export function IndexerActivity() {
             )}
           </p>
           <div className="mt-5 max-h-48 space-y-4 overflow-y-auto">
-            {selectedSources.map((s, i) => (
+            {sourcesByReleases(selectedSources, releaseOrder).map((s, i) => (
               <div key={s.id}>
                 <div className="mb-1.5 flex justify-between gap-3 text-xs">
                   <span className="truncate">{s.name || s.id}</span>
