@@ -147,7 +147,10 @@ export function MusicPlaylists() {
   return (
     <div className="space-y-3 border-t border-border px-4 py-4">
       <div className="text-sm font-medium">
-        {L("Playlists Deezer, Last.fm et ListenBrainz", "Deezer, Last.fm and ListenBrainz playlists")}
+        {L(
+          "Playlists Deezer, Last.fm et ListenBrainz",
+          "Deezer, Last.fm and ListenBrainz playlists",
+        )}
       </div>
       <p className="text-sm text-fg-muted">
         {L(
@@ -176,9 +179,7 @@ export function MusicPlaylists() {
           (s) => drafts[key(v, s)] !== undefined && drafts[key(v, s)] !== stored(v, s),
         );
         const linked = SERVICES.some((s) => Boolean(v.accounts[s]));
-        const errors = SERVICES
-          .map((s) => v.accounts[s]?.error)
-          .filter(Boolean);
+        const errors = SERVICES.map((s) => v.accounts[s]?.error).filter(Boolean);
         const last = Math.max(...SERVICES.map((s) => v.accounts[s]?.syncedAt ?? 0));
         return (
           <div key={v.id} className="space-y-2 rounded-lg border border-border p-3">
@@ -235,9 +236,7 @@ export function MusicPlaylists() {
                 placeholder="https://listenbrainz.org/user/…"
                 spellCheck={false}
                 autoComplete="off"
-                onChange={(e) =>
-                  setDrafts({ ...drafts, [key(v, "listenbrainz")]: e.target.value })
-                }
+                onChange={(e) => setDrafts({ ...drafts, [key(v, "listenbrainz")]: e.target.value })}
               />
             </label>
             {errors.length ? <p className="text-xs text-warning">{errors.join(" · ")}</p> : null}
