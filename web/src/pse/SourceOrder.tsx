@@ -127,7 +127,7 @@ export function SourceOrder() {
       ) : (
         <div className="space-y-5 p-4">
           <p className="text-sm">
-            <Link className="text-primary underline" to="/accent/sources?source=torrent-indexers">
+            <Link className="text-primary underline" to="/accent/sources?source=indexeurs">
               {L("Ordre global : Sources → Indexeurs", "Global order: Sources → Indexers")}
             </Link>
           </p>
