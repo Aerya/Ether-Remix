@@ -257,7 +257,7 @@ func (s *Server) PlexSearch(ctx context.Context, viewer int64, query string, lim
 func psemCandidate(r *http.Request) bool {
 	p := r.URL.Path
 	switch {
-	case strings.HasPrefix(p, "/music/"), strings.HasPrefix(p, "/library/sections/"+strconv.Itoa(pseMusicSection)),
+	case strings.HasPrefix(p, "/music/"), strings.HasPrefix(p, "/music."), strings.HasPrefix(p, "/library/sections/"+strconv.Itoa(pseMusicSection)),
 		strings.HasPrefix(p, "/hubs/sections/"+strconv.Itoa(pseMusicSection)), p == "/hubs/search":
 		return true
 	case strings.HasPrefix(p, "/playQueues/"):
@@ -288,6 +288,9 @@ func (q *psemReq) serve() bool {
 		return true
 	case strings.HasPrefix(p, "/hubs/sections/"+strconv.Itoa(pseMusicSection)):
 		q.sectionHubs()
+		return true
+	case strings.HasPrefix(p, "/music."):
+		q.hubItems(strings.TrimPrefix(p, "/"))
 		return true
 	case p == "/hubs/search":
 		// Recherche dans la section Musique, ou limitée à la musique ; la
@@ -488,18 +491,39 @@ func psemHub(id, title, typ string, items []model.Metadata) model.Hub {
 		HubIdentifier: "music." + id, Context: "hub.music." + id, Size: len(items), More: false, Metadata: items}
 }
 
+// hubItems répond à l'adresse qu'un client Plex déduit de l'identifiant d'une
+// rangée. Une rangée inconnue renvoie une liste vide plutôt qu'une 404 : une
+// rafale de 404 à l'ouverture de Musique fait bannir le client par CrowdSec.
+func (q *psemReq) hubItems(id string) {
+	for _, hub := range q.musicHubs() {
+		if hub.HubIdentifier == id {
+			mc := q.container(hub.Metadata, hub.Title)
+			q.p.Write(q.w, q.r, mc)
+			return
+		}
+	}
+	q.empty()
+}
+
 func (q *psemReq) sectionHubs() {
 	mc := psemContainer()
 	mc.LibrarySectionID = model.Ptr(pseMusicSection)
 	mc.LibrarySectionTitle = pseMusicTitle
 	mc.LibrarySectionUUID = pseMusicUUID
+	mc.Hub = q.musicHubs()
+	mc.Size = len(mc.Hub)
+	q.p.Write(q.w, q.r, mc)
+}
+
+func (q *psemReq) musicHubs() []model.Hub {
+	var hubs []model.Hub
 	if played := q.library("9", ListOptions{Order: "played", Played: true}, false); len(played) > 0 {
-		mc.Hub = append(mc.Hub, psemHub("recent", "Écoutés récemment", "album", played))
+		hubs = append(hubs, psemHub("recent", "Écoutés récemment", "album", played))
 	}
 	if fav := q.library("9", ListOptions{Order: "starred", Starred: true}, false); len(fav) > 0 {
-		mc.Hub = append(mc.Hub, psemHub("favorites", "Albums favoris", "album", fav))
+		hubs = append(hubs, psemHub("favorites", "Albums favoris", "album", fav))
 	}
-	mc.Hub = append(mc.Hub, q.playlistHubs()...)
+	hubs = append(hubs, q.playlistHubs()...)
 	ar, al, tr := q.m.Charts(q.ctx())
 	var albums, artists, tracks []model.Metadata
 	for _, a := range al {
@@ -511,11 +535,10 @@ func (q *psemReq) sectionHubs() {
 	for _, t := range tr {
 		tracks = append(tracks, q.trackMD(t))
 	}
-	mc.Hub = append(mc.Hub, psemHub("charts.albums", "Albums populaires", "album", albums),
+	hubs = append(hubs, psemHub("charts.albums", "Albums populaires", "album", albums),
 		psemHub("charts.artists", "Artistes populaires", "artist", artists),
 		psemHub("charts.tracks", "Titres populaires", "track", tracks))
-	mc.Size = len(mc.Hub)
-	q.p.Write(q.w, q.r, mc)
+	return hubs
 }
 
 func (q *psemReq) searchHubs(term string) {
