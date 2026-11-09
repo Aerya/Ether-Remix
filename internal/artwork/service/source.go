@@ -404,6 +404,9 @@ func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.D
 		}
 		ctx = next
 	}
+	if a.Discovery != nil && a.Discovery.PrepareArtworkPage != nil {
+		ctx = a.Discovery.PrepareArtworkPage(ctx, viewer, titles)
+	}
 	// An episode or season missing a wanted image falls back to its
 	// series' (ArtPath). Read those series in one batch rather than one
 	// title per series as each row is listed.

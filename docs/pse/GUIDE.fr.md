@@ -194,3 +194,7 @@ Les sources musicales identifient les instances publiques et proposent les liens
 - **Notifications et suivi** : notifications, Scrob et identifiants Last.fm.
 
 Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent vers les nouveaux écrans. Il n’y a pas de copie des comptes ou manifests. Les catégories servent à organiser les sources ; elles ne garantissent pas qu’un titre précis existe chez un fournisseur.
+
+### Navigation et badges des affiches
+
+Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épisodes et les rotations de collections respectent l’état de chaque spectateur. Le catalogue « lisible uniquement » conserve des compteurs exacts, y compris les exceptions de langue.

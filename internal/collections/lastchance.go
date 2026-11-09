@@ -2,8 +2,11 @@ package collections
 
 import (
 	"context"
-	"github.com/braedonsaunders/ether/internal/core"
+	"fmt"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 // LastChance reports the next configured rotation boundary only when a title
@@ -12,22 +15,30 @@ import (
 // The method uses already-built members and the current local index. It never
 // triggers a build, fetches a source, or invents a media-availability deadline.
 func (s *Service) LastChance(ctx context.Context, user *core.User, key core.RatingKey) (time.Time, error) {
-	var expires time.Time
 	if user == nil {
-		return expires, nil
+		return time.Time{}, nil
 	}
+	deadlines, err := reqmemo.Do(ctx, fmt.Sprintf("collections:lastchance:%p:%d", s, user.ID), func() (map[core.RatingKey]time.Time, error) {
+		return s.lastChanceDeadlines(ctx, user)
+	})
+	return deadlines[key], err
+}
+
+// Compute each rotation once per viewer/request, including negative results.
+func (s *Service) lastChanceDeadlines(ctx context.Context, user *core.User) (map[core.RatingKey]time.Time, error) {
+	deadlines := make(map[core.RatingKey]time.Time)
 	snap := s.idx.current()
 	if snap == nil {
-		return expires, nil
+		return deadlines, nil
 	}
 	rows, err := s.loadRows(ctx)
 	if err != nil {
-		return expires, err
+		return nil, err
 	}
 	now := s.now()
 	for _, row := range rows {
 		if ctx.Err() != nil {
-			return time.Time{}, ctx.Err()
+			return nil, ctx.Err()
 		}
 		sp := row.spec
 		if !visible(row, user) || sp.Rotate == nil || sp.Rotate.Size <= 0 || (!sp.Targets.CollectionsTab && !sp.Targets.HomeRow && !sp.Targets.SectionRow) || !sp.Targets.Schedule.Allows("", now) {
@@ -40,7 +51,7 @@ func (s *Service) LastChance(ctx context.Context, user *core.User, key core.Rati
 			}
 			keys, unshared, e := s.loadMembers(ctx, row.id)
 			if e != nil {
-				return time.Time{}, e
+				return nil, e
 			}
 			ms = s.newMemberSet(row.spec, keys, unshared, row.lastBuilt, row.buildHash)
 		}
@@ -55,26 +66,18 @@ func (s *Service) LastChance(ctx context.Context, user *core.User, key core.Rati
 		if len(keys) <= sp.Rotate.Size {
 			continue
 		}
-		contains := func(keys []core.RatingKey) bool {
-			for _, k := range keys {
-				if k == key {
-					return true
-				}
-			}
-			return false
-		}
-		if !contains(rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), now)) {
-			continue
-		}
 		boundary := nextRotationBoundary(sp.Rotate.Every, now)
-		if contains(rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), boundary)) {
-			continue
+		next := make(map[core.RatingKey]bool)
+		for _, k := range rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), boundary) {
+			next[k] = true
 		}
-		if expires.IsZero() || boundary.Before(expires) {
-			expires = boundary
+		for _, k := range rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), now) {
+			if !next[k] && (deadlines[k].IsZero() || boundary.Before(deadlines[k])) {
+				deadlines[k] = boundary
+			}
 		}
 	}
-	return expires, nil
+	return deadlines, nil
 }
 
 // Use calendar arithmetic in the collection clock's zone, including DST.

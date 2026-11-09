@@ -148,7 +148,10 @@ func (p PlayableSettings) PlayableSQL(keyCol string) (string, []any) {
 	if !p.Enabled {
 		return "", nil
 	}
-	clause := "EXISTS (SELECT 1 FROM pse_playable pp WHERE pp.title_key=" + keyCol + " AND (pp.releases>=? OR (pp.any_lang>=? AND " + LangExemptSQL(keyCol) + ")))"
+	// The eligible set is independent of the outer catalogue row. SQLite can
+	// drive a title-key lookup from this set instead of probing it once for
+	// every title in a large catalogue. Keep the exact same language exceptions.
+	clause := keyCol + " IN (SELECT pp.title_key FROM pse_playable pp WHERE pp.releases>=? OR (pp.any_lang>=? AND " + LangExemptSQL("pp.title_key") + "))"
 	if p.Pending {
 		clause += " OR NOT EXISTS (SELECT 1 FROM pse_index_titles pi WHERE pi.title_key=" + keyCol + ")"
 	}

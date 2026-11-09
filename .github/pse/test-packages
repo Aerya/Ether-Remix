@@ -12,3 +12,5 @@
 ./internal/stremio
 
 ./internal/admin
+./internal/discovery
+./internal/artwork/service

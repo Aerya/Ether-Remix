@@ -76,6 +76,7 @@ func (a *App) buildDiscovery() {
 		SourceText: a.languageSourceText,
 	})
 	a.discoveryFeatures.OverviewTranslate = a.lang.Overview
+	a.discoveryFeatures.PrepareArtworkPage = a.prepareArtworkPage
 }
 func (a *App) overlayFacts(ctx context.Context, u *core.User, t *core.Title, status, quality bool) overlays.Facts {
 	f := overlays.Facts{}
@@ -84,7 +85,9 @@ func (a *App) overlayFacts(ctx context.Context, u *core.User, t *core.Title, sta
 			f.LastChance = expiry
 		}
 	}
-	if status && t.Type == core.TypeShow && u != nil {
+	if page, ok := ctx.Value(episodeBadgePageKey{}).(episodeBadgePage); status && ok && u != nil && page.viewer == u.ID && page.covers(t.Key) {
+		f.NewEpisode, f.NewSeason = page.facts[t.Key].NewEpisode, page.facts[t.Key].NewSeason
+	} else if status && t.Type == core.TypeShow && u != nil {
 		episodes, err := a.catalog.RecentEpisodes(ctx, t.Key, time.Now().Add(-30*24*time.Hour))
 		if err == nil {
 			keys := make([]core.RatingKey, len(episodes))

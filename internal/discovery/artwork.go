@@ -27,16 +27,24 @@ func (d *Features) SelectArtwork(ctx context.Context, viewer *core.User, t *core
 			out.Title = localized
 		}
 	}
+	// All image kinds share the same pixel-version inputs.
+	var version string
+	versionFor := func() string {
+		if version == "" {
+			version = d.Overlays.Version(ctx, viewer, out.Title, lang)
+		}
+		return version
+	}
 	if (cfg.Enabled && (out.Title.Type != core.TypeEpisode || cfg.BadgesOnEpisodes()) && (out.Title.PosterPath != "" || (out.Title.Type == core.TypeEpisode && out.Title.StillPath != ""))) || (d.Overlays.CustomPostersEnabled() && (out.Title.Type == core.TypeMovie || out.Title.Type == core.TypeShow)) {
-		out.PosterVersion = d.Overlays.Version(ctx, viewer, out.Title, lang)
+		out.PosterVersion = versionFor()
 	}
 	if cfg.Enabled {
 		_, backdrop := d.Overlays.Paths(ctx, viewer, out.Title, lang)
 		if backdrop != "" && backdrop != t.BackdropPath {
-			out.BackdropVersion = d.Overlays.Version(ctx, viewer, out.Title, lang)
+			out.BackdropVersion = versionFor()
 		}
 		if out.Title.LogoPath != "" {
-			out.LogoVersion = d.Overlays.Version(ctx, viewer, out.Title, lang)
+			out.LogoVersion = versionFor()
 		}
 	}
 	return out

@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-09-unread-notes",
+    id: "2026-11-09-client-browsing",
     version: "current",
+    date: "2026-11-09",
+    title: ["Navigation plus rapide dans Plex et Jellyfin", "Faster browsing in Plex and Jellyfin"],
+    items: [
+      [
+        "Les badges des affiches sont préparés par page : moins de lectures répétées des collections et des épisodes, avec les états propres à chaque spectateur.",
+        "Poster badges are prepared per page, reducing repeated collection and episode reads while preserving each viewer’s state.",
+      ],
+      [
+        "Le catalogue lisible uniquement recherche directement les titres éligibles pour accélérer les listes et leurs compteurs, avec les mêmes filtres et exceptions de langue.",
+        "The playable-only catalogue looks up eligible titles directly to speed up lists and counts, preserving language filters and exceptions.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-09-unread-notes",
+    version: "0.2.37-remix.6.1",
     date: "2026-11-09",
     title: [
       "Des réglages plus clairs et uniquement les nouveautés non lues",

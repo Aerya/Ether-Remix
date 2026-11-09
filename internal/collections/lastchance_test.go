@@ -1,10 +1,13 @@
 package collections_test
 
 import (
-	"github.com/braedonsaunders/ether/internal/collections"
-	"github.com/braedonsaunders/ether/internal/core"
 	"testing"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/collections"
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func TestLastChanceMatchesActualNextRotationAndViewerTargets(t *testing.T) {
@@ -101,5 +104,49 @@ func TestLastChanceNeverInventsExpiryForStableOrHiddenCollection(t *testing.T) {
 	at, err := e.svc.LastChance(e.ctx, owner, page.Items[0].Key)
 	if err != nil || !at.IsZero() {
 		t.Fatal("disabled collection advertised deadline")
+	}
+}
+
+func TestLastChancePageLoadsCollectionsOnce(t *testing.T) {
+	e := newEnv(t)
+	sp := spec("Rotating page", "movie", catalogSource(), rl("votes", "gte", 1000))
+	sp.Rotate = &core.CollectionRotate{Size: 5, Every: "daily"}
+	sp.Targets.Users = core.UserTargets{IDs: []int64{owner.ID}}
+	created, err := e.svc.CreateSpec(e.ctx, sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := e.svc.Items(e.ctx, owner, core.SmartKey(mustInt(t, created.ID)), 0, 100)
+	if err != nil || len(page.Items) == 0 {
+		t.Fatalf("fixture: %v", err)
+	}
+	ctx, stats := store.WithQueryStats(reqmemo.With(e.ctx))
+	for i := 0; i < 300; i++ {
+		title := page.Items[i%len(page.Items)]
+		got, err := e.svc.LastChance(ctx, owner, title.Key)
+		want, expectedErr := e.svc.LastChance(e.ctx, owner, title.Key)
+		if err != nil || expectedErr != nil || !got.Equal(want) {
+			t.Fatalf("badge mismatch: %v %v", got, want)
+		}
+	}
+	t.Logf("300 badge lookups: %d queries", stats.Queries())
+	if stats.Queries() > 10 {
+		t.Fatalf("repeated collection reads: %d", stats.Queries())
+	}
+	for _, title := range page.Items {
+		at, err := e.svc.LastChance(ctx, guest, title.Key)
+		if err != nil || !at.IsZero() {
+			t.Fatal("viewer state leaked")
+		}
+	}
+	sp.Enabled = false
+	if _, err := e.svc.UpdateSpec(e.ctx, created.ID, sp); err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range page.Items {
+		at, err := e.svc.LastChance(reqmemo.With(e.ctx), owner, title.Key)
+		if err != nil || !at.IsZero() {
+			t.Fatal("new request kept old rotation")
+		}
 	}
 }

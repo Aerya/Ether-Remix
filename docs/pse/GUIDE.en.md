@@ -194,3 +194,7 @@ Music sources identify public instances and link to available self-hosting proje
 - **Notifications & tracking**: notifications, Scrob and Last.fm credentials.
 
 Existing `/sources/...` addresses and old Remix tabs redirect to their new locations. Accounts and manifests are not duplicated. Categories organize sources; they do not guarantee that a particular title is available.
+
+### Browsing and poster badges
+
+Plex and Jellyfin prepare a page’s badges together. New episodes and collection rotations respect each viewer’s state. The playable-only catalogue keeps exact counts, including language exceptions.
