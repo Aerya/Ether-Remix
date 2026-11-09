@@ -1,4 +1,3 @@
-import { StremioHostingOptions } from "../../pse/SourceHosting";
 import {
   Alert,
   AlertDescription,
@@ -427,7 +426,6 @@ export function IndexerList({
         }
         bodyClassName="space-y-3 p-4"
       >
-        {view === "stremio" ? <StremioHostingOptions /> : null}
         {shown.length === 0 ? (
           view === "stremio" ? (
             <EmptyState

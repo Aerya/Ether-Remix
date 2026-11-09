@@ -408,6 +408,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("POST /api/test/usenet", h.handleTestUsenet)
 	api("POST /api/test/indexer", h.handleTestIndexer)
 	api("POST /api/test/debrid", h.handleTestDebrid)
+	api("POST /api/debrid/providers/{id}/key", h.handlePseDebridKey) // PSE-HOOK: affichage ponctuel réservé au propriétaire.
 	api("POST /api/test/tmdb", h.handleTestTMDB)
 	api("POST /api/test/opensubtitles", h.handleTestOpenSubtitles)
 	api("POST /api/test/llm", h.handleTestLLM)

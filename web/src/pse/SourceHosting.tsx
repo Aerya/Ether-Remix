@@ -43,18 +43,3 @@ export function SourceHosting({
     </span>
   );
 }
-export function StremioHostingOptions() {
-  return (
-    <details className="rounded-lg border border-border px-4 py-3 text-sm text-fg-muted">
-      <summary className="cursor-pointer font-medium">
-        {L("Instances publiques et auto-hébergement", "Public instances and self-hosting")}
-      </summary>
-      <p className="mt-2">
-        {L(
-          "Vous pouvez coller le manifest d’une instance publique ou privée. Une adresse de configuration publique ne signifie pas que le logiciel peut être auto-hébergé.",
-          "You can paste a public or private instance's manifest. A public configuration page does not imply that the software can be self-hosted.",
-        )}
-      </p>
-    </details>
-  );
-}

@@ -4,11 +4,57 @@ import { useEffect, useRef, useState } from "react";
 import { getLocale } from "../i18n";
 
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
-const SEEN_KEY = "ether-remix.updates.seen";
+const SEEN_KEY = "ether-remix.updates.seen"; // Ancien repère, conservé pour la migration.
+const READ_KEY = "ether-remix.updates.read";
+interface ReadProgress {
+  version: string;
+  ids: string[];
+}
+
+// Les nombres de build se comparent numériquement (remix.10 > remix.9).
+export function compareUpdateVersions(a: string, b: string): number | null {
+  const parse = (value: string) => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)-remix\.(\d+)\.(\d+)$/.exec(value);
+    return match ? match.slice(1).map(Number) : null;
+  };
+  const av = parse(a),
+    bv = parse(b);
+  if (!av || !bv) return null;
+  for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return av[i]! > bv[i]! ? 1 : -1;
+  return 0;
+}
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
+    id: "2026-11-09-unread-notes",
+    version: "current",
+    date: "2026-11-09",
+    title: [
+      "Des réglages plus clairs et uniquement les nouveautés non lues",
+      "Clearer settings and only unread updates",
+    ],
+    items: [
+      [
+        "La popup affiche uniquement les nouveautés depuis votre dernière version lue. Les notes déjà consultées restent dans l’historique, accessible à la demande.",
+        "The popup only shows updates since your last read version. Previously read notes remain available in the optional history.",
+      ],
+      [
+        "Sources musicales regroupées : Eclipse, DMM / Real-Debrid avec ses comptes associés, puis les autres sources. Le diagnostic audio reste commun.",
+        "Music sources grouped into Eclipse, DMM / Real-Debrid with its linked accounts, and other sources. Audio diagnostics remain shared.",
+      ],
+      [
+        "Dans Debrid, affichez puis masquez la clé API du compte sélectionné. La clé reste masquée dans la configuration ordinaire.",
+        "Under Debrid, show or hide the selected account’s API key. Normal configuration responses keep keys masked.",
+      ],
+      [
+        "Les sources importées se filtrent et se trient aussi par contenus concernés. Priorité de recherche est repliable et l’encart générique sur les instances Stremio a été retiré.",
+        "Imported sources can also be filtered and sorted by content. Search priority is collapsible and the generic Stremio instance notice has been removed.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-09-iptv-editor",
+    version: "0.2.37-remix.5.1",
     date: "2026-11-09",
     title: [
       "Sources Stremio simplifiées et IPTV corrigé",
@@ -27,6 +73,7 @@ export const REMIX_UPDATES = [
   },
   {
     id: "2026-11-09-sources-sync",
+    version: "0.2.37-remix.4.1",
     date: "2026-11-09",
     title: ["Sources réunies et navigation simplifiée", "Unified sources and simpler navigation"],
     items: [
@@ -50,6 +97,7 @@ export const REMIX_UPDATES = [
   },
   {
     id: "2026-11-09-animes",
+    version: "0.2.37-remix.3.1",
     date: "2026-11-09",
     title: ["Les animés rejoignent Ether-Remix", "Anime joins Ether-Remix"],
     items: [
@@ -77,6 +125,7 @@ export const REMIX_UPDATES = [
   },
   {
     id: "2026-11-09-remix",
+    version: "0.2.37-remix.3.1",
     date: "2026-11-09",
     title: ["Accent devient Ether-Remix", "Accent becomes Ether-Remix"],
     items: [
@@ -96,24 +145,116 @@ export const REMIX_UPDATES = [
   },
 ] as const;
 
-export function RemixUpdates() {
+type Release = (typeof REMIX_UPDATES)[number];
+const noteVersion = (release: Release, running: string) =>
+  release.version === "current" ? running.replace(/^v/, "") : release.version;
+function availableNotes(version: string): Release[] {
+  return REMIX_UPDATES.filter(
+    (release) => (compareUpdateVersions(noteVersion(release, version), version) ?? 0) <= 0,
+  );
+}
+function loadProgress(version: string): ReadProgress {
+  const raw = localStorage.getItem(READ_KEY);
+  if (raw) {
+    try {
+      const value = JSON.parse(raw);
+      if (
+        typeof value?.version === "string" &&
+        Array.isArray(value.ids) &&
+        value.ids.every((id: unknown) => typeof id === "string")
+      ) {
+        if (compareUpdateVersions(value.version, value.version) !== 0) {
+          value.version = REMIX_UPDATES.filter(
+            (r) => r.version !== "current" && value.ids.includes(r.id),
+          ).reduce(
+            (latest, r) =>
+              (compareUpdateVersions(r.version, latest) ?? 1) > 0 ? r.version : latest,
+            "",
+          );
+        }
+        return value;
+      }
+    } catch {
+      /* Reprendre l’ancien repère si la nouvelle valeur est invalide. */
+    }
+  }
+  const legacy = localStorage.getItem(SEEN_KEY);
+  const release = REMIX_UPDATES.find((r) => r.id === legacy);
+  if (release)
+    return {
+      version: noteVersion(release, version),
+      ids: REMIX_UPDATES.slice(REMIX_UPDATES.indexOf(release)).map((r) => r.id),
+    };
+  if (legacy && compareUpdateVersions(legacy, legacy) === 0) return { version: legacy, ids: [] };
+  // Un ancien identifiant retiré ne doit pas ressusciter tout l’historique.
+  return { version: "", ids: legacy ? REMIX_UPDATES.slice(1).map((r) => r.id) : [] };
+}
+function unreadNotes(version: string, read: ReadProgress): Release[] {
+  return availableNotes(version).filter(
+    (release) =>
+      !read.ids.includes(release.id) &&
+      (compareUpdateVersions(noteVersion(release, version), read.version) ?? 1) > 0,
+  );
+}
+
+export function RemixUpdates({ version }: { version: string }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState<Release[]>([]);
+  const [history, setHistory] = useState(false);
+  const [read, setRead] = useState<ReadProgress>({ version: "", ids: [] });
   useEffect(() => {
     try {
-      if (localStorage.getItem(SEEN_KEY) !== REMIX_UPDATES[0].id) setOpen(true);
+      const progress = loadProgress(version);
+      const notes = unreadNotes(version, progress);
+      setRead(progress);
+      setShown(notes);
+      setHistory(false);
+      setOpen(notes.length > 0);
     } catch {
-      /* L'accès manuel reste disponible si le stockage est bloqué. */
+      /* L’accès manuel reste disponible si le stockage est bloqué. */
     }
-  }, []);
+  }, [version]);
   useEffect(() => {
     if (open && !dialog.current?.open) dialog.current?.showModal();
+    else if (!open && dialog.current?.open) dialog.current.close();
   }, [open]);
-  const close = () => {
+  const openUnread = () => {
+    let progress = read;
     try {
-      localStorage.setItem(SEEN_KEY, REMIX_UPDATES[0].id);
+      progress = loadProgress(version);
     } catch {
       /* Stockage facultatif. */
+    }
+    setRead(progress);
+    setShown(unreadNotes(version, progress));
+    setHistory(false);
+    setOpen(true);
+  };
+  const close = () => {
+    if (shown.length) {
+      let previous = read;
+      try {
+        previous = loadProgress(version);
+      } catch {
+        /* Stockage facultatif. */
+      }
+      const progress = {
+        version:
+          compareUpdateVersions(version, version) !== 0 ||
+          (compareUpdateVersions(previous.version, version) ?? -1) > 0
+            ? previous.version
+            : version.replace(/^v/, ""),
+        ids: [...new Set([...previous.ids, ...shown.map((r) => r.id)])],
+      };
+      setRead(progress);
+      try {
+        localStorage.setItem(READ_KEY, JSON.stringify(progress));
+        if ((compareUpdateVersions(progress.version, version) ?? 0) <= 0)
+          localStorage.setItem(SEEN_KEY, REMIX_UPDATES[0].id);
+      } catch {
+        /* Stockage facultatif. */
+      }
     }
     setOpen(false);
     dialog.current?.close();
@@ -123,7 +264,7 @@ export function RemixUpdates() {
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => setOpen(true)}
+        onClick={openUnread}
         aria-label={L("Nouveautés Ether-Remix", "Ether-Remix what's new")}
       >
         <Sparkles size={16} aria-hidden />{" "}
@@ -148,12 +289,21 @@ export function RemixUpdates() {
           </Button>
         </div>
         <div className="space-y-6 p-5">
-          {REMIX_UPDATES.map((release) => (
+          {shown.length === 0 ? (
+            <p className="text-sm text-fg-muted">
+              {L(
+                "Vous avez déjà lu toutes les nouveautés de cette version.",
+                "You have already read all updates for this version.",
+              )}
+            </p>
+          ) : null}
+          {shown.map((release) => (
             <section key={release.id}>
               <time className="text-xs text-fg-muted" dateTime={release.date}>
                 {new Date(`${release.date}T12:00:00`).toLocaleDateString(getLocale(), {
                   dateStyle: "long",
-                })}
+                })}{" "}
+                · v{noteVersion(release, version)}
               </time>
               <h3 className="mt-1 font-semibold">{L(release.title[0], release.title[1])}</h3>
               <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-fg-muted">
@@ -164,7 +314,21 @@ export function RemixUpdates() {
             </section>
           ))}
         </div>
-        <div className="flex justify-end border-t border-border p-4">
+        <div className="flex flex-wrap justify-between gap-3 border-t border-border p-4">
+          <Button
+            variant="ghost"
+            onClick={() => {
+              if (history) openUnread();
+              else {
+                setShown(availableNotes(version));
+                setHistory(true);
+              }
+            }}
+          >
+            {history
+              ? L("Nouveautés non lues", "Unread updates")
+              : L("Historique complet", "Full history")}
+          </Button>
           <Button onClick={close}>{L("J’ai compris", "Got it")}</Button>
         </div>
       </dialog>

@@ -1,3 +1,4 @@
+import { DebridKeyField } from "../../pse/DebridKeyField";
 import { formatThroughput } from "../../lib/format";
 import { t, tn, tx } from "../../i18n";
 import {
@@ -17,7 +18,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { MoreOptions } from "../../components/ConfigSection";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
-import { SecretInput, TestButton } from "../../components/fields";
+import { TestButton } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
@@ -516,7 +517,10 @@ export function DebridSources({
                 </>
               }
             >
-              <SecretInput
+              <DebridKeyField
+                key={`${draft.id}-${draft.kind}`}
+                providerId={draft.id}
+                kind={draft.kind}
                 ariaLabel={t("API key")}
                 value={draft.apiKey}
                 invalid={Boolean(errors.apiKey)}

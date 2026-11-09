@@ -30,3 +30,18 @@ it("includes newly configured sources and keeps hidden selections when filtering
   fireEvent.click(screen.getByLabelText(/Source category|Catégorie de source/));
   expect(await screen.findByRole("option", { name: "Usenet" })).toBeTruthy();
 });
+
+it("filters and sorts by content while retaining selected sources outside the filter", async () => {
+  const change = vi.fn();
+  render(<ImportedSources value="a,c" options={[]} onChange={change} />);
+  await screen.findByText("Zeta");
+  fireEvent.click(screen.getByLabelText("Source content"));
+  fireEvent.click(await screen.findByRole("option", { name: "Albums via debrid" }));
+  expect(screen.queryByText("Zeta")).toBeNull();
+  expect(screen.queryByText("Beta")).toBeNull();
+  fireEvent.click(screen.getByLabelText("Alpha"));
+  expect(change).toHaveBeenLastCalledWith("a,b,c");
+  fireEvent.click(screen.getByLabelText("Sort sources"));
+  fireEvent.click(await screen.findByRole("option", { name: "Content then name" }));
+  expect(screen.getByLabelText("Alpha")).toBeTruthy();
+});

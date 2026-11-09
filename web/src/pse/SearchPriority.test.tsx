@@ -52,6 +52,9 @@ it("puts prioritized targets first and filters by name", () => {
 
 it("saves a level, searches now and refreshes every collection of a library", async () => {
   render(<SearchPriority />);
+  const summary = await screen.findByText("Search priority");
+  expect(summary.closest("details")).not.toHaveAttribute("open");
+  fireEvent.click(summary);
   await screen.findByText("2 priority title(s)");
 
   fireEvent.click(screen.getByLabelText("Services priority"));
