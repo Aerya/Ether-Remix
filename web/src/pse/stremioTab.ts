@@ -38,8 +38,8 @@ const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 export const pseStremioText = {
   description: () =>
     L(
-      "Addons Stremio interrogés quand quelqu'un lance une lecture, dans l'ordre de recherche des sources. Collez l'URL du manifest de l'addon (AIOStreams, Torrentio, Comet…).",
-      "Stremio addons queried when someone presses Play, in the sources' search order. Paste the addon's manifest URL (AIOStreams, Torrentio, Comet…).",
+      "Addons Stremio interrogés quand quelqu'un lance une lecture, dans l'ordre de recherche des sources. Collez l'URL du manifest de l'addon de votre choix.",
+      "Stremio addons queried when someone presses Play, in the sources' search order. Paste the manifest URL of your chosen addon.",
     ),
   emptyTitle: () => L("Aucun addon Stremio", "No Stremio addons"),
   emptyDescription: () =>
