@@ -5,8 +5,7 @@
 
 1. Dans SeerrCatalog, ouvrez **Paramètres → Intégration Ether Remix**, générez une clé et activez l’export.
 2. Dans Remix, ouvrez **Sources → Stremio → SeerrCatalog → Ether Remix**, saisissez l’adresse de base de SeerrCatalog et la clé, activez puis enregistrez.
-3. Facultatif : dans SeerrCatalog, indiquez l’adresse de Remix suivie de `/api/integrations/seerrcatalog/v1/events`. Sans notification, la synchronisation reste automatique chaque minute.
-4. Revérifiez les anciens contenus dans SeerrCatalog pour créer leurs premiers résultats exportables.
+3. Revérifiez les anciens contenus dans SeerrCatalog pour créer leurs premiers résultats exportables.
 
 Remix fait confiance aux critères de SeerrCatalog : les titres disponibles passent le filtre **« lisible uniquement »**, et leur contrôle d’indexation n’interroge pas à nouveau les addons. Les autres filtres de visibilité et les règles de lecture des spectateurs restent actifs. L’import récupère les fiches TMDB ; aucune collection n’est créée automatiquement.
 
@@ -18,3 +17,5 @@ Variables équivalentes : `PSE_SEERRCATALOG=on`, `PSE_SEERRCATALOG_URL=http://se
 
 
 Le contrat HTTP complet est documenté dans le [README SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog#intégration-ether-remix).
+
+Le bouton **Tester la connexion** vérifie les réglages enregistrés depuis Remix (clé et flux), sans importer ni rechercher de contenus. Enregistrez avant le test. Saisissez uniquement l’adresse de base, par exemple `https://seerrcatalog.example` : Remix ajoute `/api/integrations/remix/v1/availability` et synchronise chaque minute.

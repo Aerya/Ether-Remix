@@ -379,7 +379,11 @@ function FeatureSection({
     <SettingsRow
       key={fd.key}
       setting={`pse-${fd.key.toLowerCase()}`}
-      stacked={fd.kind === "multi" || fd.kind === "filter" || fd.kind === "url"}
+      stacked={
+        fd.kind === "multi" ||
+        fd.kind === "filter" ||
+        (fd.kind === "url" && feature.id !== "seerrcatalog")
+      }
       title={
         <span className="flex flex-wrap items-center gap-2" title={fd.key}>
           {T(fd.label)}
@@ -393,7 +397,13 @@ function FeatureSection({
         </>
       }
       control={
-        <div className="flex flex-wrap items-center gap-2">
+        <div
+          className={
+            feature.id === "seerrcatalog"
+              ? "flex w-full items-center gap-2 sm:w-auto"
+              : "flex flex-wrap items-center gap-2"
+          }
+        >
           <Control field={fd} value={draft[fd.key] ?? ""} onChange={(v) => onChange(fd.key, v)} />
           {fd.source === "console" && !resets.includes(fd.key) ? (
             <Button
@@ -541,7 +551,13 @@ function Control({
       return (
         <Input
           aria-label={label}
-          className={field.kind === "url" ? "h-9 w-full min-w-72" : "h-9 w-48"}
+          className={
+            field.key.startsWith("PSE_SEERRCATALOG_")
+              ? "h-9 min-w-0 flex-1 sm:w-96 sm:flex-none"
+              : field.kind === "url"
+                ? "h-9 w-full min-w-72"
+                : "h-9 w-48"
+          }
           placeholder={field.placeholder}
           value={value}
           spellCheck={false}
