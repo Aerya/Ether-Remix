@@ -38,6 +38,18 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-09-collapsible-source-blocks",
+    version: "0.2.37-remix.22.1",
+    date: "2026-11-09",
+    title: ["Des blocs repliables dans les sources", "Collapsible source sections"],
+    items: [
+      [
+        "Dans Sources → Stremio, Indexeurs et Indexation, chaque bloc se replie et se déplie depuis son titre, sans perdre les réglages en cours de saisie.",
+        "Under Sources → Stremio, Indexers and Indexing, each section can be collapsed or expanded from its title without losing unsaved settings.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-09-seerrcatalog-integration",
     version: "0.2.37-remix.19.1",
     date: "2026-11-09",

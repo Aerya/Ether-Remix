@@ -2,7 +2,7 @@ import { fireEvent, render, screen, cleanup, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { compareUpdateVersions, REMIX_UPDATES, RemixUpdates } from "./RemixUpdates";
 
-const version = "0.2.37-remix.20.1";
+const version = "0.2.37-remix.23.1";
 const readKey = "ether-remix.updates.read";
 const legacyKey = "ether-remix.updates.seen";
 beforeEach(() => {
@@ -69,8 +69,10 @@ it("does not show the IPTV delivery again when migrating the latest legacy marke
   localStorage.setItem(legacyKey, "2026-11-09-iptv-editor");
   render(<RemixUpdates version={version} />);
   expect(await screen.findByRole("dialog")).toHaveAttribute("open");
-  expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(4);
-  expect(screen.getByText(/v0.2.37-remix.20.1/)).toBeTruthy();
+  expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(
+    REMIX_UPDATES.findIndex((entry) => entry.id === "2026-11-09-iptv-editor"),
+  );
+  expect(screen.getByText(/v0.2.37-remix.23.1/)).toBeTruthy();
 });
 
 it("does not repeat the same notes when a Docker build is retried or rebuilt", async () => {
@@ -78,19 +80,19 @@ it("does not repeat the same notes when a Docker build is retried or rebuilt", a
   await screen.findByRole("dialog");
   dismiss();
   first.unmount();
-  render(<RemixUpdates version="0.2.37-remix.20.2" />);
+  render(<RemixUpdates version="0.2.37-remix.23.2" />);
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 it("preserves a newer read version after rolling back and consulting history", async () => {
-  localStorage.setItem(readKey, JSON.stringify({ version: "0.2.37-remix.21.1", ids: [] }));
+  localStorage.setItem(readKey, JSON.stringify({ version: "0.2.37-remix.24.1", ids: [] }));
   render(<RemixUpdates version={version} />);
   expect(screen.queryByRole("dialog")).toBeNull();
   openManually();
   expect(await screen.findByText(/already read all|déjà lu toutes/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /Full history|Historique complet/ }));
   dismiss();
-  expect(JSON.parse(localStorage.getItem(readKey)!).version).toBe("0.2.37-remix.21.1");
+  expect(JSON.parse(localStorage.getItem(readKey)!).version).toBe("0.2.37-remix.24.1");
 });
 
 it("excludes notes from a version newer than the running server", async () => {
