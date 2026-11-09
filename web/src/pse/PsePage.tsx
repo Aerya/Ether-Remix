@@ -235,11 +235,11 @@ function PseSettings() {
               <>
                 {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
                 <SearchPriority />
-                <SourceOrder />
               </>
             }
           />
         ) : null}
+        {tab === "priorites" ? <SourceOrder /> : null}
         {tab === "contenus" ? (
           <>
             <nav

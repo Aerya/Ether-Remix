@@ -2,6 +2,7 @@ import { Navigate, useLocation, useParams } from "react-router-dom";
 
 export const REMIX_TABS = [
   { key: "sources", fr: "Sources", en: "Sources", features: ["indexer"] },
+  { key: "priorites", fr: "Priorités", en: "Priorities", features: [] },
   {
     key: "langues",
     fr: "Langues et qualité",

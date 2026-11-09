@@ -1,6 +1,5 @@
 import { Badge, Button, SettingsSection } from "@braedonsaunders/appkit-ui";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { getLocale } from "../i18n";
 import { api } from "../lib/api";
 import { useAsync } from "../lib/hooks";
@@ -34,6 +33,18 @@ export function moved<T>(list: T[], at: number, delta: -1 | 1): T[] {
   const next = [...list];
   next.splice(to, 0, next.splice(at, 1)[0] as T);
   return next;
+}
+
+/** Écrit l'ordre global dans les priorités (la plus petite passe d'abord). */
+export function applyPriorities<T extends { id: string; priority: number }>(
+  list: T[],
+  ids: string[],
+): T[] {
+  const at = new Map(ids.map((id, index) => [id, index + 1]));
+  return list.map((item) => {
+    const priority = at.get(item.id);
+    return priority === undefined ? item : { ...item, priority };
+  });
 }
 
 function OrderList({ rows, onMove }: { rows: Row[]; onMove: (at: number, delta: -1 | 1) => void }) {
@@ -72,6 +83,7 @@ export function SourceOrder() {
   const config = useAsync(() => api.getConfig(), []);
   const [families, setFamilies] = useState<string[]>([]);
   const [content, setContent] = useState<Record<string, string[]>>({});
+  const [globalIds, setGlobalIds] = useState<string[] | null>(null);
   const [selected, setSelected] = useState<Content>("movie");
   const [state, setState] = useState<"" | "saving" | "saved" | "error">("");
 
@@ -84,16 +96,23 @@ export function SourceOrder() {
   const indexers = useMemo(
     () =>
       (config.data?.indexers ?? [])
-        .filter((ix) => ix.enabled && ix.kind !== "stremio")
+        .filter((ix) => ix.enabled)
         .sort((a, b) => a.priority - b.priority),
     [config.data],
   );
   const labels = new Map(indexers.map((ix) => [ix.id, ix]));
   const custom = (content[selected] ?? []).filter((id) => labels.has(id));
-  const contentIds = [
-    ...custom,
-    ...indexers.map((ix) => ix.id).filter((id) => !custom.includes(id)),
-  ];
+  const orderedIds = globalIds ?? indexers.map((ix) => ix.id);
+  const contentIds = [...custom, ...orderedIds.filter((id) => !custom.includes(id))];
+  const sourceRow = (id: string): Row => {
+    const ix = labels.get(id);
+    return {
+      id,
+      label: ix?.name ?? id,
+      badge:
+        ix?.kind === "stremio" ? "Stremio" : ix?.protocol === "torrent" ? "BitTorrent" : "Usenet",
+    };
+  };
   const familyIds = families.length ? families : FAMILIES;
 
   async function save() {
@@ -102,6 +121,10 @@ export function SourceOrder() {
       const latest = await api.getConfig();
       await api.putConfig({
         ...latest,
+        indexers:
+          globalIds && latest.indexers
+            ? applyPriorities(latest.indexers, globalIds)
+            : latest.indexers,
         resolver: { ...latest.resolver, sourceOrder: { families, content } },
       } as typeof latest);
       setState("saved");
@@ -126,11 +149,6 @@ export function SourceOrder() {
         <p className="p-4 text-sm">{L("Chargement…", "Loading…")}</p>
       ) : (
         <div className="space-y-5 p-4">
-          <p className="text-sm">
-            <Link className="text-primary underline" to="/accent/sources?source=indexeurs">
-              {L("Ordre global : Sources → Indexeurs", "Global order: Sources → Indexers")}
-            </Link>
-          </p>
           <section className="space-y-2">
             <h3 className="text-sm font-medium">
               {L("Par famille de sources", "By source family")}
@@ -154,7 +172,16 @@ export function SourceOrder() {
           </section>
           <section className="space-y-2">
             <h3 className="text-sm font-medium">
-              {L("Indexeurs par type de contenu", "Indexers by content type")}
+              {L("Ordre global des sources", "Global source order")}
+            </h3>
+            <OrderList
+              rows={orderedIds.map(sourceRow)}
+              onMove={(at, delta) => setGlobalIds(moved(orderedIds, at, delta))}
+            />
+          </section>
+          <section className="space-y-2">
+            <h3 className="text-sm font-medium">
+              {L("Sources par type de contenu", "Sources by content type")}
             </h3>
             <nav className="flex flex-wrap gap-2">
               {CONTENTS.map((id) => (
@@ -169,11 +196,7 @@ export function SourceOrder() {
               ))}
             </nav>
             <OrderList
-              rows={contentIds.map((id) => ({
-                id,
-                label: labels.get(id)?.name ?? id,
-                badge: labels.get(id)?.protocol === "torrent" ? "BitTorrent" : "Usenet",
-              }))}
+              rows={contentIds.map(sourceRow)}
               onMove={(at, delta) =>
                 setContent({ ...content, [selected]: moved(contentIds, at, delta) })
               }

@@ -57,6 +57,7 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
   expect(tabs).toEqual([
     "Sources",
+    "Priorités",
     "Langues et qualité",
     "VOSTFR à la demande",
     "Contenus et bibliothèques",
