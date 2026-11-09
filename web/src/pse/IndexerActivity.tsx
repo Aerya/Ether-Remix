@@ -446,11 +446,13 @@ export function IndexerActivity() {
                   <th scope="row" className="px-4 py-4 text-left font-medium">
                     <span>{s.name || s.id}</span>
                     <span className="mt-1 block text-xs font-normal text-fg-muted">
-                      {s.selected
-                        ? L("Sélectionnée", "Selected")
-                        : s.enabled
-                          ? L("Hors indexation", "Not selected")
-                          : L("Désactivée ou retirée", "Disabled or removed")}
+                      {s.id === "sfr-db" && s.enabled
+                        ? L("Import actif", "Import active")
+                        : s.selected
+                          ? L("Sélectionnée", "Selected")
+                          : s.enabled
+                            ? L("Hors indexation", "Not selected")
+                            : L("Désactivée ou retirée", "Disabled or removed")}
                     </span>
                   </th>
                   <td className="px-4 py-4 text-right tabular-nums">
