@@ -160,11 +160,13 @@ Chaque ajout dans **Titres en VOSTFR à la demande** place aussi le titre en tê
 
 Le bouton **Tester** de DMM utilise désormais un échantillon du catalogue DMM, indépendamment des classements Deezer. Il distingue les étapes catalogue, compte, cache et lien audio. Les logs `component=pse-music source=dmm` donnent les compteurs et les causes d’échec sans enregistrer de clé ni d’URL de lecture.
 
+Dans **Sources → IPTV**, le bouton **Modifier** ouvre le fournisseur sélectionné. La création, l’enregistrement et la fermeture de son formulaire conservent la catégorie IPTV. Les liens provenant de Télévision en direct ouvrent ce même éditeur.
+
 ## Animes
 
 Dans **Ether-Remix → Contenus et bibliothèques → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
 
-Utilisez **Configurer UwU+** pour choisir vos préférences chez le fournisseur, puis **Ajouter UwU+** et collez le lien `manifest.json` généré. **Ajouter un autre addon Stremio** accepte les autres fournisseurs. UwU+ fournit les flux, pas les catalogues : utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues pour la découverte. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. La disponibilité et la lecture dépendent des fournisseurs et de vos réglages de lecture.
+Dans **Sources → Stremio**, ouvrez **Fournisseurs suggérés : UwU+ et autres addons**. Utilisez **Configurer UwU+** pour choisir vos préférences chez le fournisseur, puis **Ajouter UwU+** et collez le lien `manifest.json` généré. **Ajouter un autre addon Stremio** accepte les autres fournisseurs. UwU+ fournit les flux, pas les catalogues : utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues pour la découverte. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. La disponibilité et la lecture dépendent des fournisseurs et de vos réglages de lecture.
 
 Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir les notes de livraison. Les nouvelles notes s’affichent une fois par navigateur après connexion ; leur fermeture mémorise localement la livraison consultée. La version dans le menu est fournie par le serveur exécuté ; les images officielles incluent un numéro de build Remix automatiquement croissant. Le pied du menu mène aux dépôts Ether et Ether-Remix.
 

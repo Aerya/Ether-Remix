@@ -37,6 +37,9 @@ export function sourcesHref(tab = "debrid", search = "") {
     params.set("view", tab === "usage" ? "usage" : "sources");
     return `/accent/statistiques?${params}`;
   }
+  if (tab === "iptv" && params.has("source")) {
+    params.set("iptvSource", params.get("source")!);
+  }
   params.set(
     "source",
     tab === "indexers"

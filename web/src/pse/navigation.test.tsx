@@ -21,3 +21,9 @@ it("keeps one source entry and maps legacy source addresses without losing param
   expect(sourcesHref("usage", "?days=30")).toBe("/accent/statistiques?days=30&view=usage");
   expect(legacyRemixRoute("animes")).toBe("/accent/contenus?content=animes");
 });
+
+it("preserves native IPTV provider IDs when redirecting to Remix", () => {
+  const url = new URL(sourcesHref("iptv", "?source=king-123"), "https://example.invalid");
+  expect(url.searchParams.get("source")).toBe("iptv");
+  expect(url.searchParams.get("iptvSource")).toBe("king-123");
+});

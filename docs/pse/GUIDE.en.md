@@ -160,11 +160,13 @@ Each addition under **On-demand subtitled titles** also queues a priority search
 
 The DMM **Test** button now samples DMM’s own catalogue instead of Deezer charts. It distinguishes catalogue, account, cache and audio-link stages. Logs tagged `component=pse-music source=dmm` report counts and failure categories without keys or playback URLs.
 
+Under **Sources → IPTV**, **Edit** opens the selected provider. Creating, saving and closing its form keeps the IPTV category selected. Links from Live TV open the same editor.
+
 ## Anime
 
 In **Ether-Remix → Content & libraries → Anime**, create the Anime preset to get popular and top-rated movie/show collections from TMDB. Mixed libraries appear as separate Movies and Shows sections in Plex. Their Anime category is retained after renaming. Anime libraries respect your language filters, including French/MULTi. Original audio and subtitles remain an explicit choice through on-demand exceptions or the Any language option.
 
-Use **Configure UwU+** to select provider preferences, then **Add UwU+** and paste the generated `manifest.json` URL. **Add another Stremio addon** accepts other providers. UwU+ supplies streams, not catalogues; use TMDB collections, AniList lists or a catalogue-capable addon for discovery. Sources, activation and priority are shared with Movies & Shows. Availability and playback depend on each provider and your playback settings.
+Under **Sources → Stremio**, expand **Suggested providers: UwU+ and other addons**. Use **Configure UwU+** to select provider preferences, then **Add UwU+** and paste the generated `manifest.json` URL. **Add another Stremio addon** accepts other providers. UwU+ supplies streams, not catalogues; use TMDB collections, AniList lists or a catalogue-capable addon for discovery. Sources, activation and priority are shared with Movies & Shows. Availability and playback depend on each provider and your playback settings.
 
 The **What's new** button in the console header reopens release notes. New notes open once per browser after sign-in; dismissing them stores the viewed release locally. The sidebar version is provided by the running server; official images include an automatically increasing Remix build number. The footer links to both Ether and Ether-Remix.
 

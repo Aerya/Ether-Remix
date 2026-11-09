@@ -8,6 +8,21 @@ const SEEN_KEY = "ether-remix.updates.seen";
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
+    id: "2026-11-09-iptv-editor",
+    date: "2026-11-09",
+    title: ["Éditeur IPTV corrigé", "IPTV editor fixed"],
+    items: [
+      [
+        "Les fournisseurs IPTV s’ouvrent et s’enregistrent depuis Sources → IPTV ; la catégorie reste sélectionnée à la fermeture du formulaire.",
+        "IPTV providers open and save under Sources → IPTV; the category stays selected when closing the editor.",
+      ],
+      [
+        "UwU+ reste disponible dans Sources → Stremio → Fournisseurs suggérés, avec votre manifest configuré chez le fournisseur.",
+        "UwU+ remains available under Sources → Stremio → Suggested providers, using your provider-configured manifest.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-09-sources-sync",
     date: "2026-11-09",
     title: ["Sources réunies et navigation simplifiée", "Unified sources and simpler navigation"],

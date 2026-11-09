@@ -53,6 +53,8 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
     setParams((p) => {
       const n = new URLSearchParams(p);
       n.set("source", target);
+      n.delete("iptvSource");
+      n.delete("new");
       if (choice.type === "iptv") n.set("new", choice.kind);
       return n;
     });
@@ -90,6 +92,8 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
               setParams((p) => {
                 const next = new URLSearchParams(p);
                 next.set("source", id);
+                next.delete("iptvSource");
+                next.delete("new");
                 return next;
               })
             }
@@ -186,7 +190,7 @@ export function RemixSources({ music, indexing }: { music: ReactNode; indexing: 
       ) : null}
       {category === "debrid" ? <DebridSources addKind={debridAdd} /> : null}
       {category === "usenet" ? <UsenetProviders addNonce={usenetAdd} /> : null}
-      {category === "iptv" ? <IPTVProviders /> : null}
+      {category === "iptv" ? <IPTVProviders sourceParam="iptvSource" /> : null}
       {category === "musique" ? music : null}
       {category === "indexation" ? indexing : null}
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />
