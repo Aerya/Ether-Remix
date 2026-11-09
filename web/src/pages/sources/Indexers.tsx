@@ -1,3 +1,4 @@
+import { StremioHostingOptions } from "../../pse/SourceHosting";
 import {
   Alert,
   AlertDescription,
@@ -13,7 +14,7 @@ import { Globe, Link2, Plus, Puzzle, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../../app-context";
-import { localized, t, tn } from "../../i18n";
+import { getLocale, localized, t, tn } from "../../i18n";
 import { ActionMenu } from "../../components/ActionMenu";
 import { MoreOptions } from "../../components/ConfigSection";
 import { Meter } from "../../components/charts";
@@ -87,7 +88,7 @@ function blankIndexer(priority: number): Indexer {
   };
 }
 
-/** A Stremio stream addon: torrent results streamed through debrid. */
+/** A Stremio stream addon: direct links or torrents streamed through debrid. */
 function blankStremioIndexer(priority: number): Indexer {
   return { ...blankIndexer(priority), kind: "stremio", protocol: "torrent" };
 }
@@ -182,7 +183,7 @@ export function IndexerList({
   view = "all", // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
 }: {
   version?: number;
-  addRequest?: { nonce: number; type: "site" | "newznab" | "stremio" } | null;
+  addRequest?: { nonce: number; type: "site" | "newznab" | "stremio"; name?: string } | null;
   view?: PseIndexerView;
 }) {
   const { dashboard, refreshDashboard } = useApp();
@@ -259,7 +260,10 @@ export function IndexerList({
     open(
       indexers.length,
       addRequest.type === "stremio"
-        ? blankStremioIndexer(indexers.length)
+        ? {
+            ...blankStremioIndexer(indexers.length),
+            ...(addRequest.name ? { name: addRequest.name } : {}),
+          }
         : blankIndexer(indexers.length),
     );
   }, [addRequest, cfg, indexers.length]);
@@ -423,6 +427,7 @@ export function IndexerList({
         }
         bodyClassName="space-y-3 p-4"
       >
+        {view === "stremio" ? <StremioHostingOptions /> : null}
         {shown.length === 0 ? (
           view === "stremio" ? (
             <EmptyState
@@ -650,7 +655,9 @@ export function IndexerList({
             ? builtin
               ? siteKindLabel(draft.protocol)
               : stremio
-                ? t("Stremio addon · Torrent")
+                ? getLocale().startsWith("fr")
+                  ? "Addon Stremio · Flux directs / torrents"
+                  : "Stremio addon · Direct streams / torrents"
                 : isTorrent(draft)
                   ? t("Torznab indexer")
                   : t("Newznab indexer")
@@ -755,9 +762,11 @@ export function IndexerList({
                   type="url"
                   value={draft.url}
                   placeholder="https://addon.example/manifest.json"
-                  help={t(
-                    "Paste the addon's install link. Choose an addon that exposes torrent results; direct or proxied playback links alone are not supported. Ether streams through your configured debrid accounts.",
-                  )}
+                  help={
+                    getLocale().startsWith("fr")
+                      ? "Collez le lien manifest.json généré par l’addon. Les torrents utilisent vos comptes debrid ; les liens HTTP directs sont relayés selon les formats pris en charge."
+                      : "Paste the addon's generated manifest.json link. Torrents use your debrid accounts; direct HTTP links are relayed for supported formats."
+                  }
                   error={errors.url}
                   onChange={(v) => set({ url: v })}
                 />

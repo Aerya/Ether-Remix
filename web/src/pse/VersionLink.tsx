@@ -28,3 +28,29 @@ export function PseVersionLink({
     </a>
   );
 }
+
+/** Liens distincts vers le projet d’origine et le fork. */
+export function RemixRepositoryLinks() {
+  return (
+    <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 text-[10px] text-fg-subtle">
+      <a
+        href="https://github.com/braedonsaunders/ether"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="hover:underline"
+        title="GitHub · Ether"
+      >
+        Ether ↗
+      </a>
+      <a
+        href={PSE_REPO_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="hover:underline"
+        title="GitHub · Ether-Remix"
+      >
+        Remix ↗
+      </a>
+    </div>
+  );
+}

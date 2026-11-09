@@ -264,3 +264,35 @@ func TestConcertPresetIgnoresLanguage(t *testing.T) {
 		t.Fatalf("source = %+v", p)
 	}
 }
+
+func TestAnimeLibraryOriginSurvivesRenameAndReload(t *testing.T) {
+	s, cols := newTest(t)
+	ctx := context.Background()
+	l, warnings, err := s.ApplyPreset(ctx, cols, "anime", "Mes animés")
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("preset: %v %v", err, warnings)
+	}
+	if l.Preset != "anime" || l.AllLanguages || l.Type != TypeMixed || len(l.Collections) != 4 {
+		t.Fatalf("library: %+v", l)
+	}
+	// Un ancien client peut ignorer le champ preset lors d’un renommage.
+	l.Name = "Animation japonaise"
+	l.Preset = ""
+	if _, err := s.Update(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Libraries()[0]
+	if got.Preset != "anime" || got.Name != l.Name {
+		t.Fatalf("origin lost: %+v", got)
+	}
+	before := len(cols.created)
+	if _, _, err := s.ApplyPreset(ctx, cols, "anime", "Autres animés"); err != nil {
+		t.Fatal(err)
+	}
+	if len(cols.created) != before {
+		t.Fatal("collections dupliquées")
+	}
+}

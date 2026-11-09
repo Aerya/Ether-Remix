@@ -15,6 +15,7 @@ type Kind = "movie" | "show" | "mixed";
 
 export interface ThemeLibrary {
   id: number;
+  preset?: string;
   name: string;
   type: Kind;
   collections: string[];
@@ -134,8 +135,8 @@ function Editor({
           <span className="font-medium text-fg">{L("Toutes langues", "Any language")}</span>
           {" — "}
           {L(
-            "ses titres ignorent le filtre de langue du catalogue (VO, VOSTFR…) et apparaissent aussi dans Films et Séries. Idéal pour les concerts et spectacles.",
-            "its titles skip the catalogue's language filter (original, subtitled…) and also show in Movies and Shows. Ideal for concerts and shows.",
+            "ses titres ignorent le filtre de langue du catalogue (VO, VOSTFR…) et apparaissent aussi dans Films et Séries. Adapté aux animés, concerts et spectacles.",
+            "its titles skip the catalogue's language filter (original, subtitled…) and also show in Movies and Shows. Suitable for anime, concerts and shows.",
           )}
         </span>
       </label>
@@ -187,8 +188,10 @@ function Editor({
         {choices.map((c) => (
           <option key={c.id} value={c.id}>
             {c.name}
-            {draft.type === "mixed" && c.mediaType !== "mixed" ? ` · ${kindLabel(c.mediaType as Kind)}` : ""} (
-            {c.items})
+            {draft.type === "mixed" && c.mediaType !== "mixed"
+              ? ` · ${kindLabel(c.mediaType as Kind)}`
+              : ""}{" "}
+            ({c.items})
           </option>
         ))}
       </Select>
@@ -196,11 +199,15 @@ function Editor({
   );
 }
 
-export function ThemeLibraries() {
+export function ThemeLibraries({ preset }: { preset?: string } = {}) {
   const doc = useAsync(() => apiFetch<ThemeData>(ENDPOINT), []);
   const [data, setData] = useState<ThemeData | null>(null);
   const [edits, setEdits] = useState<Record<number, Draft>>({});
-  const [creating, setCreating] = useState<Draft>({ name: "", type: "movie", collections: [] });
+  const [creating, setCreating] = useState<Draft>({
+    name: preset === "anime" ? "Animes" : "",
+    type: preset ? "mixed" : "movie",
+    collections: [],
+  });
   const [busy, setBusy] = useState(false);
   const current = data ?? doc.data ?? null;
   if (!current) return null;
@@ -226,15 +233,32 @@ export function ThemeLibraries() {
   };
 
   const full = current.libraries.length >= current.max;
+  const libraries = current.libraries.filter(
+    (l) =>
+      !preset ||
+      l.preset === preset ||
+      (!l.preset && preset === "anime" && /^(anime|animes)$/i.test(l.name)),
+  );
 
   return (
     <div id="pse-themes">
       <SettingsSection
-        title={L("Bibliothèques à thème", "Themed libraries")}
-        description={L(
-          "Des bibliothèques Plex en plus de Films et Séries (Services, Studios & labels, Animes, Concerts…). Chaque rangée est une collection d'Ether : MDBList, Trakt, catalogue d'addon Stremio, service de streaming, studio… L'onglet Bibliothèque regroupe tous leurs titres. Seuls les titres disponibles selon vos réglages VF apparaissent, les plus récents d'abord. Rien n'est téléchargé.",
-          "Plex libraries on top of Movies and Shows (Services, Studios & labels, Anime, Concerts…). Each row is an Ether collection: MDBList, Trakt, Stremio add-on catalog, streaming service, studio… The Library tab gathers all their titles. Only titles available under your French settings show up, newest first. Nothing is downloaded.",
-        )}
+        title={
+          preset === "anime"
+            ? L("Bibliothèques et collections Animes", "Anime libraries and collections")
+            : L("Bibliothèques", "Libraries")
+        }
+        description={
+          preset === "anime"
+            ? L(
+                "Films et séries d’animation japonaise, classés par popularité et par note. Les collections se mettent à jour automatiquement ; personnalisez leurs rangées ou ajoutez vos listes AniList, MDBList, Trakt et catalogues Stremio.",
+                "Japanese animated movies and series, sorted by popularity and rating. Collections refresh automatically; customize their rows or add AniList, MDBList, Trakt lists and Stremio catalogs.",
+              )
+            : L(
+                "Des bibliothèques Plex en plus de Films et Séries (Services, Studios & labels, Animes, Concerts…). Chaque rangée est une collection d'Ether : MDBList, Trakt, catalogue d'addon Stremio, service de streaming, studio… L'onglet Bibliothèque regroupe tous leurs titres. Seuls les titres disponibles selon vos réglages VF apparaissent, les plus récents d'abord. Rien n'est téléchargé.",
+                "Plex libraries on top of Movies and Shows (Services, Studios & labels, Anime, Concerts…). Each row is an Ether collection: MDBList, Trakt, Stremio add-on catalog, streaming service, studio… The Library tab gathers all their titles. Only titles available under your French settings show up, newest first. Nothing is downloaded.",
+              )
+        }
       >
         <div className="space-y-4 px-4 py-4">
           <div className="space-y-2">
@@ -248,43 +272,47 @@ export function ThemeLibraries() {
               )}
             </p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              {current.presets.map((p) => {
-                const exists = current.libraries.some((l) => l.name === p.name);
-                return (
-                  <div
-                    key={p.id}
-                    className="flex flex-col gap-2 rounded-lg border border-border bg-bg-subtle p-3"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{p.name}</span>
-                      <Badge>{kindLabel(p.type)}</Badge>
-                      {p.allLanguages ? <Badge>{L("Toutes langues", "Any language")}</Badge> : null}
-                    </div>
-                    <p className="flex-1 text-xs text-fg-muted" title={p.rows.join(", ")}>
-                      {p.summary}
-                    </p>
-                    <Button
-                      size="sm"
-                      variant={exists ? "outline" : undefined}
-                      disabled={busy || full}
-                      onClick={() =>
-                        void send(
-                          "preset",
-                          "POST",
-                          { preset: p.id, name: "" },
-                          L(
-                            `Bibliothèque ${p.name} créée ; ses collections se remplissent`,
-                            `${p.name} library created; its collections are filling`,
-                          ),
-                        )
-                      }
+              {current.presets
+                .filter((p) => !preset || p.id === preset)
+                .map((p) => {
+                  const exists = current.libraries.some((l) => l.name === p.name);
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex flex-col gap-2 rounded-lg border border-border bg-bg-subtle p-3"
                     >
-                      <Plus size={14} aria-hidden />{" "}
-                      {exists ? L("Créer une autre", "Create another") : L("Créer", "Create")}
-                    </Button>
-                  </div>
-                );
-              })}
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{p.name}</span>
+                        <Badge>{kindLabel(p.type)}</Badge>
+                        {p.allLanguages ? (
+                          <Badge>{L("Toutes langues", "Any language")}</Badge>
+                        ) : null}
+                      </div>
+                      <p className="flex-1 text-xs text-fg-muted" title={p.rows.join(", ")}>
+                        {p.summary}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant={exists ? "outline" : undefined}
+                        disabled={busy || full}
+                        onClick={() =>
+                          void send(
+                            "preset",
+                            "POST",
+                            { preset: p.id, name: "" },
+                            L(
+                              `Bibliothèque ${p.name} créée ; ses collections se remplissent`,
+                              `${p.name} library created; its collections are filling`,
+                            ),
+                          )
+                        }
+                      >
+                        <Plus size={14} aria-hidden />{" "}
+                        {exists ? L("Créer une autre", "Create another") : L("Créer", "Create")}
+                      </Button>
+                    </div>
+                  );
+                })}
             </div>
           </div>
 
@@ -311,6 +339,7 @@ export function ThemeLibraries() {
                         name: addon.slice(0, 60),
                         type: types.length === 1 ? types[0] : "mixed",
                         collections: ids.slice(0, 60),
+                        preset,
                       },
                       L(
                         `Bibliothèque « ${addon} » créée ; ses rangées se remplissent`,
@@ -322,7 +351,7 @@ export function ThemeLibraries() {
             )}
           </div>
 
-          {current.libraries.map((lib, i) => {
+          {libraries.map((lib, i) => {
             const draft = edits[lib.id] ?? {
               name: lib.name,
               type: lib.type,
@@ -344,38 +373,42 @@ export function ThemeLibraries() {
                     ) : null}
                   </span>
                   <span className="flex gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={L("Monter", "Move up")}
-                      disabled={busy || i === 0}
-                      onClick={() =>
-                        void send(
-                          `${lib.id}/move`,
-                          "POST",
-                          { dir: -1 },
-                          L("Ordre enregistré", "Order saved"),
-                        )
-                      }
-                    >
-                      <ArrowUp size={14} aria-hidden />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={L("Descendre", "Move down")}
-                      disabled={busy || i === current.libraries.length - 1}
-                      onClick={() =>
-                        void send(
-                          `${lib.id}/move`,
-                          "POST",
-                          { dir: 1 },
-                          L("Ordre enregistré", "Order saved"),
-                        )
-                      }
-                    >
-                      <ArrowDown size={14} aria-hidden />
-                    </Button>
+                    {!preset ? (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={L("Monter", "Move up")}
+                          disabled={busy || i === 0}
+                          onClick={() =>
+                            void send(
+                              `${lib.id}/move`,
+                              "POST",
+                              { dir: -1 },
+                              L("Ordre enregistré", "Order saved"),
+                            )
+                          }
+                        >
+                          <ArrowUp size={14} aria-hidden />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={L("Descendre", "Move down")}
+                          disabled={busy || i === current.libraries.length - 1}
+                          onClick={() =>
+                            void send(
+                              `${lib.id}/move`,
+                              "POST",
+                              { dir: 1 },
+                              L("Ordre enregistré", "Order saved"),
+                            )
+                          }
+                        >
+                          <ArrowDown size={14} aria-hidden />
+                        </Button>
+                      </>
+                    ) : null}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -430,24 +463,28 @@ export function ThemeLibraries() {
             );
           })}
 
-          <LanguageExceptions
-            current={current}
-            busy={busy}
-            save={(ids) =>
-              send(
-                "exceptions",
-                "PUT",
-                { collections: ids },
-                L("Exceptions de langue enregistrées", "Language exceptions saved"),
-              )
-            }
-          />
+          {!preset ? (
+            <LanguageExceptions
+              current={current}
+              busy={busy}
+              save={(ids) =>
+                send(
+                  "exceptions",
+                  "PUT",
+                  { collections: ids },
+                  L("Exceptions de langue enregistrées", "Language exceptions saved"),
+                )
+              }
+            />
+          ) : null}
 
           <div className="space-y-2 rounded-lg border border-dashed border-border p-3">
-            <div className="text-sm font-medium">{L(
+            <div className="text-sm font-medium">
+              {L(
                 "Bibliothèque personnalisée (à partir de vos collections)",
                 "Custom library (from your collections)",
-              )}</div>
+              )}
+            </div>
             <p className="text-xs text-fg-muted">
               {L(
                 "Créez d'abord les collections voulues dans Collections (liste MDBList ou Trakt, catalogue d'addon Stremio…), puis ajoutez-les ici comme rangées.",
@@ -459,7 +496,12 @@ export function ThemeLibraries() {
               size="sm"
               disabled={busy || full || !creating.name.trim() || creating.collections.length === 0}
               onClick={() =>
-                void send("", "POST", creating, L("Bibliothèque créée", "Library created")).then(
+                void send(
+                  "",
+                  "POST",
+                  { ...creating, preset },
+                  L("Bibliothèque créée", "Library created"),
+                ).then(
                   (ok) => ok && setCreating({ name: "", type: creating.type, collections: [] }),
                 )
               }

@@ -230,7 +230,7 @@ func (s *Service) ApplyPreset(ctx context.Context, c Creator, id, name string) (
 	if err := s.Reload(ctx); err != nil {
 		return Library{}, warnings, err
 	}
-	l, err := s.Create(ctx, Library{Name: name, Type: p.Type, Collections: cols, AllLanguages: p.AllLanguages})
+	l, err := s.Create(ctx, Library{Name: name, Type: p.Type, Collections: cols, AllLanguages: p.AllLanguages, Preset: p.ID})
 	return l, warnings, err
 }
 

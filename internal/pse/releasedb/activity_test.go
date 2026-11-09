@@ -97,3 +97,22 @@ func TestActivityBoundedAndCancellation(t *testing.T) {
 		t.Fatalf("%d %v", n, err)
 	}
 }
+
+func TestAnimeBackgroundSearchIncludesMappingHints(t *testing.T) {
+	e := newFreshEnv(t)
+	calls := 0
+	e.s.d.Search = func(_ context.Context, req core.SearchRequest) ([]core.Release, error) {
+		calls++
+		if !req.Anime || req.Type != core.TypeEpisode || req.Season != 1 || req.Episode != 1 || req.AbsoluteEpisode != 1 {
+			t.Fatalf("incomplete anime request: %+v", req)
+		}
+		return nil, nil
+	}
+	title := core.Title{Key: 42, Type: core.TypeShow, Title: "Anime", Language: "ja", Genres: []string{"Animation"}, IDs: core.IDs{IMDB: "tt42"}}
+	if err := e.s.IndexTitle(e.ctx, title, e.s.sources()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("sources queried: %d", calls)
+	}
+}

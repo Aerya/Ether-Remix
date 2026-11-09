@@ -98,7 +98,7 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Nouveautés et test des sources** : la playlist automatique **Nouveautés de vos artistes** réunit les albums sortis ces 4 derniers mois par les artistes favoris et les plus écoutés du spectateur (calculée en arrière-plan, mise à jour toutes les 6 h). Dans la console, onglet Musique, **Tester les sources audio** essaie chaque source réglée, seule, sur le même titre et affiche le format réellement envoyé (FLAC, MP3…), pas celui annoncé, ou la raison de l'échec. Il montre l'ordre réel de lecture, la raison de chaque source inactive et, pour chaque source, les étapes franchies : titre trouvé au catalogue, résultat de la source, lien obtenu, premiers octets vérifiés. La lecture complète n'est pas testée. **Réessayer cette source** relance une seule source, sans cache. Les liens d'addons ne sont affichés que par leur hôte ; aucune clé ni lien audio n'est affiché.
 
-**Titres en VOSTFR** : dans **Ether-Remix → Films & séries**, cherchez un film ou une série et ajoutez-le. Il apparaît dans Films et Séries même sans VF, et dans la bibliothèque **« VOSTFR »** de Plex et Jellyfin (créée au premier ajout).
+**Titres en VOSTFR à la demande** : dans **Ether-Remix → À la demande**, cherchez un film ou une série et ajoutez-le. Il apparaît dans Films et Séries même sans VF, et dans la bibliothèque **« VOSTFR »** de Plex et Jellyfin (créée au premier ajout).
 
 **Découvrir de la musique** : chaque spectateur reçoit les playlists **Top France**, **Top Monde**… (pays au choix dans Console → Ether-Remix → Musique) et **Découvertes**, renouvelées toutes les 12 heures. Les **styles** (Pop, Rap/Hip Hop, Rock, Électro, Jazz…) se parcourent dans Plex (Musique › Par style), Jellyfin (Genres) et Feishin (Genres), avec les albums, artistes et titres du moment. Sur la page d'un artiste : **artistes similaires** et radio « Dans le même esprit » (Plex), **Mix instantané** (Jellyfin), titres populaires et similaires (Feishin).
 
@@ -156,6 +156,22 @@ L’historique propose **Jour** (30 jours), **Semaine** (12 semaines), **Mois** 
 
 Les ajouts sont reconstruits depuis les dates d’entrée des médias encore conservés dans le catalogue local. Les titres sans date restent explicitement exclus. Le suivi des recherches par source est enregistré durablement à partir de cette mise à jour : une recherche correspond à un titre interrogé auprès d’une source, hors annulations et refus de quota. Un titre peut être recherché plusieurs fois. Les périodes non mesurées apparaissent comme telles.
 
-Chaque ajout dans **Titres en VOSTFR** place aussi le titre en tête de file de recherche, sans attendre son délai normal. L’indexation doit être active ; les budgets par source et les pauses pendant les lectures restent respectés. Si la mise en file échoue, la sélection VOSTFR est conservée et la console l’indique.
+Chaque ajout dans **Titres en VOSTFR à la demande** place aussi le titre en tête de file de recherche, sans attendre son délai normal. L’indexation doit être active ; les budgets par source et les pauses pendant les lectures restent respectés. Si la mise en file échoue, la sélection VOSTFR est conservée et la console l’indique.
 
 Le bouton **Tester** de DMM utilise désormais un échantillon du catalogue DMM, indépendamment des classements Deezer. Il distingue les étapes catalogue, compte, cache et lien audio. Les logs `component=pse-music source=dmm` donnent les compteurs et les causes d’échec sans enregistrer de clé ni d’URL de lecture.
+
+## Animes
+
+Dans **Ether-Remix → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
+
+Utilisez **Configurer UwU+** pour choisir vos préférences chez le fournisseur, puis **Ajouter UwU+** et collez le lien `manifest.json` généré. **Ajouter un autre addon Stremio** accepte les autres fournisseurs. UwU+ fournit les flux, pas les catalogues : utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues pour la découverte. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. La disponibilité et la lecture dépendent des fournisseurs et de vos réglages de lecture.
+
+Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir les notes de livraison. Les nouvelles notes s’affichent une fois par navigateur après connexion ; leur fermeture mémorise localement la livraison consultée. La version dans le menu est fournie par le serveur exécuté ; les images officielles incluent un numéro de build Remix automatiquement croissant. Le pied du menu mène aux dépôts Ether et Ether-Remix.
+
+### Exceptions VOSTFR à la demande
+
+**Ether-Remix → À la demande → Titres en VOSTFR à la demande** regroupe les films, séries et animés explicitement autorisés sans VF. Chaque ajout lance une recherche prioritaire si l’indexation est active, dans les limites des quotas et des pauses de lecture. Ces titres figurent aussi dans la bibliothèque VOSTFR. Votre sélection existante est conservée.
+
+### Instances publiques ou auto-hébergement
+
+Les pages de configuration hébergées chez les fournisseurs portent la mention **Instance publique proposée**. Lorsqu’il existe, le lien **Héberger sa propre instance (GitHub)** mène au projet concerné : [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music), [HiFi API](https://github.com/binimum/hifi-api), [AIOStreams](https://github.com/Viren070/AIOStreams) et [Comet](https://github.com/g0ldyy/comet). AIOStreams propose aussi sa liste officielle d’instances publiques. Aucun lien d’auto-hébergement n’est déduit pour un fournisseur non documenté. Votre manifest personnel reste votre configuration, que le serveur soit public ou privé.

@@ -43,6 +43,11 @@ CREATE TABLE pse_theme_langfree (
 );`)
 }
 
+func init() {
+	store.Register("pse_themes", 4, `ALTER TABLE pse_theme_libraries ADD COLUMN preset_id TEXT NOT NULL DEFAULT '';
+UPDATE pse_theme_libraries SET preset_id='anime' WHERE lower(trim(name)) IN ('anime','animes');`)
+}
+
 // MaxLibraries borne le nombre de bibliothèques (sections 5101 à 5199).
 const MaxLibraries = frontend.PSEThemeShowOffset - 1
 
@@ -55,6 +60,7 @@ const (
 
 // Library est une bibliothèque à thème.
 type Library struct {
+	Preset      string   `json:"preset,omitempty"` // modèle d’origine, conservé après renommage
 	ID          int64    `json:"id"`
 	Name        string   `json:"name"`
 	Type        string   `json:"type"`        // movie, show ou mixed
@@ -114,7 +120,7 @@ func New(ctx context.Context, db *sql.DB, cols Collections) (*Service, error) {
 
 // Reload relit les bibliothèques et le nom des collections.
 func (s *Service) Reload(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, collections, position, all_languages FROM pse_theme_libraries ORDER BY position, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, collections, position, all_languages, preset_id FROM pse_theme_libraries ORDER BY position, id`)
 	if err != nil {
 		return err
 	}
@@ -124,7 +130,7 @@ func (s *Service) Reload(ctx context.Context) error {
 		var l Library
 		var raw string
 		var all int
-		if err := rows.Scan(&l.ID, &l.Name, &l.Type, &raw, &l.Position, &all); err != nil {
+		if err := rows.Scan(&l.ID, &l.Name, &l.Type, &raw, &l.Position, &all, &l.Preset); err != nil {
 			return err
 		}
 		l.AllLanguages = all != 0
@@ -241,6 +247,11 @@ func (s *Service) AllKeys(ctx context.Context, typ core.MediaType) []core.Rating
 
 func (s *Service) clean(ctx context.Context, l Library) (Library, error) {
 	l.Name = strings.TrimSpace(l.Name)
+	if l.Preset != "" {
+		if _, ok := presetByID(l.Preset); !ok {
+			return l, invalid("modèle inconnu")
+		}
+	}
 	if l.Name == "" || utf8.RuneCountInString(l.Name) > 60 {
 		return l, invalid("nom vide ou trop long (60 caractères au plus)")
 	}
@@ -305,8 +316,8 @@ func (s *Service) Create(ctx context.Context, l Library) (Library, error) {
 	}
 	l.Position = pos
 	raw, _ := json.Marshal(l.Collections)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO pse_theme_libraries(id, name, type, collections, position, created_at, all_languages) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		l.ID, l.Name, l.Type, string(raw), l.Position, time.Now().Unix(), boolInt(l.AllLanguages)); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO pse_theme_libraries(id, name, type, collections, position, created_at, all_languages, preset_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, l.Name, l.Type, string(raw), l.Position, time.Now().Unix(), boolInt(l.AllLanguages), l.Preset); err != nil {
 		return l, err
 	}
 	return l, s.Reload(ctx)

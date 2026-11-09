@@ -532,22 +532,7 @@ func searchRequestFor(t *core.Title) core.SearchRequest {
 // isAnime reports a title whose releases follow anime conventions
 // (absolute episode numbers, fansub groups): TMDB's "anime" keyword, or
 // Japanese-language animation.
-func isAnime(t *core.Title) bool {
-	for _, k := range t.Keywords {
-		if strings.EqualFold(k, "anime") {
-			return true
-		}
-	}
-	if !strings.EqualFold(t.Language, "ja") {
-		return false
-	}
-	for _, g := range t.Genres {
-		if strings.EqualFold(g, "Animation") {
-			return true
-		}
-	}
-	return false
-}
+func isAnime(t *core.Title) bool { return t.IsAnime() }
 
 // absoluteEpisode is the requested episode's number counted from the
 // series start: the catalogue's count, or the episode number itself in

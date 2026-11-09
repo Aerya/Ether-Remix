@@ -16,7 +16,7 @@ describe("Sources › Indexers Stremio addons", () => {
   it("adds an addon from its stremio:// install link as a torrent source", async () => {
     const { fake } = renderApp("/sources/stremio");
     const drawer = await openAddAddon();
-    expect(within(drawer).getByText("Stremio addon · Torrent")).toBeInTheDocument();
+    expect(within(drawer).getByText("Stremio addon · Direct streams / torrents")).toBeInTheDocument();
     expect(within(drawer).queryByLabelText("API key")).toBeNull();
     expect(within(drawer).queryByText("Movie categories")).toBeNull();
     fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "My Addon" } });

@@ -98,7 +98,7 @@ TorBox enforces cached-only additions. Real-Debrid no longer provides a cache pr
 
 **New releases and source test**: the automatic playlist **New releases from your artists** gathers albums released in the last 4 months by the viewer's favourite and most played artists (computed in the background, refreshed every 6 h). In the console, Music tab, **Test audio sources** tries each configured source on its own on the same track and shows the format the source really sends (FLAC, MP3…), not the advertised one, or why it failed. It shows the real playback order, why each inactive source is inactive and, for each source, the steps reached: track found in the catalogue, source result, link obtained, first bytes checked. Full playback is not tested. **Retry this source** reruns a single source, without caches. Addon links are shown by host only; no key or audio link is shown.
 
-**Titles in original version (VOSTFR)**: in **Ether-Remix → Movies & shows**, search a movie or show and add it. It appears in Movies and Shows even without a French version, and in the **“VOSTFR”** library in Plex and Jellyfin (created on the first addition).
+**On-demand subtitled titles (VOSTFR)**: in **Ether-Remix → On demand**, search a movie or show and add it. It appears in Movies and Shows even without a French version, and in the **“VOSTFR”** library in Plex and Jellyfin (created on the first addition).
 
 **Discovering music**: every viewer gets **Top France**, **Top Worldwide**… playlists (countries chosen in Console → Ether-Remix → Music) and **Discoveries**, renewed every 12 hours. **Genres** (Pop, Rap/Hip Hop, Rock, Electro, Jazz…) can be browsed in Plex (Music › By genre), Jellyfin (Genres) and Feishin (Genres), with the current albums, artists and tracks. On an artist page: **similar artists** and a “Same vibe” radio (Plex), **Instant Mix** (Jellyfin), top and similar songs (Feishin).
 
@@ -156,6 +156,22 @@ History supports **Day** (30 days), **Week** (12 weeks), **Month** (12 months) a
 
 Additions are reconstructed from the entry dates of media still retained locally; undated titles are explicitly excluded. Source searches are stored persistently from this update onward: one search means one title queried on one source, excluding cancellations and quota denials. Titles can be searched repeatedly. Unmeasured periods are marked as such.
 
-Each addition under **Titles in original version** also queues a priority search without waiting for the normal retry delay. Indexing must be enabled; source budgets and playback pauses still apply. If queueing fails, the VOSTFR selection is retained and the console explains it.
+Each addition under **On-demand subtitled titles** also queues a priority search without waiting for the normal retry delay. Indexing must be enabled; source budgets and playback pauses still apply. If queueing fails, the VOSTFR selection is retained and the console explains it.
 
 The DMM **Test** button now samples DMM’s own catalogue instead of Deezer charts. It distinguishes catalogue, account, cache and audio-link stages. Logs tagged `component=pse-music source=dmm` report counts and failure categories without keys or playback URLs.
+
+## Anime
+
+In **Ether-Remix → Anime**, create the Anime preset to get popular and top-rated movie/show collections from TMDB. Mixed libraries appear as separate Movies and Shows sections in Plex. Their Anime category is retained after renaming. Anime libraries respect your language filters, including French/MULTi. Original audio and subtitles remain an explicit choice through on-demand exceptions or the Any language option.
+
+Use **Configure UwU+** to select provider preferences, then **Add UwU+** and paste the generated `manifest.json` URL. **Add another Stremio addon** accepts other providers. UwU+ supplies streams, not catalogues; use TMDB collections, AniList lists or a catalogue-capable addon for discovery. Sources, activation and priority are shared with Movies & Shows. Availability and playback depend on each provider and your playback settings.
+
+The **What's new** button in the console header reopens release notes. New notes open once per browser after sign-in; dismissing them stores the viewed release locally. The sidebar version is provided by the running server; official images include an automatically increasing Remix build number. The footer links to both Ether and Ether-Remix.
+
+### On-demand subtitled exceptions
+
+**Ether-Remix → On demand → On-demand subtitled titles** groups movies, shows and anime explicitly allowed without French dubbing. Each addition queues a priority search when background indexing is enabled, within source budgets and playback pauses. These titles also appear in the VOSTFR library. Your existing selection is preserved.
+
+### Public instances or self-hosting
+
+Provider-hosted configuration pages are labelled **Public instance offered**. Where available, **Host your own instance (GitHub)** links to the provider’s project: [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music), [HiFi API](https://github.com/binimum/hifi-api), [AIOStreams](https://github.com/Viren070/AIOStreams) and [Comet](https://github.com/g0ldyy/comet). AIOStreams also links to its official public-instance list. No self-hosting link is inferred for an undocumented provider. Your personal manifest remains your own configuration, whether the server is public or private.
