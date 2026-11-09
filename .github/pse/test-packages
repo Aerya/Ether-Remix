@@ -1,0 +1,9 @@
+# Paquets Go d'Ether testés à chaque synchronisation (un par ligne, ex. ./internal/notify)
+./internal/notify
+./internal/app
+./internal/catalog
+./internal/frontends/mediabrowser
+./internal/frontend
+./internal/plex
+./internal/collections
+./internal/debrid

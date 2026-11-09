@@ -1,0 +1,400 @@
+name: Release
+
+# Tag v1.2.3 (or v1.2.3-beta.1 for the beta channel) to release.
+# Flow: goreleaser (binaries/tarballs/deb/rpm/docker, draft release) ->
+# macOS DMG (sign+notarise) -> Windows installer (sign) -> signed update
+# manifests -> publish. Secrets used (all optional; missing secrets
+# degrade to unsigned artifacts and are called out in the job summary):
+#   ETHER_UPDATE_PRIVATE_KEY  base64 ed25519 (cmd/ether-release-sign keygen)
+#   ETHER_UPDATE_PUBLIC_KEY   base64 ed25519 public half (baked into builds)
+#   ETHER_TMDB_BUNDLED_KEY    TMDB v3 API key baked into builds (catalogue)
+#   MACOS_CERT_P12            base64 Developer ID .p12
+#   MACOS_CERT_PASSWORD       its password
+#   MACOS_SIGN_IDENTITY       "Developer ID Application: ... (TEAMID)"
+#   NOTARY_APPLE_ID / NOTARY_TEAM_ID / NOTARY_PASSWORD
+#   WINDOWS_CERT_PFX_B64      base64 code-signing .pfx
+#   WINDOWS_CERT_PASSWORD     its password
+
+on:
+  push:
+    tags: ["v*"]
+
+# Each job requests only what it uses.
+permissions: {}
+
+jobs:
+  ci:
+    name: Require successful CI for the release commit
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    # Main CI includes a 45-minute race suite; waiting less cancels the release.
+    timeout-minutes: 90
+    steps:
+      - name: Wait for exact-commit CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          run=""
+          for _attempt in $(seq 1 12); do
+            run=$(gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [ -n "$run" ]; then break; fi
+            sleep 5
+          done
+          if [ -z "$run" ]; then
+            echo "::error::No main-branch CI run found for release commit $SHA"
+            exit 1
+          fi
+          gh run watch "$run" --repo "$REPO" --interval 30 --exit-status
+
+  certification:
+    name: Recertify the client matrix for this minor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check the published certification matrix
+        run: go run ./scripts/certification-gate -tag "$GITHUB_REF_NAME"
+
+  goreleaser:
+    name: GoReleaser (binaries, packages, docker)
+    needs: certification
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # draft release
+      packages: write # candidate images on ghcr.io
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      channel: ${{ steps.ver.outputs.channel }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require written release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          notes="release-notes/$RELEASE_TAG.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::Write $notes with the major changes and upgrade notes before tagging."
+            exit 1
+          fi
+      - id: ver
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          case "$v" in *-*) echo "channel=beta" >> "$GITHUB_OUTPUT" ;; *) echo "channel=stable" >> "$GITHUB_OUTPUT" ;; esac
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install llvm-lipo (universal ffmpeg), qemu, docker
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq llvm
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          # No cache in release builds. v4 caches only when cache: is set;
+          # v5 and later cache by default unless this is false.
+          package-manager-cache: false
+      - name: Build web UI (embedded by go:embed)
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ETHER_UPDATE_PUBLIC_KEY: ${{ secrets.ETHER_UPDATE_PUBLIC_KEY }}
+          ETHER_TMDB_BUNDLED_KEY: ${{ secrets.ETHER_TMDB_BUNDLED_KEY }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: goreleaser-dist
+          path: dist/release/
+          retention-days: 7
+
+  macos:
+    name: macOS Ether.app + DMG
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # attach the DMG
+    env:
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+    needs: goreleaser
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Import Developer ID certificate
+        if: env.HAS_MACOS_CERT == 'true'
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PW: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          echo "$CERT_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p actions build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$CERT_PW" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+      - name: Build + sign + notarise DMG
+        env:
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          ETHER_UPDATE_PUBLIC_KEY: ${{ secrets.ETHER_UPDATE_PUBLIC_KEY }}
+          ETHER_TMDB_BUNDLED_KEY: ${{ secrets.ETHER_TMDB_BUNDLED_KEY }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          packaging/macos/build-app.sh
+          packaging/macos/build-dmg.sh
+      - name: Attach DMG to the (draft) release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+        run: gh release upload "v$VERSION" "dist/Ether-$VERSION.dmg" --clobber
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-dmg
+          path: dist/Ether-*.dmg
+
+  windows:
+    name: Windows installer (NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # attach the installer
+    env:
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
+    needs: goreleaser
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          $candidates = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe")
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install nsis -y --no-progress
+            $installed = @($candidates | Where-Object { Test-Path -LiteralPath $_ })
+            # Chocolatey can return success after a feed timeout without
+            # installing anything. Require the actual compiler as well.
+            if ($LASTEXITCODE -eq 0 -and $installed.Count -gt 0) {
+              Split-Path $installed[0] | Out-File -FilePath $env:GITHUB_PATH -Append
+              & $installed[0] /VERSION
+              if ($LASTEXITCODE -ne 0) { throw "NSIS compiler did not run" }
+              exit 0
+            }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 10 }
+          }
+          throw "NSIS installation failed after three attempts"
+      - name: Decode code-signing cert
+        if: env.HAS_WINDOWS_CERT == 'true'
+        shell: pwsh
+        env:
+          CERT_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:CERT_B64))
+          "WINDOWS_CERT_PFX=$env:RUNNER_TEMP\cert.pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build installer
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          ETHER_UPDATE_PUBLIC_KEY: ${{ secrets.ETHER_UPDATE_PUBLIC_KEY }}
+          ETHER_TMDB_BUNDLED_KEY: ${{ secrets.ETHER_TMDB_BUNDLED_KEY }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $env:Path += ";C:\Program Files (x86)\NSIS"
+          # signtool ships with the Windows SDK on the runner image.
+          packaging/windows/build-installer.ps1 -Version $env:VERSION
+      - name: Smoke-test installed service and desktop launcher
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+        run: packaging/windows/smoke-installer.ps1 -Version $env:VERSION
+      - name: Attach installer to the (draft) release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+        run: gh release upload "v$VERSION" "dist/EtherSetup-$VERSION.exe" --clobber
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-installer
+          path: dist/EtherSetup-*.exe
+
+  update-feed:
+    concurrency:
+      group: ether-update-feed
+      cancel-in-progress: false
+    name: Signed update manifests + publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # publish the release and manifests
+      packages: write # promote approved images
+    # The owner approves publication after testing the built release on a
+    # real device; until then the GitHub release stays a draft and no update
+    # channel moves. Approval: Actions run -> Review deployments.
+    environment: release-publish
+    env:
+      HAS_UPDATE_KEY: ${{ secrets.ETHER_UPDATE_PRIVATE_KEY != '' }}
+    needs: [ci, certification, goreleaser, macos, windows]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Download all artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Build + sign channel manifest
+        if: env.HAS_UPDATE_KEY == 'true'
+        env:
+          ETHER_UPDATE_PRIVATE_KEY: ${{ secrets.ETHER_UPDATE_PRIVATE_KEY }}
+          ETHER_UPDATE_PUBLIC_KEY: ${{ secrets.ETHER_UPDATE_PUBLIC_KEY }}
+          ETHER_TMDB_BUNDLED_KEY: ${{ secrets.ETHER_TMDB_BUNDLED_KEY }}
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+          CHANNEL: ${{ needs.goreleaser.outputs.channel }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          base="https://github.com/$REPO/releases/download/v$VERSION"
+          notes="https://github.com/$REPO/releases/tag/v$VERSION"
+          # Stage the bare binaries under unique names: the manifest's
+          # "binary" artifacts must resolve to exactly the bytes that were
+          # hashed (a bare executable), so they are attached to the release
+          # alongside the tarballs (see the attach step).
+          mkdir -p feed
+          b() { find artifacts/goreleaser-dist -path "*$1_$2*/$3" | head -n1; }
+          stage() { # goos goarch srcname dstname
+            src=$(b "$1" "$2" "$3")
+            if [ -n "$src" ] && [ -f "$src" ]; then cp "$src" "feed/$4"; echo "staged $4 <- $src";
+            else echo "::warning::no bare binary for $1/$2"; fi
+          }
+          stage linux amd64 ether ether-linux-amd64
+          stage linux arm64 ether ether-linux-arm64
+          # goreleaser names the universal dir ether_darwin_all
+          stage darwin all ether ether-darwin-universal
+          stage windows amd64 ether.exe ether-windows-amd64.exe
+          stage windows arm64 ether.exe ether-windows-arm64.exe
+          args=()
+          add() { # file os arch kind url
+            if [ -f "$1" ]; then args+=(-artifact "$1:$2:$3:$4:$5"); else echo "::warning::missing artifact for $2/$3 ($1)"; fi
+          }
+          add feed/ether-linux-amd64          linux   amd64     binary    "$base/ether-linux-amd64"
+          add feed/ether-linux-arm64          linux   arm64     binary    "$base/ether-linux-arm64"
+          add feed/ether-darwin-universal     darwin  universal binary    "$base/ether-darwin-universal"
+          add feed/ether-windows-amd64.exe    windows amd64     binary    "$base/ether-windows-amd64.exe"
+          add feed/ether-windows-arm64.exe    windows arm64     binary    "$base/ether-windows-arm64.exe"
+          add "artifacts/macos-dmg/Ether-$VERSION.dmg"              darwin  universal installer "$base/Ether-$VERSION.dmg"
+          add "artifacts/windows-installer/EtherSetup-$VERSION.exe" windows amd64     installer "$base/EtherSetup-$VERSION.exe"
+          go run ./cmd/ether-release-sign manifest \
+            -version "$VERSION" -channel "$CHANNEL" -notes "$notes" \
+            "${args[@]}" -out "$CHANNEL.json"
+          go run ./cmd/ether-release-sign sign -in "$CHANNEL.json" -detached
+          go run ./cmd/ether-release-sign verify -in "$CHANNEL.json" -sig "$CHANNEL.json.sig"
+          cat "$CHANNEL.json"
+      # GoReleaser publishes only commit-specific candidate images. Public
+      # version/latest tags move here, after CI and the publication approval.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote approved container images
+        env:
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+          CHANNEL: ${{ needs.goreleaser.outputs.channel }}
+        run: |
+          set -eu
+          image=ghcr.io/braedonsaunders/ether
+          commit=$(git rev-parse HEAD)
+          for arch in amd64 arm64; do
+            docker buildx imagetools create --tag "$image:$VERSION-$arch" "$image:candidate-$commit-$arch"
+            if [ "$CHANNEL" = stable ]; then
+              docker buildx imagetools create --tag "$image:latest-$arch" "$image:candidate-$commit-$arch"
+            fi
+          done
+          docker buildx imagetools create --tag "$image:$VERSION" "$image:candidate-$commit"
+          if [ "$CHANNEL" = stable ]; then
+            docker buildx imagetools create --tag "$image:latest" "$image:candidate-$commit"
+          fi
+      - name: Attach manifest + publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.goreleaser.outputs.version }}
+          CHANNEL: ${{ needs.goreleaser.outputs.channel }}
+        run: |
+          set -eu
+          notes="release-notes/v$VERSION.md"
+          test -s "$notes"
+          gh release edit "v$VERSION" --notes-file "$notes"
+          if [ -f "$CHANNEL.json" ]; then
+            gh release upload "v$VERSION" "$CHANNEL.json" "$CHANNEL.json.sig" feed/ether-* --clobber
+          else
+            echo "::warning::ETHER_UPDATE_PRIVATE_KEY not set — publishing WITHOUT a signed update manifest. Tray update checks will find nothing."
+          fi
+          if [ "$CHANNEL" = "beta" ]; then
+            gh release edit "v$VERSION" --draft=false --prerelease --latest=false
+          else
+            gh release edit "v$VERSION" --draft=false --latest
+          fi
+          # Only once the release (and so every artifact URL in the
+          # manifest) is public: every channel's current manifest also lives
+          # on the rolling "channels" pre-release, the updater's default
+          # feed. releases/latest never points at a beta, so beta.json could
+          # not be found there. Older installs still read stable.json from
+          # releases/latest, which the upload above keeps serving.
+          if [ -f "$CHANNEL.json" ]; then
+            if ! gh release view channels >/dev/null 2>&1; then
+              gh release create channels --prerelease --latest=false \
+                --title "Update channels" \
+                --notes "Signed update manifests for each channel, read by Ether's updater. Not a release; do not delete."
+            fi
+            gh release upload channels "$CHANNEL.json" "$CHANNEL.json.sig" --clobber
+          fi

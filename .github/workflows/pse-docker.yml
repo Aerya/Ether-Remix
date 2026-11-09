@@ -1,0 +1,80 @@
+# Ether-Remix (anciennement Private Streaming Enhanced) — image Docker
+# multi-architecture (linux/amd64 + linux/arm64) sur GHCR, construite
+# automatiquement à chaque changement de main et après chaque
+# synchronisation upstream réussie.
+#   ghcr.io/aerya/ether-remix:latest
+#   ghcr.io/aerya/ether-remix:<version>-remix.<run>.<tentative>
+#   ghcr.io/aerya/ether-remix:sha-<commit>
+name: Ether-Remix · Images Docker
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "release-notes/**", ".github/workflows/pse-sync-upstream.yml"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+
+concurrency:
+  group: pse-docker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Version
+        id: v
+        run: |
+          # L'historique public est indépendant de celui d'Ether.
+          base=$(python3 -c 'import json; print(json.load(open("web/package.json"))["version"])')
+          echo "version=$base-remix.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          echo "ffmpeg=linux-amd64 linux-arm64" >> "$GITHUB_OUTPUT"
+
+      - name: FFmpeg épinglé
+        run: scripts/fetch-ffmpeg.sh ${{ steps.v.outputs.ffmpeg }}
+
+      # Le binaire Go est compilé nativement pour chaque architecture
+      # (FROM --platform=$BUILDPLATFORM) ; QEMU ne sert qu'à l'étape apt arm64.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construire et publier
+        env:
+          TMDB_KEY: ${{ secrets.ETHER_TMDB_BUNDLED_KEY }}
+        run: |
+          img=ghcr.io/aerya/ether-remix
+          tags="-t $img:latest -t $img:${{ steps.v.outputs.version }} -t $img:sha-${{ steps.v.outputs.commit }}"
+          docker buildx build \
+            --platform "${{ steps.v.outputs.platforms }}" \
+            --build-arg VERSION="${{ steps.v.outputs.version }}" \
+            --build-arg COMMIT="${{ steps.v.outputs.commit }}" \
+            --secret id=ETHER_TMDB_BUNDLED_KEY,env=TMDB_KEY \
+            --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            --label org.opencontainers.image.title="Ether-Remix" \
+            --label org.opencontainers.image.description="Ether en VF, avec la musique" \
+            --label org.opencontainers.image.version="${{ steps.v.outputs.version }}" \
+            --cache-from type=gha --cache-to type=gha,mode=max \
+            $tags \
+            --push .
+          echo "Image : $img:${{ steps.v.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,259 @@
+package collections
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
+	"golang.org/x/text/language"
+	"golang.org/x/text/language/display"
+
+	"github.com/braedonsaunders/ether/internal/contentrating"
+	"github.com/braedonsaunders/ether/internal/core"
+)
+
+// Catalogue helpers for the Collection Studio's pickers.
+
+// ratingFacet lists every content-rating level, mildest first, then "Not
+// rated": the level's key is the stored rule value, the title its US labels
+// ("PG · TV-PG"), Labels every board's equivalent label (bare US, "cc/label"
+// elsewhere) and Count the browsable titles at that level.
+func (s *Service) ratingFacet(ctx context.Context, t core.MediaType) ([]core.FacetValue, error) {
+	counts := map[string]int{}
+	if vals, err := s.cat.Facet(ctx, t, "contentRatingLevel"); err == nil {
+		for _, v := range vals {
+			counts[v.Key] = v.Count
+		}
+	}
+	levels := append(append([]contentrating.Level(nil), contentrating.Levels...), contentrating.Unrated)
+	out := make([]core.FacetValue, 0, len(levels))
+	for _, l := range levels {
+		out = append(out, core.FacetValue{
+			Key:    l.Key(),
+			Title:  strings.Join(l.USLabels(), " · "),
+			Count:  counts[strconv.Itoa(int(l))],
+			Labels: contentrating.Equivalents(l),
+		})
+	}
+	return out, nil
+}
+
+// BrowseTitles lists the released local catalogue with filters and pagination.
+func (s *Service) BrowseTitles(ctx context.Context, q core.BrowseQuery) (core.Page, error) {
+	return s.cat.Browse(ctx, q)
+}
+
+// SearchTitles searches the catalogue (reaching all of TMDB).
+func (s *Service) SearchTitles(ctx context.Context, q string, t core.MediaType, limit int) ([]core.Title, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	var types []core.MediaType
+	if t == core.TypeMovie || t == core.TypeShow {
+		types = []core.MediaType{t}
+	}
+	return s.cat.Search(ctx, q, types, limit)
+}
+
+// Facets lists filter values over the browsable catalogue: genre, decade,
+// contentRating, studio, country, language (and year).
+func (s *Service) Facets(ctx context.Context, t core.MediaType, facet string) ([]core.FacetValue, error) {
+	switch facet {
+	case "language":
+		return s.languageFacet(ctx, t)
+	case "genre", "decade", "contentRating", "studio", "country", "year", "tag":
+	default:
+		return nil, &ValidationError{Fields: map[string]string{"facet": "facet is genre, decade, contentRating, studio, country or language"}}
+	}
+	if facet == "contentRating" {
+		return s.ratingFacet(ctx, t)
+	}
+	vals, err := s.cat.Facet(ctx, t, facet)
+	if err != nil {
+		return nil, err
+	}
+	if facet == "country" {
+		// Movies store country names, shows ISO codes; merge them.
+		merged := map[string]*core.FacetValue{}
+		var order []string
+		for _, v := range vals {
+			key := v.Key
+			title := v.Title
+			if len(key) == 2 {
+				if n, ok := countryNames[strings.ToUpper(key)]; ok {
+					title = n
+				}
+			} else if code := countryCode(key); code != "" {
+				key = code
+			}
+			if m := merged[strings.ToUpper(key)]; m != nil {
+				m.Count += v.Count
+				continue
+			}
+			fv := core.FacetValue{Key: strings.ToUpper(key), Title: title, Count: v.Count}
+			if len(fv.Key) != 2 {
+				fv.Key = v.Key
+			}
+			merged[strings.ToUpper(key)] = &fv
+			order = append(order, strings.ToUpper(key))
+		}
+		out := make([]core.FacetValue, 0, len(order))
+		for _, k := range order {
+			out = append(out, *merged[k])
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+		return out, nil
+	}
+	return vals, nil
+}
+
+func (s *Service) languageFacet(ctx context.Context, t core.MediaType) ([]core.FacetValue, error) {
+	vals, err := s.cat.Facet(ctx, t, "language")
+	if err != nil {
+		return nil, err
+	}
+	for i := range vals {
+		vals[i].Title = languageName(vals[i].Key)
+	}
+	return vals, nil
+}
+
+func languageName(code string) string {
+	tag, err := language.Parse(code)
+	if err != nil {
+		return code
+	}
+	if n := display.English.Languages().Name(tag); n != "" {
+		return n
+	}
+	return code
+}
+
+// Lookup finds TMDB people, keywords, companies, networks, collections or
+// streaming services by name for the rule and source pickers.
+func (s *Service) Lookup(ctx context.Context, kind, q, region string) ([]core.LookupResult, error) {
+	q = strings.TrimSpace(q)
+	switch kind {
+	case "network":
+		if n, err := strconv.ParseInt(q, 10, 64); err == nil && n > 0 {
+			r, err := s.names.resolve(ctx, "network", ref{ID: n}, "")
+			if err != nil {
+				return []core.LookupResult{}, nil
+			}
+			return []core.LookupResult{{ID: r.ID, Name: r.Name}}, nil
+		}
+		return searchNetworks(q), nil
+	case "watchProvider":
+		ps, err := s.api.watchProviders(ctx, s.region(region))
+		if err != nil {
+			return nil, err
+		}
+		want := normName(q)
+		out := []core.LookupResult{}
+		for _, p := range ps {
+			if want == "" || strings.Contains(normName(p.Name), want) {
+				out = append(out, core.LookupResult{ID: p.ID, Name: p.Name, Subtitle: s.region(region), ImagePath: p.Logo})
+			}
+			if len(out) >= 60 {
+				break
+			}
+		}
+		return out, nil
+	case "person", "keyword", "company", "collection":
+		if q == "" {
+			return []core.LookupResult{}, nil
+		}
+		if s.api.c == nil {
+			return nil, errNoTMDB
+		}
+		if n, err := strconv.ParseInt(q, 10, 64); err == nil && n > 0 {
+			name, err := s.api.entityName(ctx, kind, n)
+			if err != nil {
+				return []core.LookupResult{}, nil
+			}
+			return []core.LookupResult{{ID: n, Name: name}}, nil
+		}
+		res, err := s.api.search(ctx, kind, q)
+		if err != nil {
+			return nil, err
+		}
+		if len(res) > 20 {
+			res = res[:20]
+		}
+		return res, nil
+	}
+	return nil, &ValidationError{Fields: map[string]string{"kind": fmt.Sprintf("unknown lookup kind %q", kind)}}
+}
+
+// TitleDetail returns a title with credits and keywords (fetching details
+// from TMDB when the mirror only has a summary). The owner console also
+// inspects titles viewers cannot open yet, such as an upcoming movie on the
+// release calendar, so an unreleased title Get refuses is read from the
+// mirror instead. Adult titles stay hidden.
+func (s *Service) TitleDetail(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	t, err := s.cat.Get(ctx, key)
+	if !errors.Is(err, core.ErrNotFound) {
+		return t, err
+	}
+	stored, ok := s.cat.(core.StoredTitleLookup)
+	if !ok || (key.Kind() != core.KindMovie && key.Kind() != core.KindShow) {
+		return nil, err
+	}
+	t, serr := stored.StoredTitle(ctx, key)
+	if serr != nil || t == nil || t.Adult || t.Key != key {
+		return nil, err
+	}
+	return t, nil
+}
+
+// TitlesByIMDB resolves up to 24 IMDb ids to catalogue titles, in order,
+// skipping ids the catalogue does not know. The owner console uses it to
+// name the titles a plugin was asked about.
+func (s *Service) TitlesByIMDB(ctx context.Context, ids []string) []core.Title {
+	if len(ids) > 24 {
+		ids = ids[:24]
+	}
+	out := make([]core.Title, 0, len(ids))
+	for _, id := range ids {
+		if t, err := s.cat.ByExternalID(ctx, "imdb", id); err == nil && t != nil && !t.Adult {
+			out = append(out, *t)
+		}
+	}
+	return out
+}
+
+// ConsoleFacets serves cached counts and schedules cold/generation refreshes.
+func (s *Service) ConsoleFacets(ctx context.Context, typ core.MediaType, facet string) ([]core.FacetValue, bool, error) {
+	if c, ok := s.cat.(interface {
+		ConsoleFacets(context.Context, core.MediaType, string) ([]core.FacetValue, bool, error)
+	}); ok {
+		vals, pending, err := c.ConsoleFacets(ctx, typ, facet)
+		for i := range vals {
+			if facet == "language" {
+				vals[i].Title = languageName(vals[i].Key)
+			}
+			if facet == "decade" {
+				vals[i].Title = vals[i].Key + "s"
+			}
+			if facet == "country" {
+				if name, ok := countryNames[strings.ToUpper(vals[i].Key)]; ok {
+					vals[i].Title = name
+				}
+			}
+		}
+		return vals, pending, err
+	}
+	return []core.FacetValue{}, false, nil
+}
+
+func (s *Service) ConsoleCount(ctx context.Context, f core.Filter) (int, bool, error) {
+	if c, ok := s.cat.(interface {
+		ConsoleCount(context.Context, core.Filter) (int, bool, error)
+	}); ok {
+		return c.ConsoleCount(ctx, f)
+	}
+	return 0, false, nil
+}

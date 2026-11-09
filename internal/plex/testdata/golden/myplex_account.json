@@ -1,0 +1,13 @@
+{
+  "MyPlex": {
+    "username": "owner",
+    "mappingState": "mapped",
+    "mappingError": "",
+    "signInState": "ok",
+    "privateAddress": "",
+    "privatePort": 0,
+    "subscriptionActive": false,
+    "subscriptionState": "Unknown"
+  }
+}
+

@@ -1,0 +1,838 @@
+package store
+
+import (
+	"bufio"
+	"context"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Logical dumps are engine-neutral JSON lines, used to back up PostgreSQL
+// (where VACUUM INTO and file copies do not apply) and usable to move data
+// between SQLite and PostgreSQL. The stream is:
+//
+//	{"format":"ether-logical","version":1,"dialect":"postgres","created":"...","migrations":{"auth":1,...}}
+//	{"table":"auth_users","columns":["id",...],"types":["integer",...]}
+//	[1,"alice",...]                          one JSON array per row
+//	...
+//	{"end":true,"tables":42,"rows":1234}
+//
+// Tables appear parents-first (foreign keys), so a restore can insert in
+// file order. Blob values are base64 strings. schema_migrations is carried
+// in the header rather than as a table.
+const logicalFormat = "ether-logical"
+
+// LogicalHeader is the first line of a logical dump.
+type LogicalHeader struct {
+	Format     string         `json:"format"`
+	Version    int            `json:"version"`
+	Dialect    Dialect        `json:"dialect"`
+	Created    time.Time      `json:"created"`
+	Migrations map[string]int `json:"migrations"`
+}
+
+type logicalTable struct {
+	Table   string   `json:"table"`
+	Columns []string `json:"columns"`
+	Types   []string `json:"types"`
+}
+
+type logicalEnd struct {
+	End    bool  `json:"end"`
+	Tables int   `json:"tables"`
+	Rows   int64 `json:"rows"`
+}
+
+// Column kinds in a dump.
+const (
+	kindInteger = "integer"
+	kindReal    = "real"
+	kindText    = "text"
+	kindBlob    = "blob"
+)
+
+func columnKind(dbType string) string {
+	t := strings.ToUpper(dbType)
+	switch {
+	case strings.Contains(t, "INT"):
+		return kindInteger
+	case strings.Contains(t, "REAL"), strings.Contains(t, "FLOA"), strings.Contains(t, "DOUB"), strings.Contains(t, "NUMERIC"):
+		return kindReal
+	case strings.Contains(t, "BLOB"), strings.Contains(t, "BYTEA"):
+		return kindBlob
+	}
+	return kindText
+}
+
+// queryer is satisfied by *sql.DB and *sql.Tx.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func listTables(ctx context.Context, q queryer, d Dialect) ([]string, error) {
+	// Ordinary tables only: a virtual table (a full-text index) and its
+	// shadow tables are derived from the tables they index; a restore
+	// rebuilds them by replaying their triggers (restore.go).
+	query := `SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name`
+	if d == Postgres {
+		query = `SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name`
+	}
+	rows, err := q.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		if name != "schema_migrations" {
+			out = append(out, name)
+		}
+	}
+	return out, rows.Err()
+}
+
+// parentTables lists the tables table references through foreign keys.
+func parentTables(ctx context.Context, q queryer, d Dialect, table string) ([]string, error) {
+	query := `SELECT DISTINCT "table" FROM pragma_foreign_key_list(?)`
+	if d == Postgres {
+		query = `SELECT DISTINCT cl.relname FROM pg_constraint c JOIN pg_class cl ON cl.oid=c.confrelid
+			WHERE c.contype='f' AND c.conrelid=(SELECT oid FROM pg_class WHERE relname=? AND relnamespace=current_schema()::regnamespace)`
+	}
+	rows, err := q.QueryContext(ctx, query, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// orderedTables returns tables sorted so referenced tables come first.
+func orderedTables(ctx context.Context, q queryer, d Dialect) ([]string, error) {
+	tables, err := listTables(ctx, q, d)
+	if err != nil {
+		return nil, err
+	}
+	deps := map[string][]string{}
+	for _, t := range tables {
+		if deps[t], err = parentTables(ctx, q, d, t); err != nil {
+			return nil, fmt.Errorf("foreign keys of %s: %w", t, err)
+		}
+	}
+	var out []string
+	state := map[string]int{} // 1 visiting, 2 done
+	var visit func(string)
+	visit = func(t string) {
+		if state[t] != 0 {
+			return
+		}
+		state[t] = 1
+		for _, p := range deps[t] {
+			if p != t {
+				visit(p)
+			}
+		}
+		state[t] = 2
+		out = append(out, t)
+	}
+	for _, t := range tables {
+		visit(t)
+	}
+	return out, nil
+}
+
+func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// ExportLogical writes a consistent logical dump of every table in db to w.
+func ExportLogical(ctx context.Context, db *sql.DB, w io.Writer) error {
+	d := DialectOf(db)
+	opts := &sql.TxOptions{ReadOnly: true}
+	if d == Postgres {
+		opts.Isolation = sql.LevelRepeatableRead
+	}
+	tx, err := db.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	bw := bufio.NewWriterSize(w, 256<<10)
+	enc := json.NewEncoder(bw)
+	enc.SetEscapeHTML(false)
+
+	h := LogicalHeader{Format: logicalFormat, Version: 1, Dialect: d, Created: time.Now().UTC(), Migrations: map[string]int{}}
+	mrows, err := tx.QueryContext(ctx, `SELECT component, MAX(version) FROM schema_migrations GROUP BY component`)
+	if err != nil {
+		return err
+	}
+	for mrows.Next() {
+		var c string
+		var v int
+		if err := mrows.Scan(&c, &v); err != nil {
+			mrows.Close()
+			return err
+		}
+		h.Migrations[c] = v
+	}
+	if err := mrows.Err(); err != nil {
+		mrows.Close()
+		return err
+	}
+	mrows.Close()
+	if err := enc.Encode(h); err != nil {
+		return err
+	}
+	tables, err := orderedTables(ctx, tx, d)
+	if err != nil {
+		return err
+	}
+	var total int64
+	for _, t := range tables {
+		n, err := exportTable(ctx, tx, enc, d, t)
+		if err != nil {
+			return fmt.Errorf("export %s: %w", t, err)
+		}
+		total += n
+	}
+	if err := enc.Encode(logicalEnd{End: true, Tables: len(tables), Rows: total}); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+func generatedColumns(ctx context.Context, q queryer, d Dialect, table string) (map[string]bool, error) {
+	query := `SELECT name FROM pragma_table_xinfo(?) WHERE hidden IN (2, 3)`
+	if d == Postgres {
+		query = `SELECT a.attname FROM pg_attribute a
+			JOIN pg_class c ON c.oid=a.attrelid
+			JOIN pg_namespace n ON n.oid=c.relnamespace
+			WHERE n.nspname=current_schema() AND c.relname=? AND a.attgenerated<>'' AND a.attnum>0 AND NOT a.attisdropped`
+	}
+	rows, err := q.QueryContext(ctx, query, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
+}
+
+func exportTable(ctx context.Context, tx *sql.Tx, enc *json.Encoder, d Dialect, table string) (int64, error) {
+	generated, err := generatedColumns(ctx, tx, d, table)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT * FROM `+quoteIdent(table))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return 0, err
+	}
+	cts, err := rows.ColumnTypes()
+	if err != nil {
+		return 0, err
+	}
+	keep := make([]int, 0, len(cols))
+	head := logicalTable{Table: table}
+	for i, name := range cols {
+		if generated[name] {
+			continue
+		}
+		keep = append(keep, i)
+		head.Columns = append(head.Columns, name)
+		head.Types = append(head.Types, columnKind(cts[i].DatabaseTypeName()))
+	}
+	if err := enc.Encode(head); err != nil {
+		return 0, err
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	out := make([]any, len(head.Columns))
+	var n int64
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return n, err
+		}
+		for i, src := range keep {
+			out[i] = encodeValue(vals[src], head.Types[i])
+		}
+		if err := enc.Encode(out); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
+}
+
+func encodeValue(v any, kind string) any {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case []byte:
+		if kind == kindBlob {
+			return base64.StdEncoding.EncodeToString(x)
+		}
+		return string(x)
+	case bool:
+		if x {
+			return 1
+		}
+		return 0
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return strconv.FormatFloat(x, 'g', -1, 64)
+		}
+		return x
+	case time.Time:
+		return x.UTC().Format(time.RFC3339Nano)
+	default:
+		return x
+	}
+}
+
+// ErrNotEmpty means a logical restore target already holds data.
+var ErrNotEmpty = errors.New("store: restore target database is not empty")
+
+// ImportLogical loads a logical dump into db, which must be migrated and
+// hold no rows in any table the dump contains. It runs in one transaction.
+// The target's triggers are suspended while rows are written; see
+// restore.go.
+func ImportLogical(ctx context.Context, db *sql.DB, r io.Reader) (err error) {
+	d := DialectOf(db)
+	dec := newLogicalDecoder(r)
+	h, err := dec.header()
+	if err != nil {
+		return err
+	}
+	have, err := AppliedMigrations(ctx, db)
+	if err != nil {
+		return err
+	}
+	for c, v := range h.Migrations {
+		if have[c] < v {
+			return fmt.Errorf("store: backup has %s schema version %d but this server has %d; restore with a newer Ether", c, v, have[c])
+		}
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+	targetTables, err := listTables(ctx, tx, d)
+	if err != nil {
+		return err
+	}
+	seeded := seededTables()
+	for _, t := range targetTables {
+		var any int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT 1 FROM `+quoteIdent(t)+` LIMIT 1) x`).Scan(&any); err != nil {
+			return err
+		}
+		if any > 0 && !seeded[t] {
+			return fmt.Errorf("%w (table %s has rows)", ErrNotEmpty, t)
+		}
+	}
+	known := map[string]bool{}
+	for _, t := range targetTables {
+		known[t] = true
+	}
+	finish, err := beginRestoreHooks(ctx, tx)
+	if err != nil {
+		return err
+	}
+	// See restore.go: the dump already holds what triggers derive.
+	suspended, err := suspendTriggers(ctx, tx, d)
+	if err != nil {
+		return err
+	}
+	restored := map[string]bool{}
+	var tables int
+	var total int64
+	for {
+		head, end, err := dec.next()
+		if err != nil {
+			return err
+		}
+		if end != nil {
+			if end.Tables != tables || end.Rows != total {
+				return fmt.Errorf("store: dump trailer mismatch (tables %d/%d, rows %d/%d)", tables, end.Tables, total, end.Rows)
+			}
+			break
+		}
+		if !known[head.Table] {
+			return fmt.Errorf("store: backup table %s does not exist on this server", head.Table)
+		}
+		if restored[head.Table] {
+			return fmt.Errorf("store: backup holds table %s twice", head.Table)
+		}
+		restored[head.Table] = true
+		kinds, err := targetKinds(ctx, tx, head.Table, head.Columns)
+		if err != nil {
+			return err
+		}
+		generated, err := generatedColumns(ctx, tx, d, head.Table)
+		if err != nil {
+			return err
+		}
+		keep := make([]int, 0, len(head.Columns))
+		keptCols := make([]string, 0, len(head.Columns))
+		keptKinds := make([]string, 0, len(kinds))
+		for i, name := range head.Columns {
+			if generated[name] {
+				continue
+			}
+			keep = append(keep, i)
+			keptCols = append(keptCols, name)
+			keptKinds = append(keptKinds, kinds[i])
+		}
+		width := len(head.Columns)
+		head.Columns = keptCols
+		// Seed rows written by migrations (singleton settings) are replaced.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+quoteIdent(head.Table)); err != nil {
+			return err
+		}
+		n, err := importRows(ctx, tx, dec, head, keptKinds, width, keep, d)
+		if err != nil {
+			return fmt.Errorf("restore %s: %w", head.Table, err)
+		}
+		tables++
+		total += n
+	}
+	if err := resumeTriggers(ctx, tx, d, suspended, restored); err != nil {
+		return err
+	}
+	if d == Postgres {
+		if err := resetIdentities(ctx, tx); err != nil {
+			return err
+		}
+	}
+	if err := finish(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+var reSeedInsert = regexp.MustCompile(`(?i)\bINSERT\s+INTO\s+"?([A-Za-z_][A-Za-z0-9_]*)`)
+
+// seededTables lists tables that migrations themselves insert rows into
+// (singleton settings); a fresh database already holds those rows, so they
+// do not make it "not empty" and the restore replaces them.
+func seededTables() map[string]bool {
+	out := map[string]bool{}
+	for _, m := range registered() {
+		for _, sql := range append([]string{m.sql}, mapValues(m.overrides)...) {
+			for _, sm := range reSeedInsert.FindAllStringSubmatch(sql, -1) {
+				out[sm[1]] = true
+			}
+		}
+	}
+	return out
+}
+
+func mapValues(m map[Dialect]string) []string {
+	out := make([]string, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	return out
+}
+
+func targetKinds(ctx context.Context, tx *sql.Tx, table string, cols []string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT * FROM `+quoteIdent(table)+` WHERE 1=0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	cts, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+	byName := map[string]string{}
+	for i, n := range names {
+		byName[n] = columnKind(cts[i].DatabaseTypeName())
+	}
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		k, ok := byName[c]
+		if !ok {
+			return nil, fmt.Errorf("store: backup column %s.%s does not exist on this server", table, c)
+		}
+		out[i] = k
+	}
+	return out, nil
+}
+
+// restoreBatchParams bounds one multi-row INSERT: below SQLite's 32766
+// variable limit and PostgreSQL's 65535 parameters, and small enough that a
+// batch's arguments stay a few hundred kilobytes.
+const (
+	restoreBatchParams = 30000
+	restoreBatchRows   = 500
+)
+
+// importRows inserts a table's rows in multi-row batches. One statement per
+// row costs a round trip and an executor start per row, which dominates a
+// restore of a large library.
+func importRows(ctx context.Context, tx *sql.Tx, dec *logicalDecoder, head *logicalTable, kinds []string, width int, keep []int, d Dialect) (int64, error) {
+	cols := len(head.Columns)
+	if cols == 0 {
+		return 0, errors.New("no restorable columns")
+	}
+	quoted := make([]string, cols)
+	for i, c := range head.Columns {
+		quoted[i] = quoteIdent(c)
+	}
+	tuple := "(" + strings.TrimSuffix(strings.Repeat("?,", cols), ",") + ")"
+	// A GENERATED ALWAYS identity column rejects an explicit id (428C9).
+	// The dump carries the ids the rest of the backup points at, so the
+	// restore supplies them. OVERRIDING SYSTEM VALUE is a no-op for columns
+	// that are not generated that way.
+	prefix := `INSERT INTO ` + quoteIdent(head.Table) + `(` + strings.Join(quoted, ",") + `) `
+	if d == Postgres {
+		prefix += `OVERRIDING SYSTEM VALUE `
+	}
+	prefix += `VALUES`
+	insert := func(rows int) string {
+		return prefix + strings.TrimSuffix(strings.Repeat(tuple+",", rows), ",")
+	}
+	batch := min(restoreBatchRows, max(1, restoreBatchParams/cols))
+	var full *sql.Stmt
+	defer func() {
+		if full != nil {
+			full.Close()
+		}
+	}()
+	args := make([]any, 0, batch*cols)
+	flush := func() error {
+		rows := len(args) / cols
+		if rows == 0 {
+			return nil
+		}
+		var err error
+		if rows == batch {
+			if full == nil {
+				if full, err = tx.PrepareContext(ctx, insert(batch)); err != nil {
+					return err
+				}
+			}
+			_, err = full.ExecContext(ctx, args...)
+		} else {
+			_, err = tx.ExecContext(ctx, insert(rows), args...)
+		}
+		args = args[:0]
+		return err
+	}
+	var n int64
+	for {
+		row, ok, err := dec.row()
+		if err != nil {
+			return n, err
+		}
+		if !ok {
+			return n, flush()
+		}
+		if len(row) != width {
+			return n, fmt.Errorf("row %d has %d values, want %d", n+1, len(row), width)
+		}
+		for i, src := range keep {
+			v, err := decodeValue(row[src], kinds[i])
+			if err != nil {
+				return n, fmt.Errorf("row %d column %s: %w", n+1, head.Columns[i], err)
+			}
+			args = append(args, v)
+		}
+		n++
+		if len(args) == batch*cols {
+			if err := flush(); err != nil {
+				return n, fmt.Errorf("rows up to %d: %w", n, err)
+			}
+		}
+	}
+}
+
+func decodeValue(raw json.RawMessage, kind string) (any, error) {
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	if len(raw) > 0 && raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return nil, err
+		}
+		switch kind {
+		case kindBlob:
+			return base64.StdEncoding.DecodeString(s)
+		case kindInteger:
+			if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+				return v, nil
+			}
+		case kindReal:
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				return v, nil
+			}
+		}
+		return s, nil
+	}
+	num := json.Number(raw)
+	switch kind {
+	case kindInteger:
+		if v, err := num.Int64(); err == nil {
+			return v, nil
+		}
+		f, err := num.Float64()
+		if err != nil {
+			return nil, err
+		}
+		if f == math.Trunc(f) && math.Abs(f) < 1<<53 {
+			return int64(f), nil
+		}
+		return f, nil
+	case kindReal:
+		return num.Float64()
+	default:
+		return num.String(), nil
+	}
+}
+
+// resetIdentities moves identity sequences past restored IDs without ever
+// rewinding a sequence whose higher values have already been issued.
+func resetIdentities(ctx context.Context, tx *sql.Tx) error {
+	return advanceIdentities(ctx, tx, nil)
+}
+
+// advanceIdentities handles every identity column, or only the named tables
+// when selected is non-nil. Table locks serialize ordinary inserts with the
+// MAX/MIN check; sequences themselves are only moved forward. This matters
+// because setval is not rolled back with the surrounding transaction.
+func advanceIdentities(ctx context.Context, tx *sql.Tx, selected map[string]bool) error {
+	rows, err := tx.QueryContext(ctx, `SELECT table_name, column_name FROM information_schema.columns
+		WHERE table_schema=current_schema() AND is_identity='YES' ORDER BY table_name, column_name`)
+	if err != nil {
+		return err
+	}
+	type col struct{ table, column string }
+	var cols []col
+	for rows.Next() {
+		var c col
+		if err := rows.Scan(&c.table, &c.column); err != nil {
+			rows.Close()
+			return err
+		}
+		if selected == nil || selected[c.table] {
+			cols = append(cols, c)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, c := range cols {
+		if _, err := tx.ExecContext(ctx, `LOCK TABLE `+quoteIdent(c.table)+` IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+			return fmt.Errorf("lock identity table %s: %w", c.table, err)
+		}
+		var schema, sequence string
+		var increment int64
+		err := tx.QueryRowContext(ctx, `SELECT n.nspname,c.relname,s.seqincrement FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_sequence s ON s.seqrelid=c.oid WHERE c.oid=CAST(pg_get_serial_sequence(?, ?) AS regclass)`, quoteIdent(c.table), c.column).Scan(&schema, &sequence, &increment)
+		if err != nil {
+			return fmt.Errorf("find identity %s.%s: %w", c.table, c.column, err)
+		}
+		if increment == 0 {
+			return fmt.Errorf("invalid identity increment %s.%s", c.table, c.column)
+		}
+		sequenceName := quoteIdent(schema) + "." + quoteIdent(sequence)
+		var last int64
+		var called bool
+		if err := tx.QueryRowContext(ctx, `SELECT last_value,is_called FROM `+sequenceName).Scan(&last, &called); err != nil {
+			return fmt.Errorf("read identity %s.%s: %w", c.table, c.column, err)
+		}
+		aggregate := "MAX"
+		if increment < 0 {
+			aggregate = "MIN"
+		}
+		var extreme sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT `+aggregate+`(`+quoteIdent(c.column)+`) FROM `+quoteIdent(c.table)).Scan(&extreme); err != nil {
+			return fmt.Errorf("read identity values %s.%s: %w", c.table, c.column, err)
+		}
+		if !extreme.Valid {
+			continue
+		}
+		needsAdvance := increment > 0 && (extreme.Int64 > last || extreme.Int64 == last && !called) || increment < 0 && (extreme.Int64 < last || extreme.Int64 == last && !called)
+		if needsAdvance {
+			if _, err := tx.ExecContext(ctx, `SELECT setval(CAST(? AS regclass), ?, true)`, sequenceName, extreme.Int64); err != nil {
+				return fmt.Errorf("advance identity %s.%s: %w", c.table, c.column, err)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateLogical reads a whole dump and checks its structure and trailer
+// without touching a database. It returns the header.
+func ValidateLogical(r io.Reader) (LogicalHeader, error) {
+	dec := newLogicalDecoder(r)
+	h, err := dec.header()
+	if err != nil {
+		return LogicalHeader{}, err
+	}
+	seen := map[string]bool{}
+	var tables int
+	var total int64
+	for {
+		head, end, err := dec.next()
+		if err != nil {
+			return h, err
+		}
+		if end != nil {
+			if end.Tables != tables || end.Rows != total {
+				return h, errors.New("store: logical dump is truncated or inconsistent")
+			}
+			return h, nil
+		}
+		if seen[head.Table] || len(head.Columns) != len(head.Types) || len(head.Columns) == 0 {
+			return h, fmt.Errorf("store: malformed table header for %q", head.Table)
+		}
+		seen[head.Table] = true
+		tables++
+		for {
+			row, ok, err := dec.row()
+			if err != nil {
+				return h, err
+			}
+			if !ok {
+				break
+			}
+			if len(row) != len(head.Columns) {
+				return h, fmt.Errorf("store: %s row has %d values, want %d", head.Table, len(row), len(head.Columns))
+			}
+			total++
+		}
+	}
+}
+
+// logicalDecoder reads the line-oriented dump.
+type logicalDecoder struct {
+	sc      *bufio.Scanner
+	pending []byte // a line read by row() that starts the next section
+}
+
+func newLogicalDecoder(r io.Reader) *logicalDecoder {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 1<<20), 256<<20)
+	return &logicalDecoder{sc: sc}
+}
+
+func (d *logicalDecoder) line() ([]byte, error) {
+	if d.pending != nil {
+		l := d.pending
+		d.pending = nil
+		return l, nil
+	}
+	for d.sc.Scan() {
+		if l := d.sc.Bytes(); len(strings.TrimSpace(string(l))) > 0 {
+			return append([]byte(nil), l...), nil
+		}
+	}
+	if err := d.sc.Err(); err != nil {
+		return nil, err
+	}
+	return nil, io.ErrUnexpectedEOF
+}
+
+func (d *logicalDecoder) header() (LogicalHeader, error) {
+	var h LogicalHeader
+	l, err := d.line()
+	if err != nil {
+		return h, fmt.Errorf("store: empty logical dump: %w", err)
+	}
+	if err := json.Unmarshal(l, &h); err != nil || h.Format != logicalFormat {
+		return h, errors.New("store: not an Ether logical dump")
+	}
+	if h.Version != 1 {
+		return h, fmt.Errorf("store: unsupported logical dump version %d", h.Version)
+	}
+	return h, nil
+}
+
+// next returns the next table header, or the trailer.
+func (d *logicalDecoder) next() (*logicalTable, *logicalEnd, error) {
+	l, err := d.line()
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: logical dump is truncated: %w", err)
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(l, &probe); err != nil {
+		return nil, nil, fmt.Errorf("store: malformed logical dump line: %w", err)
+	}
+	if _, ok := probe["end"]; ok {
+		var e logicalEnd
+		if err := json.Unmarshal(l, &e); err != nil {
+			return nil, nil, err
+		}
+		return nil, &e, nil
+	}
+	var t logicalTable
+	if err := json.Unmarshal(l, &t); err != nil || t.Table == "" {
+		return nil, nil, errors.New("store: malformed logical dump table header")
+	}
+	return &t, nil, nil
+}
+
+// row returns the next row of the current table; ok is false at the end of
+// the table (the following header is kept for next).
+func (d *logicalDecoder) row() ([]json.RawMessage, bool, error) {
+	l, err := d.line()
+	if err != nil {
+		return nil, false, fmt.Errorf("store: logical dump is truncated: %w", err)
+	}
+	if len(l) == 0 || l[0] != '[' {
+		d.pending = l
+		return nil, false, nil
+	}
+	var row []json.RawMessage
+	if err := json.Unmarshal(l, &row); err != nil {
+		return nil, false, fmt.Errorf("store: malformed row: %w", err)
+	}
+	return row, true, nil
+}

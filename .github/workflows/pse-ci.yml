@@ -1,0 +1,119 @@
+# Ether-Remix — contrôles du fork.
+# Contrôles ciblés sous Linux pour limiter le coût des vérifications. La CI complète d'Ether (ci.yml, matrice
+# Linux/Windows/macOS) reste désactivée dans ce dépôt.
+# Pas de second passage sur main : chaque PR a déjà été vérifiée, et la
+# synchronisation upstream appelle ce workflow (workflow_call). Les tests de
+# l'interface (~9 min) ne tournent que si une PR touche web/ ou le dist.
+name: Ether-Remix · CI
+
+on:
+  pull_request:
+    paths-ignore: ["**.md", "docs/**", "release-notes/**"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+
+concurrency:
+  group: pse-ci-${{ inputs.ref || github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    name: Fichiers modifiés
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.diff.outputs.web }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "web=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files=$(gh api "repos/${{ github.repository }}/pulls/$PR/files" --paginate -q '.[].filename')
+          if echo "$files" | grep -qE '^(web/|internal/admin/dist/|\.github/workflows/pse-ci\.yml$)'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web=false" >> "$GITHUB_OUTPUT"
+            echo "Interface non modifiée : tests web ignorés."
+          fi
+
+
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          out=$(gofmt -l cmd internal sdk 2>/dev/null || true)
+          test -z "$out" || { echo "$out"; echo "::error::fichiers non formatés"; exit 1; }
+      - name: Build (CGO_ENABLED=0)
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Tests des ajouts du fork et des paquets qu'ils touchent
+        run: |
+          pkgs="$(go list ./internal/pse/... 2>/dev/null || true)"
+          pkgs="$pkgs $(cat .github/pse/test-packages 2>/dev/null | grep -v '^#' || true)"
+          if [ -n "$(echo $pkgs | tr -d ' ')" ]; then
+            go test -count=1 -timeout 25m $pkgs
+          else
+            echo "Aucun paquet du fork à tester."
+          fi
+
+  web:
+    name: Interface web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        working-directory: web
+        run: pnpm typecheck
+      - name: Test
+        working-directory: web
+        timeout-minutes: 14
+        run: pnpm test
+      - name: Build
+        working-directory: web
+        run: pnpm build
+      - name: Interface embarquée à jour
+        run: |
+          git status --porcelain internal/admin/dist
+          test -z "$(git status --porcelain internal/admin/dist)" || {
+            echo "::error::internal/admin/dist n'est pas à jour : lancer 'pnpm build' dans web/ et committer"; exit 1; }

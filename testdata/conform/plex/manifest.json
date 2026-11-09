@@ -1,0 +1,37 @@
+{
+  "discoveryWarnings": [],
+  "fixtureCounts": {
+    "appletv": 62,
+    "decisions": 1,
+    "ios": 62,
+    "web": 62
+  },
+  "fixturePolicy": "Response listings are trimmed to the first 50 entries per repeated container child.",
+  "requestErrors": null,
+  "trimmedResponses": [
+    "web /hubs/sections/{{section}} trimmed to first 50 entries",
+    "web /hubs/sections/{{section}} trimmed to first 50 entries",
+    "web /:/prefs trimmed to first 50 entries",
+    "web /:/prefs trimmed to first 50 entries",
+    "ios /hubs/sections/{{section}} trimmed to first 50 entries",
+    "ios /hubs/sections/{{section}} trimmed to first 50 entries",
+    "ios /:/prefs trimmed to first 50 entries",
+    "ios /:/prefs trimmed to first 50 entries",
+    "appletv /hubs/sections/{{section}} trimmed to first 50 entries",
+    "appletv /hubs/sections/{{section}} trimmed to first 50 entries",
+    "appletv /:/prefs trimmed to first 50 entries",
+    "appletv /:/prefs trimmed to first 50 entries",
+    "appletv /library/people/{{personKey}}/media trimmed to first 50 entries",
+    "appletv /library/people/{{personKey}}/media trimmed to first 50 entries",
+    "appletv /library/people/{{personTagKey}}/media trimmed to first 50 entries",
+    "appletv /library/people/{{personTagKey}}/media trimmed to first 50 entries",
+    "ios /library/people/{{personKey}}/media trimmed to first 50 entries",
+    "ios /library/people/{{personKey}}/media trimmed to first 50 entries",
+    "ios /library/people/{{personTagKey}}/media trimmed to first 50 entries",
+    "ios /library/people/{{personTagKey}}/media trimmed to first 50 entries",
+    "web /library/people/{{personKey}}/media trimmed to first 50 entries",
+    "web /library/people/{{personKey}}/media trimmed to first 50 entries",
+    "web /library/people/{{personTagKey}}/media trimmed to first 50 entries",
+    "web /library/people/{{personTagKey}}/media trimmed to first 50 entries"
+  ]
+}

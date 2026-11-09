@@ -1,0 +1,943 @@
+import {
+  Alert,
+  AlertDescription,
+  Button,
+  Input,
+  PagedTable,
+  SearchSelect,
+  Select,
+  SettingsSection,
+  toast,
+} from "@braedonsaunders/appkit-ui";
+import { Download, FileUp, Plus, RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { ErrorPanel, LoadingRows } from "../../components/feedback";
+import { useClustered } from "./Cluster";
+import { NumberInput, PasswordInput } from "../../components/fields";
+import { Section } from "../../components/layout";
+import { SaveBar, useDraft } from "../../components/SaveBar";
+import { SettingsRow } from "../../components/SettingsRow";
+import { restoreApi, type RestoreState } from "../../lib/ops";
+import { PendingRestore, RestoreReportPanel } from "./RestoreReport";
+import { RestoreDrawer, type RestoreSource } from "./RestoreDrawer";
+import { getLocale, localized, t, tn } from "../../i18n";
+import {
+  api,
+  apiBlob,
+  apiFetch,
+  API_BASE,
+  errorMessage,
+  getToken,
+  SESSION_HEADER,
+} from "../../lib/api";
+import { listPlexServers } from "../../lib/plex-servers";
+import { useAsync } from "../../lib/hooks";
+import { DatabaseRecovery } from "./DatabaseRecovery";
+import { formatBytes } from "../../lib/format";
+import type { EtherUser } from "../../lib/types";
+import { pagedTableLabels, searchSelectLabels } from "../../i18n/appkit-labels";
+
+type Plan = {
+  id: string;
+  imported: boolean;
+  items: { title: string; key: number; views: number; rating: number; offsetMs: number }[];
+  lists: { name: string; kind: string; keys: number[] }[];
+  warnings: string[];
+};
+type PreviewStatus = {
+  id: string;
+  status: "running" | "done" | "error" | "cancelled";
+  progress?: { scanned?: number };
+  error?: string;
+  plan?: Plan;
+};
+type Schedule = { intervalHours: number; retain: number; sharedDir?: string };
+type Snapshot = {
+  name: string;
+  size: number;
+  created: string;
+  /** Clustered servers: the node that wrote (and, unless shared, holds) the bundle. */
+  node?: string;
+  nodeId?: string;
+  /** In the shared backup directory every node reaches. */
+  shared?: boolean;
+  /** On another node's disk: download it from that node. */
+  remote?: boolean;
+};
+type Backups = {
+  snapshots: Snapshot[] | null;
+  settings: Schedule;
+  warning: string;
+};
+
+/** Where a clustered snapshot lives, for the Location column. */
+function snapshotLocation(s: Snapshot): string {
+  if (s.shared) return t("Shared folder");
+  const node = s.node || s.nodeId || "";
+  if (!node) return "";
+  return s.remote ? node : t("{node} (this node)", { node });
+}
+
+const base = "/adoption";
+const post = <T,>(path: string, body: unknown = {}) =>
+  apiFetch<T>(base + path, { method: "POST", body: JSON.stringify(body) });
+
+function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function download(path: string, name: string) {
+  saveBlob(await apiBlob(API_BASE + base + path), name);
+}
+
+async function failure(res: Response): Promise<Error> {
+  const data = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+  return new Error(data.error?.message ?? t("Request failed ({status})", { status: res.status }));
+}
+
+async function upload(
+  path: string,
+  file: File,
+  contentType: string,
+  headers: Record<string, string> = {},
+) {
+  const res = await fetch(API_BASE + base + path, {
+    method: "POST",
+    body: file,
+    headers: {
+      ...headers,
+      [SESSION_HEADER]: getToken(),
+      "X-Ether-Request": "1",
+      "Content-Type": contentType,
+    },
+  });
+  if (!res.ok) throw await failure(res);
+  return (await res.json()) as unknown;
+}
+
+/** Backups leave the server encrypted with a password of at least this length. */
+const MIN_BACKUP_PASSWORD = 12;
+/** Downloads a snapshot encrypted with password (never stored). */
+async function exportBackup(name: string, password: string) {
+  const res = await fetch(API_BASE + base + "/backups/export/" + encodeURIComponent(name), {
+    method: "POST",
+    body: JSON.stringify({ password }),
+    headers: {
+      [SESSION_HEADER]: getToken(),
+      "X-Ether-Request": "1",
+      "Content-Type": "application/json",
+    },
+  });
+  if (!res.ok) throw await failure(res);
+  saveBlob(await res.blob(), name.replace(/\.tar\.gz$/, "") + ".etherbackup");
+}
+
+/** Runs one action at a time, reporting failures as toasts. */
+function useBusy() {
+  const [busy, setBusy] = useState(false);
+  const run = useCallback(async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      toast.error(errorMessage(e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  return { busy, run };
+}
+
+function useImportViewers() {
+  const [users, setUsers] = useState<EtherUser[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.users().then(
+      (us) => {
+        if (live) setUsers(us);
+      },
+      (e) => toast.error(errorMessage(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return users;
+}
+
+/** A native file picker styled as a button. */
+function FilePick({
+  label,
+  accept,
+  disabled,
+  onFile,
+}: {
+  label: string;
+  accept: string;
+  disabled?: boolean;
+  onFile: (file: File) => void;
+}) {
+  return (
+    <label
+      className={`relative inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-sm font-medium text-fg shadow-sm hover:bg-surface-hover focus-within:ring-2 focus-within:ring-ring/50 ${disabled ? "pointer-events-none opacity-50" : ""}`}
+    >
+      <FileUp size={14} /> {label}
+      <input
+        className="sr-only"
+        type="file"
+        accept={accept}
+        aria-label={label}
+        disabled={disabled}
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0];
+          if (file) onFile(file);
+          e.currentTarget.value = "";
+        }}
+      />
+    </label>
+  );
+}
+
+/**
+ * Backups & import: the automatic backup schedule edited in place, snapshots
+ * and restore on one tab; one-off imports from Plex, Trakt and Letterboxd on
+ * the other. Both stay mounted so a half-finished import survives a tab switch.
+ */
+export function BackupsAndImport({ tab = "backups" }: { tab?: "backups" | "import" }) {
+  const users = useImportViewers();
+  const clustered = useClustered();
+  const [data, setData] = useState<Backups | null>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  // The guided restore: what the drawer restores, and this server's restore state.
+  const [restoring, setRestoring] = useState<RestoreSource | null>(null);
+  const [restore, setRestore] = useState<RestoreState | null>(null);
+  // Held in memory only: never saved, and gone when the page closes.
+  const [password, setPassword] = useState("");
+  const passwordOK = password.length >= MIN_BACKUP_PASSWORD;
+  const passwordInput = useRef<HTMLInputElement>(null);
+  const [passwordPrompt, setPasswordPrompt] = useState(false);
+  const [saveError, setSaveError] = useState<unknown>(null);
+  const [saving, setSaving] = useState(false);
+  const { busy, run } = useBusy();
+  const { draft, setDraft, dirty, reset } = useDraft<Schedule>(data?.settings);
+
+  const load = useCallback(async () => {
+    try {
+      setData(await apiFetch<Backups>(base + "/backups/"));
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e);
+    }
+    // The restore report is an extra: a failure leaves the page usable.
+    restoreApi.state().then(setRestore, () => setRestore(null));
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const saveSchedule = async () => {
+    if (!draft) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await post("/backups/settings", {
+        intervalHours: draft.intervalHours,
+        retain: draft.retain,
+        ...(clustered ? { sharedDir: (draft.sharedDir ?? "").trim() } : {}),
+      });
+      toast.success(t("Settings saved"), { description: t("Automatic backups") });
+      await load();
+    } catch (e) {
+      setSaveError(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <div hidden={tab !== "backups"} className="space-y-6">
+        <DatabaseRecovery />
+        {loadError && !data ? (
+          <ErrorPanel error={loadError} onRetry={() => void load()} />
+        ) : (
+          <>
+            {restore?.report ? (
+              <RestoreReportPanel
+                report={restore.report}
+                onUndo={() => setRestoring({ kind: "undo", report: restore.report! })}
+                onDismissed={() => setRestore({ ...restore, report: null })}
+              />
+            ) : null}
+            {restore?.pending ? <PendingRestore onCancelled={() => void load()} /> : null}
+            <SettingsSection
+              title={t("Automatic backups")}
+              description={t("Snapshots hold your settings and a consistent copy of the database.")}
+            >
+              {draft ? (
+                <>
+                  <SettingsRow
+                    title={<label htmlFor="backup-interval">{t("Back up every")}</label>}
+                    description={t("0 turns automatic backups off.")}
+                    control={
+                      <span className="flex items-center gap-2">
+                        <NumberInput
+                          id="backup-interval"
+                          aria-label={t("Back up every")}
+                          className="w-24"
+                          min={0}
+                          max={8760}
+                          step={1}
+                          value={draft.intervalHours}
+                          onChange={(n) => setDraft({ ...draft, intervalHours: n })}
+                        />
+                        <span className="text-sm text-fg-muted">{t("hours")}</span>
+                      </span>
+                    }
+                  />
+                  <SettingsRow
+                    title={<label htmlFor="backup-retain">{t("Snapshots to keep")}</label>}
+                    description={t(
+                      "The oldest snapshot is removed when a new one would exceed this.",
+                    )}
+                    control={
+                      <NumberInput
+                        id="backup-retain"
+                        aria-label={t("Snapshots to keep")}
+                        className="w-24"
+                        min={1}
+                        max={365}
+                        step={1}
+                        value={draft.retain}
+                        onChange={(n) => setDraft({ ...draft, retain: n })}
+                      />
+                    }
+                  />
+                  {clustered ? (
+                    <SettingsRow
+                      stacked
+                      title={<label htmlFor="backup-shared-dir">{t("Shared backup folder")}</label>}
+                      description={t(
+                        "A folder every node reaches at the same path, such as a network share. Leave empty to keep each backup on the node that made it.",
+                      )}
+                    >
+                      <Input
+                        id="backup-shared-dir"
+                        placeholder="/mnt/backups/ether"
+                        value={draft.sharedDir ?? ""}
+                        onChange={(e) => setDraft({ ...draft, sharedDir: e.currentTarget.value })}
+                      />
+                    </SettingsRow>
+                  ) : null}
+                </>
+              ) : (
+                <div className="px-5 py-4">
+                  <LoadingRows rows={2} />
+                </div>
+              )}
+            </SettingsSection>
+
+            <Section
+              title={t("Snapshots")}
+              description={t(
+                "Snapshots hold your settings, database and the key that unlocks saved credentials. Ones kept on this server are readable only by Ether's account; downloads are encrypted with the password below.",
+              )}
+              actions={
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void run(() => post("/backups/").then(load))}
+                >
+                  <Plus size={14} /> {busy ? t("Working…") : t("Create snapshot")}
+                </Button>
+              }
+            >
+              {data?.warning ? (
+                <Alert variant="warning" role="status">
+                  <AlertDescription>{data.warning}</AlertDescription>
+                </Alert>
+              ) : null}
+              <SettingsRow
+                stacked
+                title={<label htmlFor="backup-password">{t("Backup password")}</label>}
+                description={t(
+                  "Downloads are encrypted with it and restoring one asks for it again. At least {min} characters; Ether does not keep it.",
+                  { min: MIN_BACKUP_PASSWORD },
+                )}
+              >
+                <PasswordInput
+                  id="backup-password"
+                  ref={passwordInput}
+                  aria-invalid={passwordPrompt && !passwordOK}
+                  aria-describedby={
+                    passwordPrompt && !passwordOK ? "backup-password-prompt" : undefined
+                  }
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  value={password}
+                  onChange={(e) => setPassword(e.currentTarget.value)}
+                />
+              </SettingsRow>
+              {passwordPrompt && !passwordOK ? (
+                <Alert variant="warning" role="alert" id="backup-password-prompt">
+                  <AlertDescription>
+                    {t("Enter a backup password to download")}
+                    {". "}
+                    {t(
+                      "Downloads are encrypted with it and restoring one asks for it again. At least {min} characters; Ether does not keep it.",
+                      { min: MIN_BACKUP_PASSWORD },
+                    )}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+              {data ? (
+                <PagedTable
+                  rows={data.snapshots ?? []}
+                  rowKey={(s) => s.name}
+                  pageSize={10}
+                  empty={t(
+                    "No snapshots available here. If you saved a backup elsewhere, choose it below.",
+                  )}
+                  defaultSort={{ key: "created", dir: "desc" }}
+                  labels={pagedTableLabels({ searchLabel: t("Search backups") })}
+                  columns={[
+                    {
+                      key: "created",
+                      header: t("Created"),
+                      search: (s) => s.name,
+                      sortValue: (s) => s.created,
+                      cell: (s) => new Date(s.created).toLocaleString(getLocale()),
+                    },
+                    {
+                      key: "size",
+                      header: t("Size"),
+                      align: "right",
+                      sortValue: (s) => s.size,
+                      cell: (s) => <span className="tabular-nums">{formatBytes(s.size)}</span>,
+                    },
+                    ...((data.snapshots ?? []).some((s) => snapshotLocation(s))
+                      ? [
+                          {
+                            key: "location",
+                            header: t("Location"),
+                            search: snapshotLocation,
+                            sortValue: snapshotLocation,
+                            cell: (s: Snapshot) => (
+                              <span className="text-fg-muted">{snapshotLocation(s) || "—"}</span>
+                            ),
+                          },
+                        ]
+                      : []),
+                    {
+                      key: "download",
+                      header: "",
+                      align: "right",
+                      cell: (s) => (
+                        <div className="flex flex-col items-end gap-1">
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={busy || s.remote || restoring !== null}
+                              aria-label={t("Restore {name}", { name: s.name })}
+                              onClick={() => setRestoring({ kind: "snapshot", name: s.name })}
+                            >
+                              <RotateCcw size={14} /> {t("Restore")}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={busy || s.remote}
+                              aria-label={t("Download {name}", { name: s.name })}
+                              onClick={() => {
+                                if (!passwordOK) {
+                                  setPasswordPrompt(true);
+                                  passwordInput.current?.focus();
+                                  passwordInput.current?.scrollIntoView?.({ block: "center" });
+                                  return;
+                                }
+                                void run(() => exportBackup(s.name, password));
+                              }}
+                            >
+                              <Download size={14} /> {t("Download")}
+                            </Button>
+                          </div>
+                          {s.remote ? (
+                            <p className="max-w-xs text-xs text-fg-muted">
+                              {s.node
+                                ? t("Stored on {node}: download it from that node's admin page", {
+                                    node: s.node,
+                                  })
+                                : t(
+                                    "Stored on another node: download it from that node's admin page",
+                                  )}
+                            </p>
+                          ) : null}
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              ) : (
+                <LoadingRows rows={3} />
+              )}
+            </Section>
+
+            <Section
+              title={t("Restore a backup")}
+              description={
+                restore?.oneClick === false
+                  ? t(
+                      "Restore a backup you downloaded from Ether. Ether checks it first; on a cluster it then guides you through replacing the shared database.",
+                    )
+                  : t(
+                      "Restore a backup you downloaded from Ether, or pick a snapshot above. Ether checks it first, keeps your current data so you can undo, and restarts by itself.",
+                    )
+              }
+            >
+              <FilePick
+                label={t("Choose backup file")}
+                accept=".etherbackup,.tar.gz,.gz"
+                disabled={busy || restoring !== null}
+                onFile={(file) => setRestoring({ kind: "upload", file, password })}
+              />
+            </Section>
+          </>
+        )}
+      </div>
+      <div hidden={tab !== "import"} className="space-y-6">
+        <PlexImport users={users} />
+        <CsvTools users={users} />
+      </div>
+
+      <RestoreDrawer
+        source={restoring}
+        oneClick={restore?.oneClick !== false}
+        onClose={() => {
+          setRestoring(null);
+          void load();
+        }}
+      />
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        error={saveError}
+        onSave={saveSchedule}
+        onDiscard={() => {
+          reset();
+          setSaveError(null);
+        }}
+      />
+    </>
+  );
+}
+
+// ---- Imports ---------------------------------------------------------------------------
+
+function ViewerPick({
+  label,
+  users,
+  value,
+  onChange,
+}: {
+  label: string;
+  users: EtherUser[] | null;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="w-full sm:w-64">
+      <SearchSelect
+        {...searchSelectLabels()}
+        ariaLabel={label}
+        placeholder={users ? t("Choose a viewer") : t("Loading viewers…")}
+        value={value}
+        onChange={onChange}
+        options={(users ?? []).map((u) => ({ value: String(u.id), label: u.title || u.username }))}
+      />
+    </div>
+  );
+}
+
+/** Step two of every import: what will change, and the explicit import action. */
+function ImportReview({
+  id,
+  plan,
+  busy,
+  onImport,
+}: {
+  id: string;
+  plan: Plan;
+  busy: boolean;
+  onImport: () => void;
+}) {
+  return (
+    <Section
+      id={id}
+      title={plan.imported ? t("Imported") : t("Review import")}
+      description={`${tn(plan.items.length, "{count} watch record", "{count} watch records")} · ${tn(
+        plan.lists.length,
+        "{count} playlist or collection",
+        "{count} playlists and collections",
+      )}`}
+      footer={
+        <Button size="sm" disabled={busy || plan.imported} onClick={onImport}>
+          {plan.imported ? t("Import complete") : t("Import reviewed records")}
+        </Button>
+      }
+    >
+      {plan.warnings.length > 0 ? (
+        <ul className="max-h-52 list-disc space-y-1 overflow-auto pl-5 text-sm text-warning">
+          {plan.warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      ) : null}
+      {plan.items.length ? (
+        <ul className="max-h-64 space-y-0.5 overflow-auto text-sm">
+          {plan.items.map((it, i) => (
+            <li key={i}>
+              {it.title} · {tn(it.views, "{count} watch", "{count} watches")} ·{" "}
+              {t("rating {rating}", { rating: it.rating || "—" })}
+              {it.offsetMs > 0
+                ? ` · ${t("resume at {minutes} min", { minutes: Math.floor(it.offsetMs / 60000) })}`
+                : ""}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-fg-muted">{t("Nothing matched.")}</p>
+      )}
+    </Section>
+  );
+}
+
+function useImportPlan(reviewId: string) {
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const { busy, run } = useBusy();
+  useEffect(() => {
+    if (plan)
+      document.getElementById(reviewId)?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [plan, reviewId]);
+  const review: ReactNode = plan ? (
+    <ImportReview
+      id={reviewId}
+      plan={plan}
+      busy={busy}
+      onImport={() =>
+        void run(async () => {
+          setPlan(await post<Plan>("/migration/import", { id: plan.id }));
+          toast.success(t("Import complete"));
+        })
+      }
+    />
+  ) : null;
+  return { setPlan, busy, run, review };
+}
+
+/** The viewer imports apply to, defaulting to the first one. */
+function useViewerChoice(users: EtherUser[] | null) {
+  const [viewer, setViewer] = useState("");
+  useEffect(() => {
+    if (users?.[0]) {
+      const defaultViewer = String(users[0].id);
+      // A viewer may be chosen while this default update is still queued.
+      setViewer((current) => current || defaultViewer);
+    }
+  }, [users]);
+  return [viewer, setViewer] as const;
+}
+
+function PlexImport({ users }: { users: EtherUser[] | null }) {
+  const [viewer, setViewer] = useViewerChoice(users);
+  const servers = useAsync(listPlexServers, []);
+  const [serverID, setServerID] = useState("");
+  const url = (servers.data ?? []).find((s) => String(s.id) === serverID)?.url ?? "";
+  const [token, setToken] = useState("");
+  const [scanned, setScanned] = useState<number | null>(null);
+  const [previewError, setPreviewError] = useState("");
+  const { setPlan, busy, run, review } = useImportPlan("plex-import-review");
+  const generation = useRef(0);
+  const jobID = useRef("");
+  const cancelJob = (id: string) => {
+    if (!id) return;
+    void post(`/migration/preview/${id}/cancel`).catch(() => {});
+  };
+  const stopPreview = () => {
+    generation.current += 1;
+    const id = jobID.current;
+    jobID.current = "";
+    cancelJob(id);
+    setScanned(null);
+  };
+  const edit = (fn: (v: string) => void) => (v: string) => {
+    fn(v);
+    setPlan(null);
+    setPreviewError("");
+    stopPreview();
+  };
+  return (
+    <>
+      <SettingsSection
+        title={t("One-time Plex import")}
+        description={t(
+          "Bring one viewer's watch history, ratings and playlists across from another Plex server. That server is only read, and you review everything before it's imported.",
+        )}
+        footer={
+          busy ? (
+            <Button size="sm" variant="outline" onClick={stopPreview}>
+              {t("Cancel preview")}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!url || !token || !viewer}
+              onClick={() =>
+                void run(async () => {
+                  setPreviewError("");
+                  setPlan(null);
+                  setScanned(0);
+                  const mine = ++generation.current;
+                  const started = await post<PreviewStatus>("/migration/preview", {
+                    url,
+                    token,
+                    viewers: [
+                      {
+                        localUserId: Number(viewer),
+                        name: users?.find((u) => String(u.id) === viewer)?.username,
+                      },
+                    ],
+                  });
+                  if (generation.current !== mine) {
+                    cancelJob(started.id);
+                    return;
+                  }
+                  jobID.current = started.id;
+                  try {
+                    for (;;) {
+                      if (generation.current !== mine) return;
+                      const st = await apiFetch<PreviewStatus>(
+                        `${base}/migration/preview/${started.id}`,
+                      );
+                      if (generation.current !== mine) return;
+                      setScanned(st.progress?.scanned ?? 0);
+                      if (st.status === "done") {
+                        if (!st.plan?.id) throw new Error(t("Plex preview failed"));
+                        setPlan(st.plan);
+                        setToken("");
+                        setScanned(null);
+                        jobID.current = "";
+                        return;
+                      }
+                      if (st.status === "error") {
+                        throw new Error(
+                          t("The Plex preview stopped: {error}", {
+                            error: st.error || t("Plex preview failed"),
+                          }),
+                        );
+                      }
+                      if (st.status === "cancelled") {
+                        setScanned(null);
+                        jobID.current = "";
+                        return;
+                      }
+                      await new Promise((resolve) => setTimeout(resolve, 400));
+                    }
+                  } catch (e) {
+                    if (generation.current !== mine) return;
+                    setPreviewError(errorMessage(e));
+                    setScanned(null);
+                    jobID.current = "";
+                    throw e;
+                  }
+                })
+              }
+            >
+              {t("Preview import")}
+            </Button>
+          )
+        }
+      >
+        <SettingsRow
+          title={t("Ether viewer")}
+          description={t(
+            "Who the history belongs to here. To add friends, share your library with them in Plex first.",
+          )}
+          control={
+            <ViewerPick
+              label={t("Ether viewer")}
+              users={users}
+              value={viewer}
+              onChange={edit(setViewer)}
+            />
+          }
+        />
+        <SettingsRow
+          stacked
+          title={<label htmlFor="plex-import-server">{t("Server")}</label>}
+          description={
+            <>
+              {t("Choose a server from Plex watch sync.")}{" "}
+              <a className="text-primary hover:underline" href="/ether/services/plexservers">
+                {t("Manage Plex watch sync")}
+              </a>
+            </>
+          }
+        >
+          {servers.error ? (
+            <ErrorPanel error={servers.error} onRetry={() => void servers.reload()} />
+          ) : null}
+          <Select
+            id="plex-import-server"
+            value={serverID}
+            disabled={servers.loading || !!servers.error}
+            onChange={(e) => edit(setServerID)(e.currentTarget.value)}
+          >
+            <option value="">{t("Choose a server from Plex watch sync.")}</option>
+            {(servers.data ?? []).map((server) => (
+              <option key={server.id} value={server.id}>
+                {server.name}
+              </option>
+            ))}
+          </Select>
+        </SettingsRow>
+        <SettingsRow
+          stacked
+          title={<label htmlFor="plex-import-token">{t("Source viewer’s Plex token")}</label>}
+          description={t(
+            "That viewer's access token on the source server. It's used for the preview and not stored.",
+          )}
+        >
+          <PasswordInput
+            id="plex-import-token"
+            autoComplete="off"
+            value={token}
+            onChange={(e) => edit(setToken)(e.currentTarget.value)}
+          />
+        </SettingsRow>
+        {scanned !== null && (
+          <Alert variant="info" role="status">
+            <AlertDescription>
+              {t("Reading the Plex server… {count} scanned", { count: scanned })}
+            </AlertDescription>
+          </Alert>
+        )}
+        {previewError && (
+          <Alert variant="destructive" role="alert">
+            <AlertDescription>{previewError}</AlertDescription>
+          </Alert>
+        )}
+      </SettingsSection>
+      {review}
+    </>
+  );
+}
+
+const CSV_SERVICES = [
+  { value: "letterboxd", label: "Letterboxd" },
+  { value: "trakt", label: "Trakt" },
+];
+const CSV_KINDS = localized(() => [
+  { value: "history", label: t("History") },
+  { value: "ratings", label: t("Ratings") },
+  { value: "watchlist", label: t("Watchlist") },
+]);
+
+function CsvTools({ users }: { users: EtherUser[] | null }) {
+  const [viewer, setViewer] = useViewerChoice(users);
+  const [format, setFormat] = useState("letterboxd");
+  const [kind, setKind] = useState("history");
+  const { setPlan, busy, run, review } = useImportPlan("csv-import-review");
+  const query = `viewer=${viewer}&format=${format}&kind=${kind}`;
+  const edit = (fn: (v: string) => void) => (v: string) => {
+    fn(v);
+    setPlan(null);
+  };
+  return (
+    <>
+      <SettingsSection
+        title={t("Trakt and Letterboxd files")}
+        description={t(
+          "Export or import a diary, ratings or watchlist as CSV. Letterboxd matches need the same title and year.",
+        )}
+        footer={
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || !viewer}
+              onClick={() =>
+                void run(() =>
+                  download(`/migration/csv/export?${query}`, `ether-${format}-${kind}.csv`),
+                )
+              }
+            >
+              <Download size={14} /> {t("Export CSV")}
+            </Button>
+            <FilePick
+              label={t("Preview a CSV import")}
+              accept=".csv,text/csv"
+              disabled={busy || !viewer}
+              onFile={(file) =>
+                void run(async () => {
+                  setPlan(
+                    (await upload(`/migration/csv/preview?${query}`, file, "text/csv")) as Plan,
+                  );
+                })
+              }
+            />
+          </>
+        }
+      >
+        <SettingsRow
+          title={t("Viewer")}
+          control={
+            <ViewerPick
+              label={t("CSV viewer")}
+              users={users}
+              value={viewer}
+              onChange={edit(setViewer)}
+            />
+          }
+        />
+        <SettingsRow
+          title={t("Service")}
+          control={
+            <div className="w-48">
+              <SearchSelect
+                {...searchSelectLabels()}
+                ariaLabel={t("CSV service")}
+                value={format}
+                onChange={edit(setFormat)}
+                options={CSV_SERVICES}
+              />
+            </div>
+          }
+        />
+        <SettingsRow
+          title={t("Contents")}
+          control={
+            <div className="w-48">
+              <SearchSelect
+                {...searchSelectLabels()}
+                ariaLabel={t("CSV contents")}
+                value={kind}
+                onChange={edit(setKind)}
+                options={CSV_KINDS}
+              />
+            </div>
+          }
+        />
+      </SettingsSection>
+      {review}
+    </>
+  );
+}

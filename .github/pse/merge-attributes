@@ -1,0 +1,6 @@
+# Attributs appliqués uniquement pendant la synchronisation upstream
+# (copiés dans .git/info/attributes par pse-sync-upstream.yml).
+# La version du fork prime pour ces fichiers lorsque les deux côtés les ont modifiés.
+README.md merge=ours
+README.fr.md merge=ours
+README.en.md merge=ours

@@ -1,0 +1,449 @@
+{
+  "v": 1,
+  "moment": "upnext",
+  "duration": 8,
+  "poster": 5.5,
+  "layers": [
+    {
+      "id": "bg",
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 1080,
+      "fill": {
+        "radial": [
+          960,
+          480,
+          0,
+          1300
+        ],
+        "stops": [
+          [
+            0,
+            "{glow}"
+          ],
+          [
+            1,
+            "{bg}"
+          ]
+        ]
+      },
+      "name": "Background"
+    },
+    {
+      "id": "beam",
+      "type": "path",
+      "path": "M 150 0 L 520 0 L 1500 1080 L 700 1080 Z",
+      "fill": {
+        "linear": [
+          0,
+          0,
+          0,
+          1080
+        ],
+        "stops": [
+          [
+            0,
+            "{accent}@0.06"
+          ],
+          [
+            1,
+            "{accent}@0"
+          ]
+        ]
+      },
+      "name": "Beam"
+    },
+    {
+      "id": "dust",
+      "type": "particles",
+      "count": 70,
+      "fill": "{accent}@0.4",
+      "seed": 11,
+      "name": "Dust"
+    },
+    {
+      "id": "art-illustration",
+      "type": "group",
+      "x": 0,
+      "y": 0,
+      "clip": "M 16 0 H 1904 Q 1920 0 1920 16 V 1064 Q 1920 1080 1904 1080 H 16 Q 0 1080 0 1064 V 16 Q 0 0 16 0 Z",
+      "layers": [
+        {
+          "id": "art-sky",
+          "type": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080,
+          "fill": {
+            "linear": [
+              0,
+              0,
+              0,
+              1080
+            ],
+            "stops": [
+              [
+                0,
+                "{control.detail4}"
+              ],
+              [
+                1,
+                "#bd794f"
+              ]
+            ]
+          },
+          "name": "Sky"
+        },
+        {
+          "id": "art-house",
+          "type": "rect",
+          "x": 345.59999999999997,
+          "y": 345.6,
+          "w": 1228.8,
+          "h": 734.4000000000001,
+          "fill": "#22313a",
+          "name": "House"
+        },
+        {
+          "id": "art-roof",
+          "type": "path",
+          "path": "M 153.6 367.20000000000005 L 960.0 108.0 L 1766.4 367.20000000000005 Z",
+          "fill": "{control.detail3}",
+          "name": "Roof"
+        },
+        {
+          "id": "art-window00",
+          "type": "rect",
+          "x": 460.79999999999995,
+          "y": 432.0,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail2}",
+          "name": "Window 1"
+        },
+        {
+          "id": "art-window01",
+          "type": "rect",
+          "x": 729.6,
+          "y": 432.0,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 2"
+        },
+        {
+          "id": "art-window02",
+          "type": "rect",
+          "x": 998.4000000000001,
+          "y": 432.0,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 3"
+        },
+        {
+          "id": "art-window03",
+          "type": "rect",
+          "x": 1267.2,
+          "y": 432.0,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail2}",
+          "name": "Window 4"
+        },
+        {
+          "id": "art-window10",
+          "type": "rect",
+          "x": 460.79999999999995,
+          "y": 615.6,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 11"
+        },
+        {
+          "id": "art-window11",
+          "type": "rect",
+          "x": 729.6,
+          "y": 615.6,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 12"
+        },
+        {
+          "id": "art-window12",
+          "type": "rect",
+          "x": 998.4000000000001,
+          "y": 615.6,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail2}",
+          "name": "Window 13"
+        },
+        {
+          "id": "art-window13",
+          "type": "rect",
+          "x": 1267.2,
+          "y": 615.6,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 14"
+        },
+        {
+          "id": "art-window20",
+          "type": "rect",
+          "x": 460.79999999999995,
+          "y": 799.2,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 21"
+        },
+        {
+          "id": "art-window21",
+          "type": "rect",
+          "x": 729.6,
+          "y": 799.2,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail2}",
+          "name": "Window 22"
+        },
+        {
+          "id": "art-window22",
+          "type": "rect",
+          "x": 998.4000000000001,
+          "y": 799.2,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 23"
+        },
+        {
+          "id": "art-window23",
+          "type": "rect",
+          "x": 1267.2,
+          "y": 799.2,
+          "w": 124.80000000000001,
+          "h": 118.8,
+          "fill": "{control.detail1}",
+          "name": "Window 24"
+        }
+      ],
+      "name": "Illustration"
+    },
+    {
+      "id": "art",
+      "type": "art",
+      "src": "{next.backdrop}",
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 1080,
+      "fit": "cover",
+      "name": "Art"
+    },
+    {
+      "id": "scrim",
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 1080,
+      "fill": {
+        "linear": [
+          0,
+          0,
+          1920,
+          0
+        ],
+        "stops": [
+          [
+            0,
+            "{bg}@0.95"
+          ],
+          [
+            1,
+            "{bg}@0.1"
+          ]
+        ]
+      },
+      "name": "Scrim"
+    },
+    {
+      "id": "kicker",
+      "type": "text",
+      "text": "{words.upNext}",
+      "x": 180,
+      "y": 290,
+      "size": 40,
+      "font": "{type.display}",
+      "fill": "{accent}",
+      "fit": "shrink",
+      "maxWidth": 1600,
+      "track": 6,
+      "opacity": {
+        "keys": [
+          [
+            0,
+            0
+          ],
+          [
+            0.4,
+            0
+          ],
+          [
+            1.8,
+            1,
+            "out"
+          ]
+        ]
+      },
+      "name": "Kicker"
+    },
+    {
+      "id": "Title",
+      "type": "text",
+      "text": "{next.title}",
+      "x": 180,
+      "y": 460,
+      "size": 112,
+      "font": "{type.display}",
+      "fill": "{text}",
+      "fit": "wrap",
+      "maxWidth": 920,
+      "maxLines": 2,
+      "opacity": {
+        "keys": [
+          [
+            0,
+            0
+          ],
+          [
+            0.4,
+            0
+          ],
+          [
+            1.8,
+            1,
+            "out"
+          ]
+        ]
+      },
+      "name": "Channel title"
+    },
+    {
+      "id": "meta",
+      "type": "text",
+      "text": "{next.meta}",
+      "x": 180,
+      "y": 680,
+      "size": 32,
+      "font": "{type.mono}",
+      "fill": "{text}",
+      "fit": "shrink",
+      "maxWidth": 1600,
+      "opacity": {
+        "keys": [
+          [
+            0,
+            0
+          ],
+          [
+            0.4,
+            0
+          ],
+          [
+            1.8,
+            1,
+            "out"
+          ]
+        ]
+      },
+      "name": "Meta"
+    },
+    {
+      "id": "logline",
+      "type": "text",
+      "text": "{next.logline}",
+      "x": 180,
+      "y": 770,
+      "size": 38,
+      "font": "{type.display}",
+      "fill": "{text}",
+      "fit": "wrap",
+      "maxWidth": 900,
+      "maxLines": 2,
+      "opacity": {
+        "keys": [
+          [
+            0,
+            0
+          ],
+          [
+            0.4,
+            0
+          ],
+          [
+            1.8,
+            1,
+            "out"
+          ]
+        ]
+      },
+      "name": "Logline"
+    },
+    {
+      "id": "time",
+      "type": "text",
+      "text": "{next.time}",
+      "x": 180,
+      "y": 930,
+      "size": 38,
+      "font": "{type.display}",
+      "fill": "{text}",
+      "fit": "shrink",
+      "maxWidth": 1600,
+      "opacity": {
+        "keys": [
+          [
+            0,
+            0
+          ],
+          [
+            0.4,
+            0
+          ],
+          [
+            1.8,
+            1,
+            "out"
+          ]
+        ]
+      },
+      "name": "Time"
+    }
+  ],
+  "post": [
+    {
+      "type": "grain",
+      "amount": "{textures.grain}"
+    },
+    {
+      "type": "vignette",
+      "amount": "{control.effect-vignette}"
+    }
+  ],
+  "slots": [
+    "next.backdrop",
+    "next.logline",
+    "next.meta",
+    "next.time",
+    "next.title"
+  ]
+}

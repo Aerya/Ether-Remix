@@ -1,0 +1,77 @@
+package availability
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+)
+
+type countingRecent struct {
+	*fakeCatalog
+	calls int
+}
+
+func (c *countingRecent) RecentShows(ctx context.Context, since time.Time) ([]core.Title, error) {
+	c.calls++
+	return c.fakeCatalog.RecentShows(ctx, since)
+}
+
+// Every library page excludes the hidden evidence-window titles, so the
+// answer is memoized: a second page reads no catalogue, and a new
+// observation recomputes it at once.
+func TestHiddenTitlesAreMemoizedUntilAnObservation(t *testing.T) {
+	x := setup(t)
+	recent := &countingRecent{fakeCatalog: x.cat}
+	x.s.d.Catalog = recent
+	show := core.Title{Key: core.ShowKey(7), Type: core.TypeShow, Title: "Series", Language: "en", Released: x.now.Add(-time.Hour)}
+	x.cat.titles[show.Key] = show
+	for range 3 {
+		if hidden := x.s.HiddenShows(t.Context()); len(hidden) != 1 || hidden[0] != show.Key {
+			t.Fatalf("hidden: %v", hidden)
+		}
+	}
+	if recent.calls != 1 {
+		t.Fatalf("read the recent catalogue %d times for three pages", recent.calls)
+	}
+	if err := x.s.retainFeed(t.Context(), x.f.sources[0], []core.Release{{ID: "x", Name: "Other.S01E01.1080p.WEB-DL", Indexer: "Fake"}}); err != nil {
+		t.Fatal(err)
+	}
+	x.s.HiddenShows(t.Context())
+	if recent.calls != 2 {
+		t.Fatalf("an observation did not recompute the hidden titles (%d reads)", recent.calls)
+	}
+}
+
+type gateCountingCatalog struct {
+	*fakeCatalog
+	changed int
+}
+
+func (c *gateCountingCatalog) ConsoleGateChanged() { c.changed++ }
+
+// Republishing the same hidden set must keep the catalogue's page cache:
+// a refresh on a large library otherwise made every browse a cache miss.
+// A new set or policy still invalidates it.
+func TestPublishHiddenInvalidatesOnlyOnChange(t *testing.T) {
+	x := setup(t)
+	cat := &gateCountingCatalog{fakeCatalog: x.cat}
+	x.s.d.Catalog = cat
+	publish := func(policy string, keys ...core.RatingKey) {
+		t.Helper()
+		if err := x.s.publishHidden(t.Context(), hiddenShows, policy, keys); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish("p", core.ShowKey(1))
+	publish("p", core.ShowKey(1))
+	if cat.changed != 1 {
+		t.Fatalf("an unchanged set invalidated the catalogue %d times", cat.changed)
+	}
+	publish("p", core.ShowKey(1), core.ShowKey(2))
+	publish("q", core.ShowKey(1), core.ShowKey(2))
+	if cat.changed != 3 {
+		t.Fatalf("a changed set or policy invalidated %d times, want 3", cat.changed)
+	}
+}

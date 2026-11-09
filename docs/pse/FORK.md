@@ -1,0 +1,91 @@
+# PSE fork rules
+
+“Ether-Remix” is the fork's public name. The code keeps the historical `pse` prefix (packages, `PSE_*` variables, `PSE-HOOK` markers) so neither configurations nor the upstream sync break.
+
+Goal: merge Ether upstream every day **without breaking PSE additions**, and without automatic conflict resolution on code.
+
+## Where code goes
+
+| Kind | Fork-owned location |
+| --- | --- |
+| Go | `internal/pse/<feature>/` (one package per addition) |
+| Go imported by a frontend | `internal/frontend/kit/<feature>/`: `TestFrontendImports` forbids frontends any other internal package (e.g. `scrobview`) |
+| Web UI | `web/src/pse/` |
+| PSE translations | `web/src/pse/i18n/` (supplementary catalogues, never in `web/src/i18n/locales/*.json`) |
+| Workflows | `.github/workflows/pse-*.yml`, support files in `.github/pse/` |
+| Documentation | `README.md`, `README.fr.md`, `docs/pse/` |
+
+Ether files are only changed for **hook points**: a few lines calling PSE code (registering a route, a service, a catalogue filter…). Every hook point is marked:
+
+```go
+// PSE-HOOK: <addition name> — see docs/pse/FORK.md
+```
+
+`git grep PSE-HOOK` lists everything that can conflict with upstream. Current hooks:
+
+| Ether file | Addition |
+| --- | --- |
+| `internal/notify/notify.go` (`deliver`) | French notifications (`internal/notify/pse_localize.go`) |
+| `internal/app/build_integrations.go` | release indexer (`internal/app/pse_indexer.go`), Subsonic API (`internal/app/pse_music.go`) |
+| `internal/catalog/browse.go` (`browseWhere`) | playable-only and French-language catalogue (`internal/catalog/pse_hooks.go`) |
+| `internal/catalog/browse_tally.go` (`tallyTotal`) | precomputed tally skipped when Ether-Remix filters apply (`pseFiltersCatalog`) |
+| `internal/core/interfaces.go` (`Filter.PSEUnplayable`, `Filter.PSEThemed`) | PSE indexer walks titles outside the playable-only catalogue (`internal/app/pse_indexer.go`); French filter on themed libraries despite `IncludeKeys` (`internal/catalog/pse_hooks.go`) |
+| `internal/catalog/sync.go` (background loop) | release dates for the French-language catalogue (`internal/catalog/pse_hooks.go`) |
+| `internal/frontends/mediabrowser/browse.go` (views, `/Items`, folder) | "Vus et notés" libraries, `AnyProviderIdEquals` (`internal/frontends/mediabrowser/pse_scrob.go`) |
+| `internal/frontends/mediabrowser/frontend.go` (`Handler`, wrapped router) | Music library for Jellyfin clients (`internal/frontends/mediabrowser/pse_music.go`, `internal/pse/music/jellyfin.go`) |
+| `internal/plex/routes.go` (middleware after `authenticate`), `internal/plex/handlers_library.go` (`handleSections`), `internal/plex/handlers_server.go` (`handleProviders`), `internal/plex/handlers_hubs.go` (`handleHubSearch`, `handleLibrarySearch`) | Music section for Plex clients (`internal/plex/pse_music.go`, `internal/pse/music/plex.go`); bridge without importing `internal/pse`: `internal/frontend/pse_music.go` |
+| `internal/plex/playlist_queries.go` (`writePlaylistListing`), `internal/frontends/mediabrowser/playlists.go` (`writePlaylists`) | Deezer and Last.fm playlists added to Ether's playlists (`internal/plex/pse_music.go`, `internal/frontends/mediabrowser/pse_music.go`, `internal/pse/music/playlists*.go`) |
+| `internal/frontends/mediabrowser/userdata.go` (`mutationRoutes`) | `POST …/UserData` (`internal/frontends/mediabrowser/pse_scrob.go`) |
+| `internal/app/extensions.go` (`extensionHandlers`) | PSE page API `/ether/api/pse/` (`internal/app/pse_console.go`, `internal/pse/console`) |
+| `internal/app/extend_builtins.go` | "PSE" menu entry (`internal/app/pse_descriptors.go`) |
+| `web/src/pages/settings/ConnectedServices.tsx` (import, “Watch tracking” group) | Scrob card and its side panel (`web/src/pse/ScrobCard.tsx`); playback push: `internal/pse/scrobpush`, `internal/app/pse_scrob.go` |
+| `web/src/pages/sources/Sources.tsx` (tab, gallery routing) and `web/src/pages/sources/Indexers.tsx` (`view` prop, filtered list, merged order) | Sources Stremio tab (`web/src/pse/stremioTab.ts`); adapted Ether test: `web/src/test/indexer-stremio.test.tsx` |
+| `internal/collections/builtins.go` (`refreshInterval`), `internal/collections/spec.go` (`refresh` validation), `web/src/lib/contract.ts` (`Refresh` type) | free "Nh" collection refresh, 1 to 168 h (`internal/collections/pse_refresh.go`, `web/src/pse/refresh.ts`) |
+| `web/src/pages/collections/SettingsPanels.tsx` (Refresh field), `web/src/pages/collections/Editor.tsx` and `web/src/pages/collections/CollectionDetail.tsx` (refresh label) | "Every N h" choice (`web/src/pse/RefreshField.tsx`) |
+| `web/src/pages/collections/Gallery.tsx` (import, header) | "Import an add-on" button: one collection per Stremio add-on catalog (`web/src/pse/AddonCatalogImport.tsx`) |
+| `internal/plex/server.go` (`sectionByID`, `canSeeSection`), `internal/plex/handlers_library.go` (`handleSections`, `parseBrowse`), `internal/plex/handlers_server.go` (`handleProviders`), `internal/plex/handlers_hubs.go` (`buildSectionHubs`), `internal/plex/handlers_metadata.go` (`sectionCollections`) | themed libraries for Plex clients, sections 5101 to 5199 (`internal/plex/pse_themes.go`, `internal/pse/themes`, `internal/collections/pse_keys.go`); bridge without importing `internal/pse`: `internal/frontend/pse_themes.go`; indexer priority titles: `internal/app/pse_themes.go` |
+| `web/src/App.tsx` (import, `BUILTIN_PAGES` with `/:tab?` tabs, `Languages` icon in the lucide import and `NAV_ICONS`) | Ether-Remix page (`web/src/pse/PsePage.tsx`), at the top of the menu under Overview (`internal/app/pse_descriptors.go`) |
+| `web/src/App.tsx` (sidebar footer) | version number linking to the GitHub repository (`web/src/pse/VersionLink.tsx`) |
+| `web/src/pages/Home.tsx` (import, `ActivityPanel` column) | Music panel on the Overview (`web/src/pse/MusicActivity.tsx`, `internal/pse/music/plays.go`) |
+| `.github/workflows/pr-image-build.yml` (`paths-ignore`) | no preview image for a PR that only touches documentation (`*.md`, `docs/`, `LICENSE`); `pr-image-publish.yml` only runs after a successful build, so it is skipped too |
+
+Every PSE setting goes through `internal/pse/pseenv`: the value saved in the console (`pse_settings` table) wins over the environment variable. A new addition reads its settings with `pseenv.Get` and declares them in `internal/pse/console/fields.go`.
+
+## Automatic synchronization
+
+Every day at 05:17 UTC, the workflow compares Ether with the public revision recorded in `.github/pse/upstream-base`. It applies only the delta using a three-way merge, without importing private history or adding Ether commits as parents.
+
+The three READMEs, `.github/`, `docs/pse/`, `internal/pse/` and `web/src/pse/` remain owned by Ether-Remix. Ether workflow changes require manual review. The embedded UI is rebuilt from merged sources.
+
+Conflicts open an issue and leave main unchanged. Otherwise a temporary branch is published and Go/web checks run against its exact commit. Only that verified commit can be promoted; promotion fails if main has advanced. Docker images for amd64 and arm64 are then rebuilt.
+
+The built-in `GITHUB_TOKEN` is sufficient: no personal token or synchronization secret is needed, since upstream workflows are excluded.
+
+## Manual conflict resolution
+
+From a clean clone:
+
+```bash
+git fetch origin
+git fetch https://github.com/braedonsaunders/ether.git main
+upstream_sha=$(git rev-parse FETCH_HEAD)
+git switch -c sync/manual origin/main
+python3 .github/pse/apply-upstream.py "$upstream_sha"
+# Resolve conflicts while preserving Ether-Remix additions.
+git add -A
+printf '%s\n' "$upstream_sha" > .github/pse/upstream-base
+git add .github/pse/upstream-base
+cd web && pnpm install --frozen-lockfile && pnpm build && cd ..
+git add -A internal/admin/dist
+git commit -m "Synchroniser Ether et reconstruire l’interface"
+git push origin sync/manual
+# Open a PR and wait for checks before merging.
+```
+
+## Disabled Ether workflows
+
+`ci.yml`, `api-drift.yml`, `plex-parity.yml`, `reference-drift.yml`, `refresh-update-feed.yml` and `release.yml` stay in the tree (to avoid conflicts) but are disabled in the repository's Actions settings: they publish Ether releases or use many minutes (Windows/macOS matrix) on a private repository.
+
+## Markdown files
+
+Ether's `.gitignore` ignores unlisted `*.md` files. Add new PSE documentation with `git add -f`.

@@ -1,0 +1,466 @@
+import { Badge, Button, Input, Label, cn } from "@braedonsaunders/appkit-ui";
+import { CheckCircle2, Eye, EyeOff, PlugZap, Plus, Trash2, XCircle } from "lucide-react";
+import { forwardRef, useEffect, useId, useState, type ComponentProps, type ReactNode } from "react";
+import { t } from "../i18n";
+import { REDACTED } from "../lib/types";
+
+export function Field({
+  label,
+  hint,
+  error,
+  children,
+  className,
+  htmlFor,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  error?: string;
+  children: ReactNode;
+  className?: string;
+  htmlFor?: string;
+}) {
+  return (
+    <div className={cn("space-y-1.5", className)}>
+      <Label htmlFor={htmlFor} className="block text-sm font-medium text-fg">
+        {label}
+      </Label>
+      {children}
+      {error ? (
+        <p className="text-xs text-danger" role="alert">
+          {error}
+        </p>
+      ) : hint ? (
+        <p className="text-xs text-fg-muted">{hint}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Numeric input that never emits NaN. */
+export function NumberInput({
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  className,
+  ...rest
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  min?: number;
+  max?: number;
+  step?: number | "any";
+  className?: string;
+} & Omit<
+  React.InputHTMLAttributes<HTMLInputElement>,
+  "value" | "onChange" | "type" | "min" | "max" | "step"
+>) {
+  return (
+    <Input
+      {...rest}
+      type="number"
+      inputMode="decimal"
+      className={cn("tabular-nums", className)}
+      value={Number.isFinite(value) ? value : 0}
+      min={min}
+      max={max}
+      step={step}
+      onChange={(e) => {
+        const n = e.currentTarget.valueAsNumber;
+        onChange(Number.isFinite(n) ? n : 0);
+      }}
+    />
+  );
+}
+
+/** Password field with the show/hide control inside the right edge. */
+export const PasswordInput = forwardRef<
+  HTMLInputElement,
+  Omit<ComponentProps<typeof Input>, "type">
+>(function PasswordInput({ className, disabled, ...rest }, ref) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div className={cn("relative", className)}>
+      <Input
+        ref={ref}
+        {...rest}
+        disabled={disabled}
+        type={shown ? "text" : "password"}
+        className="pr-10"
+      />
+      <button
+        type="button"
+        disabled={disabled}
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-md text-fg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setShown((s) => !s)}
+        aria-label={shown ? t("Hide password") : t("Show password")}
+        aria-pressed={shown}
+      >
+        {shown ? <EyeOff size={16} aria-hidden /> : <Eye size={16} aria-hidden />}
+      </button>
+    </div>
+  );
+});
+
+/**
+ * Password input that understands the server's redaction placeholder: the
+ * stored secret arrives as "••••" (or "Saved" for plugin secrets) and sending
+ * it back unchanged keeps it.
+ */
+export function SecretInput({
+  value,
+  onChange,
+  placeholder,
+  id,
+  ariaLabel,
+  invalid,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  id?: string;
+  ariaLabel?: string;
+  invalid?: boolean;
+}) {
+  const isStored =
+    value === REDACTED || value === "Saved" || /^https?:\/\/[^\s]+ \(saved\)$/.test(value);
+  return (
+    <div className="space-y-1">
+      {isStored ? (
+        <Input
+          id={id}
+          aria-label={ariaLabel}
+          aria-invalid={invalid || undefined}
+          type="text"
+          value={value}
+          placeholder={placeholder}
+          autoComplete="new-password"
+          spellCheck={false}
+          onFocus={(e) => e.currentTarget.select()}
+          onChange={(e) => onChange(e.currentTarget.value)}
+        />
+      ) : (
+        <PasswordInput
+          id={id}
+          aria-label={ariaLabel}
+          aria-invalid={invalid || undefined}
+          value={value}
+          placeholder={placeholder}
+          autoComplete="new-password"
+          spellCheck={false}
+          onChange={(e) => onChange(e.currentTarget.value)}
+        />
+      )}
+      {isStored ? (
+        <p className="text-xs text-fg-muted">
+          {t("Saved. Leave as is to keep it, or type a new value to replace it.")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export interface TestState {
+  status: "idle" | "running" | "ok" | "fail";
+  message?: string;
+  durationMs?: number;
+}
+
+export function TestButton({
+  label = t("Test"),
+  state,
+  onTest,
+  disabled,
+}: {
+  label?: string;
+  state: TestState;
+  onTest: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={onTest}
+        disabled={disabled || state.status === "running"}
+      >
+        <PlugZap size={14} /> {state.status === "running" ? t("Testing…") : label}
+      </Button>
+      {state.status === "ok" ? (
+        <Badge variant="success">
+          <CheckCircle2 size={12} />{" "}
+          {state.durationMs != null ? t("OK · {ms} ms", { ms: state.durationMs }) : t("OK")}
+        </Badge>
+      ) : null}
+      {state.status === "fail" ? (
+        <Badge variant="destructive" title={state.message}>
+          <XCircle size={12} />{" "}
+          {state.message ? t("Failed: {message}", { message: state.message }) : t("Failed")}
+        </Badge>
+      ) : null}
+    </span>
+  );
+}
+
+/** A row of toggle chips (weekdays, devices…). */
+export function ChipGroup<T extends string | number>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+  size = "md",
+}: {
+  options: { value: T; label: string }[];
+  value: T[];
+  onChange: (v: T[]) => void;
+  ariaLabel: string;
+  size?: "sm" | "md";
+}) {
+  return (
+    <div role="group" aria-label={ariaLabel} className="flex flex-wrap gap-1.5">
+      {options.map((o) => {
+        const on = value.includes(o.value);
+        return (
+          <button
+            key={String(o.value)}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onChange(on ? value.filter((v) => v !== o.value) : [...value, o.value])}
+            className={cn(
+              "rounded-full border font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+              size === "sm" ? "px-2.5 py-0.5 text-xs" : "px-3 py-1 text-sm",
+              on
+                ? "border-primary/40 bg-primary-subtle text-primary"
+                : "border-border bg-surface text-fg-muted hover:border-border-strong hover:text-fg",
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Single-choice segmented control rendered as a radio group (keyboard: arrows). */
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+  className,
+  size = "md",
+}: {
+  options: { value: T; label: ReactNode; icon?: ReactNode; disabled?: boolean }[];
+  value: T;
+  onChange: (v: T) => void;
+  ariaLabel: string;
+  className?: string;
+  size?: "sm" | "md";
+}) {
+  const name = useId();
+  return (
+    <div
+      role="radiogroup"
+      aria-label={ariaLabel}
+      className={cn(
+        "inline-flex flex-wrap gap-0.5 rounded-lg border border-border bg-bg-subtle p-0.5",
+        className,
+      )}
+    >
+      {options.map((o, i) => {
+        const on = o.value === value;
+        return (
+          <button
+            key={o.value}
+            id={`${name}-${i}`}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            disabled={o.disabled}
+            tabIndex={on && !o.disabled ? 0 : -1}
+            onClick={() => onChange(o.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+              e.preventDefault();
+              const direction = e.key === "ArrowRight" ? 1 : -1;
+              const next = Array.from(
+                { length: options.length },
+                (_, step) =>
+                  options[(i + direction * (step + 1) + options.length * 2) % options.length],
+              ).find((option) => option && !option.disabled);
+              if (next) {
+                onChange(next.value);
+                (
+                  e.currentTarget.parentElement?.children[options.indexOf(next)] as
+                    HTMLElement | undefined
+                )?.focus();
+              }
+            }}
+            className={cn(
+              "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40",
+              size === "sm" ? "h-7 px-2.5 text-xs" : "h-8 px-3 text-sm",
+              on ? "bg-surface text-fg shadow-sm" : "text-fg-muted hover:text-fg",
+            )}
+          >
+            {o.icon}
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function parseListInput(raw: string, numeric?: boolean): (string | number)[] {
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return numeric ? parts.map(Number).filter((n) => Number.isFinite(n)) : parts;
+}
+
+/** Comma-separated list editor (languages, blocklists, custom URLs…). */
+export function ListInput({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+  numeric,
+  id,
+  invalid,
+}: {
+  value: (string | number)[] | null;
+  onChange: (v: (string | number)[]) => void;
+  placeholder?: string;
+  ariaLabel?: string;
+  numeric?: boolean;
+  id?: string;
+  invalid?: boolean;
+}) {
+  const list = value ?? [];
+  const [text, setText] = useState(list.join(", "));
+  const key = JSON.stringify(list);
+  useEffect(() => {
+    if (JSON.stringify(parseListInput(text, numeric)) !== key) {
+      setText(list.join(", "));
+    }
+  }, [key, numeric]);
+  return (
+    <Input
+      id={id}
+      value={text}
+      aria-label={ariaLabel}
+      aria-invalid={invalid || undefined}
+      placeholder={placeholder ?? t("Comma-separated")}
+      onChange={(e) => {
+        const nextText = e.currentTarget.value;
+        setText(nextText);
+        onChange(parseListInput(nextText, numeric));
+      }}
+      onBlur={(e) => {
+        const parsed = parseListInput(e.currentTarget.value, numeric);
+        setText(parsed.join(", "));
+        onChange(parsed);
+      }}
+    />
+  );
+}
+
+/**
+ * Name/value rows for a map of short strings whose values are secrets.
+ * Values arrive redacted; renaming a row clears its stored value, because a
+ * renamed secret is a new secret.
+ */
+export function MapInput({
+  value,
+  onChange,
+  ariaLabel,
+  namePlaceholder,
+  valuePlaceholder,
+  id,
+  invalid,
+}: {
+  value: Record<string, string>;
+  onChange: (v: Record<string, string>) => void;
+  ariaLabel: string;
+  namePlaceholder?: string;
+  valuePlaceholder?: string;
+  id?: string;
+  invalid?: boolean;
+}) {
+  const [rows, setRows] = useState<[string, string][]>(() => Object.entries(value));
+  // A row without a name is a placeholder the owner is still filling in.
+  const toObject = (list: [string, string][]) =>
+    Object.fromEntries(list.filter(([name]) => name !== ""));
+  const key = JSON.stringify(value);
+  useEffect(() => {
+    if (JSON.stringify(toObject(rows)) !== key) {
+      setRows(Object.entries(value));
+    }
+  }, [key]);
+  const commit = (next: [string, string][]) => {
+    setRows(next);
+    onChange(toObject(next));
+  };
+  return (
+    <div className="space-y-2" role="group" aria-label={ariaLabel}>
+      {rows.map(([name, secret], i) => (
+        <div key={i} className="flex flex-col gap-2 sm:flex-row sm:items-start">
+          <Input
+            id={i === 0 ? id : undefined}
+            aria-label={t("Header name")}
+            className="sm:w-1/2 sm:shrink-0"
+            aria-invalid={invalid || undefined}
+            value={name}
+            placeholder={namePlaceholder}
+            spellCheck={false}
+            onChange={(e) => {
+              const renamed = e.currentTarget.value;
+              // A map cannot hold one name twice, so a duplicate would drop
+              // the first row's value on save; refuse the keystroke instead.
+              const taken = rows.some(
+                (r, j) => j !== i && r[0] !== "" && r[0].toLowerCase() === renamed.toLowerCase(),
+              );
+              if (taken) return;
+              commit(
+                rows.map((r, j) => (j === i ? [renamed, secret === REDACTED ? "" : secret] : r)),
+              );
+            }}
+          />
+          <div className="min-w-0 flex-1">
+            <SecretInput
+              ariaLabel={t("Value")}
+              value={secret}
+              placeholder={valuePlaceholder}
+              onChange={(v) => commit(rows.map((r, j) => (j === i ? [name, v] : r)))}
+            />
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={t("Remove header")}
+            className="self-end sm:self-start"
+            onClick={() => commit(rows.filter((_, j) => j !== i))}
+          >
+            <Trash2 size={14} />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        aria-label={t("Add header")}
+        onClick={() => commit([...rows, ["", ""]])}
+      >
+        <Plus size={14} /> {t("Add header")}
+      </Button>
+    </div>
+  );
+}

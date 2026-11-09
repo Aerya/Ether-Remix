@@ -1,0 +1,27 @@
+package core
+
+import "encoding/json"
+
+// CustomFormat retains the native TRaSH/Radarr/Sonarr JSON for owner editing.
+// Unknown specifications are rejected at import rather than silently matching.
+type CustomFormat struct {
+	ID             string                `json:"trash_id"`
+	Name           string                `json:"name"`
+	Scores         map[string]int        `json:"trash_scores,omitempty"`
+	Specifications []FormatSpecification `json:"specifications"`
+	// App names the Starr app whose enum values the specifications use:
+	// Sonarr numbers sources differently from Radarr. Empty means Radarr.
+	App string `json:"app,omitempty"`
+	// ManagedBy marks a definition an imported profile brought in and the
+	// guide sync owns ("trash:radarr", "dictionarry:sonarr"). Manual
+	// definitions leave it empty and the sync never removes them.
+	ManagedBy string `json:"managedBy,omitempty"`
+}
+
+type FormatSpecification struct {
+	Name           string                     `json:"name"`
+	Implementation string                     `json:"implementation"`
+	Negate         bool                       `json:"negate"`
+	Required       bool                       `json:"required"`
+	Fields         map[string]json.RawMessage `json:"fields"`
+}

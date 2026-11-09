@@ -1,0 +1,588 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # A tag needs CI on its exact commit, and every release commit carries
+    # release-notes/*.md, so release notes still run CI on main.
+    paths-ignore:
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'UPGRADING.md'
+      - 'docs/**'
+      - 'LICENSE'
+  # No paths filter on pull requests: a workflow skipped by a filter never
+  # reports its checks, which leaves a required check pending forever. The
+  # `changes` job skips the heavy jobs for documentation-only changes instead.
+  pull_request:
+
+# One run per pull request: a new push cancels the previous run. Pushes to
+# main are never cancelled, because a release waits for that exact commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The pull request merge commit and its first parent (the base).
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Anything besides documentation?
+        id: diff
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf 'Changed files:\n%s\n' "$changed"
+          code=$(printf '%s\n' "$changed" | grep -vE '(\.md$|^docs/|^release-notes/|^LICENSE$)' | grep -c . || true)
+          if [ "$code" -gt 0 ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Documentation-only change: the build and test jobs are skipped."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  lint:
+    name: Lint (Go, workflows, scripts)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # golangci-lint-action reads the pull request diff for only-new-issues.
+      pull-requests: read
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "::error::gofmt needed:"; echo "$out"; exit 1; fi
+      - name: go.mod and go.sum are tidy
+        run: |
+          go mod tidy -diff || {
+            echo "::error::go.mod/go.sum are not tidy: run 'go mod tidy' and commit the result"; exit 1; }
+      - name: Module checksums match go.sum
+        run: go mod verify
+      - name: golangci-lint (new issues only)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          only-new-issues: true
+      - name: actionlint
+        # Uses the runner's shellcheck for run: scripts.
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+      - name: zizmor (workflow security)
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          version: 1.32.0
+          advanced-security: false
+      - name: Shellcheck scripts
+        run: |
+          # Shipped and CI scripts: every finding.
+          shellcheck scripts/*.sh packaging/linux/*.sh packaging/macos/*.sh packaging/docker/*.sh
+          # Every other tracked script (lab, cluster, test fixtures): errors.
+          git ls-files -z '*.sh' | xargs -0 shellcheck --severity=error
+
+  sdk:
+    name: Plugin SDKs (Python, TypeScript)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # node --test runs the .ts sources directly (type stripping).
+          node-version: 24
+      - name: TypeScript SDK
+        working-directory: sdk/typescript
+        run: node --test src/sdk.test.ts src/settings-host.test.ts
+      - name: Python SDK
+        working-directory: sdk/python
+        run: python3 -m unittest discover -p 'test*.py' -v
+      - name: Scorecard helpers
+        working-directory: cmd/scorecard
+        run: python3 -m unittest discover -p '*_test.py' -v
+
+  go:
+    name: Go (${{ matrix.os }} / ${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 45
+    env:
+      GOEXPERIMENT: simd
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shard: app-1
+          - os: ubuntu-latest
+            shard: app-2
+          - os: ubuntu-latest
+            shard: app-migrations
+          - os: ubuntu-latest
+            shard: app-3
+          - os: ubuntu-latest
+            shard: transcode-playback
+          - os: ubuntu-latest
+            shard: protocols-catalog
+          - os: ubuntu-latest
+            shard: rest
+          - os: windows-latest
+            shard: app-transcode-playback
+          - os: windows-latest
+            shard: rest
+          - os: macos-latest
+            shard: all
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cache protocol specs
+        if: matrix.shard == 'protocols-catalog' || matrix.shard == 'rest' || matrix.shard == 'all'
+        id: specs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-specs
+          key: protocol-specs-${{ hashFiles('internal/conform/specs/manifest.json') }}
+      - name: Stage protocol specs
+        if: matrix.shard == 'protocols-catalog' || matrix.shard == 'rest' || matrix.shard == 'all'
+        shell: bash
+        env:
+          SPECS_CACHE_HIT: ${{ steps.specs.outputs.cache-hit }}
+        run: |
+          if [ "$SPECS_CACHE_HIT" != 'true' ]; then
+            bash internal/conform/specs/fetch.sh .ci-specs
+          fi
+          specdir="$GITHUB_WORKSPACE/.ci-specs"
+          if [ "$RUNNER_OS" = Windows ]; then specdir=$(cygpath -w "$specdir"); fi
+          echo "ETHER_CONFORM_SPECS_DIR=$specdir" >> "$GITHUB_ENV"
+      # Stage the pinned ffmpeg/ffprobe (packaging/ffmpeg.lock.json,
+      # SHA-256 verified by scripts/fetch-ffmpeg.sh) and put them first on
+      # PATH so the real integration tests in internal/transcode run
+      # instead of skipping on exec.LookPath("ffmpeg").
+      - name: Resolve pinned ffmpeg platform
+        id: ffmpeg
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) goos=linux ;;
+            macOS) goos=darwin ;;
+            Windows) goos=windows ;;
+            *) echo "::error::unsupported runner OS $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          case "$RUNNER_ARCH" in
+            X64) goarch=amd64 ;;
+            ARM64) goarch=arm64 ;;
+            *) echo "::error::unsupported runner arch $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          echo "platform=$goos-$goarch" >> "$GITHUB_OUTPUT"
+          echo "dir=dist/ffmpeg/$goos-$goarch" >> "$GITHUB_OUTPUT"
+      - name: Cache pinned ffmpeg
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.ffmpeg.outputs.dir }}
+          # Exact key only (no restore-keys): a lock bump must re-fetch,
+          # never revive the previous pin.
+          key: ffmpeg-${{ steps.ffmpeg.outputs.platform }}-${{ hashFiles('packaging/ffmpeg.lock.json') }}
+      - name: Stage pinned ffmpeg/ffprobe
+        shell: bash
+        env:
+          FFMPEG_PLATFORM: ${{ steps.ffmpeg.outputs.platform }}
+          FFMPEG_DIR: ${{ steps.ffmpeg.outputs.dir }}
+        run: |
+          bash scripts/fetch-ffmpeg.sh "$FFMPEG_PLATFORM"
+          # GITHUB_PATH must hold a native Windows path on Windows, where
+          # later steps run under pwsh but this one runs under Git Bash.
+          staged="$GITHUB_WORKSPACE/$FFMPEG_DIR"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            staged=$(cygpath -w "$staged")
+          fi
+          echo "$staged" >> "$GITHUB_PATH"
+          echo "Staged $FFMPEG_PLATFORM ffmpeg/ffprobe at $staged"
+      - name: Verify ffmpeg/ffprobe resolve to the staged pins
+        # A fresh shell, so PATH reflects GITHUB_PATH exactly as the test
+        # steps will see it. Fails hard: a broken stage must never let the
+        # integration tests quietly skip back to green.
+        shell: bash
+        env:
+          FFMPEG_DIR: ${{ steps.ffmpeg.outputs.dir }}
+        run: |
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=.exe; fi
+          staged="$GITHUB_WORKSPACE/$FFMPEG_DIR"
+          test -f "$staged/.sha256" || { echo "::error::staged ffmpeg missing .sha256 marker" >&2; exit 1; }
+          show_version() { out=$("$1" -hide_banner -version); echo "${out%%$'\n'*}"; }
+          show_version "$staged/ffmpeg$ext"
+          show_version "$staged/ffprobe$ext"
+          for tool in ffmpeg ffprobe; do
+            found=$(command -v "$tool") || { echo "::error::$tool not on PATH" >&2; exit 1; }
+            echo "PATH $tool -> $found"
+            case "$found" in
+              *"/$FFMPEG_DIR/"*) ;;
+              *) echo "::error::$tool resolves outside the staged pin: $found" >&2; exit 1 ;;
+            esac
+          done
+          show_version ffmpeg
+          show_version ffprobe
+      - name: Build (CGO_ENABLED=0 — the shipped configuration)
+        if: matrix.shard == 'rest' || matrix.shard == 'all'
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+      - name: Build Windows ARM64 with portable yEnc fallback
+        if: runner.os == 'Linux' && matrix.shard == 'rest'
+        env:
+          CGO_ENABLED: "0"
+          GOEXPERIMENT: simd
+          GOOS: windows
+          GOARCH: arm64
+        run: go build ./...
+      - name: Test yEnc portable SWAR fallback
+        if: matrix.shard == 'rest' || matrix.shard == 'all'
+        env:
+          CGO_ENABLED: "0"
+          GOEXPERIMENT: ""
+        run: go test ./internal/yenc ./internal/usenet
+      - name: Test RapidYenc pure-Go SIMD response path
+        if: matrix.shard == 'rest' || matrix.shard == 'all'
+        env:
+          CGO_ENABLED: "0"
+        run: go test -count=1 ./internal/usenet -run '^TestRapid'
+      - name: Race-check RapidYenc pure-Go SIMD response path
+        if: runner.os == 'macOS' && matrix.shard == 'all'
+        env:
+          CGO_ENABLED: "0"
+          GOEXPERIMENT: simd
+        run: go test -race -count=1 -timeout=8m ./internal/usenet ./internal/yenc ./internal/stream
+      - name: Fuzz RapidYenc pure-Go SIMD response path
+        if: runner.os == 'Linux' && matrix.shard == 'rest'
+        env:
+          CGO_ENABLED: "0"
+          GOEXPERIMENT: simd
+        run: go test ./internal/usenet -run '^$' -fuzz '^FuzzRapidDifferential$' -fuzztime=100000x -parallel=2 -timeout=3m
+      - name: Test yEnc without AVX2
+        if: runner.os == 'Linux' && matrix.shard == 'rest'
+        env:
+          CGO_ENABLED: "0"
+          GODEBUG: cpu.avx2=off
+        run: |
+          go test -count=1 ./internal/yenc
+          go test -count=1 ./internal/usenet -run '^TestRapid'
+      - name: Verify bundled TMDB linker symbol
+        if: matrix.shard == 'rest' || matrix.shard == 'all'
+        env:
+          CGO_ENABLED: "0"
+          ETHER_TEST_BUNDLED_KEY: ether-linker-smoke
+        run: go test ./internal/tmdb -run TestBundledKeyLinker -ldflags "-X github.com/braedonsaunders/ether/internal/tmdb.BundledKey=ether-linker-smoke"
+      - name: Vet
+        if: matrix.shard == 'rest' || matrix.shard == 'all'
+        env:
+          CGO_ENABLED: "0"
+        run: go vet ./...
+      - name: Vet tray with CGO (macOS systray build)
+        if: runner.os == 'macOS'
+        env:
+          CGO_ENABLED: "1"
+        run: go vet ./cmd/ether-tray/
+      - name: Test (Linux race shard)
+        # Linux -race needs CGO, so these runs use the SWAR decoder.
+        # Pure-Go SIMD race coverage runs separately on macOS above.
+        # macOS uses CGO_ENABLED=0 below to exclude the tray GUI.
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          case "$SHARD" in
+            app-1)
+              go test -race -timeout 20m ./internal/app -run '^Test[A-F]'
+              ;;
+            app-2)
+              go test -race -timeout 20m ./internal/app -run '^Test[G-P]' -skip '^TestPrismUpgradeCandidateMigrationFailures$'
+              ;;
+            app-migrations)
+              # The failure-injection matrix takes about ten minutes alone.
+              # Give it its own budget without dropping cases or raising timeouts.
+              go test -race -timeout 20m ./internal/app -run '^TestPrismUpgradeCandidateMigrationFailures$'
+              ;;
+            app-3)
+              go test -race -timeout 20m ./internal/app -run '^Test[^A-P]'
+              ;;
+            transcode-playback)
+              go test -race -timeout 20m ./internal/transcode/... ./internal/playback/... ./internal/usenet/...
+              ;;
+            protocols-catalog)
+              go test -race -timeout 20m ./internal/plex/... ./internal/frontends/... ./internal/catalog/... ./internal/resolver/... ./internal/debrid/...
+              ;;
+            rest)
+              # shellcheck disable=SC2016 # $ is a regex anchor
+              pkgs=$(go list ./... | grep -vE '/internal/(app|transcode|playback|usenet|plex|frontends|catalog|resolver|debrid)($|/)')
+              # shellcheck disable=SC2086 # one argument per package
+              go test -race -timeout 20m $pkgs
+              ;;
+            *)
+              echo "::error::unknown Linux shard: $SHARD" >&2
+              exit 1
+              ;;
+          esac
+      - name: Test (Windows shard)
+        # The race detector makes the real-media suite exceed any sane
+        # package cap on Windows runners; races are covered on Linux.
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          case "$SHARD" in
+            app-transcode-playback)
+              go test -timeout 25m ./internal/app/... ./internal/transcode/... ./internal/playback/...
+              ;;
+            rest)
+              # shellcheck disable=SC2016 # $ is a regex anchor
+              pkgs=$(go list ./... | grep -vE '/internal/(app|transcode|playback)($|/)')
+              # shellcheck disable=SC2086 # one argument per package
+              go test -timeout 25m $pkgs
+              ;;
+            *)
+              echo "::error::unknown Windows shard: $SHARD" >&2
+              exit 1
+              ;;
+          esac
+      - name: Test (macOS, headless tray)
+        if: runner.os == 'macOS'
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+      - name: Cross-compile matrix
+        if: runner.os == 'Linux' && matrix.shard == 'rest'
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          # shellcheck disable=SC2016 # the bash -c script expands its own variables
+          printf '%s\n' linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 | \
+            xargs -P 3 -I {} bash -c '
+              t="{}"
+              echo "Cross-compiling $t..."
+              GOOS="${t%/*}" GOARCH="${t#*/}" go build ./cmd/ether ./cmd/ether-tray ./internal/...
+            '
+
+  postgres:
+    name: PostgreSQL 14 (${{ matrix.package }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [store, cluster, clusterconfig, clusterbus, clusterplayback, state, livetv, app, artwork/service, auth, backup, debrid, experience, handles/capability, identity, migrate, playback, playbackcontinuity, placement, plexwatch, sessions]
+    services:
+      postgres:
+        # PostgreSQL 14 is Ether's minimum supported server version.
+        image: postgres:14
+        env:
+          POSTGRES_USER: ether
+          POSTGRES_PASSWORD: ether
+          POSTGRES_DB: ether
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ether -d ether"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with PostgreSQL
+        env:
+          CGO_ENABLED: "0"
+          ETHER_TEST_POSTGRES: postgres://ether:ether@127.0.0.1:5432/ether?sslmode=disable
+        run: go test -count=1 -timeout 20m ./internal/${{ matrix.package }}/...
+
+  vulnerabilities:
+    name: Go vulnerabilities
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Scan reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  performance:
+    name: Library-scale performance gate
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 75
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Replays every protocol against a 50k and a 500k+ row synthetic
+      # library and fails when an endpoint's statements, rows read or
+      # database time grow with the library (docs/performance.md).
+      - name: Performance gate
+        env:
+          CGO_ENABLED: "0"
+          ETHER_PERF_GATE: "1"
+          ETHER_PERF_GATE_REPORT: ${{ runner.temp }}/perf-gate.md
+        run: go test ./internal/app -run '^TestPerformanceGate$' -count=1 -timeout 60m -v
+      - name: Publish the gate report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/perf-gate.md" ]; then cat "$RUNNER_TEMP/perf-gate.md" >> "$GITHUB_STEP_SUMMARY"; fi
+
+  web:
+    name: Web UI
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: Audit web and development dependencies
+        working-directory: web
+        run: pnpm audit --audit-level=moderate
+      - name: Formatting
+        working-directory: web
+        run: pnpm format:check
+      - name: Typecheck
+        working-directory: web
+        run: pnpm typecheck
+      - name: Test
+        working-directory: web
+        run: pnpm test
+      - name: Build
+        working-directory: web
+        run: pnpm build
+      - name: Embedded UI is up to date
+        # Contributor PRs omit generated assets; the coordinator rebuilds them.
+        if: github.event_name != 'pull_request'
+        run: |
+          # internal/admin/dist is committed so `go build` works without Node;
+          # it must match a fresh build of web/.
+          git status --porcelain internal/admin/dist
+          test -z "$(git status --porcelain internal/admin/dist)" || {
+            echo "::error::internal/admin/dist is stale: run 'pnpm build' in web/ and commit the result"; exit 1; }
+
+  packaging:
+    name: Packaging checks
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # This job runs a release tool; never restore a shared cache into it.
+          cache: false
+      - name: Goreleaser config check
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "~> v2"
+          args: check
+      - name: Validate ffmpeg lock JSON
+        run: python3 -m json.tool packaging/ffmpeg.lock.json > /dev/null
+      - name: Validate plists
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          for p in ["packaging/macos/Info.plist", "packaging/macos/io.github.braedonsaunders.ether.plist"]:
+              plistlib.load(open(p, "rb"))
+              print("ok", p)
+          PY
+      - name: Docker runtime stack guard
+        run: packaging/docker/check-runtime-stack.sh
+      - name: Docker image builds (host ffmpeg staged)
+        run: |
+          scripts/fetch-ffmpeg.sh linux-amd64
+          docker build -t ether:ci .
+          packaging/docker/check-runtime-stack.sh --image ether:ci
+
+  # The one check to require in branch protection. Matrix job names change
+  # whenever a shard is added; this name does not. Skipped jobs (a
+  # documentation-only change) count as passing, failures and cancellations
+  # do not.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [changes, lint, sdk, go, postgres, vulnerabilities, performance, web, packaging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
+          if [ -n "$bad" ]; then echo "::error::Failed or cancelled: $bad"; exit 1; fi

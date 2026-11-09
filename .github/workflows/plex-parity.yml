@@ -1,0 +1,48 @@
+name: Plex parity
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'release-notes/**'
+      - 'LICENSE'
+
+# One run per pull request: a new push cancels the previous run. Pushes to
+# main are never cancelled, because a release waits for that exact commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  plex-parity:
+    if: github.event.pull_request.head.ref == 'prism'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Compare against merge base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          baseline=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          set +e
+          bash cmd/plexparity/ci.sh "$baseline" "$HEAD_SHA" | tee /tmp/plex-parity-report.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 2 ]; then
+            detail=$(grep '^coverage incomplete:' /tmp/plex-parity-report.txt | tail -1)
+            if [ -z "$detail" ]; then echo '::error::Parity returned incomplete without a coverage report'; exit 1; fi
+            echo "::error::$detail"
+            exit 2
+          fi
+          exit "$status"

@@ -1,0 +1,51 @@
+name: Reference recording drift
+on:
+  pull_request:
+    paths:
+      - 'testdata/conform/**'
+      - 'internal/conform/profiles/**'
+      - 'cmd/conformdiff/**'
+      - 'scripts/reference-drift.sh'
+      - '.github/workflows/reference-drift.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .reference-base
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build offline comparer
+        run: go build -o "$RUNNER_TEMP/conformdiff" ./cmd/conformdiff
+      - name: Compare recordings without reference access
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-drift"
+          failed=0
+          for protocol in jellyfin emby silo; do
+            "$RUNNER_TEMP/conformdiff" drift -protocol "$protocol" \
+              -fixtures ".reference-base/testdata/conform/$protocol" \
+              -candidate "testdata/conform/$protocol" \
+              > "$RUNNER_TEMP/reference-drift/$protocol.json" \
+              2> "$RUNNER_TEMP/reference-drift/$protocol.log" || failed=1
+          done
+          exit "$failed"
+      - name: Preserve every report including failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reference-drift-${{ github.sha }}
+          path: ${{ runner.temp }}/reference-drift
+          if-no-files-found: error

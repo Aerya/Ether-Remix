@@ -1,0 +1,62 @@
+{{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.hosts }}{{ fail "ingress.hosts must be nonempty when ingress is enabled" }}{{ end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ether.name" . }}
+  labels:
+    {{- include "ether.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          {{- if or (gt (int $.Values.pools.server.replicas) 0) (gt (int $.Values.pools.delivery.replicas) 0) }}
+          # Media representation LAB ONLY. Requires real writer-derived URL/auth,
+          # same-origin controller and protocol capability acceptance.
+          # General mixed-client routing remains blocked by validation.
+          - path: /video/:/transcode/universal/session
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ether.name" $ }}-media
+                port: {name: public}
+          - path: /sessions/media
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ether.name" $ }}-media
+                port: {name: public}
+          - path: /jellyfin/sessions/media
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ether.name" $ }}-media
+                port: {name: public}
+          - path: /emby/sessions/media
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ether.name" $ }}-media
+                port: {name: public}
+          {{- end }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ether.name" $ }}
+                port: {name: public}
+    {{- end }}
+{{- end }}

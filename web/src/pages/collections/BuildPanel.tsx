@@ -1,0 +1,421 @@
+import { Button, SearchSelect, Textarea, type ContextMenuEntry } from "@braedonsaunders/appkit-ui";
+import {
+  ArrowDownWideNarrow,
+  ArrowUpNarrowWide,
+  Filter,
+  FilterX,
+  ListPlus,
+  Plus,
+} from "lucide-react";
+import { useState } from "react";
+import { ActionMenu } from "../../components/ActionMenu";
+import { SectionHeading } from "../../components/feedback";
+import { ChipGroup, Field, NumberInput, Segmented } from "../../components/fields";
+import type { CollectionSpec, Rule, RuleField, Source } from "../../lib/contract";
+import { t, tx } from "../../i18n";
+import { isPluginDescriptor, textOf, useRegistry } from "../../lib/extend";
+import {
+  FIELDS,
+  SORTS,
+  newRule,
+  newSourceFromDescriptor,
+  sourceDescriptor,
+  type CollectionSourceMeta,
+  type SourceDescriptor,
+} from "../../lib/rules";
+import { AddonCatalogDrawer, type AddonCatalogChoice } from "./AddonCatalogDrawer";
+import { RuleRow } from "./RuleRow";
+import { SourceEditor } from "./SourceEditor";
+
+export type SpecUpdate = (patch: Partial<CollectionSpec>, coalesceKey?: string) => void;
+
+function fieldMenu(onPick: (f: RuleField) => void): ContextMenuEntry[] {
+  const out: ContextMenuEntry[] = [];
+  let group = "";
+  for (const f of FIELDS) {
+    if (f.group !== group) {
+      if (group) out.push({ key: `sep-${f.group}`, separator: true });
+      group = f.group;
+    }
+    out.push({ key: f.field, label: f.label, onSelect: () => onPick(f.field) });
+  }
+  return out;
+}
+
+export function BuildPanel({
+  spec,
+  update,
+  region,
+  pickAddonCatalog = false,
+}: {
+  spec: CollectionSpec;
+  update: SpecUpdate;
+  region: string;
+  /** Open the Stremio add-on catalog picker straight away. */
+  pickAddonCatalog?: boolean;
+}) {
+  const [addonCatalogs, setAddonCatalogs] = useState(pickAddonCatalog);
+  const setRules = (key: "rules" | "exclude", rules: Rule[]) => update({ [key]: rules });
+  // Source kinds come from the descriptor registry (built-ins and plugins
+  // in one list); the console keeps no kind list of its own.
+  const registry = useRegistry<CollectionSourceMeta>("collectionSource");
+  const descriptors: SourceDescriptor[] = registry.descriptors;
+  // The whole catalogue already contains every other source, so adding a
+  // specific source replaces a lone "Whole catalogue".
+  const loneCatalog = spec.sources.length === 1 && spec.sources[0]?.kind === "catalog";
+  const addSource = (d: SourceDescriptor) => {
+    const keep = loneCatalog && d.id !== "catalog" ? [] : spec.sources;
+    update({
+      sources: [...keep, newSourceFromDescriptor(d, spec.mediaType, region)],
+      ...(d.id !== "catalog" ? { localOnly: false } : {}),
+    });
+  };
+  // A catalog added with its add-on may reach the registry after the pick,
+  // so it is added by kind; a new collection takes the catalog's media type.
+  const addAddonCatalog = (c: AddonCatalogChoice) => {
+    const d = sourceDescriptor(descriptors, c.kind);
+    const src = d
+      ? newSourceFromDescriptor(d, spec.mediaType, region)
+      : ({ kind: c.kind } as unknown as Source);
+    update({
+      sources: [...(loneCatalog ? [] : spec.sources), src],
+      localOnly: false,
+      ...(loneCatalog && c.mediaType ? { mediaType: c.mediaType } : {}),
+    });
+  };
+  const sourceItems: ContextMenuEntry[] = [
+    ...descriptors
+      .filter((d) => d.id !== "catalog" || !spec.sources.some((s) => s.kind === "catalog"))
+      .map((d) => ({
+        key: d.id,
+        label: isPluginDescriptor(d)
+          ? t("{label} (from {owner})", { label: textOf(d.label), owner: d.group || d.owner })
+          : textOf(d.label),
+        onSelect: () => addSource(d),
+      })),
+    { key: "addon-catalog-sep", separator: true },
+    {
+      key: "addon-catalog",
+      label: t("Stremio plugin catalog…"),
+      onSelect: () => setAddonCatalogs(true),
+    },
+  ];
+  const limitPresets = [25, 50, 100, 0];
+
+  return (
+    <div className="space-y-7">
+      <section className="space-y-4">
+        <Field
+          label={t("Description")}
+          hint={t("Shown under the collection title.")}
+          htmlFor="collection-description"
+        >
+          <Textarea
+            id="collection-description"
+            rows={2}
+            value={spec.description ?? ""}
+            placeholder={t("What makes this collection special?")}
+            onChange={(e) => update({ description: e.currentTarget.value }, "description")}
+          />
+        </Field>
+        <Field label={t("Contains")}>
+          <Segmented
+            ariaLabel={t("Media type")}
+            value={spec.mediaType}
+            onChange={(m) => update({ mediaType: m })}
+            options={[
+              { value: "movie", label: t("Movies") },
+              { value: "show", label: t("TV shows") },
+              { value: "mixed", label: t("Both") },
+            ]}
+          />
+        </Field>
+        <Field
+          label={t("Release dates")}
+          hint={t(
+            "Upcoming shows are new series by first air date; future episodes of existing shows are not included. Dates can change.",
+          )}
+        >
+          <Segmented
+            ariaLabel={t("Release dates")}
+            value={spec.releaseMode ?? "released"}
+            onChange={(releaseMode) =>
+              update({ releaseMode, lookaheadDays: spec.lookaheadDays || 90 })
+            }
+            options={[
+              { value: "released", label: t("Released") },
+              { value: "upcoming", label: t("Upcoming") },
+              { value: "mixed", label: t("Both") },
+            ]}
+          />
+        </Field>
+        {spec.releaseMode && spec.releaseMode !== "released" && (
+          <Field
+            label={t("Look ahead (days)")}
+            htmlFor="lookahead-days"
+            hint={t(
+              "1–366 days. Upcoming titles use the whole catalogue source and TMDB discovery; playback is unavailable before the scheduled release date.",
+            )}
+          >
+            <NumberInput
+              id="lookahead-days"
+              value={spec.lookaheadDays ?? 90}
+              min={1}
+              max={366}
+              onChange={(lookaheadDays) => update({ lookaheadDays }, "lookaheadDays")}
+            />
+          </Field>
+        )}
+      </section>
+
+      <section aria-labelledby="sources-h">
+        <SectionHeading
+          id="sources-h"
+          title={t("Sources")}
+          description={t("Where candidate titles come from. Several sources are combined.")}
+          actions={
+            <ActionMenu items={sourceItems} variant="outline" size="sm" label={t("Add source")}>
+              <ListPlus size={14} /> {t("Add source")}
+            </ActionMenu>
+          }
+        />
+        {registry.error ? (
+          <p role="alert" className="mb-2 text-sm text-danger">
+            {t("Source kinds could not be loaded.")}{" "}
+            <Button type="button" variant="ghost" size="sm" onClick={registry.reload}>
+              {t("Try again")}
+            </Button>
+          </p>
+        ) : registry.loading ? (
+          <p className="mb-2 text-sm text-fg-muted">{t("Loading source kinds…")}</p>
+        ) : null}
+        <div className="space-y-2">
+          {spec.sources.map((s, i) => (
+            <SourceEditor
+              key={i}
+              index={i}
+              source={s}
+              region={region}
+              removable={spec.sources.length > 1}
+              descriptor={sourceDescriptor(descriptors, s.kind)}
+              descriptors={descriptors}
+              lookupPolicy={
+                s.kind === "catalog" && spec.sources.length === 1
+                  ? {
+                      storedOnly: Boolean(spec.localOnly),
+                      onChange: (storedOnly) => update({ localOnly: storedOnly }),
+                    }
+                  : undefined
+              }
+              onChange={(next) =>
+                update({ sources: spec.sources.map((x, j) => (j === i ? next : x)) }, `source-${i}`)
+              }
+              onRemove={() => update({ sources: spec.sources.filter((_, j) => j !== i) })}
+            />
+          ))}
+        </div>
+        <AddonCatalogDrawer
+          open={addonCatalogs}
+          onClose={() => setAddonCatalogs(false)}
+          onPick={addAddonCatalog}
+        />
+      </section>
+
+      <section aria-labelledby="rules-h">
+        <SectionHeading
+          id="rules-h"
+          title={t("Rules")}
+          description={t("Keep only titles that match.")}
+          actions={
+            <ActionMenu
+              items={fieldMenu((f) => setRules("rules", [...spec.rules, newRule(f)]))}
+              variant="outline"
+              size="sm"
+              label={t("Add rule")}
+            >
+              <Filter size={14} /> {t("Add rule")}
+            </ActionMenu>
+          }
+        />
+        {spec.rules.length > 1 ? (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-fg-muted">
+            {tx("Include titles that match {mode} of these rules", {
+              mode: (
+                <Segmented
+                  ariaLabel={t("Match mode")}
+                  size="sm"
+                  value={spec.match}
+                  onChange={(m) => update({ match: m })}
+                  options={[
+                    { value: "all", label: t("all") },
+                    { value: "any", label: t("any") },
+                  ]}
+                />
+              ),
+            })}
+          </div>
+        ) : null}
+        {spec.rules.length === 0 ? (
+          <EmptyHint
+            text={t("No rules: every title from the sources is included.")}
+            action={
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setRules("rules", [...spec.rules, newRule("genre")])}
+              >
+                <Plus size={14} /> {t("Add a genre rule")}
+              </Button>
+            }
+          />
+        ) : (
+          <div className="space-y-2">
+            {spec.rules.map((r, i) => (
+              <RuleRow
+                key={i}
+                index={i}
+                kind="include"
+                rule={r}
+                mediaType={spec.mediaType}
+                region={region}
+                onChange={(next) =>
+                  setRules(
+                    "rules",
+                    spec.rules.map((x, j) => (j === i ? next : x)),
+                  )
+                }
+                onRemove={() =>
+                  setRules(
+                    "rules",
+                    spec.rules.filter((_, j) => j !== i),
+                  )
+                }
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section aria-labelledby="exclude-h">
+        <SectionHeading
+          id="exclude-h"
+          title={t("Exclude")}
+          description={t("Drop titles matching any of these, whatever the rules say.")}
+          actions={
+            <ActionMenu
+              items={fieldMenu((f) => setRules("exclude", [...spec.exclude, newRule(f)]))}
+              variant="outline"
+              size="sm"
+              label={t("Add exclusion")}
+            >
+              <FilterX size={14} /> {t("Add exclusion")}
+            </ActionMenu>
+          }
+        />
+        {spec.exclude.length === 0 ? (
+          <EmptyHint text={t("Nothing excluded.")} />
+        ) : (
+          <div className="space-y-2">
+            {spec.exclude.map((r, i) => (
+              <RuleRow
+                key={i}
+                index={i}
+                kind="exclude"
+                rule={r}
+                mediaType={spec.mediaType}
+                region={region}
+                onChange={(next) =>
+                  setRules(
+                    "exclude",
+                    spec.exclude.map((x, j) => (j === i ? next : x)),
+                  )
+                }
+                onRemove={() =>
+                  setRules(
+                    "exclude",
+                    spec.exclude.filter((_, j) => j !== i),
+                  )
+                }
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section aria-labelledby="sort-h" className="space-y-4">
+        <SectionHeading id="sort-h" title={t("Order and size")} />
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label={t("Sort by")} className="min-w-52 flex-1">
+            <SearchSelect
+              value={spec.sort}
+              onChange={(v) => v && update({ sort: v as CollectionSpec["sort"] })}
+              options={SORTS.map((s) => ({ value: s.value, label: s.label, hint: s.hint }))}
+              ariaLabel={t("Sort by")}
+              searchable={false}
+              placeholder={t("Select…")}
+              selectLabel={t("Select")}
+              closeLabel={t("Close")}
+            />
+          </Field>
+          {spec.sort !== "random" && spec.sort !== "source" && spec.sort !== "personal" ? (
+            <Segmented
+              ariaLabel={t("Sort direction")}
+              value={spec.sortDesc ? "desc" : "asc"}
+              onChange={(d) => update({ sortDesc: d === "desc" })}
+              options={[
+                {
+                  value: "desc",
+                  label: spec.sort === "title" ? t("Z–A") : t("Highest"),
+                  icon: <ArrowDownWideNarrow size={14} />,
+                },
+                {
+                  value: "asc",
+                  label: spec.sort === "title" ? t("A–Z") : t("Lowest"),
+                  icon: <ArrowUpNarrowWide size={14} />,
+                },
+              ]}
+            />
+          ) : null}
+        </div>
+        <Field
+          label={t("Limit")}
+          hint={t("The most titles the collection holds. 0 keeps every match.")}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <NumberInput
+              aria-label={t("Limit")}
+              value={spec.limit}
+              min={0}
+              step={5}
+              className="w-28"
+              onChange={(n) => update({ limit: Math.max(0, Math.round(n)) }, "limit")}
+            />
+            <ChipGroup
+              ariaLabel={t("Limit presets")}
+              size="sm"
+              value={[spec.limit]}
+              onChange={(v) => {
+                const last = v[v.length - 1];
+                if (last !== undefined) update({ limit: last });
+              }}
+              options={limitPresets.map((n) => ({
+                value: n,
+                label: n === 0 ? t("No limit") : String(n),
+              }))}
+            />
+          </div>
+        </Field>
+      </section>
+    </div>
+  );
+}
+
+function EmptyHint({ text, action }: { text: string; action?: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-border px-3 py-2.5 text-sm text-fg-muted">
+      {text}
+      {action}
+    </div>
+  );
+}

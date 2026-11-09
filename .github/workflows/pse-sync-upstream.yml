@@ -1,0 +1,204 @@
+# Synchronisation quotidienne par delta à trois voies, sans import de l’ancien historique.
+name: Ether-Remix · Synchronisation Ether
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Reconstruire l'image même sans nouveauté upstream"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: write
+
+concurrency:
+  group: pse-sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/braedonsaunders/ether.git
+  UPSTREAM_BRANCH: main
+  SYNC_BRANCH: sync/upstream-main
+
+jobs:
+  merge:
+    name: Fusionner upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      pending: ${{ steps.changes.outputs.pending }}
+      conflict: ${{ steps.merge.outputs.conflict }}
+      sha: ${{ steps.changes.outputs.sha }}
+      candidate: ${{ steps.publish.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Vérifier la fusion à trois voies
+        run: python3 -m unittest discover -s .github/pse -p 'test_*.py'
+
+      - name: Récupérer Ether upstream
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+      - name: Upstream déjà intégré ?
+        id: changes
+        run: |
+          sha=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          base=$(cat .github/pse/upstream-base)
+          git merge-base --is-ancestor "$base" "$sha"
+          if [ "$sha" = "$base" ]; then
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.changes.outputs.pending == 'true'
+        with:
+          version: 10
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.changes.outputs.pending == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Fusionner en préservant les ajouts du fork
+        if: steps.changes.outputs.pending == 'true'
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$SYNC_BRANCH" origin/main
+          set +e
+          python3 .github/pse/apply-upstream.py "${{ steps.changes.outputs.sha }}"
+          status=$?
+          set -e
+          if [ "$status" -eq 2 ]; then
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+            git reset --hard HEAD
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+      - name: Reconstruire l'interface embarquée
+        if: steps.changes.outputs.pending == 'true' && steps.merge.outputs.conflict == 'false'
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          cd ..
+          git add -A internal/admin/dist
+          git commit -m "Synchroniser Ether ${{ steps.changes.outputs.sha }} et reconstruire l’interface"
+
+      - name: Publier la branche de synchronisation
+        id: publish
+        if: steps.changes.outputs.pending == 'true' && steps.merge.outputs.conflict == 'false'
+        run: |
+          git push --force-with-lease origin "$SYNC_BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Signaler un conflit
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ steps.changes.outputs.sha }}
+        run: |
+          title="Synchronisation Ether upstream bloquée"
+          body=$(printf "La fusion de \`%s\` rencontre des conflits avec les ajouts du fork. Rien n'a été fusionné ni publié.\n\nFichiers concernés :\n\`\`\`\n%s\n\`\`\`\n\nRésolution : voir docs/pse/FORK.fr.md, section « Résolution manuelle d’un conflit »." "$UPSTREAM_SHA" "$(cat /tmp/conflicts.txt)")
+          issue=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then gh issue comment "$issue" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+          exit 1
+
+  verify:
+    name: Contrôler la fusion
+    needs: merge
+    if: needs.merge.outputs.pending == 'true' && needs.merge.outputs.conflict == 'false'
+    uses: ./.github/workflows/pse-ci.yml
+    with:
+      ref: ${{ needs.merge.outputs.candidate }}
+
+  promote:
+    name: Intégrer dans main
+    needs: [merge, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Avance rapide de main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch origin "$SYNC_BRANCH"
+          candidate="${{ needs.merge.outputs.candidate }}"
+          test "$(git rev-parse "origin/$SYNC_BRANCH")" = "$candidate"
+          if git merge-base --is-ancestor origin/main "$candidate"; then
+            git push origin "$candidate:refs/heads/main"
+          else
+            echo "::error::main a avancé pendant la synchronisation ; relancer le workflow."
+            exit 1
+          fi
+          # Ferme la PR éventuellement laissée ouverte par un échec précédent.
+          for n in $(gh pr list --head "$SYNC_BRANCH" --state open --json number --jq '.[].number'); do
+            gh pr close "$n" --comment "Intégrée automatiquement après contrôles verts." || true
+          done
+
+  review:
+    name: Signaler si les contrôles échouent
+    needs: [merge, verify]
+    if: failure() && needs.merge.outputs.conflict == 'false' && needs.merge.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Issue « contrôles en échec »
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          UPSTREAM_SHA: ${{ needs.merge.outputs.sha }}
+        run: |
+          # GitHub Actions n'a pas le droit d'ouvrir de PR dans ce dépôt : on
+          # signale par une issue, la fusion reste sur la branche de sync.
+          title="Synchronisation Ether upstream : contrôles en échec"
+          body="La fusion d'Ether upstream jusqu'à \`$UPSTREAM_SHA\` est propre, mais les contrôles du fork échouent. main n'a pas été modifiée. Branche : \`$SYNC_BRANCH\`. Exécution : $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then gh issue comment "$issue" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+
+  alert:
+    name: Signaler un échec de la synchronisation
+    needs: merge
+    if: failure() && needs.merge.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Issue « synchronisation en échec »
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="Synchronisation Ether upstream en échec"
+          body="La fusion automatique d'Ether upstream a échoué avant les contrôles. main n'a pas été modifiée. Voir l'exécution : $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then gh issue comment "$issue" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+
+  image:
+    name: Publier l'image
+    needs: [merge, promote]
+    if: always() && (needs.promote.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.force_build && needs.merge.outputs.pending == 'false'))
+    uses: ./.github/workflows/pse-docker.yml
+    with:
+      ref: main
+    secrets: inherit

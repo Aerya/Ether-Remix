@@ -1,0 +1,350 @@
+package playback
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+)
+
+func TestPreResolveReusedWithoutLiveSessionOrHistory(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	// Keep the first warm in flight while the second asks: the per-user
+	// budget counts warms that are still running.
+	h.resolver.mu.Lock()
+	h.resolver.delay = 200 * time.Millisecond
+	h.resolver.mu.Unlock()
+	caps := defaultCaps("client")
+	if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+		t.Fatal("first warm skipped")
+	}
+	if h.m.Prewarm(context.Background(), owner, movie2, caps, core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+		t.Fatal("per-user budget ignored")
+	}
+	h.m.mu.Lock()
+	e := h.m.warm[identity{userID: owner.ID, clientID: caps.ClientID, key: movieKey}]
+	h.m.mu.Unlock()
+	select {
+	case <-e.done:
+	case <-time.After(time.Second):
+		t.Fatal("warm did not complete")
+	}
+	if len(h.m.Sessions()) != 0 {
+		t.Fatal("speculation created live session")
+	}
+	// Metadata omits decision-only codec and bandwidth hints. The same profile
+	// must reuse its release and probe even several minutes later.
+	h.clock.Advance(35 * time.Minute)
+	caps.MaxBitrateKbps = 20000
+	caps.VideoCodecs = []string{"h264"}
+	if info, ok := h.m.WarmProbeInfo(owner, caps, movieKey); !ok || info.Estimated {
+		t.Fatalf("warm probe expired before 60m TTL: ok=%v info=%+v", ok, info)
+	}
+	ps, err := h.m.Prepare(context.Background(), owner, movieKey, caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps.Resolution.Release.ID != "r1" {
+		t.Fatalf("wrong warm release %+v", ps)
+	}
+	// Consuming the warm resolution for playback must retain the probed
+	// tracks in WarmProbeInfo for subsequent detail-page refreshes.
+	if info, ok := h.m.WarmProbeInfo(owner, caps, movieKey); !ok || info.Estimated {
+		t.Fatalf("WarmProbeInfo lost probed tracks after Prepare consumed warm resolution: ok=%v info=%+v", ok, info)
+	}
+	h.resolver.mu.Lock()
+	calls := h.resolver.calls
+	h.resolver.mu.Unlock()
+	h.tr.mu.Lock()
+	probes := h.tr.probes
+	h.tr.mu.Unlock()
+	if probes != 1 {
+		t.Fatalf("warm probe was repeated: %d", probes)
+	}
+	if calls != 1 {
+		t.Fatalf("resolved again: %d calls", calls)
+	}
+}
+
+func TestSurfaceVersionUsesMatchingWarmProbe(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	caps := defaultCaps("client")
+	caps.Protocol = "jellyfin"
+	if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+		t.Fatal("warm skipped")
+	}
+	h.m.mu.Lock()
+	e := h.m.warm[identity{userID: owner.ID, clientID: caps.ClientID, key: movieKey, surface: "jellyfin"}]
+	h.m.mu.Unlock()
+	if e == nil {
+		t.Fatal("surface warm missing")
+	}
+	select {
+	case <-e.done:
+	case <-time.After(time.Second):
+		t.Fatal("warm did not complete")
+	}
+	ps, err := h.m.PrepareSurface(context.Background(), owner, movieKey, caps, "r1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps.Resolution == nil || ps.Resolution.Release.ID != "r1" {
+		t.Fatal("exact source changed")
+	}
+	h.resolver.mu.Lock()
+	calls := h.resolver.calls
+	h.resolver.mu.Unlock()
+	h.tr.mu.Lock()
+	probes := h.tr.probes
+	h.tr.mu.Unlock()
+	if calls != 1 || probes != 1 {
+		t.Fatalf("matching warm repeated resolve/probe: %d/%d", calls, probes)
+	}
+}
+
+func TestWaitWarmProbeWaitsForInFlightDetailWarmup(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	h.resolver.mu.Lock()
+	h.resolver.delay = 80 * time.Millisecond
+	h.resolver.mu.Unlock()
+	caps := defaultCaps("client")
+	if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+		t.Fatal("detail prewarm skipped")
+	}
+	info, ok := h.m.WaitWarmProbe(context.Background(), owner, caps, movieKey, time.Second)
+	if !ok || info.Estimated || len(info.Streams) == 0 {
+		t.Fatalf("WaitWarmProbe did not return probed streams: ok=%v info=%+v", ok, info)
+	}
+}
+
+func TestCachePolicyCanDisableSpeculation(t *testing.T) {
+	for _, mode := range []string{"off", "detail", "all"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+			cfg := h.m.config()
+			switch mode {
+			case "off":
+				cfg.Cache.Mode = "off"
+			case "detail":
+				cfg.Cache.DetailWarmup = "off"
+			case "all":
+				cfg.Cache.DisableSpeculation = true
+			}
+			h.m.SetConfig(cfg)
+			if h.m.Prewarm(context.Background(), owner, movieKey, defaultCaps("client"), core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+				t.Fatal("disabled warm was admitted")
+			}
+			h.resolver.mu.Lock()
+			defer h.resolver.mu.Unlock()
+			if h.resolver.calls != 0 {
+				t.Fatal("disabled warming reached resolver")
+			}
+		})
+	}
+}
+
+type openingPrefetchFailure struct {
+	core.Engine
+	err      error
+	finished chan context.Context
+}
+
+func (e *openingPrefetchFailure) Prefetch(ctx context.Context, _ string, _ []byte, _, _ int64) error {
+	e.finished <- ctx
+	return e.err
+}
+
+func TestPrewarmRejectsMissingOpeningButNotTransientFailure(t *testing.T) {
+	for _, permanent := range []bool{true, false} {
+		name := "transient"
+		failure := context.DeadlineExceeded
+		if permanent {
+			name = "missing"
+			failure = core.ErrArticleMissing
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+			engine := &openingPrefetchFailure{Engine: h.engine, err: failure, finished: make(chan context.Context, 1)}
+			h.m.deps.Engine = engine
+			if !h.m.Prewarm(context.Background(), owner, movieKey, defaultCaps("client"), core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+				t.Fatal("warm skipped")
+			}
+			select {
+			case ctx := <-engine.finished:
+				select {
+				case <-ctx.Done():
+				case <-time.After(2 * time.Second):
+					t.Fatal("warm did not finish")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("prefetch not reached")
+			}
+			// Warm cancellation happens after rejection processing.
+			h.resolver.mu.Lock()
+			_, bad := h.resolver.bad["r1"]
+			h.resolver.mu.Unlock()
+			h.m.mu.Lock()
+			_, warm := h.m.warm[identity{userID: owner.ID, clientID: "client", key: movieKey}]
+			h.m.mu.Unlock()
+			if bad != permanent || warm == permanent {
+				t.Fatalf("bad=%v warm=%v permanent=%v", bad, warm, permanent)
+			}
+		})
+	}
+}
+
+type holdPrefetch struct {
+	core.Engine
+	hold chan struct{}
+}
+
+func (e *holdPrefetch) Prefetch(ctx context.Context, _ string, _ []byte, _, _ int64) error {
+	select {
+	case <-e.hold:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestPrepareDoesNotWaitForUsenetOpeningPrefetch(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<20, time.Minute)}, []string{"r1"})
+	hold := make(chan struct{})
+	h.m.deps.Engine = &holdPrefetch{Engine: h.engine, hold: hold}
+	t.Cleanup(func() { close(hold) })
+	if !h.m.Prewarm(context.Background(), owner, movieKey, defaultCaps("client"), core.PrewarmOptions{Reason: core.PrewarmDetail}) {
+		t.Fatal("warm skipped")
+	}
+	h.m.mu.Lock()
+	e := h.m.warm[identity{userID: owner.ID, clientID: "client", key: movieKey}]
+	h.m.mu.Unlock()
+	if e == nil {
+		t.Fatal("no warm entry")
+	}
+	select {
+	case <-e.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe did not publish")
+	}
+	start := time.Now()
+	ps, err := h.m.Prepare(context.Background(), owner, movieKey, defaultCaps("client"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("Prepare waited %s behind usenet opening prefetch", d)
+	}
+	if ps.Resolution == nil || ps.Resolution.Release.ID != "r1" {
+		t.Fatalf("prepare %+v", ps)
+	}
+}
+
+func TestWaitWarmProbeStopsAtTheCallerBudget(t *testing.T) {
+	user := &core.User{ID: 9}
+	caps := core.ClientCaps{ClientID: "adult"}
+	key := core.MovieKey(10004)
+	done := make(chan struct{})
+	m := &Manager{now: time.Now, warm: map[identity]*warmEntry{}}
+	m.warm[identity{userID: user.ID, clientID: caps.ClientID, key: key}] = &warmEntry{
+		done: done, expires: time.Now().Add(time.Minute),
+	}
+	start := time.Now()
+	_, ok := m.WaitWarmProbe(context.Background(), user, caps, key, 30*time.Millisecond)
+	elapsed := time.Since(start)
+	if ok {
+		t.Fatal("unfinished probe was treated as ready")
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("wait %s exceeded the caller budget", elapsed)
+	}
+	close(done)
+}
+
+func TestBrowsePrewarmOpensWithoutPrefetch(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"})
+	caps := defaultCaps("browse")
+	if !h.m.Prewarm(context.Background(), owner, movieKey, caps, core.PrewarmOptions{Reason: core.PrewarmBrowse}) {
+		t.Fatal("browse warm skipped")
+	}
+	waitWarm(t, h, owner.ID, "browse", movieKey)
+	h.engine.mu.Lock()
+	n := len(h.engine.prefetch)
+	h.engine.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("browse warm prefetched %d times", n)
+	}
+	if info, ok := h.m.WarmProbeInfo(owner, caps, movieKey); !ok || info.Estimated {
+		t.Fatalf("browse warm did not publish a probe: ok=%v info=%+v", ok, info)
+	}
+}
+
+func TestMetadataProbeWithoutPrefetchOrPlaybackSession(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprint(active), func(t *testing.T) {
+			h := newHarness(t, []*fakeRelease{mkv("r1", 2<<30, 90*time.Minute)}, []string{"r1"}, withNativeProbe(func(ctx context.Context, src core.MediaSource) (*core.MediaInfo, error) {
+				if _, err := src.ReadAt(make([]byte, 64), 0); err != nil {
+					return nil, err
+				}
+				info := nativeInfo(src)
+				info.Streams = append(info.Streams, core.StreamInfo{Index: 2, Type: "subtitle", Codec: "subrip", Language: "en"}, core.StreamInfo{Index: 3, Type: "subtitle", Codec: "hdmv_pgs_subtitle", Language: "en"})
+				return info, nil
+			}, nil))
+			caps := defaultCaps("shield")
+			if active {
+				if _, err := h.m.Prepare(context.Background(), owner, movie2, defaultCaps("other")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := len(h.m.Sessions())
+			if err := h.m.ProbeMetadata(context.Background(), owner, movieKey, caps); err != nil {
+				t.Fatal(err)
+			}
+			if info, ok := h.m.WarmProbeInfo(owner, caps, movieKey); !ok || info.Estimated || len(info.Streams) != 4 {
+				t.Fatalf("missing exact pre-play facts: %v %+v", ok, info)
+			}
+			if len(h.m.Sessions()) != before {
+				t.Fatal("metadata created session")
+			}
+			h.engine.mu.Lock()
+			n := len(h.engine.prefetch)
+			h.engine.mu.Unlock()
+			if n != 0 {
+				t.Fatalf("metadata prefetched video: %d", n)
+			}
+			resolves, probes := counts(h)
+			if err := h.m.ProbeMetadata(context.Background(), owner, movieKey, caps); err != nil {
+				t.Fatal(err)
+			}
+			r, p := counts(h)
+			if r != resolves || p != probes {
+				t.Fatal("repeated metadata repeated probe")
+			}
+		})
+	}
+}
+
+func TestMetadataProbeRespectsDisabledSettings(t *testing.T) {
+	for _, mode := range []string{"detail-off", "speculation-off", "cache-off"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t, []*fakeRelease{mkv("r1", 2<<20, time.Minute)}, []string{"r1"})
+			cfg := h.m.config()
+			switch mode {
+			case "detail-off":
+				cfg.Cache.DetailWarmup = "off"
+			case "speculation-off":
+				cfg.Cache.DisableSpeculation = true
+			case "cache-off":
+				cfg.Cache.Mode = "off"
+			}
+			h.m.SetConfig(cfg)
+			if err := h.m.ProbeMetadata(t.Context(), owner, movieKey, defaultCaps("shield")); err == nil {
+				t.Fatal("uncached disabled probe reported success")
+			}
+			if r, p := counts(h); r != 0 || p != 0 {
+				t.Fatalf("disabled probe resolved/probed: %d/%d", r, p)
+			}
+		})
+	}
+}

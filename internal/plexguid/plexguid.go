@@ -1,0 +1,737 @@
+// Package plexguid maps verified external identities through Plex's metadata
+// provider. It never invents plex:// IDs or grants Plex account entitlements.
+package plexguid
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/store"
+)
+
+func init() {
+	store.Register("plexguid", 1, `CREATE TABLE plexguid_mappings(rating_key INTEGER PRIMARY KEY,guid TEXT NOT NULL,checked_at INTEGER NOT NULL);`)
+	store.Register("plexguid", 3, `CREATE TABLE plexguid_verified(rating_key INTEGER PRIMARY KEY, guid TEXT NOT NULL);`)
+	// Older child mappings did not retain their parent identity. Keep serving
+	// them while the repair worker checks their ancestry.
+	store.Register("plexguid", 4, `CREATE TABLE plexguid_parentage(rating_key INTEGER PRIMARY KEY, parent_key INTEGER NOT NULL, parent_guid TEXT NOT NULL);`)
+	store.Register("plexguid", 5, `CREATE INDEX plexguid_parentage_parent ON plexguid_parentage(parent_key);`)
+	store.Register("plexguid", 2, `CREATE INDEX plexguid_mappings_guid ON plexguid_mappings(guid);`)
+}
+
+const (
+	cacheTTL         = 30 * 24 * time.Hour
+	recheckInterval  = 24 * time.Hour
+	bgWorkers        = 2
+	bgQueueSize      = 256
+	bgLookupTimeout  = 3 * time.Second
+	childrenPageSize = 50
+	maxChildrenItems = 2500
+)
+
+type Options struct {
+	HTTP *http.Client
+	// ClientIdentifier is the per-install X-Plex-Client-Identifier.
+	ClientIdentifier func() string
+	BaseURL          string
+	Token            func() string
+	Background       bool
+}
+
+type Service struct {
+	db *sql.DB
+	o  Options
+
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	closeOne sync.Once
+
+	mu      sync.Mutex
+	idle    *sync.Cond
+	pending map[core.RatingKey]bool
+	jobs    chan core.RatingKey
+}
+
+func New(db *sql.DB, o Options) *Service {
+	if o.HTTP == nil {
+		o.HTTP = egress.Client(egress.CapDirect, 5*time.Second)
+	}
+	if o.BaseURL == "" {
+		o.BaseURL = "https://metadata.provider.plex.tv"
+	}
+	if o.ClientIdentifier == nil {
+		// Unconfigured fixtures still get an id of their own, fixed for
+		// this Service, never one shared across installs.
+		fixed := ClientIdentifier("", "")
+		o.ClientIdentifier = func() string { return fixed }
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Service{
+		db:      db,
+		o:       o,
+		ctx:     ctx,
+		cancel:  cancel,
+		pending: map[core.RatingKey]bool{},
+	}
+	s.idle = sync.NewCond(&s.mu)
+	if o.Background {
+		s.jobs = make(chan core.RatingKey, bgQueueSize)
+		for i := 0; i < bgWorkers; i++ {
+			s.wg.Add(1)
+			go s.worker()
+		}
+		s.wg.Add(1)
+		go s.repairMappings()
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			<-ctx.Done()
+			s.mu.Lock()
+			s.idle.Broadcast()
+			s.mu.Unlock()
+		}()
+	}
+	return s
+}
+
+// ClientIdentifier returns the per-install X-Plex-Client-Identifier used by s.
+func (s *Service) ClientIdentifier() string {
+	if s == nil {
+		return ""
+	}
+	return s.clientIdentifier()
+}
+
+func (s *Service) Close() {
+	s.closeOne.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+	})
+}
+
+// Wait blocks until all queued background GUID resolutions finish.
+func (s *Service) Wait() {
+	if s.jobs == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for len(s.pending) > 0 && s.ctx.Err() == nil {
+		s.idle.Wait()
+	}
+}
+
+// Schedule queues keys for asynchronous plex:// GUID resolution when
+// Background is enabled. Safe to call on hot render paths.
+func (s *Service) Schedule(keys ...core.RatingKey) {
+	if s == nil || s.jobs == nil || s.ctx.Err() != nil {
+		return
+	}
+	if s.o.Token == nil || s.o.Token() == "" {
+		return
+	}
+	for _, k := range keys {
+		if !resolvableKey(k) {
+			continue
+		}
+		s.mu.Lock()
+		if s.pending[k] {
+			s.mu.Unlock()
+			continue
+		}
+		s.pending[k] = true
+		s.mu.Unlock()
+		select {
+		case s.jobs <- k:
+		default:
+			s.done(k)
+		}
+	}
+}
+
+func (s *Service) worker() {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case k := <-s.jobs:
+			func() {
+				defer s.done(k)
+				rctx, cancel := context.WithTimeout(s.ctx, bgLookupTimeout)
+				defer cancel()
+				_, _ = s.Resolve(rctx, k)
+			}()
+		}
+	}
+}
+
+// repairMappings revisits legacy identities without withholding them. It
+// alternates unverified entries with children whose parentage was not
+// recorded, so legacy children get priority without starving other work.
+func (s *Service) repairMappings() {
+	defer s.wg.Done()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	var after [2]int64
+	var turn int
+	queries := [2]string{
+		`SELECT m.rating_key FROM plexguid_mappings m WHERE m.rating_key>? AND NOT EXISTS (SELECT 1 FROM plexguid_verified v WHERE v.rating_key=m.rating_key AND v.guid=m.guid) ORDER BY m.rating_key LIMIT 1`,
+		`SELECT m.rating_key FROM plexguid_mappings m WHERE m.rating_key>? AND m.rating_key>=3000000000000000 AND m.rating_key<5000000000000000 AND m.guid<>'' AND NOT EXISTS (SELECT 1 FROM plexguid_parentage p WHERE p.rating_key=m.rating_key) ORDER BY m.rating_key LIMIT 1`,
+	}
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-tick.C:
+		}
+		if s.o.Token == nil || s.o.Token() == "" {
+			continue
+		}
+		var key int64
+		queue := turn
+		turn = 1 - turn
+		err := s.db.QueryRowContext(s.ctx, queries[queue], after[queue]).Scan(&key)
+		if err == sql.ErrNoRows {
+			after[queue] = 0
+			queue = 1 - queue
+			err = s.db.QueryRowContext(s.ctx, queries[queue], after[queue]).Scan(&key)
+		}
+		if err == sql.ErrNoRows {
+			after[queue] = 0
+			timer := time.NewTimer(time.Minute)
+			select {
+			case <-s.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		k := core.RatingKey(key)
+		if !resolvableKey(k) {
+			after[queue] = key
+			continue
+		}
+		s.mu.Lock()
+		if s.pending[k] {
+			s.mu.Unlock()
+			after[queue] = key
+			continue
+		}
+		s.pending[k] = true
+		s.mu.Unlock()
+		select {
+		case s.jobs <- k:
+			after[queue] = key
+		case <-s.ctx.Done():
+			s.done(k)
+			return
+		default:
+			s.done(k)
+		}
+	}
+}
+
+func (s *Service) done(k core.RatingKey) {
+	s.mu.Lock()
+	delete(s.pending, k)
+	if len(s.pending) == 0 {
+		s.idle.Broadcast()
+	}
+	s.mu.Unlock()
+}
+
+var validGUID = regexp.MustCompile(`^plex://(movie|show|season|episode)/[a-f0-9]{24}$`)
+
+func resolvableKey(k core.RatingKey) bool {
+	switch k.Kind() {
+	case core.KindMovie, core.KindShow:
+		return k.TMDB() > 0
+	case core.KindSeason:
+		return k.TMDB() > 0 && k.Season() >= 0 && k.Season() < 9000
+	case core.KindEpisode:
+		return k.TMDB() > 0 && k.Season() >= 0 && k.Season() < 9000 && k.Episode() > 0
+	default:
+		return false
+	}
+}
+
+// Cached is safe for lists: no network requests or credentials are needed.
+func (s *Service) Cached(ctx context.Context, k core.RatingKey) string {
+	var guid string
+	_ = s.db.QueryRowContext(ctx, `SELECT guid FROM plexguid_mappings m WHERE rating_key=? AND checked_at>?`, int64(k), time.Now().Add(-cacheTTL).Unix()).Scan(&guid)
+	return guid
+}
+
+// CachedMany batch-loads cached non-empty plex:// GUIDs for keys without
+// network activity.
+func (s *Service) CachedMany(ctx context.Context, keys []core.RatingKey) map[core.RatingKey]string {
+	if s == nil || s.db == nil || len(keys) == 0 {
+		return nil
+	}
+	uniq := make([]core.RatingKey, 0, len(keys))
+	seen := make(map[core.RatingKey]struct{}, len(keys))
+	for _, k := range keys {
+		if k == 0 {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		uniq = append(uniq, k)
+	}
+	if len(uniq) == 0 {
+		return nil
+	}
+	cutoff := time.Now().Add(-cacheTTL).Unix()
+	out := make(map[core.RatingKey]string, len(uniq))
+	const chunkSize = 200
+	for start := 0; start < len(uniq); start += chunkSize {
+		end := min(start+chunkSize, len(uniq))
+		chunk := uniq[start:end]
+		var b strings.Builder
+		b.WriteString(`SELECT rating_key,guid FROM plexguid_mappings WHERE rating_key IN (`)
+		args := make([]any, 0, len(chunk)+1)
+		for i, k := range chunk {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteByte('?')
+			args = append(args, int64(k))
+		}
+		b.WriteString(`) AND checked_at>?`)
+		args = append(args, cutoff)
+		rows, err := s.db.QueryContext(ctx, b.String(), args...)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var rk int64
+			var guid string
+			if err := rows.Scan(&rk, &guid); err == nil && guid != "" {
+				out[core.RatingKey(rk)] = guid
+			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Default().Warn("plexguid: cached mappings not fully loaded", "err", err)
+		}
+		_ = rows.Close()
+	}
+	return out
+}
+
+func (s *Service) freshCached(ctx context.Context, k core.RatingKey) (string, bool) {
+	var cached string
+	var at int64
+	if e := s.db.QueryRowContext(ctx, `SELECT guid,checked_at FROM plexguid_mappings m WHERE rating_key=? AND EXISTS (SELECT 1 FROM plexguid_verified v WHERE v.rating_key=m.rating_key AND v.guid=m.guid) AND (rating_key<3000000000000000 OR rating_key>=5000000000000000 OR guid='' OR EXISTS (SELECT 1 FROM plexguid_parentage p WHERE p.rating_key=m.rating_key))`, int64(k)).Scan(&cached, &at); e == nil && time.Since(time.Unix(at, 0)) < recheckInterval {
+		return cached, true
+	}
+	return "", false
+}
+
+func (s *Service) storeMapping(ctx context.Context, k core.RatingKey, guid string, now int64) error {
+	return s.storeMappingUnder(ctx, k, guid, now, 0, "")
+}
+
+func (s *Service) storeMappingUnder(ctx context.Context, k core.RatingKey, guid string, now int64, parent core.RatingKey, parentGUID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if parent != 0 {
+		var current string
+		err = tx.QueryRowContext(ctx, `SELECT m.guid FROM plexguid_mappings m JOIN plexguid_verified v ON v.rating_key=m.rating_key AND v.guid=m.guid WHERE m.rating_key=?`, int64(parent)).Scan(&current)
+		if err != nil || current != parentGUID {
+			return fmt.Errorf("Plex parent identity changed")
+		}
+	}
+	var old string
+	if err = tx.QueryRowContext(ctx, `SELECT guid FROM plexguid_mappings WHERE rating_key=?`, int64(k)).Scan(&old); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if old != guid {
+		// Delete only children whose recorded parentage proves they belong
+		// to the old tree. Unknown legacy children stay available.
+		remove := func(query string, args ...any) error {
+			for _, table := range []string{"plexguid_verified", "plexguid_mappings", "plexguid_parentage"} {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rating_key IN (`+query+`)`, args...); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if k.Kind() == core.KindShow {
+			q := `SELECT ep.rating_key FROM plexguid_parentage ep JOIN plexguid_parentage sea ON ep.parent_key=sea.rating_key WHERE sea.parent_key=? AND sea.parent_guid<>?`
+			if err = remove(q, int64(k), guid); err != nil {
+				return err
+			}
+		}
+		if k.Kind() == core.KindShow || k.Kind() == core.KindSeason {
+			q := `SELECT rating_key FROM plexguid_parentage WHERE parent_key=? AND parent_guid<>?`
+			if err = remove(q, int64(k), guid); err != nil {
+				return err
+			}
+		}
+		// A child's proof is tied to its parent's identity. Drop those proofs
+		// when a parent changes so they are resolved through the new tree.
+		var ranges [][2]core.RatingKey
+		switch k.Kind() {
+		case core.KindShow:
+			ranges = append(ranges, [2]core.RatingKey{core.SeasonKey(k.TMDB(), 0), core.SeasonKey(k.TMDB()+1, 0)}, [2]core.RatingKey{core.EpisodeKey(k.TMDB(), 0, 0), core.EpisodeKey(k.TMDB()+1, 0, 0)})
+		case core.KindSeason:
+			ranges = append(ranges, [2]core.RatingKey{core.EpisodeKey(k.TMDB(), k.Season(), 0), core.EpisodeKey(k.TMDB(), k.Season()+1, 0)})
+		}
+		for _, bounds := range ranges {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM plexguid_verified WHERE rating_key>=? AND rating_key<?`, int64(bounds[0]), int64(bounds[1])); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO plexguid_mappings(rating_key,guid,checked_at) VALUES(?,?,?) ON CONFLICT(rating_key) DO UPDATE SET guid=excluded.guid,checked_at=excluded.checked_at`, int64(k), guid, now); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO plexguid_verified(rating_key,guid) VALUES(?,?) ON CONFLICT(rating_key) DO UPDATE SET guid=excluded.guid`, int64(k), guid); err != nil {
+		return err
+	}
+	if parent != 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO plexguid_parentage(rating_key,parent_key,parent_guid) VALUES(?,?,?) ON CONFLICT(rating_key) DO UPDATE SET parent_key=excluded.parent_key,parent_guid=excluded.parent_guid`, int64(k), int64(parent), parentGUID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Service) Resolve(ctx context.Context, k core.RatingKey) (string, error) {
+	if !resolvableKey(k) {
+		return "", nil
+	}
+	if cached, ok := s.freshCached(ctx, k); ok {
+		return cached, nil
+	}
+	if s.o.Token == nil || s.o.Token() == "" {
+		return "", core.ErrUnauthorized
+	}
+	switch k.Kind() {
+	case core.KindMovie, core.KindShow:
+		kind, typ := "movie", "1"
+		if k.Kind() == core.KindShow {
+			kind, typ = "show", "2"
+		}
+		guid, err := s.resolveMovieOrShow(ctx, k, kind, typ)
+		if err == nil && guid == "" {
+			// Existing mappings are served until re-verified (#289); one that
+			// no longer verifies (a namesake from another year or country)
+			// is dropped so Plex apps stop loading its cast and metadata.
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM plexguid_mappings WHERE rating_key=? AND NOT EXISTS (SELECT 1 FROM plexguid_verified v WHERE v.rating_key=plexguid_mappings.rating_key AND v.guid=plexguid_mappings.guid)`, int64(k))
+		}
+		return guid, err
+	case core.KindSeason:
+		return s.resolveSeason(ctx, k)
+	case core.KindEpisode:
+		return s.resolveEpisode(ctx, k)
+	default:
+		return "", nil
+	}
+}
+
+type providerItem struct {
+	GUID            string `json:"guid"`
+	RatingKey       string `json:"ratingKey"`
+	Type            string `json:"type"`
+	Year            int    `json:"year"`
+	Index           *int   `json:"index"`
+	ParentIndex     *int   `json:"parentIndex"`
+	ParentGUID      string `json:"parentGuid"`
+	GrandparentGUID string `json:"grandparentGuid"`
+	IDs             []struct {
+		ID string `json:"id"`
+	} `json:"Guid"`
+}
+
+func (s *Service) getPage(ctx context.Context, path string, q url.Values) ([]providerItem, int, error) {
+	u := strings.TrimRight(s.o.BaseURL, "/") + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	req, e := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if e != nil {
+		return nil, 0, fmt.Errorf("Plex metadata request invalid")
+	}
+	req.Header.Set("X-Plex-Token", s.o.Token())
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Plex-Product", "Ether")
+	req.Header.Set("X-Plex-Client-Identifier", s.clientIdentifier())
+	// Never forward account credentials to a redirect target.
+	client := *s.o.HTTP
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, e := client.Do(req)
+	if e != nil {
+		return nil, 0, fmt.Errorf("Plex metadata unavailable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, 0, core.ErrNotFound
+	}
+	if resp.StatusCode != 200 {
+		return nil, 0, fmt.Errorf("Plex metadata HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Container struct {
+			TotalSize int            `json:"totalSize"`
+			Metadata  []providerItem `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	if e = json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&body); e != nil {
+		return nil, 0, fmt.Errorf("Plex metadata response invalid")
+	}
+	return body.Container.Metadata, body.Container.TotalSize, nil
+}
+
+func (s *Service) getItems(ctx context.Context, path string, q url.Values) ([]providerItem, error) {
+	items, _, err := s.getPage(ctx, path, q)
+	return items, err
+}
+
+func (s *Service) getChildren(ctx context.Context, hex string) ([]providerItem, error) {
+	path := "/library/metadata/" + url.PathEscape(hex) + "/children"
+	var all []providerItem
+	for start := 0; start < maxChildrenItems; {
+		q := url.Values{
+			"X-Plex-Container-Start": {strconv.Itoa(start)},
+			"X-Plex-Container-Size":  {strconv.Itoa(childrenPageSize)},
+		}
+		page, totalSize, err := s.getPage(ctx, path, q)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		n := len(page)
+		if n == 0 {
+			break
+		}
+		start += n
+		if totalSize > 0 {
+			if start >= totalSize {
+				break
+			}
+		} else if n < childrenPageSize {
+			break
+		}
+	}
+	return all, nil
+}
+
+func (s *Service) clientIdentifier() string {
+	if s.o.ClientIdentifier != nil {
+		if id := strings.TrimSpace(s.o.ClientIdentifier()); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func validKindGUID(guid, kind string) bool {
+	return validGUID.MatchString(guid) && strings.HasPrefix(guid, "plex://"+kind+"/")
+}
+
+func guidHex(guid, kind string) string {
+	prefix := "plex://" + kind + "/"
+	if !validKindGUID(guid, kind) {
+		return ""
+	}
+	return strings.TrimPrefix(guid, prefix)
+}
+
+func hasExternalID(item providerItem, want ...string) bool {
+	for _, id := range item.IDs {
+		for _, w := range want {
+			if w != "" && id.ID == w {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// verifyTitle checks the canonical metadata record, not just a search hit.
+func (s *Service) verifyTitle(ctx context.Context, k core.RatingKey, kind, guid string) (bool, error) {
+	items, err := s.getItems(ctx, "/library/metadata/"+guidHex(guid, kind), url.Values{"includeGuids": {"1"}})
+	if errors.Is(err, core.ErrNotFound) {
+		return false, nil // no canonical record: not verified
+	}
+	if err != nil {
+		return false, err
+	}
+	var year int
+	var imdb string
+	_ = s.db.QueryRowContext(ctx, `SELECT year,imdb FROM catalog_titles WHERE key=?`, int64(k)).Scan(&year, &imdb)
+	for _, item := range items {
+		if item.GUID != guid || item.Type != kind {
+			continue
+		}
+		// TMDB and Plex years can differ by one (festival vs release); a
+		// namesake from another decade cannot.
+		if year > 0 && item.Year > 0 && (item.Year < year-1 || item.Year > year+1) {
+			continue
+		}
+		if hasExternalID(item, fmt.Sprintf("tmdb://%d", k.TMDB()), externalIMDB(imdb)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func externalIMDB(id string) string {
+	if id == "" {
+		return ""
+	}
+	return "imdb://" + id
+}
+
+func (s *Service) resolveMovieOrShow(ctx context.Context, k core.RatingKey, kind, typ string) (string, error) {
+	external := fmt.Sprintf("tmdb://%d", k.TMDB())
+	items, err := s.getItems(ctx, "/library/metadata/matches", url.Values{"type": {typ}, "guid": {external}, "includeGuids": {"1"}})
+	if err != nil {
+		return "", err
+	}
+	found := ""
+	for _, item := range items {
+		if item.Type != kind || !validKindGUID(item.GUID, kind) {
+			continue
+		}
+		if hasExternalID(item, external) {
+			ok, err := s.verifyTitle(ctx, k, kind, item.GUID)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				continue
+			}
+			if found != "" && found != item.GUID {
+				return "", fmt.Errorf("ambiguous Plex identity")
+			}
+			found = item.GUID
+		}
+	}
+	now := time.Now().Unix()
+	err = s.storeMapping(ctx, k, found, now)
+	return found, err
+}
+
+func (s *Service) resolveSeason(ctx context.Context, k core.RatingKey) (string, error) {
+	showID := k.TMDB()
+	seasonNum := k.Season()
+	showKey := core.ShowKey(showID)
+	// Resolve only through a verified show and its actual children. Match
+	// results alone do not establish which show owns a season.
+	showGUID, err := s.Resolve(ctx, showKey)
+	if err != nil {
+		return "", err
+	}
+	showHex := guidHex(showGUID, "show")
+	if showHex == "" {
+		_ = s.storeMapping(ctx, k, "", time.Now().Unix())
+		return "", nil
+	}
+	children, err := s.getChildren(ctx, showHex)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().Unix()
+	found := ""
+	seen := make(map[int]string)
+	for _, item := range children {
+		if item.Type != "season" || !validKindGUID(item.GUID, "season") || item.Index == nil || *item.Index < 0 || *item.Index >= 9000 {
+			continue
+		}
+		if prior := seen[*item.Index]; prior != "" && prior != item.GUID {
+			return "", fmt.Errorf("ambiguous Plex season")
+		}
+		seen[*item.Index] = item.GUID
+	}
+	for n, guid := range seen {
+		sk := core.SeasonKey(showID, n)
+		if err := s.storeMappingUnder(ctx, sk, guid, now, showKey, showGUID); err != nil {
+			return "", err
+		}
+		if n == seasonNum {
+			found = guid
+		}
+	}
+	if found == "" {
+		if err := s.storeMappingUnder(ctx, k, "", now, showKey, showGUID); err != nil {
+			return "", err
+		}
+	}
+	return found, nil
+}
+
+func (s *Service) resolveEpisode(ctx context.Context, k core.RatingKey) (string, error) {
+	showID := k.TMDB()
+	seasonNum := k.Season()
+	epNum := k.Episode()
+	seasonKey := core.SeasonKey(showID, seasonNum)
+	// A verified season is obtained through its verified show; fetch its
+	// children rather than trusting an independent episode search hit.
+	seasonGUID, err := s.Resolve(ctx, seasonKey)
+	if err != nil {
+		return "", err
+	}
+	seasonHex := guidHex(seasonGUID, "season")
+	if seasonHex == "" {
+		_ = s.storeMapping(ctx, k, "", time.Now().Unix())
+		return "", nil
+	}
+	children, err := s.getChildren(ctx, seasonHex)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().Unix()
+	found := ""
+	seen := make(map[int]string)
+	for _, item := range children {
+		if item.Type != "episode" || !validKindGUID(item.GUID, "episode") || item.Index == nil || *item.Index <= 0 || *item.Index >= 10000 || (item.ParentIndex != nil && *item.ParentIndex != seasonNum) {
+			continue
+		}
+		if prior := seen[*item.Index]; prior != "" && prior != item.GUID {
+			return "", fmt.Errorf("ambiguous Plex episode")
+		}
+		seen[*item.Index] = item.GUID
+	}
+	for n, guid := range seen {
+		ek := core.EpisodeKey(showID, seasonNum, n)
+		if err := s.storeMappingUnder(ctx, ek, guid, now, seasonKey, seasonGUID); err != nil {
+			return "", err
+		}
+		if n == epNum {
+			found = guid
+		}
+	}
+	if found == "" {
+		if err := s.storeMappingUnder(ctx, k, "", now, seasonKey, seasonGUID); err != nil {
+			return "", err
+		}
+	}
+	return found, nil
+}

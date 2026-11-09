@@ -1,0 +1,72 @@
+{
+  "v": 1,
+  "moment": "offair",
+  "duration": 8,
+  "poster": 5.5,
+  "slots": [
+    "channel.name",
+    "offair.message"
+  ],
+  "layers": [
+    {
+      "id": "static",
+      "type": "noise",
+      "w": 1920,
+      "h": 1080,
+      "name": "Static"
+    },
+    {
+      "id": "panel",
+      "type": "path",
+      "x": 520,
+      "y": 350,
+      "fill": "#000000@0.9",
+      "stroke": "{text}@0.5",
+      "strokeWidth": 2,
+      "path": "M 30 0 H 850 Q 880 0 880 30 V 350 Q 880 380 850 380 H 30 Q 0 380 0 350 V 30 Q 0 0 30 0 Z",
+      "name": "Panel"
+    },
+    {
+      "id": "brand",
+      "type": "text",
+      "text": "{channel.name}",
+      "x": 960,
+      "y": 480,
+      "size": 96,
+      "font": "playfairdisplay",
+      "fill": "{text}",
+      "align": "center",
+      "track": 10,
+      "maxWidth": 820,
+      "fit": "shrink",
+      "name": "Brand"
+    },
+    {
+      "id": "sleep",
+      "type": "text",
+      "text": "THE CHANNEL SLEEPS.",
+      "x": 960,
+      "y": 570,
+      "size": 40,
+      "font": "specialelite",
+      "fill": "{text}",
+      "align": "center",
+      "track": 6,
+      "name": "Sleep"
+    },
+    {
+      "id": "return",
+      "type": "text",
+      "text": "{offair.message}",
+      "x": 960,
+      "y": 650,
+      "size": 32,
+      "font": "specialelite",
+      "fill": "{accent}",
+      "align": "center",
+      "maxWidth": 800,
+      "fit": "shrink",
+      "name": "Return"
+    }
+  ]
+}

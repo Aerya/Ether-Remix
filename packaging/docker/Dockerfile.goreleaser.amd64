@@ -1,0 +1,45 @@
+# GoReleaser image: packages the already-built ether binary (build context
+# root has the target binary as ./ether plus staged ffmpeg from
+# scripts/fetch-ffmpeg.sh). Used by the `dockers:` section of
+# .goreleaser.yaml. For from-source builds use the repo-root Dockerfile.
+FROM debian:trixie-slim
+
+# Hardware transcoding userspace, loaded by the bundled ffmpeg at runtime:
+# libva + libva-drm (VAAPI on /dev/dri), Mesa VA drivers (AMD), Intel's
+# non-free iHD (Gen8+: full EU kernel shaders for VBR/CBR/QVBR,
+# VAEntrypointEncSlice and VAEntrypointVideoProc) and i965 (older Gen) VA
+# drivers and the oneVPL QuickSync runtime (Debian ships the Intel packages
+# for amd64 only), OpenCL loader.
+# fontconfig and DejaVu give libass a font to burn text subtitles with
+# (Plex Web's ASS tracks); without them it draws nothing.
+#
+# The ether account (the default PUID/PGID) is fixed at 999: what --system allocation gave every
+# earlier image on this base, pinned so a future image can still read an
+# existing 0700 /config volume. Keep in sync with the repo-root Dockerfile.
+RUN sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates tzdata fontconfig fonts-dejavu-core libva2 libva-drm2 vainfo mesa-va-drivers ocl-icd-libopencl1 \
+      intel-media-va-driver-non-free i965-va-driver-shaders libmfx-gen1.2 \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 999 ether \
+ && useradd --system --uid 999 --gid ether --home-dir /config --shell /usr/sbin/nologin ether \
+ && mkdir -p /config /cache /usr/lib/ether \
+ && chown -R ether:ether /config /cache
+
+COPY ether /usr/lib/ether/ether
+COPY dist/ffmpeg/linux-amd64/ffmpeg dist/ffmpeg/linux-amd64/ffprobe /usr/lib/ether/
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/ether/
+COPY packaging/docker/entrypoint.sh /usr/lib/ether/entrypoint
+
+RUN /usr/lib/ether/ether -h \
+ && /usr/lib/ether/ffmpeg -version \
+ && /usr/lib/ether/ffprobe -version
+
+ENV ETHER_DATA_DIR=/config XDG_CACHE_HOME=/cache
+EXPOSE 32400/tcp 32410-32414/udp
+VOLUME ["/config", "/cache"]
+# Starts as root only to hand the volumes to PUID:PGID (default 999, the
+# ether account) and drop privileges; see packaging/docker/entrypoint.sh.
+WORKDIR /config
+ENTRYPOINT ["/usr/lib/ether/entrypoint"]

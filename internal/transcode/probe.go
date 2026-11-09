@@ -1,0 +1,793 @@
+package transcode
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/langtag"
+)
+
+// probeAttempt is one ffprobe pass. The first is small so a remote stream
+// is probed in about a second; the second only runs when the first left
+// stream parameters missing.
+type probeAttempt struct {
+	probesize       int64 // bytes
+	analyzeDuration time.Duration
+	timeout         time.Duration
+}
+
+var probeAttempts = []probeAttempt{
+	{probesize: 2 << 20, analyzeDuration: 1500 * time.Millisecond, timeout: 20 * time.Second},
+	{probesize: 50 << 20, analyzeDuration: 10 * time.Second, timeout: 60 * time.Second},
+}
+
+// isNetworkURL reports whether ffmpeg's HTTP protocol options apply.
+func isNetworkURL(u string) bool {
+	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+}
+
+// httpInputArgs are protocol options for loopback HTTP sources: generous
+// read timeouts (Usenet fetches stall), reconnect on dropped connections.
+func httpInputArgs(input string, reconnect bool) []string {
+	if !isNetworkURL(input) {
+		return nil
+	}
+	args := []string{"-rw_timeout", "30000000", "-user_agent", "Ether"}
+	if reconnect {
+		args = append(args, "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "416,5xx", "-reconnect_max_retries", "2", "-reconnect_delay_max", "4")
+	}
+	return args
+}
+
+func probeArgsMode(input string, a probeAttempt, live bool) []string {
+	args := []string{"-hide_banner", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", "-show_data",
+		"-probesize", strconv.FormatInt(a.probesize, 10),
+		"-analyzeduration", strconv.FormatInt(a.analyzeDuration.Microseconds(), 10),
+	}
+	args = append(args, inputSafetyArgs(input, live)...)
+	args = append(args, httpInputArgs(input, false)...)
+	return append(args, "-i", input)
+}
+
+// probe runs ffprobe, retrying with a larger probesize when the quick pass
+// leaves stream parameters unknown.
+func probe(ctx context.Context, r Runner, ffprobe, input string) (*core.MediaInfo, error) {
+	return probeMode(ctx, r, ffprobe, input, false)
+}
+
+func probeMode(ctx context.Context, r Runner, ffprobe, input string, live bool) (*core.MediaInfo, error) {
+	var best *core.MediaInfo
+	var lastErr error
+	for i, a := range probeAttempts {
+		info, err := probeOnceMode(ctx, r, ffprobe, input, a, live)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			lastErr = err
+			continue
+		}
+		// Preserve an observed duration if a subsequent pass finds more
+		// stream details but omits that same source's container duration.
+		if info.Duration <= 0 && best != nil && best.Duration > 0 {
+			info.Duration = best.Duration
+		}
+		best = info
+		if probeCompleteMode(info, live) {
+			markADTSProgramConfigs(ctx, r, ffprobe, input, info)
+			return info, nil
+		}
+		if i < len(probeAttempts)-1 {
+			lastErr = errors.New("incomplete stream parameters")
+		}
+	}
+	if best != nil {
+		markADTSProgramConfigs(ctx, r, ffprobe, input, best)
+		return best, nil
+	}
+	return nil, lastErr
+}
+
+func probeOnceMode(ctx context.Context, r Runner, ffprobe, input string, a probeAttempt, live bool) (*core.MediaInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	err := r.Run(ctx, Command{Path: ffprobe, Args: probeArgsMode(input, a, live), Stdout: &stdout, Stderr: &stderr})
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("transcode: ffprobe: %w: %s", err, tail(stderr.String(), 400))
+	}
+	return ParseProbe(stdout.Bytes())
+}
+
+func probeCompleteMode(m *core.MediaInfo, live bool) bool {
+	if m.Duration <= 0 && !live {
+		return false
+	}
+	hasAV := false
+	for _, s := range m.Streams {
+		switch s.Type {
+		case "video":
+			hasAV = true
+			if s.Width == 0 || s.Height == 0 || s.Codec == "" {
+				return false
+			}
+		case "audio":
+			hasAV = true
+			if s.Channels == 0 || s.SampleRate == 0 || s.Codec == "" {
+				return false
+			}
+		}
+	}
+	return hasAV
+}
+
+// ffprobe JSON (only what Ether uses).
+type ffprobeChapter struct {
+	ID    int64             `json:"id"`
+	Start string            `json:"start_time"`
+	End   string            `json:"end_time"`
+	Tags  map[string]string `json:"tags"`
+}
+
+type ffprobeOutput struct {
+	Chapters []ffprobeChapter `json:"chapters"`
+	Streams  []ffprobeStream  `json:"streams"`
+	Format   ffprobeFormat    `json:"format"`
+}
+
+type ffprobeStream struct {
+	ID             string            `json:"id"`
+	ChromaLocation string            `json:"chroma_location"`
+	CodedWidth     int               `json:"coded_width"`
+	CodedHeight    int               `json:"coded_height"`
+	FieldOrder     string            `json:"field_order"`
+	Extradata      string            `json:"extradata"`
+	Index          int               `json:"index"`
+	Level          *int              `json:"level"`
+	CodecName      string            `json:"codec_name"`
+	CodecLongName  string            `json:"codec_long_name"`
+	CodecType      string            `json:"codec_type"`
+	CodecTagString string            `json:"codec_tag_string"`
+	Profile        string            `json:"profile"`
+	Width          int               `json:"width"`
+	Height         int               `json:"height"`
+	PixFmt         string            `json:"pix_fmt"`
+	ColorTransfer  string            `json:"color_transfer"`
+	ColorPrimaries string            `json:"color_primaries"`
+	ColorSpace     string            `json:"color_space"`
+	ColorRange     string            `json:"color_range"`
+	SAR            string            `json:"sample_aspect_ratio"`
+	DAR            string            `json:"display_aspect_ratio"`
+	TimeBase       string            `json:"time_base"`
+	NALLengthSize  json.RawMessage   `json:"nal_length_size"`
+	Refs           *int              `json:"refs"`
+	RFrameRate     string            `json:"r_frame_rate"`
+	AvgFrameRate   string            `json:"avg_frame_rate"`
+	SampleFmt      string            `json:"sample_fmt"`
+	BitsPerRaw     string            `json:"bits_per_raw_sample"`
+	InitialPadding int               `json:"initial_padding"`
+	StartTime      string            `json:"start_time"`
+	SampleRate     string            `json:"sample_rate"`
+	Channels       int               `json:"channels"`
+	ChannelLayout  string            `json:"channel_layout"`
+	BitRate        string            `json:"bit_rate"`
+	Disposition    map[string]int    `json:"disposition"`
+	Tags           map[string]string `json:"tags"`
+	SideDataList   []map[string]any  `json:"side_data_list"`
+}
+
+type ffprobeFormat struct {
+	FormatName string            `json:"format_name"`
+	Duration   string            `json:"duration"`
+	Size       string            `json:"size"`
+	BitRate    string            `json:"bit_rate"`
+	Tags       map[string]string `json:"tags"`
+}
+
+// ParseProbe maps ffprobe -print_format json -show_format -show_streams
+// output to MediaInfo.
+func ParseProbe(b []byte) (*core.MediaInfo, error) {
+	var out ffprobeOutput
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("transcode: parse ffprobe json: %w", err)
+	}
+	if out.Format.FormatName == "" && len(out.Streams) == 0 {
+		return nil, errors.New("transcode: ffprobe returned no format or streams")
+	}
+	m := &core.MediaInfo{
+		Container:   NormalizeContainer(out.Format.FormatName),
+		Duration:    parseSeconds(out.Format.Duration),
+		Size:        atoi64(out.Format.Size),
+		BitrateKbps: probeKbps(atoi64(out.Format.BitRate)),
+	}
+	for _, c := range out.Chapters {
+		start, e1 := strconv.ParseFloat(c.Start, 64)
+		end, e2 := strconv.ParseFloat(c.End, 64)
+		if e1 != nil || e2 != nil || math.IsNaN(start) || math.IsNaN(end) || math.IsInf(start, 0) || math.IsInf(end, 0) || start < 0 || end <= start || end >= float64(math.MaxInt64)/float64(time.Second) {
+			continue
+		}
+		m.Chapters = append(m.Chapters, core.Chapter{ID: c.ID, Title: tag(c.Tags, "title"), Start: time.Duration(start * float64(time.Second)), End: time.Duration(end * float64(time.Second))})
+	}
+	for _, s := range out.Streams {
+		si, ok := mapStream(s)
+		if !ok {
+			continue
+		}
+		m.Streams = append(m.Streams, si)
+	}
+	if m.BitrateKbps == 0 && m.Size > 0 && m.Duration > 0 {
+		m.BitrateKbps = int(math.Round(float64(m.Size) * 8 / m.Duration.Seconds() / 1000))
+	}
+	// Only a complete successful MP4/Matroska probe can establish that its
+	// container has no DV configuration record. Partial best-effort probes
+	// must not turn missing evidence into a negative claim.
+	if (m.Container == "mp4" || m.Container == "mkv") && probeCompleteMode(m, false) {
+		for i := range m.Streams {
+			si := &m.Streams[i]
+			if si.Type == "video" && !si.DolbyVision && si.DolbyVisionConfigurationPresent == nil {
+				present := false
+				si.DolbyVisionConfigurationPresent = &present
+			}
+			// A complete container probe that has no Dolby Vision configuration
+			// also has no base-layer compatibility id.
+			if si.Type == "video" && si.DolbyVisionConfigurationPresent != nil && !*si.DolbyVisionConfigurationPresent && si.DolbyVisionBLCompatibilityIDPresent == nil {
+				present := false
+				si.DolbyVisionBLCompatibilityIDPresent = &present
+			}
+		}
+	}
+	return m, nil
+}
+
+func mapStream(s ffprobeStream) (core.StreamInfo, bool) {
+	si := core.StreamInfo{Index: s.Index, Type: s.CodecType}
+	switch s.CodecType {
+	case "video":
+		if s.Disposition["attached_pic"] == 1 || isImageCodec(s.CodecName) {
+			return si, false // cover art
+		}
+	case "audio", "subtitle":
+	default:
+		return si, false // data, attachment (fonts)
+	}
+	si.Codec = NormalizeCodec(s.CodecName)
+	si.Profile = s.Profile
+	if strings.HasPrefix(s.CodecName, "pcm_") {
+		si.SampleFormat = s.SampleFmt
+	}
+	if s.Level != nil {
+		si.Level = *s.Level
+		if *s.Level >= 0 {
+			v := *s.Level
+			si.ProbedLevel = &v
+		}
+	}
+	si.Language = normalizeLanguage(tag(s.Tags, "language"))
+	si.Title = tag(s.Tags, "title")
+	// MP4 audio often has no title tag. A descriptive handler name is the label
+	// Jellyfin publishes, such as "GPAC ISO Audio Handler". Generic handler
+	// names (SoundHandler) and video or subtitle handlers stay off the title.
+	if si.Title == "" && s.CodecType == "audio" {
+		si.Title = descriptiveAudioHandler(tag(s.Tags, "handler_name"))
+	}
+	si.CodecLongName = strings.TrimSpace(s.CodecLongName)
+	si.Default = s.Disposition["default"] == 1
+	si.Forced = s.Disposition["forced"] == 1
+	for _, field := range []struct {
+		key string
+		dst **bool
+	}{
+		{"default", &si.DefaultDisposition},
+		{"forced", &si.ForcedDisposition},
+		{"hearing_impaired", &si.HearingImpaired},
+		{"original", &si.Original},
+		{"visual_impaired", &si.VisualImpaired},
+		{"comment", &si.Commentary},
+		{"dub", &si.Dub},
+	} {
+		if value, ok := s.Disposition[field.key]; ok {
+			set := value == 1
+			*field.dst = &set
+		}
+	}
+	if tag := s.CodecTagString; tag != "" && tag != "[0][0][0][0]" && tag != "0x0000" {
+		si.CodecTag = tag
+	}
+	si.CodedHeight = s.CodedHeight
+	si.CodedWidth = s.CodedWidth
+	if s.ChromaLocation != "unspecified" && s.ChromaLocation != "unknown" {
+		si.ChromaLocation = s.ChromaLocation
+	}
+	if id, err := strconv.ParseInt(s.ID, 0, 64); err == nil {
+		si.StreamIdentifier = strconv.FormatInt(id, 10)
+	}
+	si.TimeBase = probedTimeBase(s.TimeBase)
+	if n, err := strconv.Atoi(strings.TrimSpace(s.BitsPerRaw)); err == nil && n > 0 {
+		si.BitsPerRawSample = &n
+	}
+	si.BitrateKbps = probeKbps(atoi64(s.BitRate))
+	if si.BitrateKbps == 0 {
+		// mkvmerge statistics tags
+		for _, k := range []string{"BPS", "BPS-eng"} {
+			if v := tag(s.Tags, k); v != "" {
+				si.BitrateKbps = probeKbps(atoi64(v))
+				break
+			}
+		}
+	}
+	switch s.CodecType {
+	case "video":
+		si.Width, si.Height = s.Width, s.Height
+		si.ChromaLocation = probedColour(s.ChromaLocation)
+		si.CodedWidth, si.CodedHeight = s.CodedWidth, s.CodedHeight
+		si.Interlaced = s.FieldOrder != "" && s.FieldOrder != "unknown" && s.FieldOrder != "progressive"
+		switch s.FieldOrder {
+		case "progressive", "tt", "bb", "tb", "bt":
+			si.FieldOrder = s.FieldOrder
+			v := s.FieldOrder != "progressive"
+			si.ProbedInterlaced = &v
+		}
+		si.PixelFormat = probedColour(s.PixFmt)
+		si.DisplayAspectRatio = probedSAR(s.DAR)
+		if s.Refs != nil && *s.Refs >= 0 {
+			v := *s.Refs
+			si.ReferenceFrames = &v
+		}
+		if v, ok := optionalProbeInt(s.NALLengthSize); ok && v > 0 {
+			si.NALLengthSize = &v
+		}
+		avg, nominal := parseRate(s.AvgFrameRate), parseRate(s.RFrameRate)
+		if v := exactProbeRate(s.AvgFrameRate); v > 0 {
+			si.AverageFrameRate = &v
+		}
+		if v := exactProbeRate(s.RFrameRate); v > 0 {
+			si.ReferenceFrameRate = &v
+		}
+		// A material rate disagreement is evidence against a steady frame clock.
+		si.VariableFrameRate = avg > 0 && nominal > 0 && (avg/nominal < 0.999 || avg/nominal > 1.001)
+		si.FrameRate = avg
+		if si.FrameRate == 0 {
+			si.FrameRate = parseRate(s.RFrameRate)
+		}
+		si.BitDepth = bitDepth(s)
+		si.ColorTransfer = s.ColorTransfer
+		si.SampleAspectRatio = probedSAR(s.SAR)
+		si.ColorRange = probedColour(s.ColorRange)
+		si.ColorPrimaries = probedColour(s.ColorPrimaries)
+		si.ColorSpace = probedColour(s.ColorSpace)
+		si.DolbyVision, si.DolbyVisionProfile = dolbyVision(s)
+		for _, sd := range s.SideDataList {
+			if sd["side_data_type"] == "HDR Dynamic Metadata SMPTE2094-40" {
+				present := true
+				si.HDR10Plus = &present
+			} else if si.HDR10Plus == nil {
+				if flag, ok := sd["hdr10plus_flag"].(float64); ok && (flag == 0 || flag == 1) {
+					present := flag == 1
+					si.HDR10Plus = &present
+				}
+			}
+			if sd["side_data_type"] == "DOVI configuration record" {
+				v := true
+				si.DolbyVisionConfigurationPresent = &v
+			}
+			if _, ok := sd["dv_profile"].(float64); ok {
+				v := true
+				si.DolbyVisionConfigurationPresent = &v
+			}
+			if flag, ok := sd["dovi_config_present"].(float64); ok && (flag == 1 || (flag == 0 && si.DolbyVisionConfigurationPresent == nil)) {
+				v := flag == 1
+				si.DolbyVisionConfigurationPresent = &v
+			}
+			if _, ok := sd["dv_bl_signal_compatibility_id"].(float64); ok {
+				v := true
+				si.DolbyVisionBLCompatibilityIDPresent = &v
+			}
+			if flag, ok := sd["dv_bl_compat_id_present"].(float64); ok && (flag == 1 || (flag == 0 && si.DolbyVisionBLCompatibilityIDPresent == nil)) {
+				v := flag == 1
+				si.DolbyVisionBLCompatibilityIDPresent = &v
+			}
+			if profile, ok := sd["dv_profile"].(float64); ok && profile >= 0 && profile == math.Trunc(profile) {
+				v := int(profile)
+				si.ProbedDolbyVisionProfile = &v
+			}
+			if major, ok := sd["dv_version_major"].(float64); ok {
+				minor, _ := sd["dv_version_minor"].(float64)
+				si.DolbyVisionVersion = fmt.Sprintf("%d.%d", int(major), int(minor))
+			}
+			for _, field := range []struct {
+				key string
+				dst **bool
+			}{
+				{"bl_present_flag", &si.DolbyVisionBLPresent},
+				{"el_present_flag", &si.DolbyVisionELPresent},
+				{"rpu_present_flag", &si.DolbyVisionRPUPresent},
+			} {
+				if value, ok := sd[field.key].(float64); ok {
+					present := value != 0
+					*field.dst = &present
+				}
+			}
+			if level, ok := sd["dv_level"].(float64); ok {
+				si.DolbyVisionLevel = int(level)
+				if level >= 0 && level == math.Trunc(level) {
+					v := int(level)
+					si.ProbedDolbyVisionLevel = &v
+				}
+			}
+			if compat, ok := sd["dv_bl_signal_compatibility_id"].(float64); ok {
+				si.DolbyVisionCompatibilityID = int(compat)
+			}
+		}
+		extra := probeExtradata(s.Extradata)
+		if si.Codec == "h264" && len(extra) >= 4 && extra[0] == 1 {
+			si.CodecString = fmt.Sprintf("avc1.%02x%02x%02x", extra[1], extra[2], extra[3])
+		}
+		if si.Codec == "hevc" && len(extra) >= 13 && extra[0] == 1 {
+			si.CodecString = "hvc1." + hevcCodecs(extra)
+		}
+		if si.Codec == "hevc" {
+			si.MalformedHEVC = malformedHEVCConfig(extra)
+		}
+	case "audio":
+		si.Channels = s.Channels
+		si.ChannelLayout = s.ChannelLayout
+		if si.Codec == "aac" {
+			si.AACProgramConfig = aacASCProgramConfig(probeExtradata(s.Extradata), si.Channels)
+		}
+		si.SampleRate = int(atoi64(s.SampleRate))
+		// A negative origin still includes the priming on its clock. Do not
+		// subtract it again when restoring decoded frame sample positions.
+		if start, err := strconv.ParseFloat(s.StartTime, 64); err == nil && start >= 0 {
+			si.DecodedPadding = max(0, s.InitialPadding)
+		}
+	}
+	return si, true
+}
+
+func descriptiveAudioHandler(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "soundhandler", "videohandler", "subtitlehandler", "datahandler", "hinthandler":
+		return ""
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
+func tag(tags map[string]string, key string) string {
+	if v, ok := tags[key]; ok {
+		return strings.TrimSpace(v)
+	}
+	for k, v := range tags {
+		if strings.EqualFold(k, key) {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// normalizeLanguage keeps the form the probes have always reported in
+// StreamInfo.Language (legacy ISO 639-2 where the source carries it),
+// dropping undetermined/unknown and anything langtag rejects as
+// garbage. It is the shared entry point for the ffprobe tag, the
+// Matroska legacy Language element and the MP4 mdhd code.
+func normalizeLanguage(l string) string {
+	l = strings.ToLower(strings.TrimSpace(l))
+	// "und" and any other tag langtag rejects stay empty. That is the
+	// form both the ffprobe tag parser and the native Matroska/MP4
+	// readers have always stored. Silo maps an absent audio language
+	// back to "und" at its own boundary.
+	if langtag.Normalize(l) == "" {
+		return ""
+	}
+	return l
+}
+
+// normalizeBCP47Language converts a BCP 47 tag (Matroska
+// LanguageBCP47) to the form stored in StreamInfo.Language via
+// langtag: Portuguese and Chinese keep their region (pt-br, zh-tw —
+// script is parsed, never read as region, so zh-Hant-TW folds to
+// zh-tw), every other language folds to the ISO 639-2 form the probes
+// have always reported. "" means the tag is garbage and the caller
+// keeps its legacy value.
+func normalizeBCP47Language(tag string) string {
+	n := langtag.Normalize(tag)
+	if n == "" {
+		return ""
+	}
+	if strings.Contains(n, "-") {
+		return n // pt/zh regional form
+	}
+	if three, ok := iso6391to2[n]; ok {
+		return three
+	}
+	return n
+}
+
+func isImageCodec(c string) bool {
+	switch c {
+	case "mjpeg", "png", "bmp", "gif", "webp":
+		return true
+	}
+	return false
+}
+
+// probedSAR keeps a signalled sample aspect ratio; ffprobe reports 0:1
+// (or nothing) when neither stream nor container carries one.
+func probedTimeBase(s string) string {
+	n, d, ok := strings.Cut(s, "/")
+	num, e1 := strconv.ParseInt(n, 10, 64)
+	den, e2 := strconv.ParseInt(d, 10, 64)
+	if !ok || e1 != nil || e2 != nil || num <= 0 || den <= 0 {
+		return ""
+	}
+	return s
+}
+
+func optionalProbeInt(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		text = string(raw)
+	}
+	v, err := strconv.Atoi(text)
+	return v, err == nil
+}
+
+func exactProbeRate(s string) float64 {
+	n, d, ok := strings.Cut(s, "/")
+	if !ok {
+		return 0
+	}
+	num, e1 := strconv.ParseFloat(n, 64)
+	den, e2 := strconv.ParseFloat(d, 64)
+	if e1 != nil || e2 != nil || num <= 0 || den <= 0 || math.IsNaN(num) || math.IsNaN(den) || math.IsInf(num, 0) || math.IsInf(den, 0) {
+		return 0
+	}
+	value := num / den
+	if math.IsInf(value, 0) || math.IsNaN(value) {
+		return 0
+	}
+	return value
+}
+
+func probedSAR(s string) string {
+	n, d, ok := strings.Cut(s, ":")
+	if !ok || atoi64(n) <= 0 || atoi64(d) <= 0 {
+		return ""
+	}
+	a, b := reduce(int(atoi64(n)), int(atoi64(d)))
+	return strconv.Itoa(a) + ":" + strconv.Itoa(b)
+}
+
+// probedColour drops ffprobe's placeholders for unsignalled colour facts.
+func probedColour(s string) string {
+	switch s {
+	case "", "unknown", "unspecified", "reserved":
+		return ""
+	}
+	return s
+}
+
+var pixDepthRE = regexp.MustCompile(`p(9|10|12|14|16)(le|be)?$`)
+
+func bitDepth(s ffprobeStream) int {
+	if n := int(atoi64(s.BitsPerRaw)); n > 0 {
+		return n
+	}
+	if m := pixDepthRE.FindStringSubmatch(s.PixFmt); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	if s.PixFmt != "" {
+		return 8
+	}
+	return 0
+}
+
+// dolbyVision detects DV from the DOVI configuration record side data, or
+// from the mp4 sample entry tag (dvh1/dvhe/dva1/dvav) when the record is
+// absent.
+func dolbyVision(s ffprobeStream) (bool, int) {
+	for _, sd := range s.SideDataList {
+		t, _ := sd["side_data_type"].(string)
+		if !strings.Contains(strings.ToLower(t), "dovi") && !strings.Contains(strings.ToLower(t), "dolby vision") {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(t), "configuration") {
+			continue // per-frame RPU metadata
+		}
+		prof := 0
+		if v, ok := sd["dv_profile"].(float64); ok {
+			prof = int(v)
+		}
+		return true, prof
+	}
+	switch strings.ToLower(s.CodecTagString) {
+	case "dvh1", "dvhe", "dva1", "dvav", "dav1":
+		return true, 0
+	}
+	return false, 0
+}
+
+// NormalizeContainer maps an ffprobe format_name to Ether's container name.
+func NormalizeContainer(formatName string) string {
+	names := strings.Split(formatName, ",")
+	first := ""
+	if len(names) > 0 {
+		first = names[0]
+	}
+	switch {
+	case first == "matroska" || contains(names, "matroska"):
+		return "mkv"
+	case first == "webm":
+		return "webm"
+	case first == "mov" || contains(names, "mp4"):
+		return "mp4"
+	case first == "mpegts":
+		return "mpegts"
+	case first == "avi":
+		return "avi"
+	case first == "asf":
+		return "wmv"
+	case first == "mpeg" || first == "mpegvideo":
+		return "mpeg"
+	case first == "flv":
+		return "flv"
+	case first == "ogg":
+		return "ogg"
+	case first == "hls":
+		return "hls"
+	}
+	return first
+}
+
+// NormalizeCodec maps ffprobe codec names to Ether/Plex codec names.
+func NormalizeCodec(c string) string {
+	switch c {
+	case "h265":
+		return "hevc"
+	case "libdav1d", "libaom-av1":
+		return "av1"
+	case "mpeg2video":
+		return "mpeg2video"
+	case "dca":
+		return "dts"
+	case "pcm_bluray":
+		return "pcm_bluray"
+	case "mlp":
+		return "truehd"
+	case "hdmv_pgs_subtitle":
+		return "pgs"
+	case "dvd_subtitle":
+		return "vobsub"
+	case "dvb_subtitle":
+		return "dvbsub"
+	case "ssa":
+		return "ass"
+	case "text":
+		return "subrip"
+	}
+	if strings.HasPrefix(c, "pcm_") {
+		return "pcm"
+	}
+	return c
+}
+
+// IsImageSubtitle reports whether a subtitle codec is bitmap-based and so
+// must be burned in to be shown in HLS.
+func IsImageSubtitle(codec string) bool {
+	switch codec {
+	case "pgs", "vobsub", "dvbsub", "xsub", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle":
+		return true
+	}
+	return false
+}
+
+// IsTextSubtitle reports whether a subtitle codec can be converted to
+// WebVTT.
+func IsTextSubtitle(codec string) bool {
+	switch codec {
+	case "subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "microdvd", "subviewer", "jacosub", "sami", "realtext", "stl", "ttml":
+		return true
+	}
+	return false
+}
+
+// maxMediaSeconds bounds a probed duration: anything longer is a corrupt
+// header, and as a Duration it would overflow (or, saturated, plan billions
+// of segments).
+const maxMediaSeconds = 30 * 24 * 3600
+
+func parseSeconds(s string) time.Duration {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) || f > maxMediaSeconds {
+		return 0
+	}
+	return time.Duration(f * float64(time.Second))
+}
+
+func parseRate(s string) float64 {
+	num, den, ok := strings.Cut(s, "/")
+	if !ok {
+		f, _ := strconv.ParseFloat(s, 64)
+		return f
+	}
+	n, err1 := strconv.ParseFloat(num, 64)
+	d, err2 := strconv.ParseFloat(den, 64)
+	if err1 != nil || err2 != nil || d == 0 {
+		return 0
+	}
+	return math.Round(n/d*1000) / 1000
+}
+
+func atoi64(s string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			return 0
+		}
+		return int64(f)
+	}
+	return n
+}
+
+func tail(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		return "..." + s[len(s)-n:]
+	}
+	return s
+}
+
+// ffprobe prints extradata as offset-prefixed hex rows followed by ASCII.
+func probeExtradata(raw string) []byte {
+	if len(raw) > 256<<10 {
+		return nil
+	}
+	var out []byte
+	for _, line := range strings.Split(raw, "\n") {
+		_, data, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		data = strings.TrimSpace(data)
+		if hexPart, _, ok := strings.Cut(data, "  "); ok {
+			data = hexPart
+		}
+		data = strings.ReplaceAll(data, " ", "")
+		b, err := hex.DecodeString(data)
+		if err != nil {
+			return nil
+		}
+		out = append(out, b...)
+	}
+	return out
+}
+
+// probeKbps uses the nearest decimal kilobit, without overflowing the input.
+func probeKbps(bits int64) int {
+	if bits <= 0 {
+		return 0
+	}
+	kb := bits / 1000
+	if bits%1000 >= 500 {
+		kb++
+	}
+	return int(kb)
+}
