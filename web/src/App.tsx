@@ -528,11 +528,11 @@ function Shell() {
         }
         sidebarFooter={
           <div className="space-y-2">
-            <div className="flex min-w-0 items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
               {/* PSE-HOOK: version cliquable vers GitHub — voir docs/pse/FORK.fr.md */}
               <PseVersionLink
                 version={version}
-                className="block min-w-0 truncate px-1 text-xs text-fg-subtle"
+                className="block min-w-0 break-all px-1 text-xs text-fg-subtle"
               />
               <LanguagePicker className="h-7 shrink-0 px-1.5 text-xs" />
             </div>
