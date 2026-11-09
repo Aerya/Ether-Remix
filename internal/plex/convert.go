@@ -1412,6 +1412,9 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []core.Title,
 		if d.Overlays != nil {
 			ctx = d.Overlays.WithSettingsSnapshot(ctx)
 		}
+		if d.PrepareArtworkPage != nil {
+			ctx = d.PrepareArtworkPage(ctx, pr.User, ts)
+		}
 	}
 	if o.state == nil {
 		o.state = s.stateFor(ctx, pr, ts)

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, cleanup, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { compareUpdateVersions, REMIX_UPDATES, RemixUpdates } from "./RemixUpdates";
 
-const version = "0.2.37-remix.6.1";
+const version = "0.2.37-remix.9.1";
 const readKey = "ether-remix.updates.read";
 const legacyKey = "ether-remix.updates.seen";
 beforeEach(() => {
@@ -54,7 +54,7 @@ it("migrates the old delivery ID and only shows newer notes, including releases 
   expect(screen.getByRole("heading", { name: REMIX_UPDATES[0].title[1] })).toBeTruthy();
   expect(screen.getByRole("heading", { name: REMIX_UPDATES[1].title[1] })).toBeTruthy();
   expect(screen.getByRole("heading", { name: REMIX_UPDATES[2].title[1] })).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: REMIX_UPDATES[3].title[1] })).toBeNull();
+  expect(screen.getByRole("heading", { name: REMIX_UPDATES[3].title[1] })).toBeTruthy();
   expect(screen.queryByRole("heading", { name: REMIX_UPDATES[4].title[1] })).toBeNull();
   fireEvent(dialog, new Event("cancel", { bubbles: true, cancelable: true }));
   await waitFor(() => expect(dialog).not.toHaveAttribute("open"));
@@ -65,8 +65,8 @@ it("does not show the IPTV delivery again when migrating the latest legacy marke
   localStorage.setItem(legacyKey, "2026-11-09-iptv-editor");
   render(<RemixUpdates version={version} />);
   expect(await screen.findByRole("dialog")).toHaveAttribute("open");
-  expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(1);
-  expect(screen.getByText(/v0.2.37-remix.6.1/)).toBeTruthy();
+  expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
+  expect(screen.getByText(/v0.2.37-remix.9.1/)).toBeTruthy();
 });
 
 it("does not repeat the same notes when a Docker build is retried or rebuilt", async () => {
@@ -74,7 +74,7 @@ it("does not repeat the same notes when a Docker build is retried or rebuilt", a
   await screen.findByRole("dialog");
   dismiss();
   first.unmount();
-  render(<RemixUpdates version="0.2.37-remix.7.1" />);
+  render(<RemixUpdates version="0.2.37-remix.9.2" />);
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
@@ -94,7 +94,7 @@ it("excludes notes from a version newer than the running server", async () => {
   render(<RemixUpdates version="0.2.37-remix.4.1" />);
   await screen.findByRole("dialog");
   expect(screen.queryByRole("heading", { name: REMIX_UPDATES[1].title[1] })).toBeNull();
-  expect(screen.getByRole("heading", { name: REMIX_UPDATES[2].title[1] })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: REMIX_UPDATES[3].title[1] })).toBeTruthy();
 });
 
 it("keeps manual access available when browser storage is blocked", async () => {

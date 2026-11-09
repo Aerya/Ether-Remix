@@ -17,12 +17,14 @@ import (
 // Features is optional. Viewers use these features through ordinary
 // Plex metadata, Home, search and continue-watching endpoints.
 type Features struct {
-	Watchlist *watchlist.Service
-	Ratings   *ratings.Service
-	Overlays  *overlays.Service
-	Personal  *personalize.Discovery
-	LLM       *llm.Service
-	Localize  func(context.Context, *core.Title, string) (*core.Title, error)
+	// PrepareArtworkPage batches viewer-specific facts for one bounded list.
+	PrepareArtworkPage func(context.Context, *core.User, []core.Title) context.Context
+	Watchlist          *watchlist.Service
+	Ratings            *ratings.Service
+	Overlays           *overlays.Service
+	Personal           *personalize.Discovery
+	LLM                *llm.Service
+	Localize           func(context.Context, *core.Title, string) (*core.Title, error)
 	// OverviewTranslate is optional. detail is true only when a viewer opened
 	// the item. A library row passes false and must not call a model.
 	OverviewTranslate func(ctx context.Context, t *core.Title, lang string, detail bool) (summary, tagline string, ok bool)
