@@ -20,6 +20,7 @@ const guidPlaylist = 4
 const psemPlaylist = 53
 
 var psemPlaylistRe = regexp.MustCompile(`/playlists/(5[0-3][0-9]{15})`)
+var psemHubPlaylistRe = regexp.MustCompile(`/music\.pl\.([^/?&]+)$`)
 
 func playlistSubsonicID(id int64) string { return "pl-" + strconv.FormatInt(id, 10) }
 
@@ -481,6 +482,14 @@ func (q *psemReq) playlistTracksFor(v url.Values) ([]Track, bool) {
 		if u, err := url.PathUnescape(uri); err == nil {
 			uri = u
 		}
+		// Une rangée de l'accueil Musique désigne sa playlist par music.pl.{ref}.
+		if m := psemHubPlaylistRe.FindStringSubmatch(uri); m != nil {
+			for _, pl := range q.m.playlistsOf(q.ctx(), q.viewer) {
+				if pl.Ref == m[1] {
+					return pl.Tracks, true
+				}
+			}
+		}
 		if m := psemPlaylistRe.FindStringSubmatch(uri); m != nil {
 			key = m[1]
 		}
@@ -489,26 +498,6 @@ func (q *psemReq) playlistTracksFor(v url.Values) ([]Track, bool) {
 	if !ok || kind != psemPlaylist {
 		return nil, false
 	}
-	pl, ok := q.playlistForQueue(key, id)
+	pl, ok := q.m.playlist(q.ctx(), q.viewer, id)
 	return pl.Tracks, ok
-}
-
-// playlistForQueue retrouve la playlist d'une file de lecture. Les clés
-// musique dépassent 2^53 : un client JavaScript qui lit playlistID comme un
-// nombre renvoie une valeur arrondie, qu'on compare donc aussi après le même
-// arrondi.
-func (q *psemReq) playlistForQueue(key string, id int64) (Playlist, bool) {
-	if pl, ok := q.m.playlist(q.ctx(), q.viewer, id); ok {
-		return pl, true
-	}
-	received, err := strconv.ParseFloat(key, 64)
-	if err != nil {
-		return Playlist{}, false
-	}
-	for _, pl := range q.m.playlistsOf(q.ctx(), q.viewer) {
-		if float64(int64(psemPlaylist)*psemBase+pl.ID) == received {
-			return pl, true
-		}
-	}
-	return Playlist{}, false
 }
