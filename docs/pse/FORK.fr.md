@@ -89,3 +89,11 @@ git push origin sync/manuel
 ## Fichiers Markdown
 
 Le `.gitignore` d'Ether ignore les fichiers `*.md` non listés. Ajouter une nouvelle documentation PSE avec `git add -f`.
+
+## Navigation Remix et synchronisation
+
+La navigation et les catégories résident dans `web/src/pse/navigation.tsx`, `RemixSources.tsx` et `PsePage.tsx`. Les composants natifs Sources sont importés avec leurs API/configurations existantes. Les pages Sources et Collections d’Ether restent identiques à upstream ; l’import de catalogues se fait depuis Contenus et bibliothèques. Les anciennes routes Sources servent de redirections.
+
+Le script de synchronisation fusionne les conflits de traductions JSON par clé uniquement lorsque les modifications sont indépendantes. Deux traductions différentes du même message restent un conflit bloquant ; le point de référence n’avance pas. L’interface et les catalogues sont régénérés avant les contrôles. Les consignes `AGENTS.md`, les fichiers Remix et les workflows restent protégés. Le retard historique de 775 commits a été intégré depuis `6d9bb9f17adb661540fdf292fee42ac0bb8ac353`.
+
+L’adaptateur `internal/catalog/pse_tier_sources.go` classe les tables du fork pour la migration de catalogue d’Ether : les exceptions de langue restent protégées, les caches d’indexation ne retiennent pas tout le catalogue. Cet adaptateur est protégé du delta automatique.

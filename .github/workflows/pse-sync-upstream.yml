@@ -102,9 +102,10 @@ jobs:
         working-directory: web
         run: |
           pnpm install --frozen-lockfile
+          pnpm i18n sync
           pnpm build
           cd ..
-          git add -A internal/admin/dist
+          git add -A internal/admin/dist web/src/i18n/locales
           git commit -m "Synchroniser Ether ${{ steps.changes.outputs.sha }} et reconstruire l’interface"
 
       - name: Publier la branche de synchronisation
@@ -156,6 +157,14 @@ jobs:
             echo "::error::main a avancé pendant la synchronisation ; relancer le workflow."
             exit 1
           fi
+          for title in "Synchronisation Ether upstream bloquée" "Synchronisation Ether upstream : contrôles en échec" "Synchronisation Ether upstream en échec"; do
+            gh issue list --state open --search "in:title \"$title\"" --json number,title --jq '.[] | [.number,.title] | @tsv' |
+            while IFS=$'\t' read -r number actual; do
+              if [ "$actual" = "$title" ]; then
+                gh issue close "$number" --comment "Synchronisation rétablie après intégration contrôlée."
+              fi
+            done
+          done
           # Ferme la PR éventuellement laissée ouverte par un échec précédent.
           for n in $(gh pr list --head "$SYNC_BRANCH" --state open --json number --jq '.[].number'); do
             gh pr close "$n" --comment "Intégrée automatiquement après contrôles verts." || true
@@ -183,7 +192,7 @@ jobs:
   alert:
     name: Signaler un échec de la synchronisation
     needs: merge
-    if: failure() && needs.merge.result == 'failure'
+    if: failure() && needs.merge.result == 'failure' && needs.merge.outputs.conflict != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Issue « synchronisation en échec »

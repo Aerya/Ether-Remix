@@ -78,7 +78,7 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 
 ### Connecting a music client (Subsonic)
 
-1. In **Console → Ether-Remix → Music**, enable **AllDebrid**, **Real-Debrid** and/or **TorBox**, or paste an Eclipse addon manifest. Keys and indexers are reused from Ether-Remix. **Test** checks the account and searches for a link (without checking audio); **Test sources** reads the first audio bytes to identify the format. With several accounts of the same service in **Sources › Debrid**, they are tried in priority order.
+1. In **Console → Ether-Remix → Sources → Music streaming**, enable **AllDebrid**, **Real-Debrid** and/or **TorBox**, or paste an Eclipse addon manifest. Keys and indexers are reused from Ether-Remix. **Test** checks the account and searches for a link (without checking audio); **Test sources** reads the first audio bytes to identify the format. With several accounts of the same service in **Sources › Debrid**, they are tried in priority order.
 2. In the client, add a **Subsonic / OpenSubsonic** server: URL `http://<host>:32400` (or the `ETHER_PORT` port), your Ether-Remix account credentials (local password accounts).
 3. Enable the client's **plain-text password / legacy authentication** option: Ether-Remix only stores hashes, so token authentication (`t`/`s`) is refused (code 41). Use HTTPS (reverse proxy) outside your LAN.
 
@@ -88,7 +88,7 @@ TorBox enforces cached-only additions. Real-Debrid no longer provides a cache pr
 
 **Jellyfin and Plex clients** (Jellyfin web, Finamp, Findroid, Streamyfin, Plexamp, Plex Web…): nothing to set up, a **Musique** library appears next to the others as soon as a music source is turned on. It shows your favourites and plays, then Deezer charts; search covers the whole catalogue and playback is direct. Plex's global search also shows artists, albums and tracks.
 
-**Deezer and Last.fm playlists**: in **Console → Ether-Remix → Music**, paste each viewer's Deezer profile link (their public playlists, including Favourite tracks) or Deezer playlist links (app share links `link.deezer.com` included), and/or their Last.fm username (loved tracks, top of the month, all-time top, with the Last.fm API key). The playlists show up in Plexamp, Plex Web, Finamp, Jellyfin and Subsonic clients, read-only, and are re-imported every 6 hours (`PSE_MUSIC_PLAYLISTS_HOURS`). Nothing is downloaded: only track references are kept. Spotify is not supported (its API requires a developer app and a per-account sign-in).
+**Deezer and Last.fm playlists**: in **Console → Ether-Remix → Sources → Music streaming**, paste each viewer's Deezer profile link (their public playlists, including Favourite tracks) or Deezer playlist links (app share links `link.deezer.com` included), and/or their Last.fm username (loved tracks, top of the month, all-time top, with the Last.fm API key). The playlists show up in Plexamp, Plex Web, Finamp, Jellyfin and Subsonic clients, read-only, and are re-imported every 6 hours (`PSE_MUSIC_PLAYLISTS_HOURS`). Nothing is downloaded: only track references are kept. Spotify is not supported (its API requires a developer app and a per-account sign-in).
 
 **ListenBrainz playlists**: same screen, ListenBrainz username (free, no API key). Ether-Remix imports the latest playlist of each series ListenBrainz generates for them (Daily Jams, Weekly Jams, Weekly Exploration…) and their public playlists, within ListenBrainz's rate limit.
 
@@ -98,11 +98,11 @@ TorBox enforces cached-only additions. Real-Debrid no longer provides a cache pr
 
 **New releases and source test**: the automatic playlist **New releases from your artists** gathers albums released in the last 4 months by the viewer's favourite and most played artists (computed in the background, refreshed every 6 h). In the console, Music tab, **Test audio sources** tries each configured source on its own on the same track and shows the format the source really sends (FLAC, MP3…), not the advertised one, or why it failed. It shows the real playback order, why each inactive source is inactive and, for each source, the steps reached: track found in the catalogue, source result, link obtained, first bytes checked. Full playback is not tested. **Retry this source** reruns a single source, without caches. Addon links are shown by host only; no key or audio link is shown.
 
-**On-demand subtitled titles (VOSTFR)**: in **Ether-Remix → On demand**, search a movie or show and add it. It appears in Movies and Shows even without a French version, and in the **“VOSTFR”** library in Plex and Jellyfin (created on the first addition).
+**On-demand subtitled titles (VOSTFR)**: in **Ether-Remix → On-demand subtitles**, search a movie or show and add it. It appears in Movies and Shows even without a French version, and in the **“VOSTFR”** library in Plex and Jellyfin (created on the first addition).
 
-**Discovering music**: every viewer gets **Top France**, **Top Worldwide**… playlists (countries chosen in Console → Ether-Remix → Music) and **Discoveries**, renewed every 12 hours. **Genres** (Pop, Rap/Hip Hop, Rock, Electro, Jazz…) can be browsed in Plex (Music › By genre), Jellyfin (Genres) and Feishin (Genres), with the current albums, artists and tracks. On an artist page: **similar artists** and a “Same vibe” radio (Plex), **Instant Mix** (Jellyfin), top and similar songs (Feishin).
+**Discovering music**: every viewer gets **Top France**, **Top Worldwide**… playlists (countries chosen in Console → Ether-Remix → Sources → Music streaming) and **Discoveries**, renewed every 12 hours. **Genres** (Pop, Rap/Hip Hop, Rock, Electro, Jazz…) can be browsed in Plex (Music › By genre), Jellyfin (Genres) and Feishin (Genres), with the current albums, artists and tracks. On an artist page: **similar artists** and a “Same vibe” radio (Plex), **Instant Mix** (Jellyfin), top and similar songs (Feishin).
 
-**Sending plays to Last.fm**: with the Last.fm API key and shared secret, each viewer can click **Connect Last.fm** in **Console → Ether-Remix → Music**, authorize Ether-Remix on last.fm, then **I authorized Ether-Remix**. Their completed plays are then sent every 2 minutes (plays from before linking or older than 14 days are not sent). The **Overview** also shows a **Music** panel: plays, hours and listeners over the last 30 days, top tracks and artists.
+**Sending plays to Last.fm**: with the Last.fm API key and shared secret, each viewer can click **Connect Last.fm** in **Console → Ether-Remix → Sources → Music streaming**, authorize Ether-Remix on last.fm, then **I authorized Ether-Remix**. Their completed plays are then sent every 2 minutes (plays from before linking or older than 14 days are not sent). The **Overview** also shows a **Music** panel: plays, hours and listeners over the last 30 days, top tracks and artists.
 
 **Feishin and other Subsonic clients**: use Ether-Remix's address, your username and a local password (Your account › Sign-in methods, including for an account signed in through Plex), and tick **Enable legacy authentication**: Ether-Remix does not accept Subsonic token authentication.
 
@@ -112,7 +112,7 @@ The library fills up with favourites (artists, albums, tracks) and plays. Search
 
 ### Eclipse community sources
 
-Under **Ether-Remix → Music → Eclipse community sources**, open **Configure** for your provider. Generate its link, paste the `manifest.json` and save. An empty field disables the source. Select **Music** for Internet Archive. UltraMax and Deezer Ricky request your Deezer account on their own website; Ether-Remix only stores the generated link, masked in the console.
+Under **Ether-Remix → Sources → Music streaming → Eclipse community sources**, open **Configure** for your provider. Generate its link, paste the `manifest.json` and save. An empty field disables the source. Select **Music** for Internet Archive. UltraMax and Deezer Ricky request your Deezer account on their own website; Ether-Remix only stores the generated link, masked in the console.
 
 | Provider | Manifest environment variable |
 | --- | --- |
@@ -141,7 +141,7 @@ A title search may consume multiple requests. Titles shared by sources or librar
 
 ### DMM with Real-Debrid
 
-Configure at least one active Real-Debrid account in **Sources → Debrid**, then enable **DMM · Real-Debrid** under **Ether-Remix → Music**. No manifest link or DMM account is needed. Browsing still uses the Deezer catalogue; DMM adds another way to find albums to play.
+Configure at least one active Real-Debrid account in **Sources → Debrid**, then enable **DMM · Real-Debrid** under **Ether-Remix → Sources → Music streaming**. No manifest link or DMM account is needed. Browsing still uses the Deezer catalogue; DMM adds another way to find albums to play.
 
 This source does not depend on indexers. It follows the priority of your Real-Debrid accounts, just before their indexer searches; accounts are tried in priority order. Other enabled sources take over when the album or track cannot be played.
 
@@ -162,7 +162,7 @@ The DMM **Test** button now samples DMM’s own catalogue instead of Deezer char
 
 ## Anime
 
-In **Ether-Remix → Anime**, create the Anime preset to get popular and top-rated movie/show collections from TMDB. Mixed libraries appear as separate Movies and Shows sections in Plex. Their Anime category is retained after renaming. Anime libraries respect your language filters, including French/MULTi. Original audio and subtitles remain an explicit choice through on-demand exceptions or the Any language option.
+In **Ether-Remix → Content & libraries → Anime**, create the Anime preset to get popular and top-rated movie/show collections from TMDB. Mixed libraries appear as separate Movies and Shows sections in Plex. Their Anime category is retained after renaming. Anime libraries respect your language filters, including French/MULTi. Original audio and subtitles remain an explicit choice through on-demand exceptions or the Any language option.
 
 Use **Configure UwU+** to select provider preferences, then **Add UwU+** and paste the generated `manifest.json` URL. **Add another Stremio addon** accepts other providers. UwU+ supplies streams, not catalogues; use TMDB collections, AniList lists or a catalogue-capable addon for discovery. Sources, activation and priority are shared with Movies & Shows. Availability and playback depend on each provider and your playback settings.
 
@@ -170,8 +170,19 @@ The **What's new** button in the console header reopens release notes. New notes
 
 ### On-demand subtitled exceptions
 
-**Ether-Remix → On demand → On-demand subtitled titles** groups movies, shows and anime explicitly allowed without French dubbing. Each addition queues a priority search when background indexing is enabled, within source budgets and playback pauses. These titles also appear in the VOSTFR library. Your existing selection is preserved.
+**Ether-Remix → On-demand subtitles → On-demand subtitled titles** groups movies, shows and anime explicitly allowed without French dubbing. Each addition queues a priority search when background indexing is enabled, within source budgets and playback pauses. These titles also appear in the VOSTFR library. Your existing selection is preserved.
 
 ### Public instances or self-hosting
 
 Provider-hosted configuration pages are labelled **Public instance offered**. Where available, **Host your own instance (GitHub)** links to the provider’s project: [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music), [HiFi API](https://github.com/binimum/hifi-api), [AIOStreams](https://github.com/Viren070/AIOStreams) and [Comet](https://github.com/g0ldyy/comet). AIOStreams also links to its official public-instance list. No self-hosting link is inferred for an undocumented provider. Your personal manifest remains your own configuration, whether the server is public or private.
+
+## Settings organization
+
+- **Sources**: one entry for accounts, Stremio addons, BitTorrent/Usenet indexers, Usenet providers, IPTV and music sources. Ether components and configurations are retained. The Indexing category groups enablement, budgets, pace, sortable source selection and library priorities.
+- **Languages & quality**: French catalogue, release languages, resolution, codecs, cache and collection exceptions.
+- **On-demand subtitles**: explicit non-dubbed title selection and priority searches.
+- **Content & libraries**: movies, shows, anime, music, playlists and custom libraries. Mixed libraries remain available under Movies and Shows.
+- **Statistics**: Remix indexing plus Ether’s Sources and Usage dashboards.
+- **Notifications & tracking**: notifications, Scrob and Last.fm credentials.
+
+Existing `/sources/...` addresses and old Remix tabs redirect to their new locations. Accounts and manifests are not duplicated. Categories organize sources; they do not guarantee that a particular title is available.

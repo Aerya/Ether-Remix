@@ -106,7 +106,7 @@ it("saves language exceptions", async () => {
     calls.push({ path, init });
     return { libraries: [], collections: cols, presets: [], max: 99, exceptions: ["2"] };
   });
-  render(<ThemeLibraries />);
+  render(<ThemeLibraries exceptionsOnly />);
   expect(await screen.findByText("HBO")).toBeTruthy();
   fireEvent.click(screen.getByLabelText(/^(Add an exception|Ajouter une exception)$/));
   fireEvent.click(await screen.findByRole("option", { name: /Concerts/ }));

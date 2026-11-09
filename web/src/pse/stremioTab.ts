@@ -8,10 +8,15 @@ import { getLocale } from "../i18n";
  */
 
 /** Ce qu'affiche une liste d'indexeurs : tout (Ether), sans Stremio, ou Stremio seul. */
-export type PseIndexerView = "all" | "indexers" | "stremio";
+export type PseIndexerView = "all" | "indexers" | "stremio" | "bittorrent" | "usenet-indexers";
 
-export function pseShowsIndexer(view: PseIndexerView, ix: { kind?: string }): boolean {
+export function pseShowsIndexer(
+  view: PseIndexerView,
+  ix: { kind?: string; protocol?: string },
+): boolean {
   if (view === "all") return true;
+  if (view === "bittorrent") return ix.kind !== "stremio" && ix.protocol === "torrent";
+  if (view === "usenet-indexers") return ix.kind !== "stremio" && ix.protocol !== "torrent";
   return (ix.kind === "stremio") === (view === "stremio");
 }
 

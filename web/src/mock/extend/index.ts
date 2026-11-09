@@ -1,3 +1,4 @@
+import { remixDescriptors } from "../../pse/mock";
 import { mockOnAirSegments } from "../onair";
 /**
  * Mock backend for the extensibility work (docs/extend/SPEC.md): the
@@ -27,6 +28,7 @@ export type ExtendHandler = (
 
 function builtinDescriptors(): Descriptor[] {
   return [
+    ...remixDescriptors,
     ...ranking,
     ...collections,
     ...livetv,

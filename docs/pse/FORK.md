@@ -89,3 +89,11 @@ git push origin sync/manual
 ## Markdown files
 
 Ether's `.gitignore` ignores unlisted `*.md` files. Add new PSE documentation with `git add -f`.
+
+## Remix navigation and synchronization
+
+Navigation and categories live in `web/src/pse/navigation.tsx`, `RemixSources.tsx` and `PsePage.tsx`. Native source components retain their APIs and configuration. Ether’s Sources and Collections pages match upstream; catalogue import is available from Content & libraries. Legacy source routes redirect to Remix.
+
+The sync script merges JSON translation conflicts by key only when edits are independent. Different translations of the same message remain blocking; the checkpoint stays unchanged. Catalogues and embedded UI are regenerated before verification. `AGENTS.md`, Remix files and workflows remain protected. The historical 775-commit backlog was integrated through `6d9bb9f17adb661540fdf292fee42ac0bb8ac353`.
+
+The protected `internal/catalog/pse_tier_sources.go` adapter classifies fork tables for Ether’s catalogue migration: language exceptions remain protected, while automatic indexing caches do not retain the entire catalogue.

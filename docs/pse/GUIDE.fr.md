@@ -78,7 +78,7 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 
 ### Connecter un client musique (Subsonic)
 
-1. Dans **Console → Ether-Remix → Musique**, activez les comptes souhaités : **AllDebrid**, **Real-Debrid** et/ou **TorBox**, ou collez le lien manifest d’un addon Eclipse. Les clés et les indexeurs sont ceux déjà configurés dans Ether-Remix. **Tester** vérifie le compte puis cherche un lien (sans vérifier l’audio) ; **Tester les sources** ouvre les premiers octets audio pour constater le format. Avec plusieurs comptes d’un même service dans **Sources › Debrid**, ils sont essayés dans l’ordre de priorité.
+1. Dans **Console → Ether-Remix → Sources → Streaming musical**, activez les comptes souhaités : **AllDebrid**, **Real-Debrid** et/ou **TorBox**, ou collez le lien manifest d’un addon Eclipse. Les clés et les indexeurs sont ceux déjà configurés dans Ether-Remix. **Tester** vérifie le compte puis cherche un lien (sans vérifier l’audio) ; **Tester les sources** ouvre les premiers octets audio pour constater le format. Avec plusieurs comptes d’un même service dans **Sources › Debrid**, ils sont essayés dans l’ordre de priorité.
 2. Dans le client, ajoutez un serveur **Subsonic / OpenSubsonic** : URL `http://<hôte>:32400` (ou le port `ETHER_PORT`), identifiants de votre compte Ether-Remix (comptes locaux à mot de passe).
 3. Activez l'option **mot de passe en clair / authentification legacy** du client : Ether-Remix ne conserve que des hachages, l'authentification par jeton (`t`/`s`) est refusée (code 41). Utilisez HTTPS (proxy inverse) hors de votre réseau local.
 
@@ -88,7 +88,7 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Clients Jellyfin et Plex** (Jellyfin web, Finamp, Findroid, Streamyfin, Plexamp, Plex Web…) : rien à régler, une bibliothèque **Musique** apparaît à côté des autres dès qu’une source musicale est activée. Elle montre vos favoris et écoutes, puis les classements Deezer ; la recherche couvre tout le catalogue et la lecture est directe. La recherche globale de Plex montre aussi artistes, albums et titres.
 
-**Playlists Deezer et Last.fm** : dans **Console → Ether-Remix → Musique**, collez pour chaque spectateur le lien de son profil Deezer (ses playlists publiques, dont Coups de cœur) ou des liens de playlists Deezer, y compris les liens de partage de l'application (`link.deezer.com`), et/ou son nom d'utilisateur Last.fm (titres aimés, top du mois, top de tous les temps, avec la clé API Last.fm). Les playlists apparaissent dans Plexamp, Plex Web, Finamp, Jellyfin et les clients Subsonic, en lecture seule, et sont réimportées toutes les 6 heures (`PSE_MUSIC_PLAYLISTS_HOURS`). Rien n'est téléchargé : seules les références des titres sont gardées. Spotify n'est pas pris en charge (son API exige une application développeur et une connexion par compte).
+**Playlists Deezer et Last.fm** : dans **Console → Ether-Remix → Sources → Streaming musical**, collez pour chaque spectateur le lien de son profil Deezer (ses playlists publiques, dont Coups de cœur) ou des liens de playlists Deezer, y compris les liens de partage de l'application (`link.deezer.com`), et/ou son nom d'utilisateur Last.fm (titres aimés, top du mois, top de tous les temps, avec la clé API Last.fm). Les playlists apparaissent dans Plexamp, Plex Web, Finamp, Jellyfin et les clients Subsonic, en lecture seule, et sont réimportées toutes les 6 heures (`PSE_MUSIC_PLAYLISTS_HOURS`). Rien n'est téléchargé : seules les références des titres sont gardées. Spotify n'est pas pris en charge (son API exige une application développeur et une connexion par compte).
 
 **Playlists ListenBrainz** : même écran, nom d'utilisateur ListenBrainz (gratuit, sans clé API). Ether-Remix importe la dernière playlist de chaque série que ListenBrainz génère pour lui (Daily Jams, Weekly Jams, Weekly Exploration…) et ses playlists publiques, en respectant la limite de débit de ListenBrainz.
 
@@ -98,11 +98,11 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Nouveautés et test des sources** : la playlist automatique **Nouveautés de vos artistes** réunit les albums sortis ces 4 derniers mois par les artistes favoris et les plus écoutés du spectateur (calculée en arrière-plan, mise à jour toutes les 6 h). Dans la console, onglet Musique, **Tester les sources audio** essaie chaque source réglée, seule, sur le même titre et affiche le format réellement envoyé (FLAC, MP3…), pas celui annoncé, ou la raison de l'échec. Il montre l'ordre réel de lecture, la raison de chaque source inactive et, pour chaque source, les étapes franchies : titre trouvé au catalogue, résultat de la source, lien obtenu, premiers octets vérifiés. La lecture complète n'est pas testée. **Réessayer cette source** relance une seule source, sans cache. Les liens d'addons ne sont affichés que par leur hôte ; aucune clé ni lien audio n'est affiché.
 
-**Titres en VOSTFR à la demande** : dans **Ether-Remix → À la demande**, cherchez un film ou une série et ajoutez-le. Il apparaît dans Films et Séries même sans VF, et dans la bibliothèque **« VOSTFR »** de Plex et Jellyfin (créée au premier ajout).
+**Titres en VOSTFR à la demande** : dans **Ether-Remix → VOSTFR à la demande**, cherchez un film ou une série et ajoutez-le. Il apparaît dans Films et Séries même sans VF, et dans la bibliothèque **« VOSTFR »** de Plex et Jellyfin (créée au premier ajout).
 
-**Découvrir de la musique** : chaque spectateur reçoit les playlists **Top France**, **Top Monde**… (pays au choix dans Console → Ether-Remix → Musique) et **Découvertes**, renouvelées toutes les 12 heures. Les **styles** (Pop, Rap/Hip Hop, Rock, Électro, Jazz…) se parcourent dans Plex (Musique › Par style), Jellyfin (Genres) et Feishin (Genres), avec les albums, artistes et titres du moment. Sur la page d'un artiste : **artistes similaires** et radio « Dans le même esprit » (Plex), **Mix instantané** (Jellyfin), titres populaires et similaires (Feishin).
+**Découvrir de la musique** : chaque spectateur reçoit les playlists **Top France**, **Top Monde**… (pays au choix dans Console → Ether-Remix → Sources → Streaming musical) et **Découvertes**, renouvelées toutes les 12 heures. Les **styles** (Pop, Rap/Hip Hop, Rock, Électro, Jazz…) se parcourent dans Plex (Musique › Par style), Jellyfin (Genres) et Feishin (Genres), avec les albums, artistes et titres du moment. Sur la page d'un artiste : **artistes similaires** et radio « Dans le même esprit » (Plex), **Mix instantané** (Jellyfin), titres populaires et similaires (Feishin).
 
-**Envoi des écoutes à Last.fm** : avec la clé API et le secret partagé Last.fm, chaque spectateur peut cliquer sur **Connecter Last.fm** dans **Console → Ether-Remix → Musique**, autoriser Ether-Remix sur last.fm, puis **J'ai autorisé Ether-Remix**. Ses écoutes complètes sont ensuite envoyées toutes les 2 minutes (celles d'avant la liaison et de plus de 14 jours ne partent pas). La **Vue d'ensemble** affiche aussi un bloc **Musique** : écoutes, heures et auditeurs des 30 derniers jours, titres et artistes les plus écoutés.
+**Envoi des écoutes à Last.fm** : avec la clé API et le secret partagé Last.fm, chaque spectateur peut cliquer sur **Connecter Last.fm** dans **Console → Ether-Remix → Sources → Streaming musical**, autoriser Ether-Remix sur last.fm, puis **J'ai autorisé Ether-Remix**. Ses écoutes complètes sont ensuite envoyées toutes les 2 minutes (celles d'avant la liaison et de plus de 14 jours ne partent pas). La **Vue d'ensemble** affiche aussi un bloc **Musique** : écoutes, heures et auditeurs des 30 derniers jours, titres et artistes les plus écoutés.
 
 **Feishin et autres clients Subsonic** : utilisez l'adresse d'Ether-Remix, votre nom d'utilisateur et un mot de passe local (Votre compte › Méthodes de connexion, y compris pour un compte connecté via Plex), et cochez **Enable legacy authentication** : Ether-Remix n'accepte pas l'authentification Subsonic par jeton.
 
@@ -112,7 +112,7 @@ La bibliothèque se remplit avec les favoris (artistes, albums, titres) et les �
 
 ### Sources communautaires Eclipse
 
-Dans **Ether-Remix → Musique → Sources communautaires Eclipse**, ouvrez **Configurer** pour le fournisseur souhaité. Générez son lien, collez le `manifest.json`, puis enregistrez. Un champ vide désactive la source. Pour Internet Archive, choisissez la catégorie **Music**. UltraMax et Deezer Ricky demandent votre compte Deezer sur leur propre site ; Ether-Remix conserve uniquement le lien généré, masqué dans la console.
+Dans **Ether-Remix → Sources → Streaming musical → Sources communautaires Eclipse**, ouvrez **Configurer** pour le fournisseur souhaité. Générez son lien, collez le `manifest.json`, puis enregistrez. Un champ vide désactive la source. Pour Internet Archive, choisissez la catégorie **Music**. UltraMax et Deezer Ricky demandent votre compte Deezer sur leur propre site ; Ether-Remix conserve uniquement le lien généré, masqué dans la console.
 
 | Fournisseur | Variable du manifest |
 | --- | --- |
@@ -141,7 +141,7 @@ Une recherche de titre peut consommer plusieurs requêtes. Les titres communs à
 
 ### DMM avec Real-Debrid
 
-Dans **Sources → Debrid**, configurez au moins un compte Real-Debrid actif, puis activez **DMM · Real-Debrid** dans **Ether-Remix → Musique**. Aucun lien manifest ni compte DMM n'est nécessaire. Le catalogue de navigation reste Deezer ; DMM fournit une recherche supplémentaire des albums à lire.
+Dans **Sources → Debrid**, configurez au moins un compte Real-Debrid actif, puis activez **DMM · Real-Debrid** dans **Ether-Remix → Sources → Streaming musical**. Aucun lien manifest ni compte DMM n'est nécessaire. Le catalogue de navigation reste Deezer ; DMM fournit une recherche supplémentaire des albums à lire.
 
 Cette source ne dépend pas des indexeurs. Elle se place au rang des comptes Real-Debrid, juste avant leur recherche par indexeurs ; les comptes sont essayés dans leur ordre de priorité. Les autres sources activées prennent le relais si l'album ou la piste ne peut pas être lu.
 
@@ -162,7 +162,7 @@ Le bouton **Tester** de DMM utilise désormais un échantillon du catalogue DMM,
 
 ## Animes
 
-Dans **Ether-Remix → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
+Dans **Ether-Remix → Contenus et bibliothèques → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
 
 Utilisez **Configurer UwU+** pour choisir vos préférences chez le fournisseur, puis **Ajouter UwU+** et collez le lien `manifest.json` généré. **Ajouter un autre addon Stremio** accepte les autres fournisseurs. UwU+ fournit les flux, pas les catalogues : utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues pour la découverte. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. La disponibilité et la lecture dépendent des fournisseurs et de vos réglages de lecture.
 
@@ -170,8 +170,19 @@ Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir le
 
 ### Exceptions VOSTFR à la demande
 
-**Ether-Remix → À la demande → Titres en VOSTFR à la demande** regroupe les films, séries et animés explicitement autorisés sans VF. Chaque ajout lance une recherche prioritaire si l’indexation est active, dans les limites des quotas et des pauses de lecture. Ces titres figurent aussi dans la bibliothèque VOSTFR. Votre sélection existante est conservée.
+**Ether-Remix → VOSTFR à la demande → Titres en VOSTFR à la demande** regroupe les films, séries et animés explicitement autorisés sans VF. Chaque ajout lance une recherche prioritaire si l’indexation est active, dans les limites des quotas et des pauses de lecture. Ces titres figurent aussi dans la bibliothèque VOSTFR. Votre sélection existante est conservée.
 
 ### Instances publiques ou auto-hébergement
 
 Les pages de configuration hébergées chez les fournisseurs portent la mention **Instance publique proposée**. Lorsqu’il existe, le lien **Héberger sa propre instance (GitHub)** mène au projet concerné : [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music), [HiFi API](https://github.com/binimum/hifi-api), [AIOStreams](https://github.com/Viren070/AIOStreams) et [Comet](https://github.com/g0ldyy/comet). AIOStreams propose aussi sa liste officielle d’instances publiques. Aucun lien d’auto-hébergement n’est déduit pour un fournisseur non documenté. Votre manifest personnel reste votre configuration, que le serveur soit public ou privé.
+
+## Organisation des réglages
+
+- **Sources** : accès unique aux comptes, addons Stremio, indexeurs BitTorrent/Usenet, fournisseurs Usenet, IPTV et sources musicales. Les composants et configurations Ether sont conservés. La catégorie Indexation regroupe activation, quotas, rythme, sélection triable des sources et priorités des bibliothèques.
+- **Langues et qualité** : catalogue français, langues de release, résolution, codecs, cache et exceptions par collection.
+- **VOSTFR à la demande** : sélection explicite de titres sans VF et recherche prioritaire.
+- **Contenus et bibliothèques** : films, séries, animés, musique, playlists et bibliothèques personnalisées. Les bibliothèques mixtes restent proposées dans Films et Séries.
+- **Statistiques** : indexation Remix, tableaux de bord Sources et Utilisation hérités d’Ether.
+- **Notifications et suivi** : notifications, Scrob et identifiants Last.fm.
+
+Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent vers les nouveaux écrans. Il n’y a pas de copie des comptes ou manifests. Les catégories servent à organiser les sources ; elles ne garantissent pas qu’un titre précis existe chez un fournisseur.

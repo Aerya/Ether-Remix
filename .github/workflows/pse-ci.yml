@@ -61,6 +61,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Tests de la synchronisation
+        run: python3 -m unittest discover -s .github/pse -p 'test_*.py'
       - name: gofmt
         run: |
           out=$(gofmt -l cmd internal sdk 2>/dev/null || true)

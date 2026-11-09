@@ -25,7 +25,11 @@ import { MusicSources } from "./MusicSources";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
-import { AnimeSources } from "./AnimeSources";
+import { RemixSources } from "./RemixSources";
+import { REMIX_TABS, legacyRemixRoute } from "./navigation";
+import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { SourceStatistics, StatisticsPeriod } from "../pages/sources/statistics/Statistics";
+import { ImportedSources } from "./ImportedSources";
 import { VostfrTitles } from "./VostfrTitles";
 
 /**
@@ -82,25 +86,7 @@ const T = (text: Text) => (fr() ? text.fr : text.en);
 const BASE = "/accent";
 
 /** Onglets de la page ; une section inconnue va dans le dernier. */
-const TABS = [
-  {
-    key: "films",
-    fr: "Films & Séries",
-    en: "Movies & shows",
-    features: ["french", "playable", "indexer"],
-  },
-  { key: "animes", fr: "Animes", en: "Anime", features: [] },
-  { key: "demande", fr: "À la demande", en: "On demand", features: [] },
-  { key: "musique", fr: "Musique", en: "Music", features: ["music"] },
-  { key: "bibliotheques", fr: "Bibliothèques", en: "Libraries", features: [] },
-  { key: "statistiques", fr: "Stats", en: "Stats", features: [] },
-  {
-    key: "suivi",
-    fr: "Notif & suivi",
-    en: "Notifications & tracking",
-    features: ["notify", "scrob"],
-  },
-] as const;
+const TABS = REMIX_TABS;
 type TabKey = (typeof TABS)[number]["key"];
 
 export function featuresOfTab(tab: TabKey, features: Feature[]): Feature[] {
@@ -120,6 +106,37 @@ function valuesOf(data: PseData | null): Record<string, string> | null {
 }
 
 export default function PsePage() {
+  const { tab } = useParams();
+  const location = useLocation();
+  let legacy = legacyRemixRoute(tab);
+  const field = location.hash.match(/^#pse-(pse_[a-z_]+)$/i)?.[1]?.toUpperCase();
+  if (tab === "films" && (field?.startsWith("PSE_INDEXER") || location.hash === "#pse-indexer"))
+    legacy = "/accent/sources?source=indexation";
+  if (tab === "musique" && field)
+    legacy =
+      musicFieldPlacement(field) === "source"
+        ? "/accent/sources?source=musique"
+        : musicFieldPlacement(field) === "tracking"
+          ? "/accent/suivi"
+          : "/accent/contenus?content=musique";
+  return legacy ? <Navigate replace to={legacy + location.hash} /> : <PseSettings />;
+}
+
+const MUSIC_CONTENT = new Set([
+  "PSE_MUSIC_PLAYLISTS_HOURS",
+  "PSE_MUSIC_CHARTS",
+  "PSE_MUSIC_DISCOVER",
+  "PSE_MUSIC_COVERS_URL",
+]);
+const MUSIC_TRACKING = new Set(["PSE_LASTFM_API_KEY", "PSE_LASTFM_SECRET"]);
+export function musicFieldPlacement(key: string) {
+  return MUSIC_TRACKING.has(key) ? "tracking" : MUSIC_CONTENT.has(key) ? "content" : "source";
+}
+
+function PseSettings() {
+  const [params, setParams] = useSearchParams();
+  const content = params.get("content") ?? "bibliotheques";
+  const stats = params.get("view") ?? "indexation";
   const tab = useRouteTab(TABS);
   const doc = useAsync(() => apiFetch<PseData>("/pse/"), []);
   const [data, setData] = useState<PseData | null>(null);
@@ -168,6 +185,37 @@ export default function PsePage() {
     }
   };
 
+  const renderFeature = (
+    feature: Feature,
+    placement: "source" | "content" | "tracking" = "content",
+  ) => (
+    <FeatureSection
+      key={feature.id + placement}
+      feature={feature}
+      placement={placement}
+      draft={draft}
+      resets={resets}
+      onChange={(key, value) => {
+        setResets(resets.filter((k) => k !== key));
+        setDraft({ ...draft, [key]: value });
+      }}
+      onReset={(fd) => {
+        setResets([...resets.filter((k) => k !== fd.key), fd.key]);
+        setDraft({ ...draft, [fd.key]: fd.env ?? fd.default });
+      }}
+    />
+  );
+  const music = current.features.find((f) => f.id === "music");
+  const musicPart = (placement: "source" | "content" | "tracking") =>
+    music
+      ? renderFeature(
+          {
+            ...music,
+            fields: music.fields.filter((fd) => musicFieldPlacement(fd.key) === placement),
+          },
+          placement,
+        )
+      : null;
   return (
     <DomainPage
       title="Ether-Remix"
@@ -180,32 +228,112 @@ export default function PsePage() {
       )}
     >
       <div className="space-y-6">
-        {tab === "animes" ? (
+        {tab === "sources" ? (
+          <RemixSources
+            music={musicPart("source")}
+            indexing={
+              <>
+                {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
+                <SearchPriority />
+              </>
+            }
+          />
+        ) : null}
+        {tab === "contenus" ? (
           <>
-            <AnimeSources />
-            <ThemeLibraries preset="anime" />
+            <nav
+              className="flex flex-wrap gap-2"
+              aria-label={L("Types de contenus", "Content types")}
+            >
+              {[
+                ["films", "Films", "Movies"],
+                ["series", "Séries", "Shows"],
+                ["animes", "Animes", "Anime"],
+                ["musique", "Musique", "Music"],
+                ["bibliotheques", "Toutes les bibliothèques", "All libraries"],
+              ].map(([key, fr, en]) => (
+                <Button
+                  key={key}
+                  variant={content === key ? "default" : "outline"}
+                  aria-pressed={content === key}
+                  onClick={() =>
+                    setParams((p) => {
+                      const n = new URLSearchParams(p);
+                      n.set("content", key!);
+                      return n;
+                    })
+                  }
+                >
+                  {L(fr!, en!)}
+                </Button>
+              ))}
+            </nav>
+            {content === "animes" ? (
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Les animés utilisent vos critères de langue habituels. UwU+ et les autres addons se configurent dans Sources.",
+                  "Anime uses your usual language criteria. Configure UwU+ and other addons in Sources.",
+                )}{" "}
+                <Link className="underline" to="/accent/sources?source=stremio">
+                  {L("Gérer les sources Stremio", "Manage Stremio sources")}
+                </Link>
+              </p>
+            ) : null}
+            {content === "musique" ? (
+              musicPart("content")
+            ) : (
+              <ThemeLibraries
+                key={content}
+                preset={content === "animes" ? "anime" : undefined}
+                mediaType={
+                  content === "films" ? "movie" : content === "series" ? "show" : undefined
+                }
+              />
+            )}
           </>
         ) : null}
-        {tab === "bibliotheques" ? <ThemeLibraries /> : null}
-        {tab === "bibliotheques" ? <SearchPriority /> : null}
+        {tab === "langues" ? <ThemeLibraries exceptionsOnly /> : null}
         {tab === "demande" ? <VostfrTitles /> : null}
-        {tab === "statistiques" ? <IndexerDetails /> : null}
-        {featuresOfTab(tab, current.features).map((f) => (
-          <FeatureSection
-            key={f.id}
-            feature={f}
-            draft={draft}
-            resets={resets}
-            onChange={(key, value) => {
-              setResets(resets.filter((k) => k !== key));
-              setDraft({ ...draft, [key]: value });
-            }}
-            onReset={(fd) => {
-              setResets([...resets.filter((k) => k !== fd.key), fd.key]);
-              setDraft({ ...draft, [fd.key]: fd.env ?? fd.default });
-            }}
-          />
-        ))}
+        {tab === "statistiques" ? (
+          <>
+            <nav
+              className="flex flex-wrap gap-2"
+              aria-label={L("Vues statistiques", "Statistics views")}
+            >
+              {[
+                ["indexation", "Indexation", "Indexing"],
+                ["sources", "Sources", "Sources"],
+                ["usage", "Utilisation", "Usage"],
+              ].map(([key, fr, en]) => (
+                <Button
+                  key={key}
+                  variant={stats === key ? "default" : "outline"}
+                  onClick={() =>
+                    setParams((p) => {
+                      const n = new URLSearchParams(p);
+                      n.set("view", key!);
+                      return n;
+                    })
+                  }
+                >
+                  {L(fr!, en!)}
+                </Button>
+              ))}
+            </nav>
+            {stats === "indexation" ? (
+              <IndexerDetails />
+            ) : (
+              <>
+                <StatisticsPeriod />
+                <SourceStatistics view={stats === "usage" ? "usage" : "statistics"} />
+              </>
+            )}
+          </>
+        ) : null}
+        {tab !== "sources" && tab !== "contenus"
+          ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
+          : null}
+        {tab === "suivi" ? musicPart("tracking") : null}
       </div>
       <SaveBar
         dirty={changed}
@@ -224,12 +352,14 @@ export default function PsePage() {
 
 function FeatureSection({
   feature,
+  placement = "content",
   draft,
   resets,
   onChange,
   onReset,
 }: {
   feature: Feature;
+  placement?: "source" | "content" | "tracking";
   draft: Record<string, string>;
   resets: string[];
   onChange: (key: string, value: string) => void;
@@ -289,15 +419,15 @@ function FeatureSection({
         <StatusLine feature={feature} />
         {basic.map(row)}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
-        {feature.id === "music" ? (
+        {feature.id === "music" && placement === "source" ? (
           <MusicAddons
             fields={feature.fields
               .filter((fd) => fd.community)
               .map((fd) => ({ key: fd.key, control: row(fd) }))}
           />
         ) : null}
-        {feature.id === "music" ? <MusicSources /> : null}
-        {feature.id === "music" ? <MusicPlaylists /> : null}
+        {feature.id === "music" && placement === "source" ? <MusicSources /> : null}
+        {feature.id === "music" && placement === "content" ? <MusicPlaylists /> : null}
         {advanced.length ? (
           <details className="border-t border-border">
             <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-fg-muted hover:text-fg">
@@ -330,6 +460,8 @@ function Control({
   onChange: (value: string) => void;
 }) {
   const label = T(field.label);
+  if (field.key === "PSE_INDEXER_SOURCES")
+    return <ImportedSources value={value} options={field.options ?? []} onChange={onChange} />;
   switch (field.kind) {
     case "toggle":
       return (

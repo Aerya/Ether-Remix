@@ -199,13 +199,17 @@ function Editor({
   );
 }
 
-export function ThemeLibraries({ preset }: { preset?: string } = {}) {
+export function ThemeLibraries({
+  preset,
+  mediaType,
+  exceptionsOnly = false,
+}: { preset?: string; mediaType?: "movie" | "show"; exceptionsOnly?: boolean } = {}) {
   const doc = useAsync(() => apiFetch<ThemeData>(ENDPOINT), []);
   const [data, setData] = useState<ThemeData | null>(null);
   const [edits, setEdits] = useState<Record<number, Draft>>({});
   const [creating, setCreating] = useState<Draft>({
     name: preset === "anime" ? "Animes" : "",
-    type: preset ? "mixed" : "movie",
+    type: preset ? "mixed" : (mediaType ?? "movie"),
     collections: [],
   });
   const [busy, setBusy] = useState(false);
@@ -232,12 +236,32 @@ export function ThemeLibraries({ preset }: { preset?: string } = {}) {
     }
   };
 
+  if (exceptionsOnly)
+    return (
+      <SettingsSection
+        title={L("Exceptions de langue par collection", "Language exceptions by collection")}
+      >
+        <LanguageExceptions
+          current={current}
+          busy={busy}
+          save={(ids) =>
+            send(
+              "exceptions",
+              "PUT",
+              { collections: ids },
+              L("Exceptions de langue enregistrées", "Language exceptions saved"),
+            )
+          }
+        />
+      </SettingsSection>
+    );
   const full = current.libraries.length >= current.max;
   const libraries = current.libraries.filter(
     (l) =>
-      !preset ||
-      l.preset === preset ||
-      (!l.preset && preset === "anime" && /^(anime|animes)$/i.test(l.name)),
+      (!mediaType || l.type === mediaType || l.type === "mixed") &&
+      (!preset ||
+        l.preset === preset ||
+        (!l.preset && preset === "anime" && /^(anime|animes)$/i.test(l.name))),
   );
 
   return (
@@ -273,7 +297,11 @@ export function ThemeLibraries({ preset }: { preset?: string } = {}) {
             </p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {current.presets
-                .filter((p) => !preset || p.id === preset)
+                .filter(
+                  (p) =>
+                    (!preset || p.id === preset) &&
+                    (!mediaType || p.type === mediaType || p.type === "mixed"),
+                )
                 .map((p) => {
                   const exists = current.libraries.some((l) => l.name === p.name);
                   return (
@@ -462,21 +490,6 @@ export function ThemeLibraries({ preset }: { preset?: string } = {}) {
               </div>
             );
           })}
-
-          {!preset ? (
-            <LanguageExceptions
-              current={current}
-              busy={busy}
-              save={(ids) =>
-                send(
-                  "exceptions",
-                  "PUT",
-                  { collections: ids },
-                  L("Exceptions de langue enregistrées", "Language exceptions saved"),
-                )
-              }
-            />
-          ) : null}
 
           <div className="space-y-2 rounded-lg border border-dashed border-border p-3">
             <div className="text-sm font-medium">

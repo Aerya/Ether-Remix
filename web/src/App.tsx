@@ -1,3 +1,4 @@
+import { RemixSourcesRedirect } from "./pse/navigation";
 import { RemixUpdates } from "./pse/RemixUpdates";
 import { McpAuthorize } from "./components/agent/McpAuthorize";
 import {
@@ -111,7 +112,7 @@ const LiveTV = lazy(() => import("./pages/livetv/LiveTV"));
 const Calendar = lazy(() => import("./pages/calendar/Calendar"));
 const Catalog = lazy(() => import("./pages/catalog/Catalog"));
 const Metadata = lazy(() => import("./pages/metadata/Metadata"));
-const Sources = lazy(() => import("./pages/sources/Sources"));
+
 const Quality = lazy(() => import("./pages/releases/Releases"));
 const Cache = lazy(() => import("./pages/cache/Cache"));
 const Playback = lazy(() => import("./pages/playback/Playback"));
@@ -205,6 +206,13 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
     if (d.kind !== "navItem" || d.owner !== BUILTIN) continue;
     const meta = d.meta as NavItemMeta | undefined;
     if (!meta?.route) continue;
+    if (
+      meta.route === "/sources" &&
+      descriptors.some(
+        (item) => item.kind === "page" && (item.meta as PageMeta | undefined)?.route === "/accent",
+      )
+    )
+      continue;
     const pageId = meta.page ?? (meta.pageKey ? `plugin:${d.owner}/${meta.pageKey}` : undefined);
     if (pageId) navPages.add(pageId);
     navPages.add(d.id);
@@ -410,7 +418,7 @@ const BUILTIN_PAGES: Record<
   calendar: { element: <Calendar />, suffix: "/:view?" },
   catalog: { element: <Catalog />, suffix: "/:tab?" },
   metadata: { element: <Metadata />, suffix: "/:tab?" },
-  sources: { element: <Sources />, suffix: "/:tab?" },
+  sources: { element: <RemixSourcesRedirect />, suffix: "/:tab?/:section?" },
   releases: { element: <Quality />, suffix: "/:tab?" },
   cache: { element: <Cache />, suffix: "/:tab?" },
   playback: { element: <Playback />, suffix: "/:tab?/:section?" },
@@ -553,13 +561,17 @@ function Shell() {
           <SettingFocus />
           <Suspense fallback={<PageFallback />}>
             <Routes>
+              <Route path="/accent/:tab?" element={<PsePage />} />
               <Route path="/setup" element={<Setup />} />
               <Route path="/mcp/authorize" element={<McpAuthorize />} />
               <Route path="/plugins/studio" element={<Studio />} />
               <Route path="/plugins/:tab?/*" element={<Plugins />} />
               <Route path="/p/:plugin/:page/*" element={<PluginPage />} />
               {navDescriptors
-                .filter((d) => d.kind === "page" && d.owner === BUILTIN && d.meta?.route)
+                .filter(
+                  (d) =>
+                    d.kind === "page" && d.owner === BUILTIN && d.meta?.route && d.id !== "pse",
+                )
                 .flatMap((d) => {
                   const page = BUILTIN_PAGES[d.id];
                   if (!page) return [];

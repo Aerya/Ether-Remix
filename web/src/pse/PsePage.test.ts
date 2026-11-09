@@ -29,9 +29,9 @@ describe("onglets de la page Ether-Remix", () => {
   });
   const all = ["notify", "french", "indexer", "playable", "scrob", "music", "nouveau"].map(f);
   it("range chaque section dans son onglet", () => {
-    expect(featuresOfTab("films", all).map((x) => x.id)).toEqual(["french", "playable", "indexer"]);
-    expect(featuresOfTab("musique", all).map((x) => x.id)).toEqual(["music"]);
-    expect(featuresOfTab("bibliotheques", all)).toEqual([]);
+    expect(featuresOfTab("langues", all).map((x) => x.id)).toEqual(["french", "playable"]);
+    expect(featuresOfTab("contenus", all).map((x) => x.id)).toEqual(["music"]);
+    expect(featuresOfTab("demande", all)).toEqual([]);
     expect(featuresOfTab("statistiques", all)).toEqual([]);
   });
   it("met une section inconnue dans le dernier onglet", () => {
