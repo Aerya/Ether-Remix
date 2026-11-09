@@ -21,6 +21,7 @@ import { useAsync } from "../lib/hooks";
 import { MusicPlaylists } from "./MusicPlaylists";
 import { IndexerDetails } from "./IndexerDetails";
 import { MusicSourceSettings } from "./MusicSourceSettings";
+import { SourceOrder } from "./SourceOrder";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
@@ -234,6 +235,7 @@ function PseSettings() {
               <>
                 {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
                 <SearchPriority />
+                <SourceOrder />
               </>
             }
           />

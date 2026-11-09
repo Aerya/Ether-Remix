@@ -359,6 +359,15 @@ func (c Catalog) Bars() (minPopularity float64, minVotes int) {
 	return c.MinPopularity, c.MinVotes
 }
 
+// SourceOrder is the owner's order of sources among equivalent releases.
+type SourceOrder struct {
+	// Families lists "stremio", "usenet" and "torrent", best first.
+	Families []string `json:"families,omitempty"`
+	// Content maps "movie", "show" or "anime" to indexer ids, best first.
+	// An indexer left out follows the listed ones, in its global priority.
+	Content map[string][]string `json:"content,omitempty"`
+}
+
 type Resolver struct {
 	// HardSubtitles is empty (prefer clean), exclude, or allow.
 	HardSubtitles   string `json:"hardSubtitles,omitempty"`
@@ -390,6 +399,9 @@ type Resolver struct {
 	// sources have measurements; "usenet" or "debrid" always prefer one.
 	// Quality is never traded for speed (see resolver/routing.go).
 	SourcePreference string `json:"sourcePreference,omitempty"`
+	// SourceOrder orders releases of equivalent quality by source family and
+	// by indexer for each kind of content. Empty keeps the behaviour above.
+	SourceOrder SourceOrder `json:"sourceOrder,omitzero"`
 	// SourceAlwaysFirst puts the preferred source first even when the
 	// other source has a better or better-fitting release: every Usenet
 	// release, or every known-cached debrid release, before the rest. The

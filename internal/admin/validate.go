@@ -402,6 +402,20 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	default:
 		v.add("resolver.sourcePreference", `must be "auto", "usenet" or "debrid"`)
 	}
+	seenFamily := map[string]bool{}
+	for _, family := range cfg.Resolver.SourceOrder.Families {
+		if (family != "stremio" && family != "usenet" && family != "torrent") || seenFamily[family] {
+			v.add("resolver.sourceOrder.families", `must list "stremio", "usenet" and "torrent" at most once`)
+			break
+		}
+		seenFamily[family] = true
+	}
+	for content := range cfg.Resolver.SourceOrder.Content {
+		if content != "movie" && content != "show" && content != "anime" {
+			v.add("resolver.sourceOrder.content", `keys must be "movie", "show" or "anime"`)
+			break
+		}
+	}
 	if cfg.Resolver.SourceAlwaysFirst && cfg.Resolver.SourcePreference != "usenet" && cfg.Resolver.SourcePreference != "debrid" {
 		v.add("resolver.sourceAlwaysFirst", `needs sourcePreference "usenet" or "debrid"`)
 	}
