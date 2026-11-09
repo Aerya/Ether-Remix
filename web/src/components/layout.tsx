@@ -1,10 +1,11 @@
+import { CollapsibleBlock, CollapsibleSections } from "./CollapsibleSections";
 import {
   PageContainer,
   PageHeader,
   SubtabNav as AppKitSubtabNav,
   cn,
 } from "@braedonsaunders/appkit-ui";
-import { useRef, type ReactNode, type ComponentProps, type RefObject } from "react";
+import { useContext, useRef, type ReactNode, type ComponentProps, type RefObject } from "react";
 import { OverflowTabs } from "./OverflowTabs";
 import { useNavigate, useParams } from "react-router-dom";
 import { t } from "../i18n";
@@ -116,6 +117,23 @@ export function Section({
   bodyClassName?: string;
   id?: string;
 }) {
+  const collapsible = useContext(CollapsibleSections);
+  if (collapsible && title)
+    return (
+      <section aria-label={typeof title === "string" ? title : undefined}>
+        <CollapsibleBlock title={title} description={description} id={id} className={className}>
+          {actions ? (
+            <div className="flex flex-wrap items-center gap-2 px-5 pt-4">{actions}</div>
+          ) : null}
+          <div className={bodyClassName ?? "space-y-4 px-5 py-4"}>{children}</div>
+          {footer ? (
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-bg-subtle px-5 py-3">
+              {footer}
+            </div>
+          ) : null}
+        </CollapsibleBlock>
+      </section>
+    );
   return (
     <section
       id={id}

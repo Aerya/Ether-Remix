@@ -51,6 +51,12 @@ export function SettingFocus() {
       const row = anchor?.closest<HTMLElement>(".px-5") ?? anchor;
       if (row) {
         window.clearInterval(timer);
+        // Reveal every enclosing disclosure before scrolling to a source setting.
+        let parent = anchor?.parentElement;
+        while (parent) {
+          if (parent instanceof HTMLDetailsElement) parent.open = true;
+          parent = parent.parentElement;
+        }
         row.scrollIntoView({ block: "center", behavior: "smooth" });
         row.classList.add("setting-focus");
         window.setTimeout(() => row.classList.remove("setting-focus"), 2400);

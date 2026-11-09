@@ -1,5 +1,6 @@
+import { SettingsSection } from "../../components/CollapsibleSections";
 import { Play, CalendarDays, Zap } from "lucide-react";
-import { Input, SettingsSection, toast } from "@braedonsaunders/appkit-ui";
+import { Input, toast } from "@braedonsaunders/appkit-ui";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { MoreOptions } from "../../components/ConfigSection";

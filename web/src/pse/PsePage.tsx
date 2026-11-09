@@ -1,14 +1,6 @@
+import { SettingsSection } from "../components/CollapsibleSections";
 import { SourceHosting } from "./SourceHosting";
-import {
-  Badge,
-  Button,
-  Checkbox,
-  Input,
-  Select,
-  SettingsSection,
-  Switch,
-  toast,
-} from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Checkbox, Input, Select, Switch, toast } from "@braedonsaunders/appkit-ui";
 import { RotateCcw } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { ErrorPanel, LoadingRows } from "../components/feedback";

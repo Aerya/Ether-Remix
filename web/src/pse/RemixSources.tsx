@@ -1,3 +1,4 @@
+import { CollapsibleSections } from "../components/CollapsibleSections";
 import { AddSourceGallery, type GalleryChoice } from "../pages/sources/cards";
 import type { DebridKind } from "../lib/types";
 import { Badge, Button } from "@braedonsaunders/appkit-ui";
@@ -135,61 +136,65 @@ export function RemixSources({
           )}
         </span>
       </div>
-      {category === "stremio" ? (
-        <>
-          <IndexerList view="stremio" addRequest={add} />
-          {stremio}
-        </>
-      ) : null}
-      {category === "indexeurs" ? (
-        <>
-          <Button variant="outline" onClick={() => setImporting(true)}>
-            {L("Importer depuis Prowlarr", "Import from Prowlarr")}
-          </Button>
-          <nav
-            className="flex gap-2"
-            aria-label={L("Protocoles des indexeurs", "Indexer protocols")}
-          >
-            {[
-              ["all", "Tous", "All"],
-              ["torrent", "BitTorrent", "BitTorrent"],
-              ["usenet", "Usenet", "Usenet"],
-            ].map(([id, fr, en]) => (
-              <Button
-                key={id}
-                variant={(protocol ?? "all") === id ? "default" : "outline"}
-                onClick={() =>
-                  setParams((p) => {
-                    const n = new URLSearchParams(p);
-                    n.set("protocol", id!);
-                    return n;
-                  })
-                }
-              >
-                {L(fr!, en!)}
-              </Button>
-            ))}
-          </nav>
-          <IndexerList
-            key={protocol ?? "all"}
-            view={
-              protocol === "torrent"
-                ? "bittorrent"
-                : protocol === "usenet"
-                  ? "usenet-indexers"
-                  : "indexers"
-            }
-            version={version}
-            addRequest={add}
-          />
-          <NewReleaseBudgetSection />
-        </>
-      ) : null}
-      {category === "debrid" ? <DebridSources addKind={debridAdd} /> : null}
-      {category === "usenet" ? <UsenetProviders addNonce={usenetAdd} /> : null}
-      {category === "iptv" ? <IPTVProviders sourceParam="iptvSource" /> : null}
-      {category === "musique" ? music : null}
-      {category === "indexation" ? indexing : null}
+      <CollapsibleSections.Provider
+        value={["stremio", "indexeurs", "indexation"].includes(category)}
+      >
+        {category === "stremio" ? (
+          <>
+            <IndexerList view="stremio" addRequest={add} />
+            {stremio}
+          </>
+        ) : null}
+        {category === "indexeurs" ? (
+          <>
+            <Button variant="outline" onClick={() => setImporting(true)}>
+              {L("Importer depuis Prowlarr", "Import from Prowlarr")}
+            </Button>
+            <nav
+              className="flex gap-2"
+              aria-label={L("Protocoles des indexeurs", "Indexer protocols")}
+            >
+              {[
+                ["all", "Tous", "All"],
+                ["torrent", "BitTorrent", "BitTorrent"],
+                ["usenet", "Usenet", "Usenet"],
+              ].map(([id, fr, en]) => (
+                <Button
+                  key={id}
+                  variant={(protocol ?? "all") === id ? "default" : "outline"}
+                  onClick={() =>
+                    setParams((p) => {
+                      const n = new URLSearchParams(p);
+                      n.set("protocol", id!);
+                      return n;
+                    })
+                  }
+                >
+                  {L(fr!, en!)}
+                </Button>
+              ))}
+            </nav>
+            <IndexerList
+              key={protocol ?? "all"}
+              view={
+                protocol === "torrent"
+                  ? "bittorrent"
+                  : protocol === "usenet"
+                    ? "usenet-indexers"
+                    : "indexers"
+              }
+              version={version}
+              addRequest={add}
+            />
+            <NewReleaseBudgetSection />
+          </>
+        ) : null}
+        {category === "debrid" ? <DebridSources addKind={debridAdd} /> : null}
+        {category === "usenet" ? <UsenetProviders addNonce={usenetAdd} /> : null}
+        {category === "iptv" ? <IPTVProviders sourceParam="iptvSource" /> : null}
+        {category === "musique" ? music : null}
+        {category === "indexation" ? indexing : null}
+      </CollapsibleSections.Provider>
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />
       <Drawer
         open={importing}

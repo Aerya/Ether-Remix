@@ -1,4 +1,5 @@
-import { SearchSelect, SettingsSection, Spinner, toast } from "@braedonsaunders/appkit-ui";
+import { SettingsSection } from "../../components/CollapsibleSections";
+import { SearchSelect, Spinner, toast } from "@braedonsaunders/appkit-ui";
 import { useMemo, useState } from "react";
 import { MoreOptions } from "../../components/ConfigSection";
 import { ErrorPanel } from "../../components/feedback";
