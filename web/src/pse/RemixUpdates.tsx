@@ -17,8 +17,8 @@ export const REMIX_UPDATES = [
         "One source entry in Remix reuses Ether accounts and addons, alongside music sources and background indexing.",
       ],
       [
-        "Six onglets : Sources, Langues et qualité, VOSTFR à la demande, Contenus et bibliothèques, Statistiques, Notifications et suivi.",
-        "Six tabs: Sources, Languages & quality, On-demand subtitles, Content & libraries, Statistics, Notifications & tracking.",
+        "Statistiques Animes : carte dédiée, historique par période ou cumulé et filtre par source, sans double comptage. Six onglets : Sources, Langues et qualité, VOSTFR à la demande, Contenus et bibliothèques, Statistiques, Notifications et suivi.",
+        "Anime statistics: dedicated card, period or cumulative history and source filtering, without double counting. Six tabs: Sources, Languages & quality, On-demand subtitles, Content & libraries, Statistics, Notifications & tracking.",
       ],
       [
         "Sélection des sources d’indexation regroupée par catégorie, avec tri et indication des contenus concernés.",

@@ -34,6 +34,7 @@ const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n * 100) / d)} %` 
 const TYPES = [
   ["movie", "Films", "Movies"],
   ["show", "Séries", "TV shows"],
+  ["anime", "Animes", "Anime"],
 ] as const;
 
 function Metric({
@@ -155,7 +156,7 @@ export function IndexerDetails() {
     void load(false);
   }, []);
   const types = data?.types ?? {};
-  const total = TYPES.reduce<Counts>(
+  const total = TYPES.filter(([type]) => type !== "anime").reduce<Counts>(
     (acc, [t]) => {
       const c = types[t];
       if (c) for (const k of Object.keys(acc) as (keyof Counts)[]) acc[k] += c[k] ?? 0;
@@ -242,8 +243,8 @@ export function IndexerDetails() {
           {total.titles === 0 ? (
             <p className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-fg-muted">
               {L(
-                "Aucun titre suivi pour le moment. Configurez l’indexation dans Films & séries.",
-                "No tracked titles yet. Configure indexing under Movies & shows.",
+                "Aucun titre suivi pour le moment. Configurez l’indexation dans Sources → Indexation.",
+                "No tracked titles yet. Configure indexing under Sources → Indexing.",
               )}
             </p>
           ) : null}
@@ -253,7 +254,7 @@ export function IndexerDetails() {
               "These counts cover movies and shows in Ether-Remix’s local browsable catalogue, not all of TMDB. “Searched” counts titles already queried on your release sources.",
             )}
           </p>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 xl:grid-cols-3 md:grid-cols-2">
             {TYPES.map(([type, fr, en]) => {
               const c = types[type];
               if (!c) return null;
@@ -263,7 +264,12 @@ export function IndexerDetails() {
                     <h3 className="font-semibold">{L(fr, en)}</h3>
                     <span className="text-sm text-fg-muted">
                       {num(c.titles)}{" "}
-                      {L("titres du catalogue local", "titles in the local catalogue")}
+                      {type === "anime"
+                        ? L(
+                            "dont animes · inclus dans Films et Séries",
+                            "of which anime · included in Movies and TV shows",
+                          )
+                        : L("titres du catalogue local", "titles in the local catalogue")}
                     </span>
                   </div>
                   <div className="mb-2 flex justify-between text-sm">

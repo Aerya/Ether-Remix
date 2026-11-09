@@ -14,6 +14,7 @@ interface Event {
   source: string;
   title: string;
   type: string;
+  anime?: boolean;
   started: number;
   finished?: number;
   status: string;
@@ -278,7 +279,14 @@ export function IndexerActivity() {
                 className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-4"
               >
                 <div>
-                  <p className="font-medium">{e.title}</p>
+                  <p className="font-medium">
+                    {e.title}
+                    {e.anime ? (
+                      <span className="ml-2 rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                        {L("Anime", "Anime")}
+                      </span>
+                    ) : null}
+                  </p>
                   <p className="mt-1 text-xs text-fg-muted">
                     {e.source || e.sourceId} ·{" "}
                     {e.type === "show"
@@ -492,7 +500,14 @@ export function IndexerActivity() {
               className="flex flex-wrap items-center justify-between gap-2 border-t border-border py-3 text-sm"
             >
               <div className="min-w-0">
-                <p className="font-medium">{e.title}</p>
+                <p className="font-medium">
+                  {e.title}
+                  {e.anime ? (
+                    <span className="ml-2 rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                      {L("Anime", "Anime")}
+                    </span>
+                  ) : null}
+                </p>
                 <p className="mt-1 text-xs text-fg-muted">
                   {e.source || e.sourceId} ·{" "}
                   {new Date(e.finished ?? e.started).toLocaleTimeString(getLocale())} ·{" "}

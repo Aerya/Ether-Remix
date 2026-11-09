@@ -16,7 +16,7 @@ func TestTypeAndKeyCounts(t *testing.T) {
 	now := time.Now()
 	// Le catalogue d'Ether n'est pas migré dans cette base de test : on
 	// n'en garde que les colonnes lues.
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', browsable INTEGER NOT NULL DEFAULT 0)`); err != nil {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', browsable INTEGER NOT NULL DEFAULT 0, language TEXT NOT NULL DEFAULT ''); CREATE TABLE catalog_keywords(key INTEGER,keyword TEXT); CREATE TABLE catalog_genres(key INTEGER,genre TEXT)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO catalog_titles(key,type,title,browsable) VALUES(5,'movie','caché',0)`); err != nil {
@@ -44,6 +44,9 @@ func TestTypeAndKeyCounts(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO pse_playable(title_key,releases) VALUES(1,3),(4,1)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO catalog_keywords VALUES(1,'Anime'); INSERT INTO catalog_genres VALUES(4,'Animation'),(3,'Animation'); UPDATE catalog_titles SET language='JA' WHERE key=4`); err != nil {
+		t.Fatal(err)
+	}
 	types, err := s.TypeCounts(ctx, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -53,6 +56,9 @@ func TestTypeAndKeyCounts(t *testing.T) {
 	}
 	if sh := types["show"]; sh != (Counts{Titles: 1, Indexed: 1, Found: 1, Playable: 0, Recent: 1}) {
 		t.Fatalf("show = %+v", sh)
+	}
+	if a := types["anime"]; a != (Counts{Titles: 2, Indexed: 2, Found: 2, Playable: 1, Recent: 2}) {
+		t.Fatalf("anime subset = %+v", a)
 	}
 	c, err := s.KeyCounts(ctx, []core.RatingKey{1, 3, 3, 9}, 2)
 	if err != nil {

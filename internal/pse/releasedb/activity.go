@@ -25,6 +25,7 @@ CREATE TABLE pse_index_activity(
 
 // SearchEvent never contains upstream error strings, URLs or credentials.
 type SearchEvent struct {
+	Anime      bool           `json:"anime"`
 	ID         uint64         `json:"id"`
 	SourceID   string         `json:"sourceId"`
 	Source     string         `json:"source"`
@@ -74,7 +75,7 @@ func (s *Service) beginSearch(t core.Title, src source) SearchEvent {
 	s.activity.mu.Lock()
 	defer s.activity.mu.Unlock()
 	s.activity.seq++
-	e := SearchEvent{ID: s.activity.seq, SourceID: src.id, Source: src.name, Title: t.Title, Type: t.Type, Started: s.d.Now().UnixMilli(), Status: "searching"}
+	e := SearchEvent{ID: s.activity.seq, SourceID: src.id, Source: src.name, Title: t.Title, Type: t.Type, Anime: t.IsAnime(), Started: s.d.Now().UnixMilli(), Status: "searching"}
 	if s.activity.active == nil {
 		s.activity.active = map[uint64]SearchEvent{}
 	}
