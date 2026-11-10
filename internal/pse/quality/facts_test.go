@@ -11,7 +11,7 @@ func TestDetailedFormatFacts(t *testing.T) {
 	for _, tc := range []struct{ name, want string }{
 		{"Film.1080p.BluRay.REMUX", "BluRay REMUX"}, {"Film.DVD.REMUX", "DVD REMUX"},
 		{"Film.HC.HD-Rip", "HDRip"}, {"Film.HC.1080p", "HC HD-Rip"}, {"Film.HDRip", "HDRip"}, {"Film.DVDRip", "DVDRip"},
-		{"Film.1080p.BluRay", "BluRay"}, {"Film.WEB-DL", "WEB-DL"}, {"Film.WEBRip", "WEBRip"},
+		{"Film.1080p.BluRay", "BluRay"}, {"Film.WEB-DL", "WEB-DL"}, {"Film.WEBRip", "WEBRip"}, {"Film.WEB-DL.ts", "WEB-DL"},
 		{"Film.HDCAM", "CAM"}, {"Film.HDTS", "TS"}, {"Film.Telecine", "TC"}, {"Film.DVDSCR", "SCR"},
 	} {
 		r := core.Release{Name: tc.name, Info: releaseparse.Parse(tc.name)}

@@ -68,7 +68,7 @@ func formatFact(r core.Release) string {
 		}
 		return "BluRay REMUX"
 	}
-	for _, p := range [][2]string{{"cam", "CAM"}, {"ts", "TS"}, {"tc", "TC"}, {"scr", "SCR"}, {"webdl", "WEB-DL"}, {"webrip", "WEBRip"}, {"hdrip", "HDRip"}, {"hc", "HC HD-Rip"}, {"bluray", "BluRay"}, {"dvd", "DVDRip"}, {"hdtv", "HDTV"}} {
+	for _, p := range [][2]string{{"bluray", "BluRay"}, {"webdl", "WEB-DL"}, {"webrip", "WEBRip"}, {"hdrip", "HDRip"}, {"hc", "HC HD-Rip"}, {"dvd", "DVDRip"}, {"hdtv", "HDTV"}, {"cam", "CAM"}, {"ts", "TS"}, {"tc", "TC"}, {"scr", "SCR"}} {
 		if tag(n, p[0]) {
 
 			return p[1]
