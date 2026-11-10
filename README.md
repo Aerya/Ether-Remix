@@ -84,6 +84,10 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 - Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs.
 - Images Docker pour **amd64 et arm64** et présentation des nouveautés dans la console.
 
+## Sous-titres avec SubMaker
+
+Intégration facultative d’une instance publique ou auto-hébergée, avec traduction anglais → français (langues modifiables), périmètre global/bibliothèque/collection et transmission des SRT vérifiés à SeerrCatalog. Désactivée par défaut ; manifeste personnel nécessaire lors de l’activation. [Configuration et limites](docs/pse/SUBMAKER.fr.md).
+
 ## SeerrCatalog : des demandes aux contenus disponibles
 
 Dans **Sources → Stremio → SeerrCatalog**, une seule section regroupe **Disponibilités vers Remix** (import des résultats SeerrCatalog) et **Recherche via Remix** (recherches demandées par SeerrCatalog). Les deux fonctions restent indépendantes, avec une clé et une activation chacune. Le test du partage se fait dans Remix ; le test des recherches se fait dans SeerrCatalog. Prowlarr autonome se configure séparément dans SeerrCatalog.

@@ -218,3 +218,7 @@ Choose a viewer, inspect the preview and confirm. Import creates a personal copy
 **Spotify**: under Discover → Spotify, enter your application’s **Client ID**. Add the exact redirect URI displayed by Remix to your Spotify developer dashboard, then connect the chosen viewer’s account. HTTPS is required except on loopback. No Client Secret is needed: OAuth with PKCE, server-encrypted tokens, read-only access and a disconnect button. In development mode, the app owner needs Premium and users must be allowed in Spotify Developers. Spotify may deny playlist items unless you own or collaborate on the playlist; directory links do not bypass this limit.
 
 **Appearance**: the palette button in the top bar offers Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine. Select light or dark mode separately; previews are immediate and your preference is stored in this browser. Other users keep their own preferences.
+
+## SubMaker
+
+[Configure external subtitles and optional translation](SUBMAKER.en.md), globally or per library/collection, with SeerrCatalog.

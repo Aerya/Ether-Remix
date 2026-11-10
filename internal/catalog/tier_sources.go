@@ -51,6 +51,7 @@ type touchSource struct {
 var tierTouchSources = []touchSource{
 	// Tier A: viewer or owner intent.
 	{table: "pse_seerrcatalog", column: "title_key", tierA: true},
+	{table: "remix_submaker_jobs", column: "title_key", tierA: true},
 	{table: "state_watch", column: "rating_key", tierA: true},
 	{table: "state_history", column: "rating_key", tierA: true},
 	{table: "state_history_events", column: "rating_key"},
@@ -162,7 +163,9 @@ var tierTouchSources = []touchSource{
 // the titles behind them would keep every title an Xtream client ever
 // listed, which is the whole mirror.
 var tierUntouchedTables = []string{
-	"remix_quality_config", // Release policy configuration, no viewer title references.
+	"remix_submaker_budget", // Daily counters, no title references.
+	"remix_submaker_scopes", // Library/collection identifiers, no title keys.
+	"remix_quality_config",  // Release policy configuration, no viewer title references.
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
 	// Tier C: caches and derived state, rebuilt on demand.
