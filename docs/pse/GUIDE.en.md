@@ -71,10 +71,13 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 
 ### Connecting Scrob
 
-1. Add `PSE_SCROB_VIEWS=on` to the Ether-Remix container and restart it.
-2. In Scrob, add a **Jellyfin** connection: URL `http://<host>:32400` (or your `ETHER_PORT`), your Ether-Remix account credentials.
-3. In the connection's libraries, **select only "Vus et notés — Films" and "Vus et notés — Séries"**. With no selection, Scrob would import Ether-Remix's whole catalogue.
-4. For real time: copy that connection's webhook URL (Scrob → Connections), then in Ether-Remix open **Services → Watch tracking → Scrob**, turn the card on and paste the link for the matching viewer (**Test** button).
+1. Under **Ether-Remix → Notifications and tracking → Scrob**, enable the **Watched and rated** libraries and Scrob delivery.
+2. For the matching viewer, click **Create Jellyfin credentials for Scrob**. In Scrob → **Connections → Media Players → Add Connection**, choose **Jellyfin** and copy **Server URL**, **Token** and **User ID**. The token is scoped to this viewer and Jellyfin, and can be revoked in the viewer’s devices.
+3. Select only **“Vus et notés — Films” and “Vus et notés — Séries”** in the connection’s libraries to import history without scanning the full catalogue.
+4. Enable **Scrob → Server: Watched status and Ratings**, then your preferred automatic sync. Movies and episodes are identified by TMDB, with season and episode numbers for episodes. Incoming changes use the same watch state as the viewer’s Plex/Jellyfin clients.
+5. For **real-time Remix → Scrob**, copy the webhook URL from this same connection and paste it into Remix for the matching viewer. **Test** checks webhook acceptance, not a complete history sync.
+
+A **Scrobble-only** connection cannot send changes back to Remix. Scrob’s Jellyfin connector pushes watched status and ratings, but not resume positions; configure sync frequency and preferences in Scrob.
 
 ### Connecting a music client (Subsonic)
 

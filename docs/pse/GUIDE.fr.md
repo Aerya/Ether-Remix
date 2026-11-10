@@ -71,10 +71,13 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 
 ### Connecter Scrob
 
-1. Ajoutez `PSE_SCROB_VIEWS=on` au conteneur Ether-Remix et redémarrez-le.
-2. Dans Scrob, ajoutez une connexion **Jellyfin** : URL `http://<hôte>:32400` (ou le port `ETHER_PORT`), identifiants de votre compte Ether-Remix.
-3. Dans les bibliothèques de la connexion, **ne cochez que « Vus et notés — Films » et « Vus et notés — Séries »**. Sans sélection, Scrob importerait tout le catalogue d'Ether-Remix.
-4. Pour le temps réel : copiez l'URL du webhook de cette connexion (Scrob → Connexions), puis dans Ether-Remix ouvrez **Services → Suivi du visionnage → Scrob**, activez la carte et collez le lien pour le spectateur concerné (bouton **Tester**).
+1. Dans **Ether-Remix → Notifications et suivi → Scrob**, activez les bibliothèques **Vus et notés** et les envois Scrob.
+2. Pour le spectateur concerné, cliquez sur **Créer les identifiants Jellyfin pour Scrob**. Dans Scrob → **Connections → Media Players → Add Connection**, choisissez **Jellyfin** et copiez **Server URL**, **Token** et **User ID**. Le jeton est limité à ce spectateur et à Jellyfin ; il est révocable dans les appareils du spectateur.
+3. Dans les bibliothèques de la connexion, **ne cochez que « Vus et notés — Films » et « Vus et notés — Séries »** pour importer l’historique sans parcourir le catalogue complet.
+4. Activez les préférences **Scrob → Server : Watched status et Ratings**, puis la synchronisation automatique souhaitée. Les films et épisodes sont identifiés par TMDB et, pour les épisodes, par saison et numéro. Les changements reçus utilisent le même état de visionnage que les clients Plex/Jellyfin du spectateur.
+5. Pour **Remix → Scrob en temps réel**, copiez l’URL du webhook de cette même connexion et collez-la dans Remix pour le spectateur correspondant. **Tester** vérifie l’acceptation du webhook, pas une synchronisation complète de l’historique.
+
+Une connexion **Scrobble-only** ne permet pas le retour vers Remix. Le connecteur Jellyfin de Scrob renvoie les statuts vus et les notes, mais pas les positions de reprise ; la fréquence et les choix de synchronisation se règlent dans Scrob.
 
 ### Connecter un client musique (Subsonic)
 

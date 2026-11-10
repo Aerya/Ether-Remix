@@ -12,6 +12,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
@@ -144,6 +145,9 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		result["url"] = u.String()
 		result["username"] = connectAppUsername(viewer)
 		result["password"] = secret
+		if surface == "jellyfin" || surface == "emby" {
+			result["userId"], _ = ids.GUID(ids.User, viewer.ID)
+		}
 	case "stremio":
 		u.Path = prefix + "/stremio/" + secret + "/manifest.json"
 		result["url"] = u.String()

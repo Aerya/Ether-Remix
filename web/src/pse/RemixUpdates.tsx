@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-seerrcatalog-delegated-search",
+    id: "2026-11-10-scrob-bidirectional",
     version: "current",
+    date: "2026-11-10",
+    title: ["Scrob dans les deux sens", "Bidirectional Scrob"],
+    items: [
+      [
+        "Créez les identifiants Jellyfin de chaque spectateur depuis les réglages Scrob. Le retour des statuts vus et des notes retrouve précisément les épisodes par série, saison et numéro. L’aide distingue la connexion complète du simple webhook.",
+        "Create each viewer’s Jellyfin credentials from Scrob settings. Incoming watched status and ratings resolve the exact episode by series, season and number. Setup help distinguishes a full connection from a webhook alone.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-seerrcatalog-delegated-search",
+    version: "0.2.37-remix.29.1",
     date: "2026-11-10",
     title: ["SeerrCatalog : recherche complémentaire", "SeerrCatalog: complementary search"],
     items: [

@@ -54,3 +54,27 @@ it("lists every viewer with its masked Scrob link and saves a new one", async ()
   const test = calls.find((c) => c.path === "/pse/scrob/test")!;
   expect(JSON.parse(String(test.init!.body))).toEqual({ viewer: 1, url: masked });
 });
+
+it("creates a viewer-scoped Jellyfin connection only on request and masks its token", async () => {
+  apiFetch.mockReset();
+  apiFetch.mockImplementation(async (path: string) => {
+    if (path === "/viewers/7/apps/jellyfin")
+      return {
+        url: "https://remix.example/jellyfin",
+        password: "private-grant",
+        userId: "jellyfin-user-seven",
+      };
+    return { enabled: true, viewers: [{ id: 7, name: "Alice", url: "", configured: false }] };
+  });
+  render(<ScrobLinks />);
+  const button = await screen.findByRole("button", {
+    name: /Create Jellyfin credentials|Créer les identifiants Jellyfin/,
+  });
+  expect(apiFetch).not.toHaveBeenCalledWith("/viewers/7/apps/jellyfin", expect.anything());
+  fireEvent.click(button);
+  await screen.findByDisplayValue("https://remix.example/jellyfin");
+  expect(apiFetch).toHaveBeenCalledWith("/viewers/7/apps/jellyfin", { method: "POST" });
+  expect(screen.getByLabelText("Token").getAttribute("type")).toBe("password");
+  expect((screen.getByLabelText("User ID") as HTMLInputElement).value).toBe("jellyfin-user-seven");
+  expect((button as HTMLButtonElement).disabled).toBe(true);
+});

@@ -3,11 +3,14 @@ package mediabrowser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/scrobview"
@@ -65,6 +68,9 @@ func (i *instance) pseWriteFolder(w http.ResponseWriter, r *http.Request, v *fro
 // pseItems répond à /Items pour une bibliothèque PSE ou une recherche par
 // identifiant externe. Renvoie false si la requête ne concerne pas PSE.
 func (i *instance) pseItems(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, parent []string, q frontend.ItemQuery) bool {
+	if i.pseScrobEpisode(w, r, v, q) {
+		return true
+	}
 	var titles []frontend.Title
 	var err error
 	switch {
@@ -116,6 +122,48 @@ func (i *instance) pseItems(w http.ResponseWriter, r *http.Request, v *frontend.
 		end = min(start+q.Limit, total)
 	}
 	i.page(w, r, v, frontend.Page{Items: titles[start:end], Total: total}, q.Offset)
+	return true
+}
+
+// Scrob's reverse sync looks up an episode using SeriesId rather than ParentId.
+// Resolve the exact key through Experience so viewer visibility rules still apply.
+func (i *instance) pseScrobEpisode(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, q frontend.ItemQuery) bool {
+	series := firstQuery(r, "SeriesId")
+	seasonRaw, episodeRaw := firstQuery(r, "ParentIndexNumber"), firstQuery(r, "IndexNumber")
+	if series == "" || seasonRaw == "" || episodeRaw == "" {
+		return false
+	}
+	show, err := ids.ParseRatingKeyGUID(series)
+	season, se := strconv.Atoi(seasonRaw)
+	episode, ee := strconv.Atoi(episodeRaw)
+	if err != nil || show.Kind() != core.KindShow || se != nil || ee != nil || season < 0 || season > 999 || episode < 1 || episode > 9999 {
+		http.Error(w, "Invalid episode selector", http.StatusBadRequest)
+		return true
+	}
+	page := frontend.Page{}
+	allowed := len(q.Types) == 0
+	for _, typ := range q.Types {
+		allowed = allowed || typ == core.TypeEpisode
+	}
+	if allowed {
+		key := core.EpisodeKey(show.TMDB(), season, episode)
+		if key.Kind() != core.KindEpisode || key.TMDB() != show.TMDB() || key.Season() != season || key.Episode() != episode {
+			http.Error(w, "Invalid episode selector", http.StatusBadRequest)
+			return true
+		}
+		detail, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+		if err != nil && !errors.Is(err, frontend.ErrNotFound) && !errors.Is(err, core.ErrNotAvailable) {
+			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
+			return true
+		}
+		if err == nil && detail.Title.Key == key && detail.Title.Type == core.TypeEpisode {
+			page.Total = 1
+			if q.Offset == 0 {
+				page.Items = []frontend.Title{detail.Title}
+			}
+		}
+	}
+	i.page(w, r, v, page, q.Offset)
 	return true
 }
 
