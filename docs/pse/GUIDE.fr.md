@@ -79,6 +79,8 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 
 Une connexion **Scrobble-only** ne permet pas le retour vers Remix. Le connecteur Jellyfin de Scrob renvoie les statuts vus et les notes, mais pas les positions de reprise ; la fréquence et les choix de synchronisation se règlent dans Scrob.
 
+Le panneau actualise automatiquement le dernier accès Jellyfin du spectateur (Scrob ou autre client) et l’état du webhook, sans recharger la page ni effacer les champs en cours de saisie. Un accès API ne prouve pas la fin d’une synchronisation. **Trigger Library Scan** demande un rafraîchissement à Remix : son catalogue étant virtuel, la demande est acquittée immédiatement sans scan de fichiers ni réindexation globale. Les listes d’épisodes sans tri explicite utilisent le catalogue stocké et paginé lorsque l’ordre des épisodes n’est pas personnalisé. Utilisez **Pull** pour importer les données dans Scrob et **Push** pour les renvoyer à Remix.
+
 ### Connecter un client musique (Subsonic)
 
 1. Dans **Console → Ether-Remix → Sources → Streaming musical**, activez les comptes souhaités : **AllDebrid**, **Real-Debrid** et/ou **TorBox**, ou collez le lien manifest d’un addon Eclipse. Les clés et les indexeurs sont ceux déjà configurés dans Ether-Remix. **Tester** vérifie le compte puis cherche un lien (sans vérifier l’audio) ; **Tester les sources** ouvre les premiers octets audio pour constater le format. Avec plusieurs comptes d’un même service dans **Sources › Debrid**, ils sont essayés dans l’ordre de priorité.

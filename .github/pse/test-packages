@@ -14,3 +14,7 @@
 ./internal/admin
 ./internal/discovery
 ./internal/artwork/service
+
+./internal/experience
+
+./internal/identity
