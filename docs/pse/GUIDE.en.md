@@ -79,6 +79,8 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 
 A **Scrobble-only** connection cannot send changes back to Remix. Scrob’s Jellyfin connector pushes watched status and ratings, but not resume positions; configure sync frequency and preferences in Scrob.
 
+The panel automatically refreshes the viewer’s latest Jellyfin access (Scrob or another client) and webhook status, without reloading the page or clearing unsaved inputs. An API access does not prove that a sync completed. **Trigger Library Scan** requests a refresh from Remix: because its catalogue is virtual, the request is acknowledged immediately without a file scan or global reindex. Episode lists without an explicit sort use the stored, paginated catalogue when episode order is not customized. Use **Pull** to import data into Scrob and **Push** to send it back to Remix.
+
 ### Connecting a music client (Subsonic)
 
 1. In **Console → Ether-Remix → Sources → Music streaming**, enable **AllDebrid**, **Real-Debrid** and/or **TorBox**, or paste an Eclipse addon manifest. Keys and indexers are reused from Ether-Remix. **Test** checks the account and searches for a link (without checking audio); **Test sources** reads the first audio bytes to identify the format. With several accounts of the same service in **Sources › Debrid**, they are tried in priority order.

@@ -177,9 +177,28 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		Pusher: func() *scrobpush.Pusher { return rt.scrob.Load() },
 		Viewers: func(ctx context.Context) ([]scrobpush.Viewer, error) {
 			vs, err := a.pseViewers(ctx)
+			if err != nil {
+				return nil, err
+			}
+			activity := map[int64]int64{}
+			rows, err := a.db.QueryContext(ctx, `SELECT g.viewer_id, MAX(g.last_used) FROM identity_grants g JOIN auth_users u ON u.id=g.viewer_id WHERE g.surface='jellyfin' AND g.revoked=0 AND g.expires>? AND g.last_used>g.created AND u.active=1 GROUP BY g.viewer_id`, time.Now().UnixMilli())
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var id, at int64
+				if err := rows.Scan(&id, &at); err != nil {
+					return nil, err
+				}
+				activity[id] = at / 1000
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
 			out := make([]scrobpush.Viewer, 0, len(vs))
 			for _, v := range vs {
-				out = append(out, scrobpush.Viewer{ID: v.ID, Name: v.Name})
+				out = append(out, scrobpush.Viewer{ID: v.ID, Name: v.Name, JellyfinLastAt: activity[v.ID]})
 			}
 			return out, err
 		},

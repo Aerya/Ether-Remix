@@ -1,5 +1,5 @@
 import { Badge, Button, Input, toast } from "@braedonsaunders/appkit-ui";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getLocale } from "../i18n";
 import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
@@ -17,6 +17,7 @@ interface ScrobViewer {
   configured: boolean;
   lastStatus?: string;
   lastAt?: number;
+  jellyfinLastAt?: number;
 }
 
 export interface ScrobData {
@@ -50,6 +51,27 @@ export function ScrobLinks({
   const [connections, setConnections] = useState<
     Record<number, { url: string; password: string; userId: string }>
   >({});
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        if (!document.hidden) {
+          const next = await apiFetch<ScrobData>("/pse/scrob/");
+          if (!stopped) setData(next);
+        }
+      } catch {
+        /* Keep the last known status; never clear unsaved inputs. */
+      } finally {
+        if (!stopped) timer = setTimeout(poll, 5000);
+      }
+    };
+    timer = setTimeout(poll, 5000);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, []);
   const current = data ?? doc.data ?? null;
   if (!current) return null;
 
@@ -148,11 +170,28 @@ export function ScrobLinks({
                     : v.lastStatus}
                 </Badge>
               ) : v.configured ? (
-                <Badge variant="success">{L("Lié", "Linked")}</Badge>
+                <Badge variant="success">{L("Webhook configuré", "Webhook configured")}</Badge>
               ) : (
-                <Badge variant="secondary">{L("Non lié", "Not linked")}</Badge>
+                <Badge variant="secondary">
+                  {L("Webhook non configuré", "Webhook not configured")}
+                </Badge>
               )}
             </div>
+            <p className="text-xs text-fg-muted" role="status">
+              {v.jellyfinLastAt
+                ? L(
+                    `Dernier accès Jellyfin : ${when(v.jellyfinLastAt)}`,
+                    `Last Jellyfin access: ${when(v.jellyfinLastAt)}`,
+                  )
+                : L(
+                    "Aucun accès Jellyfin observé avec les identifiants actifs.",
+                    "No Jellyfin access observed with active credentials.",
+                  )}{" "}
+              {L(
+                "Inclut Scrob et les autres clients Jellyfin de ce spectateur ; ne confirme pas une synchronisation terminée.",
+                "Includes Scrob and this viewer’s other Jellyfin clients; does not confirm a completed sync.",
+              )}
+            </p>
             <Button
               size="sm"
               variant="outline"

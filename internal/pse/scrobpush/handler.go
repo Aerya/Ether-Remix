@@ -11,8 +11,9 @@ import (
 
 // Viewer est un spectateur d'Ether proposé dans la console.
 type Viewer struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	JellyfinLastAt int64  `json:"jellyfinLastAt,omitempty"`
 }
 
 // HandlerDeps relie l'API de la console à Ether.

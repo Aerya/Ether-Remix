@@ -169,6 +169,18 @@ func (i *instance) pseScrobEpisode(w http.ResponseWriter, r *http.Request, v *fr
 // pseRoutes enregistre POST /Users/{userId}/Items/{itemId}/UserData, que
 // Scrob utilise pour envoyer une note (échelle 0–10).
 func (i *instance) pseRoutes() error {
+	// This server serves a live virtual catalogue: there are no local media
+	// folders to scan. Acknowledge Jellyfin's refresh request immediately;
+	// do not trigger a global TMDB crawl or a release-indexing job.
+	if err := i.router.Handle("POST", "/Library/Refresh", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v, _, err := i.viewer(r); err != nil || v == nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})); err != nil {
+		return err
+	}
 	for _, pattern := range []string{"/Users/{userId}/Items/{itemId}/UserData", "/UserItems/{itemId}/UserData"} {
 		if err := i.router.Handle("POST", pattern, http.HandlerFunc(i.pseUpdateUserData)); err != nil {
 			return err
