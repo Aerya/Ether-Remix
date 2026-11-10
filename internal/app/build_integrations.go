@@ -98,6 +98,7 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	a.mountExtensibility(mux)
 	if s := pseRuntimeOf(a).seerr; s != nil {
 		mux.Handle("/api/integrations/seerrcatalog/v1/events", s)
+		mux.Handle("/api/integrations/seerrcatalog/v1/search", s)
 	}
 	a.mountPSEMusic(mux) // PSE-HOOK: API Subsonic (musique) — voir docs/pse/FORK.fr.md
 	mux.HandleFunc("/ether", func(w http.ResponseWriter, r *http.Request) {

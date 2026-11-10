@@ -16,6 +16,7 @@ func (a *App) startSeerrCatalog() {
 	rt.seerr = s
 	if a.indexers != nil {
 		a.indexers.SetRetainedSearch(s.Lookup)
+		s.Search = a.indexers.Search
 	}
 	s.Start()
 	a.closers = append(a.closers, s.Close)
