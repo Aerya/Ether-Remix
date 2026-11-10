@@ -27,12 +27,15 @@ import (
 	"github.com/braedonsaunders/ether/internal/pse/scrobpush"
 	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
 	"github.com/braedonsaunders/ether/internal/pse/statistics"
+	"github.com/braedonsaunders/ether/internal/pse/submaker"
 	"github.com/braedonsaunders/ether/internal/pse/themes"
 )
 
 // pseRuntime regroupe l'état des ajouts PSE d'une instance d'App, sans
 // ajouter de champ à la structure d'Ether.
 type pseRuntime struct {
+	submakerOnce  sync.Once
+	submaker      *submaker.Service
 	qualityOnce   sync.Once
 	quality       *quality.Service
 	addons        music.AddonRegistry
@@ -272,9 +275,17 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	if q := a.pseQuality(); q != nil {
 		qualityAPI = q.Handler(a.pseLangExemptChanged)
 	}
+	var submakerAPI http.Handler = http.NotFoundHandler()
+	if s := a.pseSubmaker(); s != nil {
+		submakerAPI = s.Handler()
+	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/quality/manifest" {
 			a.pseQualityImport(w, r)
+			return
+		}
+		if r.URL.Path == "/submaker" || strings.HasPrefix(r.URL.Path, "/submaker/") {
+			http.StripPrefix("/submaker", submakerAPI).ServeHTTP(w, r)
 			return
 		}
 		if r.URL.Path == "/quality" || strings.HasPrefix(r.URL.Path, "/quality/") {

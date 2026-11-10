@@ -21,6 +21,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
+	"github.com/braedonsaunders/ether/internal/pse/submaker"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/stremio"
 )
@@ -121,6 +122,7 @@ type Status struct {
 	Error    string     `json:"error,omitempty"`
 }
 type Service struct {
+	Submaker    *submaker.Service
 	Enrich      func(context.Context, core.SearchRequest) core.SearchRequest
 	Search      func(context.Context, core.SearchRequest) ([]core.Release, error)
 	searchSlots chan struct{}

@@ -1,3 +1,4 @@
+import { Submaker } from "./Submaker";
 import { QualityProfiles } from "./QualityProfiles";
 import { CollapsibleBlock, SettingsSection } from "../components/CollapsibleSections";
 import { SourceHosting } from "./SourceHosting";
@@ -236,6 +237,10 @@ function PseSettings() {
             stremio={
               <>
                 {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
+                <CollapsibleBlock title="SubMaker" id="submaker-integration">
+                  {current.features.filter((f) => f.id === "submaker").map((f) => renderFeature(f))}
+                  <Submaker />
+                </CollapsibleBlock>
                 <CollapsibleBlock title="SeerrCatalog" id="seerrcatalog-integration">
                   <div className="space-y-4 p-4">
                     <p className="text-sm text-fg-muted">

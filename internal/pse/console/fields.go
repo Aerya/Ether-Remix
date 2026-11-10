@@ -199,6 +199,18 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID: "submaker", Title: tx("SubMaker : sous-titres externes", "SubMaker: external subtitles"),
+		Description: tx("Cherche des sous-titres compatibles puis traduit si nécessaire. Instance publique ou auto-hébergée ; désactivé par défaut.", "Find matching subtitles, then translate if needed. Public or self-hosted instance; disabled by default."),
+		Fields: []Field{
+			{Key: "PSE_SUBMAKER", Kind: KindToggle, Default: "off", Label: tx("Activer SubMaker", "Enable SubMaker")},
+			{Key: "PSE_SUBMAKER_MANIFEST", Kind: KindURL, Secret: true, Label: tx("Manifeste SubMaker personnel", "Personal SubMaker manifest"), Placeholder: "https://submaker.example/addon/…/manifest.json", Help: tx("Configurez les langues et votre moteur de traduction sur l’instance choisie, puis collez le manifeste généré. Une URL /configure ne suffit pas.", "Configure languages and your translation engine on the chosen instance, then paste its generated manifest. A /configure URL is not sufficient.")},
+			{Key: "PSE_SUBMAKER_SOURCE", Kind: KindKey, Default: "en", Label: tx("Langue source (code ISO)", "Source language (ISO code)")},
+			{Key: "PSE_SUBMAKER_TARGET", Kind: KindKey, Default: "fr", Label: tx("Langue des sous-titres (code ISO)", "Subtitle language (ISO code)")},
+			{Key: "PSE_SUBMAKER_DAILY", Kind: KindNumber, Default: "10", Min: ptr(1), Max: ptr(100), Label: tx("Maximum de recherches / traductions par jour", "Maximum searches / translations per day")},
+		},
+	},
+
+	{
 		ID:          "seerrcatalog",
 		Title:       tx("Disponibilités vers Remix", "Availability to Remix"),
 		Description: tx("Importer les disponibilités et sources déjà vérifiées par SeerrCatalog, sans relancer leur recherche.", "Import availability and sources already checked by SeerrCatalog without searching again."),

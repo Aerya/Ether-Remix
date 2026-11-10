@@ -42,6 +42,18 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-10-submaker-external-subtitles",
+    version: "0.2.37-remix.41.1",
+    date: "2026-11-10",
+    title: ["Sous-titres externes avec SubMaker", "External subtitles with SubMaker"],
+    items: [
+      [
+        "Instance publique ou auto-hébergée, recherche et traduction facultatives par bibliothèque ou collection. Les sous-titres préparés restent liés à leur release et peuvent être transmis à SeerrCatalog.",
+        "Public or self-hosted instance, optional subtitle search and translation per library or collection. Prepared subtitles stay bound to their release and can be sent to SeerrCatalog.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-10-quality-profiles",
     version: "0.2.37-remix.40.1",
     date: "2026-11-10",

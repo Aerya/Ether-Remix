@@ -37,7 +37,11 @@ func (a *App) newPSEIndexer() *releasedb.Service {
 			if a.indexers == nil {
 				return nil, nil
 			}
-			return a.indexers.Search(ctx, req)
+			rels, err := a.indexers.Search(ctx, req)
+			if err == nil {
+				a.prepareSubmaker(ctx, req, rels)
+			}
+			return rels, err
 		},
 		Priority: a.pseThemePriority,
 		Active:   func() bool { return a.playback != nil && len(a.playback.Sessions()) > 0 },

@@ -93,7 +93,7 @@ TorBox enforces cached-only additions. Real-Debrid no longer provides a cache pr
 
 **Jellyfin and Plex clients** (Jellyfin web, Finamp, Findroid, Streamyfin, Plexamp, Plex Web…): nothing to set up, a **Musique** library appears next to the others as soon as a music source is turned on. It shows your favourites and plays, then Deezer charts; search covers the whole catalogue and playback is direct. Plex's global search also shows artists, albums and tracks.
 
-**Deezer and Last.fm playlists**: in **Console → Ether-Remix → Sources → Music streaming**, paste each viewer's Deezer profile link (their public playlists, including Favourite tracks) or Deezer playlist links (app share links `link.deezer.com` included), and/or their Last.fm username (loved tracks, top of the month, all-time top, with the Last.fm API key). The playlists show up in Plexamp, Plex Web, Finamp, Jellyfin and Subsonic clients, read-only, and are re-imported every 6 hours (`PSE_MUSIC_PLAYLISTS_HOURS`). Nothing is downloaded: only track references are kept. Spotify is not supported (its API requires a developer app and a per-account sign-in).
+**Deezer and Last.fm playlists**: in **Console → Ether-Remix → Sources → Music streaming**, paste each viewer's Deezer profile link (their public playlists, including Favourite tracks) or Deezer playlist links (app share links `link.deezer.com` included), and/or their Last.fm username (loved tracks, top of the month, all-time top, with the Last.fm API key). The playlists show up in Plexamp, Plex Web, Finamp, Jellyfin and Subsonic clients, read-only, and are re-imported every 6 hours (`PSE_MUSIC_PLAYLISTS_HOURS`). Nothing is downloaded: only track references are kept. For Spotify and manual imports, see [Playlists and appearance](#playlists-and-appearance).
 
 **ListenBrainz playlists**: same screen, ListenBrainz username (free, no API key). Ether-Remix imports the latest playlist of each series ListenBrainz generates for them (Daily Jams, Weekly Jams, Weekly Exploration…) and their public playlists, within ListenBrainz's rate limit.
 
@@ -218,3 +218,9 @@ Choose a viewer, inspect the preview and confirm. Import creates a personal copy
 **Spotify**: under Discover → Spotify, enter your application’s **Client ID**. Add the exact redirect URI displayed by Remix to your Spotify developer dashboard, then connect the chosen viewer’s account. HTTPS is required except on loopback. No Client Secret is needed: OAuth with PKCE, server-encrypted tokens, read-only access and a disconnect button. In development mode, the app owner needs Premium and users must be allowed in Spotify Developers. Spotify may deny playlist items unless you own or collaborate on the playlist; directory links do not bypass this limit.
 
 **Appearance**: the palette button in the top bar offers Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine. Select light or dark mode separately; previews are immediate and your preference is stored in this browser. Other users keep their own preferences.
+
+## SubMaker
+
+[Configure external subtitles and optional translation](SUBMAKER.en.md), globally or per library/collection, with SeerrCatalog.
+
+For visibility rules and search intervals, see [Catalogue and indexing](CATALOGUE.en.md). To connect the addon, see [SeerrCatalog](SEERRCATALOG.en.md).
