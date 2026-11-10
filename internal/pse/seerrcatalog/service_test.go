@@ -207,9 +207,8 @@ func TestConfirmedAvailabilitySurvivesAgeButDoesNotReviveSignedURLs(t *testing.T
 	}
 	// Database trust remains after an application restart without a successful feed fetch.
 	restarted := New(s.DB, s.HTTP)
-	_ = restarted
 	*status = 503
-	if s.Sync(t.Context()) == nil || !Trusted(t.Context(), s.DB, core.MovieKey(603)) {
+	if restarted.Sync(t.Context()) == nil || !Trusted(t.Context(), s.DB, core.MovieKey(603)) {
 		t.Fatal("outage removed confirmation")
 	}
 	*status = 200
