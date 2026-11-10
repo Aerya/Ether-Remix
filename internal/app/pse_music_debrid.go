@@ -41,6 +41,8 @@ func (a *App) newPSEMusicDebrid() music.DebridSources {
 		}
 		out = append(out, music.DebridSource{Kind: kind, Name: musicDebridName(kind), Resolver: a.musicDebridResolvers(kind, accounts[kind]), NoAccount: len(accounts[kind]) == 0})
 	}
+	// Client torrent de Remix, en dernier : il télécharge ce qui manque.
+	out = append(out, a.musicTorrentSource())
 	return out
 }
 

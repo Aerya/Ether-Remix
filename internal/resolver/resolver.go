@@ -402,9 +402,19 @@ func (s *Service) profileAllowsCam() bool {
 
 func (s *Service) cachedOnly() bool {
 	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	return s.debridCachedOnly
+	only := s.debridCachedOnly
+	s.cfgMu.RUnlock()
+	// Ether-Remix: a local BitTorrent client that downloads makes uncached
+	// releases worth queueing even while debrid accounts stay cached-only.
+	if ld, ok := s.indexer.(localDownloader); only && ok && ld.LocalDownloads() {
+		return false
+	}
+	return only
 }
+
+// localDownloader is an indexer whose sources include a local BitTorrent
+// client allowed to download (debrid.Indexer, Ether-Remix).
+type localDownloader interface{ LocalDownloads() bool }
 
 func (s *Service) searchTTL() time.Duration {
 	if d := s.resolverCfg().SearchCacheTTL.D(); d > 0 {

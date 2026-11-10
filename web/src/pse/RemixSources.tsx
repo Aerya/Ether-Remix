@@ -18,6 +18,7 @@ const CATEGORIES = [
   ["indexeurs", "Indexeurs", "Indexers"],
   ["usenet", "Usenet", "Usenet"],
   ["debrid", "Debrid", "Debrid"],
+  ["torrent", "Client torrent", "Torrent client"],
   ["musique", "Streaming musical", "Music streaming"],
   ["iptv", "IPTV", "IPTV"],
   ["indexation", "Indexation", "Indexing"],
@@ -26,10 +27,12 @@ export function RemixSources({
   music,
   indexing,
   stremio,
+  torrent,
 }: {
   music: ReactNode;
   indexing: ReactNode;
   stremio?: ReactNode;
+  torrent?: ReactNode;
 }) {
   const [params, setParams] = useSearchParams();
   const raw = params.get("source");
@@ -122,7 +125,9 @@ export function RemixSources({
                 L("Animes", "Anime"),
                 ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
                   ? [L("Musique via debrid", "Music via debrid")]
-                  : []),
+                  : category === "torrent"
+                    ? [L("Musique", "Music")]
+                    : []),
               ]
         ).map((label) => (
           <Badge key={label} variant="outline">
@@ -190,6 +195,7 @@ export function RemixSources({
           </>
         ) : null}
         {category === "debrid" ? <DebridSources addKind={debridAdd} /> : null}
+        {category === "torrent" ? torrent : null}
         {category === "usenet" ? <UsenetProviders addNonce={usenetAdd} /> : null}
         {category === "iptv" ? <IPTVProviders sourceParam="iptvSource" /> : null}
         {category === "musique" ? music : null}

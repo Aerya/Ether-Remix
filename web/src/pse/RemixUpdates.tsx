@@ -26,12 +26,38 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-seerrcatalog-hidden-titles",
+    id: "2026-11-10-torrent-client",
     version: "current",
     date: "2026-11-10",
-    title: ["SeerrCatalog : import des disponibilités fiabilisé", "SeerrCatalog: reliable availability imports"],
+    title: ["Client torrent en option", "Optional torrent client"],
     items: [
-      ["Un titre masqué ou à venir ne bloque plus l’import des disponibilités des autres titres. Les filtres du catalogue et les règles de lecture restent appliqués.", "A hidden or upcoming title no longer blocks availability imports for other titles. Catalogue filters and playback rules still apply."],
+      [
+        "Nouvelle source, désactivée par défaut : Remix envoie les releases torrent de Prowlarr ou Jackett à qBittorrent ou rTorrent / ruTorrent, puis les lit une fois téléchargées. Films, séries, animés et musique.",
+        "New source, off by default: Remix sends torrent releases from Prowlarr or Jackett to qBittorrent or rTorrent / ruTorrent, then plays them once downloaded. Movies, shows, anime and music.",
+      ],
+      [
+        "Ratio et durée de partage réglables, plafond d'ajouts par jour, cross-seed prévenu à la fin de chaque téléchargement. Remix ne supprime jamais rien du client.",
+        "Adjustable ratio and seeding time, a daily cap on additions, cross-seed notified when each download completes. Remix never deletes anything from the client.",
+      ],
+      [
+        "Vos comptes debrid restent en « cache uniquement ». Réglages : Sources → Client torrent.",
+        "Your debrid accounts stay cached-only. Settings: Sources → Torrent client.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-seerrcatalog-hidden-titles",
+    version: "0.2.37-remix.39.1",
+    date: "2026-11-10",
+    title: [
+      "SeerrCatalog : import des disponibilités fiabilisé",
+      "SeerrCatalog: reliable availability imports",
+    ],
+    items: [
+      [
+        "Un titre masqué ou à venir ne bloque plus l’import des disponibilités des autres titres. Les filtres du catalogue et les règles de lecture restent appliqués.",
+        "A hidden or upcoming title no longer blocks availability imports for other titles. Catalogue filters and playback rules still apply.",
+      ],
     ],
   },
   {
@@ -51,20 +77,24 @@ export const REMIX_UPDATES = [
     version: "0.2.37-remix.37.1",
     date: "2026-11-10",
     title: ["Scrob : connexions lentes", "Scrob: slow connections"],
-    items: [[
-      "Le test du webhook et les envois de lecture attendent désormais jusqu’à 60 secondes au lieu de 15 pour les connexions lentes.",
-      "Webhook tests and playback events now wait up to 60 seconds instead of 15 on slow connections.",
-    ]],
+    items: [
+      [
+        "Le test du webhook et les envois de lecture attendent désormais jusqu’à 60 secondes au lieu de 15 pour les connexions lentes.",
+        "Webhook tests and playback events now wait up to 60 seconds instead of 15 on slow connections.",
+      ],
+    ],
   },
   {
     id: "2026-11-10-ether-sync-recovered",
     version: "0.2.37-remix.36.1",
     date: "2026-11-10",
     title: ["Mise à jour Ether et compatibilité Remix", "Ether update and Remix compatibility"],
-    items: [[
-      "Les nouveautés d’Ether sont intégrées, dont le décalage des sorties numériques/physiques et les corrections du guide TV. Les filtres Remix, les sections repliables et la préparation groupée des affiches sont conservés.",
-      "Ether updates include the digital/physical release offset and TV guide fixes. Remix filters, collapsible sections and batched poster preparation are preserved.",
-    ]],
+    items: [
+      [
+        "Les nouveautés d’Ether sont intégrées, dont le décalage des sorties numériques/physiques et les corrections du guide TV. Les filtres Remix, les sections repliables et la préparation groupée des affiches sont conservés.",
+        "Ether updates include the digital/physical release offset and TV guide fixes. Remix filters, collapsible sections and batched poster preparation are preserved.",
+      ],
+    ],
   },
   {
     id: "2026-11-10-stats-searches-readable",

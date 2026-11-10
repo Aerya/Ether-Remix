@@ -775,7 +775,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			errs = append(errs, err)
 			continue
 		}
-		if cached, ok, _ := s.knownFor(ctx, e.cfg.ID, hash); ok && !cached {
+		// A local BitTorrent client is asked every time: a download that
+		// finished since the last answer must play at once.
+		if cached, ok, _ := s.knownFor(ctx, e.cfg.ID, hash); ok && !cached && !isLocalProvider(e.p) {
 			notCached++
 			continue
 		}
@@ -920,7 +922,11 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 // download started, and core.ErrDownloadRefused (or core.ErrDownloadLimit)
 // when no provider would take it. Background checks never start downloads.
 func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, error) {
-	if s.Config().CachedOnly || core.IsBackgroundCheck(ctx) {
+	// With cached-only on, only a local BitTorrent client that allows
+	// downloads may take the torrent (Ether-Remix): debrid accounts stay
+	// cached-only.
+	cachedOnly := s.Config().CachedOnly
+	if core.IsBackgroundCheck(ctx) || (cachedOnly && !s.LocalDownloads()) {
 		return nil, fmt.Errorf("%q: %w", rel.Name, core.ErrNotCached)
 	}
 	hash := strings.ToLower(rel.InfoHash)
@@ -928,6 +934,9 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 		return nil, fmt.Errorf("debrid: %q is not a torrent with an info hash: %w", rel.Name, core.ErrReleaseRejected)
 	}
 	entries := s.active()
+	if cachedOnly {
+		entries = slices.DeleteFunc(entries, func(e *entry) bool { return !localDownloads(e.p) })
+	}
 	if len(entries) == 0 {
 		return nil, ErrNoProvider
 	}
@@ -1074,7 +1083,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 	cacheOnlyBackground := false
 	if core.IsBackgroundCheck(ctx) && torrentID == "" {
 		fast, ok := e.p.(backgroundCacheOnlyProvider)
-		if !ok || !fast.supportsBackgroundCacheOnly() {
+		if (!ok || !fast.supportsBackgroundCacheOnly()) && !isLocalProvider(e.p) {
 			return Payload{}, errBackgroundUndecided
 		}
 		cached, err := e.p.CheckCached(ctx, []string{hash})

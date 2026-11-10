@@ -50,6 +50,7 @@ type pseRuntime struct {
 	exemptKick chan struct{}
 	lfmOnce    sync.Once
 	lastfm     *music.Scrobbler
+	torrent    pseTorrentState // client BitTorrent (PSE_TORRENT)
 }
 
 // scrobbler prépare l'envoi des écoutes à Last.fm.
@@ -162,6 +163,7 @@ func (rt *pseRuntime) apply(a *App) {
 	}
 	frenchcat.Override(frenchcat.Load())
 	releasedb.OverridePlayable(releasedb.LoadPlayable())
+	rt.reloadTorrent(a)
 	rt.reloadMusic(a)
 	go rt.restartIndexer(a) // Close attend la fin du titre en cours
 }

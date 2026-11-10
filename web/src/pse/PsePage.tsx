@@ -227,6 +227,9 @@ function PseSettings() {
         {tab === "sources" ? (
           <RemixSources
             music={musicPart("source")}
+            torrent={current.features
+              .filter((f) => f.id === "torrent")
+              .map((f) => renderFeature(f))}
             stremio={
               <>
                 {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
@@ -248,7 +251,10 @@ function PseSettings() {
             indexing={
               <>
                 {featuresOfTab(tab, current.features)
-                  .filter((f) => !["sfr", "seerrcatalog", "seerrcatalog_search"].includes(f.id))
+                  .filter(
+                    (f) =>
+                      !["sfr", "seerrcatalog", "seerrcatalog_search", "torrent"].includes(f.id),
+                  )
                   .map((f) => renderFeature(f))}
                 <SearchPriority />
               </>

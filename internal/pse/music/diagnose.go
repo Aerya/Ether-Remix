@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -257,6 +258,23 @@ func DiagnoseSource(ctx context.Context, cfg Settings, debrid DebridSources, que
 
 // probe ouvre les premiers octets du lien pour constater le format.
 func probe(ctx context.Context, hc *http.Client, st Stream, rep *SourceReport) error {
+	if st.File != "" {
+		f, err := os.Open(st.File)
+		if err != nil {
+			return errors.New("fichier du client torrent introuvable")
+		}
+		defer f.Close()
+		rep.Stage = "link"
+		b, err := io.ReadAll(io.LimitReader(f, 64<<10))
+		if err != nil {
+			return errors.New("lecture audio interrompue")
+		}
+		if !inspectAudio(b, rep) {
+			return errors.New("format audio non vérifié dans les premiers octets")
+		}
+		rep.Stage = "bytes"
+		return nil
+	}
 	if err := checkAudioHost(ctx, st.URL); err != nil {
 		return err
 	}

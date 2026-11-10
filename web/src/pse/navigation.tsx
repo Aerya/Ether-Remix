@@ -1,7 +1,12 @@
 import { Navigate, useLocation, useParams } from "react-router-dom";
 
 export const REMIX_TABS = [
-  { key: "sources", fr: "Sources", en: "Sources", features: ["indexer", "sfr", "seerrcatalog"] },
+  {
+    key: "sources",
+    fr: "Sources",
+    en: "Sources",
+    features: ["indexer", "sfr", "seerrcatalog", "torrent"],
+  },
   { key: "priorites", fr: "Priorités", en: "Priorities", features: [] },
   {
     key: "langues",
@@ -45,7 +50,7 @@ export function sourcesHref(tab = "debrid", search = "") {
     "source",
     tab === "indexers"
       ? "indexeurs"
-      : ["debrid", "usenet", "iptv", "stremio"].includes(tab)
+      : ["debrid", "usenet", "iptv", "stremio", "torrent"].includes(tab)
         ? tab
         : "debrid",
   );

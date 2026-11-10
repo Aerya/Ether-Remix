@@ -22,19 +22,24 @@ type Settings struct {
 	RealDebrid bool
 	DMM        bool // Catalogue DMM, compte Real-Debrid existant.
 	TorBox     bool
-	Audius     string // off, first or last; public MP3 fallback
+	// Torrent : client BitTorrent de Remix (PSE_TORRENT et PSE_TORRENT_MUSIC).
+	Torrent bool
+	Audius  string // off, first or last; public MP3 fallback
 }
+
+// TorrentSource est la source « client torrent » de Remix.
+const TorrentSource = "torrent"
 
 // Enabled indique si l'API Subsonic doit être montée.
 func (s Settings) Enabled() bool {
-	return (s.EclipseURLs != "" || s.hasCommunity()) || s.HiFiURL != "" || (s.Debrid || s.RealDebrid || s.TorBox || s.DMM) || s.audiusEnabled()
+	return (s.EclipseURLs != "" || s.hasCommunity()) || s.HiFiURL != "" || (s.Debrid || s.RealDebrid || s.TorBox || s.DMM || s.Torrent) || s.audiusEnabled()
 }
 
 // Mode renvoie la source utilisée : "eclipse", "alldebrid",
 // "eclipse+alldebrid", "debrid", "audius" (éventuellement combiné), "hifi" ou "".
 func (s Settings) Mode() string {
 	switch {
-	case s.RealDebrid || s.TorBox || s.DMM:
+	case s.RealDebrid || s.TorBox || s.DMM || s.Torrent:
 		return "debrid"
 	case s.audiusEnabled():
 		return "audius"
@@ -62,6 +67,8 @@ func LoadSettings() Settings {
 		RealDebrid:  on(pseenv.Get("PSE_MUSIC_REALDEBRID")),
 		DMM:         on(pseenv.Get("PSE_MUSIC_DMM")),
 		TorBox:      on(pseenv.Get("PSE_MUSIC_TORBOX")),
+		Torrent: on(pseenv.Get("PSE_TORRENT")) && strings.TrimSpace(pseenv.Get("PSE_TORRENT_URL")) != "" &&
+			!off(pseenv.Get("PSE_TORRENT_MUSIC")),
 	}
 	for i, a := range CommunityAddons() {
 		if urls := ParseEclipseURLs(pseenv.Get(a.Key)); len(urls) == 1 {
@@ -114,6 +121,14 @@ func on(v string) bool {
 	return false
 }
 
+func off(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "0", "false", "no", "non":
+		return true
+	}
+	return false
+}
+
 func (s Settings) audiusEnabled() bool { return s.Audius == "first" || s.Audius == "last" }
 
 // DebridSources follows the configured account priorities.
@@ -136,6 +151,8 @@ func (s Settings) DebridEnabled(kind string) bool {
 		return s.RealDebrid
 	case "torbox":
 		return s.TorBox
+	case TorrentSource:
+		return s.Torrent
 	}
 	return false
 }
