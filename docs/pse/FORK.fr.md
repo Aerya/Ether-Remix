@@ -124,3 +124,9 @@ Les sessions Plex/Jellyfin/Emby expirent après deux minutes sans rapport. Subso
 Activité → Historique présente aussi les lignes existantes de `pse_music_plays` dans une section musicale dédiée, via l’API propriétaire `/pse/music/history`. Période, année et spectateur filtrent cette section, paginée par cent écoutes. La durée affichée est celle du morceau, pas une mesure de temps écouté ; les indicateurs vidéo restent séparés. Les soumissions Subsonic alimentent l’historique ; Plex et Jellyfin/Emby le font à l’arrêt après au moins trente secondes, comme auparavant. Une simple notification de début ne crée pas d’historique.
 
 Points d’accroche : `internal/app/admin.go`, `internal/app/pse_console.go`, `internal/frontend/pse_music.go`, `internal/frontends/mediabrowser/pse_music.go`, `web/src/lib/health.ts`, `web/src/components/SessionArtwork.tsx`, `web/src/pages/activity/Activity.tsx` et `NowPlaying.tsx`.
+
+## Sélection Concerts
+
+Le modèle Concerts exige le genre TMDB Musique (10402) et au moins un mot-clé de captation : `concert film` (156205), `music concert` (304615) ou `live concert` (318730). Le mot-clé générique `concert` (6029), qui peut décrire une scène de fiction, est retiré. Les sorties vidéo sont incluses. La pertinence prime sur l’exhaustivité : les captations mal renseignées peuvent manquer, et les erreurs de mots-clés TMDB restent possibles.
+
+Au démarrage, les trois anciennes requêtes standard des collections créées par le modèle sont remplacées et leurs membres reconstruits en arrière-plan. Identifiants, noms et autres réglages sont conservés, y compris après renommage. Une requête personnalisée ou une collection personnelle n’est pas migrée. Les titres disparaissent de Concerts après reconstruction ; aucun média n’est supprimé.

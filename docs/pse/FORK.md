@@ -107,3 +107,9 @@ Plex/Jellyfin/Emby sessions expire after two minutes without reports. Subsonic g
 Activity → History also shows existing `pse_music_plays` rows in a dedicated music section via the owner-only `/pse/music/history` API. Period, year and viewer filters apply, with pages of one hundred listens. Displayed duration is track length, not measured listening time; video statistics remain separate. Subsonic submissions populate history; Plex and Jellyfin/Emby record stops after at least thirty seconds, as before. Start notifications alone do not create history.
 
 Hooks: `internal/app/admin.go`, `internal/app/pse_console.go`, `internal/frontend/pse_music.go`, `internal/frontends/mediabrowser/pse_music.go`, `web/src/lib/health.ts`, `web/src/components/SessionArtwork.tsx`, `web/src/pages/activity/Activity.tsx` and `NowPlaying.tsx`.
+
+## Concert selection
+
+The Concerts preset requires the TMDB Music genre (10402) and at least one recorded-performance keyword: `concert film` (156205), `music concert` (304615) or `live concert` (318730). The generic `concert` keyword (6029), which may describe a fictional scene, is removed. Video releases are included. Precision takes priority over completeness: poorly tagged recordings may be missing, and incorrect TMDB keywords can still produce false positives.
+
+At startup, the three original standard queries in preset-created collections are upgraded and their members rebuilt in the background. IDs, names and other settings are retained, including renamed collections. Custom queries and personal collections are not migrated. Titles leave Concerts after rebuilding; no media is deleted.

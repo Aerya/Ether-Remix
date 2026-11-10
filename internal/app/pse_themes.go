@@ -39,6 +39,9 @@ func (a *App) pseThemes() *themes.Service {
 			go a.runPSELangExempt(ctx, svc, rt.exemptKick)
 			if a.collections != nil {
 				go func() {
+					if err := svc.UpgradeConcertCollections(ctx, a.collections); err != nil && ctx.Err() == nil {
+						a.log.Warn("mise à jour des collections Concerts Ether-Remix", "err", err)
+					}
 					if err := svc.ShowPresetCollections(ctx, a.collections); err != nil && ctx.Err() == nil {
 						a.log.Warn("collections des modèles Ether-Remix", "err", err)
 					}
