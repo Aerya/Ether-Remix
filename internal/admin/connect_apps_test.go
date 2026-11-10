@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -249,6 +250,7 @@ func TestConnectAppsPlexViewerWithoutLocalPasswordMintsJellyfinEmbySilo(t *testi
 	for _, surface := range []string{"jellyfin", "emby", "silo"} {
 		res = do("POST", "/ether/api/me/apps/"+surface)
 		var created struct {
+			UserID   string `json:"userId"`
 			Surface  string `json:"surface"`
 			URL      string `json:"url"`
 			Username string `json:"username"`
@@ -262,6 +264,16 @@ func TestConnectAppsPlexViewerWithoutLocalPasswordMintsJellyfinEmbySilo(t *testi
 		}
 		if created.Surface != surface || created.URL != "https://ether.example/"+surface || created.Username != "plexviewer" || !core.IsGrantCredential(created.Password) || !strings.HasPrefix(created.QR, "data:image/png;base64,") {
 			t.Fatalf("%s created: %+v", surface, created)
+		}
+		if surface == "jellyfin" || surface == "emby" {
+			want, _ := ids.GUID(ids.User, 77)
+			if created.UserID != want {
+				t.Fatalf("wrong user ID: %s", created.UserID)
+			}
+			v, _, _, err := grants.ResolveGrantDevice(ctx, surface, created.Password, "")
+			if err != nil || v.ID != 77 {
+				t.Fatal("Scrob token without device claim rejected", err)
+			}
 		}
 		tok, err := grants.SignInWithGrant(ctx, surface, created.Username, created.Password, core.Device{ID: "infuse-tv", Client: "Infuse", Product: "Apple TV", Version: "8.0"})
 		if err != nil || tok != created.Password {

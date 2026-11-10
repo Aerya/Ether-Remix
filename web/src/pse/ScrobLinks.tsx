@@ -47,8 +47,26 @@ export function ScrobLinks({
   const [data, setData] = useState<ScrobData | null>(null);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState<number | null>(null);
+  const [connections, setConnections] = useState<
+    Record<number, { url: string; password: string; userId: string }>
+  >({});
   const current = data ?? doc.data ?? null;
   if (!current) return null;
+
+  const connect = async (id: number) => {
+    setBusy(id);
+    try {
+      const c = await apiFetch<{ url: string; password: string; userId: string }>(
+        `/viewers/${id}/apps/jellyfin`,
+        { method: "POST" },
+      );
+      setConnections((prev) => ({ ...prev, [id]: c }));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const save = async (v: ScrobViewer, value: string) => {
     setBusy(v.id);
@@ -102,6 +120,12 @@ export function ScrobLinks({
           "In Scrob: Connections → your Jellyfin connection (the one pointing at Ether-Remix) → copy the webhook URL, then paste it here for the matching viewer.",
         )}
       </p>
+      <p className="text-sm text-fg-muted">
+        {L(
+          "Pour les deux sens, ajoutez une connexion Jellyfin dans Scrob → Media Players, avec les champs générés ci-dessous. Activez les options Scrob → Server : Watched status et Ratings, puis choisissez la synchronisation automatique. Une connexion Scrobble-only ne permet que Remix → Scrob. La position de reprise n’est pas renvoyée par Scrob.",
+          "For both directions, add a Jellyfin connection under Scrob → Media Players using the fields generated below. Enable Scrob → Server: Watched status and Ratings, then choose automatic sync. A Scrobble-only connection only supports Remix → Scrob. Scrob does not push resume positions.",
+        )}
+      </p>
       {current.viewers.length === 0 ? (
         <p className="text-sm text-fg-muted">
           {L(
@@ -129,6 +153,44 @@ export function ScrobLinks({
                 <Badge variant="secondary">{L("Non lié", "Not linked")}</Badge>
               )}
             </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy === v.id || !!connections[v.id]}
+              onClick={() => void connect(v.id)}
+            >
+              {L(
+                "Créer les identifiants Jellyfin pour Scrob",
+                "Create Jellyfin credentials for Scrob",
+              )}
+            </Button>
+            {connections[v.id] ? (
+              <div className="space-y-2 rounded border border-border p-3">
+                {(
+                  [
+                    ["Server URL", connections[v.id]!.url],
+                    ["Token", connections[v.id]!.password],
+                    ["User ID", connections[v.id]!.userId],
+                  ] as const
+                ).map(([label, field]) => (
+                  <label key={label} className="block text-xs">
+                    {label}
+                    <Input
+                      readOnly
+                      type={label === "Token" ? "password" : "text"}
+                      value={field}
+                      onFocus={(e) => e.currentTarget.select()}
+                    />
+                  </label>
+                ))}
+                <p className="text-xs text-fg-muted">
+                  {L(
+                    "Copiez ces champs dans Scrob. Le jeton est propre à ce spectateur et révocable dans ses appareils. Il ne sera plus affiché après fermeture de cette page.",
+                    "Copy these fields into Scrob. The token belongs to this viewer and can be revoked in their devices. It will no longer be displayed after leaving this page.",
+                  )}
+                </p>
+              </div>
+            ) : null}
             <Input
               className="h-9 w-full"
               aria-label={L(`Lien webhook Scrob de ${v.name}`, `${v.name} Scrob webhook link`)}
