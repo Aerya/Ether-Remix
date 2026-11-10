@@ -22,22 +22,24 @@ import (
 type QBittorrent struct {
 	base       *url.URL // sans identifiants
 	user, pass string
+	key        string // clé d'API (qBittorrent 5.2 et suivants)
 	hc         *http.Client
 
 	mu     sync.Mutex
 	logged bool
 }
 
-// NewQBittorrent prépare le client ; les identifiants sont dans l'adresse
-// (http://utilisateur:motdepasse@hôte:port), ou absents quand qBittorrent
-// dispense le réseau local d'authentification.
-func NewQBittorrent(raw string, hc *http.Client) (*QBittorrent, error) {
+// NewQBittorrent prépare le client. Trois accès possibles : une clé d'API
+// (qBittorrent 5.2 et suivants, envoyée en « Authorization: Bearer »), des
+// identifiants dans l'adresse (http://utilisateur:motdepasse@hôte:port), ou
+// rien quand qBittorrent dispense le réseau local d'authentification.
+func NewQBittorrent(raw, key string, hc *http.Client) (*QBittorrent, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("torrentclient: adresse qBittorrent http(s)://… attendue")
 	}
-	q := &QBittorrent{}
-	if u.User != nil {
+	q := &QBittorrent{key: strings.TrimSpace(key)}
+	if u.User != nil && q.key == "" {
 		q.user = u.User.Username()
 		q.pass, _ = u.User.Password()
 	}
@@ -97,7 +99,7 @@ func (q *QBittorrent) origin(req *http.Request) {
 func (q *QBittorrent) call(ctx context.Context, method, p string, form url.Values) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
 		q.mu.Lock()
-		if !q.logged && q.user != "" {
+		if !q.logged && q.user != "" && q.key == "" {
 			if err := q.login(ctx); err != nil {
 				q.mu.Unlock()
 				return nil, err
@@ -123,6 +125,9 @@ func (q *QBittorrent) call(ctx context.Context, method, p string, form url.Value
 			return nil, err
 		}
 		q.origin(req)
+		if q.key != "" {
+			req.Header.Set("Authorization", "Bearer "+q.key)
+		}
 		resp, err := q.hc.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("torrentclient: qBittorrent injoignable")
@@ -130,7 +135,7 @@ func (q *QBittorrent) call(ctx context.Context, method, p string, form url.Value
 		body, rerr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-			if attempt == 0 && q.user != "" {
+			if attempt == 0 && q.user != "" && q.key == "" {
 				q.mu.Lock()
 				q.logged = false
 				q.mu.Unlock()
@@ -199,11 +204,19 @@ type qbTorrent struct {
 	CompletedOn int64   `json:"completion_on"`
 	SavePath    string  `json:"save_path"`
 	Tags        string  `json:"tags"`
+	Size        int64   `json:"size"`
+	Eta         int64   `json:"eta"`
 }
+
+// qbNoETA : qBittorrent répond 8640000 (100 jours) quand il ne sait pas.
+const qbNoETA = 8640000
 
 func (t qbTorrent) torrent() Torrent {
 	out := Torrent{Hash: normHash(t.Hash), Name: t.Name, Category: t.Category, Ratio: t.Ratio,
-		Seeding: time.Duration(t.SeedingTime) * time.Second, Root: t.SavePath}
+		Seeding: time.Duration(t.SeedingTime) * time.Second, Root: t.SavePath, Progress: min(max(t.Progress, 0), 1), Size: t.Size}
+	if t.Eta > 0 && t.Eta < qbNoETA {
+		out.ETA = time.Duration(t.Eta) * time.Second
+	}
 	out.Done = t.Progress >= 1 || strings.HasSuffix(t.State, "UP")
 	switch t.State {
 	case "pausedUP", "pausedDL", "stoppedUP", "stoppedDL", "error", "missingFiles", "unknown":
@@ -306,6 +319,15 @@ func (q *QBittorrent) Files(ctx context.Context, t Torrent) ([]File, error) {
 func (q *QBittorrent) MarkNotified(ctx context.Context, hash string) error {
 	_, err := q.call(ctx, http.MethodPost, "torrents/addTags", url.Values{"hashes": {normHash(hash)}, "tags": {NotifiedTag}})
 	return err
+}
+
+// DefaultDir renvoie le dossier par défaut de qBittorrent.
+func (q *QBittorrent) DefaultDir(ctx context.Context) (string, error) {
+	b, err := q.call(ctx, http.MethodGet, "app/defaultSavePath", nil)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // Stop : qBittorrent applique lui-même les limites posées à l'ajout.

@@ -26,7 +26,11 @@ type fakeClient struct {
 	stopped  []string
 	notified []string
 	selfStop bool // qBittorrent : limites appliquées par le client
+	dir      string
+	addErr   error
 }
+
+func (f *fakeClient) DefaultDir(context.Context) (string, error) { return f.dir, nil }
 
 func newFakeClient() *fakeClient {
 	return &fakeClient{torrents: map[string]*Torrent{}, files: map[string][]File{}}
@@ -37,6 +41,9 @@ func (f *fakeClient) Version(context.Context) (string, error) { return "1.0", ni
 func (f *fakeClient) Add(_ context.Context, o AddOptions) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.addErr != nil {
+		return f.addErr
+	}
 	f.adds = append(f.adds, o)
 	h := strings.TrimPrefix(o.Magnet, "magnet:?xt=urn:btih:")
 	f.torrents[h] = &Torrent{Hash: h, Category: o.Category, Active: true}
@@ -102,6 +109,8 @@ func (f *fakeClient) finish(hash, root string, files ...File) {
 	f.files[hash] = files
 }
 
+func one(c Client) []*Slot { return []*Slot{{Client: c, Conf: ClientConf{N: 1}}} }
+
 func chooseFirstVideo(fs []debrid.File) (debrid.File, error) {
 	for _, f := range fs {
 		if strings.HasSuffix(f.Path, ".mkv") {
@@ -123,8 +132,8 @@ func TestProviderAddsOnlyForPlaybackAndPlaysWhenDone(t *testing.T) {
 	c := newFakeClient()
 	files := &FileServer{}
 	defer files.Close()
-	p := &Provider{Client: c, Files: files, Settings: Settings{Download: true, Music: true, Category: "remix", MaxPerDay: 2, Ratio: 1,
-		SeedTime: 72 * time.Hour, PathMap: []Mapping{{Client: clientRoot, Local: dir}}}}
+	p := &Provider{Slots: []*Slot{{Client: c, Conf: ClientConf{N: 1, Ratio: 1, SeedTime: 72 * time.Hour, PathMap: []Mapping{{Client: clientRoot, Local: dir}}}}},
+		Files: files, Settings: Settings{Download: true, Music: true, Category: "remix", MaxPerDay: 2}}
 	ctx := t.Context()
 	magnet := "magnet:?xt=urn:btih:" + hashA
 
@@ -192,7 +201,7 @@ func TestProviderAddsOnlyForPlaybackAndPlaysWhenDone(t *testing.T) {
 
 func TestProviderDailyLimitAndDownloadsOff(t *testing.T) {
 	c := newFakeClient()
-	p := &Provider{Client: c, Files: &FileServer{}, Settings: Settings{Download: true, Category: "remix", MaxPerDay: 1}}
+	p := &Provider{Slots: one(c), Files: &FileServer{}, Settings: Settings{Download: true, Category: "remix", MaxPerDay: 1}}
 	ctx := t.Context()
 	hashB := strings.Repeat("b", 40)
 	if _, err := p.Acquire(ctx, debrid.AcquireRequest{InfoHash: hashA, Magnet: "magnet:?xt=urn:btih:" + hashA}); !errors.Is(err, core.ErrNotCached) {
@@ -214,7 +223,7 @@ func TestProviderDailyLimitAndDownloadsOff(t *testing.T) {
 func TestProviderMusicOneAlbumAtATime(t *testing.T) {
 	c := newFakeClient()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	p := &Provider{Client: c, Files: &FileServer{}, Now: func() time.Time { return now },
+	p := &Provider{Slots: one(c), Files: &FileServer{}, Now: func() time.Time { return now },
 		Settings: Settings{Download: true, Music: true, Category: "remix", MaxPerDay: 10}}
 	ctx := t.Context()
 	for i, h := range []string{strings.Repeat("1", 40), strings.Repeat("2", 40)} {
@@ -238,8 +247,8 @@ func TestProviderRefusesFilesOutsideMappedFolders(t *testing.T) {
 	c := newFakeClient()
 	c.torrents[hashA] = &Torrent{Hash: hashA, Done: true, Root: "/elsewhere"}
 	c.files[hashA] = []File{{Path: "/elsewhere/Film.mkv", Size: 4}}
-	p := &Provider{Client: c, Files: &FileServer{}, Settings: Settings{PathMap: []Mapping{{Client: "/downloads", Local: t.TempDir()}}}}
-	if _, err := p.Link(t.Context(), debrid.Handle{TorrentID: hashA, Link: "/elsewhere/Film.mkv"}); err == nil || !strings.Contains(err.Error(), "PSE_TORRENT_PATH_MAP") {
+	p := &Provider{Slots: []*Slot{{Client: c, Conf: ClientConf{N: 1, PathMap: []Mapping{{Client: "/downloads", Local: t.TempDir()}}}}}, Files: &FileServer{}}
+	if _, err := p.Link(t.Context(), debrid.Handle{TorrentID: hashA, Link: "/elsewhere/Film.mkv"}); err == nil || !strings.Contains(err.Error(), "hors des dossiers partagés") {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -270,7 +279,8 @@ func TestMonitorNotifiesCrossSeedOnceAndStopsRTorrentSeeding(t *testing.T) {
 	c.torrents[hashB] = &Torrent{Hash: hashB, Category: "remix", Active: true} // en cours
 	hashC := strings.Repeat("c", 40)
 	c.torrents[hashC] = &Torrent{Hash: hashC, Category: "autre", Done: true, Active: true, Ratio: 5}
-	m := &Monitor{Client: c, XSeed: cs, Settings: Settings{Category: "remix", Ratio: 1, SeedTime: 72 * time.Hour}}
+	m := &Monitor{XSeed: cs, Provider: &Provider{Slots: []*Slot{{Client: c, Conf: ClientConf{N: 1, Ratio: 1, SeedTime: 72 * time.Hour}}},
+		Settings: Settings{Category: "remix"}}}
 	m.Round(t.Context())
 	m.Round(t.Context())
 	if len(hooks) != 1 || hooks[0] != hashA {
@@ -289,7 +299,7 @@ func TestSettingsPathMapAndRatio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := Settings{PathMap: m}
+	s := ClientConf{PathMap: m}
 	if got, ok := s.Local("/downloads/films/A/a.mkv"); !ok || got != "/media/films/A/a.mkv" {
 		t.Fatalf("plus long préfixe : %q %v", got, ok)
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,9 @@ const rtListTTL = 10 * time.Second
 
 // rtNotified est la variable rTorrent qui retient l'envoi à cross-seed.
 const rtNotified = "remix_xseed"
+
+// rtLimits retient les limites posées par Remix : « ratio/secondes ».
+const rtLimits = "remix_limits"
 
 // NewRTorrent prépare le client (http(s)://utilisateur:motdepasse@hôte/RPC2).
 func NewRTorrent(raw string, hc *http.Client) (*RTorrent, error) {
@@ -102,6 +106,9 @@ func (r *RTorrent) Add(ctx context.Context, o AddOptions) error {
 	if o.SavePath != "" {
 		params = append(params, "d.directory.set="+o.SavePath)
 	}
+	if o.Ratio > 0 || o.SeedTime > 0 {
+		params = append(params, "d.custom.set="+rtLimits+","+formatLimits(o.Ratio, o.SeedTime))
+	}
 	if _, err := r.call(ctx, "load.start", params...); err != nil {
 		return err
 	}
@@ -112,7 +119,27 @@ func (r *RTorrent) Add(ctx context.Context, o AddOptions) error {
 }
 
 var rtFields = []any{"", "main", "d.hash=", "d.name=", "d.custom1=", "d.complete=", "d.ratio=",
-	"d.timestamp.finished=", "d.directory=", "d.is_active=", "d.custom=" + rtNotified}
+	"d.timestamp.finished=", "d.directory=", "d.is_active=", "d.custom=" + rtNotified,
+	"d.size_bytes=", "d.completed_bytes=", "d.down.rate=", "d.custom=" + rtLimits}
+
+// formatLimits écrit « 1.50/259200 » (ratio, secondes de partage).
+func formatLimits(ratio float64, seed time.Duration) string {
+	return strconv.FormatFloat(ratio, 'f', 2, 64) + "/" + strconv.FormatInt(int64(seed/time.Second), 10)
+}
+
+// parseLimits lit formatLimits ; ok est faux pour une valeur vide ou illisible.
+func parseLimits(v string) (float64, time.Duration, bool) {
+	a, b, found := strings.Cut(strings.TrimSpace(v), "/")
+	if !found {
+		return 0, 0, false
+	}
+	ratio, err1 := strconv.ParseFloat(a, 64)
+	secs, err2 := strconv.ParseInt(b, 10, 64)
+	if err1 != nil || err2 != nil || ratio < 0 || secs < 0 {
+		return 0, 0, false
+	}
+	return ratio, time.Duration(secs) * time.Second, true
+}
 
 func (r *RTorrent) listAll(ctx context.Context) ([]Torrent, error) {
 	r.mu.Lock()
@@ -133,8 +160,20 @@ func (r *RTorrent) listAll(ctx context.Context) ([]Torrent, error) {
 		if !ok || len(f) < 9 {
 			continue
 		}
-		str := func(i int) string { s, _ := f[i].(string); return s }
-		num := func(i int) int64 { n, _ := f[i].(int64); return n }
+		str := func(i int) string {
+			if i >= len(f) {
+				return ""
+			}
+			s, _ := f[i].(string)
+			return s
+		}
+		num := func(i int) int64 {
+			if i >= len(f) {
+				return 0
+			}
+			n, _ := f[i].(int64)
+			return n
+		}
 		label, err := url.PathUnescape(str(2))
 		if err != nil {
 			label = str(2)
@@ -145,6 +184,17 @@ func (r *RTorrent) listAll(ctx context.Context) ([]Torrent, error) {
 			t.Finished = time.Unix(fin, 0)
 			t.Seeding = r.now().Sub(t.Finished)
 		}
+		t.Size = num(9)
+		if done := num(10); t.Size > 0 {
+			t.Progress = min(float64(done)/float64(t.Size), 1)
+			if rate := num(11); rate > 0 && done < t.Size {
+				t.ETA = time.Duration((t.Size-done)/rate) * time.Second
+			}
+		}
+		if t.Done {
+			t.Progress = 1
+		}
+		t.RatioLimit, t.SeedLimit, t.HasLimits = parseLimits(str(12))
 		out = append(out, t)
 	}
 	r.all = out
@@ -231,6 +281,16 @@ func (r *RTorrent) MarkNotified(ctx context.Context, hash string) error {
 		r.mu.Unlock()
 	}
 	return err
+}
+
+// DefaultDir renvoie directory.default de rTorrent.
+func (r *RTorrent) DefaultDir(ctx context.Context) (string, error) {
+	v, err := r.call(ctx, "directory.default")
+	if err != nil {
+		return "", err
+	}
+	s, _ := v.(string)
+	return s, nil
 }
 
 func (r *RTorrent) Stop(ctx context.Context, hash string) error {

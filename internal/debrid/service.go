@@ -770,6 +770,7 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	}
 	var errs []error
 	notCached := 0
+	var downloading error // a local BitTorrent client is downloading it
 	for _, e := range entries {
 		if err := e.blocked(s.now()); err != nil {
 			errs = append(errs, err)
@@ -796,6 +797,11 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			// release cannot be checked or played.
 			notCached++
 			errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
+		case errors.As(err, new(*core.LocalDownloadError)):
+			notCached++
+			if downloading == nil {
+				downloading = err
+			}
 		case errors.Is(err, core.ErrNotCached):
 			notCached++
 		case errors.Is(err, core.ErrReleaseRejected):
@@ -803,6 +809,10 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 		default:
 			errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
 		}
+	}
+	if downloading != nil {
+		// Say what the player can tell the viewer: it is on its way.
+		return nil, fmt.Errorf("%q: %w", rel.Name, downloading)
 	}
 	if len(errs) == 0 {
 		return nil, fmt.Errorf("%q: %w", rel.Name, core.ErrNotCached)
@@ -903,6 +913,8 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 		return p.Encode(), nil, true
 	case ctx.Err() != nil:
 		return nil, ctx.Err(), true
+	case errors.As(err, new(*core.LocalDownloadError)):
+		return nil, fmt.Errorf("%q on %s: %w", rel.Name, displayName(e.cfg), err), true
 	case errors.Is(err, core.ErrNotCached) && !refusal(err) && !errors.Is(err, core.ErrDownloadLimit):
 		return nil, fmt.Errorf("%q on %s: %w", rel.Name, displayName(e.cfg), core.ErrDownloadQueued), true
 	}
@@ -987,11 +999,19 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 		}
 		var untracked *untrackedPending
 		confirmed := pendingTorrent(err) != "" || errors.As(err, &untracked)
-		if (confirmed || (e.cfg.Kind != "realdebrid" && e.cfg.Kind != "premiumize")) && errors.Is(err, core.ErrNotCached) && !refusal(err) && !errors.Is(err, core.ErrDownloadLimit) {
+		// A local BitTorrent client (Ether-Remix) counts as queued only
+		// once it confirmed the add: a refusal (no free space, client
+		// down) wraps ErrNotCached too.
+		local := isLocalProvider(e.p)
+		if (confirmed || (!local && e.cfg.Kind != "realdebrid" && e.cfg.Kind != "premiumize")) && errors.Is(err, core.ErrNotCached) && !refusal(err) && !errors.Is(err, core.ErrDownloadLimit) {
 			s.queuedMu.Lock()
 			s.queued[key] = queuedDownload{hash: hash, provider: e.cfg.ID, torrent: pendingTorrent(err), release: rel.Name, at: now}
 			s.queuedMu.Unlock()
 			s.log.Info("sent uncached torrent to download", "release", rel.Name, "provider", displayName(e.cfg))
+			var lde *core.LocalDownloadError
+			if local && errors.As(err, &lde) {
+				return nil, fmt.Errorf("%q on %s: %w", rel.Name, displayName(e.cfg), lde)
+			}
 			return nil, fmt.Errorf("%q on %s: %w", rel.Name, displayName(e.cfg), core.ErrDownloadQueued)
 		}
 		if errors.Is(err, core.ErrReleaseRejected) {

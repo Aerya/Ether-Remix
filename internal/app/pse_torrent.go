@@ -13,7 +13,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/debrid"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/notify"
 	"github.com/braedonsaunders/ether/internal/pse/music"
+	"github.com/braedonsaunders/ether/internal/pse/notifyfr"
 	"github.com/braedonsaunders/ether/internal/pse/torrentclient"
 )
 
@@ -58,26 +60,63 @@ func (rt *pseRuntime) reloadTorrent(a *App) {
 		return
 	}
 	log := a.log.With("component", "pse-torrent")
-	client, err := s.NewClient(egress.Client(egress.CapDebrid, 20*time.Second))
-	if err != nil {
-		log.Warn("client torrent non configuré", "err", err)
+	prov := &torrentclient.Provider{Settings: s, Files: &st.files, Log: log, Lang: "en"}
+	if notifyfr.Enabled() {
+		prov.Lang = "fr"
+	}
+	core.LocalMessageLang.Store(prov.Lang)
+	for _, c := range s.Clients {
+		client, err := c.NewClient(egress.Client(egress.CapDebrid, 20*time.Second))
+		if err != nil {
+			log.Warn("client torrent non configuré", "client", c.Label(), "err", err)
+			continue
+		}
+		prov.Slots = append(prov.Slots, &torrentclient.Slot{Conf: c, Client: client})
+	}
+	if len(prov.Slots) == 0 {
 		st.prov = nil
 		a.debrid.RegisterPluginProvider(torrentclient.ProviderID, "", nil)
 		return
 	}
-	st.prov = &torrentclient.Provider{Client: client, Settings: s, Files: &st.files, Log: log}
-	a.debrid.RegisterPluginProvider(torrentclient.ProviderID, "Client torrent ("+s.Label()+")", st.prov)
+	st.prov = prov
+	a.debrid.RegisterPluginProvider(torrentclient.ProviderID, "Client torrent ("+s.Label()+")", prov)
 	var xseed *torrentclient.CrossSeed
 	if s.XSeedURL != "" {
+		var err error
 		if xseed, err = torrentclient.NewCrossSeed(s.XSeedURL, s.XSeedKey, egress.Client(egress.CapDebrid, 30*time.Second)); err != nil {
 			log.Warn("cross-seed non configuré", "err", err)
 		}
 	}
-	if xseed != nil || s.Client == "rtorrent" {
-		st.mon = &torrentclient.Monitor{Client: client, Settings: s, XSeed: xseed, Log: log}
-		st.mon.Start()
+	st.mon = &torrentclient.Monitor{Provider: prov, XSeed: xseed, Log: log, Alert: a.pseTorrentAlert}
+	st.mon.Start()
+	log.Info("client torrent Ether-Remix actif", "clients", s.Label(), "downloads", s.Download, "cross-seed", xseed != nil)
+}
+
+// pseTorrentAlert passe par les notifications d'Ether : « fournisseur
+// indisponible » pour une alerte, « fournisseur rétabli » au retour.
+func (a *App) pseTorrentAlert(ctx context.Context, critical bool, title, message string) {
+	if a.notifications == nil {
+		return
 	}
-	log.Info("client torrent Ether-Remix actif", "client", s.Label(), "downloads", s.Download, "cross-seed", xseed != nil)
+	kind := "provider.recovered"
+	if critical {
+		kind = "provider.outage"
+	}
+	if err := a.notifications.Emit(ctx, notify.Event{Kind: kind, Title: title, Message: message}); err != nil {
+		a.log.Warn("alerte du client torrent non envoyée", "err", err)
+	}
+}
+
+// pseTorrentStatus est l'état affiché dans la console.
+func (a *App) pseTorrentStatus(ctx context.Context) map[string]any {
+	out := map[string]any{"active": false}
+	prov := a.pseTorrentProvider()
+	if prov == nil {
+		return out
+	}
+	out["active"] = true
+	out["state"] = prov.Status(ctx)
+	return out
 }
 
 func (rt *pseRuntime) stopTorrent() {

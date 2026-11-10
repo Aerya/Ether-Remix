@@ -12,22 +12,41 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/datafs"
 	"github.com/braedonsaunders/ether/internal/debrid"
 )
 
 // ProviderID identifie le client torrent parmi les comptes debrid d'Ether.
 const ProviderID = "remix-torrent"
 
-// Provider présente le client BitTorrent à Ether comme un compte debrid :
-// un torrent complet sur le client est « en cache », un torrent absent est
+// Slot est un client BitTorrent et ses réglages.
+type Slot struct {
+	Conf   ClientConf
+	Client Client
+
+	mu       sync.Mutex
+	dir      string // dossier par défaut du client, retenu
+	dirAt    time.Time
+	free     int64 // place libre mesurée, -1 : inconnue
+	freeAt   time.Time
+	freeErr  string
+	lowSpace bool // sous le seuil lors de la dernière mesure
+}
+
+// Provider présente les clients BitTorrent à Ether comme un compte debrid :
+// un torrent complet sur l'un d'eux est « en cache », un torrent absent est
 // ajouté seulement pour une lecture demandée (jamais par une vérification en
-// arrière-plan), et rien n'est jamais retiré du client.
+// arrière-plan), et rien n'est jamais retiré d'un client.
 type Provider struct {
-	Client   Client
+	Slots    []*Slot
 	Settings Settings
 	Files    *FileServer
 	Log      *slog.Logger
 	Now      func() time.Time
+	// Lang : langue des messages aux spectateurs (fr, en).
+	Lang string
+	// Usage mesure la place d'un dossier (datafs.Usage par défaut).
+	Usage func(path string) (total, free int64, err error)
 
 	mu       sync.Mutex
 	day      string
@@ -58,33 +77,69 @@ func (p *Provider) Kind() string { return ProviderID }
 func (p *Provider) LocalDownloads() bool { return p.Settings.Download }
 
 func (p *Provider) CheckCached(ctx context.Context, hashes []string) (map[string]bool, error) {
-	found, err := p.Client.Lookup(ctx, hashes)
-	if err != nil {
-		return nil, p.wrap(err)
-	}
 	out := make(map[string]bool, len(hashes))
+	var firstErr error
+	answered := false
+	for _, s := range p.Slots {
+		found, err := s.Client.Lookup(ctx, hashes)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		answered = true
+		for _, h := range hashes {
+			if t, ok := found[normHash(h)]; ok && t.Done {
+				out[strings.ToLower(h)] = true
+			}
+		}
+	}
+	if !answered && firstErr != nil {
+		return nil, p.wrap(firstErr)
+	}
 	for _, h := range hashes {
-		t, ok := found[normHash(h)]
-		out[strings.ToLower(h)] = ok && t.Done
+		if _, ok := out[strings.ToLower(h)]; !ok {
+			out[strings.ToLower(h)] = false
+		}
 	}
 	return out, nil
 }
 
+// find cherche le torrent sur les clients, dans l'ordre. Une panne d'un
+// client ne cache pas un torrent présent sur un autre.
+func (p *Provider) find(ctx context.Context, hash string) (*Slot, *Torrent, error) {
+	var firstErr error
+	for _, s := range p.Slots {
+		t, err := s.Client.Get(ctx, hash)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if t != nil {
+			return s, t, nil
+		}
+	}
+	return nil, nil, firstErr
+}
+
 func (p *Provider) Find(ctx context.Context, hash string) (string, error) {
-	t, err := p.Client.Get(ctx, hash)
+	_, t, err := p.find(ctx, normHash(hash))
+	if t != nil {
+		return t.Hash, nil
+	}
 	if err != nil {
 		return "", p.wrap(err)
 	}
-	if t == nil {
-		return "", nil
-	}
-	return t.Hash, nil
+	return "", nil
 }
 
 // errDailyLimit : le plafond d'ajouts du jour protège les comptes trackers.
 var errDailyLimit = fmt.Errorf("client torrent : plafond d'ajouts du jour atteint : %w", core.ErrDownloadLimit)
 
-// reserve compte un ajout ; faux une fois le plafond du jour atteint ou
+// reserve compte un ajout ; refuse une fois le plafond du jour atteint ou
 // quand le torrent vient déjà d'être envoyé.
 func (p *Provider) reserve(hash string, music bool) error {
 	p.mu.Lock()
@@ -95,7 +150,7 @@ func (p *Provider) reserve(hash string, music bool) error {
 		p.day, p.added, p.addedSet = day, 0, map[string]time.Time{}
 	}
 	if at, ok := p.addedSet[hash]; ok && now.Sub(at) < time.Hour {
-		return debrid.Pending(hash, core.ErrNotCached)
+		return debrid.Pending(hash, p.downloading(nil, nil))
 	}
 	if p.added >= p.Settings.MaxPerDay {
 		return errDailyLimit
@@ -111,6 +166,25 @@ func (p *Provider) reserve(hash string, music bool) error {
 	p.added++
 	p.addedSet[hash] = now
 	return nil
+}
+
+func (p *Provider) unreserve(hash string) {
+	p.mu.Lock()
+	delete(p.addedSet, hash)
+	p.added--
+	p.mu.Unlock()
+}
+
+// downloading décrit un téléchargement en cours (t nil : envoyé à l'instant).
+func (p *Provider) downloading(s *Slot, t *Torrent) error {
+	e := &core.LocalDownloadError{Lang: p.Lang, Started: t == nil}
+	if s != nil {
+		e.Client = s.Conf.Label()
+	}
+	if t != nil {
+		e.Progress, e.ETA = t.Progress, t.ETA
+	}
+	return e
 }
 
 // Acquire : voir Provider.
@@ -132,36 +206,20 @@ func (p *Provider) acquire(ctx context.Context, req debrid.AcquireRequest, music
 	if !validHash(hash) {
 		return nil, fmt.Errorf("client torrent : empreinte invalide : %w", core.ErrReleaseRejected)
 	}
-	t, err := p.Client.Get(ctx, hash)
-	if err != nil {
+	slot, t, err := p.find(ctx, hash)
+	if t == nil && err != nil {
 		return nil, p.wrap(err)
 	}
 	if t == nil {
-		if req.CachedOnly || !p.Settings.Download || (music && !p.Settings.Music) {
+		if req.CachedOnly || !p.Settings.Download || (music && !p.Settings.Music) || req.Magnet == "" {
 			return nil, core.ErrNotCached
 		}
-		if req.Magnet == "" {
-			return nil, core.ErrNotCached
-		}
-		if err := p.reserve(hash, music); err != nil {
-			return nil, err
-		}
-		err := p.Client.Add(ctx, AddOptions{Magnet: req.Magnet, Category: p.Settings.Category, SavePath: p.Settings.SavePath,
-			Ratio: p.Settings.Ratio, SeedTime: p.Settings.SeedTime})
-		if err != nil {
-			p.mu.Lock()
-			delete(p.addedSet, hash)
-			p.added--
-			p.mu.Unlock()
-			return nil, p.wrap(err)
-		}
-		p.log().Info("torrent envoyé au client", "client", p.Client.Kind(), "hash", hash)
-		return nil, debrid.Pending(hash, core.ErrNotCached)
+		return nil, p.add(ctx, hash, req.Magnet, music)
 	}
 	if !t.Done {
-		return nil, debrid.Pending(hash, core.ErrNotCached)
+		return nil, debrid.Pending(hash, p.downloading(slot, t))
 	}
-	files, err := p.files(ctx, *t)
+	files, err := p.files(ctx, slot, *t)
 	if err != nil {
 		return nil, err
 	}
@@ -178,10 +236,46 @@ func (p *Provider) acquire(ctx context.Context, req debrid.AcquireRequest, music
 	return &debrid.Acquired{TorrentID: t.Hash, File: file, Files: files}, nil
 }
 
+// add envoie le torrent au premier client qui a la place et l'accepte.
+func (p *Provider) add(ctx context.Context, hash, magnet string, music bool) error {
+	if err := p.reserve(hash, music); err != nil {
+		return err
+	}
+	var lastErr error
+	full := 0
+	for _, s := range p.Slots {
+		if free, known := p.FreeSpace(ctx, s); known && p.Settings.MinFree > 0 && free < p.Settings.MinFree {
+			full++
+			continue
+		}
+		ratio, seed := p.Settings.Limits(s.Conf, magnet)
+		err := s.Client.Add(ctx, AddOptions{Magnet: magnet, Category: p.Settings.Category, SavePath: s.Conf.SavePath,
+			Ratio: ratio, SeedTime: seed})
+		if err != nil {
+			lastErr = err
+			p.log().Warn("client torrent : ajout refusé", "client", s.Conf.Label(), "err", err)
+			continue
+		}
+		p.log().Info("torrent envoyé au client", "client", s.Conf.Label(), "hash", hash, "ratio", ratio, "seed", seed)
+		return debrid.Pending(hash, p.downloading(s, nil))
+	}
+	p.unreserve(hash)
+	if lastErr == nil && full > 0 {
+		return core.ErrLocalNoSpace
+	}
+	if lastErr == nil {
+		return core.ErrDownloadRefused
+	}
+	if errors.Is(lastErr, ErrAuth) {
+		return p.wrap(lastErr)
+	}
+	return fmt.Errorf("%w: %w", core.ErrDownloadRefused, lastErr)
+}
+
 // files liste les fichiers du torrent, chemins relatifs pour le choix et
 // chemin du client dans Link.
-func (p *Provider) files(ctx context.Context, t Torrent) ([]debrid.File, error) {
-	raw, err := p.Client.Files(ctx, t)
+func (p *Provider) files(ctx context.Context, s *Slot, t Torrent) ([]debrid.File, error) {
+	raw, err := s.Client.Files(ctx, t)
 	if err != nil {
 		return nil, p.wrap(err)
 	}
@@ -222,14 +316,14 @@ func (p *Provider) localFile(ctx context.Context, h debrid.Handle) (string, int6
 	if hash == "" {
 		hash = normHash(h.InfoHash)
 	}
-	t, err := p.Client.Get(ctx, hash)
-	if err != nil {
+	slot, t, err := p.find(ctx, hash)
+	if t == nil && err != nil {
 		return "", 0, p.wrap(err)
 	}
 	if t == nil || !t.Done {
 		return "", 0, debrid.ErrGone
 	}
-	files, err := p.files(ctx, *t)
+	files, err := p.files(ctx, slot, *t)
 	if err != nil {
 		return "", 0, err
 	}
@@ -243,12 +337,12 @@ func (p *Provider) localFile(ctx context.Context, h debrid.Handle) (string, int6
 	if chosen == nil {
 		return "", 0, debrid.ErrGone
 	}
-	local, ok := p.Settings.Local(chosen.Link)
+	local, ok := slot.Conf.Local(chosen.Link)
 	if !ok {
-		return "", 0, fmt.Errorf("client torrent : %s hors des dossiers partagés (PSE_TORRENT_PATH_MAP)", chosen.Path)
+		return "", 0, fmt.Errorf("client torrent : %s hors des dossiers partagés (correspondance des dossiers de %s)", chosen.Path, slot.Conf.Label())
 	}
 	if st, err := os.Stat(local); err != nil || !st.Mode().IsRegular() || st.Size() != chosen.Size {
-		return "", 0, fmt.Errorf("client torrent : fichier absent du dossier partagé de Remix (%s) ; vérifiez le montage ou PSE_TORRENT_PATH_MAP", chosen.Path)
+		return "", 0, fmt.Errorf("client torrent : fichier absent du dossier partagé de Remix (%s) ; vérifiez le montage ou la correspondance des dossiers", chosen.Path)
 	}
 	return local, chosen.Size, nil
 }
@@ -257,11 +351,22 @@ func (p *Provider) localFile(ctx context.Context, h debrid.Handle) (string, int6
 func (p *Provider) Remove(context.Context, string) error { return nil }
 
 func (p *Provider) Account(ctx context.Context) (debrid.Account, error) {
-	v, err := p.Client.Version(ctx)
-	if err != nil {
-		return debrid.Account{}, p.wrap(err)
+	var names []string
+	var firstErr error
+	for _, s := range p.Slots {
+		v, err := s.Client.Version(ctx)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		names = append(names, s.Conf.Label()+" "+v)
 	}
-	return debrid.Account{User: p.Settings.Label() + " " + v, Premium: true}, nil
+	if len(names) == 0 && firstErr != nil {
+		return debrid.Account{}, p.wrap(firstErr)
+	}
+	return debrid.Account{User: strings.Join(names, ", "), Premium: true}, nil
 }
 
 func (p *Provider) wrap(err error) error {
@@ -269,4 +374,62 @@ func (p *Provider) wrap(err error) error {
 		return fmt.Errorf("%w: %w", debrid.ErrAuth, err)
 	}
 	return err
+}
+
+// --- place libre ---
+
+const (
+	freeTTL = time.Minute
+	dirTTL  = 10 * time.Minute
+)
+
+// FreeSpace mesure la place libre du dossier de téléchargement de s, vu
+// par Remix : le dossier réglé, sinon celui du client. known est faux quand
+// Remix ne voit pas ce dossier.
+func (p *Provider) FreeSpace(ctx context.Context, s *Slot) (int64, bool) {
+	s.mu.Lock()
+	if !s.freeAt.IsZero() && p.now().Sub(s.freeAt) < freeTTL {
+		free := s.free
+		s.mu.Unlock()
+		return free, free >= 0
+	}
+	s.mu.Unlock()
+	free, msg := p.measure(ctx, s)
+	s.mu.Lock()
+	s.free, s.freeErr, s.freeAt = free, msg, p.now()
+	s.mu.Unlock()
+	return free, free >= 0
+}
+
+func (p *Provider) measure(ctx context.Context, s *Slot) (int64, string) {
+	dir := s.Conf.SavePath
+	if dir == "" {
+		s.mu.Lock()
+		dir = s.dir
+		fresh := !s.dirAt.IsZero() && p.now().Sub(s.dirAt) < dirTTL
+		s.mu.Unlock()
+		if !fresh {
+			d, err := s.Client.DefaultDir(ctx)
+			if err != nil {
+				return -1, "dossier du client inconnu"
+			}
+			dir = d
+			s.mu.Lock()
+			s.dir, s.dirAt = d, p.now()
+			s.mu.Unlock()
+		}
+	}
+	local, ok := s.Conf.Local(dir)
+	if !ok {
+		return -1, "dossier " + dir + " hors de la correspondance des dossiers"
+	}
+	usage := p.Usage
+	if usage == nil {
+		usage = datafs.Usage
+	}
+	_, free, err := usage(local)
+	if err != nil {
+		return -1, "dossier " + local + " invisible pour Remix"
+	}
+	return free, ""
 }

@@ -5,7 +5,7 @@ export const REMIX_TABS = [
     key: "sources",
     fr: "Sources",
     en: "Sources",
-    features: ["indexer", "sfr", "seerrcatalog", "torrent"],
+    features: ["indexer", "sfr", "seerrcatalog", "torrent", "torrent2", "torrent3"],
   },
   { key: "priorites", fr: "Priorités", en: "Priorities", features: [] },
   {

@@ -224,6 +224,15 @@ func (h *handler) put(w http.ResponseWriter, r *http.Request) {
 		if effective("PSE_TORRENT_URL") == "" {
 			errs["PSE_TORRENT_URL"] = "Adresse du client torrent requise"
 		}
+		for n := 2; n <= torrentclient.MaxClients; n++ {
+			p := "PSE_TORRENT" + strconv.Itoa(n)
+			switch strings.ToLower(effective(p)) {
+			case "on", "1", "true", "yes", "oui":
+				if effective(p+"_URL") == "" {
+					errs[p+"_URL"] = "Adresse du client torrent requise"
+				}
+			}
+		}
 	}
 	switch strings.ToLower(effective("PSE_SEERRCATALOG")) {
 	case "on", "1", "true", "yes", "oui":
@@ -346,7 +355,16 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 	if (fd.Key == "PSE_SEERRCATALOG_TOKEN" || fd.Key == "PSE_SEERRCATALOG_SEARCH_TOKEN") && v != "" && len(v) < 32 {
 		return "", errors.New("clé de 32 caractères minimum")
 	}
-	switch fd.Key {
+	key := fd.Key
+	if strings.HasPrefix(key, "PSE_TORRENT2_") || strings.HasPrefix(key, "PSE_TORRENT3_") {
+		key = "PSE_TORRENT_" + key[len("PSE_TORRENT2_"):] // mêmes règles que le client principal
+	}
+	switch key {
+	case "PSE_TORRENT_TRACKERS":
+		if _, err := torrentclient.ParseTrackerRules(v); err != nil {
+			return "", err
+		}
+		return v, nil
 	case "PSE_TORRENT_RATIO":
 		r, err := torrentclient.ParseRatio(v)
 		if err != nil {

@@ -64,6 +64,10 @@ const (
 )
 
 func playbackMessage(err error) string {
+	// Ether-Remix : téléchargement sur le client torrent local, en option.
+	if msg := core.LocalDownloadMessage(err, ""); msg != "" {
+		return msg
+	}
 	switch {
 	case errors.Is(err, core.ErrUnreleased):
 		return "This title has not been released yet. Playback is unavailable."

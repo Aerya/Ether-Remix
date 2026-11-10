@@ -40,7 +40,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 - **Recherches maîtrisées** : budgets quotidiens par source, pause pendant la lecture, priorités par collection ou bibliothèque et recherche manuelle immédiate.
 - **Recherche depuis Plex ou Jellyfin** : les premiers résultats jamais cherchés ou restés sans release passent en priorité, selon leur délai de nouvelle tentative.
 - **Intégration SeerrCatalog** : récupérez les disponibilités et sources déjà contrôlées pour vos demandes Seerr, sans doubler les recherches. En cas de besoin, la lecture revient aux sources habituelles.
-- **Client torrent en option** : envoyez les releases de Prowlarr ou Jackett à qBittorrent ou rTorrent/ruTorrent, avec ratio, durée de partage et cross-seed. Désactivé par défaut ; les comptes debrid restent en cache uniquement. [Détails](docs/pse/TORRENT.fr.md)
+- **Client torrent en option** : envoyez les releases de Prowlarr ou Jackett à un à trois clients qBittorrent ou rTorrent/ruTorrent, avec ratio et durée de partage par client et par tracker, cross-seed et alerte de place libre. Le client peut être distant, mais Remix doit voir son dossier de téléchargement (même machine ou partage NFS/SMB) pour lire les fichiers. Désactivé par défaut ; les comptes debrid restent en cache uniquement. [Détails](docs/pse/TORRENT.fr.md)
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Des bibliothèques et collections personnalisées
 

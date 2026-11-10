@@ -83,3 +83,52 @@ func TestAcquireAsksLocalClientDespiteUncachedMemory(t *testing.T) {
 		t.Fatalf("after download: %v", err)
 	}
 }
+
+// localScripted answers Acquire with a fixed error, like the torrent client
+// downloading (LocalDownloadError) or out of space (ErrLocalNoSpace).
+type localScripted struct {
+	*localFake
+	err error
+}
+
+func (l *localScripted) Acquire(context.Context, AcquireRequest) (*Acquired, error) {
+	return nil, l.err
+}
+
+// The torrent client's progress reaches the player, on the first play and
+// while the download runs.
+func TestLocalDownloadProgressReachesCaller(t *testing.T) {
+	h := newHarness(t, 1<<20, "torbox")
+	lde := &core.LocalDownloadError{Client: "qBittorrent", Progress: 0.4}
+	local := &localScripted{localFake: &localFake{fakeProvider: newFakeProvider("remix-torrent", h.media, movieFiles(1<<20)), downloads: true},
+		err: Pending("abc", lde)}
+	h.svc.RegisterPluginProvider("remix-torrent", "Client torrent", local)
+	rel := torrentRelease("r1")
+	rel.TitleIDs = core.IDs{TMDB: 603}
+	_, err := h.svc.QueueDownload(t.Context(), rel)
+	var got *core.LocalDownloadError
+	if !errors.As(err, &got) || got.Percent() != 40 || !errors.Is(err, core.ErrDownloadQueued) {
+		t.Fatalf("queue: %v", err)
+	}
+	// Played again while downloading: still the progress, not a bare "not cached".
+	if _, err := h.svc.Acquire(t.Context(), rel); !errors.As(err, &got) {
+		t.Fatalf("acquire: %v", err)
+	}
+}
+
+// A refusal by the torrent client (no free space) is not a queued download.
+func TestLocalNoSpaceIsNotQueued(t *testing.T) {
+	h := newHarness(t, 1<<20, "torbox")
+	local := &localScripted{localFake: &localFake{fakeProvider: newFakeProvider("remix-torrent", h.media, movieFiles(1<<20)), downloads: true},
+		err: core.ErrLocalNoSpace}
+	h.svc.RegisterPluginProvider("remix-torrent", "Client torrent", local)
+	rel := torrentRelease("r1")
+	rel.TitleIDs = core.IDs{TMDB: 603}
+	_, err := h.svc.QueueDownload(t.Context(), rel)
+	if errors.Is(err, core.ErrDownloadQueued) || !errors.Is(err, core.ErrLocalNoSpace) || !errors.Is(err, core.ErrDownloadRefused) {
+		t.Fatalf("queue: %v", err)
+	}
+	if core.LocalDownloadMessage(err, "fr") == "" {
+		t.Fatal("no player message")
+	}
+}

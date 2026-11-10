@@ -356,6 +356,7 @@ func (a *App) pseStatus(ctx context.Context, rt *pseRuntime) map[string]any {
 		m["library"] = totals
 	}
 	out["music"] = m
+	out["torrent"] = a.pseTorrentStatus(ctx)
 	return out
 }
 

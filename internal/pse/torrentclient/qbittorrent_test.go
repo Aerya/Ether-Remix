@@ -97,7 +97,7 @@ func TestQBittorrentAddListFilesAndRelogin(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	u.User = url.UserPassword("admin", "secret")
 	u.Path = "/qb/"
-	q, err := NewQBittorrent(u.String(), srv.Client())
+	q, err := NewQBittorrent(u.String(), "", srv.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,12 +148,68 @@ func TestQBittorrentBadPassword(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	u.User = url.UserPassword("admin", "wrong")
 	u.Path = "/qb"
-	q, _ := NewQBittorrent(u.String(), srv.Client())
+	q, _ := NewQBittorrent(u.String(), "", srv.Client())
 	_, err := q.Version(t.Context())
 	if err != ErrAuth {
 		t.Fatalf("err %v, attendu ErrAuth", err)
 	}
 	if strings.Contains(err.Error(), "wrong") {
 		t.Fatal("mot de passe dans l'erreur")
+	}
+}
+
+func TestQBittorrentAPIKey(t *testing.T) {
+	var mu sync.Mutex
+	var logins int
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/api/v2/auth/login" {
+			logins++
+		}
+		auth = append(auth, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer qbt_key" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v2/app/version":
+			_, _ = w.Write([]byte("v5.2.0"))
+		case "/api/v2/app/defaultSavePath":
+			_, _ = w.Write([]byte("/downloads"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	u.User = url.UserPassword("ignored", "ignored") // la clé l'emporte
+	q, err := NewQBittorrent(u.String(), "qbt_key", srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := q.Version(t.Context()); err != nil || v != "v5.2.0" {
+		t.Fatalf("version %q %v", v, err)
+	}
+	if d, err := q.DefaultDir(t.Context()); err != nil || d != "/downloads" {
+		t.Fatalf("dossier %q %v", d, err)
+	}
+	if logins != 0 {
+		t.Fatalf("connexions %d, attendu 0 avec une clé", logins)
+	}
+	bad, _ := NewQBittorrent(srv.URL, "qbt_wrong", srv.Client())
+	if _, err := bad.Version(t.Context()); err != ErrAuth {
+		t.Fatalf("mauvaise clé : %v", err)
+	}
+}
+
+func TestQBittorrentProgressAndETA(t *testing.T) {
+	tr := qbTorrent{Hash: hashA, Progress: 0.5, State: "downloading", Size: 100, Eta: 90}.torrent()
+	if tr.Done || tr.Progress != 0.5 || tr.Size != 100 || tr.ETA != 90*time.Second {
+		t.Fatalf("%+v", tr)
+	}
+	if tr := (qbTorrent{Hash: hashA, Eta: qbNoETA}).torrent(); tr.ETA != 0 {
+		t.Fatalf("ETA inconnue %v", tr.ETA)
 	}
 }

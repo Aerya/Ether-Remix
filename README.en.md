@@ -40,7 +40,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 - **Controlled searches**: daily per-source budgets, pauses during playback, collection/library priorities and immediate manual searches.
 - **Search from Plex or Jellyfin**: top results never searched or previously without releases receive priority, subject to their retry interval.
 - **SeerrCatalog integration**: import availability and previously checked sources for Seerr requests without duplicate searches. Normal playback discovery remains the fallback.
-- **Optional torrent client**: send Prowlarr or Jackett releases to qBittorrent or rTorrent/ruTorrent, with ratio, seeding time and cross-seed. Off by default; debrid accounts stay cached-only. [Details](docs/pse/TORRENT.en.md)
+- **Optional torrent client**: send Prowlarr or Jackett releases to one to three qBittorrent or rTorrent/ruTorrent clients, with ratio and seeding time per client and per tracker, cross-seed and a free-space alert. The client can be remote, but Remix must see its download folder (same machine or NFS/SMB share) to play the files. Off by default; debrid accounts stay cached-only. [Details](docs/pse/TORRENT.en.md)
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
 

@@ -32,6 +32,16 @@ type Torrent struct {
 	Notified bool          // cross-seed déjà prévenu
 	// Root est le dossier qui contient les chemins relatifs des fichiers.
 	Root string
+	// Progress va de 0 à 1 ; Size est la taille totale en octets.
+	Progress float64
+	Size     int64
+	// ETA : temps restant estimé, 0 si inconnu.
+	ETA time.Duration
+	// Limites posées par Remix à l'ajout (rTorrent, qui n'en a pas de
+	// natives) ; HasLimits est faux pour un torrent ajouté sans limite.
+	HasLimits  bool
+	RatioLimit float64
+	SeedLimit  time.Duration
 }
 
 // AddOptions décrit un ajout.
@@ -62,6 +72,9 @@ type Client interface {
 	// Stop arrête le partage (limites atteintes) sans rien supprimer ;
 	// ErrUnsupported quand le client applique lui-même ses limites.
 	Stop(ctx context.Context, hash string) error
+	// DefaultDir renvoie le dossier de téléchargement par défaut, vu par le
+	// client ; il sert à mesurer la place libre.
+	DefaultDir(ctx context.Context) (string, error)
 }
 
 // ErrUnsupported : opération inutile pour ce client.

@@ -38,13 +38,15 @@ func (f *fakeRT) handler(t *testing.T) http.Handler {
 		case "d.multicall2":
 			fin := time.Now().Add(-80 * time.Hour).Unix()
 			_, _ = io.WriteString(w, `<?xml version="1.0"?><methodResponse><params><param><value><array><data>
-<value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value><value><string>Album</string></value><value><string>remix</string></value><value><i8>1</i8></value><value><i8>350</i8></value><value><i8>`+itoa(fin)+`</i8></value><value><string>/data/Album</string></value><value><i8>1</i8></value><value><string></string></value></data></array></value>
+<value><array><data><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value><value><string>Album</string></value><value><string>remix</string></value><value><i8>1</i8></value><value><i8>350</i8></value><value><i8>`+itoa(fin)+`</i8></value><value><string>/data/Album</string></value><value><i8>1</i8></value><value><string></string></value><value><i8>1000</i8></value><value><i8>1000</i8></value><value><i8>0</i8></value><value><string>2.00/172800</string></value></data></array></value>
 <value><array><data><value><string>FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF</string></value><value><string>Autre</string></value><value><string>tv</string></value><value><i8>0</i8></value><value><i8>0</i8></value><value><i8>0</i8></value><value><string>/data/Autre</string></value><value><i8>1</i8></value><value><string></string></value></data></array></value>
 </data></array></value></param></params></methodResponse>`)
 		case "f.multicall":
 			_, _ = io.WriteString(w, `<?xml version="1.0"?><methodResponse><params><param><value><array><data>
 <value><array><data><value><string>01 Titre.flac</string></value><value><i8>10</i8></value></data></array></value>
 </data></array></value></param></params></methodResponse>`)
+		case "directory.default":
+			_, _ = io.WriteString(w, `<?xml version="1.0"?><methodResponse><params><param><value><string>/data</string></value></param></params></methodResponse>`)
 		case "load.start", "d.custom.set", "d.stop":
 			_, _ = io.WriteString(w, `<?xml version="1.0"?><methodResponse><params><param><value><i4>0</i4></value></param></params></methodResponse>`)
 		default:
@@ -80,22 +82,29 @@ func TestRTorrentListFilesAddAndStop(t *testing.T) {
 		t.Fatalf("liste %+v %v", list, err)
 	}
 	tr := list[0]
-	if tr.Hash != hashA || !tr.Done || tr.Ratio != 0.35 || tr.Seeding < 79*time.Hour || tr.Root != "/data/Album" {
+	if tr.Hash != hashA || !tr.Done || tr.Ratio != 0.35 || tr.Seeding < 79*time.Hour || tr.Root != "/data/Album" ||
+		tr.Size != 1000 || tr.Progress != 1 || !tr.HasLimits || tr.RatioLimit != 2 || tr.SeedLimit != 48*time.Hour {
 		t.Fatalf("torrent %+v", tr)
 	}
 	files, err := r.Files(ctx, tr)
 	if err != nil || len(files) != 1 || files[0].Path != "/data/Album/01 Titre.flac" || files[0].Size != 10 {
 		t.Fatalf("fichiers %+v %v", files, err)
 	}
-	if err := r.Add(ctx, AddOptions{Magnet: "magnet:?xt=urn:btih:" + hashA, Category: "remix", SavePath: "/data"}); err != nil {
+	if err := r.Add(ctx, AddOptions{Magnet: "magnet:?xt=urn:btih:" + hashA, Category: "remix", SavePath: "/data", Ratio: 1.5, SeedTime: 72 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Stop(ctx, hashA); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(f.calls, "\n")
+	if !strings.Contains(joined, "d.custom.set="+rtLimits+",1.50/259200") {
+		t.Fatalf("limites non posées : %s", joined)
+	}
 	if !strings.Contains(joined, "d.custom1.set=remix") || !strings.Contains(joined, "d.directory.set=/data") || !strings.Contains(joined, "d.stop") {
 		t.Fatalf("appels %s", joined)
+	}
+	if d, err := r.DefaultDir(ctx); err != nil || d != "/data" {
+		t.Fatalf("dossier %q %v", d, err)
 	}
 	got, err := r.Get(ctx, strings.Repeat("e", 40))
 	if err != nil || got != nil {

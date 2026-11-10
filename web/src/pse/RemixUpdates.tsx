@@ -36,12 +36,16 @@ export const REMIX_UPDATES = [
         "New source, off by default: Remix sends torrent releases from Prowlarr or Jackett to qBittorrent or rTorrent / ruTorrent, then plays them once downloaded. Movies, shows, anime and music.",
       ],
       [
-        "Ratio et durée de partage réglables, plafond d'ajouts par jour, cross-seed prévenu à la fin de chaque téléchargement. Remix ne supprime jamais rien du client.",
-        "Adjustable ratio and seeding time, a daily cap on additions, cross-seed notified when each download completes. Remix never deletes anything from the client.",
+        "Jusqu'à trois clients, accès par identifiants ou clé d'API qBittorrent (5.2 et suivants). Ratio et durée de partage par client et par tracker, plafond d'ajouts par jour, cross-seed. Remix ne supprime jamais rien.",
+        "Up to three clients, with credentials or a qBittorrent API key (5.2 and later). Ratio and seeding time per client and per tracker, a daily cap on additions, cross-seed. Remix never deletes anything.",
       ],
       [
-        "Vos comptes debrid restent en « cache uniquement ». Réglages : Sources → Client torrent.",
-        "Your debrid accounts stay cached-only. Settings: Sources → Torrent client.",
+        "Pendant le téléchargement, Plex, Jellyfin et Emby affichent l'avancement ; la console liste les téléchargements. Sous le seuil de place libre, plus aucun ajout et une alerte part par les notifications d'Ether.",
+        "While downloading, Plex, Jellyfin and Emby show the progress; the console lists the downloads. Below the free-space threshold, no more additions and an alert goes out through Ether notifications.",
+      ],
+      [
+        "Le client peut être distant, mais Remix doit voir son dossier de téléchargement (même machine ou partage NFS/SMB). Vos comptes debrid restent en « cache uniquement ». Réglages : Sources → Client torrent.",
+        "The client can be remote, but Remix must see its download folder (same machine or NFS/SMB share). Your debrid accounts stay cached-only. Settings: Sources → Torrent client.",
       ],
     ],
   },
