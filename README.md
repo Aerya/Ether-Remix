@@ -9,7 +9,6 @@
   </picture>
 </p>
 
-# Ether-Remix
 
 **Ether en VF, avec la musique.**
 
@@ -27,7 +26,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
 - **Profils de qualité** : formats, codecs, résolutions, HDR/Dolby Vision, taille, langues et regex, globalement ou par bibliothèque/collection. Import des filtres compatibles AIOStreams depuis un export JSON, avec aperçu et modification avant enregistrement.
-- **Catalogue orienté français** : choisissez vos langues et variantes — VFF, VFQ, VFi, MULTi… — ainsi que vos critères de résolution, codec et disponibilité en cache.
+- **Catalogue orienté français** : choisissez vos langues et variantes — VFF, VFQ, VFi, MULTi… — et vos exigences de disponibilité en cache.
 - **Catalogue « lisible uniquement »** : affichez les titres disposant d’un minimum de releases correspondant à vos critères. La recherche, les collections, la watchlist et la reprise de lecture restent accessibles.
 - **Exceptions ciblées** : autorisez d’autres langues pour certaines collections ou bibliothèques, sans modifier vos préférences générales.
 - **VOSTFR à la demande** : ajoutez les titres souhaités ; chaque ajout lance une recherche prioritaire lorsque l’indexation est active.
@@ -42,7 +41,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 - **Disponibilités SeerrCatalog** : importez les disponibilités confirmées et les sources récentes de [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), sans nouvelle recherche pour le catalogue « lisible uniquement ». La confirmation persiste jusqu’à suppression ; les sources de lecture périmées sont recherchées à nouveau si nécessaire.
 - **Recherches pour SeerrCatalog** : autorisez les recherches complémentaires dans les sources Remix, notamment Prowlarr, avec une clé dédiée. Recherche et partage des disponibilités sont deux fonctions indépendantes, regroupées dans les réglages SeerrCatalog.
 
-### Sous-titres externes et traduction avec SubMaker
+### ![](https://api.iconify.design/lucide/captions.svg?color=%2314b8a6&width=24&height=24) Sous-titres externes et traduction avec SubMaker
 
 - **Instance au choix** : utilisez [SubMaker](https://github.com/xtremexq/StremioSubMaker) [public](https://submaker.elfhosted.com/configure) ou auto-hébergé avec un manifeste personnel ; l’intégration est désactivée par défaut.
 - **Langues et périmètres** : choisissez les langues source/cible, anglais → français par défaut, et autorisez le traitement globalement ou par bibliothèque/collection.
@@ -53,7 +52,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 
 - Organisez vos bibliothèques Plex par **service, studio, animés, documentaires, concerts ou spectacles**.
 - Composez leurs rangées avec des collections TMDB, des catalogues Stremio importés et des modèles prêts à l’emploi.
-- Réglez les exceptions de langue, les priorités de recherche et la fréquence d’actualisation de chaque collection, de **1 à 168 heures**.
+- Réglez la fréquence d’actualisation de chaque collection, de **1 à 168 heures**, indépendamment de la recherche de releases.
 - Ajustez l’apparition des films avant ou après leur sortie numérique/physique avec un **décalage en jours**.
 - Profitez d’une préparation groupée des badges d’affiches dans Plex et Jellyfin, avec l’état de lecture propre à chaque spectateur et des compteurs exacts.
 
@@ -61,7 +60,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 
 - Parcourez le **catalogue Deezer public** depuis Plex/Plexamp, les clients Jellyfin ou une application Subsonic : Symfonium, Feishin, Supersonic, DSub…
 - Écoutez via **Audius, les addons Eclipse, DMM avec Real-Debrid ou vos comptes AllDebrid, Real-Debrid et TorBox**, selon les sources activées.
-- Définissez l’ordre des sources : lorsqu’une source échoue, Remix essaie les suivantes. Un mode HiFi API externe est également disponible séparément.
+- Définissez l’ordre des sources : lorsqu’une source échoue, Remix essaie les suivantes. Le mode HiFi API externe s’utilise seulement lorsqu’aucune autre source musicale n’est active.
 - Retrouvez vos **favoris et votre historique par utilisateur**, sans constituer une bibliothèque de fichiers musicaux locaux. La qualité disponible dépend des sources.
 
 ### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Vos playlists et de nouvelles découvertes
@@ -92,93 +91,6 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 - Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs.
 - Images Docker pour **amd64 et arm64** et présentation des nouveautés dans la console.
 
-## Sous-titres avec SubMaker
-
-Intégration facultative d’une instance publique ou auto-hébergée, avec traduction anglais → français (langues modifiables), périmètre global/bibliothèque/collection et transmission des SRT vérifiés à SeerrCatalog. Désactivée par défaut ; manifeste personnel nécessaire lors de l’activation. [Configuration et limites](docs/pse/SUBMAKER.fr.md).
-
-## SeerrCatalog : des demandes aux contenus disponibles
-
-Dans **Sources → Stremio → SeerrCatalog**, une seule section regroupe **Disponibilités vers Remix** (import des résultats SeerrCatalog) et **Recherche via Remix** (recherches demandées par SeerrCatalog). Les deux fonctions restent indépendantes, avec une clé et une activation chacune. Le test du partage se fait dans Remix ; le test des recherches se fait dans SeerrCatalog. Prowlarr autonome se configure séparément dans SeerrCatalog.
-
-[SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog) transforme les demandes Seerr en catalogues Stremio et transmet à Remix ses contrôles de disponibilité et ses sources, sans recherche en double.
-
-1. Dans SeerrCatalog, ouvrez **Paramètres → Intégration Ether Remix**, générez une clé et activez l’export.
-2. Dans Remix, ouvrez **Sources → Stremio → SeerrCatalog → Disponibilités vers Remix**, saisissez l’adresse de base (ex. `https://seerrcatalog.example`, sans `/api/…`) et la clé, activez puis enregistrez. **Tester la connexion** vérifie le flux sans importer ; la synchronisation s’effectue chaque minute.
-3. Les titres déjà validés sont exportés automatiquement par la nouvelle version de SeerrCatalog, sans relancer leurs recherches.
-
-Les disponibilités de SeerrCatalog passent le filtre **« lisible uniquement »** sans nouvelle interrogation des addons. Les titres masqués ou à venir ne bloquent pas la synchronisation des autres disponibilités. Les filtres du catalogue et les règles de lecture restent actifs. L’import récupère les fiches TMDB, sans créer de collection.
-
-Disponibilités valables **26 h**, revérifiées après 24 h avec réveil horaire. Liens et en-têtes réutilisés au maximum **30 min** ; hash torrent jusqu’à expiration de l’observation. Source périmée, refusée par les règles du spectateur ou défaillante : retour à la recherche habituelle. Les URL peuvent expirer plus tôt ou dépendre de l’IP. Pour les séries, seuls les épisodes contrôlés fournissent des sources réutilisables.
-
-La synchronisation paginée rattrape modifications et suppressions après coupure ; un import incomplet conserve les données valides. Les sources sensibles restent en mémoire, hors API de catalogue, et sont relues au redémarrage. Désactiver l’intégration retire sa confiance. La clé partage les sources de **tous les utilisateurs SeerrCatalog** : instance Remix de confiance et HTTPS hors réseau privé requis.
-
-Variables équivalentes : `PSE_SEERRCATALOG=on`, `PSE_SEERRCATALOG_URL=http://seerrcatalog:7000`, `PSE_SEERRCATALOG_TOKEN=…`. L’option est désactivée par défaut.
-
-**Recherche complémentaire pour SeerrCatalog** : dans **SeerrCatalog → Paramètres → Intégration Ether Remix → Recherche via Remix**, activez la recherche et renseignez l’adresse de base de Remix. Générez une **clé dédiée aux recherches** dans ce bloc, puis copiez-la dans **Remix → Sources → Stremio → SeerrCatalog → Recherche via Remix** et activez les recherches. Enregistrez des deux côtés. Le partage des disponibilités possède sa propre clé et peut rester désactivé. Après mise à jour des deux applications, configurez cette nouvelle clé : l’ancienne clé de partage n’autorise plus les recherches. Lorsque les addons ne trouvent aucune release dans les langues principales et que le repli utilisateur est activé, SeerrCatalog demande à Remix une recherche dans ses sources configurées, notamment Prowlarr. Les tags principaux/de repli, la déduplication et les seuils restent appliqués par SeerrCatalog. Les contrôles J+1/J+3 et la disponibilité définitive sont conservés. Les recherches respectent les budgets de disponibilité et ne réutilisent pas circulairement les observations SeerrCatalog. Les torrents avec infoHash et les vrais flux HTTP peuvent être retournés ; les liens NZB ne sont jamais présentés comme des vidéos. Le test de connexion s’effectue depuis SeerrCatalog, sans lancer de recherche.
-
-## Les sources musicales
-
-Les sources s’activent séparément dans **Console → Ether-Remix → Sources → Streaming musical**. Les comptes debrid et les indexeurs déjà configurés sont réutilisés.
-
-| Source | Accès et rôle |
-| --- | --- |
-| **Audius** | MP3 public sans compte ni clé API, sur les titres correspondant au catalogue. Placé en premier ou en repli. |
-| **Tido, Internet Archive, UltraMax, Deezer Ricky, SoundCloud (Eclipse et Ricky)** | Entrées dédiées avec lien de configuration et manifest personnel masqué. UltraMax et Deezer Ricky nécessitent un compte Deezer. Qualité et disponibilité selon le fournisseur. |
-| **Autres addons Eclipse** | Un ou plusieurs liens `manifest.json`, essayés dans l’ordre. |
-| **DMM · Real-Debrid** | Recherche dans le catalogue musical de Debrid Media Manager, puis lecture avec vos comptes Real-Debrid existants, sans Prowlarr. |
-| **AllDebrid, Real-Debrid, TorBox** | Vos comptes existants, pour lire les pistes d’albums déjà en cache. Plusieurs comptes d’un même service sont essayés l’un après l’autre. |
-| **HiFi API** | Mode à part, via une instance externe : utilisé **seulement** quand aucune autre source n’est active, jamais ajouté en repli. |
-
-Les sources sont essayées automatiquement selon leur priorité, avec repli vers les suivantes. La console permet de consulter leur ordre et leur état. Les liens de configuration des fournisseurs sont actualisés depuis le registre public Eclipse.
-
-Les flux sont relayés sans conversion audio ni stockage local. La disponibilité et la qualité audio dépendent des sources et des fichiers proposés.
-
-### Clients musique
-
-| Client | Accès |
-| --- | --- |
-| Plexamp, Plex Web, applications Plex | Section **Musique** de Plex |
-| Finamp, Jellyfin web, Findroid, Streamyfin | Bibliothèque **Musique** Jellyfin |
-| Symfonium, Feishin, Supersonic, Tempo, DSub… | API Subsonic, authentification **legacy** |
-
-## Quels titres sont affichés et cherchés
-
-Avec le catalogue **« lisible uniquement »**, Remix connaît tout le catalogue TMDB mais n’affiche un titre que s’il a assez de releases indexées (2 par défaut) qui respectent le filtre choisi, par exemple VF ou MULTi en cache debrid. Les titres **VOSTFR** et les exceptions de langue comptent leurs releases dans toutes les langues.
-
-- **Listes filtrées** : accueil, Films, Séries, recommandations. La recherche, la watchlist, les collections et la reprise de lecture ne le sont pas : un titre choisi reste accessible, et sa lecture interroge les sources en direct.
-- **Ordre de recherche** : popularité TMDB décroissante, en alternant films et séries. Passent avant : les titres VOSTFR et exceptions de langue, puis les collections et bibliothèques mises en priorité.
-- **Recherche immédiate** : un ajout VOSTFR, le bouton **Chercher maintenant**, et une recherche dans Plex ou Jellyfin. Pour une recherche, les 5 premiers titres trouvés passent en tête de file s’ils n’ont jamais été cherchés, ou n’avaient rien donné il y a plus de 6 h.
-- **Titres à risque** : l’option **Afficher aussi les titres à risque** garde les titres qui ont moins de releases que le minimum (au moins une). Plex et Jellyfin les signalent par « ⚠ 1 source » au début du résumé, par un badge « 1 SOURCE » sur les affiches Ether, ou les deux. Avec un autre outil d’affiches, choisissez le résumé.
-- **Catalogue local** : Ether ne liste pas tout TMDB, seulement les titres assez connus et déjà sortis, selon **Catalogue → Masquer les titres obscurs**. C’est dans cet ensemble que Remix cherche des releases.
-
-## Délais de rafraîchissement
-
-**Métadonnées TMDB**
-
-| Donnée | Fréquence |
-| --- | --- |
-| Catalogue complet | Toutes les 24 h (réglable) |
-| Nouveautés et tendances | Toutes les 4 h |
-| Fiches détaillées manquantes | Par lots, toutes les 90 s, en commençant par les sorties récentes et les titres populaires |
-| Séries en cours | Fiche actualisée à chaque cycle du catalogue ; 1 h au maximum à l’affichage d’une saison active |
-
-**Recherche de releases**
-
-| Résultat de la dernière recherche | Nouvel essai après |
-| --- | --- |
-| Titre sorti il y a moins de 60 jours | 2 jours |
-| Aucune release trouvée | 7 jours |
-| Releases trouvées | 14 jours |
-| Source en panne ou réponse partielle | 24 h |
-
-Ces délais sont des minimums. La recherche dépend du budget quotidien de chaque source (1000 requêtes par défaut), de l’intervalle entre deux titres (10 s par défaut) et se met en pause pendant la lecture : sur un grand catalogue, un titre peut attendre plus longtemps. Une release non revue depuis 60 jours ne compte plus.
-
-Dans **Sources → Indexation**, le bloc repliable **Priorité de recherche** permet de faire passer une collection ou une bibliothèque avant le reste : *Prioritaire* retente un titre sans release après 1 jour, *Maximale* après 6 h. **Chercher maintenant** ignore ces délais pour la sélection. Les budgets par source restent appliqués. À l’import, SeerrCatalog (mise à jour toutes les heures, priorité maximale) et RSS Catalog (toutes les 3 h, prioritaire) sont reconnus et préréglés ; ces réglages restent modifiables.
-
-**Collections et bibliothèques**
-
-Chaque collection a sa propre cadence : `live` (à la demande), `hourly`, `daily` (par défaut), `weekly` ou toutes les N heures, de 1 à 168. Certaines sources imposent un délai minimum. Les bibliothèques se mettent à jour avec leurs collections. Cette cadence est indépendante de la priorité de recherche de releases ; **Actualiser**, dans la même section, relance immédiatement une collection ou toutes celles d’une bibliothèque.
-
 ## Démarrer
 
 1. **Installer** `ghcr.io/aerya/ether-remix:latest` avec le [Compose fourni](docs/pse/GUIDE.fr.md#installation), via Dockge-Enhanced. L’image est publique, sans connexion à GHCR.
@@ -190,7 +102,12 @@ Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/c
 
 ## Documentation
 
-- [Guide français : installation, variables, Scrob, musique et clients](docs/pse/GUIDE.fr.md) · [English guide](docs/pse/GUIDE.en.md)
+| Besoin | Guide |
+| --- | --- |
+| Installation, réglages, sources musicales, playlists, Scrob et clients | [Guide de configuration](docs/pse/GUIDE.fr.md) |
+| Visibilité des titres, priorités et délais de recherche | [Catalogue et indexation](docs/pse/CATALOGUE.fr.md) |
+| Partage des disponibilités et recherches complémentaires | [Intégration SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) |
+| Instance publique ou auto-hébergée, langues et limites de traduction | [SubMaker](docs/pse/SUBMAKER.fr.md) |
 
 ## Origine et licence
 
