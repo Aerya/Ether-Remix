@@ -46,6 +46,9 @@ describe("Owner usability", () => {
     // before checking that opening its drawer does not remount/refetch it.
     if (path === "/sources/indexers") {
       await screen.findByRole("button", { name: "Add indexer" }, WAIT);
+      // The sibling budget section loads its own configuration too.
+      // Wait for both initial reads before measuring drawer-only requests.
+      await screen.findByRole("heading", { name: "Daily budgets" }, WAIT);
     }
     const page = control.closest("main")!;
     const configReads = calls(fake, "GET", "/config").length;

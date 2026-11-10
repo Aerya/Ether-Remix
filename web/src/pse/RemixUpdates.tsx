@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-submaker-external-subtitles",
+    id: "2026-11-10-concerts-precision",
     version: "current",
+    date: "2026-11-10",
+    title: ["Concerts : une sélection plus précise", "Concerts: a more focused selection"],
+    items: [
+      [
+        "Mots-clés de captation et genre Musique pour réduire les fictions. Les anciennes collections standard sont corrigées automatiquement, sans écraser les requêtes personnalisées. Quelques concerts mal renseignés peuvent manquer.",
+        "Recorded-performance keywords and the Music genre reduce fiction matches. Existing standard collections are upgraded automatically without overwriting custom queries. Some poorly tagged concerts may be missing.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-submaker-external-subtitles",
+    version: "0.2.37-remix.41.1",
     date: "2026-11-10",
     title: ["Sous-titres externes avec SubMaker", "External subtitles with SubMaker"],
     items: [

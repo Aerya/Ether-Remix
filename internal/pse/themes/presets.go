@@ -54,10 +54,10 @@ func discover(name string, params map[string]string) Entry {
 
 // Mots-clés TMDB (vérifiés sur themoviedb.org) ; « | » vaut « ou ».
 const (
-	kwConcerts   = "156205|6029|304615|318730" // concert film, concert, music concert, live concert
-	kwStandUp    = "9716"                      // stand-up comedy
-	kwOneManShow = "6656|193300"               // one-man show, one-woman show
-	kwTheatre    = "246884|195729|220201"      // filmed theater, stage play, musical theater
+	kwConcerts   = "156205|304615|318730" // concert film, music concert, live concert ; pas le thème générique « concert »
+	kwStandUp    = "9716"                 // stand-up comedy
+	kwOneManShow = "6656|193300"          // one-man show, one-woman show
+	kwTheatre    = "246884|195729|220201" // filmed theater, stage play, musical theater
 )
 
 func keywords(name, kw, sort string, extra ...string) Entry {
@@ -66,6 +66,15 @@ func keywords(name, kw, sort string, extra ...string) Entry {
 		p[extra[i]] = extra[i+1]
 	}
 	return discover(name, p)
+}
+
+// Le genre Musique complète les mots-clés de captation. include_video
+// conserve les concerts publiés directement en vidéo.
+func concerts(name, sort string, extra ...string) Entry {
+	e := keywords(name, kwConcerts, sort, extra...)
+	e.Params["with_genres"] = "10402"
+	e.Params["include_video"] = "true"
+	return e
 }
 
 var services = []Entry{
@@ -112,9 +121,9 @@ var presets = []Preset{
 		discover("Documentaires français", map[string]string{"with_genres": "99", "with_original_language": "fr", "sort_by": "popularity.desc"}),
 	}},
 	{ID: "concerts", Name: "Concerts", Type: TypeMovie, AllLanguages: true, Summary: "Concerts filmés, toutes langues", Entries: []Entry{
-		keywords("Concerts populaires", kwConcerts, "popularity.desc"),
-		keywords("Concerts les mieux notés", kwConcerts, "vote_average.desc", "vote_count.gte", "20"),
-		keywords("Concerts récents", kwConcerts, "primary_release_date.desc", "vote_count.gte", "5"),
+		concerts("Concerts populaires", "popularity.desc"),
+		concerts("Concerts les mieux notés", "vote_average.desc", "vote_count.gte", "20"),
+		concerts("Concerts récents", "primary_release_date.desc", "vote_count.gte", "5"),
 	}},
 	{ID: "spectacles", Name: "Spectacles", Type: TypeMovie, AllLanguages: true, Summary: "Stand-up, one-man-shows et théâtre filmé, toutes langues", Entries: []Entry{
 		keywords("Stand-up", kwStandUp, "popularity.desc"),

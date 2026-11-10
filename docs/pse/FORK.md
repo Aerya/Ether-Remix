@@ -97,3 +97,9 @@ Navigation and categories live in `web/src/pse/navigation.tsx`, `RemixSources.ts
 The sync script merges JSON translation conflicts by key only when edits are independent. Different translations of the same message remain blocking; the checkpoint stays unchanged. Catalogues and embedded UI are regenerated before verification. `AGENTS.md`, Remix files and workflows remain protected. The historical 775-commit backlog was integrated through `6d9bb9f17adb661540fdf292fee42ac0bb8ac353`.
 
 The protected `internal/catalog/pse_tier_sources.go` adapter classifies fork tables for Ether’s catalogue migration: language exceptions remain protected, while automatic indexing caches do not retain the entire catalogue.
+
+## Concert selection
+
+The Concerts preset requires the TMDB Music genre (10402) and at least one recorded-performance keyword: `concert film` (156205), `music concert` (304615) or `live concert` (318730). The generic `concert` keyword (6029), which may describe a fictional scene, is removed. Video releases are included. Precision takes priority over completeness: poorly tagged recordings may be missing, and incorrect TMDB keywords can still produce false positives.
+
+At startup, the three original standard queries in preset-created collections are upgraded and their members rebuilt in the background. IDs, names and other settings are retained, including renamed collections. Custom queries and personal collections are not migrated. Titles leave Concerts after rebuilding; no media is deleted.
