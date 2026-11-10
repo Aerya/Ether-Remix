@@ -431,16 +431,18 @@ export function IndexerActivity() {
           </div>
         </article>
       </div>
-      <div className="overflow-hidden rounded-xl border border-border">
-        <div className="px-5 py-4">
-          <h4 className="text-sm font-semibold">{L("Détail par source", "Source breakdown")}</h4>
+      <details className="overflow-hidden rounded-xl border border-border">
+        <summary className="cursor-pointer px-5 py-4">
+          <span className="text-sm font-semibold">
+            {L("Détail par source", "Source breakdown")}
+          </span>
           <p className="mt-1 text-xs text-fg-muted">
             {L(
               "Aujourd’hui (UTC) · chiffres actualisés toutes les 30 s. Les erreurs et durées sont mesurées depuis cette mise à jour d’Ether-Remix.",
               "Today (UTC) · figures refreshed every 30s. Errors and durations are measured since this Ether-Remix update.",
             )}
           </p>
-        </div>
+        </summary>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-sm">
             <thead>
@@ -518,7 +520,7 @@ export function IndexerActivity() {
             "A title search can consume several requests. Stored releases do not guarantee playback.",
           )}
         </p>
-      </div>
+      </details>
       <details className="rounded-xl border border-border" open>
         <summary className="cursor-pointer px-5 py-4 text-sm font-semibold">
           {L("Dernières recherches", "Recent searches")}{" "}
