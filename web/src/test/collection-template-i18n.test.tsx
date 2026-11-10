@@ -40,7 +40,9 @@ it("switches template copy in place and searches translated names and descriptio
   fireEvent.click(screen.getByRole("button", { name: "French" }));
   await waitFor(() => expect(t(template.name)).not.toBe(template.name));
   const name = t(template.name);
-  fireEvent.change(screen.getByRole("searchbox", { name: t("Search collections") }), {
+  // The dictionary updates before React commits the translated controls.
+  const search = await screen.findByRole("searchbox", { name: t("Search collections") });
+  fireEvent.change(search, {
     target: { value: name },
   });
   expect(
