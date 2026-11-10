@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/DescribeDialog-ColhkliN.js
 import{c as pe,r as l,m as ee,j as n,a,t as ge,x as xe,b as L,a3 as be,H as te,e as ye,u as ve,aG as we,aH as je,aF as Se,a2 as $,aI as Ne,D as Q,a4 as Ae,aD as ke,a5 as Ce,g as Ee,L as Me,S as De,q as Ie,aJ as Te,aK as Z,aL as Le,a1 as Re}from"./index-Da2Xr5X8.js";import{A as Oe}from"./react-DOTo9p2G.js";import{e as ze}from"./rules-BbG2aE_9.js";import{r as _e}from"./LiveStage-BZsw6Hqe.js";import{C as He}from"./Catalog-CAZ5gDB7.js";import{T as Pe}from"./TitleInspector-B3ey0UZB.js";import"./Stage-BH4rbq5P.js";import{M as $e}from"./maximize-2-CV9TsJcn.js";/**
+========
+import{c as pe,r as l,m as ee,j as n,a,t as ge,x as xe,b as L,a3 as be,H as te,e as ye,u as ve,aG as we,aH as je,aF as Se,a2 as $,aI as Ne,D as Q,a4 as Ae,aD as ke,a5 as Ce,g as Ee,L as Me,S as De,q as Ie,aJ as Te,aK as Z,aL as Le,a1 as Re}from"./index-CLhOd4Ta.js";import{A as Oe}from"./react-CGP6v2ga.js";import{e as ze}from"./rules-0nUaXTCO.js";import{r as _e}from"./LiveStage-DiUXRUTW.js";import{C as He}from"./Catalog-DvabC4Fe.js";import{T as Pe}from"./TitleInspector-DIZRoCmf.js";import"./Stage-0qpNPWu5.js";import{M as $e}from"./maximize-2-C34N-bOR.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/DescribeDialog-CYUNAcvm.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

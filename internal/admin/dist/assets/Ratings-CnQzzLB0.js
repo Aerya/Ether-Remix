@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/Ratings-CnQzzLB0.js
 import{c as be,j as e,b as T,a as t,B as _,F as pe,L as Y,q as G,Q as me,m as je,r as g,bc as xe,D as ve,bP as ye,aN as W,a1 as Q,a_ as X,an as $,I as ae,bF as re,ay as ke,du as Se,c$ as we,be as Ne,Y as ne,a0 as Ce,aj as w,aR as ie,a$ as q,t as oe,g as Pe,au as De,a3 as Me,ap as Re,X as Te,U as Oe,am as Fe,a2 as Ke}from"./index-Da2Xr5X8.js";import{I as Le}from"./IntegrationAppCard-DvvydfEH.js";import{I as he}from"./integration-brands-Bc0AhuL9.js";import{A as Be}from"./arrow-right-Cc_b9VOq.js";import{s as Ae}from"./IntegrationAccount-C647ydcR.js";import{W as Ie}from"./workspace-Bd0N38cz.js";import{L as Ee}from"./list-video-Biyfv_VS.js";/**
+========
+import{c as be,j as e,b as T,a as t,B as _,F as pe,L as Y,q as G,Q as me,m as je,r as g,bc as xe,D as ve,bP as ye,aN as W,a1 as Q,a_ as X,an as $,I as ae,bF as re,ay as ke,du as Se,c$ as we,be as Ne,Y as ne,a0 as Ce,aj as w,aR as ie,a$ as q,t as oe,g as Pe,au as De,a3 as Me,ap as Re,X as Te,U as Oe,am as Fe,a2 as Ke}from"./index-CLhOd4Ta.js";import{I as Le}from"./IntegrationAppCard-A0_zJCLI.js";import{I as he}from"./integration-brands-BTUQ5biT.js";import{A as Be}from"./arrow-right-B42xtO8N.js";import{s as Ae}from"./IntegrationAccount-C647ydcR.js";import{W as Ie}from"./workspace-DzI_XmVk.js";import{L as Ee}from"./list-video-B-J6x9sK.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/Ratings-D1fo0cr8.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

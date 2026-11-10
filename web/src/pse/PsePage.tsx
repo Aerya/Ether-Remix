@@ -1,3 +1,4 @@
+import { QualityProfiles } from "./QualityProfiles";
 import { CollapsibleBlock, SettingsSection } from "../components/CollapsibleSections";
 import { SourceHosting } from "./SourceHosting";
 import { Badge, Button, Checkbox, Input, Select, Switch, toast } from "@braedonsaunders/appkit-ui";
@@ -315,7 +316,12 @@ function PseSettings() {
             )}
           </>
         ) : null}
-        {tab === "langues" ? <ThemeLibraries exceptionsOnly /> : null}
+        {tab === "langues" ? (
+          <>
+            <QualityProfiles />
+            <ThemeLibraries exceptionsOnly />
+          </>
+        ) : null}
         {tab === "demande" ? <VostfrTitles /> : null}
         {tab === "statistiques" ? (
           <>

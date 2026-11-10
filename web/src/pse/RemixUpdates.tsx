@@ -46,6 +46,22 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-10-quality-profiles",
+    version: "0.2.37-remix.40.1",
+    date: "2026-11-10",
+    title: ["Des filtres de qualité personnalisables", "Custom release quality filters"],
+    items: [
+      [
+        "Langues et qualité : profils globaux, par Films/Séries, bibliothèque ou collection. Formats, codecs, résolution, HDR/DV, taille et regex, avec test de noms de releases.",
+        "Languages and quality: global, Movies/Shows, library or collection profiles. Formats, codecs, resolution, HDR/DV, size and regex, with a release-name preview.",
+      ],
+      [
+        "Import des filtres compatibles d’un export JSON AIOStreams, avertissements pour les règles non transposables et modification avant enregistrement.",
+        "Import compatible filters from an AIOStreams JSON export, with unsupported-rule warnings and editing before saving.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-10-seerrcatalog-hidden-titles",
     version: "0.2.37-remix.39.1",
     date: "2026-11-10",

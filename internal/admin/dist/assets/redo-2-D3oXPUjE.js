@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/redo-2-D3oXPUjE.js
 import{c as o}from"./index-Da2Xr5X8.js";/**
+========
+import{c as o}from"./index-CLhOd4Ta.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/redo-2-DzR3z6M8.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

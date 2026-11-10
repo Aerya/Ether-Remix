@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/presets-DHXlRV-l.js
 import{c as f,j as e,a,e as c,H as h,dK as b,ae as x,q as B}from"./index-Da2Xr5X8.js";import{Z as g}from"./zap-B59DqHzx.js";/**
+========
+import{c as f,j as e,a,e as c,H as h,dK as b,ae as x,q as B}from"./index-CLhOd4Ta.js";import{Z as g}from"./zap-DSjzAPvi.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/presets-Drt6czij.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

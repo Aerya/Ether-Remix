@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/SignInMethods-BGtrHRcs.js
 import{c as X,r as a,a as e,j as s,a4 as A,a5 as E,a_ as y,ah as M,aj as x,Z,aP as F,b as v,I as Q,aR as Y,aW as ee}from"./index-Da2Xr5X8.js";/**
+========
+import{c as X,r as a,a as e,j as s,a4 as A,a5 as E,a_ as y,ah as M,aj as x,Z,aP as F,b as v,I as Q,aR as Y,aW as ee}from"./index-CLhOd4Ta.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/SignInMethods-C462rvfe.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

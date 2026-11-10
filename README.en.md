@@ -26,6 +26,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
 
+- **Quality profiles**: formats, codecs, resolutions, HDR/Dolby Vision, size, languages and regex, globally or per library/collection. Import compatible AIOStreams filters from a JSON export, preview and edit before saving.
 - **French-oriented catalogue**: choose languages and variants — VFF, VFQ, VFi, MULTi… — along with resolution, codec and cache requirements.
 - **Playable-only catalogue**: show titles with a minimum number of releases matching your preferences. Search, collections, watchlists and continue watching remain accessible.
 - **Targeted exceptions**: allow other languages for selected collections or libraries without changing your general preferences.

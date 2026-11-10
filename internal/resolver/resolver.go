@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/quality"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
 )
@@ -619,6 +620,7 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	q := s.qualityCfg()
 	req.Client, _ = applyClientRules(q, req.Client, req.User, media)
 	profile := SelectProfileForMedia(q, req.Client, req.User, media)
+	profile.SelectionKey += quality.Signature(s.db)
 	key := flightKey(req, profile)
 
 	for {
@@ -1565,7 +1567,13 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		}
 		preferred := !fallback && (pinned || (req.Prefer != "" && rel.ID == req.Prefer))
 		var reason string
-		if s.HardSubtitleBlocked(ctx, rel) {
+		qualityKey := t.Key
+		if t.ShowKey != 0 {
+			qualityKey = t.ShowKey
+		}
+		if !quality.Allow(s.db, qualityKey, t.Type, rel) {
+			reason = "release preference: Remix quality profile"
+		} else if s.HardSubtitleBlocked(ctx, rel) {
 			reason = "blocked hardcoded subtitles"
 		} else if s.rejectedFor(t.Key, rel) {
 			reason = "release rejected for this title"

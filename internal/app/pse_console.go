@@ -22,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/pse/frenchcat"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 	"github.com/braedonsaunders/ether/internal/pse/notifyfr"
+	"github.com/braedonsaunders/ether/internal/pse/quality"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 	"github.com/braedonsaunders/ether/internal/pse/scrobpush"
 	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
@@ -32,6 +33,8 @@ import (
 // pseRuntime regroupe l'état des ajouts PSE d'une instance d'App, sans
 // ajouter de champ à la structure d'Ether.
 type pseRuntime struct {
+	qualityOnce   sync.Once
+	quality       *quality.Service
 	addons        music.AddonRegistry
 	statistics    statistics.Service
 	once          sync.Once
@@ -267,7 +270,15 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	indexActivity := a.pseIndexActivityHandler(false)
 	indexSources := a.pseIndexActivityHandler(true)
 	indexHistory := a.pseIndexHistoryHandler()
+	var qualityAPI http.Handler = http.NotFoundHandler()
+	if q := a.pseQuality(); q != nil {
+		qualityAPI = q.Handler(a.pseLangExemptChanged)
+	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/quality" || strings.HasPrefix(r.URL.Path, "/quality/") {
+			http.StripPrefix("/quality", qualityAPI).ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/themes" || strings.HasPrefix(r.URL.Path, "/themes/") {
 			http.StripPrefix("/themes", themeAPI).ServeHTTP(w, r)
 			return

@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/merge-BX-fI01r.js
 import{c as a}from"./index-Da2Xr5X8.js";/**
+========
+import{c as a}from"./index-CLhOd4Ta.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/merge-G34adyt5.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
+	"github.com/braedonsaunders/ether/internal/pse/quality"
 	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -231,6 +233,13 @@ func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p Playa
 	names, all := map[string]bool{}, map[string]bool{}
 	now := s.now()
 	for _, r := range rs {
+		info := releaseparse.Parse(r.Name)
+		info.Height, info.VideoCodec, info.AudioCodec = r.Height, r.VideoCodec, r.AudioCodec
+		info.HDR10, info.DolbyVision = r.HDR, r.DolbyVision
+		info.Languages, info.SubtitleLanguages = r.Languages, r.SubtitleLanguages
+		if !quality.Allow(s.db, key, r.Type, core.Release{Name: r.Name, Size: r.Size, Protocol: r.Protocol, Indexer: r.SourceName, Info: info}) {
+			continue
+		}
 		if !counts(r, now) {
 			continue
 		}
@@ -255,7 +264,7 @@ func (s *Store) ForgetPlayable(ctx context.Context) error {
 // SyncPlayable recalcule tous les titres si le filtre a changé depuis le
 // dernier calcul. Renvoie le nombre de titres recalculés.
 func (s *Store) SyncPlayable(ctx context.Context, p PlayableSettings) (int, error) {
-	sig := p.signature()
+	sig := p.signature() + quality.Signature(s.db)
 	var cur string
 	err := s.db.QueryRowContext(ctx, `SELECT v FROM pse_state WHERE k='playable_signature'`).Scan(&cur)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {

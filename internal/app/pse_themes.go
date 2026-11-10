@@ -66,6 +66,7 @@ func (a *App) runPSELangExempt(ctx context.Context, svc *themes.Service, kick <-
 		if err := st.SetLangExempt(run, svc.ExemptKeys(run)); err != nil && ctx.Err() == nil {
 			a.log.Warn("exceptions de langue Ether-Remix non enregistrées", "err", err)
 		}
+		a.refreshPSEQuality(run, svc)
 		cancel()
 		select {
 		case <-ctx.Done():

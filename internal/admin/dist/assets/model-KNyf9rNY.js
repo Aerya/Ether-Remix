@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/model-KNyf9rNY.js
 import{c as M,aN as r,q as T,a,d8 as f,M as P,t as k}from"./index-Da2Xr5X8.js";/**
+========
+import{c as M,aN as r,q as T,a,d8 as f,M as P,t as k}from"./index-CLhOd4Ta.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/model-CddWC0iQ.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

@@ -16,6 +16,7 @@ func (a *App) buildPSEIndexer() {
 	}
 	rt := pseRuntimeOf(a)
 	rt.prepare(a)
+	a.pseQuality()
 	a.pseThemes()
 	a.buildPSEScrob()
 	a.startPSEScrobPush()

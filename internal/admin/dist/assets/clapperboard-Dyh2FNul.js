@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/clapperboard-Dyh2FNul.js
 import{c as e}from"./index-Da2Xr5X8.js";/**
+========
+import{c as e}from"./index-CLhOd4Ta.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/clapperboard-BbLJBQVA.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.

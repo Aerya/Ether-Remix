@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:internal/admin/dist/assets/captions-DarreTOz.js
 import{c as t}from"./index-Da2Xr5X8.js";/**
+========
+import{c as t}from"./index-CLhOd4Ta.js";/**
+>>>>>>>> origin/main:internal/admin/dist/assets/captions-CZyrdpOY.js
  * @license lucide-react v1.70.0 - ISC
  *
  * This source code is licensed under the ISC license.
