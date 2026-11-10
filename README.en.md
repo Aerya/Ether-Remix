@@ -45,6 +45,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 - Organize Plex libraries by **service, studio, anime, documentaries, concerts or live shows**.
 - Build their rows with TMDB collections, imported Stremio catalogues and ready-made presets.
 - Set language exceptions, search priorities and collection refresh intervals from **1 to 168 hours**.
+- Adjust when movies appear before or after their digital/physical release with a **day offset**.
 - Benefit from batched poster badge preparation in Plex and Jellyfin, per-viewer watch state and exact counts.
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) Music in your applications

@@ -57,6 +57,18 @@ CREATE INDEX ` + t + `_status ON ` + t + `(type, browsable, adult, status, rk);
 CREATE INDEX ` + t + `_all ON ` + t + `(type, adult, rk);`
 }
 
+func dropRankIndexesSQL(side string) []string {
+	t := "catalog_rank_" + side
+	return []string{
+		`DROP INDEX IF EXISTS ` + t + `_pop`,
+		`DROP INDEX IF EXISTS ` + t + `_year`,
+		`DROP INDEX IF EXISTS ` + t + `_lang`,
+		`DROP INDEX IF EXISTS ` + t + `_runtime`,
+		`DROP INDEX IF EXISTS ` + t + `_status`,
+		`DROP INDEX IF EXISTS ` + t + `_all`,
+	}
+}
+
 const rankFill = `SELECT key, type, browsable, adult, release_known, released_ts, year, language, runtime_sec, status, -popularity FROM catalog_titles WHERE type IN ('movie','show')`
 
 // rankUpsert writes src's rank row into one copy, when that copy is the
@@ -285,12 +297,20 @@ func (c *Catalog) rebuildRank(ctx context.Context) (RankRebuild, error) {
 		rankBuildHook()
 	}
 	for _, ix := range strings.Split(strings.TrimSuffix(rankIndexSQL(idle), ";"), ";\n") {
-		if err := exec(ix); err != nil {
-			return abandon(err)
+		if pg {
+			if err := exec(ix); err != nil {
+				return abandon(err)
+			}
+			continue
+		}
+		if err := store.CreateIndexAnalyzed(ctx, c.db, strings.Fields(ix)[2], ix); err != nil {
+			return abandon(fmt.Errorf("catalog: rank rebuild: %w", err))
 		}
 	}
-	if err := exec(`ANALYZE ` + t); err != nil {
-		return abandon(err)
+	if pg {
+		if err := exec(`ANALYZE ` + t); err != nil {
+			return abandon(err)
+		}
 	}
 	// Apply what changed during the build and swap, in one short
 	// transaction. On PostgreSQL a writer whose statement began before
@@ -326,6 +346,14 @@ func (c *Catalog) rebuildRank(ctx context.Context) (RankRebuild, error) {
 				return out, err
 			}
 		}
+	}
+	// Reclaim the retired copy's rows and secondary indexes now that the view
+	// names the newly built copy instead of keeping two full copies on disk.
+	oldTable := "catalog_rank_" + live
+	if !pg {
+		_ = exec(`DROP TABLE IF EXISTS `+oldTable, strings.TrimSuffix(rankTableSQL(live, bigint), ";"))
+	} else {
+		_ = exec(append([]string{`SET LOCAL lock_timeout = '2s'`}, append(dropRankIndexesSQL(live), `TRUNCATE `+oldTable)...)...)
 	}
 	c.rankReady.Store(true)
 	c.writeGen.Add(1)

@@ -985,6 +985,9 @@ func (c *Catalog) upsertItemsBudget(ctx context.Context, items []upsertItem, bud
 	}
 	c.writeGen.Add(1)
 	c.noteSearchWrites(titles)
+	if len(fresh) > 0 {
+		c.notifyStatus(true)
+	}
 	return nil
 }
 
@@ -1576,7 +1579,7 @@ func (c *Catalog) queryTitlesRows(ctx context.Context, sqlGated, rowsOnly bool, 
 		visible = out[:0]
 		for _, t := range out {
 			// A row's release gate is the caller's, once its facts are read.
-			if asRow(&t) || c.upcomingMovie(&t) || (t.IsReleased(c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || homeReleaseVisible(&t, c.now()))) {
+			if asRow(&t) || c.upcomingMovie(&t) || (t.IsReleased(c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(&t))) {
 				visible = append(visible, t)
 			}
 		}

@@ -26,8 +26,18 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-stats-searches-readable",
+    id: "2026-11-10-ether-sync-recovered",
     version: "current",
+    date: "2026-11-10",
+    title: ["Mise à jour Ether et compatibilité Remix", "Ether update and Remix compatibility"],
+    items: [[
+      "Les nouveautés d’Ether sont intégrées, dont le décalage des sorties numériques/physiques et les corrections du guide TV. Les filtres Remix, les sections repliables et la préparation groupée des affiches sont conservés.",
+      "Ether updates include the digital/physical release offset and TV guide fixes. Remix filters, collapsible sections and batched poster preparation are preserved.",
+    ]],
+  },
+  {
+    id: "2026-11-10-stats-searches-readable",
+    version: "0.2.37-remix.35.1",
     date: "2026-11-10",
     title: ["Statistiques plus lisibles", "Clearer statistics"],
     items: [

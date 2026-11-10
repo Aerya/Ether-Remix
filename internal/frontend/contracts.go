@@ -15,6 +15,10 @@ import (
 // Protocol identifies a surface independently of client product or platform.
 type Protocol = core.Protocol
 
+// ProtocolHTTP is the release protocol for a stream URL read with HTTP
+// range requests. Its value stays owned by core.
+const ProtocolHTTP = core.ProtocolHTTP
+
 // Placement identifies where rows are rendered.
 type Placement string
 
@@ -95,9 +99,10 @@ type RowDirectory struct {
 
 // RowLayout describes Home Designer presentation selected by experience.
 type RowLayout struct {
-	Order int
-	Style string
-	Paint RowPaint
+	Order  int
+	Style  string
+	Paint  RowPaint
+	Always bool
 }
 
 // RowPaint carries optional presentation colors and artwork references.
@@ -308,6 +313,12 @@ const (
 	PrerollAfterTrailers  = core.PrerollAfterTrailers
 )
 
+// Pre-roll request, clip and play values stay owned by core. Adapters
+// exchange them through these aliases.
+type PrerollRequest = core.PrerollRequest
+type PrerollClip = core.PrerollClip
+type PrerollPlay = core.PrerollPlay
+
 // Prerolls are the owner's pre-rolls (#298), served as the first intro of
 // a fresh movie or episode play. Intro reports the pre-roll before an item
 // the front end already authorized (with its placement,
@@ -425,6 +436,32 @@ type PlaylistLibrary interface {
 	MovePlaylistItem(context.Context, *core.Viewer, core.RatingKey, int, int) error
 	DeletePlaylist(context.Context, *core.Viewer, core.RatingKey) error
 }
+
+// PlaylistEdit updates only explicitly supplied fields. Its storage stays
+// owned by core.
+type PlaylistEdit = core.PlaylistEdit
+
+// PlaylistMutation addresses members by stable item identity. Its storage
+// stays owned by core.
+type PlaylistMutation = core.PlaylistMutation
+
+// PlaylistEditor is the optional playlist field-edit capability a playlist
+// store may expose.
+type PlaylistEditor interface {
+	EditPlaylist(context.Context, int64, RatingKey, PlaylistEdit) (*Playlist, error)
+}
+
+// PlaylistMutator is the optional identity-addressed playlist mutation
+// capability a playlist store may expose.
+type PlaylistMutator interface {
+	MutatePlaylist(context.Context, int64, RatingKey, PlaylistMutation) (*Playlist, int, error)
+}
+
+// SmartPlaylists persists a section query for evaluation at read time.
+type SmartPlaylists interface {
+	CreateSmartPlaylist(ctx context.Context, userID int64, title, uri string) (*Playlist, error)
+}
+
 type NotInterestedEntry struct {
 	Key     core.RatingKey
 	AddedAt time.Time
@@ -708,6 +745,14 @@ type TrickplayOffer struct {
 	Interval      time.Duration
 	Bandwidth     int
 }
+
+// TrickplayCacheKey binds preview work to the selected item, release and
+// opened source member. The identity stays owned by core.
+func TrickplayCacheKey(s *PlaySession) string { return core.TrickplayCacheKey(s) }
+
+// TrickplayCanceler is the optional capability that cancels preview work
+// for a trickplay cache key.
+type TrickplayCanceler interface{ CancelTrickplay(string) }
 
 // TrickplayTiles serves preview sheets for an item the viewer may play.
 // The broker owns release identity and generation. A false offer means no

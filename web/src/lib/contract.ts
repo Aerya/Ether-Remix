@@ -47,6 +47,26 @@ export interface TitleDetail extends TitleCard {
   episodeCount?: number;
 }
 
+export interface TitleLibraryReason {
+  code: string;
+  message: string;
+  votes?: number;
+  minVotes?: number;
+  popularity?: number;
+  minPopularity?: number;
+  rule?: string;
+}
+
+export interface TitleLibraryStatus {
+  browsable: boolean;
+  included: boolean;
+  inLibraryTier: boolean;
+  canInclude: boolean;
+  releaseGated: boolean;
+  reasons: string[];
+  items: TitleLibraryReason[];
+}
+
 const RULE_FIELDS = [
   "genre",
   "keyword",
@@ -63,6 +83,8 @@ const RULE_FIELDS = [
   "runtime",
   "contentRating",
   "released",
+  "latestSeasonPremiere",
+  "latestEpisode",
   "watchProvider",
   "collection",
   "watched",
@@ -352,6 +374,7 @@ export interface HomeRow {
   slot?: number;
   anchorSlot?: number;
   placement?: string;
+  hiddenCode?: string;
   hiddenReason?: string;
   policy?: RowPolicy;
   policyLayer?: "global" | "override";

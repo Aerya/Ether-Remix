@@ -1,6 +1,37 @@
 # Changelog
 
-## Unreleased (0.3.6)
+## 0.3.7 (2026-11-09)
+
+- **Performance:** On Air graphics render only for watched channels, so the
+  decade channels no longer burn CPU unwatched; disabling a channel cancels its
+  renders; faster On Air rasterizing; calmer IPTV listing and availability
+  rebuilds (#409).
+- **Database:** hidden-title sets no longer pile up (minutes of retention,
+  compact storage); daily sweeps of expired derived data; idle compaction
+  returns free pages to disk; one pre-migration snapshot, removed after 7 days.
+- **Updates and health:** startup and migration work queues background writers
+  instead of failing them after 10 seconds; transient post-start states show as
+  checking, not errors; **Sync shared users**; client rules naming removed
+  quality profiles repair themselves (#407).
+- **Playback:** stopped Plex sessions end even if the player keeps fetching
+  (#410); LG webOS / VIDAA keep Direct Play for 4K HEVC, 1080p fallback
+  transcodes, a single HLS variant (#408); faster QSV HDR tone mapping.
+- **Jellyfin/Emby clients:** lenient device-profile decoding for Litefin (#404);
+  tag-less posters for Moonfin, served only for titles every viewer may see
+  (#405).
+- **Console:** Home designer bottom bulk bar and much faster first load; Cache
+  Explorer **Clear** without blocking (#402); **Latest season premiere** and
+  **Latest aired episode** collection rules (#406).
+- **Live TV:** decade channels keep to their own decade; Live TV does no
+  background work while nobody watches; a channel's programme feed is not a
+  second stream on Overview/Activity.
+- **Late fixes:** Experience counts real stalls per hour; Plex Media/Part lists
+  stay stable (#389) and DV-stripped variants keep subtitles (#191); Emby startup
+  calls (#327); live Overview/health; Radarr-style profile Language; season
+  release pinning (#318); home-release offset (#362); parser fixes (#335, #360);
+  diagnostics keep every rejection (#365).
+
+## 0.3.6 (2026-11-09)
 
 - **Decade channels:** CHROMA 80, RIOT 90, ORBIT 00 and SHIFT 10 ship on every
   install, with weekly schedules built from your catalogue, rebuilt era

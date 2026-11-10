@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -155,4 +156,184 @@ func TestListingLifecycle(t *testing.T) {
 	if !acceptsGzip("deflate, gzip;q=0.5") || acceptsGzip("gzip;q=0, *") || !acceptsGzip("*") || acceptsGzip("") {
 		t.Fatal("Accept-Encoding negotiation")
 	}
+}
+
+// Catalogue writes during a scan must not queue another whole-library build
+// behind every poll: the first write rebuilds promptly, and the rest of
+// the write stream coalesces until the rebuild floor passes.
+func TestCatalogueChurnDoesNotRebuildHotListing(t *testing.T) {
+	s := New(t.TempDir())
+	t.Cleanup(s.Close)
+	var clock atomic.Int64
+	clock.Store(time.Unix(1_800_000_000, 0).UnixNano())
+	s.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	var built atomic.Int64
+	req := func(catalog uint64) Request {
+		return Request{Slot: "movie", State: State{Stamp: "a", Catalog: catalog, At: s.now()}, Owner: "device",
+			Build: func(_ context.Context, e *Entry) error {
+				built.Add(1)
+				_, err := io.WriteString(e, "[]")
+				return err
+			}}
+	}
+	serve(t, s, req(1), nil)
+	settle(t, s)
+	// The catalogue generation moves under every poll, seconds apart.
+	for gen := uint64(2); gen <= 6; gen++ {
+		clock.Add(int64(5 * time.Second))
+		serve(t, s, req(gen), nil)
+		settle(t, s)
+	}
+	if built.Load() != 2 {
+		t.Fatalf("catalogue churn rebuilt a hot listing: %d builds, want the prompt first only", built.Load())
+	}
+	// Once the listing ages out, one write revalidates it once.
+	clock.Add(int64(Revalidate))
+	serve(t, s, req(7), nil)
+	settle(t, s)
+	if built.Load() != 3 {
+		t.Fatalf("aged listing not revalidated: %d builds", built.Load())
+	}
+}
+
+// Concurrent cold requests for one slot follow a single build.
+func TestConcurrentColdServesBuildOnce(t *testing.T) {
+	s := New(t.TempDir())
+	t.Cleanup(s.Close)
+	var built atomic.Int64
+	releaseBuild := make(chan struct{})
+	req := Request{Slot: "movie", State: State{Stamp: "a", Catalog: 1, At: s.now()}, Owner: "device",
+		Build: func(_ context.Context, e *Entry) error {
+			built.Add(1)
+			<-releaseBuild
+			_, err := io.WriteString(e, "[]")
+			return err
+		}}
+	const n = 16
+	done := make(chan *httptest.ResponseRecorder, n)
+	for range n {
+		go func() {
+			w := httptest.NewRecorder()
+			if !s.Serve(w, httptest.NewRequest("GET", "/list", nil), req) {
+				w.Body.WriteString("declined")
+			}
+			done <- w
+		}()
+	}
+	// Let every request reach the build before it can finish.
+	for deadline := time.Now().Add(10 * time.Second); built.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no build started")
+		}
+	}
+	close(releaseBuild)
+	for range n {
+		if w := <-done; w.Body.String() != "[]" {
+			t.Fatalf("cold serve body %q", w.Body.String())
+		}
+	}
+	settle(t, s)
+	if built.Load() != 1 {
+		t.Fatalf("concurrent cold serves built %d listings", built.Load())
+	}
+}
+
+// Simultaneous cold Serve and Prepare calls must claim the slot before opening
+// files on disk so slow filesystem creation cannot race into multiple builds.
+func TestConcurrentColdServeAndPrepareBuildOnce(t *testing.T) {
+	s := New(t.TempDir())
+	t.Cleanup(s.Close)
+	var built atomic.Int64
+	req := Request{Slot: "series", State: State{Stamp: "a", Catalog: 1, At: s.now()}, Owner: "device",
+		Build: func(_ context.Context, e *Entry) error {
+			built.Add(1)
+			_, err := io.WriteString(e, `[{"series_id":1}]`)
+			return err
+		}}
+	const serves, prepares = 16, 8
+	var ready, done sync.WaitGroup
+	ready.Add(serves + prepares)
+	done.Add(serves + prepares)
+	start := make(chan struct{})
+	results := make(chan string, serves)
+	for range serves {
+		go func() {
+			defer done.Done()
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("GET", "/list", nil)
+			ready.Done()
+			<-start
+			if !s.Serve(w, r, req) {
+				results <- "declined"
+				return
+			}
+			results <- w.Body.String()
+		}()
+	}
+	for range prepares {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			s.Prepare(req)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	close(results)
+	for body := range results {
+		if body != `[{"series_id":1}]` {
+			t.Fatalf("cold serve body %q", body)
+		}
+	}
+	settle(t, s)
+	if built.Load() != 1 {
+		t.Fatalf("concurrent cold serve/prepare built %d listings", built.Load())
+	}
+}
+
+// Builds for distinct slots do not all encode at once.
+func TestBuildsAreBounded(t *testing.T) {
+	s := New(t.TempDir())
+	t.Cleanup(s.Close)
+	var live, peak atomic.Int64
+	releaseBuild := make(chan struct{})
+	build := func(_ context.Context, e *Entry) error {
+		cur := live.Add(1)
+		for p := peak.Load(); cur > p && !peak.CompareAndSwap(p, cur); p = peak.Load() {
+		}
+		<-releaseBuild
+		live.Add(-1)
+		_, err := io.WriteString(e, "[]")
+		return err
+	}
+	const n = 6
+	done := make(chan *httptest.ResponseRecorder, n)
+	for i := range n {
+		req := Request{Slot: "slot-" + string(rune('a'+i)), State: State{Stamp: "a", Catalog: 1, At: s.now()}, Owner: "device", Build: build}
+		go func() {
+			w := httptest.NewRecorder()
+			if !s.Serve(w, httptest.NewRequest("GET", "/list", nil), req) {
+				w.Body.WriteString("declined")
+			}
+			done <- w
+		}()
+	}
+	for deadline := time.Now().Add(10 * time.Second); live.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no build started")
+		}
+	}
+	// Give queued builds a chance to (wrongly) start, then release all.
+	time.Sleep(50 * time.Millisecond)
+	got := peak.Load()
+	close(releaseBuild)
+	if got > 2 {
+		t.Fatalf("%d builds encoded at once, bound is 2", got)
+	}
+	for range n {
+		<-done
+	}
+	settle(t, s)
 }

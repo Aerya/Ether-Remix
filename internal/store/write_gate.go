@@ -24,9 +24,72 @@ type writeGate struct {
 	// pausedUntil, while a maintenance rewrite holds the gate (pause),
 	// is how long a writer waits for it instead of writeGateWait.
 	pausedUntil time.Time
-	mu          sync.Mutex
-	holder      string
-	started     time.Time
+	// maintRefs counts maintenance holds (MaintenanceHold, migration):
+	// startup work that writes through the gate itself in many steps.
+	// While any hold is active, other writers queue until maintUntil
+	// instead of failing at writeGateWait. Unlike pausedUntil it is not
+	// cleared by a holder's release, only when the last hold ends.
+	maintRefs  int
+	maintUntil time.Time
+	mu         sync.Mutex
+	holder     string
+	started    time.Time
+}
+
+// queueWaitLocked is how long a new writer waits for the gate: the plain
+// busy wait, or until a pause/maintenance deadline when one runs longer.
+func (g *writeGate) queueWaitLocked() time.Duration {
+	wait := max(writeGateWait, time.Until(g.pausedUntil))
+	if g.maintRefs > 0 {
+		wait = max(wait, time.Until(g.maintUntil))
+	}
+	return wait
+}
+
+// queueRemainingLocked is how much longer a writer whose wait just
+// elapsed keeps queueing because a pause or maintenance hold is still
+// running; zero once neither deadline is in the future.
+func (g *writeGate) queueRemainingLocked() time.Duration {
+	rem := time.Until(g.pausedUntil)
+	if g.maintRefs > 0 {
+		rem = max(rem, time.Until(g.maintUntil))
+	}
+	return rem
+}
+
+func (g *writeGate) beginMaintenance(until time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.maintRefs++
+	if until.After(g.maintUntil) {
+		g.maintUntil = until
+	}
+	g.mu.Unlock()
+}
+
+func (g *writeGate) extendMaintenance(until time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	if g.maintRefs > 0 && until.After(g.maintUntil) {
+		g.maintUntil = until
+	}
+	g.mu.Unlock()
+}
+
+func (g *writeGate) endMaintenance() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.maintRefs--
+	if g.maintRefs <= 0 {
+		g.maintRefs, g.maintUntil = 0, time.Time{}
+	}
+	g.mu.Unlock()
 }
 
 // writeGateWait matches busy_timeout: a writer that waits longer fails the
@@ -85,23 +148,32 @@ func (g *writeGate) acquire(ctx context.Context) error {
 	}
 	g.mu.Lock()
 	prior, priorStart := g.holder, g.started
-	wait := max(writeGateWait, time.Until(g.pausedUntil))
+	wait := g.queueWaitLocked()
 	g.mu.Unlock()
 	t := time.NewTimer(wait)
 	defer t.Stop()
-	select {
-	case g.slot <- struct{}{}:
-		g.held()
-		if time.Since(start) >= time.Second {
-			slog.Warn("sqlite writer waited", "wait", time.Since(start), "holder_at_start", prior, "holder_age_at_start", start.Sub(priorStart))
+	for {
+		select {
+		case g.slot <- struct{}{}:
+			g.held()
+			if time.Since(start) >= time.Second {
+				slog.Warn("sqlite writer waited", "wait", time.Since(start), "holder_at_start", prior, "holder_age_at_start", start.Sub(priorStart))
+			}
+			return nil
+		case <-ctx.Done():
+			g.logHolder(time.Since(start))
+			return ctx.Err()
+		case <-t.C:
+			g.mu.Lock()
+			rem := g.queueRemainingLocked()
+			g.mu.Unlock()
+			if rem > 0 {
+				t.Reset(rem)
+				continue
+			}
+			g.logHolder(time.Since(start))
+			return errWriteGateTimeout
 		}
-		return nil
-	case <-ctx.Done():
-		g.logHolder(time.Since(start))
-		return ctx.Err()
-	case <-t.C:
-		g.logHolder(time.Since(start))
-		return errWriteGateTimeout
 	}
 }
 
@@ -159,10 +231,26 @@ func (g *writeGate) logHolder(wait time.Duration) {
 	}
 }
 
+// extendHeld lets a known long maintenance transaction (CreateIndexAnalyzed,
+// analyzeFull) that already holds the gate keep in-process writers queued up
+// to until, subject to each caller's own context deadline, instead of failing
+// at writeGateWait (10 s). release clears pausedUntil when the holder finishes.
+func (g *writeGate) extendHeld(until time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	if until.After(g.pausedUntil) {
+		g.pausedUntil = until
+	}
+	g.mu.Unlock()
+}
+
 func (g *writeGate) release() {
 	g.mu.Lock()
 	label, started := g.holder, g.started
 	g.holder, g.started = "", time.Time{}
+	g.pausedUntil = time.Time{}
 	g.mu.Unlock()
 	<-g.slot
 	elapsed := time.Since(started)
@@ -233,8 +321,11 @@ func writes(query string) bool {
 	if len(q) < 6 {
 		return false
 	}
+	if strings.HasPrefix(strings.ToUpper(q[:5]), "DROP ") {
+		return true
+	}
 	switch strings.ToUpper(q[:6]) {
-	case "INSERT", "UPDATE", "DELETE", "REPLAC", "CREATE", "ANALYZ":
+	case "INSERT", "UPDATE", "DELETE", "REPLAC", "CREATE", "ANALYZ", "ALTER ":
 		return true
 	case "PRAGMA":
 		return strings.EqualFold(strings.TrimSuffix(strings.Join(strings.Fields(q), " "), ";"), "PRAGMA wal_checkpoint(TRUNCATE)")

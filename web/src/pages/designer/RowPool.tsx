@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { newCollectionHref } from "../collections/links";
+import { BulkBar } from "../../components/BulkBar";
 import { Drawer } from "../../components/Drawer";
 import { Badge, Button, Checkbox, Input, cn } from "@braedonsaunders/appkit-ui";
 import {
@@ -10,7 +11,6 @@ import {
   Search,
   SlidersHorizontal,
   Trash2,
-  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Segmented } from "../../components/fields";
@@ -24,13 +24,16 @@ import type {
   RowStatus,
   TargetSchedule,
   Viewer,
+  ViewerHome,
 } from "../../lib/contract";
 import { api } from "../../lib/api";
 import { localized, t, tn, tx } from "../../i18n";
 import { WEEKDAYS, formatNumber } from "../../lib/format";
 import {
+  CONTINUE,
   FRONT_END_ROWS,
   collectionIdOf,
+  describeHiddenRow,
   collectionSchedule,
   effectivePolicy,
   matchRank,
@@ -141,6 +144,8 @@ export function RowPool({
   available,
   focusRow,
   onFocusRow,
+  preview,
+  previewWho,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
@@ -150,6 +155,8 @@ export function RowPool({
   available: AvailableRow[];
   focusRow: string | null;
   onFocusRow: (row: string | null) => void;
+  preview?: ViewerHome | null;
+  previewWho?: string;
 }) {
   const navigate = useNavigate();
   const collectionKinds = useRegistry<CollectionSourceMeta>("collectionSource");
@@ -281,7 +288,10 @@ export function RowPool({
   const filtering = Boolean(needle) || filter !== "all";
   const statuses: RowStatus[] = ["always", "eligible", "off"];
   return (
-    <section className="space-y-2" aria-label={t("Row catalogue")}>
+    <section
+      className={cn("space-y-2", pickedRows.length > 0 && "pb-16")}
+      aria-label={t("Row catalogue")}
+    >
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
           {t("Row catalogue")}
@@ -320,52 +330,6 @@ export function RowPool({
           { value: "changed", label: layer === "global" ? t("Changed") : t("Overridden") },
         ]}
       />
-      {pickedRows.length ? (
-        <div
-          role="toolbar"
-          aria-label={t("Selected rows")}
-          className="sticky top-0 z-10 flex flex-wrap items-center gap-1.5 rounded-lg border border-primary/40 bg-surface p-2 shadow-sm"
-        >
-          <span className="text-xs font-medium text-fg">
-            {t("{count} selected", { count: formatNumber(pickedRows.length) })}
-          </span>
-          <span className="flex-1" />
-          {statuses.map((s) => (
-            <Button
-              key={s}
-              variant="outline"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              aria-label={t("Set the selected rows to {status}", { status: STATUS_LABEL[s] })}
-              onClick={() => bulk(s)}
-            >
-              {STATUS_LABEL[s]}
-            </Button>
-          ))}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            aria-label={
-              layer === "global"
-                ? t("Set the selected rows back to default")
-                : t("Reset the selected rows to Everyone")
-            }
-            onClick={() => bulk(null)}
-          >
-            <RotateCcw size={12} /> {layer === "global" ? t("Default") : t("Reset to Everyone")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            aria-label={t("Clear selection")}
-            onClick={() => setPicked(new Set())}
-          >
-            <X size={14} />
-          </Button>
-        </div>
-      ) : null}
       <Link
         to={newCollectionHref({ source: "addonCatalog" })}
         className="block rounded-lg border border-border bg-surface p-3 text-sm text-primary"
@@ -456,6 +420,8 @@ export function RowPool({
                       layer={layer}
                       section={section}
                       viewers={viewers}
+                      preview={preview}
+                      previewWho={previewWho}
                       open={focusRow === e.row}
                       onToggle={() => onFocusRow(focusRow === e.row ? null : e.row)}
                     />
@@ -485,6 +451,37 @@ export function RowPool({
       >
         <Plus size={14} /> {t("Add custom pattern")}
       </Button>
+      {pickedRows.length ? (
+        <BulkBar
+          count={pickedRows.length}
+          label={t("Selected rows")}
+          onClear={() => setPicked(new Set())}
+        >
+          {statuses.map((s) => (
+            <Button
+              key={s}
+              variant="ghost"
+              size="sm"
+              aria-label={t("Set the selected rows to {status}", { status: STATUS_LABEL[s] })}
+              onClick={() => bulk(s)}
+            >
+              {STATUS_LABEL[s]}
+            </Button>
+          ))}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={
+              layer === "global"
+                ? t("Set the selected rows back to default")
+                : t("Reset the selected rows to Everyone")
+            }
+            onClick={() => bulk(null)}
+          >
+            <RotateCcw size={14} /> {layer === "global" ? t("Default") : t("Reset to Everyone")}
+          </Button>
+        </BulkBar>
+      ) : null}
       <Drawer
         open={patternOpen}
         onClose={() => {
@@ -575,6 +572,8 @@ function PoolItem({
   layer,
   section,
   viewers,
+  preview,
+  previewWho,
   open,
   onToggle,
 }: {
@@ -591,9 +590,12 @@ function PoolItem({
   layer: LayerKey;
   section: LayoutSection;
   viewers: Viewer[];
+  preview?: ViewerHome | null;
+  previewWho?: string;
   open: boolean;
   onToggle: () => void;
 }) {
+  const { locale } = useLocale();
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
     if (open) ref.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
@@ -648,6 +650,34 @@ function PoolItem({
     : layer === "global"
       ? t("Default")
       : t("Reset to Everyone");
+  const who = previewWho || t("Typical viewer");
+  const absenceNote = useMemo(() => {
+    if (!preview || onCreate) return "";
+    const matched = preview.rows.filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0);
+    if (matched.some((r) => !r.hidden && r.items.length > 0)) return "";
+    const hiddenMatch = matched.find((r) => r.hidden);
+    if (effective.status === "always") {
+      if (matched.some((r) => !r.hidden && r.kind === CONTINUE && r.items.length === 0)) {
+        return t("Hidden for {who}: nothing in progress", { who });
+      }
+      if (hiddenMatch) return describeHiddenRow(hiddenMatch, who);
+      return t("Hidden for {who}: no matching titles", { who });
+    }
+    if (
+      effective.status === "eligible" &&
+      hiddenMatch?.hiddenCode &&
+      [
+        "outside_collection_schedule",
+        "collection_disabled",
+        "collection_not_shared",
+        "outside_schedule",
+        "weekly_cap",
+      ].includes(hiddenMatch.hiddenCode)
+    ) {
+      return describeHiddenRow(hiddenMatch, who);
+    }
+    return "";
+  }, [preview, onCreate, entry.row, effective.status, who, locale]);
   return (
     <li
       ref={ref}
@@ -704,6 +734,11 @@ function PoolItem({
                 </Badge>
               ))}
             </div>
+          ) : null}
+          {absenceNote ? (
+            <p className="mt-1.5 rounded-md border border-warning/30 bg-warning-subtle/40 px-2 py-1 text-xs text-fg">
+              {absenceNote}
+            </p>
           ) : null}
         </div>
         {!onCreate && (

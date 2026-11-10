@@ -45,6 +45,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 - Organisez vos bibliothèques Plex par **service, studio, animés, documentaires, concerts ou spectacles**.
 - Composez leurs rangées avec des collections TMDB, des catalogues Stremio importés et des modèles prêts à l’emploi.
 - Réglez les exceptions de langue, les priorités de recherche et la fréquence d’actualisation de chaque collection, de **1 à 168 heures**.
+- Ajustez l’apparition des films avant ou après leur sortie numérique/physique avec un **décalage en jours**.
 - Profitez d’une préparation groupée des badges d’affiches dans Plex et Jellyfin, avec l’état de lecture propre à chaque spectateur et des compteurs exacts.
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) La musique dans vos applications
