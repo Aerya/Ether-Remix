@@ -46,6 +46,22 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-10-search-queues-indexing",
+    version: "0.2.37-remix.24.1",
+    date: "2026-11-10",
+    title: ["Une recherche lance l’indexation", "Searching starts indexing"],
+    items: [
+      [
+        "Une recherche dans Plex ou Jellyfin fait passer en tête de file les 5 premiers titres trouvés, s’ils n’ont jamais été cherchés ou n’avaient rien donné il y a plus de 6 h.",
+        "A Plex or Jellyfin search moves the first 5 titles found to the front of the indexing queue, if they were never searched or found nothing more than 6 h ago.",
+      ],
+      [
+        "Le README explique quels titres sont affichés et dans quel ordre ils sont cherchés.",
+        "The README explains which titles are shown and in which order they are searched.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-09-seerrcatalog-connection-test",
     version: "0.2.37-remix.23.1",
     date: "2026-11-09",

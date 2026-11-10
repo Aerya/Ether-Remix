@@ -67,7 +67,7 @@ func (a *App) searchSources() experience.SearchSources {
 	if a.collections != nil {
 		src.Vibe = a.collections
 	}
-	return src
+	return a.pseSearchQueued(src)
 }
 
 // peopleIndex adapts the catalogue's people-name index to experience.
