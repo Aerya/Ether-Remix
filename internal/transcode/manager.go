@@ -55,6 +55,7 @@ type options struct {
 	onInputFailure  func(sessionID, inputURL string, at time.Duration, err error)
 	onRunStart      func(inputURL string, from, to time.Duration)
 	onEncoder       func(sessionID string, started bool, excerpt string)
+	onChange        func()
 	tracePlayback   bool
 	// rungDwell is how long a run keeps producing its rung before a
 	// request on another rung may replace it (see Session.rungDwellLocked).
@@ -137,6 +138,9 @@ func WithEncoderObserver(f func(sessionID string, started bool, excerpt string))
 // WithTracePlayback logs Plex HLS playhead decisions and ffmpeg run
 // start/stop reasons. It does not change encoding or delivery.
 func WithTracePlayback(on bool) Option { return func(o *options) { o.tracePlayback = on } }
+
+// WithOnChange is notified when owner-visible transcoder capability state changes.
+func WithOnChange(f func()) Option { return func(o *options) { o.onChange = f } }
 
 // Manager runs ffmpeg for Ether. It implements core.Transcoder.
 type Manager struct {
@@ -404,9 +408,13 @@ func (m *Manager) noteGraphError(err error) {
 		return
 	}
 	m.mu.Lock()
+	changed := m.graphErr != err.Error()
 	m.graphErr = err.Error()
 	m.mu.Unlock()
 	m.log.Warn("transcode graph unavailable", "err", err)
+	if changed && m.opts.onChange != nil {
+		m.opts.onChange()
+	}
 }
 
 func (m *Manager) limitation() string {
@@ -1103,6 +1111,16 @@ func (m *Manager) reapIdle(now time.Time) {
 		return
 	}
 	for _, s := range m.Sessions() {
+		// An authenticated stop is terminal even if the dead player keeps
+		// fetching segments: those fetches touch LastAccess, so without
+		// this a stopped session (and its suspended ffmpeg) never reaps
+		// (#410). Close kills the process through its guardian, stopped
+		// or not.
+		if s.stoppedAt.Load() != 0 {
+			s.log.Info("closing stopped session")
+			_ = s.Close()
+			continue
+		}
 		if idle := now.Sub(s.LastAccess()); idle > m.opts.idleTimeout && now.UnixNano() >= s.pauseUntil.Load() {
 			s.log.Info("closing idle session", "idle", idle.Round(time.Second))
 			_ = s.Close()

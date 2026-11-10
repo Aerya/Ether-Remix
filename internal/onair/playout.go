@@ -22,15 +22,23 @@ func (s *Service) Overlay(ctx context.Context, r core.ClipRequest) (scene.Docume
 		s.mu.Lock()
 		look := s.looks[r.LookID]
 		s.mu.Unlock()
+		b := core.ResolveBug(look.Bug, r.Bug)
 		logo := r.Art["channel.logo"]
-		if logo == "" {
+		if logo == "" || j.Bind.Assets[logo] == nil {
 			logo = look.Brand.Logo
 		}
-		if j.Bind.Assets[logo] == nil {
-			logo = ""
+		if logo == "" || j.Bind.Assets[logo] == nil {
+			logo = showcaseBugSrc(look.ID)
 		}
-		b := core.ResolveBug(look.Bug, r.Bug)
-		if logo != "" && b.Style == "monochrome" {
+		if im := showcaseBugImage(logo); im != nil {
+			if b.Style == "monochrome" {
+				j.Bind.Assets[logo] = showcaseBugSilhouette(logo)
+			} else {
+				j.Bind.Assets[logo] = im
+			}
+		} else if j.Bind.Assets[logo] == nil {
+			logo = ""
+		} else if logo != "" && b.Style == "monochrome" {
 			j.Bind.Assets[logo] = raster.Silhouette(j.Bind.Assets[logo])
 		}
 		configureBug(&j.Doc, b, logo)
@@ -57,12 +65,22 @@ func (s *Service) ReelSnapshot(ctx context.Context, id string) (Reel, error) { r
 // ReelClipPath reads clip metadata and the local master index. A miss is materialized by
 // the background queue, and the caller skips it until a later planning pass.
 func (s *Service) ReelClipPath(ctx context.Context, reelID, clipID string) (string, bool) {
+	if path, _, ok := s.PeekCachedReelClip(reelID, clipID); ok {
+		return path, true
+	}
 	r, e := s.Reel(ctx, reelID)
 	if e != nil {
 		return "", false
 	}
 	for _, c := range r.Clips {
-		if c.ID != clipID || c.Status != "ready" {
+		if c.ID != clipID {
+			continue
+		}
+		if c.Link {
+			path, _, ok := s.PeekCachedReelClip(reelID, clipID)
+			return path, ok
+		}
+		if c.Status != "ready" {
 			continue
 		}
 		s.mu.Lock()

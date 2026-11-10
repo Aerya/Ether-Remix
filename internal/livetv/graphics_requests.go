@@ -9,16 +9,24 @@ import (
 )
 
 // GraphicsRequests is a background-only planning snapshot. Empty lookID limits
-// it to watched/clock channels, with at least three minutes of looks and fifteen minutes
-// of plugin segments. Near boundaries sort first across all channels so a long
-// future rundown cannot fill the render queue ahead of an imminent element.
+// it to watched channels: rendering is viewer-driven, so an enabled channel
+// nobody watches - clock, blocks or plain lineup - costs no renders, and a
+// cold tune-in airs the graphics fallback until its clips land. Near
+// boundaries sort first across all channels so a long future rundown cannot
+// fill the render queue ahead of an imminent element.
 // A lookID requests static clips for every channel using that saved look.
 func (s *Service) GraphicsRequests(ctx context.Context, lookID string) []core.ClipRequest {
+	var recent map[string]bool
+	if lookID == "" {
+		recent = s.recentlyWatched()
+		if len(recent) == 0 {
+			return nil
+		}
+	}
 	cs, e := s.virtualChannels(ctx)
 	if e != nil {
 		return nil
 	}
-	recent := s.recentlyWatched()
 	now := s.o.Now()
 	type scheduled struct {
 		at      time.Time
@@ -33,7 +41,7 @@ func (s *Service) GraphicsRequests(ctx context.Context, lookID string) []core.Cl
 			if c.Look == nil || c.Look.LookID != lookID {
 				continue
 			}
-		} else if !recent[c.ID] && len(c.Clock) == 0 {
+		} else if !recent[c.ID] {
 			continue
 		}
 		c = s.graphicsChannel(c)
@@ -64,7 +72,7 @@ func (s *Service) GraphicsRequests(ctx context.Context, lookID string) []core.Cl
 				if renderer != nil {
 					momentLead = max(momentLead, renderer.RenderLead(channelLook, p.Item.Slate))
 				}
-				if strings.HasPrefix(p.Item.Slate, "plugin:") {
+				if strings.HasPrefix(p.Item.Slate, "plugin:") || p.Item.ReelClipID != "" {
 					momentLead = max(momentLead, 15*time.Minute)
 				}
 				if p.Start.After(now.Add(momentLead)) {

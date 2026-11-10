@@ -3,6 +3,7 @@ package personalize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -182,6 +183,56 @@ func (e *Engine) ModelReady(userID int64) bool {
 // waits for the viewer's own build instead.
 func (e *Engine) modelFor(ctx context.Context, user *core.User, wait bool) *userModel {
 	ctx = core.WithCatalogViewer(ctx, user)
+	if user == nil || user.ID <= 0 {
+		// Unidentified callers and the Home Designer's "Typical viewer"
+		// preview (user.ID == 0) have no personal history: serve the
+		// pre-warmed generic model instead of queuing a separate user 0 build.
+		e.mu.Lock()
+		g := e.models[genericID]
+		stale := g != nil && e.now().Sub(g.builtAt) > e.opts.ModelTTL
+		e.mu.Unlock()
+		if g != nil && !stale {
+			return g
+		}
+		gf := e.request(genericID)
+		if g != nil {
+			return g
+		}
+		if wait {
+			select {
+			case <-gf.done:
+			case <-ctx.Done():
+			}
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			return e.models[genericID]
+		}
+		e.mu.Lock()
+		first := e.coldDeadline.IsZero()
+		if first {
+			e.coldDeadline = time.Unix(1, 0)
+		}
+		e.mu.Unlock()
+		if !first {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			return e.models[genericID]
+		}
+		waitFor := e.opts.ColdWait
+		if waitFor > 50*time.Millisecond {
+			waitFor = 50 * time.Millisecond
+		}
+		t := time.NewTimer(waitFor)
+		defer t.Stop()
+		select {
+		case <-gf.done:
+		case <-t.C:
+		case <-ctx.Done():
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.models[genericID]
+	}
 	var signature string
 	revisionOK := true
 	if e.opts.NotInterestedSnapshot != nil && user != nil && user.ID > 0 {
@@ -785,6 +836,45 @@ func (e *Engine) clearOwnerRows() {
 	e.memoMu.Unlock()
 }
 
+func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, d core.HomeLayout) (prefix, scope string) {
+	raw, _ := json.Marshal(d)
+	hash := fnv.New64a()
+	_, _ = hash.Write(raw)
+	var ruleRevision int64
+	if e.opts.CatalogRulesRevision != nil {
+		ruleRevision = e.opts.CatalogRulesRevision(user)
+	}
+	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + string(section) + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedSections, user.IsOwner)
+	prefix = strconv.FormatInt(user.ID, 10) + "|"
+	return prefix, scope
+}
+
+func (e *Engine) cachedOwnerCollection(user *core.User, hc core.HubContext, section core.MediaType, d core.HomeLayout, collID string) (core.CollectionRow, bool) {
+	if user == nil || collID == "" || e.opts.Collections == nil {
+		return core.CollectionRow{}, false
+	}
+	prefix, scope := e.ownerScopeKey(user, section, d)
+	key := prefix + hc.Now.Format("2006-01-02") + scope
+	e.mu.Lock()
+	ent := e.owner[key]
+	if ent == nil || ent.at.IsZero() {
+		if prev := e.owner[prefix+hc.Now.AddDate(0, 0, -1).Format("2006-01-02")+scope]; prev != nil && !prev.at.IsZero() {
+			ent = prev
+		}
+	}
+	var rows []core.CollectionRow
+	if ent != nil {
+		rows = ent.rows
+	}
+	e.mu.Unlock()
+	for _, cr := range rows {
+		if cr.CollectionID == collID {
+			return cr, true
+		}
+	}
+	return core.CollectionRow{}, false
+}
+
 // ownerRows returns owner collection rows for the viewer and page from a
 // cache. The fetched rows do not depend on the hour, daypart, weekend or
 // device (schedules and layout placement windows are applied here, per
@@ -798,15 +888,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 	if e.opts.Collections == nil {
 		return nil, 0
 	}
-	raw, _ := json.Marshal(d)
-	hash := fnv.New64a()
-	_, _ = hash.Write(raw)
-	var ruleRevision int64
-	if e.opts.CatalogRulesRevision != nil {
-		ruleRevision = e.opts.CatalogRulesRevision(user)
-	}
-	scope := fmt.Sprint("|rules:", ruleRevision) + "|" + string(section) + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedSections, user.IsOwner)
-	prefix := strconv.FormatInt(user.ID, 10) + "|"
+	prefix, scope := e.ownerScopeKey(user, section, d)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
 	ent := e.owner[key]
@@ -900,7 +982,9 @@ func (e *Engine) fetchOwnerRows(key string, user *core.User, hc core.HubContext,
 			}
 			row, err := source.LayoutRow(ctx, user, hc, id)
 			if err != nil {
-				e.log.Debug("personalize: selected collection unavailable", "id", id, "err", err)
+				if !errors.Is(err, core.ErrNotFound) {
+					e.log.Debug("personalize: selected collection unavailable", "id", id, "err", err)
+				}
 				continue
 			}
 			if row != nil {
@@ -972,7 +1056,7 @@ func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, u
 				hub.Items = append(hub.Items, item)
 			}
 		}
-		if len(hub.Items) < collectionMinItems {
+		if len(hub.Items) == 0 {
 			return nil
 		}
 	}

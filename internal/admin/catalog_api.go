@@ -341,8 +341,21 @@ func (h *Handler) handleCatalogSearch(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	// The console search finds titles hidden from browsing only.
-	items, err := h.deps.CatalogHelper.SearchTitles(core.WithExplicitSearch(r.Context()), q.Get("q"), mediaTypeParam(q.Get("type")), limit)
+	ctx := core.WithExplicitSearch(r.Context())
+	var (
+		items []core.Title
+		err   error
+	)
+	if (q.Get("all") == "1" || q.Get("all") == "true") && h.deps.CatalogHelper != nil {
+		if all, ok := h.deps.CatalogHelper.(CatalogUnfilteredSearch); ok {
+			items, err = all.SearchAllTitles(ctx, q.Get("q"), mediaTypeParam(q.Get("type")), limit)
+		} else {
+			items, err = h.deps.CatalogHelper.SearchTitles(ctx, q.Get("q"), mediaTypeParam(q.Get("type")), limit)
+		}
+	} else {
+		// The console search finds titles hidden from browsing only.
+		items, err = h.deps.CatalogHelper.SearchTitles(ctx, q.Get("q"), mediaTypeParam(q.Get("type")), limit)
+	}
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -473,7 +486,9 @@ func (h *Handler) handleCatalogTitle(w http.ResponseWriter, r *http.Request) {
 		Tagline: t.Tagline, Language: t.Language, Status: t.Status, Studios: t.Studios, Countries: t.Countries,
 		ReleaseDate: airDate(t.Released), HomeRelease: airDate(t.HomeReleased), LastAirDate: airDate(t.LastAirDate),
 		Seasons: t.ChildCount, Episodes: t.LeafCount}
-	d.HomeReleaseAgeAdmitted = h.deps.Config.Get().Availability.EffectiveMode() == config.ModeDigital && catalog.HomeReleaseAgeAdmitted(t, time.Now()) && (!t.HomeReleaseChecked || t.HomeReleased.IsZero() || t.HomeReleased.After(time.Now()))
+	av := h.deps.Config.Get().Availability
+	now := time.Now()
+	d.HomeReleaseAgeAdmitted = av.EffectiveMode() == config.ModeDigital && catalog.HomeReleaseAgeAdmitted(t, now) && (!t.HomeReleaseChecked || t.HomeReleased.IsZero() || catalog.HomeReleaseAdmission(t.HomeReleased, av.HomeReleaseOffsetDays).After(now))
 	if t.OriginalTitle != t.Title {
 		d.OriginalTitle = t.OriginalTitle
 	}

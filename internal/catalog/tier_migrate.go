@@ -200,6 +200,7 @@ func (c *Catalog) SetTierMigrationPaused(ctx context.Context, paused bool) error
 	}
 	c.log.Info("catalog: tier migration "+map[bool]string{true: "paused", false: "resumed"}[paused], "by", "owner")
 	c.wakeTier()
+	c.notifyStatus(false)
 	return nil
 }
 
@@ -228,6 +229,9 @@ func (c *Catalog) saveTierProgress(ctx context.Context, q execer, p TierMigratio
 		return err
 	}
 	_, err = q.ExecContext(ctx, `INSERT INTO catalog_meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, tierMetaProgress, string(raw))
+	if err == nil && q == c.db {
+		c.notifyStatus(p.State == "running")
+	}
 	return err
 }
 
@@ -237,7 +241,10 @@ func (c *Catalog) runTierMigration(ctx context.Context) {
 	if c == nil || !c.tier.running.CompareAndSwap(false, true) {
 		return
 	}
-	defer c.tier.running.Store(false)
+	defer func() {
+		c.tier.running.Store(false)
+		c.notifyStatus(false)
+	}()
 	for ctx.Err() == nil {
 		err := c.migrateTiers(ctx)
 		if err == nil || ctx.Err() != nil {
@@ -539,6 +546,8 @@ var tierDependents = []struct{ table, column string }{
 	{"catalog_release_evidence", "rating_key"},
 	{"catalog_show_episodes", "show_key"},
 	{"catalog_show_episode_ratings", "show_key"},
+	{"availability_title_checks", "rating_key"},
+	{"collections_air_dates", "show_key"},
 	{"plexmeta_titles", "rating_key"},
 	{"plex_ultrablur", "key"},
 }
@@ -576,7 +585,7 @@ func (c *Catalog) removeTierGroups(ctx context.Context, groups []tierGroup, touc
 		}
 		limit = nextBatch(limit, max(removed, 1), took, tierBatchMax)
 	}
-	return nil
+	return c.cleanupTierDerived(ctx)
 }
 
 // removeTierBatch removes one batch in one transaction: it re-reads the
@@ -707,21 +716,23 @@ func (c *Catalog) sweepTierTouched(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(missing) == 0 {
-		return 0, nil
-	}
-	c.log.Warn("catalog: tier migration: touched titles without a row; storing them again", "titles", len(missing))
 	promoted := 0
-	for i, k := range missing {
-		if i >= tierSweepMax || c.tmdb() == nil {
-			break
+	if len(missing) > 0 {
+		c.log.Warn("catalog: tier migration: touched titles without a row; storing them again", "titles", len(missing))
+		for i, k := range missing {
+			if i >= tierSweepMax || c.tmdb() == nil {
+				break
+			}
+			if t, err := c.Get(ctx, k); err == nil && t != nil {
+				promoted++
+			}
+			if !waitGap(ctx, time.Second/tierSweepRate) {
+				return promoted, ctx.Err()
+			}
 		}
-		if t, err := c.Get(ctx, k); err == nil && t != nil {
-			promoted++
-		}
-		if !waitGap(ctx, time.Second/tierSweepRate) {
-			return promoted, ctx.Err()
-		}
+	}
+	if _, err := c.promoteCollectionTouched(ctx); err != nil {
+		return promoted, err
 	}
 	return promoted, nil
 }

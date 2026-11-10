@@ -68,10 +68,102 @@ func TestWritesClassifiesStatements(t *testing.T) {
 	for q, want := range map[string]bool{
 		"INSERT INTO a VALUES(1)": true, "  update a set b=1": true, "DELETE FROM a": true, "REPLACE INTO a VALUES(1)": true,
 		"WITH x AS (SELECT 1) INSERT INTO a SELECT * FROM x": true, "SELECT 1": false, "PRAGMA wal_checkpoint(PASSIVE)": false,
-		"WITH x AS (SELECT 1) SELECT * FROM x": false, "CREATE INDEX i ON a(b)": true,
+		"WITH x AS (SELECT 1) SELECT * FROM x": false, "CREATE INDEX i ON a(b)": true, "DROP INDEX IF EXISTS i": true, "ALTER TABLE a ADD COLUMN c INT": true,
 	} {
 		if got := writes(q); got != want {
 			t.Errorf("writes(%q) = %v, want %v", q, got, want)
 		}
+	}
+}
+
+func TestWriteGateExtendHeldQueuesWaiterAndHonorsContext(t *testing.T) {
+	g := &writeGate{slot: make(chan struct{}, 1)}
+	if err := g.acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.extendHeld(time.Now().Add(300 * time.Millisecond))
+
+	// A caller with its own short deadline still cancels promptly.
+	shortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := g.acquire(shortCtx); err == nil {
+		t.Fatal("expected context deadline error while gate held")
+	}
+
+	// Release clears pausedUntil and wakes queued waiters in order.
+	done := make(chan error, 1)
+	go func() {
+		if err := g.acquire(context.Background()); err != nil {
+			done <- err
+			return
+		}
+		g.release()
+		done <- nil
+	}()
+	time.Sleep(20 * time.Millisecond)
+	g.release()
+	if err := <-done; err != nil {
+		t.Fatalf("queued waiter failed: %v", err)
+	}
+	if !g.pausedUntil.IsZero() {
+		t.Fatalf("pausedUntil = %v after release, want zero", g.pausedUntil)
+	}
+}
+
+// A background writer that arrives while startup maintenance holds the
+// gate queues through the hold — across the maintenance work's own
+// acquire/release steps — and succeeds once the work finishes, instead
+// of failing at the plain gate wait. Its own short context still wins.
+func TestWriteGateMaintenanceQueuesBackgroundWriter(t *testing.T) {
+	g := &writeGate{slot: make(chan struct{}, 1)}
+	g.beginMaintenance(time.Now().Add(time.Minute))
+
+	// Maintenance step 1 takes and releases the gate: the hold must
+	// survive that release (release only clears the single-holder pause).
+	if err := g.acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.release()
+	g.mu.Lock()
+	refs, until := g.maintRefs, g.maintUntil
+	g.mu.Unlock()
+	if refs != 1 || until.IsZero() {
+		t.Fatalf("after step release: maintRefs=%d maintUntil=%v, want hold intact", refs, until)
+	}
+	if wait := func() time.Duration { g.mu.Lock(); defer g.mu.Unlock(); return g.queueWaitLocked() }(); wait <= writeGateWait {
+		t.Fatalf("queue wait during maintenance = %v, want beyond %v", wait, writeGateWait)
+	}
+
+	// Step 2 holds the gate while a background writer arrives.
+	if err := g.acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	shortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := g.acquire(shortCtx); err == nil {
+		t.Fatal("expected context deadline error while maintenance held the gate")
+	}
+	done := make(chan error, 1)
+	go func() {
+		if err := g.acquire(context.Background()); err != nil {
+			done <- err
+			return
+		}
+		g.release()
+		done <- nil
+	}()
+	time.Sleep(20 * time.Millisecond)
+	g.release() // step 2 done
+	g.endMaintenance()
+	if err := <-done; err != nil {
+		t.Fatalf("background writer queued through maintenance failed: %v", err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.maintRefs != 0 || !g.maintUntil.IsZero() {
+		t.Fatalf("after endMaintenance: maintRefs=%d maintUntil=%v, want cleared", g.maintRefs, g.maintUntil)
+	}
+	if wait := g.queueWaitLocked(); wait != writeGateWait {
+		t.Fatalf("queue wait after maintenance = %v, want %v", wait, writeGateWait)
 	}
 }

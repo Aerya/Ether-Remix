@@ -148,7 +148,7 @@ func (s *Service) startOwnedHLS(request context.Context, ss *session, req core.H
 	}
 	lifetime, cancel := context.WithCancel(base)
 	stop := context.AfterFunc(request, cancel)
-	hls, err := s.o.Transcoder.StartHLS(lifetime, req)
+	hls, err := s.transcoder().StartHLS(lifetime, req)
 	stop()
 	if err == nil && request.Err() != nil {
 		err = request.Err()
@@ -290,6 +290,9 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 			s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
 			old.close(s)
 		}
+		if len(superseded) > 0 {
+			s.notifySessionsChanged()
+		}
 	}
 	var playbackSessions []*core.PlaySession
 	if s.o.Playback != nil {
@@ -367,6 +370,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	s.sessions[ss.info.ID] = ss
 	s.noteWatchedLocked(c.ID)
 	s.mu.Unlock()
+	s.notifySessionsChanged()
 	s.beginPersonal(c, u)
 	if limiter, ok := s.o.Playback.(channelLimiter); ok {
 		if joined, ok := s.o.Playback.(interface {
@@ -603,6 +607,7 @@ func (s *Service) Stop(ctx context.Context, id string, u *core.User) error {
 	delete(s.sessions, id)
 	s.mu.Unlock()
 	ss.close(s)
+	s.notifySessionsChanged()
 	return nil
 }
 
@@ -732,7 +737,7 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session) error {
 	isHLS := strings.HasPrefix(strings.TrimSpace(string(prefix)), "#EXTM3U") || strings.Contains(strings.ToLower(ctype), "mpegurl")
 	var info *core.MediaInfo
 	if isHLS && !c.Transcode {
-		if s.o.Transcoder != nil && probe {
+		if s.transcoder() != nil && probe {
 			probeWaitCtx := ctx
 			var waitCancel context.CancelFunc
 			if ss.caps.Protocol == "silo" {
@@ -759,7 +764,7 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session) error {
 				if analyze {
 					// A playlist is a transport, not evidence that its codecs are
 					// playable. MPEG-2/MP2 HLS needs conversion on Apple TV too.
-					dec := s.o.Transcoder.Decide(*info, ss.caps, core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1})
+					dec := s.transcoder().Decide(*info, ss.caps, core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1})
 					if !dec.VideoCopy || !dec.AudioCopy || info.Video().Codec == "hevc" {
 						return s.startIPTVRelay(ctx, ss, *info)
 					}
@@ -770,7 +775,7 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session) error {
 		s.sessionLog(ss).Info("live playback path selected", "path", "hls_passthrough", "analyzed", ss.info.MediaInfo != nil)
 		return nil
 	}
-	if s.o.Transcoder == nil {
+	if s.transcoder() == nil {
 		return core.ErrNotAvailable
 	}
 	info, err = s.takeEarlyProbe(ctx, ss, probeCh)
@@ -794,7 +799,7 @@ type probeResult struct {
 // startEarlyProbe begins codec analysis before the prefix read when this
 // tune will need it. Direct HLS without a codec decision does not probe.
 func (s *Service) startEarlyProbe(ctx context.Context, ss *session, need bool) (<-chan probeResult, context.CancelFunc) {
-	if !need || s.o.Transcoder == nil {
+	if !need || s.transcoder() == nil {
 		return nil, nil
 	}
 	ch := make(chan probeResult, 1)
@@ -906,7 +911,7 @@ func (s *Service) passthroughToRelay(ctx context.Context, ss *session) (*ownedLe
 	if lease != nil && lease.relay != nil {
 		return lease, nil
 	}
-	if s.o.Transcoder == nil {
+	if s.transcoder() == nil {
 		return nil, core.ErrNotAvailable
 	}
 	if info == nil {

@@ -61,7 +61,8 @@ func evidenceWindow(t core.Title, now time.Time, cfg config.Availability) bool {
 	switch t.Type {
 	case core.TypeMovie:
 		if cfg.EffectiveMode() == config.ModeDigital {
-			return t.HomeReleased.IsZero() || now.Sub(t.HomeReleased) < time.Duration(cfg.EffectiveMovieEvidenceDays())*24*time.Hour
+			adm := catalogHomeReleaseAdmission(t.HomeReleased, cfg.HomeReleaseOffsetDays)
+			return adm.IsZero() || now.Sub(adm) < time.Duration(cfg.EffectiveMovieEvidenceDays())*24*time.Hour
 		}
 		return !cfg.DisableMovieEvidenceGate && age < time.Duration(cfg.EffectiveMovieEvidenceDays())*24*time.Hour
 	case core.TypeEpisode, core.TypeShow:
@@ -108,7 +109,7 @@ func (s *Service) filterReleaseDiscovery(ctx context.Context, items []core.Title
 		}
 		acceptable := map[core.RatingKey]bool{}
 		if input.availability.DigitalDateEvidence {
-			s.acceptDigitalReleases(ctx, movies, input.now, acceptable)
+			s.acceptDigitalReleases(ctx, movies, input.now, input.availability.HomeReleaseOffsetDays, acceptable)
 		}
 		out := s.filterReleaseEvidence(ctx, rest, input)
 		allowed := map[core.RatingKey]bool{}
@@ -193,7 +194,7 @@ func (s *Service) filterReleaseEvidence(ctx context.Context, items []core.Title,
 		rows.Close()
 	}
 	if input.availability.DigitalDateEvidence {
-		s.acceptDigitalReleases(ctx, keys, input.now, acceptable)
+		s.acceptDigitalReleases(ctx, keys, input.now, input.availability.HomeReleaseOffsetDays, acceptable)
 	}
 	// Close the cursor before policy checks, which may read the same database.
 	var pairs []feedPair
@@ -275,7 +276,9 @@ func (s *Service) recent(ctx context.Context, kind string, input discoverySnapsh
 			if c, ok := s.d.Catalog.(interface {
 				DigitalEvidenceMovies(context.Context, time.Time) ([]core.Title, error)
 			}); ok {
-				ts, err := c.DigitalEvidenceMovies(ctx, input.now.Add(-time.Duration(input.availability.EffectiveMovieEvidenceDays())*24*time.Hour))
+				since := input.now.Add(-time.Duration(input.availability.EffectiveMovieEvidenceDays()) * 24 * time.Hour)
+				since = since.Add(-time.Duration(input.availability.HomeReleaseOffsetDays) * 24 * time.Hour)
+				ts, err := c.DigitalEvidenceMovies(ctx, since)
 				return ts, true, err
 			}
 		}
@@ -320,11 +323,15 @@ type hiddenSet struct {
 }
 
 // fresh reports whether the set still answers for these inputs: the same
-// settings, no observation or invalidation since, and at most fifteen
-// seconds old (other cluster nodes write evidence too, and titles leave
-// the window as time passes).
+// settings, no observation or invalidation since, and younger than
+// hiddenFreshFor (other cluster nodes write evidence too, and titles leave
+// the window as time passes). The Service re-warms every minute; a much
+// shorter freshness made every browse a few seconds after a pass queue
+// another full evidence pass behind it, back to back while anyone browsed.
+const hiddenFreshFor = 45 * time.Second
+
 func (h *hiddenSet) fresh(key string, revision uint64, now time.Time) bool {
-	return h.key == key && h.revision == revision && now.Sub(h.at) < 15*time.Second && !now.Before(h.at)
+	return h.key == key && h.revision == revision && now.Sub(h.at) < hiddenFreshFor && !now.Before(h.at)
 }
 
 func hiddenKey(kind string, input discoverySnapshot) string {
@@ -408,10 +415,10 @@ func (s *Service) refreshHidden(kind string) {
 	}()
 }
 
-// warmHidden keeps both sets current between requests.
+// warmHidden keeps sets current between requests.
 func (s *Service) warmHidden() {
 	input := s.discoverySnapshot()
-	if !input.availability.DisableMovieEvidenceGate {
+	if input.availability.EffectiveMode() == config.ModeDigital || !input.availability.DisableMovieEvidenceGate {
 		s.currentHidden(hiddenMovies, input)
 	}
 	s.currentHidden(hiddenShows, input)

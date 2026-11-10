@@ -82,10 +82,10 @@ type Filter struct {
 	Group               *FilterGroup `json:"group,omitempty"`
 	// DigitalDiscovery applies the availability service's digital-date gate
 	// before counting and paging a discovery result.
-	DigitalDiscovery    bool `json:"-"`
-	PSEUnplayable       bool `json:"-"` // PSE-HOOK: ignore le catalogue « lisible uniquement » (indexeur) — voir docs/pse/FORK.fr.md
-	PSEThemed           bool `json:"-"` // PSE-HOOK: filtre VF aussi sur les bibliothèques à thème — voir docs/pse/FORK.fr.md
-	DigitalDateEvidence bool `json:"-"`
+	DigitalDiscovery      bool `json:"-"`
+	DigitalDateEvidence   bool `json:"-"`
+	HomeReleaseOffsetDays int  `json:"-"`
+
 	// AvailabilityKeepKeys are the viewer's active playback sessions.
 	AvailabilityKeepKeys []RatingKey `json:"-"`
 	// Availability generations pin one evaluated hidden set across SQL reads.
@@ -179,6 +179,10 @@ type Filter struct {
 	// collection name is unmappable and is not excluded.
 	IncludeCollectionNames []string `json:"-"`
 	ExcludeCollectionNames []string `json:"-"`
+
+	// Remix-only catalogue filters, kept apart from upstream filter fields.
+	PSEUnplayable bool `json:"-"` // Ignore le catalogue « lisible uniquement » pour l’indexeur.
+	PSEThemed     bool `json:"-"` // Appliquer aussi le filtre VF aux bibliothèques à thème.
 }
 
 // BrowseSeekable reports whether Browse continues a page after AfterKey in

@@ -10,11 +10,21 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
+)
+
+const (
+	// hiddenRetentionSeconds covers the 5-minute pagingCut lifetime plus a
+	// 1-minute in-flight query slack so paginated clients see an immutable cut
+	// without keeping 60 full copies of ~60k movie exclusions on disk.
+	hiddenRetentionSeconds      = 6 * 60
+	maxRetiredHiddenGenerations = 5
+	hiddenInsertBatch           = 500
 )
 
 // publishHidden leaves older generations available to requests already using
@@ -28,7 +38,8 @@ func (s *Service) publishHidden(ctx context.Context, kind, policy string, keys [
 		binary.BigEndian.PutUint64(buf[:], uint64(key))
 		_, _ = hash.Write(buf[:])
 	}
-	gen := hex.EncodeToString(hash.Sum(nil))
+	sum := hash.Sum(nil)
+	gen := hex.EncodeToString(sum[:8])
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -46,18 +57,74 @@ func (s *Service) publishHidden(ctx context.Context, kind, policy string, keys [
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	published := err == nil
 	changed := prevGen != gen || prevPolicy != policy
-	now := time.Now().Unix()
-	for _, key := range sorted {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO availability_hidden(kind,generation,rating_key,created_at) VALUES(?,?,?,?) ON CONFLICT(kind,generation,rating_key) DO UPDATE SET created_at=excluded.created_at`, kind, gen, int64(key), now); err != nil {
-			return err
+	now := s.now().Unix()
+	if !published || prevGen != gen {
+		// A replaced generation keeps answering requests already using it
+		// for hiddenRetentionSeconds from retirement: stamp its rows once.
+		// An unchanged set writes no rows at all.
+		if published && prevGen != "" {
+			if _, err = tx.ExecContext(ctx, `UPDATE availability_hidden SET created_at=? WHERE kind=? AND generation=?`, now, kind, prevGen); err != nil {
+				return err
+			}
+		}
+		for start := 0; start < len(sorted); start += hiddenInsertBatch {
+			chunk := sorted[start:min(start+hiddenInsertBatch, len(sorted))]
+			var sb strings.Builder
+			sb.Grow(96 + len(chunk)*10)
+			sb.WriteString(`INSERT INTO availability_hidden(kind,generation,rating_key,created_at) VALUES`)
+			args := make([]any, 0, len(chunk)*4)
+			for i, key := range chunk {
+				if i > 0 {
+					sb.WriteByte(',')
+				}
+				sb.WriteString(`(?,?,?,?)`)
+				args = append(args, kind, gen, int64(key), now)
+			}
+			sb.WriteString(` ON CONFLICT(kind,generation,rating_key) DO UPDATE SET created_at=excluded.created_at`)
+			if _, err = tx.ExecContext(ctx, sb.String(), args...); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO availability_hidden_current(kind,generation,policy) VALUES(?,?,?) ON CONFLICT(kind) DO UPDATE SET generation=excluded.generation,policy=excluded.policy`, kind, gen, policy); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM availability_hidden WHERE kind=? AND generation<>? AND created_at<?`, kind, gen, now-int64(time.Hour.Seconds())); err != nil {
+	// Two primary-key ranges around the current generation: the prune never
+	// walks the current set's rows.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM availability_hidden WHERE kind=? AND (generation<? OR generation>?) AND created_at<?`, kind, gen, gen, now-hiddenRetentionSeconds); err != nil {
 		return err
+	}
+	if !published || prevGen != gen {
+		rows, err := tx.QueryContext(ctx, `SELECT generation, MAX(created_at) AS retired_at FROM availability_hidden WHERE kind=? AND (generation<? OR generation>?) GROUP BY generation ORDER BY retired_at DESC, generation DESC`, kind, gen, gen)
+		if err != nil {
+			return err
+		}
+		var excess []string
+		seen := 0
+		for rows.Next() {
+			var g string
+			var at int64
+			if err := rows.Scan(&g, &at); err != nil {
+				rows.Close()
+				return err
+			}
+			seen++
+			if seen > maxRetiredHiddenGenerations {
+				excess = append(excess, g)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, g := range excess {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM availability_hidden WHERE kind=? AND generation=?`, kind, g); err != nil {
+				return err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -82,6 +149,9 @@ func (s *Service) PagingFilter(ctx context.Context, f core.Filter) (core.Filter,
 	input := s.snapshotFor(ctx)
 	f.DigitalDiscovery = input.availability.EffectiveMode() == config.ModeDigital
 	f.DigitalDateEvidence = input.availability.DigitalDateEvidence
+	if f.DigitalDateEvidence {
+		f.HomeReleaseOffsetDays = input.availability.HomeReleaseOffsetDays
+	}
 	// A tokenless client shares this cut with all requests for the same filter.
 	// Adapters supply a client/section/sort scope; callers without one share
 	// a cut by filter. Policy changes select a new cut immediately.

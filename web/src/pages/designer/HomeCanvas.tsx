@@ -31,6 +31,7 @@ import {
   DAYPARTS,
   SECTIONS,
   atFor,
+  describeHiddenRow,
   policyChipItems,
   policyIn,
   removePolicy,
@@ -46,6 +47,7 @@ import { ImpactBar } from "./ImpactBar";
  * provenance: where it came from and why it sits at its slot.
  */
 export function HomeCanvas({
+  ready = true,
   draft,
   dirty,
   saved,
@@ -57,9 +59,12 @@ export function HomeCanvas({
   onSpotCheck,
   refreshNonce,
   onChange,
+  onPreviewChange,
   onEditRow,
   readOnly,
 }: {
+  /** Hold row rendering until Designer controls (viewers + layout) finish loading in parallel. */
+  ready?: boolean;
   draft: HomeLayout;
   dirty: boolean;
   saved: HomeLayout;
@@ -71,6 +76,7 @@ export function HomeCanvas({
   onSpotCheck: (id: number | null) => void;
   refreshNonce: number;
   onChange: (d: HomeLayout) => void;
+  onPreviewChange?: (home: ViewerHome | null) => void;
   onEditRow: (row: string) => void;
   /** Show a viewer's saved Home without layout controls (Viewers page). */
   readOnly?: boolean;
@@ -109,6 +115,7 @@ export function HomeCanvas({
       .then((h) => {
         if (!ctl.signal.aborted) {
           setHome(h);
+          onPreviewChange?.(h);
           setError(null);
         }
       })
@@ -123,11 +130,12 @@ export function HomeCanvas({
 
   const viewer = viewers.find((v) => v.id === viewerId);
   const who = viewer ? viewerName(viewer) : t("the typical viewer");
+  const hiddenWho = viewer ? viewerName(viewer) : t("Typical viewer");
   const visible = (home?.rows ?? []).filter((r) => !r.hidden);
   const hidden = (home?.rows ?? []).filter((r) => r.hidden);
   const arranged = visible.filter((r) => r.slot);
   const fixed = visible.filter((r) => !r.slot);
-  const stale = key !== request || loading;
+  const stale = key !== request || loading || !ready;
   const editingLayer = <strong className="font-medium text-fg">{layerName}</strong>;
 
   // The policy key an action edits: the row's own policy when it lives in
@@ -244,7 +252,7 @@ export function HomeCanvas({
 
       {error ? (
         <ErrorPanel error={error} />
-      ) : !home ? (
+      ) : !home || !ready ? (
         <div className="space-y-6" role="status" aria-label={t("Loading Home")}>
           {Array.from({ length: 3 }, (_, i) => (
             <div key={i}>
@@ -321,7 +329,7 @@ export function HomeCanvas({
             />
           )}
           {hidden.length ? (
-            <HiddenRows rows={hidden} who={who} actions={readOnly ? undefined : actions} />
+            <HiddenRows rows={hidden} who={hiddenWho} actions={readOnly ? undefined : actions} />
           ) : null}
         </div>
       )}
@@ -534,6 +542,7 @@ function HiddenRows({ rows, who, actions }: { rows: HomeRow[]; who: string; acti
           {rows.map((r) => {
             const prov = provenance(r, who);
             const off = r.policy?.status === "off" && r.layer !== "personalized";
+            const alreadyAlways = r.policy?.status === "always";
             return (
               <li
                 key={r.hubId}
@@ -544,8 +553,9 @@ function HiddenRows({ rows, who, actions }: { rows: HomeRow[]; who: string; acti
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-sm font-medium text-fg">{r.title}</span>
                     <Badge variant={prov.variant}>{prov.label}</Badge>
+                    {alreadyAlways ? <Badge variant="outline">{t("Always")}</Badge> : null}
                   </div>
-                  <p className="mt-0.5 text-xs text-fg-muted">{r.hiddenReason}</p>
+                  <p className="mt-0.5 text-xs text-fg-muted">{describeHiddenRow(r, who)}</p>
                 </div>
                 {actions ? (
                   <div className="flex gap-1">
@@ -560,15 +570,27 @@ function HiddenRows({ rows, who, actions }: { rows: HomeRow[]; who: string; acti
                         {t("Eligible")}
                       </Button>
                     ) : null}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      aria-label={t("Always show {title}", { title: r.title })}
-                      onClick={() => actions.always(r)}
-                    >
-                      {t("Always")}
-                    </Button>
+                    {alreadyAlways ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        aria-label={t("Edit constraints for {title}", { title: r.title })}
+                        onClick={() => actions.edit(r)}
+                      >
+                        {t("Edit")}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        aria-label={t("Always show {title}", { title: r.title })}
+                        onClick={() => actions.always(r)}
+                      >
+                        {t("Always")}
+                      </Button>
+                    )}
                     {actions.canReset(r) ? (
                       <Button
                         variant="ghost"

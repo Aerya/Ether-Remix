@@ -40,9 +40,9 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 	s.activeReads.Add(1)
 	defer func() {
 		s.activeReads.Add(-1)
-		s.touch(m.now())
+		s.touchMedia(m.now())
 	}()
-	s.touch(m.now())
+	s.touchMedia(m.now())
 	s.markDirectPlay()
 	if !s.directRangeCompatible() {
 		// The client still holds the original file's container headers and
@@ -121,7 +121,7 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 			g.retryEpoch++
 			g.retryPending = false
 			g.mu.Unlock()
-			s.touch(now)
+			s.touchMedia(now)
 		}
 	}
 	for vpos < vend {
@@ -463,8 +463,13 @@ func (m *Manager) copyFrom(ctx context.Context, w io.Writer, g *generation, off,
 			}
 			if n > 0 && g.sess.isRegistered() && g.sess.current() == g && !background {
 				now := m.now()
-				g.sess.noteFetch(n, time.Since(readAt), now)
-				g.sess.noteReadPos(pos, n, now, m.opts.SpeedGrace)
+				warmup := g.sess.noteReadPos(pos, n, now, m.opts.SpeedGrace)
+				if !warmup {
+					g.sess.noteFetch(n, time.Since(readAt), now)
+				}
+				if rep, ok := g.src.(core.SourceDeliveryReporter); ok {
+					g.sess.recordDelivery(rep.SourceDelivery(), now)
+				}
 			}
 			if int64(n) == want && errors.Is(err, io.EOF) {
 				err = nil

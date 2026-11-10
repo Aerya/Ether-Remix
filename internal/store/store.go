@@ -377,6 +377,7 @@ func openSQLite(ctx context.Context, path string, files []SnapshotFile, progress
 	if path != ":memory:" {
 		finishPreMigrate(path)
 		warnSchemaAhead(ctx, db, slog.Default(), path+PreMigrateSuffix)
+		sweepPreMigrate(ctx, db, path, time.Now())
 	}
 	// Analyse tables whose statistics are missing or stale before the first
 	// request, from every row (RefreshStatistics). Best effort: stale
@@ -524,6 +525,13 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 }
 
 func migrateSQLite(ctx context.Context, db *sql.DB, progress func(Progress)) error {
+	// Migration steps are startup's longest writers (a full ANALYZE, a
+	// table rebuild). Hold the write gate in maintenance mode for the
+	// whole run, refreshed per step, so any writer already running
+	// beside startup queues instead of failing at 10 s (#407).
+	gate := gateOfDB(ctx, db)
+	gate.beginMaintenance(time.Now().Add(maintenanceHold))
+	defer gate.endMaintenance()
 	if _, err := db.ExecContext(ctx, createMigrationsTable); err != nil {
 		return err
 	}
@@ -552,6 +560,7 @@ func migrateSQLite(ctx context.Context, db *sql.DB, progress func(Progress)) err
 			continue
 		}
 		report(progress, Progress{Stage: StageMigrate, Name: fmt.Sprintf("%s/%d", m.component, m.version), Done: i, Total: len(pending)})
+		gate.extendMaintenance(time.Now().Add(maintenanceHold))
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return err

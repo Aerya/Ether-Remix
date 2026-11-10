@@ -274,6 +274,23 @@ func plexAndroidClient(pr *Request) bool {
 		(strings.HasPrefix(product, "plex for android") && (strings.Contains(product, "(tv)") || strings.Contains(strings.ToLower(pr.Device), "shield")))
 }
 
+// plexIOSClient identifies the official Plex iOS and iPadOS players.
+func plexIOSClient(pr *Request) bool {
+	if pr == nil {
+		return false
+	}
+	product := strings.ToLower(strings.TrimSpace(pr.Product))
+	platform := strings.ToLower(strings.TrimSpace(pr.Platform))
+	return product == "plex for ios" || (product == "plex" && (platform == "ios" || platform == "ipados"))
+}
+
+// plexMobileOrTVBedrockClient identifies the official Android and iOS players
+// built on Plex's Bedrock player, which populate their subtitle picker from the
+// pre-play detail/queue item and do not re-fetch metadata once playback starts.
+func plexMobileOrTVBedrockClient(pr *Request) bool {
+	return plexAndroidClient(pr) || plexIOSClient(pr)
+}
+
 // androidImageSubtitle is retained for native file playback, but must be burned
 // once playback is converted: our segmented muxer carries text, not images.
 func androidImageSubtitle(pr *Request, info core.MediaInfo, opts core.DecideOptions) bool {
@@ -613,6 +630,16 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*cor
 			}
 		}
 		s.burnOnlyShownSubtitle(pr, p, ps.Info)
+		p.caps.TranscodeVideoCodecs = streamingVideoTarget(pr.ProfileExtra, p.protocol)
+		if len(p.caps.VideoCodecs) > 0 && len(p.caps.TranscodeVideoCodecs) > 0 {
+			var kept []string
+			for _, c := range p.caps.TranscodeVideoCodecs {
+				if p.caps.SupportsVideo(c) {
+					kept = append(kept, c)
+				}
+			}
+			p.caps.TranscodeVideoCodecs = kept
+		}
 		p.caps.TranscodeAudioCodecs = streamingAudioTarget(pr.ProfileExtra, p.protocol)
 		if len(p.caps.AudioCodecs) > 0 && len(p.caps.TranscodeAudioCodecs) > 0 {
 			var kept []string
@@ -862,7 +889,7 @@ func (s *Server) decisionContainer(ctx context.Context, pr *Request, t *core.Tit
 	// The owner's "Convert Dolby and DTS to AAC" rule outranks the client's
 	// engine: a surround track it converted is never answered direct play.
 	ownerConverts := p.caps.ConvertSurroundAudio && dec.Kind != core.DecisionDirectPlay && !dec.AudioCopy
-	mdeDirect := p.mde && p.opts.DirectPlay && !(plexAndroidClient(pr) && dec.BurnSubtitles) && (!pm4k || dec.Kind == core.DecisionDirectPlay) && len(p.opts.AudioFilters) == 0 && !ownerConverts &&
+	mdeDirect := p.mde && p.opts.DirectPlay && !dec.StripDolbyVision && !(plexAndroidClient(pr) && dec.BurnSubtitles) && (!pm4k || dec.Kind == core.DecisionDirectPlay) && len(p.opts.AudioFilters) == 0 && !ownerConverts &&
 		!(onDemandSession(ps) && (mustConvert || (p.opts.DirectStream && dec.Kind != core.DecisionDirectPlay)))
 	shown := dec
 	if mdeDirect {
@@ -1355,10 +1382,12 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 				return s.d.Transcoder.Decide(ps.Info, entry.caps, opts)
 			}
 		}
-		if dec.AudioCodec != "" && !transcode.SegmentedAudioCopyOK(entry.caps, dec.AudioCodec) {
+		videoOK := dec.VideoCodec == "" || transcode.SegmentedVideoCopyOK(entry.caps, dec.VideoCodec)
+		audioOK := dec.AudioCodec == "" || transcode.SegmentedAudioCopyOK(entry.caps, dec.AudioCodec)
+		if !videoOK || !audioOK {
 			opts := entry.opts
 			opts.DirectPlay = false
-			opts.DirectStream = true
+			opts.DirectStream = videoOK
 			return s.d.Transcoder.Decide(ps.Info, entry.caps, opts)
 		}
 		return dec
@@ -1393,6 +1422,34 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	s.writeMasterPlaylist(w, r, p.sessionID, hs, ps.Info, dec)
 }
 
+// singleRungHLSClient reports smart-TV HTML apps (Plex for LG / webOS and
+// Plex for VIDAA) whose native HLS demuxer wedges in a seek loop if ABR
+// switches across shared-encoder TS resolutions mid-stream (#408). Explicit
+// Plex quality-menu changes still renegotiate start.m3u8.
+func singleRungHLSClient(r *http.Request, entry *transcodeEntry) bool {
+	product, platform := "", ""
+	if pr := FromContext(r.Context()); pr != nil {
+		product, platform = pr.Product, pr.Platform
+	}
+	if entry != nil {
+		if product == "" {
+			product = entry.caps.Product
+		}
+		if platform == "" {
+			platform = entry.caps.Platform
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(product)) {
+	case "plex for lg", "plex for vidaa":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "webos", "vidaa":
+		return true
+	}
+	return false
+}
+
 func (s *Server) writeMasterPlaylist(w http.ResponseWriter, r *http.Request, sessionID string, hs core.HLSSession, info core.MediaInfo, dec core.Decision) {
 	if err := s.saveDistributedBinding(r.Context(), sessionID); err != nil {
 		http.Error(w, "playback unavailable", 503)
@@ -1406,6 +1463,9 @@ func (s *Server) writeMasterPlaylist(w http.ResponseWriter, r *http.Request, ses
 	baseBandwidth := 0
 	if ls, ok := hs.(core.HLSLadderSession); ok {
 		rungs := ls.Rungs()
+		if singleRungHLSClient(r, entry) && len(rungs) > 1 {
+			rungs = rungs[:1]
+		}
 		if len(rungs) == 1 {
 			baseBandwidth = rungs[0].Bandwidth
 		}
@@ -1622,6 +1682,10 @@ func (s *Server) handleTranscodeStop(w http.ResponseWriter, r *http.Request) {
 	id := sanitizeSessionID(r.URL.Query().Get("session"))
 	pr := FromContext(r.Context())
 	if e, ok := s.transcodes.get(id); !ok || e.userID != pr.User.ID {
+		if pr.User != nil && s.transcodes.wasStoppedBy(id, pr.User.ID, s.now()) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
@@ -1747,6 +1811,77 @@ func (s *Server) servedTranscodeSessionModel(te *transcodeEntry) model.Transcode
 	return ts
 }
 
+// sessionTranscodeMedia renders the active conversion/remux Media for
+// /status/sessions once start.m3u8/start.mpd/start has actually started
+// (te.started). Tautulli and Plex Dashboard inspect Part@decision on the
+// session's Media to distinguish Direct Play (Part@decision omitted) from
+// Direct Stream (Part@decision="transcode" with VideoDecision="copy").
+func (s *Server) sessionTranscodeMedia(t *core.Title, te *transcodeEntry, viewer *Request) (model.Media, bool) {
+	if t == nil || te == nil || !te.started || viewer == nil || viewer.User == nil {
+		return model.Media{}, false
+	}
+	ps := &core.PlaySession{Info: te.info, StartedAt: t.UpdatedAt}
+	if s.d.Playback != nil {
+		if live, ok := s.d.Playback.Session(te.playID); ok && live != nil {
+			ps = live
+		} else if live, ok := s.d.Playback.SessionFor(te.userID, te.clientID, te.key); ok && live != nil {
+			ps = live
+		}
+	}
+	if len(ps.Info.Streams) == 0 && len(te.info.Streams) > 0 {
+		cp := *ps
+		cp.Info = te.info
+		ps = &cp
+	}
+	dec := te.decision
+	if dec.Kind == core.DecisionDirectPlay {
+		dec.Kind = core.DecisionRemux
+	}
+	if hs, ok := s.plexHLSSession(te.id); ok && hs != nil {
+		if src, ok := hs.(interface{ EncoderStatus() *core.EncoderStatus }); ok {
+			if st := src.EncoderStatus(); st != nil && st.Rung != "" && st.Rung != "base" && !st.Decision.VideoCopy {
+				dec = st.Decision
+			}
+		}
+	}
+	p := te.requested
+	p.key = t.Key
+	p.caps = te.caps
+	if p.caps.ClientID == "" {
+		p.caps.ClientID = te.clientID
+	}
+	if p.protocol == "" {
+		if te.opts.Protocol != "" {
+			p.protocol = te.opts.Protocol
+		} else {
+			p.protocol = core.ProtocolHLS
+		}
+	}
+	ik := s.playIdentityFor(viewer, t.Key)
+	if pin := s.playIDs.pinned(ik, true, s.now()); pin.selected != 0 {
+		p.mediaID = pin.selected
+	} else if p.mediaID == 0 {
+		p.mediaID = int64(t.Key)
+	}
+	for i, st := range ps.Info.Streams {
+		if st.Type == "audio" && st.Index == dec.AudioStream {
+			p.audioSel = i
+			break
+		}
+	}
+	if te.subtitle >= 0 && te.subtitle < len(ps.Info.Streams) && ps.Info.Streams[te.subtitle].Type == "subtitle" {
+		p.subSel, p.subSet = te.subtitle, true
+	} else {
+		p.subSel, p.subSet = -1, false
+	}
+	p.listAllTracks = androidFamilyClient(viewer)
+	p.softText = browserClient(viewer)
+	if plexAndroidClient(viewer) && dec.BurnSubtitles && p.subtitles == "none" {
+		p.subtitles = "burn"
+	}
+	return s.decisionMedia(t, ps, dec, p, viewer.User), true
+}
+
 func transcodeSessionModel(te *transcodeEntry) model.TranscodeSess {
 	ts := model.TranscodeSess{
 		Key:        "/transcode/sessions/" + te.id,
@@ -1758,6 +1893,28 @@ func transcodeSessionModel(te *transcodeEntry) model.TranscodeSess {
 		TimeStamp:  float64(te.updatedAt.Unix()),
 		AudioCodec: plexCodec(te.decision.AudioCodec),
 		VideoCodec: plexCodec(te.decision.VideoCodec),
+	}
+	if te.started {
+		switch cmp.Or(te.opts.Protocol, te.requested.protocol) {
+		case core.ProtocolDASH:
+			ts.Protocol = core.ProtocolDASH
+		case core.ProtocolHTTP:
+			ts.Protocol = core.ProtocolHTTP
+		default:
+			ts.Protocol = core.ProtocolHLS
+		}
+		switch te.decision.Container {
+		case transcode.ContainerMatroska:
+			ts.Container = "mkv"
+		case transcode.ContainerFMP4:
+			ts.Container = "mp4"
+		default:
+			if ts.Protocol == core.ProtocolHTTP {
+				ts.Container = "mkv"
+			} else {
+				ts.Container = "mpegts"
+			}
+		}
 	}
 	if v := te.info.Video(); v != nil {
 		ts.SourceVideoCodec = plexCodec(v.Codec)
@@ -1781,6 +1938,19 @@ func transcodeSessionModel(te *transcodeEntry) model.TranscodeSess {
 	}
 	if te.decision.BurnSubtitles {
 		ts.SubtitleDecision = "burn"
+	} else if te.started && te.subtitle >= 0 && te.subtitle < len(te.info.Streams) && te.info.Streams[te.subtitle].Type == "subtitle" {
+		sub := te.info.Streams[te.subtitle]
+		codec := plexCodec(sub.Codec)
+		text := textSidecarCodec(codec)
+		inSegments := text && te.decision.Container == transcode.ContainerMatroska && te.decision.SubtitleStream >= 0 && te.decision.SubtitleStream == sub.Index
+		softText := browserClient(&Request{Product: te.caps.Product})
+		switch {
+		case te.requested.subtitles == "none" && !inSegments:
+		case softText && text && te.decision.Container != transcode.ContainerMatroska:
+			ts.SubtitleDecision = "transcode"
+		default:
+			ts.SubtitleDecision = "copy"
+		}
 	}
 	return ts
 }

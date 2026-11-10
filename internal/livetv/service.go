@@ -33,47 +33,57 @@ CREATE TABLE livetv_policies(user_id INTEGER PRIMARY KEY, data TEXT NOT NULL);`)
 }
 
 type Service struct {
-	activityWake       chan struct{}
-	lastClientActivity time.Time // guarded by mu
-	vodRefreshMu       sync.Mutex
-	maintenance        maintenanceHealth
-	virtualGuide       virtualGuideCache
-	breakObserved      chan breakObservation
-	observedBreaks     map[core.RatingKey]breakObservation
-	guideAIMu          sync.Mutex
-	graphicsWake       chan struct{}
-	reelSnapshots      map[string]*ReelSnapshot
-	graphicsSkips      map[string]time.Time
-	personalDirty      map[int64]uint64
-	personalRecipes    map[personalKey]string
-	personalMu         sync.Mutex
-	personalLineup     map[int64]time.Time
-	personalClocks     map[personalKey]*personalClock
-	broadcasts         broadcastRegistry
-	broadcastProviders map[string]map[string]string
-	chanSnap           channelSnapshot // decoded lineup shared by request paths (channel_cache.go)
-	plexGate           plexGuideGate
-	plexPreviewMu      sync.Mutex
-	plexPreview        map[string]plexPreviewEntry
-	authCache          authCache  // provider credentials for the stream path (auth.go)
-	inputRelay         inputRelay // loopback ffmpeg input relay (input_relay.go)
-	probeMu            sync.Mutex
-	probeCache         map[string]liveProbeEntry
-	probeWait          map[string]*liveProbeFlight
-	healthMu           sync.RWMutex
-	channelHealth      map[string]sweepResult
-	sourceMu           sync.Mutex
-	sourceHealth       map[string]streamSourceHealth
-	history            sourceHistoryStore // learned per-source evidence (source_history.go)
-	o                  Options
-	kinds              *KindRegistry
-	policyReads        atomic.Uint64
-	mu                 sync.Mutex
-	breakOwners        map[string]int64 // admitted save identities; never persisted
-	breakOwnerRevision uint64           // identity admission invalidates background retries
-	lineupUnix         int64
-	onChange           func()
-	sessions           map[string]*session
+	activityWake          chan struct{}
+	noActivitySources     atomic.Bool
+	sourceWake            chan struct{}
+	vodWake               chan struct{}
+	maintainWake          chan struct{}
+	breakWake             chan struct{}
+	personalWake          chan struct{}
+	sweepWake             chan struct{}
+	showcasePendingTotals map[string][2]int
+	lastClientActivity    time.Time // guarded by mu
+	vodRefreshMu          sync.Mutex
+	maintenance           maintenanceHealth
+	virtualGuide          virtualGuideCache
+	breakObserved         chan breakObservation
+	observedBreaks        map[core.RatingKey]breakObservation
+	guideAIMu             sync.Mutex
+	graphicsWake          chan struct{}
+	reelSnapshots         map[string]*ReelSnapshot
+	graphicsSkips         map[string]time.Time
+	reelSubstitutions     map[string]reelSubEntry
+	personalDirty         map[int64]uint64
+	personalRecipes       map[personalKey]string
+	personalMu            sync.Mutex
+	personalLineup        map[int64]time.Time
+	personalClocks        map[personalKey]*personalClock
+	broadcasts            broadcastRegistry
+	broadcastProviders    map[string]map[string]string
+	chanSnap              channelSnapshot // decoded lineup shared by request paths (channel_cache.go)
+	plexGate              plexGuideGate
+	plexPreviewMu         sync.Mutex
+	plexPreview           map[string]plexPreviewEntry
+	authCache             authCache  // provider credentials for the stream path (auth.go)
+	inputRelay            inputRelay // loopback ffmpeg input relay (input_relay.go)
+	probeMu               sync.Mutex
+	probeCache            map[string]liveProbeEntry
+	probeWait             map[string]*liveProbeFlight
+	healthMu              sync.RWMutex
+	channelHealth         map[string]sweepResult
+	sourceMu              sync.Mutex
+	sourceHealth          map[string]streamSourceHealth
+	history               sourceHistoryStore // learned per-source evidence (source_history.go)
+	transcoderMu          sync.RWMutex
+	o                     Options
+	kinds                 *KindRegistry
+	policyReads           atomic.Uint64
+	mu                    sync.Mutex
+	breakOwners           map[string]int64 // admitted save identities; never persisted
+	breakOwnerRevision    uint64           // identity admission invalidates background retries
+	lineupUnix            int64
+	onChange              func()
+	sessions              map[string]*session
 	// watched is when each channel was last tuned or playing (guarded by
 	// mu): only channels watched lately are pre-warmed.
 	watched map[string]time.Time
@@ -92,6 +102,19 @@ type Service struct {
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	direct           ownedServiceState // Direct-path owned timelines and slates (owned_*.go)
+}
+
+func (s *Service) transcoder() core.Transcoder {
+	s.transcoderMu.RLock()
+	tc := s.o.Transcoder
+	s.transcoderMu.RUnlock()
+	return tc
+}
+
+func (s *Service) setTranscoder(tc core.Transcoder) {
+	s.transcoderMu.Lock()
+	s.o.Transcoder = tc
+	s.transcoderMu.Unlock()
 }
 
 func New(o Options) (*Service, error) {
@@ -118,6 +141,13 @@ func New(o Options) (*Service, error) {
 	}
 	s := &Service{breakObserved: make(chan breakObservation, 64), observedBreaks: map[core.RatingKey]breakObservation{}, graphicsWake: make(chan struct{}, 1), o: o, kinds: kinds, sessions: map[string]*session{}, ctx: ctx, cancel: cancel, lineupUnix: o.Now().Unix()}
 	s.activityWake = make(chan struct{}, 1)
+	s.sourceWake = make(chan struct{}, 1)
+	s.vodWake = make(chan struct{}, 1)
+	s.maintainWake = make(chan struct{}, 1)
+	s.breakWake = make(chan struct{}, 1)
+	s.personalWake = make(chan struct{}, 1)
+	s.sweepWake = make(chan struct{}, 1)
+	s.broadcasts.onAcquire = s.wakeMaintenance
 	if o.Picker != nil && o.Users != nil {
 		s.wg.Add(1)
 		go s.personalLoop()
@@ -186,6 +216,7 @@ func (s *Service) Close() error {
 	s.cancel()
 	s.broadcasts.close()
 	s.wg.Wait()
+	s.waitVirtualGuideInflight()
 	s.mu.Lock()
 	all := s.sessions
 	s.sessions = map[string]*session{}
@@ -195,6 +226,18 @@ func (s *Service) Close() error {
 	}
 	s.history.close()
 	return nil
+}
+
+func (s *Service) notifySessionsChanged() {
+	if s != nil && s.o.SessionsChanged != nil {
+		s.o.SessionsChanged()
+	}
+}
+
+func (s *Service) notifySourcesChanged() {
+	if s != nil && s.o.SourcesChanged != nil {
+		s.o.SourcesChanged()
+	}
 }
 
 func (s *Service) invalidate(channelID, sourceID string) {
@@ -211,6 +254,9 @@ func (s *Service) invalidate(channelID, sourceID string) {
 	for _, ss := range stale {
 		s.sessionLog(ss).Info("live session expired")
 		ss.close(s)
+	}
+	if len(stale) > 0 {
+		s.notifySessionsChanged()
 	}
 }
 
@@ -233,20 +279,77 @@ func liveSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
+func (s *Service) wakeMaintenance() {
+	if s.maintainWake != nil {
+		select {
+		case s.maintainWake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *Service) maintainActive() bool {
+	return len(s.recentlyWatched()) > 0 || s.hasLiveActivity()
+}
+
 func (s *Service) maintain() {
 	defer s.wg.Done()
 	steps := s.maintenanceSteps()
-	steps("refreshReels", s.refreshReels)
-	t := time.NewTicker(15 * time.Second)
-	defer t.Stop()
+	timer := time.NewTimer(15 * time.Second)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	defer timer.Stop()
 	warmed := map[core.RatingKey]time.Time{}
+	wasio := false
 	for {
+		if !s.maintainActive() {
+			wasio = false
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-s.maintainWake:
+				continue
+			case <-s.graphicsWake:
+				if s.virtualGuideActive(s.o.Now()) {
+					steps("refreshReels", s.refreshReels)
+					s.wakeVirtualGuide()
+				} else {
+					s.mu.Lock()
+					s.reelSnapshots = nil
+					s.mu.Unlock()
+				}
+				continue
+			}
+		}
+		if !wasio {
+			wasio = true
+			select {
+			case <-s.maintainWake:
+			default:
+			}
+			steps("refreshReels", s.refreshReels)
+			steps("ensureGraphics", s.ensureGraphics)
+			if s.o.Warm != nil {
+				steps("warmProgrammes", func() { s.warmProgrammes(warmed) })
+			}
+		}
+		timer.Reset(15 * time.Second)
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-s.graphicsWake:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			steps("refreshReels", s.refreshReels)
-		case <-t.C:
+		case <-timer.C:
 			steps("expireSessions", s.expireSessions)
 			steps("expireBroadcasts", func() { s.broadcasts.expire(s.o.Now()) })
 			steps("refreshReels", s.refreshReels)
@@ -259,12 +362,14 @@ func (s *Service) maintain() {
 }
 
 func (s *Service) warmProgrammes(warmed map[core.RatingKey]time.Time) {
-
+	recent := s.recentlyWatched()
+	if len(recent) == 0 {
+		return
+	}
 	cs, err := s.virtualChannels(s.ctx)
 	if err != nil {
 		return
 	}
-	recent := s.recentlyWatched()
 	s.mu.Lock()
 	watchedAt := make(map[string]time.Time, len(s.watched))
 	for id, at := range s.watched {
@@ -329,6 +434,9 @@ func (s *Service) expireSessions() {
 		s.sessionLog(ss).Info("live session expired")
 		ss.close(s)
 	}
+	if len(stale) > 0 {
+		s.notifySessionsChanged()
+	}
 }
 func (s *Service) Channels(ctx context.Context) ([]Channel, error) {
 	cs, err := s.allChannels(ctx)
@@ -373,7 +481,6 @@ func (s *Service) Channel(ctx context.Context, id string) (Channel, error) {
 			return entry.channel, nil
 		}
 		s.wakeVirtualGuide()
-		return Channel{}, core.ErrNotAvailable
 	}
 
 	var b []byte
@@ -510,7 +617,7 @@ func (s *Service) resolveProgramming(ctx context.Context, existing []Item, colle
 
 func interleave(parts [][]Item, weights []int) []Item {
 	idx := make([]int, len(parts))
-	var out []Item
+	out := []Item{}
 	for len(out) < 10000 {
 		progressed := false
 		for i, p := range parts {
@@ -557,7 +664,7 @@ func (s *Service) expandQuery(ctx context.Context, collection core.RatingKey, fi
 	if err != nil {
 		return nil, err
 	}
-	var items []Item
+	items := []Item{}
 	for _, t := range page.Items {
 		ts := []core.Title{t}
 		if t.Type == core.TypeShow {
@@ -828,25 +935,47 @@ func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 	}
 	_, err = s.o.DB.ExecContext(ctx, `INSERT INTO livetv_channels(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, c.ID, b)
 	if err == nil {
+		if !c.Enabled {
+			s.cancelGraphics(c.ID)
+		}
 		s.captureBreakOwner(ctx, c.ID)
 		s.invalidate(c.ID, "")
-		if err = s.refreshVirtualGuide(ctx); err != nil {
+		if err = s.refreshVirtualGuideIfWarm(ctx); err != nil {
 			return c, err
 		}
+		s.wakeSourceRefresh()
+		s.wakeHealthSweep()
+		s.wakeBreakLoop()
+		s.wakePersonalLoop()
 		s.bumpLineup()
 	}
 	return c, err
 }
+
+// cancelGraphics drops a channel's queued and running graphics renders
+// when the graphics service supports it: a disabled or deleted channel
+// must stop rendering at once, not at the next planning tick.
+func (s *Service) cancelGraphics(channelID string) {
+	if c, ok := s.o.Graphics.(interface{ CancelChannel(string) }); ok {
+		c.CancelChannel(channelID)
+	}
+}
+
 func (s *Service) DeleteChannel(ctx context.Context, id string) error {
 	_, err := s.o.DB.ExecContext(ctx, `DELETE FROM livetv_channels WHERE id=?`, id)
 	if err == nil {
+		s.cancelGraphics(id)
 		s.mu.Lock()
 		delete(s.breakOwners, id)
 		s.mu.Unlock()
 		s.invalidate(id, "")
-		if err = s.refreshVirtualGuide(ctx); err != nil {
+		if err = s.refreshVirtualGuideIfWarm(ctx); err != nil {
 			return err
 		}
+		s.wakeSourceRefresh()
+		s.wakeHealthSweep()
+		s.wakeBreakLoop()
+		s.wakePersonalLoop()
 		s.bumpLineup()
 	}
 	return err
@@ -888,6 +1017,7 @@ func (s *Service) bumpLineup() {
 	if fn != nil {
 		fn()
 	}
+	s.notifySourcesChanged()
 }
 func (s *Service) Policy(ctx context.Context, userID int64) (Policy, error) {
 	s.policyReads.Add(1)
@@ -901,9 +1031,10 @@ func (s *Service) SavePolicy(ctx context.Context, p Policy) error {
 	}
 	err := savePolicy(ctx, s.o.DB, p)
 	if err == nil {
-		if err = s.refreshVirtualGuide(ctx); err != nil {
+		if err = s.refreshVirtualGuideIfWarm(ctx); err != nil {
 			return err
 		}
+		s.wakePersonalLoop()
 		// The viewer's channel set changed: clients refresh their lineup.
 		s.bumpLineup()
 	}
@@ -1053,11 +1184,6 @@ func (s *Service) AllowedChannelsForIDs(ctx context.Context, u *core.User, ids [
 }
 
 func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []string) ([]Channel, error) {
-	readyCtx, readinessErr := s.withVirtualGuide(ctx, nil)
-	if readinessErr != nil {
-		return nil, readinessErr
-	}
-	ctx = readyCtx
 	ctx, pol, err := s.withPolicy(ctx, u)
 	if err != nil {
 		return nil, err
@@ -1335,105 +1461,12 @@ SELECT ch.source_id, ch.channel_id, (SELECT p.data FROM livetv_programmes p WHER
 	return out, nil
 }
 
-// guideChannel drops titles the resolver already knows cannot play. Unknown
-// titles keep their saved order, so a channel with no availability cache
-// schedules exactly as it did before.
-func (s *Service) guideChannel(ctx context.Context, c Channel) Channel {
-	c = s.graphicsChannel(c)
-	src := s.o.Availability
-	if src == nil {
-		return c
-	}
-	items, itemsChanged := omitUnavailable(ctx, src, c.Items)
-	fallback, fallbackChanged := omitUnavailable(ctx, src, c.Fallback)
-	filler, fillerChanged := omitUnavailable(ctx, src, c.Filler)
-	blocks := c.Blocks
-	blocksChanged := false
-	if len(c.Blocks) > 0 {
-		next := make([]Block, len(c.Blocks))
-		copy(next, c.Blocks)
-		for i := range next {
-			bs, ch3 := omitUnavailableSources(ctx, src, next[i].Sources)
-			if ch3 {
-				next[i].Sources = bs
-			}
-			bi, ch := omitUnavailable(ctx, src, next[i].Items)
-			bf, ch2 := omitUnavailable(ctx, src, next[i].Filler)
-			if ch || ch2 || ch3 {
-				blocksChanged = true
-				next[i].Items = bi
-				next[i].Filler = bf
-			}
-		}
-		if blocksChanged {
-			blocks = next
-		}
-	}
-	sources, sourcesChanged := omitUnavailableSources(ctx, src, c.Sources)
-	pins := append([]PinnedSlot(nil), c.Pins...)
-	pinsChanged := false
-	for i := range pins {
-		pi, a := omitUnavailable(ctx, src, pins[i].Items)
-		ps, b := omitUnavailableSources(ctx, src, pins[i].Sources)
-		if a || b {
-			pins[i].Items = pi
-			pins[i].Sources = ps
-			pinsChanged = true
-		}
-	}
-	if sourcesChanged {
-		c.Sources = sources
-	}
-	if pinsChanged {
-		c.Pins = pins
-	}
-	if !itemsChanged && !fallbackChanged && !fillerChanged && !blocksChanged && !sourcesChanged && !pinsChanged {
-		return c
-	}
-	c.Items, c.Fallback, c.Filler, c.Blocks = items, fallback, filler, blocks
-	return c
-}
-
-func omitUnavailableSources(ctx context.Context, src core.AvailabilitySource, sources []ProgramSource) ([]ProgramSource, bool) {
-	if len(sources) == 0 {
-		return sources, false
-	}
-	next := append([]ProgramSource(nil), sources...)
-	changed := false
-	for i := range next {
-		items, a := omitUnavailable(ctx, src, next[i].Items)
-		children, b := omitUnavailableSources(ctx, src, next[i].Sources)
-		if a || b {
-			next[i].Items = items
-			next[i].Sources = children
-			changed = true
-		}
-	}
-	if !changed {
-		return sources, false
-	}
-	return next, true
-}
-
-func omitUnavailable(ctx context.Context, src core.AvailabilitySource, items []Item) ([]Item, bool) {
-	if len(items) == 0 {
-		return items, false
-	}
-	out := make([]Item, 0, len(items))
-	dropped := false
-	for _, it := range items {
-		if it.Key != 0 && it.Slate == "" {
-			if known, ok := src.Available(ctx, it.Key); known && !ok {
-				dropped = true
-				continue
-			}
-		}
-		out = append(out, it)
-	}
-	if !dropped {
-		return items, false
-	}
-	return out, true
+// guideChannel is the one channel both the guide and the playout schedule:
+// the saved programming with its On Air graphics. Availability never reshapes
+// it; a title that cannot play is replaced on air for its own slot only, so
+// every other programme keeps the time the guide gave it.
+func (s *Service) guideChannel(_ context.Context, c Channel) Channel {
+	return s.graphicsChannel(c)
 }
 
 func (s *Service) programmes(ctx context.Context, c Channel, from, until time.Time) ([]Programme, error) {
@@ -1517,11 +1550,6 @@ func (s *Service) guide(ctx context.Context, u *core.User, from, until time.Time
 		return nil, fmt.Errorf("guide window must be positive and at most 7 days")
 	}
 	var err error
-	readyCtx, readinessErr := s.withVirtualGuide(ctx, nil)
-	if readinessErr != nil {
-		return nil, readinessErr
-	}
-	ctx = readyCtx
 	ctx, _, err = s.withPolicy(ctx, u)
 	if err != nil {
 		return nil, err
@@ -1735,11 +1763,6 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 	if u == nil || !until.After(now) {
 		return nil, nil, fmt.Errorf("invalid on-now window")
 	}
-	readyCtx, readinessErr := s.withVirtualGuide(ctx, nil)
-	if readinessErr != nil {
-		return nil, nil, readinessErr
-	}
-	ctx = readyCtx
 	ctx, _, err := s.withPolicy(ctx, u)
 	if err != nil {
 		return nil, nil, err
@@ -2074,10 +2097,15 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		"programmes_unchanged", writes.ProgrammesKept, "channels_written", writes.ChannelsWritten, "channels_deleted", writes.ChannelsDeleted,
 		"guide_channels_written", writes.GuideChannelsWritten, "guide_channels_deleted", writes.GuideChannelsDeleted, "source_written", sourceWritten)
 	err = tx.Commit()
+	s.forgetSourceAuth(src.ID)
+	if err == nil {
+		s.wakeSourceRefresh()
+	}
 	if err == nil && changed {
-		if err = s.refreshVirtualGuide(ctx); err != nil {
+		if err = s.refreshVirtualGuideIfWarm(ctx); err != nil {
 			return src, err
 		}
+		s.wakeHealthSweep()
 		s.bumpLineup()
 		if fetched.AddonInputs {
 			var newChannels []string
@@ -2096,9 +2124,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 			s.invalidate(id, "")
 		}
 	}
-	s.forgetSourceAuth(src.ID)
 	if err == nil && src.Auth != nil && src.Auth.Type == "xtream" {
 		_, _ = s.o.DB.ExecContext(ctx, `UPDATE xtream_vod_refresh SET next=0 WHERE provider=?`, src.ID)
+		s.wakeVODLoop()
 		if s.o.VODChanged != nil {
 			s.o.VODChanged()
 		}
@@ -2114,6 +2142,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		if e := s.fillSourceStats(ctx, one); e == nil {
 			src = one[0]
 		}
+		s.notifySourcesChanged()
 	}
 	return src, err
 }
@@ -2238,6 +2267,8 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 	if _, err = s.o.DB.ExecContext(ctx, `INSERT INTO livetv_sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, src.ID, b); err != nil {
 		return src, err
 	}
+	s.forgetSourceAuth(src.ID)
+	s.wakeSourceRefresh()
 	src.HasPlaylist = false
 	src.HasGuide = false
 	src.Playlist, src.Guide = "", ""
@@ -2246,6 +2277,7 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 	if e := s.fillSourceStats(ctx, one); e == nil {
 		src = one[0]
 	}
+	s.notifySourcesChanged()
 	return src, nil
 }
 
@@ -2342,12 +2374,17 @@ func (s *Service) DeleteSource(ctx context.Context, id string) error {
 		return err
 	}
 	err = tx.Commit()
+	s.forgetSourceAuth(id)
 	if err == nil {
 		s.invalidate("", id)
+		s.notifySourcesChanged()
+		s.wakeSourceRefresh()
+		s.wakeHealthSweep()
+		s.wakeVODLoop()
 		if s.o.VODChanged != nil {
 			s.o.VODChanged()
 		}
-		if err = s.refreshVirtualGuide(ctx); err != nil {
+		if err = s.refreshVirtualGuideIfWarm(ctx); err != nil {
 			return err
 		}
 		s.bumpLineup()
