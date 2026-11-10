@@ -23,3 +23,18 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("épisodes filtrés alors que les séries ne le sont pas : %s", q)
 	}
 }
+
+func TestInternationalSettings(t *testing.T) {
+	t.Setenv("PSE_FRENCH", "on")
+	t.Setenv("PSE_CATALOG_ORIGINAL_LANGUAGES", "ja,de")
+	t.Setenv("PSE_CATALOG_COUNTRY_EVIDENCE", "off")
+	t.Setenv("PSE_FRENCH_RELEASES", "de,pt-br")
+	s := Load()
+	if len(s.Countries) != 0 || s.NeedsHomeReleases() || len(s.OriginalLanguages) != 2 || s.Releases[0] != "german" || s.Releases[1] != "portuguese-brazil" {
+		t.Fatalf("%+v", s)
+	}
+	t.Setenv("PSE_CATALOG_ORIGINAL_LANGUAGES", "none")
+	if s := Load(); s.OriginalLanguages == nil || len(s.OriginalLanguages) != 0 {
+		t.Fatalf("none must disable original-language evidence: %+v", s)
+	}
+}

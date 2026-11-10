@@ -1,5 +1,5 @@
-// Package frenchcat implémente le catalogue en français de PSE : les listes
-// du catalogue ne gardent que les titres disponibles en français.
+// Package frenchcat filters the catalogue by configured language evidence.
+// The package name and defaults preserve the historical French configuration.
 //
 // Un titre est gardé si au moins un critère est vérifié :
 //   - sa langue originale est le français (productions françaises,
@@ -16,6 +16,7 @@
 package frenchcat
 
 import (
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,8 @@ import (
 type Settings struct {
 	// Enabled : PSE_FRENCH=on. Désactivé par défaut.
 	Enabled bool
+	// Nil retains the legacy French original-language condition; an empty slice disables it.
+	OriginalLanguages []string
 	// Countries : PSE_FRENCH_COUNTRIES, pays dont une sortie numérique ou
 	// physique compte (codes ISO, défaut FR). Ajouter CA inclut les sorties
 	// canadiennes, qui ne sont pas toujours doublées en français.
@@ -54,6 +57,18 @@ func Load() Settings {
 		for _, c := range v {
 			s.Countries = append(s.Countries, strings.ToUpper(c))
 		}
+	}
+	if v := list(pseenv.Get("PSE_CATALOG_ORIGINAL_LANGUAGES")); v != nil {
+		s.OriginalLanguages = []string{}
+		for _, code := range v {
+			if code != "none" {
+				s.OriginalLanguages = append(s.OriginalLanguages, strings.Split(code, "-")[0])
+			}
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_CATALOG_COUNTRY_EVIDENCE"))) {
+	case "off", "false", "0", "no", "non":
+		s.Countries = nil
 	}
 	if v := list(pseenv.Get("PSE_FRENCH_RELEASES")); v != nil {
 		s.Releases = nil
@@ -94,7 +109,7 @@ func canonical(l string) string {
 	case "fr-fr", "truefrench":
 		return "vff"
 	}
-	return l
+	return releaseparse.LanguageName(l)
 }
 
 var (
@@ -145,7 +160,17 @@ func (s Settings) SQL(keyCol, typeCol string, kind core.MediaType, nowTS int64) 
 	}
 	var ors []string
 	var args []any
-	ors = append(ors, "EXISTS (SELECT 1 FROM catalog_titles fl WHERE fl.key="+keyCol+" AND LOWER(fl.language)='fr')")
+	originals := s.OriginalLanguages
+	if originals == nil {
+		originals = []string{"fr"}
+	}
+	if len(originals) > 0 {
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(originals)), ",")
+		ors = append(ors, "EXISTS (SELECT 1 FROM catalog_titles fl WHERE fl.key="+keyCol+" AND LOWER(fl.language) IN ("+ph+"))")
+		for _, code := range originals {
+			args = append(args, code)
+		}
+	}
 	if s.Types[core.TypeMovie] && len(s.Countries) > 0 && kind != core.TypeEpisode && kind != core.TypeSeason {
 		ph := strings.TrimSuffix(strings.Repeat("?,", len(s.Countries)), ",")
 		ors = append(ors, "EXISTS (SELECT 1 FROM catalog_home_release_dates fd WHERE fd.key="+keyCol+" AND fd.country IN ("+ph+") AND fd.released_ts<=?)")
@@ -159,6 +184,10 @@ func (s Settings) SQL(keyCol, typeCol string, kind core.MediaType, nowTS int64) 
 		for _, l := range s.Releases {
 			likes = append(likes, "(','||fr.languages||',') LIKE ?")
 			args = append(args, "%,"+l+",%")
+			if l == "spanish" || l == "portuguese" {
+				likes = append(likes, "(','||fr.languages||',') LIKE ?")
+				args = append(args, "%,"+l+"-%,%")
+			}
 		}
 		ors = append(ors, "EXISTS (SELECT 1 FROM pse_releases fr WHERE fr.title_key="+keyCol+" AND ("+strings.Join(likes, " OR ")+"))")
 	}

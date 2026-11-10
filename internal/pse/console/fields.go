@@ -1,6 +1,9 @@
 package console
 
-import "github.com/braedonsaunders/ether/internal/pse/music"
+import (
+	"github.com/braedonsaunders/ether/internal/pse/language"
+	"github.com/braedonsaunders/ether/internal/pse/music"
+)
 
 // Text est un libellé bilingue ; la page choisit selon la langue de la console.
 type Text struct {
@@ -59,13 +62,13 @@ var (
 		{"DE", tx("Allemagne", "Germany")}, {"ES", tx("Espagne", "Spain")}, {"IT", tx("Italie", "Italy")},
 		{"BR", tx("Brésil", "Brazil")}, {"NL", tx("Pays-Bas", "Netherlands")}, {"NG", tx("Nigeria", "Nigeria")}}
 	typeOptions = []Option{{"movie", tx("Films", "Movies")}, {"show", tx("Séries", "Shows")}}
-	langOptions = []Option{
+	langOptions = append([]Option{
 		{"french", tx("Français (toute VF : FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF)", "French (any dub: FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF)")},
 		{"vff", tx("VFF / TRUEFRENCH (France)", "VFF / TRUEFRENCH (France)")},
 		{"vfq", tx("VFQ (Québec)", "VFQ (Québec)")},
 		{"vfi", tx("VFi (internationale)", "VFi (international)")},
-		{"multi", tx("MULTi", "MULTi")},
-	}
+		{"multi", tx("MULTi (langues non garanties)", "MULTi (languages not guaranteed)")},
+	}, audioLanguageOptions()...)
 )
 
 // Features est la liste des ajouts réglables, dans l'ordre de la page.
@@ -82,13 +85,15 @@ var Features = communityFields([]Feature{
 	},
 	{
 		ID:          "french",
-		Title:       tx("Catalogue en français", "French catalogue"),
-		Description: tx("N'affiche que les films et séries disponibles en français : œuvre française, sortie numérique ou TV dans les pays choisis, ou release VF/MULTi indexée.", "Only lists titles available in French: French original, digital or TV release in the chosen countries, or an indexed French/MULTi release."),
+		Title:       tx("Catalogue selon les langues", "Catalogue by language"),
+		Description: tx("Garde un titre si sa langue originale, une release indexée ou un indice de sortie correspond aux critères choisis. Le réglage initial conserve le catalogue français.", "Keeps titles matching an original language, indexed release or enabled release-country criterion. Initial settings preserve the French catalogue."),
 		Fields: []Field{
 			{Key: "PSE_FRENCH", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
 				Help: tx("S'applique aux listes du catalogue (accueil, bibliothèques, recommandations). La liste de suivi, les collections et la recherche restent complètes.", "Applies to catalogue lists (home, libraries, recommendations). Watchlist, collections and search stay complete.")},
+			{Key: "PSE_CATALOG_ORIGINAL_LANGUAGES", Kind: KindMulti, Default: "fr", Options: originalLanguageOptions(), Label: tx("Langues originales acceptées", "Accepted original languages"), Help: tx("Critère alternatif aux releases indexées. Choisissez Aucune pour ne pas retenir un titre sur sa seule langue originale.", "An alternative to indexed releases. Select None to disable original-language evidence.")},
+			{Key: "PSE_CATALOG_COUNTRY_EVIDENCE", Kind: KindToggle, Default: "on", Label: tx("Accepter aussi les sorties dans les pays choisis", "Also accept releases in selected countries"), Help: tx("Compatibilité avec le réglage français historique. Une sortie dans un pays ne garantit pas une piste audio dans sa langue ; désactivez ce critère pour exiger une autre preuve.", "Preserves historical French settings. A release country does not guarantee an audio language; disable this criterion to require other evidence.")},
 			{Key: "PSE_FRENCH_COUNTRIES", Advanced: true, Kind: KindCountries, Default: "FR", Placeholder: "FR,CA", Label: tx("Pays de sortie", "Release countries"),
-				Help: tx("Codes ISO séparés par des virgules. Une sortie numérique, physique ou TV dans l'un de ces pays compte. CA ajoute le Canada, pas toujours doublé en français.", "Comma-separated ISO codes. A digital, physical or TV release in one of them counts. CA adds Canada, not always dubbed in French.")},
+				Help: tx("Codes ISO séparés par des virgules. Une sortie numérique ou physique dans l'un de ces pays compte si le critère des pays est activé ; cela ne prouve pas une langue audio.", "Comma-separated ISO codes. A digital or physical release in one of them counts if country evidence is enabled; it does not prove an audio language.")},
 			{Key: "PSE_FRENCH_RELEASES", Kind: KindMulti, Default: "french,multi", Options: langOptions, Label: tx("Langues de release", "Release languages"),
 				Help: tx("Langues d'une release indexée qui suffisent à garder un titre (nécessite l'indexation).", "Indexed release languages that keep a title (needs indexing).")},
 			{Key: "PSE_FRENCH_TYPES", Advanced: true, Kind: KindMulti, Default: "movie,show", Options: typeOptions, Label: tx("Types filtrés", "Filtered types"),
@@ -232,3 +237,22 @@ var fieldByKey = func() map[string]Field {
 	}
 	return m
 }()
+
+func audioLanguageOptions() []Option {
+	var out []Option
+	for _, c := range language.Choices() {
+		if c.Code != "fr" {
+			out = append(out, Option{language.Name(c.Code), tx(c.FR, c.EN)})
+		}
+	}
+	return out
+}
+func originalLanguageOptions() []Option {
+	out := []Option{{"none", tx("Aucune", "None")}}
+	for _, c := range language.Choices() {
+		if len(c.Code) == 2 {
+			out = append(out, Option{c.Code, tx(c.FR, c.EN)})
+		}
+	}
+	return out
+}

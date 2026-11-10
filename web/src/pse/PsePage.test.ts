@@ -15,6 +15,11 @@ describe("critères du catalogue lisible", () => {
     expect(formatCriteria(c)).toBe("lang=fr,vfq;min=1080;codec=hevc,h264;cached=1;foo=bar");
   });
 
+  it("conserve les langues internationales et les sous-titres sans imposer MULTi", () => {
+    const value = "lang=de,pt-br,sub:es-419;min=1080;cached=1";
+    expect(formatCriteria(parseCriteria(value))).toBe(value);
+  });
+
   it("laisse un filtre vide vide", () => {
     expect(formatCriteria(parseCriteria(""))).toBe("");
   });

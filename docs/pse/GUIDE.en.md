@@ -218,3 +218,17 @@ Choose a viewer, inspect the preview and confirm. Import creates a personal copy
 **Spotify**: under Discover → Spotify, enter your application’s **Client ID**. Add the exact redirect URI displayed by Remix to your Spotify developer dashboard, then connect the chosen viewer’s account. HTTPS is required except on loopback. No Client Secret is needed: OAuth with PKCE, server-encrypted tokens, read-only access and a disconnect button. In development mode, the app owner needs Premium and users must be allowed in Spotify Developers. Spotify may deny playlist items unless you own or collaborate on the playlist; directory links do not bypass this limit.
 
 **Appearance**: the palette button in the top bar offers Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine. Select light or dark mode separately; previews are immediate and your preference is stored in this browser. Other users keep their own preferences.
+
+
+## Catalogue languages
+
+In **Languages & quality**, “Catalogue by language” selects accepted original languages and indexed release languages. These criteria are alternatives: matching one is sufficient. French defaults and existing settings are preserved; technical `PSE_FRENCH_*` names remain compatible.
+
+- `PSE_CATALOG_ORIGINAL_LANGUAGES=fr`: comma-separated ISO original-language codes. `none` disables this criterion.
+- `PSE_CATALOG_COUNTRY_EVIDENCE=on`: preserves historical release-country evidence. `off` disables it: a release country does not prove an audio language.
+- `PSE_FRENCH_RELEASES` accepts Ether-supported languages alongside historical French markers. Latino/Spain Spanish and Brazil/Portugal Portuguese remain distinct. A generic language accepts its variants; a specific variant requires matching evidence.
+- In the **playable-only** catalogue, `lang=de,sub:es;min=1080` accepts German audio **or** announced Spanish subtitles. Resolution, codec and cache requirements still apply. Languages are an acceptance list, not a playback ranking; playback priorities remain in Ether.
+
+German example: original languages `de` (or `none` to require releases), release languages `german`, country evidence disabled and playable filter `lang=de`. Leave MULTi unchecked when explicit language evidence is required: MULTi alone proves no particular language.
+
+Interface and metadata languages are independent. Sources must announce languages; streams are not probed to infer them. StreamFusion import remains French-specific. Existing exception collections, including on-demand VOSTFR, retain their identity and behaviour.

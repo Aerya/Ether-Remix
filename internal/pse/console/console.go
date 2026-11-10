@@ -372,6 +372,13 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 		return "", errors.New("valeur non proposée")
 	case KindMulti:
 		items := splitList(v)
+		if fd.Key == "PSE_CATALOG_ORIGINAL_LANGUAGES" && len(items) > 1 {
+			for _, item := range items {
+				if item == "none" {
+					return "", errors.New("Aucune ne peut pas être combinée avec une langue originale")
+				}
+			}
+		}
 		opts := fd.Options
 		if fd.Key == "PSE_INDEXER_SOURCES" {
 			for _, s := range items {

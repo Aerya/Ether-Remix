@@ -1,3 +1,4 @@
+import languageChoices from "../../../internal/pse/language/languages.json";
 import { SettingsSection } from "../components/CollapsibleSections";
 import { SourceHosting } from "./SourceHosting";
 import { Badge, Button, Checkbox, Input, Select, Switch, toast } from "@braedonsaunders/appkit-ui";
@@ -593,7 +594,7 @@ function MultiControl({
       className={
         field.key === "PSE_INDEXER_SOURCES"
           ? "flex flex-col items-start gap-2"
-          : "flex flex-wrap gap-x-5 gap-y-2"
+          : "flex max-h-64 flex-wrap gap-x-5 gap-y-2 overflow-y-auto"
       }
     >
       {options.map((o) => (
@@ -602,7 +603,10 @@ function MultiControl({
             checked={selected.includes(o.value)}
             onChange={(e) => {
               const on = e.currentTarget.checked;
-              const next = on ? [...selected, o.value] : selected.filter((s) => s !== o.value);
+              let next = on ? [...selected, o.value] : selected.filter((s) => s !== o.value);
+              if (field.key === "PSE_CATALOG_ORIGINAL_LANGUAGES" && on) {
+                next = o.value === "none" ? ["none"] : next.filter((v) => v !== "none");
+              }
               // Conserve l'ordre des options pour une valeur stable.
               onChange(
                 options
@@ -640,7 +644,9 @@ const LANGS: [string, string, string][] = [
   ["vfq", "VFQ (Québec)", "VFQ (Québec)"],
   ["vfi", "VFi (internationale)", "VFi (international)"],
   ["multi", "MULTi", "MULTi"],
-  ["en", "Anglais", "English"],
+  ...languageChoices
+    .filter((l) => l.code !== "fr")
+    .map((l): [string, string, string] => [l.code, l.fr, l.en]),
   ["vostfr", "VOSTFR / SUBFRENCH (sous-titres français)", "VOSTFR / SUBFRENCH (French subtitles)"],
   ["vo", "VO (sans doublage annoncé)", "Original (no dub announced)"],
 ];
@@ -709,26 +715,66 @@ function FilterControl({ value, onChange }: { value: string; onChange: (value: s
   const height = (v: string) => (v ? `${v}p` : L("Indifférent", "Any"));
   return (
     <div className="space-y-3 text-sm">
-      <Group label={L("Langues", "Languages")}>
-        {LANGS.map(([code, f, e]) => (
-          <label key={code} className="flex items-center gap-2">
-            <Checkbox
-              checked={c.lang.includes(code)}
-              onChange={(ev) =>
-                set({
-                  lang: toggle(
-                    c.lang,
-                    code,
-                    ev.currentTarget.checked,
-                    LANGS.map((l) => l[0]),
-                  ),
-                })
-              }
-            />
-            {L(f, e)}
-          </label>
-        ))}
-      </Group>
+      <div className="max-h-72 overflow-y-auto rounded-lg border border-border p-3">
+        <Group
+          label={L(
+            "Langues audio acceptées (au moins une)",
+            "Accepted audio languages (at least one)",
+          )}
+        >
+          {LANGS.filter(([code]) => code !== "vostfr").map(([code, f, e]) => (
+            <label key={code} className="flex items-center gap-2">
+              <Checkbox
+                checked={c.lang.includes(code)}
+                onChange={(ev) =>
+                  set({
+                    lang: toggle(
+                      c.lang,
+                      code,
+                      ev.currentTarget.checked,
+                      LANGS.map((l) => l[0]),
+                    ),
+                  })
+                }
+              />
+              {L(f, e)}
+            </label>
+          ))}
+        </Group>
+      </div>
+      <details className="rounded-lg border border-border p-3">
+        <summary className="cursor-pointer">
+          {L("Accepter aussi des sous-titres", "Also accept subtitles")}
+        </summary>
+        <p className="my-2 text-fg-muted">
+          {L(
+            "Une langue cochée ici accepte aussi les releases annonçant ces sous-titres, même sans audio dans les langues cochées ci-dessus. Aucun sous-titre n’est déduit du nom MULTi.",
+            "Selecting a language also accepts releases announcing these subtitles, even without the audio languages selected above. MULTi does not imply any subtitles.",
+          )}
+        </p>
+        <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">
+          {c.lang.includes("vostfr") ? (
+            <label className="flex items-center gap-2">
+              <Checkbox
+                checked
+                onChange={() => set({ lang: c.lang.filter((x) => x !== "vostfr") })}
+              />
+              {L("Français (VOSTFR, réglage existant)", "French (existing VOSTFR setting)")}
+            </label>
+          ) : null}
+          {languageChoices.map((l) => (
+            <label key={l.code} className="flex items-center gap-2">
+              <Checkbox
+                checked={c.lang.includes(`sub:${l.code}`)}
+                onChange={(ev) =>
+                  set({ lang: toggle(c.lang, `sub:${l.code}`, ev.currentTarget.checked, []) })
+                }
+              />
+              {L(l.fr, l.en)}
+            </label>
+          ))}
+        </div>
+      </details>
       <Group label={L("Résolution", "Resolution")}>
         <Select
           aria-label={L("Résolution minimum", "Minimum resolution")}

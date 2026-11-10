@@ -1,6 +1,7 @@
 package releasedb
 
 import (
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"regexp"
 	"strings"
 )
@@ -69,5 +70,5 @@ func canonicalLanguage(s string) string {
 	if v, ok := languageAliases[s]; ok {
 		return v
 	}
-	return s
+	return releaseparse.LanguageName(s)
 }
