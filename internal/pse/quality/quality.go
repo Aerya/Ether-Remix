@@ -103,13 +103,13 @@ func compile(c Config) ([]compiled, error) {
 			}
 			for _, cs := range [][]core.ReleaseCondition{r.Conditions, r.Unless} {
 				for _, cond := range cs {
-					if _, ok := releasepolicy.LookupBuiltinField(cond.Field); !ok || cond.Field == "audio_matches_original" {
+					if _, ok := lookupField(cond.Field); !ok || cond.Field == "audio_matches_original" {
 						return nil, fmt.Errorf("champ non pris en charge : %s", cond.Field)
 					}
 				}
 			}
 		}
-		pol, err := releasepolicy.Compile(p.Rules)
+		pol, err := compilePolicy(p.Rules)
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +163,7 @@ func (s *Service) SetMembers(m map[string][]core.RatingKey) {
 	old := s.current.Load()
 	s.publish(&snapshot{config: old.config, profiles: old.profiles, members: members})
 }
-func (s *Service) Allow(key core.RatingKey, typ core.MediaType, rel core.Release) bool {
+func (s *Service) Allow(key core.RatingKey, typ core.MediaType, rel core.Release, original ...string) bool {
 	snap := s.current.Load()
 	if !active(snap.config) {
 		return true
@@ -202,16 +202,16 @@ func (s *Service) Allow(key core.RatingKey, typ core.MediaType, rel core.Release
 	}
 	if chosen == nil || !chosen.profile.Replace {
 		for _, p := range globals {
-			if evaluate(p.policy, rel).Rejected {
+			if evaluate(p.policy, rel, original...).Rejected {
 				return false
 			}
 		}
 	}
-	return chosen == nil || !evaluate(chosen.policy, rel).Rejected
+	return chosen == nil || !evaluate(chosen.policy, rel, original...).Rejected
 }
-func Allow(db *sql.DB, key core.RatingKey, typ core.MediaType, rel core.Release) bool {
+func Allow(db *sql.DB, key core.RatingKey, typ core.MediaType, rel core.Release, original ...string) bool {
 	if v, ok := services.Load(db); ok {
-		return v.(*Service).Allow(key, typ, rel)
+		return v.(*Service).Allow(key, typ, rel, original...)
 	}
 	return true
 }
@@ -232,8 +232,12 @@ func (s *Service) publish(snap *snapshot) {
 }
 
 // A missing fact fails a requirement, but is not evidence for an exclusion.
-func evaluate(p *releasepolicy.Policy, r core.Release) releasepolicy.Result {
-	out := p.Evaluate(r, releasepolicy.Context{})
+func evaluate(p *releasepolicy.Policy, r core.Release, original ...string) releasepolicy.Result {
+	lang := ""
+	if len(original) > 0 {
+		lang = original[0]
+	}
+	out := p.Evaluate(r, releasepolicy.Context{ExternalMatch: func(r core.Release, c core.ReleaseCondition) (bool, bool) { return matchFact(r, c, lang) }})
 	out.Rejected = false
 	for i, e := range out.Explanations {
 		if e.Action == "avoid" && e.State == releasepolicy.Unknown {

@@ -233,6 +233,10 @@ func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p Playa
 	if err != nil {
 		return err
 	}
+	original := ""
+	if quality.Active(s.db) {
+		_ = s.db.QueryRowContext(ctx, "SELECT language FROM catalog_titles WHERE key=?", int64(key)).Scan(&original)
+	}
 	names, all := map[string]bool{}, map[string]bool{}
 	now := s.now()
 	for _, r := range rs {
@@ -240,7 +244,7 @@ func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p Playa
 		info.Height, info.VideoCodec, info.AudioCodec = r.Height, r.VideoCodec, r.AudioCodec
 		info.HDR10, info.DolbyVision = r.HDR, r.DolbyVision
 		info.Languages, info.SubtitleLanguages = r.Languages, r.SubtitleLanguages
-		if !quality.Allow(s.db, key, r.Type, core.Release{Name: r.Name, Size: r.Size, Protocol: r.Protocol, Indexer: r.SourceName, Info: info}) {
+		if !quality.Allow(s.db, key, r.Type, core.Release{Name: r.Name, Size: r.Size, Protocol: r.Protocol, Indexer: r.SourceName, Info: info, DebridCached: r.DebridCached, DebridUncached: r.DebridUncached}, original) {
 			continue
 		}
 		if !counts(r, now) {

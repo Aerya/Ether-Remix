@@ -69,3 +69,50 @@ func TestQualityModeReplacesLegacyCriteriaAndRestoresThem(t *testing.T) {
 		t.Fatalf("simple mode failed to restore floor: %d", n)
 	}
 }
+
+func TestQualityOriginalAndCacheSurviveIndexing(t *testing.T) {
+	e := newFreshEnv(t)
+	db := e.s.Store().db
+	if _, err := db.ExecContext(e.ctx, `CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY,language TEXT); INSERT INTO catalog_titles(key,language) VALUES(1,'ja')`); err != nil {
+		t.Fatal(err)
+	}
+	q, err := quality.New(e.ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	rules := []core.ReleaseRule{
+		{ID: "original", Name: "Original", Action: "require", Match: "any", Conditions: []core.ReleaseCondition{{Field: "remix_language", Operator: "equals", Value: "Original"}}},
+		{ID: "cached", Name: "No uncached", Action: "avoid", Match: "any", Conditions: []core.ReleaseCondition{{Field: "remix_cache", Operator: "equals", Value: "uncached"}}},
+	}
+	if err = q.Save(e.ctx, quality.Config{Mode: "profiles", Profiles: []quality.Profile{{ID: "p", Name: "P", Scope: "global", Rules: rules}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"cached", "uncached", "unknown"} {
+		r := core.Release{ID: state, Name: "Film.JAPANESE.1080p.WEB-DL-" + state, Protocol: core.ProtocolHTTP, Info: core.ReleaseInfo{Height: 1080, Languages: []string{"japanese"}}}
+		if state == "cached" {
+			r.DebridCached = []string{"realdebrid"}
+		}
+		if state == "uncached" {
+			r.DebridUncached = []string{"realdebrid"}
+		}
+		e.stub.rels["a"] = append(e.stub.rels["a"], r)
+	}
+	e.index(t, 1)
+	if n := e.playable(t, 1); n != 2 {
+		t.Fatalf("original/cache count=%d", n)
+	}
+	rs, err := e.s.Store().Releases(e.ctx, 1, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rs {
+		if len(r.DebridUncached) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("uncached evidence lost in storage")
+	}
+}

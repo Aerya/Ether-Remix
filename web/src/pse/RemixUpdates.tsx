@@ -36,8 +36,8 @@ export const REMIX_UPDATES = [
         "Enabled profiles replace simple catalogue criteria. Previous criteria are preserved when switching back. Language options are aligned.",
       ],
       [
-        "Import AIOStreams depuis une source enregistrée ou un manifest, avec le mot de passe de configuration et aperçu. Les manifests avec variante signalent explicitement que seuls les filtres de base sont récupérés.",
-        "Import AIOStreams from a saved source or manifest with the configuration password and a preview. Variant manifests explicitly warn that only base filters are retrieved.",
+        "Import AIOStreams depuis une source enregistrée ou un manifest, avec le mot de passe de configuration et aperçu. Formats détaillés, résolutions inconnues, langue originale et annonces de cache sont pris en charge. Les manifests avec variante importent les filtres de base.",
+        "Import AIOStreams from a saved source or manifest with the configuration password and a preview. Detailed formats, unknown resolutions, original language and cache hints are supported. Variant manifests import base filters.",
       ],
     ],
   },

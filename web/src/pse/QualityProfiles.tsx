@@ -21,6 +21,11 @@ type Config = { mode?: "simple" | "profiles"; profiles: Profile[] };
 type Imported = { rules: ReleaseRule[]; warnings: string[] };
 const fields = [
   ["source", "Format / source", "Format / source"],
+  ["remix_format", "Format détaillé AIOStreams", "AIOStreams detailed format"],
+  ["remix_resolution", "Résolution ou inconnue", "Resolution or unknown"],
+  ["remix_visual", "Tags vidéo détaillés", "Detailed visual tags"],
+  ["remix_language", "Langue, originale ou inconnue", "Language, original or unknown"],
+  ["remix_cache", "Cache debrid annoncé", "Declared debrid cache"],
   ["video", "Codec vidéo", "Video codec"],
   ["audio", "Codec audio", "Audio codec"],
   ["height", "Résolution", "Resolution"],
@@ -35,6 +40,55 @@ const fields = [
   ["indexer", "Source / indexeur", "Source / indexer"],
 ];
 const choices: Record<string, string[]> = {
+  remix_format: [
+    "BluRay REMUX",
+    "BluRay",
+    "WEB-DL",
+    "WEBRip",
+    "HDRip",
+    "HC HD-Rip",
+    "DVD REMUX",
+    "DVDRip",
+    "HDTV",
+    "CAM",
+    "TS",
+    "TC",
+    "SCR",
+    "Unknown",
+  ],
+  remix_resolution: [
+    "2160p",
+    "1440p",
+    "1080p",
+    "720p",
+    "576p",
+    "480p",
+    "360p",
+    "240p",
+    "144p",
+    "Unknown",
+  ],
+  remix_visual: [
+    "HDR+DV",
+    "DV Only",
+    "HDR Only",
+    "HDR10+",
+    "HDR10",
+    "DV",
+    "HDR",
+    "HLG",
+    "10bit",
+    "3D",
+    "IMAX",
+    "AI",
+    "Upscaled",
+    "SDR",
+    "H-OU",
+    "H-SBS",
+    "Unknown",
+  ],
+  remix_language: ["French", "Multi", "English", "Original", "Unknown"],
+  remix_cache: ["cached", "uncached", "unknown"],
   source: ["webdl", "webrip", "bluray", "remux", "hdtv", "dvd", "cam", "screener"],
   video: ["h264", "hevc", "av1", "vp9", "mpeg2video"],
   audio: ["aac", "ac3", "eac3", "truehd", "dts", "flac", "opus", "mp3"],
@@ -78,6 +132,7 @@ export function QualityProfiles({ onMode }: { onMode?: (active: boolean) => void
   const [raw, setRaw] = useState("");
   const [imported, setImported] = useState<Imported | null>(null);
   const [names, setNames] = useState("");
+  const [originalLanguage, setOriginalLanguage] = useState("");
   const [preview, setPreview] = useState<{ name: string; result: { rejected: boolean } }[] | null>(
     null,
   );
@@ -415,13 +470,19 @@ export function QualityProfiles({ onMode }: { onMode?: (active: boolean) => void
                         >
                           <option value="equals">{L("Égal à", "Equals")}</option>
                           <option
-                            disabled={["language", "subtitles"].includes(c.field)}
+                            disabled={
+                              ["language", "subtitles"].includes(c.field) ||
+                              c.field.startsWith("remix_")
+                            }
                             value="contains"
                           >
                             {L("Contient", "Contains")}
                           </option>
                           <option
-                            disabled={["language", "subtitles"].includes(c.field)}
+                            disabled={
+                              ["language", "subtitles"].includes(c.field) ||
+                              c.field.startsWith("remix_")
+                            }
                             value="regex"
                           >
                             Regex
@@ -628,6 +689,18 @@ export function QualityProfiles({ onMode }: { onMode?: (active: boolean) => void
                   "Tests this profile without searching or saving. One name per line. RE2 regex: no lookaround or backreferences; (?i) ignores case.",
                 )}
               </p>
+              <Input
+                aria-label={L(
+                  "Langue originale du titre pour le test",
+                  "Original title language for preview",
+                )}
+                placeholder={L(
+                  "Langue originale du titre : fr, en, ja…",
+                  "Original title language: fr, en, ja…",
+                )}
+                value={originalLanguage}
+                onChange={(e) => setOriginalLanguage(e.target.value)}
+              />
               <textarea
                 className="min-h-24 w-full rounded border border-line bg-transparent p-2"
                 value={names}
@@ -644,6 +717,7 @@ export function QualityProfiles({ onMode }: { onMode?: (active: boolean) => void
                         body: JSON.stringify({
                           profile: active,
                           names: names.split("\n").filter(Boolean),
+                          originalLanguage,
                         }),
                       }),
                     ),

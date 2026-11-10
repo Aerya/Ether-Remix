@@ -51,8 +51,9 @@ func (s *Service) Handler(changed func()) http.Handler {
 	})
 	mux.HandleFunc("POST /preview", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Profile Profile  `json:"profile"`
-			Names   []string `json:"names"`
+			Profile          Profile  `json:"profile"`
+			Names            []string `json:"names"`
+			OriginalLanguage string   `json:"originalLanguage"`
 		}
 		if !decode(w, r, &in) {
 			return
@@ -69,7 +70,7 @@ func (s *Service) Handler(changed func()) http.Handler {
 				return
 			}
 			rel := core.Release{Name: n, Info: releaseparse.Parse(n), Protocol: core.ProtocolUnstated}
-			out = append(out, map[string]any{"name": n, "result": evaluate(ps[0].policy, rel)})
+			out = append(out, map[string]any{"name": n, "result": evaluate(ps[0].policy, rel, in.OriginalLanguage)})
 		}
 		reply(w, 200, out)
 	})
