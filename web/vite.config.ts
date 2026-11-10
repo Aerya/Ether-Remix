@@ -12,7 +12,11 @@ import { theme } from "./src/theme";
 const themeScript: Plugin = {
   name: "ether-theme-script",
   transformIndexHtml: () => [
-    { tag: "script", children: getThemeScript(theme) + paletteScript(), injectTo: "head-prepend" },
+    {
+      tag: "script",
+      children: getThemeScript(theme) + ";" + paletteScript(),
+      injectTo: "head-prepend",
+    },
   ],
 };
 
