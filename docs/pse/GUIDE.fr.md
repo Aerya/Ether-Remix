@@ -218,3 +218,7 @@ Choisissez le spectateur, vérifiez l’aperçu, puis validez. Une copie personn
 **Spotify** : dans Découvrir → Spotify, saisissez le **Client ID** de votre application. Ajoutez dans le tableau de bord Spotify l’URI de redirection exacte affichée par Remix, puis connectez le compte pour le spectateur choisi. HTTPS est requis hors boucle locale. Aucun Client Secret n’est demandé : connexion OAuth avec PKCE, jetons chiffrés sur le serveur, accès en lecture seule et bouton de déconnexion. En mode développement, le propriétaire de l’application doit avoir Premium et autoriser les utilisateurs dans Spotify Developers. L’accès aux titres peut être refusé pour les playlists dont vous n’êtes ni propriétaire ni collaborateur ; un lien trouvé dans un annuaire ne contourne pas cette limite.
 
 **Apparence** : le bouton en forme de palette dans la barre supérieure propose Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine. Choisissez séparément le mode clair ou sombre ; l’aperçu est immédiat et le choix est conservé dans ce navigateur. Les autres utilisateurs gardent leurs propres préférences.
+
+## SubMaker
+
+[Configurer les sous-titres externes et la traduction facultative](SUBMAKER.fr.md), globalement ou par bibliothèque/collection, avec SeerrCatalog.

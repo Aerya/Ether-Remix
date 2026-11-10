@@ -12,6 +12,7 @@ import (
 func (a *App) startSeerrCatalog() {
 	rt := pseRuntimeOf(a)
 	s := seerrcatalog.New(a.db, egress.Client(egress.CapMetadata, 15*time.Second))
+	s.Submaker = a.pseSubmaker()
 	s.Ensure = a.ensureSeerrCatalogMetadata
 	s.Changed = a.catalog.RefreshExternalEvidence
 	s.Enrich = func(ctx context.Context, req core.SearchRequest) core.SearchRequest {
