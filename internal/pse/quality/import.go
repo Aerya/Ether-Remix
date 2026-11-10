@@ -94,12 +94,12 @@ func ImportAIO(raw json.RawMessage) (ImportResult, error) {
 				}
 			case "Languages":
 				c.Field = "language"
-				if strings.EqualFold(v, "unknown") {
+				if strings.EqualFold(v, "unknown") || strings.EqualFold(v, "original") {
 					unsupported = true
 				}
 			case "Subtitles":
 				c.Field = "subtitles"
-				if strings.EqualFold(v, "unknown") {
+				if strings.EqualFold(v, "unknown") || strings.EqualFold(v, "original") {
 					unsupported = true
 				}
 			case "VisualTags":

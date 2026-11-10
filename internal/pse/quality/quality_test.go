@@ -98,3 +98,22 @@ func TestAIOImportPreviewDoesNotCopySecrets(t *testing.T) {
 		t.Fatal("valid HEVC rejected")
 	}
 }
+
+func TestImportOriginalLanguageNeverSilentlyNarrowsWhitelist(t *testing.T) {
+	out, err := ImportAIO(json.RawMessage(`{"requiredLanguages":["French","Original"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Rules) != 0 {
+		t.Fatal("Original requires catalogue language context; do not pretend it is a literal audio language")
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "requiredLanguages") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("missing unsupported-rule warning")
+	}
+}
