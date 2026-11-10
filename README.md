@@ -46,7 +46,7 @@ Dans **Sources → Stremio, Indexeurs et Indexation**, cliquez sur le titre d’
 
 1. Dans SeerrCatalog, ouvrez **Paramètres → Intégration Ether Remix**, générez une clé et activez l’export.
 2. Dans Remix, ouvrez **Sources → Stremio → SeerrCatalog → Ether Remix**, saisissez l’adresse de base (ex. `https://seerrcatalog.example`, sans `/api/…`) et la clé, activez puis enregistrez. **Tester la connexion** vérifie le flux sans importer ; la synchronisation s’effectue chaque minute.
-3. Revérifiez les anciens contenus dans SeerrCatalog pour créer leurs premiers résultats exportables.
+3. Les titres déjà validés sont exportés automatiquement par la nouvelle version de SeerrCatalog, sans relancer leurs recherches.
 
 Les disponibilités de SeerrCatalog passent le filtre **« lisible uniquement »** sans nouvelle interrogation des addons. Les autres filtres et règles de lecture restent actifs. L’import récupère les fiches TMDB, sans créer de collection.
 
