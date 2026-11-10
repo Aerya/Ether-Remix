@@ -56,6 +56,8 @@ Paginated synchronization recovers changes and deletions after outages; incomple
 
 Equivalent variables: `PSE_SEERRCATALOG=on`, `PSE_SEERRCATALOG_URL=http://seerrcatalog:7000`, `PSE_SEERRCATALOG_TOKEN=…`. Disabled by default.
 
+**Complementary search for SeerrCatalog**: select Ether Remix in SeerrCatalog settings and enter its base URL. The same shared token authenticates both directions. When addons return no primary-language release and user fallback is enabled, SeerrCatalog asks Remix to search its configured sources, including Prowlarr. SeerrCatalog still applies primary/fallback tags, deduplication and thresholds, keeping J+1/J+3 checks and permanent confirmation. Searches respect availability budgets and cannot circularly reuse SeerrCatalog observations. Torrents with infoHashes and actual HTTP streams can be returned; NZB URLs are never exposed as video streams. Test the connection from SeerrCatalog without launching a search.
+
 ## Music sources
 
 Enable sources independently in **Console → Ether-Remix → Sources → Music streaming**. Existing debrid accounts and indexers are reused.

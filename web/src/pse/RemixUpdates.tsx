@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-risky-titles",
+    id: "2026-11-10-seerrcatalog-delegated-search",
     version: "current",
+    date: "2026-11-10",
+    title: ["SeerrCatalog : recherche complémentaire", "SeerrCatalog: complementary search"],
+    items: [
+      [
+        "SeerrCatalog peut demander à Remix de compléter une recherche sans résultat dans les langues principales, via ses indexeurs dont Prowlarr. La clé partagée protège ce retour ; les budgets et les règles de validation SeerrCatalog restent appliqués. À activer et tester dans les paramètres SeerrCatalog.",
+        "SeerrCatalog can ask Remix to complement searches with no primary-language results, using its indexers including Prowlarr. The shared token protects this response; budgets and SeerrCatalog confirmation rules still apply. Enable and test it in SeerrCatalog settings.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-risky-titles",
+    version: "0.2.37-remix.28.1",
     date: "2026-11-10",
     title: ["Titres à une seule release", "Titles with a single release"],
     items: [

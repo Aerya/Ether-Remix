@@ -121,8 +121,11 @@ type Status struct {
 	Error    string     `json:"error,omitempty"`
 }
 type Service struct {
-	DB   *sql.DB
-	HTTP *http.Client
+	Enrich      func(context.Context, core.SearchRequest) core.SearchRequest
+	Search      func(context.Context, core.SearchRequest) ([]core.Release, error)
+	searchSlots chan struct{}
+	DB          *sql.DB
+	HTTP        *http.Client
 	// Ensure imports metadata, never performs a stream search.
 	Ensure    func(context.Context, core.RatingKey) error
 	Changed   func()
@@ -141,7 +144,7 @@ func New(db *sql.DB, client *http.Client) *Service {
 	}
 	cp := *client
 	cp.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }
-	return &Service{DB: db, HTTP: &cp, wake: make(chan struct{}, 1)}
+	return &Service{DB: db, HTTP: &cp, wake: make(chan struct{}, 1), searchSlots: make(chan struct{}, 2)}
 }
 func (s *Service) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -309,6 +312,9 @@ func (s *Service) Sync(ctx context.Context) error {
 // A trusted availability without a reusable stream suppresses background checks,
 // while playback falls back to the ordinary search. Rescue always bypasses it.
 func (s *Service) Lookup(ctx context.Context, req core.SearchRequest) ([]core.Release, bool) {
+	if ctx.Value(delegatedSearchKey{}) == true {
+		return nil, false
+	}
 	c := Load()
 	if !c.valid() || core.IndexerPurpose(ctx) == core.IndexerPurposeRescue {
 		return nil, false
@@ -384,6 +390,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b := sha256.Sum256([]byte("Bearer " + c.Token))
 	if !c.valid() || subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if r.URL.Path == SearchPath {
+		s.serveSearch(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {

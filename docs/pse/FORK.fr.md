@@ -102,3 +102,9 @@ L’adaptateur `internal/catalog/pse_tier_sources.go` classe les tables du fork 
 ### Blocs repliables des sources
 
 Les onglets Stremio, Indexeurs et Indexation activent le contexte `CollapsibleSections` pour leurs blocs de réglages et listes. Chaque titre est un `summary` natif, utilisable à la souris et au clavier. Le contenu reste monté pour conserver les saisies. Les nouveaux blocs sont ouverts par défaut ; StreamFusion et Priorité de recherche conservent leur ouverture manuelle. Les autres onglets gardent leur présentation habituelle.
+
+## Recherche déléguée SeerrCatalog
+
+`GET /api/integrations/seerrcatalog/v1/search` teste la disponibilité du connecteur ; `POST` reçoit `{media: {type, tmdbId, imdbId, title, year}, season, episode}` et renvoie `{schema: "seerrcatalog.search.v1", streams, conclusive, ignored}`. Les deux utilisent `Authorization: Bearer <clé partagée>` et exigent l’intégration activée. Deux recherches simultanées au maximum ; délai de 75 secondes et budgets d’indexation existants. La réponse ne transforme ni lien NZB ni lien de téléchargement torrent en vidéo. Le champ `ignored` compte les releases sans descripteur réutilisable.
+
+La recherche appelle les indexeurs configurés, avec vérification du titre/année ou de ses identifiants, et de l’épisode pour les séries. Les résultats SeerrCatalog retenus sont explicitement exclus de cette requête afin d’éviter une boucle de validation. Le client conserve ses critères de langue et décide de la disponibilité. Aucune collection ni exception globale de langue n’est créée. Un résultat incomplet doit être retenté, sans conclure à l’absence de sources.

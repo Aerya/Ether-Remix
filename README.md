@@ -56,6 +56,8 @@ La synchronisation paginée rattrape modifications et suppressions après coupur
 
 Variables équivalentes : `PSE_SEERRCATALOG=on`, `PSE_SEERRCATALOG_URL=http://seerrcatalog:7000`, `PSE_SEERRCATALOG_TOKEN=…`. L’option est désactivée par défaut.
 
+**Recherche complémentaire pour SeerrCatalog** : dans les paramètres SeerrCatalog, choisissez Ether Remix et renseignez son adresse de base. La même clé partagée authentifie les deux sens. Lorsque les addons ne trouvent aucune release dans les langues principales et que le repli utilisateur est activé, SeerrCatalog demande à Remix une recherche dans ses sources configurées, notamment Prowlarr. Les tags principaux/de repli, la déduplication et les seuils restent appliqués par SeerrCatalog. Les contrôles J+1/J+3 et la disponibilité définitive sont conservés. Les recherches respectent les budgets de disponibilité et ne réutilisent pas circulairement les observations SeerrCatalog. Les torrents avec infoHash et les vrais flux HTTP peuvent être retournés ; les liens NZB ne sont jamais présentés comme des vidéos. Le test de connexion s’effectue depuis SeerrCatalog, sans lancer de recherche.
+
 ## Les sources musicales
 
 Les sources s’activent séparément dans **Console → Ether-Remix → Sources → Streaming musical**. Les comptes debrid et les indexeurs déjà configurés sont réutilisés.
