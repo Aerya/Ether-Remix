@@ -26,8 +26,18 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-scrob-single-connection",
+    id: "2026-11-10-scrob-slow-connection",
     version: "current",
+    date: "2026-11-10",
+    title: ["Scrob : connexions lentes", "Scrob: slow connections"],
+    items: [[
+      "Le test du webhook et les envois de lecture attendent désormais jusqu’à 60 secondes au lieu de 15 pour les connexions lentes.",
+      "Webhook tests and playback events now wait up to 60 seconds instead of 15 on slow connections.",
+    ]],
+  },
+  {
+    id: "2026-11-10-scrob-single-connection",
+    version: "0.2.37-remix.34.1",
     date: "2026-11-10",
     title: ["Scrob : une seule connexion Jellyfin", "Scrob: one Jellyfin connection"],
     items: [

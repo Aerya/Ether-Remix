@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Viewer est un spectateur d'Ether proposé dans la console.
@@ -117,7 +116,7 @@ func Handler(d HandlerDeps) http.Handler {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": "Envoi indisponible"})
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), webhookTimeout)
 		defer cancel()
 		if err := p.Test(ctx, target); err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
