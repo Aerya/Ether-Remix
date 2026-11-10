@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { IndexerDetails } from "./IndexerDetails";
+import { MemoryRouter } from "react-router-dom";
 
 vi.mock("./CatalogHistory", () => ({ CatalogHistory: () => null }));
 vi.mock("./IndexerActivity", () => ({ IndexerActivity: () => null }));
@@ -44,7 +45,11 @@ it("loads per type, library and collection details", async () => {
     collections: [{ id: "a", name: "Pixar", type: "movie", ...c(20, 10, 8, 6) }],
     empty: 3,
   });
-  render(<IndexerDetails />);
+  render(
+    <MemoryRouter>
+      <IndexerDetails />
+    </MemoryRouter>,
+  );
   expect(await screen.findByText("Studios & labels")).toBeTruthy();
   expect(apiFetch.mock.calls[0]![0]).toBe("/pse/indexer/details");
   expect(screen.getAllByText("Pixar")).toHaveLength(2);

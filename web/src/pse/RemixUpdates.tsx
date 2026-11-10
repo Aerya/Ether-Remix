@@ -35,6 +35,10 @@ export const REMIX_UPDATES = [
         "Nouvelle option dans le catalogue lisible : afficher aussi les titres qui n’ont pas le minimum de releases, en prévenant les spectateurs par « ⚠ 1 source » dans le résumé, un badge « 1 SOURCE » sur les affiches Ether, ou les deux.",
         "New playable-catalogue option: also show titles below the minimum number of releases, warning viewers with “⚠ 1 source” in the summary, a “1 SOURCE” badge on Ether posters, or both.",
       ],
+      [
+        "Les réglages d’indexation et les statistiques précisent que le catalogue local est limité par Ether (Masquer les titres obscurs), pas par Remix.",
+        "Indexing settings and statistics now explain that Ether, not Remix, limits the local catalogue (Hide obscure titles).",
+      ],
     ],
   },
   {

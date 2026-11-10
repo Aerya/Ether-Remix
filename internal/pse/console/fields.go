@@ -98,7 +98,7 @@ var Features = communityFields([]Feature{
 	{
 		ID:          "indexer",
 		Title:       tx("Indexation en arrière-plan", "Background indexing"),
-		Description: tx("Parcourt le catalogue par popularité et interroge vos addons Stremio (et, si vous les choisissez, Prowlarr/Jackett/NZBHydra2) pour enregistrer les releases disponibles. Aucun appel à l'API AllDebrid, rien n'est ajouté au compte.", "Walks the catalogue by popularity and queries your Stremio addons (and, if chosen, Prowlarr/Jackett/NZBHydra2) to record available releases. No AllDebrid API call, nothing added to the account."),
+		Description: tx("Parcourt le catalogue par popularité et interroge vos addons Stremio (et, si vous les choisissez, Prowlarr/Jackett/NZBHydra2) pour enregistrer les releases disponibles. Aucun appel à l'API AllDebrid, rien n'est ajouté au compte. Remix ne cherche que dans le catalogue local d'Ether, pas dans tout TMDB : sa taille est fixée par Ether, dans Catalogue → Réglages → Masquer les titres obscurs.", "Walks the catalogue by popularity and queries your Stremio addons (and, if chosen, Prowlarr/Jackett/NZBHydra2) to record available releases. No AllDebrid API call, nothing added to the account. Remix only searches Ether's local catalogue, not all of TMDB: Ether sets its size under Catalog → Settings → Hide obscure titles."),
 		Fields: []Field{
 			{Key: "PSE_INDEXER", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
 				Help: tx("Mis en pause pendant les lectures. Changer un réglage redémarre l'indexation.", "Paused during playback. Changing a setting restarts indexing.")},
