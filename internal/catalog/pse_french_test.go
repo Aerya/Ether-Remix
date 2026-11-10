@@ -64,6 +64,10 @@ func TestPSEFrenchCatalogue(t *testing.T) {
 	if got := browse(core.TypeMovie); len(got) != 0 {
 		t.Fatalf("aucun critère vérifié : %v", got)
 	}
+	// L'indexeur parcourt tout le catalogue : c'est lui qui trouve les VF.
+	if page, err := c.Browse(ctx, core.BrowseQuery{Filter: core.Filter{Type: core.TypeMovie, PSEUnplayable: true}, Sort: core.SortPopularity, Desc: true}); err != nil || len(page.Items) != 2 {
+		t.Fatalf("indexeur filtré par le catalogue français : %d, %v", len(page.Items), err)
+	}
 
 	// Fjord : sortie numérique en France passée. Une sortie américaine ou
 	// une sortie française future ne comptent pas.
