@@ -281,6 +281,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		submakerAPI = s.Handler()
 	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/quality/manifest" {
+			a.pseQualityImport(w, r)
+			return
+		}
 		if r.URL.Path == "/submaker" || strings.HasPrefix(r.URL.Path, "/submaker/") {
 			http.StripPrefix("/submaker", submakerAPI).ServeHTTP(w, r)
 			return

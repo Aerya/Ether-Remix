@@ -1561,7 +1561,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		if t.ShowKey != 0 {
 			qualityKey = t.ShowKey
 		}
-		if !quality.Allow(s.db, qualityKey, t.Type, rel) {
+		if !quality.Allow(s.db, qualityKey, t.Type, rel, titleOriginalLanguage(t)) {
 			reason = "release preference: Remix quality profile"
 		} else if s.HardSubtitleBlocked(ctx, rel) {
 			reason = "blocked hardcoded subtitles"

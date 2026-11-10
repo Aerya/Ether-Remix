@@ -1,6 +1,6 @@
 import { Button, Checkbox, Input, Select, toast } from "@braedonsaunders/appkit-ui";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getLocale } from "../i18n";
 import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
@@ -17,10 +17,15 @@ type Profile = {
   replace?: boolean;
   rules: ReleaseRule[];
 };
-type Config = { profiles: Profile[] };
+type Config = { mode?: "simple" | "profiles"; profiles: Profile[] };
 type Imported = { rules: ReleaseRule[]; warnings: string[] };
 const fields = [
   ["source", "Format / source", "Format / source"],
+  ["remix_format", "Format détaillé AIOStreams", "AIOStreams detailed format"],
+  ["remix_resolution", "Résolution ou inconnue", "Resolution or unknown"],
+  ["remix_visual", "Tags vidéo détaillés", "Detailed visual tags"],
+  ["remix_language", "Langue, originale ou inconnue", "Language, original or unknown"],
+  ["remix_cache", "Cache debrid annoncé", "Declared debrid cache"],
   ["video", "Codec vidéo", "Video codec"],
   ["audio", "Codec audio", "Audio codec"],
   ["height", "Résolution", "Resolution"],
@@ -35,6 +40,55 @@ const fields = [
   ["indexer", "Source / indexeur", "Source / indexer"],
 ];
 const choices: Record<string, string[]> = {
+  remix_format: [
+    "BluRay REMUX",
+    "BluRay",
+    "WEB-DL",
+    "WEBRip",
+    "HDRip",
+    "HC HD-Rip",
+    "DVD REMUX",
+    "DVDRip",
+    "HDTV",
+    "CAM",
+    "TS",
+    "TC",
+    "SCR",
+    "Unknown",
+  ],
+  remix_resolution: [
+    "2160p",
+    "1440p",
+    "1080p",
+    "720p",
+    "576p",
+    "480p",
+    "360p",
+    "240p",
+    "144p",
+    "Unknown",
+  ],
+  remix_visual: [
+    "HDR+DV",
+    "DV Only",
+    "HDR Only",
+    "HDR10+",
+    "HDR10",
+    "DV",
+    "HDR",
+    "HLG",
+    "10bit",
+    "3D",
+    "IMAX",
+    "AI",
+    "Upscaled",
+    "SDR",
+    "H-OU",
+    "H-SBS",
+    "Unknown",
+  ],
+  remix_language: ["French", "Multi", "English", "Original", "Unknown"],
+  remix_cache: ["cached", "uncached", "unknown"],
   source: ["webdl", "webrip", "bluray", "remux", "hdtv", "dvd", "cam", "screener"],
   video: ["h264", "hevc", "av1", "vp9", "mpeg2video"],
   audio: ["aac", "ac3", "eac3", "truehd", "dts", "flac", "opus", "mp3"],
@@ -61,7 +115,7 @@ function condition(field = "video"): ReleaseCondition {
   };
 }
 
-export function QualityProfiles() {
+export function QualityProfiles({ onMode }: { onMode?: (active: boolean) => void }) {
   const doc = useAsync(
     () => Promise.all([apiFetch<Config>(ROOT), apiFetch<ThemeData>("/pse/themes/")]),
     [],
@@ -71,12 +125,22 @@ export function QualityProfiles() {
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const sources = useAsync(() => apiFetch<{ id: string; name: string }[]>(ROOT + "manifest"), []);
+  const [sourceId, setSourceId] = useState("");
+  const [manifest, setManifest] = useState("");
+  const [password, setPassword] = useState("");
   const [raw, setRaw] = useState("");
   const [imported, setImported] = useState<Imported | null>(null);
   const [names, setNames] = useState("");
+  const [originalLanguage, setOriginalLanguage] = useState("");
   const [preview, setPreview] = useState<{ name: string; result: { rejected: boolean } }[] | null>(
     null,
   );
+  const persisted = baseline ?? doc.data?.[0];
+  useEffect(() => {
+    if (persisted)
+      onMode?.(persisted.mode === "profiles" || (!persisted.mode && persisted.profiles.length > 0));
+  }, [persisted, onMode]);
   if (doc.error) return <p role="alert">{String(doc.error)}</p>;
   if (!doc.data) return <p>{L("Chargement des profils…", "Loading profiles…")}</p>;
   const saved = baseline ?? doc.data[0],
@@ -143,7 +207,7 @@ export function QualityProfiles() {
           </h2>
           <p className="max-w-4xl text-sm text-fg-muted">
             {L(
-              "Filtre les releases retenues pour le catalogue et la lecture. Les sources sont interrogées normalement : un filtre ne peut pas récupérer ce qu’un addon a déjà masqué. Les profils de lecture Ether et les limites du lecteur restent applicables.",
+              "Filtre les releases retenues pour le catalogue et la lecture. Les sources sont interrogées normalement : un filtre ne peut pas récupérer ce qu’un addon a déjà masqué. Les contraintes de lecture Ether et du lecteur restent applicables.",
               "Filters releases accepted for the catalogue and playback. Sources are queried normally: filters cannot recover releases already hidden by an addon. Ether playback profiles and player limits still apply.",
             )}
           </p>
@@ -156,7 +220,7 @@ export function QualityProfiles() {
               scope: "global",
               rules: [],
             };
-            edit({ profiles: [...config.profiles, p] });
+            edit({ ...config, profiles: [...config.profiles, p] });
             setSelected(p.id);
           }}
         >
@@ -168,6 +232,24 @@ export function QualityProfiles() {
         {L(
           "Priorité : collection → bibliothèque → Films/Séries → global. À portée égale, le premier profil correspondant gagne. Les filtres globaux s’ajoutent, sauf remplacement explicite. Un titre partagé reçoit le même filtre dans tous les clients.",
           "Priority: collection → library → Movies/Shows → global. Within the same scope, the first matching profile wins. Global filters also apply unless explicitly replaced. A shared title uses the same filter in every client.",
+        )}
+      </p>
+      <label className="flex items-center gap-3 font-medium">
+        <Checkbox
+          checked={config.mode === "profiles" || (!config.mode && config.profiles.length > 0)}
+          onChange={(e) =>
+            edit({ ...config, mode: e.currentTarget.checked ? "profiles" : "simple" })
+          }
+        />
+        {L(
+          "Utiliser les profils à la place des critères simples",
+          "Use profiles instead of simple criteria",
+        )}
+      </label>
+      <p className="text-sm text-fg-muted">
+        {L(
+          "Après enregistrement, ce mode remplace tous les critères des releases de « Catalogue lisible uniquement ». Le seuil minimum de releases reste actif. Sans profil correspondant, aucune restriction supplémentaire. Désactivez ce mode pour retrouver vos critères simples conservés.",
+          "After saving, this mode replaces all release criteria in Playable-only catalogue. The minimum release count stays active. Without a matching profile there is no additional restriction. Disable this mode to restore your saved simple criteria.",
         )}
       </p>
       <div className="flex flex-wrap gap-2">
@@ -249,7 +331,7 @@ export function QualityProfiles() {
                       j = i + n;
                     if (j < 0 || j >= ps.length) return;
                     [ps[i], ps[j]] = [ps[j]!, ps[i]!];
-                    edit({ profiles: ps });
+                    edit({ ...config, profiles: ps });
                   }}
                 >
                   <D className="size-4" />
@@ -258,7 +340,9 @@ export function QualityProfiles() {
             })}
             <Button
               variant="outline"
-              onClick={() => edit({ profiles: config.profiles.filter((p) => p.id !== active.id) })}
+              onClick={() =>
+                edit({ ...config, profiles: config.profiles.filter((p) => p.id !== active.id) })
+              }
             >
               <Trash2 className="size-4" />
               {L("Retirer", "Remove")}
@@ -386,13 +470,19 @@ export function QualityProfiles() {
                         >
                           <option value="equals">{L("Égal à", "Equals")}</option>
                           <option
-                            disabled={["language", "subtitles"].includes(c.field)}
+                            disabled={
+                              ["language", "subtitles"].includes(c.field) ||
+                              c.field.startsWith("remix_")
+                            }
                             value="contains"
                           >
                             {L("Contient", "Contains")}
                           </option>
                           <option
-                            disabled={["language", "subtitles"].includes(c.field)}
+                            disabled={
+                              ["language", "subtitles"].includes(c.field) ||
+                              c.field.startsWith("remix_")
+                            }
                             value="regex"
                           >
                             Regex
@@ -447,10 +537,78 @@ export function QualityProfiles() {
             <div className="mt-3 space-y-3">
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Export JSON déchiffré ou configuration JSON, pas le manifest. Seuls les filtres compatibles sont extraits ; les comptes et clés ne sont pas enregistrés. Les règles incluses (contournement), préférées et distantes sont signalées sans être appliquées.",
-                  "Use a decrypted JSON export or JSON configuration, not a manifest. Only compatible filters are extracted; accounts and keys are not saved. Included (bypass), preferred and remote rules are reported without applying them.",
+                  "Import JSON déchiffré ci-dessous, ou import par manifest avec le formulaire dédié. Seuls les filtres compatibles sont extraits ; les comptes et clés ne sont pas enregistrés. Les règles incluses (contournement), préférées et distantes sont signalées sans être appliquées.",
+                  "Use a decrypted JSON export below, or the dedicated manifest import form. Only compatible filters are extracted; accounts and keys are not saved. Included (bypass), preferred and remote rules are reported without applying them.",
                 )}
               </p>
+              <div className="space-y-2 rounded border border-line p-3">
+                <h3 className="font-medium">
+                  {L(
+                    "Depuis une source / un manifest AIOStreams",
+                    "From an AIOStreams source / manifest",
+                  )}
+                </h3>
+                <Select
+                  aria-label="Source AIOStreams"
+                  value={sourceId}
+                  onChange={(e) => setSourceId(e.target.value)}
+                >
+                  <option value="">{L("Coller un manifest", "Paste a manifest")}</option>
+                  {sources.data?.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+                {!sourceId ? (
+                  <Input
+                    type="password"
+                    aria-label="Manifest AIOStreams"
+                    value={manifest}
+                    onChange={(e) => setManifest(e.target.value)}
+                    placeholder="https://…/manifest.json"
+                  />
+                ) : null}
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  aria-label={L(
+                    "Mot de passe de configuration AIOStreams",
+                    "AIOStreams configuration password",
+                  )}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={L(
+                    "Mot de passe de configuration AIOStreams",
+                    "AIOStreams configuration password",
+                  )}
+                />
+                <p className="text-xs text-fg-muted">
+                  {L(
+                    "Le manifest contient un accès chiffré. Le mot de passe sert uniquement à cet import et n’est pas enregistré. Les variantes sont signalées : leurs instructions ne sont pas reproduites.",
+                    "The manifest contains encrypted access. The password is only used for this import and is not saved. Variants are flagged: their instructions are not reproduced.",
+                  )}
+                </p>
+                <Button
+                  disabled={busy || !password || (!sourceId && !manifest)}
+                  onClick={() =>
+                    run(async () => {
+                      try {
+                        setImported(
+                          await apiFetch<Imported>(ROOT + "manifest", {
+                            method: "POST",
+                            body: JSON.stringify({ sourceId, manifest, password }),
+                          }),
+                        );
+                      } finally {
+                        setPassword("");
+                      }
+                    })
+                  }
+                >
+                  {L("Récupérer et analyser les filtres", "Fetch and preview filters")}
+                </Button>
+              </div>
               <input
                 type="file"
                 accept=".json,application/json"
@@ -531,6 +689,18 @@ export function QualityProfiles() {
                   "Tests this profile without searching or saving. One name per line. RE2 regex: no lookaround or backreferences; (?i) ignores case.",
                 )}
               </p>
+              <Input
+                aria-label={L(
+                  "Langue originale du titre pour le test",
+                  "Original title language for preview",
+                )}
+                placeholder={L(
+                  "Langue originale du titre : fr, en, ja…",
+                  "Original title language: fr, en, ja…",
+                )}
+                value={originalLanguage}
+                onChange={(e) => setOriginalLanguage(e.target.value)}
+              />
               <textarea
                 className="min-h-24 w-full rounded border border-line bg-transparent p-2"
                 value={names}
@@ -547,6 +717,7 @@ export function QualityProfiles() {
                         body: JSON.stringify({
                           profile: active,
                           names: names.split("\n").filter(Boolean),
+                          originalLanguage,
                         }),
                       }),
                     ),
