@@ -151,12 +151,12 @@ var Features = communityFields([]Feature{
 	{
 		ID:          "scrob",
 		Title:       tx("Scrob", "Scrob"),
-		Description: tx("Suivi du visionnage dans Scrob : Ether-Remix envoie chaque lecture (début, pause, fin, marqué vu ou non vu) au webhook Jellyfin de Scrob, en temps réel, avec le lien de chaque spectateur réglé ci-dessous. Les bibliothèques « Vus et notés » permettent en plus à Scrob d'importer l'historique existant.", "Watch tracking in Scrob: Ether-Remix sends every playback (start, pause, stop, marked watched or unwatched) to Scrob's Jellyfin webhook in real time, using each viewer's link set below. The “Vus et notés” libraries also let Scrob import existing history."),
+		Description: tx("Connectez Ether-Remix dans Scrob comme un serveur Jellyfin. Choisissez les sens de synchronisation et leur fréquence dans Scrob : Remix → Scrob pour importer l’historique ; Scrob → Remix pour les statuts vus et les notes.", "Connect Ether-Remix in Scrob as a Jellyfin server. Choose sync directions and schedules in Scrob: Remix → Scrob imports history; Scrob → Remix sends watched status and ratings."),
 		Fields: []Field{
-			{Key: "PSE_SCROB_PUSH", Kind: KindToggle, Default: "off", Label: tx("Envoyer les lectures à Scrob", "Send playback to Scrob"),
-				Help: tx("Lien webhook par spectateur : Scrob → Connexions → votre connexion Jellyfin → URL du webhook.", "One webhook link per viewer: Scrob → Connections → your Jellyfin connection → webhook URL.")},
-			{Key: "PSE_SCROB_VIEWS", Kind: KindToggle, Default: "off", Label: tx("Bibliothèques « Vus et notés »", "“Vus et notés” libraries"),
-				Help: tx("Visibles aussi dans les autres applications Jellyfin/Emby.", "Also visible in other Jellyfin/Emby apps.")},
+			{Key: "PSE_SCROB_PUSH", Advanced: true, Kind: KindToggle, Default: "off", Label: tx("Envoi immédiat des événements de lecture (webhook)", "Send playback events immediately (webhook)"),
+				Help: tx("Complément facultatif à la synchronisation programmée : début, pause et fin de lecture. Nécessite le webhook de la même connexion Jellyfin, à renseigner ci-dessus. Ce bouton ne contrôle pas le retour Scrob → Remix.", "Optional addition to scheduled sync: playback start, pause and stop. Requires the same Jellyfin connection’s webhook, entered above. This switch does not control Scrob → Remix sync.")},
+			{Key: "PSE_SCROB_VIEWS", Advanced: true, Kind: KindToggle, Default: "off", Label: tx("Proposer des bibliothèques limitées à l’historique", "Offer history-only libraries"),
+				Help: tx("Ajoute « Vus et notés » dans les bibliothèques que Scrob peut importer : utile pour éviter de parcourir tout le catalogue. Facultatif ; les bibliothèques Films et Séries fonctionnent aussi. Ne contrôle aucun sens de synchronisation.", "Adds “Vus et notés” libraries for Scrob to import, avoiding a full-catalogue scan. Optional; Movies and Shows libraries also work. Does not control either sync direction.")},
 		},
 	},
 	{

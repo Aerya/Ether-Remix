@@ -46,8 +46,20 @@ export const REMIX_UPDATES = [
     ],
   },
   {
-    id: "2026-11-10-seerrcatalog-independent-search-auth",
+    id: "2026-11-10-scrob-single-connection",
     version: "0.2.37-remix.34.1",
+    date: "2026-11-10",
+    title: ["Scrob : une seule connexion Jellyfin", "Scrob: one Jellyfin connection"],
+    items: [
+      [
+        "Le parcours explique la connexion Jellyfin unique et le choix des sens de synchronisation dans Scrob. Le webhook temps réel et les bibliothèques limitées à l’historique sont présentés comme facultatifs. Le panneau distingue un accès Jellyfin observé d’une synchronisation terminée et explique les erreurs de connexion liées au proxy.",
+        "Setup now explains one Jellyfin connection, with sync directions chosen in Scrob. Real-time webhooks and history-only libraries are explicitly optional. The panel distinguishes observed Jellyfin access from completed sync and explains proxy-related connection errors.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-seerrcatalog-independent-search-auth",
+    version: "0.2.37-remix.33.1",
     date: "2026-11-10",
     title: ["SeerrCatalog : recherches indépendantes", "SeerrCatalog: independent searches"],
     items: [

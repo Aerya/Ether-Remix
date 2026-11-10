@@ -837,7 +837,7 @@ const num = (v: unknown) => (typeof v === "number" ? v.toLocaleString(getLocale(
 
 function StatusLine({ feature }: { feature: Feature }) {
   const s = feature.status;
-  if (!s) return null;
+  if (!s || feature.id === "scrob") return null;
   const active = s.active === true;
   const items: ReactNode[] = [];
   if ("active" in s)
