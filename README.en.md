@@ -39,7 +39,15 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
 - **Controlled searches**: daily per-source budgets, pauses during playback, collection/library priorities and immediate manual searches.
 - **Search from Plex or Jellyfin**: top results never searched or previously without releases receive priority, subject to their retry interval.
-- **SeerrCatalog integration**: import availability and previously checked sources for Seerr requests without duplicate searches. Normal playback discovery remains the fallback.
+- **SeerrCatalog availability**: import confirmed availability and recent sources from [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), without another search for the playable-only catalogue. Confirmation persists until deletion; expired playback sources are searched again when needed.
+- **Searches for SeerrCatalog**: authorize complementary searches through Remix sources, including Prowlarr, using a dedicated token. Search and availability sharing are independent features grouped in the SeerrCatalog settings.
+
+### External subtitles and translation with SubMaker
+
+- **Choose your instance**: use [public](https://submaker.elfhosted.com/configure) or self-hosted [SubMaker](https://github.com/xtremexq/StremioSubMaker) with a personal manifest; the integration is disabled by default.
+- **Languages and scopes**: choose source/target languages, English → French by default, and allow processing globally or per library/collection.
+- **Controlled preparation**: find an SRT matching the release, translate when necessary, and manage processing with a queue, cache and daily budget. Only complete, validated results are accepted; translations must retain timestamps and cue counts.
+- **Playback and SeerrCatalog**: attach the prepared SRT to its matching release and send it to SeerrCatalog through authenticated search. A pending translation does not confirm availability; restart an already open playback after preparation. [Setup and limitations](docs/pse/SUBMAKER.en.md).
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
 
