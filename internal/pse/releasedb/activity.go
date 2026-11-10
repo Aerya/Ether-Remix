@@ -105,9 +105,14 @@ func (s *Service) finishSearch(ctx context.Context, e SearchEvent, results int, 
 	}
 	s.activity.mu.Lock()
 	delete(s.activity.active, e.ID)
-	s.activity.recent = append([]SearchEvent{e}, s.activity.recent...)
-	if len(s.activity.recent) > 50 {
-		s.activity.recent = s.activity.recent[:50]
+	// Une source au budget du jour épuisé n'est pas interrogée : elle reste
+	// comptée dans le détail par source (denied) mais n'occupe pas les
+	// dernières recherches, qu'elle remplirait à chaque titre.
+	if e.Status != "budget" {
+		s.activity.recent = append([]SearchEvent{e}, s.activity.recent...)
+		if len(s.activity.recent) > 50 {
+			s.activity.recent = s.activity.recent[:50]
+		}
 	}
 	s.activity.mu.Unlock()
 	if e.Status == "cancelled" {

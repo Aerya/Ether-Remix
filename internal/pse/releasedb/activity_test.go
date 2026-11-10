@@ -116,3 +116,28 @@ func TestAnimeBackgroundSearchIncludesMappingHints(t *testing.T) {
 		t.Fatalf("sources queried: %d", calls)
 	}
 }
+
+// Une source au budget épuisé reste comptée par source, sans remplir les
+// dernières recherches.
+func TestActivityBudgetSkipsRecent(t *testing.T) {
+	e := newFreshEnv(t)
+	ok := e.s.beginSearch(core.Title{Title: "Film"}, source{id: "aio", name: "AIOStreams"})
+	e.s.finishSearch(e.ctx, ok, 3, nil)
+	for i := 0; i < 30; i++ {
+		event := e.s.beginSearch(core.Title{Title: "Film"}, source{id: "prowlarr", name: "Prowlarr"})
+		e.s.finishSearch(e.ctx, event, 0, core.ErrBudgetExhausted)
+	}
+	recent := e.s.Activity().Recent
+	if len(recent) != 1 || recent[0].SourceID != "aio" {
+		t.Fatalf("dernières recherches = %+v", recent)
+	}
+	overview, err := e.s.SourceOverview(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range overview.Sources {
+		if src.ID == "prowlarr" && src.Denied != 30 {
+			t.Fatalf("refus non comptés : %+v", src)
+		}
+	}
+}
