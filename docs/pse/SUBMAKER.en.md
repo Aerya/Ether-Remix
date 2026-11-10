@@ -16,4 +16,4 @@ SeerrCatalog receives the SRT through authenticated search, without the SubMaker
 
 The SeerrCatalog Stremio `subtitles` resource serves stored subtitles only for available media and an exact video filename. Clients must send `filename`; otherwise the response is empty. Reinstall the addon if its resource list is cached. Deletion removes access to the associated subtitles.
 
-Automated tests use a local simulated provider. Real translation with a personal manifest and synchronized video playback still require validation before production. Draft PR review requires no credentials or user configuration.
+Automated tests use a local simulated provider. A live smoke test translated two English cues into French while preserving timestamps, and the Remix connector retrieved a French SRT containing 1,263 cues. Synchronized video playback and the complete SeerrCatalog flow still require validation before production. Draft PR review requires no credentials or user configuration.

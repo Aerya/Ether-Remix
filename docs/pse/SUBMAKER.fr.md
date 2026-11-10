@@ -25,4 +25,4 @@ SeerrCatalog expose les SRT enregistrés par la ressource Stremio `subtitles`, u
 
 ## Validation avant activation réelle
 
-Les tests automatisés utilisent un fournisseur local simulé : cache, budgets, erreurs, release/épisode, disponibilité et distribution Stremio. Une traduction réelle avec un manifeste personnalisé et une lecture vidéo synchronisée restent à valider avant mise en production. Aucune clé ni configuration n’est nécessaire pour examiner les PR en brouillon.
+Les tests automatisés utilisent un fournisseur local simulé : cache, budgets, erreurs, release/épisode, disponibilité et distribution Stremio. Un essai réel a validé la traduction anglais → français de deux répliques avec timecodes conservés et la récupération d’un SRT français de 1 263 répliques par le connecteur Remix. La lecture vidéo synchronisée et le parcours complet jusqu’à SeerrCatalog restent à valider avant mise en production. Aucune clé ni configuration n’est nécessaire pour examiner les PR en brouillon.
