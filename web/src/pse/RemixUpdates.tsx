@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-quality-profiles",
+    id: "2026-11-10-quality-mode-import",
     version: "current",
+    date: "2026-11-10",
+    title: ["Un seul mode de filtrage à la fois", "One filtering mode at a time"],
+    items: [
+      [
+        "Les profils remplacent les critères simples du catalogue quand ils sont activés. Vos anciens critères sont conservés pour revenir au mode simple. Les langues sont mieux alignées.",
+        "Enabled profiles replace simple catalogue criteria. Previous criteria are preserved when switching back. Language options are aligned.",
+      ],
+      [
+        "Import AIOStreams depuis une source enregistrée ou un manifest, avec le mot de passe de configuration et aperçu. Les manifests avec variante signalent explicitement que seuls les filtres de base sont récupérés.",
+        "Import AIOStreams from a saved source or manifest with the configuration password and a preview. Variant manifests explicitly warn that only base filters are retrieved.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-quality-profiles",
+    version: "0.2.37-remix.40.1",
     date: "2026-11-10",
     title: ["Des filtres de qualité personnalisables", "Custom release quality filters"],
     items: [

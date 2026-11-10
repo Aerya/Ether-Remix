@@ -273,6 +273,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		qualityAPI = q.Handler(a.pseLangExemptChanged)
 	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/quality/manifest" {
+			a.pseQualityImport(w, r)
+			return
+		}
 		if r.URL.Path == "/quality" || strings.HasPrefix(r.URL.Path, "/quality/") {
 			http.StripPrefix("/quality", qualityAPI).ServeHTTP(w, r)
 			return

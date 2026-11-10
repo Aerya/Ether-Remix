@@ -28,6 +28,8 @@ type Profile struct {
 	Rules   []core.ReleaseRule `json:"rules"`
 }
 type Config struct {
+	Mode string `json:"mode,omitempty"` // simple or profiles; empty migrates existing profiles
+
 	Profiles []Profile `json:"profiles"`
 }
 type compiled struct {
@@ -70,6 +72,9 @@ func New(ctx context.Context, db *sql.DB) (*Service, error) {
 }
 func (s *Service) Close() { services.CompareAndDelete(s.db, s) }
 func compile(c Config) ([]compiled, error) {
+	if c.Mode != "" && c.Mode != "simple" && c.Mode != "profiles" {
+		return nil, fmt.Errorf("mode de filtrage inconnu")
+	}
 	if len(c.Profiles) > 64 {
 		return nil, fmt.Errorf("64 profils au maximum")
 	}
@@ -160,6 +165,9 @@ func (s *Service) SetMembers(m map[string][]core.RatingKey) {
 }
 func (s *Service) Allow(key core.RatingKey, typ core.MediaType, rel core.Release) bool {
 	snap := s.current.Load()
+	if !active(snap.config) {
+		return true
+	}
 	var globals []compiled
 	var chosen *compiled
 	// More specific scopes win. Order resolves ties explicitly (first wins).
@@ -237,4 +245,12 @@ func evaluate(p *releasepolicy.Policy, r core.Release) releasepolicy.Result {
 		}
 	}
 	return out
+}
+
+func active(c Config) bool { return c.Mode == "profiles" || (c.Mode == "" && len(c.Profiles) > 0) }
+func Active(db *sql.DB) bool {
+	if v, ok := services.Load(db); ok {
+		return active(v.(*Service).current.Load().config)
+	}
+	return false
 }

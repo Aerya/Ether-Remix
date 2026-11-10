@@ -224,6 +224,9 @@ func (s *Store) SetLangExempt(ctx context.Context, keys []core.RatingKey) error 
 // seule fois. Les observations expirées et celles d'une source désactivée
 // ne comptent pas (freshness.go).
 func (s *Store) RefreshPlayable(ctx context.Context, key core.RatingKey, p PlayableSettings) error {
+	if quality.Active(s.db) {
+		p.Filter = Filter{}
+	}
 	anyLang := p.Filter
 	anyLang.Languages = nil
 	rs, err := s.Releases(ctx, key, anyLang)

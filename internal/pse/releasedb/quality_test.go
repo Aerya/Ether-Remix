@@ -37,3 +37,35 @@ func TestQualityChangeRecountsWithoutLosingSearchResults(t *testing.T) {
 		t.Fatalf("restored count = %d", n)
 	}
 }
+
+func TestQualityModeReplacesLegacyCriteriaAndRestoresThem(t *testing.T) {
+	e := newFreshEnv(t)
+	e.stub.rels["a"] = []core.Release{frRelease("Film.FRENCH.1080p-GOOD")}
+	e.index(t, 1)
+	q, err := quality.New(e.ctx, e.s.Store().db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	legacy := NewPlayable(1, "min=2160", false)
+	// Use the field directly to avoid depending on filter syntax here.
+	legacy.Filter.MinHeight = 2160
+	if err = q.Save(e.ctx, quality.Config{Mode: "profiles"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.s.Store().RefreshPlayable(e.ctx, 1, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.playable(t, 1); n != 1 {
+		t.Fatalf("profiles retained legacy floor: %d", n)
+	}
+	if err = q.Save(e.ctx, quality.Config{Mode: "simple"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.s.Store().RefreshPlayable(e.ctx, 1, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.playable(t, 1); n != 0 {
+		t.Fatalf("simple mode failed to restore floor: %d", n)
+	}
+}
