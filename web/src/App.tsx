@@ -1,3 +1,4 @@
+import { RemixAppearance } from "./pse/RemixAppearance";
 import { RemixSourcesRedirect } from "./pse/navigation";
 import { RemixUpdates } from "./pse/RemixUpdates";
 import { McpAuthorize } from "./components/agent/McpAuthorize";
@@ -10,7 +11,6 @@ import {
   PromptRoot,
   Spinner,
   ThemeProvider,
-  ThemeToggle,
   Toaster,
   UiLinkProvider,
   type LinkRender,
@@ -477,26 +477,7 @@ function Shell() {
             </span>
             <HealthIndicator />
             <AskEther />
-            <ThemeToggle
-              collapsed
-              labels={{
-                label: t("Theme"),
-                light: t("Light"),
-                dark: t("Dark"),
-                system: t("System"),
-                current: (mode) =>
-                  t("Theme: {mode}", {
-                    // AppKit passes the already-translated option label.
-                    mode:
-                      (
-                        { light: t("Light"), dark: t("Dark"), system: t("System") } as Record<
-                          string,
-                          string
-                        >
-                      )[mode] ?? mode,
-                  }),
-              }}
-            />
+            <RemixAppearance />
             <Link
               to={ownerPath}
               aria-label={t("Your account")}

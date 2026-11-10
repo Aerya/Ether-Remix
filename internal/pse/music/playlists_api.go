@@ -36,6 +36,7 @@ type Viewer struct {
 // PlaylistAPI sert la gestion des playlists dans la console.
 type PlaylistAPI struct {
 	Sync    *PlaylistSync
+	Spotify *SpotifyPlaylists
 	Viewers func(ctx context.Context) ([]Viewer, error)
 	// Background lance une tâche détachée de la requête.
 	Background func(fn func(ctx context.Context))
@@ -53,6 +54,7 @@ type apiViewer struct {
 	Name      string             `json:"name"`
 	Accounts  map[string]Account `json:"accounts"`
 	Playlists []apiPlaylist      `json:"playlists"`
+	Spotify   bool               `json:"spotify"`
 	Syncing   bool               `json:"syncing"`
 }
 
@@ -75,6 +77,11 @@ func (a *PlaylistAPI) view(ctx context.Context) (map[string]any, error) {
 	out := make([]apiViewer, 0, len(viewers))
 	for _, v := range viewers {
 		av := apiViewer{ID: v.ID, Name: v.Name, Accounts: byViewer[v.ID], Playlists: []apiPlaylist{}, Syncing: a.Sync.Busy(v.ID)}
+		if a.Spotify != nil {
+			var n int
+			_ = a.Sync.Store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pse_music_spotify WHERE viewer_id=?`, v.ID).Scan(&n)
+			av.Spotify = n > 0
+		}
 		if av.Accounts == nil {
 			av.Accounts = map[string]Account{}
 		}
@@ -122,6 +129,7 @@ func (a *PlaylistAPI) start(viewer int64) {
 // Handler renvoie le routeur de l'API.
 func (a *PlaylistAPI) Handler() http.Handler {
 	mux := http.NewServeMux()
+	a.importRoutes(mux)
 	reply := func(w http.ResponseWriter, r *http.Request) {
 		v, err := a.view(r.Context())
 		if err != nil {

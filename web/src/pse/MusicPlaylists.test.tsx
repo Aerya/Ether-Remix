@@ -34,7 +34,9 @@ it("lists each viewer's accounts and playlists, then saves a new account", async
     };
   });
   render(<MusicPlaylists />);
-  expect(await screen.findByText("Owner")).toBeTruthy();
+  await screen.findByRole("button", { name: /My accounts|Mes comptes/ });
+  fireEvent.click(screen.getByRole("button", { name: /My accounts|Mes comptes/ }));
+  expect(screen.getByText("Owner", { selector: "span" })).toBeTruthy();
   expect(screen.getByText("Road trip · Deezer (12)")).toBeTruthy();
   expect(screen.getByText(/Last\.fm API key|clé API Last\.fm/)).toBeTruthy();
   const inputs = screen.getAllByRole("textbox") as HTMLInputElement[];

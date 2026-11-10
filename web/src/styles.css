@@ -1,3 +1,4 @@
+@import "./pse/palettes.css";
 /* The whole AppKit design system (Tailwind v4 + semantic tokens) in one import,
  * plus the dependency-light dashboard primitives. Everything below uses
  * semantic tokens only; light and dark come from the `.dark` class. */

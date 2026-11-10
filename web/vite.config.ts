@@ -4,6 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { getThemeScript } from "@braedonsaunders/appkit-ui/theme-script";
 import type { Plugin } from "vite";
 import { mockWatch } from "./src/mock/watch-server";
+import { paletteScript } from "./src/pse/appearance";
 import { theme } from "./src/theme";
 
 // AppKit's pre-paint theme script goes first in <head>, so the stored (or
@@ -11,7 +12,7 @@ import { theme } from "./src/theme";
 const themeScript: Plugin = {
   name: "ether-theme-script",
   transformIndexHtml: () => [
-    { tag: "script", children: getThemeScript(theme), injectTo: "head-prepend" },
+    { tag: "script", children: getThemeScript(theme) + paletteScript(), injectTo: "head-prepend" },
   ],
 };
 

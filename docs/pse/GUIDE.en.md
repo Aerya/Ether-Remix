@@ -198,3 +198,18 @@ Existing `/sources/...` addresses and old Remix tabs redirect to their new locat
 ### Browsing and poster badges
 
 Plex and Jellyfin prepare a page’s badges together. New episodes and collection rotations respect each viewer’s state. The playable-only catalogue keeps exact counts, including language exceptions.
+
+
+## Playlists and appearance
+
+Under **Content & libraries → Music → Playlists**:
+
+- **Discover**: Deezer trends and search; Spotify connection and your playlists; links to ListenBrainz, Soundplate and DailyPlaylists for further discovery.
+- **My accounts**: automatically synced public Deezer profiles, Last.fm and ListenBrainz (every 6 hours by default). Private Deezer playlists cannot be accessed through a profile link.
+- **Import**: Deezer, Spotify or ListenBrainz playlist links, or CSV/XSPF files (2 MB maximum). CSV columns: `title` and `artist`, or Exportify’s `Track Name` and `Artist Name(s)`; comma and semicolon delimiters are supported. Audio URLs in XSPF files are never downloaded.
+
+Choose a viewer, inspect the preview and confirm. Import creates a personal copy editable through Subsonic without replacing other playlists. These copies do not automatically sync. It processes the first 2,000 items and reports progress and unmatched catalogue tracks. Playback still depends on your music sources; playlist metadata does not guarantee an available audio stream. Progress is retained by the server for one hour and does not survive a server restart.
+
+**Spotify**: under Discover → Spotify, enter your application’s **Client ID**. Add the exact redirect URI displayed by Remix to your Spotify developer dashboard, then connect the chosen viewer’s account. HTTPS is required except on loopback. No Client Secret is needed: OAuth with PKCE, server-encrypted tokens, read-only access and a disconnect button. In development mode, the app owner needs Premium and users must be allowed in Spotify Developers. Spotify may deny playlist items unless you own or collaborate on the playlist; directory links do not bypass this limit.
+
+**Appearance**: the palette button in the top bar offers Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine. Select light or dark mode separately; previews are immediate and your preference is stored in this browser. Other users keep their own preferences.

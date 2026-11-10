@@ -1,0 +1,190 @@
+html.dark[data-palette="nord"] {
+  --ch-bg: 46 52 64;
+  --ch-bg-subtle: 59 66 82;
+  --ch-surface: 59 66 82;
+  --ch-surface-hover: 74 80 91;
+  --ch-elevated: 59 66 82;
+  --ch-fg: 236 239 244;
+  --ch-fg-muted: 202 205 212;
+  --ch-fg-subtle: 188 192 199;
+  --ch-border: 88 93 104;
+  --ch-border-strong: 136 192 208;
+  --ch-border-subtle: 69 74 86;
+  --ch-primary: 136 192 208;
+  --ch-primary-hover: 136 192 208;
+  --ch-primary-active: 136 192 208;
+  --ch-primary-fg: 46 52 64;
+  --ch-primary-subtle: 46 52 64;
+  --ch-ring: 136 192 208;
+}
+html.light[data-palette="nord"] {
+  --ch-bg: 236 239 244;
+  --ch-bg-subtle: 229 233 240;
+  --ch-surface: 229 233 240;
+  --ch-surface-hover: 208 211 217;
+  --ch-elevated: 229 233 240;
+  --ch-fg: 46 52 64;
+  --ch-fg-muted: 80 86 96;
+  --ch-fg-subtle: 94 99 109;
+  --ch-border: 194 198 204;
+  --ch-border-strong: 67 101 118;
+  --ch-border-subtle: 213 217 222;
+  --ch-primary: 67 101 118;
+  --ch-primary-hover: 67 101 118;
+  --ch-primary-active: 67 101 118;
+  --ch-primary-fg: 236 239 244;
+  --ch-primary-subtle: 236 239 244;
+  --ch-ring: 67 101 118;
+}
+html.dark[data-palette="catppuccin"] {
+  --ch-bg: 30 30 46;
+  --ch-bg-subtle: 49 50 68;
+  --ch-surface: 49 50 68;
+  --ch-surface-hover: 56 58 76;
+  --ch-elevated: 49 50 68;
+  --ch-fg: 205 214 244;
+  --ch-fg-muted: 174 181 208;
+  --ch-fg-subtle: 161 168 194;
+  --ch-border: 68 70 90;
+  --ch-border-strong: 148 226 213;
+  --ch-border-subtle: 51 52 70;
+  --ch-primary: 148 226 213;
+  --ch-primary-hover: 148 226 213;
+  --ch-primary-active: 148 226 213;
+  --ch-primary-fg: 30 30 46;
+  --ch-primary-subtle: 30 30 46;
+  --ch-ring: 148 226 213;
+}
+html.light[data-palette="catppuccin"] {
+  --ch-bg: 239 241 245;
+  --ch-bg-subtle: 230 233 239;
+  --ch-surface: 230 233 239;
+  --ch-surface-hover: 215 217 224;
+  --ch-elevated: 230 233 239;
+  --ch-fg: 76 79 105;
+  --ch-fg-muted: 105 108 130;
+  --ch-fg-subtle: 117 120 140;
+  --ch-border: 203 205 214;
+  --ch-border-strong: 22 119 111;
+  --ch-border-subtle: 219 222 228;
+  --ch-primary: 22 119 111;
+  --ch-primary-hover: 22 119 111;
+  --ch-primary-active: 22 119 111;
+  --ch-primary-fg: 239 241 245;
+  --ch-primary-subtle: 239 241 245;
+  --ch-ring: 22 119 111;
+}
+html.dark[data-palette="solarized"] {
+  --ch-bg: 0 43 54;
+  --ch-bg-subtle: 7 54 66;
+  --ch-surface: 7 54 66;
+  --ch-surface-hover: 27 66 75;
+  --ch-elevated: 7 54 66;
+  --ch-fg: 177 193 193;
+  --ch-fg-muted: 145 166 168;
+  --ch-fg-subtle: 133 156 158;
+  --ch-border: 39 76 85;
+  --ch-border-strong: 92 196 188;
+  --ch-border-subtle: 21 61 71;
+  --ch-primary: 92 196 188;
+  --ch-primary-hover: 92 196 188;
+  --ch-primary-active: 92 196 188;
+  --ch-primary-fg: 0 43 54;
+  --ch-primary-subtle: 0 43 54;
+  --ch-ring: 92 196 188;
+}
+html.light[data-palette="solarized"] {
+  --ch-bg: 253 246 227;
+  --ch-bg-subtle: 238 232 213;
+  --ch-surface: 238 232 213;
+  --ch-surface-hover: 226 223 208;
+  --ch-elevated: 238 232 213;
+  --ch-fg: 71 91 97;
+  --ch-fg-muted: 104 119 120;
+  --ch-fg-subtle: 116 130 130;
+  --ch-border: 213 212 198;
+  --ch-border-strong: 23 111 105;
+  --ch-border-subtle: 231 227 211;
+  --ch-primary: 23 111 105;
+  --ch-primary-hover: 23 111 105;
+  --ch-primary-active: 23 111 105;
+  --ch-primary-fg: 253 246 227;
+  --ch-primary-subtle: 253 246 227;
+  --ch-ring: 23 111 105;
+}
+html.dark[data-palette="gruvbox"] {
+  --ch-bg: 40 40 40;
+  --ch-bg-subtle: 60 56 54;
+  --ch-surface: 60 56 54;
+  --ch-surface-hover: 69 67 61;
+  --ch-elevated: 60 56 54;
+  --ch-fg: 235 219 178;
+  --ch-fg-muted: 200 187 153;
+  --ch-fg-subtle: 186 174 144;
+  --ch-border: 83 79 70;
+  --ch-border-strong: 184 187 38;
+  --ch-border-subtle: 63 61 57;
+  --ch-primary: 184 187 38;
+  --ch-primary-hover: 184 187 38;
+  --ch-primary-active: 184 187 38;
+  --ch-primary-fg: 40 40 40;
+  --ch-primary-subtle: 40 40 40;
+  --ch-ring: 184 187 38;
+}
+html.light[data-palette="gruvbox"] {
+  --ch-bg: 251 241 199;
+  --ch-bg-subtle: 235 219 178;
+  --ch-surface: 235 219 178;
+  --ch-surface-hover: 222 213 177;
+  --ch-elevated: 235 219 178;
+  --ch-fg: 60 56 54;
+  --ch-fg-muted: 94 89 80;
+  --ch-fg-subtle: 108 102 90;
+  --ch-border: 209 200 167;
+  --ch-border-strong: 98 104 0;
+  --ch-border-subtle: 228 219 182;
+  --ch-primary: 98 104 0;
+  --ch-primary-hover: 98 104 0;
+  --ch-primary-active: 98 104 0;
+  --ch-primary-fg: 251 241 199;
+  --ch-primary-subtle: 251 241 199;
+  --ch-ring: 98 104 0;
+}
+html.dark[data-palette="rose-pine"] {
+  --ch-bg: 25 23 36;
+  --ch-bg-subtle: 38 35 58;
+  --ch-surface: 38 35 58;
+  --ch-surface-hover: 55 53 67;
+  --ch-elevated: 38 35 58;
+  --ch-fg: 224 222 244;
+  --ch-fg-muted: 188 186 207;
+  --ch-fg-subtle: 174 172 192;
+  --ch-border: 69 67 82;
+  --ch-border-strong: 156 207 216;
+  --ch-border-subtle: 49 47 61;
+  --ch-primary: 156 207 216;
+  --ch-primary-hover: 156 207 216;
+  --ch-primary-active: 156 207 216;
+  --ch-primary-fg: 25 23 36;
+  --ch-primary-subtle: 25 23 36;
+  --ch-ring: 156 207 216;
+}
+html.light[data-palette="rose-pine"] {
+  --ch-bg: 250 244 237;
+  --ch-bg-subtle: 242 233 225;
+  --ch-surface: 242 233 225;
+  --ch-surface-hover: 226 220 220;
+  --ch-elevated: 242 233 225;
+  --ch-fg: 87 82 121;
+  --ch-fg-muted: 116 111 142;
+  --ch-fg-subtle: 128 122 150;
+  --ch-border: 214 208 211;
+  --ch-border-strong: 40 105 131;
+  --ch-border-subtle: 230 225 223;
+  --ch-primary: 40 105 131;
+  --ch-primary-hover: 40 105 131;
+  --ch-primary-active: 40 105 131;
+  --ch-primary-fg: 250 244 237;
+  --ch-primary-subtle: 250 244 237;
+  --ch-ring: 40 105 131;
+}

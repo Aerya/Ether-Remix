@@ -313,7 +313,7 @@ describe("Catalog workspace", () => {
     const retry = await screen.findByRole("button", { name: "Try again" });
     fail = false;
     fireEvent.click(retry);
-    expect(await screen.findByText("No matching titles")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("No matching titles")).toBeInTheDocument());
     fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
     await waitFor(() => expect(screen.getByLabelText("Find a title")).toHaveValue(""));
   });
