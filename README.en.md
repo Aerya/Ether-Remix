@@ -50,7 +50,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
 
-- Organize Plex libraries by **service, studio, anime, documentaries, concerts or live shows**.
+- Organize Plex libraries by **service, studio, anime, documentaries, concerts or live shows**. Concerts combine recorded-performance keywords with the Music genre to reduce fiction matches.
 - Build their rows with TMDB collections, imported Stremio catalogues and ready-made presets.
 - Set collection refresh intervals from **1 to 168 hours**, independently of release searches.
 - Adjust when movies appear before or after their digital/physical release with a **day offset**.
