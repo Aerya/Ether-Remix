@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
@@ -11,7 +12,7 @@ import (
 func (a *App) startSeerrCatalog() {
 	rt := pseRuntimeOf(a)
 	s := seerrcatalog.New(a.db, egress.Client(egress.CapMetadata, 15*time.Second))
-	s.Ensure = func(ctx context.Context, k core.RatingKey) error { _, err := a.catalog.Get(ctx, k); return err }
+	s.Ensure = a.ensureSeerrCatalogMetadata
 	s.Changed = a.catalog.RefreshExternalEvidence
 	s.Enrich = func(ctx context.Context, req core.SearchRequest) core.SearchRequest {
 		key := core.MovieKey(req.IDs.TMDB)
@@ -35,4 +36,15 @@ func (a *App) startSeerrCatalog() {
 	}
 	s.Start()
 	a.closers = append(a.closers, s.Close)
+}
+
+func (a *App) ensureSeerrCatalogMetadata(ctx context.Context, key core.RatingKey) error {
+	_, err := a.catalog.Get(ctx, key)
+	// Get materializes metadata but also enforces catalogue visibility. A hidden
+	// title must not reject the source snapshot; visibility remains enforced by
+	// the normal catalogue and playback paths. Require an actual stored record.
+	if errors.Is(err, core.ErrNotFound) {
+		_, err = a.catalog.StoredTitle(ctx, key)
+	}
+	return err
 }

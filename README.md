@@ -93,7 +93,7 @@ Dans **Sources → Stremio → SeerrCatalog**, une seule section regroupe **Disp
 2. Dans Remix, ouvrez **Sources → Stremio → SeerrCatalog → Disponibilités vers Remix**, saisissez l’adresse de base (ex. `https://seerrcatalog.example`, sans `/api/…`) et la clé, activez puis enregistrez. **Tester la connexion** vérifie le flux sans importer ; la synchronisation s’effectue chaque minute.
 3. Les titres déjà validés sont exportés automatiquement par la nouvelle version de SeerrCatalog, sans relancer leurs recherches.
 
-Les disponibilités de SeerrCatalog passent le filtre **« lisible uniquement »** sans nouvelle interrogation des addons. Les autres filtres et règles de lecture restent actifs. L’import récupère les fiches TMDB, sans créer de collection.
+Les disponibilités de SeerrCatalog passent le filtre **« lisible uniquement »** sans nouvelle interrogation des addons. Les titres masqués ou à venir ne bloquent pas la synchronisation des autres disponibilités. Les filtres du catalogue et les règles de lecture restent actifs. L’import récupère les fiches TMDB, sans créer de collection.
 
 Disponibilités valables **26 h**, revérifiées après 24 h avec réveil horaire. Liens et en-têtes réutilisés au maximum **30 min** ; hash torrent jusqu’à expiration de l’observation. Source périmée, refusée par les règles du spectateur ou défaillante : retour à la recherche habituelle. Les URL peuvent expirer plus tôt ou dépendre de l’IP. Pour les séries, seuls les épisodes contrôlés fournissent des sources réutilisables.
 

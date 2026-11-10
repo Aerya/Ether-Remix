@@ -93,7 +93,7 @@ Under **Sources → Stremio → SeerrCatalog**, one section groups **Availabilit
 2. In Remix, open **Sources → Stremio → SeerrCatalog → Availability to Remix**, enter the base address (e.g. `https://seerrcatalog.example`, without `/api/…`) and token, enable and save. **Test connection** checks the feed without importing; synchronization runs every minute.
 3. The updated SeerrCatalog automatically exports previously confirmed titles without running new searches.
 
-SeerrCatalog availability passes the **playable-only** filter without querying addons again. Other visibility filters and viewer playback policies still apply. Imports retrieve TMDB metadata without creating collections.
+SeerrCatalog availability passes the **playable-only** filter without querying addons again. Hidden or upcoming titles do not block synchronization of other availability records. Catalogue filters and viewer playback policies still apply. Imports retrieve TMDB metadata without creating collections.
 
 Availability lasts **26 h**, rechecked after 24 h with an hourly wake-up. URLs and headers are reused for at most **30 min**; torrent hashes until observation expiry. Expired, policy-rejected or failed sources fall back to normal discovery. URLs may expire earlier or depend on IP restrictions. Only checked episodes provide reusable sources.
 

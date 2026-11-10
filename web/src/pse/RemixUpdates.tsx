@@ -26,8 +26,17 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-seerrcatalog-settings-layout",
+    id: "2026-11-10-seerrcatalog-hidden-titles",
     version: "current",
+    date: "2026-11-10",
+    title: ["SeerrCatalog : import des disponibilités fiabilisé", "SeerrCatalog: reliable availability imports"],
+    items: [
+      ["Un titre masqué ou à venir ne bloque plus l’import des disponibilités des autres titres. Les filtres du catalogue et les règles de lecture restent appliqués.", "A hidden or upcoming title no longer blocks availability imports for other titles. Catalogue filters and playback rules still apply."],
+    ],
+  },
+  {
+    id: "2026-11-10-seerrcatalog-settings-layout",
+    version: "0.2.37-remix.38.1",
     date: "2026-11-10",
     title: ["SeerrCatalog : des réglages regroupés", "SeerrCatalog: grouped settings"],
     items: [
