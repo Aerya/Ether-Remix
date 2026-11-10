@@ -36,11 +36,14 @@ type Options struct {
 
 // Server sert l'API Subsonic sous /rest/.
 type Server struct {
-	o      Options
-	auth   *authCache
-	clock  func() time.Time
-	cache  *memo // albums, artistes et titres (clients Jellyfin)
-	charts *memo // classements
+	nowMu       sync.Mutex
+	nowSequence uint64
+	nowPlaying  map[string]MusicSession
+	o           Options
+	auth        *authCache
+	clock       func() time.Time
+	cache       *memo // albums, artistes et titres (clients Jellyfin)
+	charts      *memo // classements
 	// discover : styles, classements par style, artistes proches, radios.
 	discover *memo
 	// recherches des frontaux Jellyfin et Plex
@@ -895,7 +898,10 @@ func (s *Server) scrobble(c *call) {
 		return
 	}
 	if c.param("submission") == "false" {
-		c.ok(nil) // « en cours de lecture » : rien à enregistrer
+		if kind, id, ok := parseID(ids[0]); ok && kind == KindTrack {
+			s.observeMusic(c.r, c.viewer, "subsonic", id, "playing", nil, c.user)
+		}
+		c.ok(nil) // Observation uniquement : pas d’entrée dans l’historique.
 		return
 	}
 	ctx := c.r.Context()

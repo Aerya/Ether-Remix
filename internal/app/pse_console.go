@@ -203,6 +203,7 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	playlists := playlistAPI.Handler()
 	lastfm := rt.scrobbler(a).Handler(playlistAPI.Known)
 	stats := music.StatsHandler(music.NewLibrary(a.db))
+	musicHistory := music.HistoryHandler(music.NewLibrary(a.db))
 	indexDetails := a.pseIndexDetailsHandler()
 	diagnose := a.psePlaylistDiagnose()
 	settings := console.Handler(console.Deps{
@@ -322,6 +323,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		}
 		if r.URL.Path == "/music/diagnose" {
 			diagnose.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/music/history" {
+			musicHistory.ServeHTTP(w, r)
 			return
 		}
 		if r.URL.Path == "/music/stats" {

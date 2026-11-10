@@ -58,6 +58,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) Music in your applications
 
+- **Music activity**: current playback reported by Plex, Jellyfin/Emby and Subsonic; listening history under Activity → History, filterable by period and viewer.
 - Browse the **public Deezer catalogue** from Plex/Plexamp, Jellyfin clients or a Subsonic application: Symfonium, Feishin, Supersonic, DSub…
 - Listen through **Audius, Eclipse addons, DMM with Real-Debrid or your AllDebrid, Real-Debrid and TorBox accounts**, depending on enabled sources.
 - Choose source order: when a source fails, Remix tries the next one. External HiFi API mode is used only when no other music source is active.

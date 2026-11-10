@@ -89,12 +89,16 @@ function ClusterDetails({ s }: { s: Stream }) {
   );
 }
 
+// PSE-HOOK: métadonnées musicales et absence de contrôle vidéo — voir docs/pse/FORK.fr.md
 function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onStop: () => void }) {
-  const title = useTitle(s.ratingKey ? String(s.ratingKey) : s.key || undefined);
+  const title = useTitle(
+    s.isMusic ? undefined : s.ratingKey ? String(s.ratingKey) : s.key || undefined,
+  );
   const converting = isTranscoding(s);
   const elapsed = s.progress !== null && s.durationMs ? s.progress * s.durationMs : null;
-  const subtitle =
-    title?.type === "episode" && title.showTitle
+  const subtitle = s.isMusic
+    ? [s.artist, s.album].filter(Boolean).join(" · ")
+    : title?.type === "episode" && title.showTitle
       ? `${title.showTitle} · ${t("S{season} E{episode}", { season: title.season ?? 0, episode: title.episode ?? 0 })}`
       : title?.year
         ? String(title.year)
@@ -157,16 +161,18 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
               <p className="text-xs text-on-scrim/75">{t("Waiting for playback position")}</p>
             )}
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0 self-start border-white/25 bg-black/30 text-on-scrim hover:bg-black/50"
-            disabled={stopping}
-            onClick={onStop}
-            aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
-          >
-            <Square size={13} /> {t("Stop")}
-          </Button>
+          {s.canStop !== false && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 self-start border-white/25 bg-black/30 text-on-scrim hover:bg-black/50"
+              disabled={stopping}
+              onClick={onStop}
+              aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
+            >
+              <Square size={13} /> {t("Stop")}
+            </Button>
+          )}
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 p-4 sm:grid-cols-3">
@@ -232,11 +238,14 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
 /** A rich single-row view of one stream: artwork wash, who and where, the
  * conversion, the network and the position. */
 function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onStop: () => void }) {
-  const title = useTitle(s.ratingKey ? String(s.ratingKey) : s.key || undefined);
+  const title = useTitle(
+    s.isMusic ? undefined : s.ratingKey ? String(s.ratingKey) : s.key || undefined,
+  );
   const converting = isTranscoding(s);
   const elapsed = s.progress !== null && s.durationMs ? s.progress * s.durationMs : null;
-  const subtitle =
-    title?.type === "episode" && title.showTitle
+  const subtitle = s.isMusic
+    ? [s.artist, s.album].filter(Boolean).join(" · ")
+    : title?.type === "episode" && title.showTitle
       ? `${title.showTitle} · ${t("S{season} E{episode}", { season: title.season ?? 0, episode: title.episode ?? 0 })}`
       : title?.year
         ? String(title.year)
@@ -348,16 +357,18 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
             {s.release}
           </p>
         ) : null}
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={stopping}
-          onClick={onStop}
-          aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
-          className="col-start-3 row-start-1 lg:col-auto lg:row-auto"
-        >
-          <Square size={13} /> {t("Stop")}
-        </Button>
+        {s.canStop !== false && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={stopping}
+            onClick={onStop}
+            aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
+            className="col-start-3 row-start-1 lg:col-auto lg:row-auto"
+          >
+            <Square size={13} /> {t("Stop")}
+          </Button>
+        )}
       </div>
       <ClusterDetails s={s} />
     </li>
