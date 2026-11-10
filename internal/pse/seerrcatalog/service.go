@@ -121,6 +121,7 @@ type Status struct {
 	Error    string     `json:"error,omitempty"`
 }
 type Service struct {
+	Enrich      func(context.Context, core.SearchRequest) core.SearchRequest
 	Search      func(context.Context, core.SearchRequest) ([]core.Release, error)
 	searchSlots chan struct{}
 	DB          *sql.DB

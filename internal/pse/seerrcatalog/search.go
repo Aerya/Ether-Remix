@@ -79,6 +79,9 @@ func (s *Service) serveSearch(w http.ResponseWriter, r *http.Request) {
 	if in.Media.Type == "series" {
 		req.Type = core.TypeEpisode
 	}
+	if s.Enrich != nil {
+		req = s.Enrich(ctx, req)
+	}
 	releases, err := s.Search(ctx, req)
 	if err != nil {
 		http.Error(w, "Indexer search failed", 502)
@@ -96,13 +99,13 @@ func (s *Service) serveSearch(w http.ResponseWriter, r *http.Request) {
 		if (rel.TitleIDs.IMDB != "" && rel.TitleIDs.IMDB != in.Media.IMDB) || (rel.TitleIDs.TMDB > 0 && rel.TitleIDs.TMDB != in.Media.TMDB) {
 			continue
 		}
-		if !identified && (!releaseparse.TitleMatches(rel.Info, in.Media.Title) || !releaseparse.YearMatches(rel.Info.Year, in.Media.Year)) {
+		if !identified && (!releaseparse.TitleMatchesAny(rel.Info, req.Title, append(req.AlternativeTitles, req.OriginalTitle)) || !releaseparse.YearMatches(rel.Info.Year, req.Year)) {
 			continue
 		}
 		if req.Type == core.TypeEpisode && !releaseparse.EpisodeMatches(rel.Info, in.Season, in.Episode) {
 			continue
 		}
-		st := SearchStream{Name: rel.Indexer, Title: rel.Name, Languages: rel.Info.Languages, SubtitleLanguages: rel.Info.SubtitleLanguages, Source: rel.IndexerID}
+		st := SearchStream{Name: "Ether Remix", Title: rel.Name, Languages: rel.Info.Languages, SubtitleLanguages: rel.Info.SubtitleLanguages, Source: rel.IndexerID}
 		if hashPattern.MatchString(rel.InfoHash) {
 			st.InfoHash = strings.ToLower(rel.InfoHash)
 		} else if rel.Protocol == core.ProtocolHTTP && (strings.HasPrefix(rel.StreamURL, "https://") || strings.HasPrefix(rel.StreamURL, "http://")) {

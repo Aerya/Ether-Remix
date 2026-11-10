@@ -16,6 +16,11 @@ func TestDelegatedSearchAuthenticatedBoundedAndReusable(t *testing.T) {
 	if err := s.Sync(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	s.Enrich = func(_ context.Context, req core.SearchRequest) core.SearchRequest {
+		req.Title = "La Matrice"
+		req.OriginalTitle = "The Matrix"
+		return req
+	}
 	calls := 0
 	s.Search = func(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
 		calls++
@@ -29,6 +34,7 @@ func TestDelegatedSearchAuthenticatedBoundedAndReusable(t *testing.T) {
 		return []core.Release{
 			{Name: good, Info: releaseparse.Parse(good), InfoHash: strings.Repeat("a", 40), Indexer: "test"},
 			{Name: good, Info: releaseparse.Parse(good), Protocol: core.ProtocolHTTP, StreamURL: "https://stream.test/video", StreamHeaders: map[string]string{"Authorization": "private"}},
+			{Name: good, Info: releaseparse.Parse(good), TitleIDs: core.IDs{TMDB: 999}, InfoHash: strings.Repeat("c", 40)},
 			{Name: good, Info: releaseparse.Parse(good), NZBURL: "https://indexer.test/private.nzb"},
 			{Name: "Wrong.2024.1080p", Info: releaseparse.Parse("Wrong.2024.1080p"), InfoHash: strings.Repeat("b", 40)},
 		}, nil
