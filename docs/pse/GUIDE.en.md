@@ -71,13 +71,13 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 
 ### Connecting Scrob
 
-1. Under **Ether-Remix → Notifications and tracking → Scrob**, enable the **Watched and rated** libraries and Scrob delivery.
-2. For the matching viewer, click **Create Jellyfin credentials for Scrob**. In Scrob → **Connections → Media Players → Add Connection**, choose **Jellyfin** and copy **Server URL**, **Token** and **User ID**. The token is scoped to this viewer and Jellyfin, and can be revoked in the viewer’s devices.
-3. Select only **“Vus et notés — Films” and “Vus et notés — Séries”** in the connection’s libraries to import history without scanning the full catalogue.
-4. Enable **Scrob → Server: Watched status and Ratings**, then your preferred automatic sync. Movies and episodes are identified by TMDB, with season and episode numbers for episodes. Incoming changes use the same watch state as the viewer’s Plex/Jellyfin clients.
-5. For **real-time Remix → Scrob**, copy the webhook URL from this same connection and paste it into Remix for the matching viewer. **Test** checks webhook acceptance, not a complete history sync.
+1. Under **Ether-Remix → Notifications and tracking → Scrob**, create the viewer’s Jellyfin credentials.
+2. In Scrob → **Connections → Media Players → Add Connection**, choose **Jellyfin** and copy **Server URL**, **Token** and **User ID**. Click **Test**, then **Add**. The token is scoped to that viewer and can be revoked in their devices.
+3. Select libraries in that connection. **Movies** and **Shows** work directly. Remix’s advanced “Offer history-only libraries” option adds **Vus et notés — Films/Séries** to import just history items.
+4. Choose **SERVER → SCROB**, **SCROB → SERVER**, or both, and **Pull/Push** schedules in Scrob. Incoming sync covers watched/unwatched status and ratings, not resume positions. It needs no switch or webhook in Remix.
+5. Optionally, to also send real-time playback events, copy **this same connection’s** webhook into Remix’s collapsible panel and enable “Send playback events immediately” in advanced settings. Scheduled sync works without a webhook. **Test** in that panel only tests the webhook.
 
-A **Scrobble-only** connection cannot send changes back to Remix. Scrob’s Jellyfin connector pushes watched status and ratings, but not resume positions; configure sync frequency and preferences in Scrob.
+Scrob’s **Failed to connect to Jellyfin or invalid User ID** error can also indicate a proxy or firewall HTTP 403 before Remix receives the token. Check `/jellyfin/System/Info` and `/jellyfin/Users/{UserId}` with the token from the Scrob server, alongside proxy logs. Sync may enumerate many URLs: anti-crawling protection must distinguish successful authenticated reads from rejected access attempts.
 
 The panel automatically refreshes the viewer’s latest Jellyfin access (Scrob or another client) and webhook status, without reloading the page or clearing unsaved inputs. An API access does not prove that a sync completed. **Trigger Library Scan** requests a refresh from Remix: because its catalogue is virtual, the request is acknowledged immediately without a file scan or global reindex. Episode lists without an explicit sort use the stored, paginated catalogue when episode order is not customized. Use **Pull** to import data into Scrob and **Push** to send it back to Remix.
 

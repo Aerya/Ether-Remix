@@ -114,3 +114,25 @@ it("refreshes Jellyfin activity without reloading or losing an unsaved webhook",
     vi.useRealTimers();
   }
 });
+
+it("presents one bidirectional connection and keeps webhook status inside its optional panel", async () => {
+  apiFetch.mockReset();
+  apiFetch.mockResolvedValue({
+    enabled: false,
+    viewers: [{ id: 9, name: "Viewer", url: "", configured: false }],
+  });
+  render(<ScrobLinks />);
+  expect(
+    await screen.findByText(
+      /Jellyfin connection · two-way sync|Connexion Jellyfin · synchronisation dans les deux sens/,
+    ),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(/Webhook not configured|Webhook non configuré/).closest("details"),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(
+      /Pull and Push still work without a webhook|Sans webhook, Pull et Push continuent/,
+    ),
+  ).toBeTruthy();
+});

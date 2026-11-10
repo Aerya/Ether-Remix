@@ -135,19 +135,49 @@ export function ScrobLinks({
 
   return (
     <div className={bare ? "space-y-3" : "space-y-3 border-t border-border px-4 py-4"}>
-      <div className="text-sm font-medium">{L("Liens webhook Scrob", "Scrob webhook links")}</div>
+      <div className="text-sm font-medium">
+        {L(
+          "Connexion Jellyfin · synchronisation dans les deux sens",
+          "Jellyfin connection · two-way sync",
+        )}
+      </div>
+      <ol className="list-decimal space-y-2 pl-5 text-sm text-fg-muted">
+        <li>
+          {L(
+            "Créez les identifiants du spectateur ci-dessous.",
+            "Create the viewer’s credentials below.",
+          )}
+        </li>
+        <li>
+          {L(
+            "Dans Scrob → Connections → Media Players → Add Connection, choisissez Jellyfin et copiez Server URL, Token et User ID. Cliquez sur Test, puis Add.",
+            "In Scrob → Connections → Media Players → Add Connection, choose Jellyfin and copy Server URL, Token and User ID. Click Test, then Add.",
+          )}
+        </li>
+        <li>
+          {L(
+            "Dans cette même connexion Scrob, choisissez SERVER → SCROB, SCROB → SERVER, ou les deux, puis les fréquences Pull et Push. Aucun autre mode de connexion n’est nécessaire dans Remix.",
+            "In that same Scrob connection, select SERVER → SCROB, SCROB → SERVER, or both, then the Pull and Push schedules. Remix needs no other connection mode.",
+          )}
+        </li>
+      </ol>
       <p className="text-sm text-fg-muted">
         {L(
-          "Dans Scrob : Connexions → votre connexion Jellyfin (celle qui pointe vers Ether-Remix) → copiez l'URL du webhook, puis collez-la ici pour le spectateur correspondant.",
-          "In Scrob: Connections → your Jellyfin connection (the one pointing at Ether-Remix) → copy the webhook URL, then paste it here for the matching viewer.",
+          "Le retour vers Remix concerne les statuts vus/non vus et les notes, pas la position de reprise. Le webhook ci-dessous ajoute seulement les événements en temps réel à cette même connexion.",
+          "Incoming sync covers watched/unwatched status and ratings, not resume positions. The webhook below only adds real-time events to this same connection.",
         )}
       </p>
-      <p className="text-sm text-fg-muted">
-        {L(
-          "Pour les deux sens, ajoutez une connexion Jellyfin dans Scrob → Media Players, avec les champs générés ci-dessous. Activez les options Scrob → Server : Watched status et Ratings, puis choisissez la synchronisation automatique. Une connexion Scrobble-only ne permet que Remix → Scrob. La position de reprise n’est pas renvoyée par Scrob.",
-          "For both directions, add a Jellyfin connection under Scrob → Media Players using the fields generated below. Enable Scrob → Server: Watched status and Ratings, then choose automatic sync. A Scrobble-only connection only supports Remix → Scrob. Scrob does not push resume positions.",
-        )}
-      </p>
+      <details className="rounded border border-border p-3 text-sm text-fg-muted">
+        <summary className="cursor-pointer">
+          {L("Scrob refuse la connexion ?", "Scrob rejects the connection?")}
+        </summary>
+        <p className="mt-2">
+          {L(
+            "Le message « Failed to connect to Jellyfin or invalid User ID » peut aussi signaler un blocage du reverse proxy ou du pare-feu. Vérifiez l’accès depuis le serveur Scrob : un HTTP 403 peut précéder toute vérification du jeton. L’accès observé ci-dessous ne confirme pas une synchronisation complète.",
+            "“Failed to connect to Jellyfin or invalid User ID” can also mean a reverse-proxy or firewall block. Check access from the Scrob server: HTTP 403 can occur before token validation. Observed access below does not confirm a completed sync.",
+          )}
+        </p>
+      </details>
       {current.viewers.length === 0 ? (
         <p className="text-sm text-fg-muted">
           {L(
@@ -163,19 +193,6 @@ export function ScrobLinks({
           <div key={v.id} className="space-y-2 rounded-lg border border-border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="truncate text-sm font-medium">{v.name}</span>
-              {v.lastStatus ? (
-                <Badge variant={v.lastStatus === "ok" ? "success" : "warning"}>
-                  {v.lastStatus === "ok"
-                    ? L(`Dernier envoi réussi ${when(v.lastAt)}`, `Last sent ${when(v.lastAt)}`)
-                    : v.lastStatus}
-                </Badge>
-              ) : v.configured ? (
-                <Badge variant="success">{L("Webhook configuré", "Webhook configured")}</Badge>
-              ) : (
-                <Badge variant="secondary">
-                  {L("Webhook non configuré", "Webhook not configured")}
-                </Badge>
-              )}
             </div>
             <p className="text-xs text-fg-muted" role="status">
               {v.jellyfinLastAt
@@ -230,40 +247,67 @@ export function ScrobLinks({
                 </p>
               </div>
             ) : null}
-            <Input
-              className="h-9 w-full"
-              aria-label={L(`Lien webhook Scrob de ${v.name}`, `${v.name} Scrob webhook link`)}
-              value={value}
-              placeholder="https://scrob…/api/proxy/webhooks/jellyfin/1?api_key=…"
-              onChange={(e) => setDrafts({ ...drafts, [v.id]: e.target.value })}
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                disabled={busy === v.id || !changed}
-                onClick={() => void save(v, value)}
-              >
-                {L("Enregistrer", "Save")}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy === v.id || !value}
-                onClick={() => void test(v, value)}
-              >
-                {L("Tester", "Test")}
-              </Button>
-              {v.configured && !changed ? (
+            <details className="rounded border border-border p-3" open={!!value}>
+              <summary className="cursor-pointer text-sm font-medium">
+                {L(
+                  "Optionnel : événements en temps réel vers Scrob",
+                  "Optional: real-time events to Scrob",
+                )}
+              </summary>
+              <p className="my-2 text-sm text-fg-muted">
+                {L(
+                  "Copiez l’URL du webhook de cette même connexion Jellyfin dans Scrob. Activez ensuite l’envoi immédiat dans les options avancées ci-dessous. Sans webhook, Pull et Push continuent de fonctionner.",
+                  "Copy this same Jellyfin connection’s webhook URL from Scrob. Then enable immediate sending in the advanced options below. Pull and Push still work without a webhook.",
+                )}
+              </p>
+              {v.lastStatus ? (
+                <Badge variant={v.lastStatus === "ok" ? "success" : "warning"}>
+                  {v.lastStatus === "ok"
+                    ? L(`Dernier envoi réussi ${when(v.lastAt)}`, `Last sent ${when(v.lastAt)}`)
+                    : v.lastStatus}
+                </Badge>
+              ) : v.configured ? (
+                <Badge variant="success">{L("Webhook configuré", "Webhook configured")}</Badge>
+              ) : (
+                <Badge variant="secondary">
+                  {L("Webhook non configuré", "Webhook not configured")}
+                </Badge>
+              )}
+              <Input
+                className="h-9 w-full"
+                aria-label={L(`Lien webhook Scrob de ${v.name}`, `${v.name} Scrob webhook link`)}
+                value={value}
+                placeholder="https://scrob…/api/proxy/webhooks/jellyfin/1?api_key=…"
+                onChange={(e) => setDrafts({ ...drafts, [v.id]: e.target.value })}
+              />
+              <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
-                  variant="ghost"
-                  disabled={busy === v.id}
-                  onClick={() => void save(v, "")}
+                  disabled={busy === v.id || !changed}
+                  onClick={() => void save(v, value)}
                 >
-                  {L("Retirer", "Remove")}
+                  {L("Enregistrer", "Save")}
                 </Button>
-              ) : null}
-            </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy === v.id || !value}
+                  onClick={() => void test(v, value)}
+                >
+                  {L("Tester", "Test")}
+                </Button>
+                {v.configured && !changed ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy === v.id}
+                    onClick={() => void save(v, "")}
+                  >
+                    {L("Retirer", "Remove")}
+                  </Button>
+                ) : null}
+              </div>
+            </details>
           </div>
         );
       })}
