@@ -51,7 +51,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Des bibliothèques et collections personnalisées
 
-- Organisez vos bibliothèques Plex par **service, studio, animés, documentaires, concerts ou spectacles**.
+- Organisez vos bibliothèques Plex par **service, studio, animés, documentaires, concerts ou spectacles**. Les concerts combinent des mots-clés de captation et le genre Musique pour limiter les fictions.
 - Composez leurs rangées avec des collections TMDB, des catalogues Stremio importés et des modèles prêts à l’emploi.
 - Réglez la fréquence d’actualisation de chaque collection, de **1 à 168 heures**, indépendamment de la recherche de releases.
 - Ajustez l’apparition des films avant ou après leur sortie numérique/physique avec un **décalage en jours**.
