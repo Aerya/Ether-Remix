@@ -83,7 +83,15 @@ type PlayableSettings struct {
 	// encore indexés (utile pendant la première indexation). Par défaut
 	// ils sont masqués.
 	Pending bool
-	raw     string
+	// Single : PSE_PLAYABLE_SINGLE=on affiche aussi les titres qui n'ont
+	// qu'une partie des releases demandées (au moins une), marqués comme
+	// risqués (risk.go). Sans effet si Min vaut 1.
+	Single bool
+	// Mark : PSE_PLAYABLE_SINGLE_MARK, où marquer ces titres : "summary"
+	// (début du résumé, défaut), "poster" (badge des affiches Ether) ou
+	// "both".
+	Mark string
+	raw  string
 }
 
 // LoadPlayable lit la configuration depuis l'environnement.
@@ -102,7 +110,25 @@ func LoadPlayable() PlayableSettings {
 	case "show", "on", "1", "true", "oui":
 		p.Pending = true
 	}
+	switch strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_PLAYABLE_SINGLE"))) {
+	case "on", "1", "true", "yes", "oui":
+		p.Single = true
+	}
+	p.Mark = "summary"
+	switch m := strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_PLAYABLE_SINGLE_MARK"))); m {
+	case "poster", "both":
+		p.Mark = m
+	}
 	return p
+}
+
+// ShowMin est le nombre de releases à partir duquel un titre est affiché :
+// 1 quand les titres risqués sont acceptés, sinon Min.
+func (p PlayableSettings) ShowMin() int {
+	if p.Single && p.Min > 1 {
+		return 1
+	}
+	return p.Min
 }
 
 // NewPlayable construit des réglages sans passer par l'environnement.
@@ -157,7 +183,7 @@ func (p PlayableSettings) PlayableSQL(keyCol string) (string, []any) {
 		clause += " OR NOT EXISTS (SELECT 1 FROM pse_index_titles pi WHERE pi.title_key=" + keyCol + ")"
 	}
 	trusted, args := seerrcatalog.TrustedSQL(keyCol)
-	return "(" + clause + " OR " + trusted + ")", append([]any{p.Min, p.Min}, args...)
+	return "(" + clause + " OR " + trusted + ")", append([]any{p.ShowMin(), p.ShowMin()}, args...)
 }
 
 // LangExemptSQL renvoie la condition SQL « le titre échappe au filtre de

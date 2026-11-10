@@ -98,7 +98,7 @@ var Features = communityFields([]Feature{
 	{
 		ID:          "indexer",
 		Title:       tx("Indexation en arrière-plan", "Background indexing"),
-		Description: tx("Parcourt le catalogue par popularité et interroge vos addons Stremio (et, si vous les choisissez, Prowlarr/Jackett/NZBHydra2) pour enregistrer les releases disponibles. Aucun appel à l'API AllDebrid, rien n'est ajouté au compte.", "Walks the catalogue by popularity and queries your Stremio addons (and, if chosen, Prowlarr/Jackett/NZBHydra2) to record available releases. No AllDebrid API call, nothing added to the account."),
+		Description: tx("Parcourt le catalogue par popularité et interroge vos addons Stremio (et, si vous les choisissez, Prowlarr/Jackett/NZBHydra2) pour enregistrer les releases disponibles. Aucun appel à l'API AllDebrid, rien n'est ajouté au compte. Remix ne cherche que dans le catalogue local d'Ether, pas dans tout TMDB : sa taille est fixée par Ether, dans Catalogue → Réglages → Masquer les titres obscurs.", "Walks the catalogue by popularity and queries your Stremio addons (and, if chosen, Prowlarr/Jackett/NZBHydra2) to record available releases. No AllDebrid API call, nothing added to the account. Remix only searches Ether's local catalogue, not all of TMDB: Ether sets its size under Catalog → Settings → Hide obscure titles."),
 		Fields: []Field{
 			{Key: "PSE_INDEXER", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
 				Help: tx("Mis en pause pendant les lectures. Changer un réglage redémarre l'indexation.", "Paused during playback. Changing a setting restarts indexing.")},
@@ -136,6 +136,11 @@ var Features = communityFields([]Feature{
 				Help: tx("La liste de suivi, les collections, « Reprendre » et la recherche restent complètes.", "Watchlist, collections, continue watching and search stay complete.")},
 			{Key: "PSE_PLAYABLE_MIN", Kind: KindNumber, Default: "2", Min: ptr(1), Max: ptr(50), Label: tx("Releases minimum", "Minimum releases"),
 				Help: tx("Releases distinctes (même nom = une seule) nécessaires pour lister un titre.", "Distinct releases (same name counts once) needed to list a title.")},
+			{Key: "PSE_PLAYABLE_SINGLE", Kind: KindToggle, Default: "off", Label: tx("Afficher aussi les titres à risque", "Also show risky titles"),
+				Help: tx("Garde les titres qui ont moins de releases que le minimum, au moins une, en prévenant les spectateurs que la lecture est incertaine.", "Keeps titles with fewer releases than the minimum, at least one, and warns viewers that playback is uncertain.")},
+			{Key: "PSE_PLAYABLE_SINGLE_MARK", Kind: KindSelect, Default: "summary", Label: tx("Signalement dans Plex et Jellyfin", "Warning in Plex and Jellyfin"),
+				Help:    tx("Le résumé commence par « ⚠ 1 source ». Le badge « 1 SOURCE » n’apparaît que si les affiches d’Ether sont activées ; avec un autre outil d’affiches (PosterPlus…), choisissez le résumé.", "The summary starts with “⚠ 1 source”. The “1 SOURCE” badge only shows when Ether posters are on; with another poster tool (PosterPlus…), pick the summary."),
+				Options: []Option{{"summary", tx("Résumé", "Summary")}, {"poster", tx("Badge d’affiche", "Poster badge")}, {"both", tx("Les deux", "Both")}}},
 			{Key: "PSE_PLAYABLE_FILTER", Kind: KindFilter, Default: "", Placeholder: "lang=fr,multi;min=1080", Label: tx("Critères des releases", "Release criteria"),
 				Help: tx("Langues, résolution, codecs, cache debrid. Un changement recalcule le catalogue sans réindexer.", "Languages, resolution, codecs, debrid cache. A change recomputes the catalogue without reindexing.")},
 			{Key: "PSE_PLAYABLE_PENDING", Advanced: true, Kind: KindSelect, Default: "hide", Label: tx("Titres pas encore indexés", "Titles not yet indexed"),

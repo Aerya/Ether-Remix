@@ -125,6 +125,7 @@ func (rt *pseRuntime) restartIndexer(a *App) {
 		rt.indexer.Close()
 	}
 	rt.indexer = a.newPSEIndexer()
+	frontend.SetPSERisk(releasedb.RiskMarker{}) // titres risqués dans Plex, Jellyfin et les affiches
 	rt.indexer.Start()
 }
 
@@ -321,9 +322,9 @@ func (a *App) pseStatus(ctx context.Context, rt *pseRuntime) map[string]any {
 	idx := releasedb.LoadSettings()
 	playable := releasedb.Playable()
 	indexer := map[string]any{"active": idx.Enabled}
-	if st, err := releasedb.NewStore(a.db).ConsoleStats(ctx, playable.Min); err == nil {
+	if st, err := releasedb.NewStore(a.db).ConsoleStats(ctx, playable.ShowMin()); err == nil {
 		indexer["stats"] = st
-		out["playable"] = map[string]any{"active": playable.Enabled, "titles": st.Playable, "min": playable.Min}
+		out["playable"] = map[string]any{"active": playable.Enabled, "titles": st.Playable, "min": playable.ShowMin()}
 	} else {
 		out["playable"] = map[string]any{"active": playable.Enabled}
 	}

@@ -88,6 +88,8 @@ Avec le catalogue **« lisible uniquement »**, Remix connaît tout le catalogue
 - **Listes filtrées** : accueil, Films, Séries, recommandations. La recherche, la watchlist, les collections et la reprise de lecture ne le sont pas : un titre choisi reste accessible, et sa lecture interroge les sources en direct.
 - **Ordre de recherche** : popularité TMDB décroissante, en alternant films et séries. Passent avant : les titres VOSTFR et exceptions de langue, puis les collections et bibliothèques mises en priorité.
 - **Recherche immédiate** : un ajout VOSTFR, le bouton **Chercher maintenant**, et une recherche dans Plex ou Jellyfin. Pour une recherche, les 5 premiers titres trouvés passent en tête de file s’ils n’ont jamais été cherchés, ou n’avaient rien donné il y a plus de 6 h.
+- **Titres à risque** : l’option **Afficher aussi les titres à risque** garde les titres qui ont moins de releases que le minimum (au moins une). Plex et Jellyfin les signalent par « ⚠ 1 source » au début du résumé, par un badge « 1 SOURCE » sur les affiches Ether, ou les deux. Avec un autre outil d’affiches, choisissez le résumé.
+- **Catalogue local** : Ether ne liste pas tout TMDB, seulement les titres assez connus et déjà sortis, selon **Catalogue → Masquer les titres obscurs**. C’est dans cet ensemble que Remix cherche des releases.
 
 ## Délais de rafraîchissement
 

@@ -75,7 +75,7 @@ func (a *App) pseIndexDetailsHandler() http.Handler {
 
 func (a *App) pseIndexDetails(ctx context.Context) (pseIndexDetails, error) {
 	st := releasedb.NewStore(a.db)
-	min := releasedb.Playable().Min
+	min := releasedb.Playable().ShowMin() // titres réellement affichés, risqués compris
 	d := pseIndexDetails{At: time.Now().Unix(), Min: min}
 	var err error
 	if d.Types, err = st.TypeCounts(ctx, min); err != nil {

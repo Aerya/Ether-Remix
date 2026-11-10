@@ -2,6 +2,7 @@ import { CatalogHistory } from "./CatalogHistory";
 import { IndexerActivity } from "./IndexerActivity";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { getLocale } from "../i18n";
 import { apiFetch } from "../lib/api";
@@ -211,11 +212,11 @@ export function IndexerDetails() {
         <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
-              label={L("Titres suivis", "Tracked titles")}
+              label={L("Catalogue local", "Local catalogue")}
               value={total.titles}
               hint={L(
-                "Catalogue local navigable d’Ether-Remix",
-                "Ether-Remix’s local browsable catalogue",
+                "Titres gardés par Ether, où Remix cherche",
+                "Titles kept by Ether, where Remix searches",
               )}
             />
             <Metric
@@ -250,9 +251,15 @@ export function IndexerDetails() {
           ) : null}
           <p className="text-sm text-fg-muted">
             {L(
-              "Ces nombres correspondent aux films et séries du catalogue local navigable d’Ether-Remix, pas à l’ensemble de TMDB. « Cherchés » indique combien ont déjà été interrogés sur vos sources de releases.",
-              "These counts cover movies and shows in Ether-Remix’s local browsable catalogue, not all of TMDB. “Searched” counts titles already queried on your release sources.",
-            )}
+              "Ces nombres portent sur le catalogue local, pas sur tout TMDB. C’est Ether, et non Remix, qui le limite aux titres assez connus et déjà sortis. « Cherchés » indique combien ont déjà été interrogés sur vos sources de releases.",
+              "These counts cover the local catalogue, not all of TMDB. Ether, not Remix, limits it to titles popular enough and already released. “Searched” counts titles already queried on your release sources.",
+            )}{" "}
+            <Link className="underline" to="/catalog/settings">
+              {L(
+                "Réglage Ether : Masquer les titres obscurs",
+                "Ether setting: Hide obscure titles",
+              )}
+            </Link>
           </p>
           <div className="grid gap-4 xl:grid-cols-3 md:grid-cols-2">
             {TYPES.map(([type, fr, en]) => {

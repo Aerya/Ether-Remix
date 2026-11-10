@@ -198,8 +198,8 @@ export function CatalogHistory({
             <p className="mt-3 text-xs text-fg-muted">
               {L("Export du", "Export dated")} {data.tmdb.exportDate} ·{" "}
               {L(
-                "Ce pourcentage situe la sélection locale ; il ne mesure pas les titres lisibles ni un objectif de complétude.",
-                "This percentage puts the local selection in context; it measures neither playable titles nor a completeness target.",
+                "Cette sélection est faite par Ether (réglage « Masquer les titres obscurs »), pas par Remix. Le pourcentage ne mesure ni les titres lisibles ni un objectif de complétude.",
+                "Ether makes this selection (“Hide obscure titles” setting), not Remix. The percentage measures neither playable titles nor a completeness target.",
               )}{" "}
               <a
                 className="underline"

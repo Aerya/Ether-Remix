@@ -3,6 +3,7 @@ package overlays
 import (
 	"context"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"math"
 	"strings"
 	"time"
@@ -129,6 +130,10 @@ func (s *Service) presentation(ctx context.Context, u *core.User, t *core.Title,
 		}
 	}
 	add("details", cfg.Details, details, "Year, runtime and content rating from the catalogue", "No catalogue details available")
+	// PSE-HOOK: badge des titres risqués (une seule release) — voir docs/pse/FORK.fr.md
+	if risk := frontend.PSEPosterRisk(t.Key); cfg.Enabled && risk != "" {
+		out.Labels = append([]string{risk}, out.Labels...)
+	}
 	return out
 }
 

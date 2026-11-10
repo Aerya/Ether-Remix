@@ -88,6 +88,8 @@ With the **playable-only** catalogue, Remix knows the whole TMDB catalogue but o
 - **Filtered lists**: home, Movies, TV shows, recommendations. Search, watchlist, collections and continue watching are not filtered: a chosen title stays reachable, and playback queries sources live.
 - **Search order**: TMDB popularity, highest first, alternating movies and shows. VOSTFR titles and language exceptions go first, then prioritized collections and libraries.
 - **Immediate search**: adding a VOSTFR title, the **Search now** button, and a search in Plex or Jellyfin. For a search, the first 5 titles found move to the front of the queue if they were never searched, or found nothing more than 6 h ago.
+- **Risky titles**: the **Also show risky titles** option keeps titles with fewer releases than the minimum (at least one). Plex and Jellyfin flag them with “⚠ 1 source” at the start of the summary, a “1 SOURCE” badge on Ether posters, or both. With another poster tool, pick the summary.
+- **Local catalogue**: Ether does not list all of TMDB, only titles popular enough and already released, per **Catalog → Hide obscure titles**. Remix searches releases within that set.
 
 ## Refresh intervals
 

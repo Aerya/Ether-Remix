@@ -120,6 +120,7 @@ const (
 	recentWindow   = 60 * 24 * time.Hour
 	priorityEvery  = 30 * time.Minute
 	priorityMax    = 2000
+	riskEvery      = 2 * time.Minute // relecture des titres risqués (risk.go)
 )
 
 // New construit le service.
@@ -148,6 +149,7 @@ func (s *Service) Start() {
 		defer s.wg.Done()
 		s.syncPlayable(context.Background())
 		s.maintain(context.Background())
+		s.refreshRisk(context.Background())
 	}()
 	if cfg := s.d.Settings.SFR; cfg.Enabled {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -170,7 +172,7 @@ func (s *Service) Start() {
 		s.d.Logger.Info("pse release indexer started", "pace", s.d.Settings.Pace.String(), "daily", s.d.Settings.Daily)
 		t := time.NewTicker(s.d.Settings.Pace)
 		defer t.Stop()
-		lastMaintain := s.d.Now()
+		lastMaintain, lastRisk := s.d.Now(), s.d.Now()
 		for {
 			select {
 			case <-ctx.Done():
@@ -180,6 +182,10 @@ func (s *Service) Start() {
 			if now := s.d.Now(); now.Sub(lastMaintain) >= maintainEvery {
 				lastMaintain = now
 				s.maintain(ctx)
+			}
+			if now := s.d.Now(); now.Sub(lastRisk) >= riskEvery {
+				lastRisk = now
+				s.refreshRisk(ctx)
 			}
 			if s.d.Active != nil && s.d.Active() {
 				continue
