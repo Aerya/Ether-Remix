@@ -185,3 +185,38 @@ func TestWebhookAuthorizationAndRevocation(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestConfirmedAvailabilitySurvivesAgeButDoesNotReviveSignedURLs(t *testing.T) {
+	s, items, status := fixture(t)
+	v := observation(7, "movie", 603)
+	v.Confirmed = true
+	v.Checked = time.Now().Add(-30 * 24 * time.Hour)
+	v.Expires = v.Checked.Add(26 * time.Hour)
+	v.ReleasesExpire = v.Checked.Add(30 * time.Minute)
+	*items = []Snapshot{v}
+	if err := s.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !Trusted(t.Context(), s.DB, core.MovieKey(603)) {
+		t.Fatal("confirmation expired")
+	}
+	req := core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 603, IMDB: "tt0133093"}, Title: "The Matrix", Year: 1999}
+	releases, _ := s.Lookup(t.Context(), req)
+	if len(releases) != 0 {
+		t.Fatal("expired signed URL resurrected")
+	}
+	// Database trust remains after an application restart without a successful feed fetch.
+	restarted := New(s.DB, s.HTTP)
+	*status = 503
+	if restarted.Sync(t.Context()) == nil || !Trusted(t.Context(), s.DB, core.MovieKey(603)) {
+		t.Fatal("outage removed confirmation")
+	}
+	*status = 200
+	*items = nil
+	if err := s.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if Trusted(t.Context(), s.DB, core.MovieKey(603)) {
+		t.Fatal("deleted title retained")
+	}
+}

@@ -33,6 +33,7 @@ func init() {
  media_id INTEGER PRIMARY KEY, title_key INTEGER NOT NULL, available INTEGER NOT NULL,
  expires INTEGER NOT NULL, signature TEXT NOT NULL);
  CREATE INDEX pse_seerrcatalog_title ON pse_seerrcatalog(title_key,expires);`)
+	store.Register("pse_seerrcatalog", 2, `ALTER TABLE pse_seerrcatalog ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0;`)
 }
 
 type Settings struct {
@@ -60,7 +61,7 @@ func TrustedSQL(key string) (string, []any) {
 	if !c.valid() {
 		return "0", nil
 	}
-	return key + " IN (SELECT title_key FROM pse_seerrcatalog WHERE available=1 AND expires>unixepoch() AND signature=?)", []any{c.signature()}
+	return key + " IN (SELECT title_key FROM pse_seerrcatalog WHERE available=1 AND (confirmed=1 OR expires>unixepoch()) AND signature=?)", []any{c.signature()}
 }
 func Trusted(ctx context.Context, db *sql.DB, key core.RatingKey) bool {
 	q, args := TrustedSQL("?")
@@ -98,6 +99,7 @@ type Release struct {
 	Stream      stremio.Stream `json:"stream"`
 }
 type Snapshot struct {
+	Confirmed      bool      `json:"availabilityConfirmed"`
 	Schema         string    `json:"schema"`
 	Media          Media     `json:"media"`
 	Available      bool      `json:"available"`
@@ -240,10 +242,10 @@ func (s *Service) Sync(ctx context.Context) error {
 		}
 		revision = p.Revision
 		for _, v := range p.Items {
-			if v.Schema != Schema || v.Media.ID <= 0 || v.Media.TMDB <= 0 || v.Media.TMDB >= 1e9 || (v.Media.Type != "movie" && v.Media.Type != "series") || v.Checked.IsZero() || v.Expires.After(v.Checked.Add(26*time.Hour)) || v.Checked.After(time.Now().Add(5*time.Minute)) || !v.Expires.After(v.Checked) || (v.Status != "available" && v.Status != "unavailable") || v.Available != (v.Status == "available") || len(v.Releases) > 50 {
+			if v.Schema != Schema || v.Media.ID <= 0 || v.Media.TMDB <= 0 || v.Media.TMDB >= 1e9 || (v.Media.Type != "movie" && v.Media.Type != "series") || v.Checked.IsZero() || v.Expires.After(v.Checked.Add(26*time.Hour)) || v.Checked.After(time.Now().Add(5*time.Minute)) || !v.Expires.After(v.Checked) || (v.Status != "available" && v.Status != "unavailable") || v.Available != (v.Status == "available") || len(v.Releases) > 50 || (v.Confirmed && !v.Available) {
 				return errors.New("invalid observation")
 			}
-			if !v.Expires.After(time.Now()) {
+			if !v.Confirmed && !v.Expires.After(time.Now()) {
 				continue
 			}
 			all = append(all, v)
@@ -284,7 +286,7 @@ func (s *Service) Sync(ctx context.Context) error {
 		return e
 	}
 	for _, v := range all {
-		if _, e = tx.ExecContext(ctx, "INSERT INTO pse_seerrcatalog(media_id,title_key,available,expires,signature) VALUES(?,?,?,?,?)", v.Media.ID, int64(v.Media.key()), v.Available, v.Expires.Unix(), c.signature()); e != nil {
+		if _, e = tx.ExecContext(ctx, "INSERT INTO pse_seerrcatalog(media_id,title_key,available,expires,signature,confirmed) VALUES(?,?,?,?,?,?)", v.Media.ID, int64(v.Media.key()), v.Available, v.Expires.Unix(), c.signature(), v.Confirmed); e != nil {
 			return e
 		}
 	}
@@ -320,7 +322,7 @@ func (s *Service) Lookup(ctx context.Context, req core.SearchRequest) ([]core.Re
 	var out []core.Release
 	trusted := false
 	for _, v := range s.snapshots {
-		if !v.Available || !v.Expires.After(now) || (v.Media.Type == "movie") != (req.Type == core.TypeMovie) {
+		if !v.Available || (!v.Confirmed && !v.Expires.After(now)) || (v.Media.Type == "movie") != (req.Type == core.TypeMovie) {
 			continue
 		}
 		if req.IDs.TMDB != 0 {

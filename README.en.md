@@ -46,7 +46,7 @@ Under **Sources → Stremio, Indexers and Indexing**, click a section title to c
 
 1. In SeerrCatalog, open **Settings → Ether Remix integration**, generate a token and enable export.
 2. In Remix, open **Sources → Stremio → SeerrCatalog → Ether Remix**, enter the base address (e.g. `https://seerrcatalog.example`, without `/api/…`) and token, enable and save. **Test connection** checks the feed without importing; synchronization runs every minute.
-3. Recheck existing titles in SeerrCatalog to generate their first exportable observations.
+3. The updated SeerrCatalog automatically exports previously confirmed titles without running new searches.
 
 SeerrCatalog availability passes the **playable-only** filter without querying addons again. Other visibility filters and viewer playback policies still apply. Imports retrieve TMDB metadata without creating collections.
 
