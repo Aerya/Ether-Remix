@@ -36,6 +36,26 @@ export const REMIX_UPDATES = [
     ]],
   },
   {
+    id: "2026-11-10-stats-searches-readable",
+    version: "0.2.37-remix.35.1",
+    date: "2026-11-10",
+    title: ["Statistiques plus lisibles", "Clearer statistics"],
+    items: [
+      [
+        "Dernières recherches n'affiche plus les sources dont le quota Remix du jour est épuisé : elles ne sont pas interrogées et restent comptées dans Détail par source.",
+        "Latest searches no longer lists sources whose daily Remix quota is used up: they are not queried and remain counted in Per-source details.",
+      ],
+      [
+        "Détail par source est replié par défaut ; cliquez sur le titre pour l'ouvrir.",
+        "Per-source details are collapsed by default; click the title to open them.",
+      ],
+      [
+        "Le bloc sur le catalogue TMDB explique pourquoi Remix ne cherche pas dans tout TMDB.",
+        "The TMDB catalog section explains why Remix doesn't search all of TMDB.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-10-scrob-single-connection",
     version: "0.2.37-remix.34.1",
     date: "2026-11-10",
