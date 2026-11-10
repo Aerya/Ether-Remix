@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
+
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/releasepolicy"
 )
 
 type ImportResult struct {
@@ -46,6 +45,34 @@ func ImportAIO(raw json.RawMessage) (ImportResult, error) {
 		if string(data[k]) == "null" || string(data[k]) == "[]" || string(data[k]) == "false" {
 			continue
 		}
+		if k == "ageRangeTypes" {
+			continue
+		} // selector alone is not an age limit
+		if k == "excludeUncached" || k == "excludeCached" || k == "excludeUncachedFromStreamTypes" || k == "excludeCachedFromStreamTypes" {
+			prefix := "excludeUncached"
+			value := "uncached"
+			if strings.HasPrefix(k, "excludeCached") {
+				prefix = "excludeCached"
+				value = "cached"
+			}
+			supported := string(data[k]) == "true"
+			if strings.HasSuffix(k, "FromStreamTypes") {
+				var types []string
+				_ = json.Unmarshal(data[k], &types)
+				supported = len(types) == 1 && types[0] == "debrid"
+				for _, suffix := range []string{"FromAddons", "FromServices"} {
+					if v := strings.TrimSpace(string(data[prefix+suffix])); v != "" && v != "[]" && v != "null" {
+						supported = false
+					}
+				}
+			}
+			if supported {
+				out.Rules = append(out.Rules, core.ReleaseRule{ID: fmt.Sprintf("aio-%d", len(out.Rules)+1), Name: k, Action: "avoid", Match: "any", Conditions: []core.ReleaseCondition{{Field: "remix_cache", Operator: "equals", Value: value}}})
+			} else {
+				out.Warnings = append(out.Warnings, k+" : combinaison de types/services/addons non transposable")
+			}
+			continue
+		}
 		action := "require"
 		suffix := strings.TrimPrefix(k, "required")
 		if strings.HasPrefix(k, "excluded") {
@@ -67,12 +94,7 @@ func ImportAIO(raw json.RawMessage) (ImportResult, error) {
 			c := core.ReleaseCondition{Operator: "equals", Value: strings.ToLower(v)}
 			switch suffix {
 			case "Resolutions":
-				n, e := strconv.Atoi(strings.TrimSuffix(v, "p"))
-				if e != nil || n < 1 {
-					unsupported = true
-					break
-				}
-				c = core.ReleaseCondition{Field: "height", Operator: "range", Min: float64(n), Max: float64(n)}
+				c.Field = "remix_resolution"
 			case "Encodes":
 				c.Field = "video"
 				switch strings.ToLower(v) {
@@ -85,32 +107,16 @@ func ImportAIO(raw json.RawMessage) (ImportResult, error) {
 					unsupported = true
 				}
 			case "Qualities":
-				c.Field = "source"
-				m := map[string]string{"web-dl": "webdl", "webrip": "webrip", "bluray": "bluray", "remux": "remux", "bluray remux": "remux", "hdtv": "hdtv", "dvdrip": "dvd", "dvd": "dvd"}
-				var ok bool
-				c.Value, ok = m[strings.ToLower(v)]
-				if !ok {
-					unsupported = true
-				}
+				c.Field = "remix_format"
 			case "Languages":
-				c.Field = "language"
-				if strings.EqualFold(v, "unknown") {
-					unsupported = true
-				}
+				c.Field = "remix_language"
 			case "Subtitles":
 				c.Field = "subtitles"
-				if strings.EqualFold(v, "unknown") {
+				if strings.EqualFold(v, "unknown") || strings.EqualFold(v, "original") {
 					unsupported = true
 				}
 			case "VisualTags":
-				c.Field = "name"
-				c.Operator = "regex"
-				m := map[string]string{"dv": `(?i)\b(dv|dovi|dolby[ ._-]?vision)\b`, "hdr": `(?i)\bhdr(?:10(?:\+|plus)?)?\b`, "hdr10": `(?i)\bhdr10\b`, "hdr10+": `(?i)\bhdr10(?:\+|plus)`, "hlg": `(?i)\bhlg\b`, "sdr": `(?i)\bsdr\b`}
-				var ok bool
-				c.Value, ok = m[strings.ToLower(v)]
-				if !ok {
-					unsupported = true
-				}
+				c.Field = "remix_visual"
 			case "AudioChannels":
 				if v == "Unknown" {
 					unsupported = true
@@ -178,7 +184,7 @@ func ImportAIO(raw json.RawMessage) (ImportResult, error) {
 			continue
 		}
 		if len(r.Conditions) > 0 {
-			if _, e := releasepolicy.Compile([]core.ReleaseRule{r}); e != nil {
+			if _, e := compilePolicy([]core.ReleaseRule{r}); e != nil {
 				out.Warnings = append(out.Warnings, k+" : règle incompatible")
 			} else {
 				out.Rules = append(out.Rules, r)

@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-concerts-precision",
+    id: "2026-11-10-quality-mode-import",
     version: "current",
+    date: "2026-11-10",
+    title: ["Un seul mode de filtrage à la fois", "One filtering mode at a time"],
+    items: [
+      [
+        "Les profils remplacent les critères simples du catalogue quand ils sont activés. Vos anciens critères sont conservés pour revenir au mode simple. Les langues sont mieux alignées.",
+        "Enabled profiles replace simple catalogue criteria. Previous criteria are preserved when switching back. Language options are aligned.",
+      ],
+      [
+        "Import AIOStreams depuis une source enregistrée ou un manifest, avec le mot de passe de configuration et aperçu. Formats détaillés, résolutions inconnues, langue originale et annonces de cache sont pris en charge. Les manifests avec variante importent les filtres de base.",
+        "Import AIOStreams from a saved source or manifest with the configuration password and a preview. Detailed formats, unknown resolutions, original language and cache hints are supported. Variant manifests import base filters.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-concerts-precision",
+    version: "0.2.37-remix.42.1",
     date: "2026-11-10",
     title: ["Concerts : une sélection plus précise", "Concerts: a more focused selection"],
     items: [

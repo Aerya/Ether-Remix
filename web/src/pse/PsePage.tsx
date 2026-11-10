@@ -132,6 +132,7 @@ export function musicFieldPlacement(key: string) {
 }
 
 function PseSettings() {
+  const [qualityActive, setQualityActive] = useState(false);
   const [params, setParams] = useSearchParams();
   const content = params.get("content") ?? "bibliotheques";
   const stats = params.get("view") ?? "indexation";
@@ -189,7 +190,11 @@ function PseSettings() {
   ) => (
     <FeatureSection
       key={feature.id + placement}
-      feature={feature}
+      feature={
+        qualityActive
+          ? { ...feature, fields: feature.fields.filter((fd) => fd.key !== "PSE_PLAYABLE_FILTER") }
+          : feature
+      }
       placement={placement}
       draft={draft}
       resets={resets}
@@ -317,7 +322,15 @@ function PseSettings() {
         ) : null}
         {tab === "langues" ? (
           <>
-            <QualityProfiles />
+            <QualityProfiles onMode={setQualityActive} />
+            {qualityActive ? (
+              <p className="rounded border border-border p-3 text-sm">
+                {L(
+                  "Critères simples désactivés : les profils de qualité les remplacent. Le nombre minimum de releases reste applicable.",
+                  "Simple criteria disabled: quality profiles replace them. The minimum release count still applies.",
+                )}
+              </p>
+            ) : null}
             <ThemeLibraries exceptionsOnly />
           </>
         ) : null}
@@ -821,9 +834,11 @@ function FilterControl({ value, onChange }: { value: string; onChange: (value: s
 
 function Group({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+    <div className="grid gap-2 sm:grid-cols-[6rem_1fr]">
       <span className="w-24 shrink-0 text-fg-muted">{label}</span>
-      {children}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 [&>label]:min-w-36">
+        {children}
+      </div>
     </div>
   );
 }
