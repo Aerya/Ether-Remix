@@ -8,11 +8,15 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
 func TestDelegatedSearchAuthenticatedBoundedAndReusable(t *testing.T) {
 	s, _, _ := fixture(t)
+	cfg := Load()
+	restoreSearch := pseenv.Replace(map[string]string{"PSE_SEERRCATALOG": "on", "PSE_SEERRCATALOG_URL": cfg.URL, "PSE_SEERRCATALOG_TOKEN": cfg.Token, "PSE_SEERRCATALOG_SEARCH": "on", "PSE_SEERRCATALOG_SEARCH_TOKEN": strings.Repeat("a", 64)})
+	t.Cleanup(restoreSearch)
 	if err := s.Sync(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +87,9 @@ func TestDelegatedSearchAuthenticatedBoundedAndReusable(t *testing.T) {
 
 func TestDelegatedSearchReportsIncompleteCoverage(t *testing.T) {
 	s, _, _ := fixture(t)
+	cfg := Load()
+	restoreSearch := pseenv.Replace(map[string]string{"PSE_SEERRCATALOG": "on", "PSE_SEERRCATALOG_URL": cfg.URL, "PSE_SEERRCATALOG_TOKEN": cfg.Token, "PSE_SEERRCATALOG_SEARCH": "on", "PSE_SEERRCATALOG_SEARCH_TOKEN": strings.Repeat("a", 64)})
+	t.Cleanup(restoreSearch)
 	s.Search = func(ctx context.Context, _ core.SearchRequest) ([]core.Release, error) {
 		core.NoteSearchIncomplete(ctx)
 		return nil, nil
@@ -93,5 +100,37 @@ func TestDelegatedSearchReportsIncompleteCoverage(t *testing.T) {
 	s.ServeHTTP(w, r)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"conclusive":false`) {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestSearchAuthorizationIndependentOfAvailability(t *testing.T) {
+	s, _, _ := fixture(t)
+	s.Search = func(context.Context, core.SearchRequest) ([]core.Release, error) { return nil, nil }
+	searchToken, feedToken := strings.Repeat("s", 64), strings.Repeat("f", 64)
+	configure := func(search, feed string) func() {
+		return pseenv.Replace(map[string]string{
+			"PSE_SEERRCATALOG_SEARCH": search, "PSE_SEERRCATALOG_SEARCH_TOKEN": searchToken,
+			"PSE_SEERRCATALOG": feed, "PSE_SEERRCATALOG_URL": "https://seerr.example", "PSE_SEERRCATALOG_TOKEN": feedToken,
+		})
+	}
+	request := func(path, token string) int {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		return w.Code
+	}
+	restore := configure("on", "off")
+	if request(SearchPath, searchToken) != 200 || request(SearchPath, feedToken) != 401 || request(EventsPath, searchToken) != 401 {
+		t.Fatal("search depends on availability or accepts wrong key")
+	}
+	restore()
+	restore = configure("off", "on")
+	defer restore()
+	if request(SearchPath, searchToken) != 401 || request(SearchPath, feedToken) != 401 {
+		t.Fatal("disabled search authorized")
+	}
+	if request(EventsPath, feedToken) != 405 {
+		t.Fatal("feed authorization changed")
 	}
 }

@@ -228,12 +228,12 @@ function PseSettings() {
           <RemixSources
             music={musicPart("source")}
             stremio={current.features
-              .filter((f) => ["sfr", "seerrcatalog"].includes(f.id))
+              .filter((f) => ["sfr", "seerrcatalog", "seerrcatalog_search"].includes(f.id))
               .map((f) => renderFeature(f))}
             indexing={
               <>
                 {featuresOfTab(tab, current.features)
-                  .filter((f) => !["sfr", "seerrcatalog"].includes(f.id))
+                  .filter((f) => !["sfr", "seerrcatalog", "seerrcatalog_search"].includes(f.id))
                   .map((f) => renderFeature(f))}
                 <SearchPriority />
               </>

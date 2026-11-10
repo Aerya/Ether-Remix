@@ -208,6 +208,15 @@ var Features = communityFields([]Feature{
 			{Key: "PSE_SEERRCATALOG_TOKEN", Kind: KindKey, Secret: true, Label: tx("Clé partagée", "Shared token"), Help: tx("Générez la clé dans les paramètres SeerrCatalog, puis collez-la ici. Elle reste masquée.", "Generate the token in SeerrCatalog settings and paste it here. It remains masked.")},
 		},
 	},
+	{
+		ID:          "seerrcatalog_search",
+		Title:       tx("Recherches pour SeerrCatalog", "Searches for SeerrCatalog"),
+		Description: tx("Autorise SeerrCatalog à rechercher dans les sources Remix. Indépendant du partage des disponibilités : aucune adresse SeerrCatalog ni activation de ce partage n’est nécessaire.", "Allows SeerrCatalog to search Remix sources. Independent of availability sharing: no SeerrCatalog URL or availability integration is required."),
+		Fields: []Field{
+			{Key: "PSE_SEERRCATALOG_SEARCH", Kind: KindToggle, Default: "off", Label: tx("Autoriser les recherches SeerrCatalog", "Allow SeerrCatalog searches")},
+			{Key: "PSE_SEERRCATALOG_SEARCH_TOKEN", Kind: KindKey, Secret: true, Label: tx("Clé dédiée aux recherches", "Dedicated search token"), Help: tx("Dans SeerrCatalog → Paramètres → Recherche complémentaire, générez et enregistrez une clé, puis collez-la ici (32 caractères minimum). Enregistrez et testez depuis SeerrCatalog. Cette clé n’autorise pas le partage des disponibilités.", "In SeerrCatalog → Settings → Complementary search, generate and save a token, then paste it here (at least 32 characters). Save and test from SeerrCatalog. This token does not authorize availability sharing.")},
+		},
+	},
 })
 
 func communityFields(features []Feature) []Feature {

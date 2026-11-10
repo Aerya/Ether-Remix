@@ -54,3 +54,20 @@ func TestSeerrCatalogProbeUsesSavedSettingsWithoutApplying(t *testing.T) {
 		t.Fatalf("GET accepted: %d", rec.Code)
 	}
 }
+
+func TestSeerrCatalogSearchCanBeEnabledWithoutFeed(t *testing.T) {
+	h, _, _ := newHandler(t)
+	code, _ := do(t, h, "PUT", "/", `{"values":{"PSE_SEERRCATALOG_SEARCH":"on"}}`)
+	if code != 422 {
+		t.Fatal("search enabled without key", code)
+	}
+	token := strings.Repeat("s", 64)
+	code, _ = do(t, h, "PUT", "/", `{"values":{"PSE_SEERRCATALOG_SEARCH":"on","PSE_SEERRCATALOG_SEARCH_TOKEN":"`+token+`"}}`)
+	if code != 200 {
+		t.Fatal("search requires feed settings", code)
+	}
+	field := fieldByKey["PSE_SEERRCATALOG_SEARCH_TOKEN"]
+	if shown := display(field, token); shown == token || restore(field, shown, token) != token {
+		t.Fatal("search key not protected")
+	}
+}
