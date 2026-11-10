@@ -301,7 +301,7 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 		}
 	}
 	if fields["overview"] {
-		setMissing(item, "Overview", title.Summary)
+		setMissing(item, "Overview", frontend.PSEMarkSummary(title.Key, title.Summary)) // PSE-HOOK: titres risqués — voir docs/pse/FORK.fr.md
 	}
 	if fields["genres"] {
 		if len(title.Genres) > 0 {

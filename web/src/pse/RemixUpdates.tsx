@@ -26,14 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-seerrcatalog-permanent-availability",
+    id: "2026-11-10-risky-titles",
     version: "current",
     date: "2026-11-10",
+    title: ["Titres à une seule release", "Titles with a single release"],
+    items: [
+      [
+        "Nouvelle option dans le catalogue lisible : afficher aussi les titres qui n’ont pas le minimum de releases, en prévenant les spectateurs par « ⚠ 1 source » dans le résumé, un badge « 1 SOURCE » sur les affiches Ether, ou les deux.",
+        "New playable-catalogue option: also show titles below the minimum number of releases, warning viewers with “⚠ 1 source” in the summary, a “1 SOURCE” badge on Ether posters, or both.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-seerrcatalog-permanent-availability",
+    version: "0.2.37-remix.27.1",
+    date: "2026-11-10",
     title: ["SeerrCatalog : disponibilité confirmée", "SeerrCatalog: confirmed availability"],
-    items: [[
-      "Une disponibilité confirmée par SeerrCatalog reste acquise jusqu’au retrait du titre ou à la désactivation de l’intégration. Les liens de lecture expirent toujours après 30 minutes ; aucune nouvelle recherche d’indexation n’est nécessaire.",
-      "Availability confirmed by SeerrCatalog persists until the title is removed or the integration is disabled. Playback links still expire after 30 minutes; no new indexing search is needed.",
-    ]],
+    items: [
+      [
+        "Une disponibilité confirmée par SeerrCatalog reste acquise jusqu’au retrait du titre ou à la désactivation de l’intégration. Les liens de lecture expirent toujours après 30 minutes ; aucune nouvelle recherche d’indexation n’est nécessaire.",
+        "Availability confirmed by SeerrCatalog persists until the title is removed or the integration is disabled. Playback links still expire after 30 minutes; no new indexing search is needed.",
+      ],
+    ],
   },
   {
     id: "2026-11-10-indexer-whole-catalogue",

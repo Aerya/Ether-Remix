@@ -207,7 +207,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *core.Title, o ren
 		GUID:          guidFor(t),
 		Type:          string(t.Type),
 		Title:         t.Title,
-		Summary:       t.Summary,
+		Summary:       frontend.PSEMarkSummary(t.Key, t.Summary), // PSE-HOOK: titres risqués — voir docs/pse/FORK.fr.md
 		Tagline:       t.Tagline,
 		Year:          t.Year,
 		ContentRating: t.ContentRating,
