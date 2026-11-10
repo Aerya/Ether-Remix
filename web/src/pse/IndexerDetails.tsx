@@ -1,3 +1,5 @@
+import "./StatisticsCharts.css";
+import { CoverageRing } from "./StatisticsCharts";
 import { CatalogHistory } from "./CatalogHistory";
 import { IndexerActivity } from "./IndexerActivity";
 import { Button } from "@braedonsaunders/appkit-ui";
@@ -43,14 +45,19 @@ function Metric({
   value,
   hint,
   warning = false,
+  color = "var(--viz-1)",
 }: {
   label: string;
   value: number;
   hint: string;
   warning?: boolean;
+  color?: string;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-surface p-5">
+    <div
+      className="remix-stat-metric rounded-xl border border-border bg-surface p-5"
+      style={{ borderTopColor: color }}
+    >
       <p className="text-sm text-fg-muted">{label}</p>
       <p
         className={`mt-2 text-3xl font-semibold tracking-tight tabular-nums ${warning && value > 0 ? "text-warning" : "text-fg"}`}
@@ -58,23 +65,6 @@ function Metric({
         {num(value)}
       </p>
       <p className="mt-2 text-xs text-fg-muted">{hint}</p>
-    </div>
-  );
-}
-function Progress({ value, total }: { value: number; total: number }) {
-  return (
-    <div
-      className="h-2 overflow-hidden rounded-full bg-border"
-      role="progressbar"
-      aria-label={L("Part des titres cherchés", "Share of titles searched")}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={total > 0 ? Math.min(100, Math.round((value * 100) / total)) : 0}
-    >
-      <div
-        className="h-full rounded-full bg-primary transition-all"
-        style={{ width: `${total > 0 ? Math.min(100, (value * 100) / total) : 0}%` }}
-      />
     </div>
   );
 }
@@ -220,6 +210,7 @@ export function IndexerDetails() {
               )}
             />
             <Metric
+              color="var(--viz-4)"
               label={L("Titres cherchés", "Searched titles")}
               value={total.indexed}
               hint={L(
@@ -228,11 +219,13 @@ export function IndexerDetails() {
               )}
             />
             <Metric
+              color="var(--viz-2)"
               label={L("Avec une release", "With a release")}
               value={total.found}
               hint={L("Au moins une release trouvée", "At least one release found")}
             />
             <Metric
+              color="var(--viz-3)"
               label={L("Titres affichés", "Shown titles")}
               value={total.playable}
               hint={L(
@@ -266,8 +259,11 @@ export function IndexerDetails() {
               const c = types[type];
               if (!c) return null;
               return (
-                <article key={type} className="rounded-xl border border-border p-5">
-                  <div className="mb-4 flex items-center justify-between">
+                <article
+                  key={type}
+                  className="remix-stat-card rounded-xl border border-border bg-surface p-5"
+                >
+                  <div className="mb-4 flex min-h-12 items-center justify-between gap-3">
                     <h3 className="font-semibold">{L(fr, en)}</h3>
                     <span className="text-sm text-fg-muted">
                       {num(c.titles)}{" "}
@@ -279,11 +275,18 @@ export function IndexerDetails() {
                         : L("titres du catalogue local", "titles in the local catalogue")}
                     </span>
                   </div>
-                  <div className="mb-2 flex justify-between text-sm">
-                    <span>{L("Recherche effectuée", "Search completed")}</span>
-                    <span className="tabular-nums">{pct(c.indexed, c.titles)}</span>
-                  </div>
-                  <Progress value={c.indexed} total={c.titles} />
+                  <CoverageRing
+                    value={c.indexed}
+                    total={c.titles}
+                    color={
+                      type === "movie"
+                        ? "var(--viz-1)"
+                        : type === "show"
+                          ? "var(--viz-2)"
+                          : "var(--viz-3)"
+                    }
+                    label={L("Recherche effectuée", "Search completed")}
+                  />
                   <dl className="mt-5 grid grid-cols-3 gap-3 text-sm">
                     {[
                       [L("Cherchés", "Searched"), c.indexed],

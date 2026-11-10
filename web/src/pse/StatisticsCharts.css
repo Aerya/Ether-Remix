@@ -1,0 +1,43 @@
+.remix-stat-metric {
+  border-top-width: 3px;
+  background-image: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--viz-4) 5%, transparent),
+    transparent 70%
+  );
+}
+.remix-stat-card {
+  background-image: radial-gradient(
+    ellipse at top right,
+    color-mix(in srgb, var(--viz-2) 6%, transparent),
+    transparent 70%
+  );
+}
+.remix-stat-history {
+  background-image: repeating-linear-gradient(
+    to top,
+    transparent 0,
+    transparent 45px,
+    color-mix(in srgb, var(--color-border) 55%, transparent) 45px,
+    color-mix(in srgb, var(--color-border) 55%, transparent) 46px
+  );
+}
+.remix-stat-ring {
+  transition: stroke-dasharray 0.45s ease;
+}
+.remix-stat-column {
+  width: min(100%, 16px);
+  margin-inline: auto;
+  overflow: hidden;
+  border-radius: 5px 5px 0 0;
+  transition: filter 0.15s ease;
+}
+.remix-stat-column:hover {
+  filter: brightness(1.2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .remix-stat-ring,
+  .remix-stat-column {
+    transition: none;
+  }
+}

@@ -102,6 +102,8 @@ function valuesOf(data: PseData | null): Record<string, string> | null {
 export default function PsePage() {
   const { tab } = useParams();
   const location = useLocation();
+  if (!tab)
+    return <Navigate replace to={"/accent/statistiques" + location.search + location.hash} />;
   let legacy = legacyRemixRoute(tab);
   const field = location.hash.match(/^#pse-(pse_[a-z_]+)$/i)?.[1]?.toUpperCase();
   if (tab === "films" && (field?.startsWith("PSE_INDEXER") || location.hash === "#pse-indexer"))

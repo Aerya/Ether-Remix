@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-scrob-bidirectional",
+    id: "2026-11-10-statistics-dashboard",
     version: "current",
+    date: "2026-11-10",
+    title: ["Les statistiques vous accueillent", "Statistics welcome you"],
+    items: [
+      [
+        "Le menu Remix ouvre directement les Statistiques. Des anneaux colorés montrent la progression des recherches pour les films, séries et animes ; l’historique adopte des barres fines dégradées. Les filtres et valeurs cumulées restent disponibles.",
+        "The Remix menu now opens Statistics. Coloured rings show search progress for movies, shows and anime, while history uses slim gradient bars. Filters and cumulative values remain available.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-scrob-bidirectional",
+    version: "0.2.37-remix.30.1",
     date: "2026-11-10",
     title: ["Scrob dans les deux sens", "Bidirectional Scrob"],
     items: [
