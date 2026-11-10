@@ -21,9 +21,14 @@ func pseCatalogWhere(conds []string, args []any, f core.Filter, nowTS int64) ([]
 	if f.Type == core.TypeEpisode || f.Type == core.TypeSeason {
 		col, typeCol = "t.show_key", ""
 	}
-	// L'indexeur parcourt aussi les titres pas encore lisibles : sans quoi
-	// le filtre, vide au départ, ne se remplirait jamais.
-	if clause, values := releasedb.Playable().PlayableSQL(col); clause != "" && !f.PSEUnplayable {
+	// L'indexeur parcourt aussi les titres pas encore lisibles ni connus en
+	// français : sans quoi ces filtres, fondés sur les releases indexées, ne
+	// se rempliraient jamais (une série étrangère doublée ne serait jamais
+	// cherchée).
+	if f.PSEUnplayable {
+		return conds, args
+	}
+	if clause, values := releasedb.Playable().PlayableSQL(col); clause != "" {
 		conds, args = append(conds, clause), append(args, values...)
 	}
 	if clause, values := frenchcat.Current().SQL(col, typeCol, f.Type, nowTS); clause != "" {

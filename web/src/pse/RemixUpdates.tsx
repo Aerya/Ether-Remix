@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-playlists-palettes",
+    id: "2026-11-10-indexer-whole-catalogue",
     version: "current",
+    date: "2026-11-10",
+    title: ["L’indexation parcourt tout le catalogue", "Indexing covers the whole catalogue"],
+    items: [
+      [
+        "Avec le catalogue en français, les titres étrangers sans VF connue n’étaient jamais cherchés : surtout des séries. L’indexation les parcourt désormais pour leur trouver une VF.",
+        "With the French catalogue, foreign titles without a known French release were never searched, mostly TV shows. Indexing now goes through them to find one.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-playlists-palettes",
+    version: "0.2.37-remix.25.1",
     date: "2026-11-10",
     title: ["Des thèmes plus doux et vos playlists", "Softer themes and your playlists"],
     items: [
