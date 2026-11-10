@@ -2,7 +2,7 @@ import { fireEvent, render, screen, cleanup, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { compareUpdateVersions, REMIX_UPDATES, RemixUpdates } from "./RemixUpdates";
 
-const version = "0.2.37-remix.23.1";
+const version = "0.2.37-remix.24.1";
 const readKey = "ether-remix.updates.read";
 const legacyKey = "ether-remix.updates.seen";
 beforeEach(() => {
@@ -72,7 +72,7 @@ it("does not show the IPTV delivery again when migrating the latest legacy marke
   expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(
     REMIX_UPDATES.findIndex((entry) => entry.id === "2026-11-09-iptv-editor"),
   );
-  expect(screen.getByText(/v0.2.37-remix.23.1/)).toBeTruthy();
+  expect(screen.getByText(/v0.2.37-remix.24.1/)).toBeTruthy();
 });
 
 it("does not repeat the same notes when a Docker build is retried or rebuilt", async () => {
@@ -80,7 +80,7 @@ it("does not repeat the same notes when a Docker build is retried or rebuilt", a
   await screen.findByRole("dialog");
   dismiss();
   first.unmount();
-  render(<RemixUpdates version="0.2.37-remix.23.2" />);
+  render(<RemixUpdates version="0.2.37-remix.24.2" />);
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 

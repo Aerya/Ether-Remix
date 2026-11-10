@@ -87,6 +87,14 @@ Streams are relayed without audio conversion or local storage. Audio availabilit
 | Finamp, Jellyfin web, Findroid, Streamyfin | Jellyfin **Music** library |
 | Symfonium, Feishin, Supersonic, Tempo, DSub… | Subsonic API, **legacy** authentication |
 
+## Which titles are shown and searched
+
+With the **playable-only** catalogue, Remix knows the whole TMDB catalogue but only shows a title with enough indexed releases (2 by default) matching the chosen filter, for example French or MULTi, cached on debrid. **VOSTFR** titles and language exceptions count releases in any language.
+
+- **Filtered lists**: home, Movies, TV shows, recommendations. Search, watchlist, collections and continue watching are not filtered: a chosen title stays reachable, and playback queries sources live.
+- **Search order**: TMDB popularity, highest first, alternating movies and shows. VOSTFR titles and language exceptions go first, then prioritized collections and libraries.
+- **Immediate search**: adding a VOSTFR title, the **Search now** button, and a search in Plex or Jellyfin. For a search, the first 5 titles found move to the front of the queue if they were never searched, or found nothing more than 6 h ago.
+
 ## Refresh intervals
 
 **TMDB metadata**

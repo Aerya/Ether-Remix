@@ -87,6 +87,14 @@ Les flux sont relayés sans conversion audio ni stockage local. La disponibilit�
 | Finamp, Jellyfin web, Findroid, Streamyfin | Bibliothèque **Musique** Jellyfin |
 | Symfonium, Feishin, Supersonic, Tempo, DSub… | API Subsonic, authentification **legacy** |
 
+## Quels titres sont affichés et cherchés
+
+Avec le catalogue **« lisible uniquement »**, Remix connaît tout le catalogue TMDB mais n’affiche un titre que s’il a assez de releases indexées (2 par défaut) qui respectent le filtre choisi, par exemple VF ou MULTi en cache debrid. Les titres **VOSTFR** et les exceptions de langue comptent leurs releases dans toutes les langues.
+
+- **Listes filtrées** : accueil, Films, Séries, recommandations. La recherche, la watchlist, les collections et la reprise de lecture ne le sont pas : un titre choisi reste accessible, et sa lecture interroge les sources en direct.
+- **Ordre de recherche** : popularité TMDB décroissante, en alternant films et séries. Passent avant : les titres VOSTFR et exceptions de langue, puis les collections et bibliothèques mises en priorité.
+- **Recherche immédiate** : un ajout VOSTFR, le bouton **Chercher maintenant**, et une recherche dans Plex ou Jellyfin. Pour une recherche, les 5 premiers titres trouvés passent en tête de file s’ils n’ont jamais été cherchés, ou n’avaient rien donné il y a plus de 6 h.
+
 ## Délais de rafraîchissement
 
 **Métadonnées TMDB**
