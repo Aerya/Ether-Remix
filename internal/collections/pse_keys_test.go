@@ -44,3 +44,21 @@ func TestPSEThemePresetsValidate(t *testing.T) {
 		t.Fatalf("collection inconnue : %v", keys)
 	}
 }
+
+func TestPSEQualityMembershipIgnoresPresentationLimit(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	sp := themes.PresetSpecs("services")[0]
+	sp.Name = "Quality scope"
+	sp.Sources = []core.CollectionSource{{Kind: "catalog"}}
+	sp.Limit = 1
+	got, err := e.svc.CreateSpec(ctx, sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := e.svc.PSEKeys(ctx, got.ID, nil)
+	members := e.svc.PSEQualityKeys(ctx, got.ID)
+	if len(visible) != 1 || len(members) <= len(visible) {
+		t.Fatalf("visible=%d policy members=%d", len(visible), len(members))
+	}
+}

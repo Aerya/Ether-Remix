@@ -30,3 +30,19 @@ func (s *Service) PSEKeys(ctx context.Context, id string, user *core.User) []cor
 	}
 	return keys
 }
+
+// PSEQualityKeys uses the materialized membership before visibility/quality
+// filtering. Otherwise rejecting a title could remove it from the scope that
+// rejected it, making it reappear on the next refresh. Only shared collections
+// participate in a server-wide release policy.
+func (s *Service) PSEQualityKeys(ctx context.Context, id string) []core.RatingKey {
+	row, err := s.rowByID(ctx, id)
+	if err != nil || !row.enabled || row.owner != 0 {
+		return nil
+	}
+	members, err := s.membersFor(ctx, row, false)
+	if err != nil {
+		return nil
+	}
+	return append([]core.RatingKey(nil), members.keys...)
+}
