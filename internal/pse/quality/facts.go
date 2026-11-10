@@ -51,7 +51,7 @@ var tags = map[string]*regexp.Regexp{}
 func init() {
 	for k, v := range map[string]string{
 		"remux": `\b(?:bd|dvd)?[ ._-]?remux\b`, "dvd": `\bdvd(?:[ ._-]?(?:rip|remux))?\b`, "bluray": `\b(blu[ ._-]?ray|bd[ ._-]?rip|brrip)\b`,
-		"webdl": `\bweb[ ._-]?dl\b`, "webrip": `\bweb[ ._-]?rip\b`, "hdrip": `\bhd[ ._-]?rip\b`, "hc": `\bhc\b`, "hdtv": `\bhdtv\b`,
+		"webdl": `\bweb[ ._-]?dl\b`, "webrip": `\bweb[ ._-]?rip\b`, "hdrip": `\b(?:hd[ ._-]?rip|web[ ._-]?dl[ ._-]?rip)\b`, "hc": `\bhc\b`, "hdtv": `\b(?:hdtv|pdtv|tv[ ._-]?rip|dsr(?:ip)?|sat[ ._-]?rip)\b`,
 		"cam": `\b(hd[ ._-]?)?cam(?:rip)?\b`, "ts": `\b(hd[ ._-]?)?ts\b|\btelesync\b`, "tc": `\b(hd[ ._-]?)?tc\b|\btelecine\b`, "scr": `\b(dvd[ ._-]?)?scr\b|\bscreener\b`,
 		"DV": `\b(dv|dovi|dolby[ ._-]?vision)\b`, "HDR10+": `\bhdr10(?:\+|plus)`, "HDR10": `\bhdr10\b`, "HDR": `\bhdr(?:10(?:\+|plus)?)?\b`, "HLG": `\bhlg\b`,
 		"SDR": `\bsdr\b`, "3D": `\b3d\b`, "H-OU": `\b(?:h[ ._-]?)?(?:ou|over[ ._-]?under)\b`, "H-SBS": `\b(?:h[ ._-]?)?sbs\b`, "10bit": `\b10[ ._-]?bit\b`, "IMAX": `\bimax\b`, "AI": `\bai\b`, "Upscaled": `\bupscal(?:e|ed)\b`,
@@ -68,11 +68,9 @@ func formatFact(r core.Release) string {
 		}
 		return "BluRay REMUX"
 	}
-	for _, p := range [][2]string{{"cam", "CAM"}, {"ts", "TS"}, {"tc", "TC"}, {"scr", "SCR"}, {"webdl", "WEB-DL"}, {"webrip", "WEBRip"}, {"hdrip", "HDRip"}, {"bluray", "BluRay"}, {"dvd", "DVDRip"}, {"hdtv", "HDTV"}} {
+	for _, p := range [][2]string{{"cam", "CAM"}, {"ts", "TS"}, {"tc", "TC"}, {"scr", "SCR"}, {"webdl", "WEB-DL"}, {"webrip", "WEBRip"}, {"hdrip", "HDRip"}, {"hc", "HC HD-Rip"}, {"bluray", "BluRay"}, {"dvd", "DVDRip"}, {"hdtv", "HDTV"}} {
 		if tag(n, p[0]) {
-			if p[0] == "hdrip" && tag(n, "hc") {
-				return "HC HD-Rip"
-			}
+
 			return p[1]
 		}
 	}
@@ -136,9 +134,7 @@ func matchFact(r core.Release, c core.ReleaseCondition, original string) (bool, 
 	case "remix_visual":
 		dv := r.Info.DolbyVision || tag(r.Name, "DV")
 		hdr := r.Info.HDR10 || tag(r.Name, "HDR")
-		if eq("3D") {
-			return tag(r.Name, "3D") || tag(r.Name, "H-OU") || tag(r.Name, "H-SBS"), true
-		}
+
 		if eq("DV") {
 			return dv, true
 		}
