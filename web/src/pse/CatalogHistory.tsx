@@ -196,11 +196,25 @@ export function CatalogHistory({
                 </div>
               ))}
             </div>
+            <div className="mt-4 rounded-lg bg-surface p-4 text-sm">
+              <p className="font-medium">
+                {L(
+                  "Pourquoi Remix ne cherche pas dans tout TMDB ?",
+                  "Why doesn't Remix search all of TMDB?",
+                )}
+              </p>
+              <p className="mt-1 text-fg-muted">
+                {L(
+                  "TMDB recense plus d'un million de films, très peu connus pour la plupart et sans release. Ether ne garde en local que les titres assez connus et déjà sortis : c'est son réglage « Masquer les titres obscurs » (Catalogue → Réglages). Remix cherche des releases dans cette sélection. L'élargir ajouterait surtout des titres sans source et rallongerait l'indexation.",
+                  "TMDB lists over a million movies, most of them barely known and without any release. Ether only keeps titles that are well known enough and already released locally: that is its “Hide obscure titles” setting (Catalog → Settings). Remix searches for releases within this selection. Widening it would mostly add titles without sources and lengthen indexing.",
+                )}
+              </p>
+            </div>
             <p className="mt-3 text-xs text-fg-muted">
               {L("Export du", "Export dated")} {data.tmdb.exportDate} ·{" "}
               {L(
-                "Cette sélection est faite par Ether (réglage « Masquer les titres obscurs »), pas par Remix. Le pourcentage ne mesure ni les titres lisibles ni un objectif de complétude.",
-                "Ether makes this selection (“Hide obscure titles” setting), not Remix. The percentage measures neither playable titles nor a completeness target.",
+                "Le pourcentage ne mesure ni les titres lisibles ni un objectif de complétude.",
+                "The percentage measures neither playable titles nor a completeness target.",
               )}{" "}
               <a
                 className="underline"
