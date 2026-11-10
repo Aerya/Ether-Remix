@@ -20,6 +20,7 @@ import type {
   TasteProfile,
   TitleCard,
   TitleDetail,
+  TitleLibraryStatus,
   Viewer,
   ViewerDetail,
   ViewerHome,
@@ -131,6 +132,14 @@ try {
 // Keep the current tab's explicit sign-in/sign-out authoritative in that case.
 let sessionToken = "";
 let sessionOnly = false;
+const tokenListeners = new Set<(token: string) => void>();
+
+export function onTokenChange(fn: (token: string) => void): () => void {
+  tokenListeners.add(fn);
+  return () => {
+    tokenListeners.delete(fn);
+  };
+}
 
 export function getToken(): string {
   if (sessionOnly) return sessionToken;
@@ -142,6 +151,7 @@ export function getToken(): string {
   return sessionToken;
 }
 export function setToken(token: string): void {
+  const prev = getToken();
   sessionToken = token;
   try {
     if (token) localStorage.setItem(TOKEN_KEY, token);
@@ -149,6 +159,15 @@ export function setToken(token: string): void {
     sessionOnly = false;
   } catch {
     sessionOnly = true;
+  }
+  if (token !== prev) {
+    for (const fn of [...tokenListeners]) {
+      try {
+        fn(token);
+      } catch {
+        // Ignore listener errors so credential storage always succeeds.
+      }
+    }
   }
 }
 
@@ -322,6 +341,7 @@ export const api = {
   pinStart: () => post<{ id: string; code: string; authUrl: string }>("/plex/pin"),
   pinPoll: (id: string) => apiFetch<{ done: boolean }>(`/plex/pin/${encodeURIComponent(id)}`),
   claim: () => post<{ ok: boolean }>("/plex/claim"),
+  syncPlexFriends: () => post<{ ok: boolean }>("/plex/friends/sync"),
 
   // ---- Config ---------------------------------------------------------------
   getConfig: async () => (await apiFetch<{ config: EtherConfig }>("/config")).config,
@@ -525,11 +545,18 @@ export const api = {
       hasMore?: boolean;
       nextCursor?: string;
     }>(`/catalog/browse${qs(params)}`, { signal }),
-  searchCatalog: async (q: string, type?: string, limit = 24, signal?: AbortSignal) =>
+  searchCatalog: async (
+    q: string,
+    type?: string,
+    limit = 24,
+    signal?: AbortSignal,
+    all?: boolean,
+  ) =>
     (
-      await apiFetch<{ items: TitleCard[] | null }>(`/catalog/search${qs({ q, type, limit })}`, {
-        signal,
-      })
+      await apiFetch<{ items: TitleCard[] | null }>(
+        `/catalog/search${qs({ q, type, limit, all: all ? 1 : undefined })}`,
+        { signal },
+      )
     ).items ?? [],
   facets: async (type: string, facet: FacetName) =>
     (await apiFetch<{ values: FacetValue[] | null }>(`/catalog/facets${qs({ type, facet })}`))
@@ -542,6 +569,12 @@ export const api = {
       )
     ).results ?? [],
   title: (key: string) => apiFetch<TitleDetail>(`/catalog/title/${encodeURIComponent(key)}`),
+  titleLibrary: (key: string, signal?: AbortSignal) =>
+    apiFetch<TitleLibraryStatus>(`/catalog/title/${encodeURIComponent(key)}/library`, { signal }),
+  includeTitle: (key: string) =>
+    put<TitleLibraryStatus>(`/catalog/title/${encodeURIComponent(key)}/library`, {}),
+  removeIncludedTitle: (key: string) =>
+    send<TitleLibraryStatus>("DELETE", `/catalog/title/${encodeURIComponent(key)}/library`),
 
   // ---- Viewers -------------------------------------------------------------------
   viewers: async () => (await apiFetch<{ viewers: Viewer[] | null }>("/viewers")).viewers ?? [],

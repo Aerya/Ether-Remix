@@ -252,6 +252,11 @@ func (a *App) buildAdmin() http.Handler {
 	h := admin.NewHandler(deps)
 	if a.streamRT != nil {
 		a.streamRT.SetDashboard(h.SnapshotDashboard)
+		if a.cfg != nil {
+			a.cfg.Subscribe(func(config.Config) {
+				a.publishDashboard()
+			})
+		}
 	}
 	return sourceOwnerContext(h)
 }
@@ -370,6 +375,10 @@ func (p *plexAuth) Claim(ctx context.Context) error {
 }
 
 func (p *plexAuth) Status() any { return p.app.registrar.Status() }
+
+func (p *plexAuth) SyncFriends(ctx context.Context) error {
+	return p.app.registrar.SyncFriendsNow(ctx)
+}
 
 // plexSignIn is the admin login: a plex.tv PIN whose token the admin
 // handler accepts only if it belongs to the owner. Unlike plexAuth it

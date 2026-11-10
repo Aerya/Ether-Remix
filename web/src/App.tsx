@@ -93,9 +93,10 @@ import Login from "./pages/Login";
 import Startup, { isStarting } from "./pages/Startup";
 import { PseVersionLink, RemixRepositoryLinks } from "./pse/VersionLink"; // PSE-HOOK: voir docs/pse/FORK.fr.md
 
+const loadDesigner = () => import("./pages/designer/Designer");
 const CollectionsGallery = lazy(() => import("./pages/collections/Gallery"));
 const CollectionEditor = lazy(() => import("./pages/collections/Editor"));
-const Designer = lazy(() => import("./pages/designer/Designer"));
+const Designer = lazy(loadDesigner);
 const ViewersList = lazy(() => import("./pages/viewers/ViewersList"));
 const ViewerProfile = lazy(() => import("./pages/viewers/ViewerProfile"));
 const settingsPage = <K extends keyof typeof import("./pages/settings/pages")>(name: K) =>
@@ -440,7 +441,7 @@ function Shell() {
     loading: registryLoading,
     error: registryError,
     reload: reloadRegistry,
-  } = useRegistry<PageMeta>("page", "navItem");
+  } = useRegistry<PageMeta>("page", "navItem", "command");
   const remoteSession = boot.authRequired && Boolean(getToken());
   const version = versionLabel(boot.version);
   const serverName = boot.serverName?.trim() || "Ether-Remix";
@@ -548,6 +549,9 @@ function Shell() {
               <Route path="/plugins/studio" element={<Studio />} />
               <Route path="/plugins/:tab?/*" element={<Plugins />} />
               <Route path="/p/:plugin/:page/*" element={<PluginPage />} />
+              {registryLoading && navDescriptors.length === 0 ? (
+                <Route key="home" path="/home" element={BUILTIN_PAGES.home!.element} />
+              ) : null}
               {navDescriptors
                 .filter(
                   (d) =>
@@ -607,7 +611,7 @@ function ViewerById() {
   return <ViewerProfile />;
 }
 
-function Gate({ onReady }: { onReady: (animation?: boolean) => void }) {
+function Gate({ onReady }: { onReady: (animation?: boolean, version?: string) => void }) {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [unlocked, setUnlocked] = useState(false);
@@ -616,7 +620,7 @@ function Gate({ onReady }: { onReady: (animation?: boolean) => void }) {
     try {
       const next = await api.bootstrap();
       setBoot(next);
-      onReady(next.startupAnimation !== false);
+      onReady(next.startupAnimation !== false, next.version);
       setError(null);
     } catch (e) {
       setError(e);
@@ -693,6 +697,7 @@ const Me = lazy(() => import("./pages/me/Me"));
 export default function App() {
   const location = useLocation();
   const [ready, setReady] = useState(false);
+  const [bootVersion, setBootVersion] = useState<string | null>(null);
   // Decided at page open from the last known server value, so the splash's
   // minimum time runs from load (not from bootstrap) and never flashes on a
   // server that turned it off. The server's answer can only hide it.
@@ -703,7 +708,12 @@ export default function App() {
       return true;
     }
   });
-  const onReady = useCallback((enabled?: boolean) => {
+  useEffect(() => {
+    if (location.pathname === "/home" || location.pathname.startsWith("/home/")) {
+      void loadDesigner();
+    }
+  }, [location.pathname]);
+  const onReady = useCallback((enabled?: boolean, version?: string) => {
     if (enabled !== undefined) {
       try {
         localStorage.setItem("ether.startupAnimation", String(enabled));
@@ -712,6 +722,7 @@ export default function App() {
       }
       if (!enabled) setAnimation(false);
     }
+    if (version) setBootVersion(version);
     setReady(true);
   }, []);
   return (
@@ -729,7 +740,7 @@ export default function App() {
               )}
             </Chrome>
             {location.pathname !== "/me" && animation ? <BrandSplash ready={ready} /> : null}
-            <UpdateReady />
+            <UpdateReady bootVersion={bootVersion} />
             <Toaster richColors closeButton position="bottom-right" />
           </UiLinkProvider>
         </ThemeProvider>

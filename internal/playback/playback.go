@@ -1244,10 +1244,10 @@ func (m *Manager) BeginMediaRead(id string) func() {
 		return func() {}
 	}
 	s.activeReads.Add(1)
-	s.touch(m.now())
+	s.touchMedia(m.now())
 	return func() {
 		s.activeReads.Add(-1)
-		s.touch(m.now())
+		s.touchMedia(m.now())
 	}
 }
 
@@ -1393,6 +1393,7 @@ func (m *Manager) setSurfacePrepared(id string, prepared bool) bool {
 		s.mu.Unlock()
 		return false
 	}
+	changed := s.preparedOnly != prepared
 	s.preparedOnly = prepared
 	if prepared {
 		s.stoppedBySurface = true
@@ -1407,6 +1408,9 @@ func (m *Manager) setSurfacePrepared(id string, prepared bool) bool {
 	}
 	s.mu.Unlock()
 	m.reg.poke()
+	if changed {
+		m.emitEvent("surface", s, nil)
+	}
 	return true
 }
 
@@ -1748,7 +1752,10 @@ func (m *Manager) expire() {
 			idleTimeout = max(idleTimeout, core.PausedSessionRetention)
 		}
 		switch {
-		case !stopAt.IsZero() && !now.Before(stopAt) && !last.After(stopAt.Add(-m.opts.StoppedGrace)):
+		// A client stop ends at stopAt regardless of media activity after
+		// it: segment reads from the stopped player must not disarm the
+		// stop (#410). Coming back clears stopAt (touch/touchTimeline).
+		case !stopAt.IsZero() && !now.Before(stopAt):
 			m.log.Debug("session stopped by client", "session", s.id)
 			m.Stop(s.id)
 		case !backgroundHeld && now.Sub(last) > idleTimeout:

@@ -1018,9 +1018,29 @@ func (s *Service) AuthorizeArtwork(ctx context.Context, viewer *core.Viewer, dev
 	if err != nil {
 		return nil, err
 	}
+	if err := s.authorizeArtwork(ctx, v, device, key); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// AuthorizeArtworkAs is AuthorizeArtwork for a viewer record the caller
+// has just read from the identity store (an effective active user): the
+// same section, rating, owner-policy and inherited-show checks run, but
+// the record is used exactly as given instead of being reloaded by ID.
+// Public (unauthenticated) artwork authorization runs it once per active
+// user and requires every one to pass.
+func (s *Service) AuthorizeArtworkAs(ctx context.Context, viewer *core.Viewer, device core.Device, key core.RatingKey) error {
+	if viewer == nil || viewer.ID <= 0 {
+		return core.ErrNotFound
+	}
+	return s.authorizeArtwork(core.WithCatalogViewer(ctx, viewer), viewer, device, key)
+}
+
+func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device core.Device, key core.RatingKey) error {
 	if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart || key.Kind() == core.KindPlaylist {
 		if _, err := s.Item(ctx, frontend.ItemRequest{Viewer: v, Device: device, Key: key}); err != nil {
-			return nil, err
+			return err
 		}
 	} else if s.d.CachedGet != nil {
 		get := s.d.ArtworkGet
@@ -1030,7 +1050,7 @@ func (s *Service) AuthorizeArtwork(ctx context.Context, viewer *core.Viewer, dev
 		var title *core.Title
 		rows, err := s.artworkRows(ctx, v, []core.RatingKey{key})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if t, ok := rows[key]; ok {
 			title = &t
@@ -1043,21 +1063,21 @@ func (s *Service) AuthorizeArtwork(ctx context.Context, viewer *core.Viewer, dev
 		visibility := s.d.Visibility
 		visibility.GetTitle = s.d.CachedGet
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if title == nil || title.Key != key || visibility.SectionFor == nil {
-			return nil, core.ErrNotFound
+			return core.ErrNotFound
 		}
 		section, ok := visibility.SectionFor(title.Type)
 		if !ok || !SectionAllowed(v, section) || !visibility.Visible(ctx, v, title) {
-			return nil, core.ErrNotFound
+			return core.ErrNotFound
 		}
 		// The image read that follows lists the same title (ArtworkTitle).
 		frontend.ArtworkRowsFrom(ctx).Put(*title)
 	} else if _, err := s.item(ctx, v, key); err != nil {
-		return nil, err
+		return err
 	}
-	return v, nil
+	return nil
 }
 
 // LocalEpisodes lists aired episodes already stored for a show or season.
@@ -1909,6 +1929,7 @@ func (s *Service) collectionItems(ctx context.Context, v *core.User, key core.Ra
 		}
 	}
 	var out []core.Title
+	seen := map[core.RatingKey]bool{}
 	for offset := 0; ; {
 		page, err := s.d.Collections.Items(ctx, v, key, offset, 500)
 		if err != nil {
@@ -1917,9 +1938,15 @@ func (s *Service) collectionItems(ctx context.Context, v *core.User, key core.Ra
 		batch := page.Items
 		if upcoming {
 			batch = s.d.Visibility.UpcomingItems(ctx, v, batch, time.Now)
+		} else {
+			batch, err = s.allowTitles(ctx, v, batch)
+			if err != nil {
+				return nil, err
+			}
 		}
 		for i := range batch {
-			if upcoming || s.visible(ctx, v, &batch[i]) {
+			if !seen[batch[i].Key] {
+				seen[batch[i].Key] = true
 				out = append(out, batch[i])
 			}
 		}

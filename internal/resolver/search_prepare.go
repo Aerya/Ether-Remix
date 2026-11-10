@@ -60,6 +60,9 @@ func (p *searchPreparation) arrived(batch []core.Release) {
 	var added []core.Release
 	reorder := false
 	for _, r := range batch {
+		if releaseparse.IsPlaceholderResult(r.Name) {
+			continue
+		}
 		r = withTarget(r, p.search)
 		if p.seen[r.ID] {
 			if p.svc.knownCached(r) {
@@ -220,6 +223,12 @@ func (p *searchPreparation) refillAfter(check *candidateCheck) {
 const (
 	discoveryWindow      = 500 * time.Millisecond
 	criticalPathDeadline = 4 * time.Second
+	// playStartDeadline bounds how long a viewer's Play waits on indexers that
+	// have not answered. After it, Play validates what has arrived (foreground
+	// checks may add a torrent to the debrid account) while the stragglers
+	// finish into the search cache. Without it one slow indexer held Play to
+	// its 30 s timeout, past the client's own decision budget.
+	playStartDeadline = 6 * time.Second
 )
 
 func (p *searchPreparation) readyResults() []core.Release {
@@ -284,7 +293,7 @@ func (p *searchPreparation) readyResultsAfter(window time.Duration) []core.Relea
 func (p *searchPreparation) searchLive(ctx context.Context, indexer core.StreamingIndexer, req core.SearchRequest) ([]core.Release, bool, error) {
 	if p.disabled {
 		r, e := indexer.SearchWith(ctx, req, p.arrived)
-		return r, false, e
+		return filterOutPlaceholders(r), false, e
 	}
 	// Detach from Play cancel so a first healthy hit can start while the
 	// remaining indexers finish into the search cache (better versions and
@@ -308,6 +317,7 @@ func (p *searchPreparation) searchLive(ctx context.Context, indexer core.Streami
 		defer p.svc.bgWG.Done()
 		defer cancel()
 		r, e := indexer.SearchWith(searchCtx, req, p.arrived)
+		r = filterOutPlaceholders(r)
 		// Publish every complete answer before notifying the caller. Completion
 		// can race with the early-play ticker: checking partial here could
 		// miss an early return chosen just after the check, losing the cache.
@@ -325,13 +335,19 @@ func (p *searchPreparation) searchLive(ctx context.Context, indexer core.Streami
 		case a := <-done:
 			return a.releases, false, a.err
 		case <-ticker.C:
-			if ready := p.readyResults(); len(ready) > 0 {
+			ready := p.readyResults()
+			why := "source discovery finished on playable candidate"
+			if len(ready) == 0 {
+				ready = p.overdueResults(ctx)
+				why = "source discovery stopped waiting on slow indexers"
+			}
+			if len(ready) > 0 {
 				if ctx.Err() != nil {
 					cancel()
 					<-done
 					return nil, false, ctx.Err()
 				}
-				p.svc.log.Info("source discovery finished on playable candidate", "candidates", len(ready), "elapsed", time.Since(p.first))
+				p.svc.log.Info(why, "candidates", len(ready), "elapsed", time.Since(p.first))
 				p.partial.Store(true)
 				// SearchWith keeps running on bgCtx; the worker defers cancel.
 				p.svc.keepSearchCancel(cancel)
@@ -343,6 +359,22 @@ func (p *searchPreparation) searchLive(ctx context.Context, indexer core.Streami
 			return nil, false, ctx.Err()
 		}
 	}
+}
+
+// overdueResults hands a viewer's Play everything that has arrived once
+// playStartDeadline has passed with no early check healthy (early checks run
+// on the background budget, so an uncached torrent waits for foreground
+// validation). Speculative and background work keeps waiting for the fleet.
+func (p *searchPreparation) overdueResults(ctx context.Context) []core.Release {
+	if core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx) {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.disabled || p.first.IsZero() || len(p.all) == 0 || time.Since(p.first) < playStartDeadline {
+		return nil
+	}
+	return append([]core.Release(nil), p.all...)
 }
 
 // keepSearchCancel marks cancel as owned by the background search so an

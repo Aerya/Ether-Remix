@@ -100,8 +100,15 @@ func (m *CertManager) VerifyTrust(ctx context.Context, identityHash, serverName 
 		}
 	}
 	fp := Fingerprint(leaf)
+	var changed bool
+	defer func() {
+		if changed {
+			m.notifyChange()
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	prev := m.trust
 	next := certTrust{fingerprint: fp, verified: ok, reason: reason}
 	if reason == CertReasonHandshake {
 		next.misses = 1
@@ -116,7 +123,21 @@ func (m *CertManager) VerifyTrust(ctx context.Context, identityHash, serverName 
 		}
 	}
 	m.trust = next
+	changed = next.fingerprint != prev.fingerprint || next.verified != prev.verified || next.reason != prev.reason
 	return next.verified, next.reason
+}
+
+// forgetHandshakeMisses drops handshake failures recorded before the
+// listener was up: they say nothing about the certificate, and the
+// registrar re-checks against the live listener on its next tick. A
+// confirmed pre-listen verdict reverts to "checking" until then.
+func (m *CertManager) forgetHandshakeMisses() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.trust.reason == CertReasonHandshake {
+		m.trust.reason = ""
+	}
+	m.trust.misses = 0
 }
 
 // trustPending reports an unconfirmed handshake failure for the installed

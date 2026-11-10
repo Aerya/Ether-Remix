@@ -5,9 +5,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/artwork"
-	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/discovery"
 	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plex/model"
 	"github.com/go-chi/chi/v5"
 	"math"
@@ -17,8 +16,8 @@ import (
 	"strings"
 )
 
-// DiscoveryFeatures is the shared discovery service adapted by Plex.
-type DiscoveryFeatures = discovery.Features
+// DiscoveryFeatures is the shared discovery contract adapted by Plex.
+type DiscoveryFeatures = frontend.DiscoveryFeatures
 
 func (s *Server) discoveryHubs(ctx context.Context, pr *Request, limit int) []hubSpec {
 	d := s.d.Discovery
@@ -26,9 +25,9 @@ func (s *Server) discoveryHubs(ctx context.Context, pr *Request, limit int) []hu
 		return nil
 	}
 	var out []hubSpec
-	add := func(purpose core.RowPurpose, load func(context.Context, *core.User, int) ([]core.Hub, error)) {
-		var hubs []core.Hub
-		selector := experience.DiscoverySelection{Visibility: s.visibility(), Unrestricted: func(u *core.User) bool { return !s.viewerRestricted(u) }}
+	add := func(purpose frontend.RowPurpose, load func(context.Context, *frontend.User, int) ([]frontend.Hub, error)) {
+		var hubs []frontend.Hub
+		selector := experience.DiscoverySelection{Visibility: s.visibility(), Unrestricted: func(u *frontend.User) bool { return !s.viewerRestricted(u) }}
 		rows := selector.Load(ctx, pr.User, limit, func(ctx context.Context, fetch int) []experience.DiscoveryCandidate {
 			hubs, _ = load(ctx, pr.User, fetch)
 			candidates := make([]experience.DiscoveryCandidate, len(hubs))
@@ -44,14 +43,14 @@ func (s *Server) discoveryHubs(ctx context.Context, pr *Request, limit int) []hu
 		}
 	}
 	if d.Watchlist != nil {
-		add(core.RowPurpose("watchlist"), d.Watchlist.Hubs)
+		add(frontend.RowPurpose("watchlist"), d.Watchlist.Hubs)
 	}
 	if d.Personal != nil {
-		add(core.RowPurpose("recommendation"), d.Personal.Hubs)
+		add(frontend.RowPurpose("recommendation"), d.Personal.Hubs)
 	}
 	return out
 }
-func (s *Server) discoveryRemoveContinue(ctx context.Context, pr *Request, key core.RatingKey) error {
+func (s *Server) discoveryRemoveContinue(ctx context.Context, pr *Request, key frontend.RatingKey) error {
 	if s.d.Discovery == nil || s.d.Discovery.Personal == nil || pr.User == nil {
 		return nil
 	}
@@ -60,19 +59,19 @@ func (s *Server) discoveryRemoveContinue(ctx context.Context, pr *Request, key c
 		return e
 	}
 	if !s.visibleTitle(ctx, pr.User, t) {
-		return core.ErrNotFound
+		return frontend.ErrNotFound
 	}
 	return s.d.Discovery.Personal.RemoveContinue(ctx, pr.User.ID, key)
 }
 
-func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *core.Title, m *model.Metadata, detail bool) {
+func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *frontend.Title, m *model.Metadata, detail bool) {
 	d := s.d.Discovery
 	if d == nil || t == nil || pr.User == nil || !s.titleAllowed(pr.User, t) {
 		return
 	}
 	selected := d.SelectArtwork(ctx, pr.User, t, pr.Language)
 	localized := selected.Title
-	if localized != t {
+	if localized != nil && localized != t {
 		m.Title = localized.Title
 		m.Summary = localized.Summary
 		m.Tagline = localized.Tagline
@@ -99,7 +98,7 @@ func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *
 			m.Image[i].Alt = m.Title
 			switch m.Image[i].Type {
 			case "coverPoster":
-				if t.Type != core.TypeEpisode && m.Thumb != "" {
+				if t.Type != frontend.TypeEpisode && m.Thumb != "" {
 					m.Image[i].URL = m.Thumb
 				}
 			case "background":
@@ -117,7 +116,7 @@ func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *
 			m.Image = append(m.Image, model.Image{Alt: m.Title, Type: "clearLogo", URL: fmt.Sprintf("/library/metadata/%s/discoveryPoster/%s?kind=logo&lang=%s", t.Key.String(), selected.LogoVersion, url.QueryEscape(pr.Language))})
 		}
 	}
-	if d.Ratings != nil && (t.Type == core.TypeMovie || t.Type == core.TypeShow) {
+	if d.Ratings != nil && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {
 		bs, e := d.Ratings.Cached(ctx, t)
 		cfg, ce := d.Ratings.Settings(ctx)
 		if e == nil && ce == nil && cfg.Enabled {
@@ -141,13 +140,13 @@ func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *
 				m.Rating, m.RatingImage = 0, ""
 			}
 			for _, b := range bs {
-				if b.Source == cfg.Critic && b.PlexImage() != "" {
-					m.Rating = b.PlexValue()
-					m.RatingImage = b.PlexImage()
+				if b.Source == cfg.Critic && b.Image != "" {
+					m.Rating = b.Value
+					m.RatingImage = b.Image
 				}
-				if b.Source == cfg.Audience && b.PlexImage() != "" {
-					m.AudienceRating = b.PlexValue()
-					m.AudienceRatingImage = b.PlexImage()
+				if b.Source == cfg.Audience && b.Image != "" {
+					m.AudienceRating = b.Value
+					m.AudienceRatingImage = b.Image
 				}
 			}
 		}
@@ -162,9 +161,8 @@ func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *
 		}
 
 	}
-	if d.LLM != nil && d.Watchlist != nil && (t.Type == core.TypeSeason || t.Type == core.TypeEpisode) {
-		cfg, _ := d.Watchlist.Settings(ctx)
-		if cfg.Recaps {
+	if d.LLM != nil && d.Watchlist != nil && (t.Type == frontend.TypeSeason || t.Type == frontend.TypeEpisode) {
+		if d.Watchlist.RecapsEnabled(ctx) {
 			entry := d.CachedRecap(pr.User, t, s.d.State, s.now())
 			if entry != "" {
 				m.Summary = "Previously watched: " + entry + "\n\n" + m.Summary
@@ -174,7 +172,7 @@ func (s *Server) decorateDiscoveryMetadata(ctx context.Context, pr *Request, t *
 	}
 }
 func (s *Server) handleDiscoveryPoster(w http.ResponseWriter, r *http.Request) {
-	k, e := core.ParseRatingKey(chi.URLParam(r, "id"))
+	k, e := frontend.ParseRatingKey(chi.URLParam(r, "id"))
 	if e != nil {
 		writeHTTPError(w, 400)
 		return
@@ -185,7 +183,7 @@ func (s *Server) handleDiscoveryPoster(w http.ResponseWriter, r *http.Request) {
 
 // serveDiscoveryPoster also serves Plex's photo transcode wrapper. Keep the
 // authenticated outer request: credentials inside an artwork URL grant nothing.
-func (s *Server) serveDiscoveryPoster(w http.ResponseWriter, r *http.Request, k core.RatingKey, kind, lang string) {
+func (s *Server) serveDiscoveryPoster(w http.ResponseWriter, r *http.Request, k frontend.RatingKey, kind, lang string) {
 	d := s.d.Discovery
 	if d == nil || d.Overlays == nil {
 		writeHTTPError(w, 404)

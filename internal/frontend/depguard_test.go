@@ -23,24 +23,15 @@ func TestPlexProductionImportsStayInsideRecordedBoundary(t *testing.T) {
 		"github.com/braedonsaunders/ether/internal/config":                 true,
 		"github.com/braedonsaunders/ether/internal/core":                   true,
 		"github.com/braedonsaunders/ether/internal/reqmemo":                true,
-		"github.com/braedonsaunders/ether/internal/contentrating":          true,
-		"github.com/braedonsaunders/ether/internal/discovery":              true,
 		"github.com/braedonsaunders/ether/internal/experience":             true,
-		"github.com/braedonsaunders/ether/internal/extras":                 true,
 		"github.com/braedonsaunders/ether/internal/frontend":               true,
 		"github.com/braedonsaunders/ether/internal/homefilter":             true,
 		"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet": true,
 		"github.com/braedonsaunders/ether/internal/livetv":                 true,
 		"github.com/braedonsaunders/ether/internal/plex/model":             true,
-		// Apple TV guide logos (#391) need the public-IP and plex.direct host
-		// helpers; moving them into frontend/kit is Prism work for 0.3.7.
-		"github.com/braedonsaunders/ether/internal/remote":    true,
-		"github.com/braedonsaunders/ether/internal/sessions":  true,
-		"github.com/braedonsaunders/ether/internal/store":     true,
-		"github.com/braedonsaunders/ether/internal/subtitles": true,
-		"github.com/braedonsaunders/ether/internal/tmdb":      true,
-		"github.com/braedonsaunders/ether/internal/transcode": true,
-		"github.com/braedonsaunders/ether/internal/trickplay": true,
+		"github.com/braedonsaunders/ether/internal/sessions":               true,
+		"github.com/braedonsaunders/ether/internal/store":                  true,
+		"github.com/braedonsaunders/ether/internal/transcode":              true,
 	}
 	root := filepath.Join("..", "plex")
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
