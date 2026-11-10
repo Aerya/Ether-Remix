@@ -1,3 +1,4 @@
+import { PlaylistBrowser } from "./PlaylistBrowser";
 import { Badge, Button, Input, toast } from "@braedonsaunders/appkit-ui";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -28,6 +29,7 @@ interface PlaylistViewer {
   accounts: Partial<Record<Service, Account>>;
   playlists: { id: number; name: string; source: Service; tracks: number }[];
   syncing: boolean;
+  spotify?: boolean;
 }
 
 interface PlaylistData {
@@ -63,6 +65,7 @@ export function deezerLinks(account: string) {
 const ENDPOINT = "/pse/music/playlists/";
 
 export function MusicPlaylists() {
+  const [tab, setTab] = useState<"discover" | "accounts" | "import">("discover");
   const doc = useAsync(() => apiFetch<PlaylistData>(ENDPOINT), []);
   const [data, setData] = useState<PlaylistData | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -82,7 +85,17 @@ export function MusicPlaylists() {
     return () => window.clearInterval(t);
   }, [syncing]);
 
-  if (!current) return null;
+  if (!current)
+    return (
+      <p className="p-4 text-sm text-fg-muted" role={doc.error ? "alert" : "status"}>
+        {doc.error
+          ? L(
+              "Impossible de charger les playlists. Rechargez la page pour réessayer.",
+              "Could not load playlists. Reload the page to retry.",
+            )
+          : L("Chargement des playlists…", "Loading playlists…")}
+      </p>
+    );
 
   const stored = (v: PlaylistViewer, s: Service) => {
     const a = v.accounts[s]?.account ?? "";
@@ -146,130 +159,164 @@ export function MusicPlaylists() {
 
   return (
     <div className="space-y-3 border-t border-border px-4 py-4">
-      <div className="text-sm font-medium">
-        {L(
-          "Playlists Deezer, Last.fm et ListenBrainz",
-          "Deezer, Last.fm and ListenBrainz playlists",
-        )}
+      <div className="text-sm font-medium">{L("Playlists", "Playlists")}</div>
+      <div
+        className="flex flex-wrap gap-2"
+        role="group"
+        aria-label={L("Gestion des playlists", "Playlist management")}
+      >
+        {(["discover", "accounts", "import"] as const).map((id) => (
+          <Button
+            key={id}
+            size="sm"
+            variant={tab === id ? "default" : "outline"}
+            aria-pressed={tab === id}
+            onClick={() => setTab(id)}
+          >
+            {id === "discover"
+              ? L("Découvrir", "Discover")
+              : id === "accounts"
+                ? L("Mes comptes", "My accounts")
+                : L("Importer", "Import")}
+          </Button>
+        ))}
       </div>
-      <p className="text-sm text-fg-muted">
-        {L(
-          `Les playlists publiques d'un profil Deezer (dont Coups de cœur), ou des liens de playlists Deezer, les titres aimés et tops Last.fm, et les playlists ListenBrainz (Daily Jams, Weekly Exploration…) apparaissent dans Plex, Jellyfin et les clients Subsonic du spectateur. Mise à jour toutes les ${current.hours} h ; rien n'est téléchargé.`,
-          `Public playlists of a Deezer profile (including Favourite tracks), or Deezer playlist links, Last.fm loved and top tracks, and ListenBrainz playlists (Daily Jams, Weekly Exploration…) show up in the viewer's Plex, Jellyfin and Subsonic clients. Refreshed every ${current.hours} h; nothing is downloaded.`,
-        )}
-      </p>
-      {!current.lastfmKey ? (
+      <div hidden={tab === "accounts"}>
+        <PlaylistBrowser
+          viewers={current.viewers}
+          mode={tab === "import" ? "import" : "discover"}
+          refresh={() => {
+            void apiFetch<PlaylistData>(ENDPOINT)
+              .then(setData)
+              .catch(() => undefined);
+          }}
+        />
+      </div>
+      <div hidden={tab !== "accounts"} className="space-y-3">
         <p className="text-sm text-fg-muted">
           {L(
-            "Last.fm : renseignez d'abord la clé API Last.fm ci-dessus.",
-            "Last.fm: set the Last.fm API key above first.",
+            `Les playlists publiques d'un profil Deezer (dont Coups de cœur), ou des liens de playlists Deezer, les titres aimés et tops Last.fm, et les playlists ListenBrainz (Daily Jams, Weekly Exploration…) apparaissent dans Plex, Jellyfin et les clients Subsonic du spectateur. Mise à jour toutes les ${current.hours} h ; rien n'est téléchargé.`,
+            `Public playlists of a Deezer profile (including Favourite tracks), or Deezer playlist links, Last.fm loved and top tracks, and ListenBrainz playlists (Daily Jams, Weekly Exploration…) show up in the viewer's Plex, Jellyfin and Subsonic clients. Refreshed every ${current.hours} h; nothing is downloaded.`,
           )}
         </p>
-      ) : null}
-      {current.viewers.length === 0 ? (
-        <p className="text-sm text-fg-muted">
-          {L(
-            "Aucun spectateur pour l'instant : ajoutez-en dans Spectateurs, puis revenez ici.",
-            "No viewers yet: add some in Viewers, then come back here.",
-          )}
-        </p>
-      ) : null}
-      {current.viewers.map((v) => {
-        const changed = SERVICES.some(
-          (s) => drafts[key(v, s)] !== undefined && drafts[key(v, s)] !== stored(v, s),
-        );
-        const linked = SERVICES.some((s) => Boolean(v.accounts[s]));
-        const errors = SERVICES.map((s) => v.accounts[s]?.error).filter(Boolean);
-        const last = Math.max(...SERVICES.map((s) => v.accounts[s]?.syncedAt ?? 0));
-        return (
-          <div key={v.id} className="space-y-2 rounded-lg border border-border p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="truncate text-sm font-medium">{v.name}</span>
-              {v.syncing ? (
-                <Badge variant="info">{L("Import en cours…", "Importing…")}</Badge>
-              ) : linked ? (
-                <Badge variant={errors.length ? "warning" : "success"}>
-                  {L(`${v.playlists.length} playlist(s)`, `${v.playlists.length} playlist(s)`)}
-                  {last ? ` · ${when(last)}` : ""}
-                </Badge>
-              ) : (
-                <Badge variant="secondary">{L("Non lié", "Not linked")}</Badge>
-              )}
-            </div>
-            <label className="block space-y-1 text-xs text-fg-muted">
-              <span>
-                {L("Deezer : lien du profil ou de playlists", "Deezer: profile or playlist links")}
-              </span>
-              <Input
-                className="h-9 w-full"
-                aria-label={L(`Deezer de ${v.name}`, `${v.name} Deezer`)}
-                value={value(v, "deezer")}
-                placeholder="https://www.deezer.com/fr/profile/123456"
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(e) => setDrafts({ ...drafts, [key(v, "deezer")]: e.target.value })}
-              />
-            </label>
-            <label className="block space-y-1 text-xs text-fg-muted">
-              <span>{L("Last.fm : nom d'utilisateur", "Last.fm: username")}</span>
-              <Input
-                className="h-9 w-full"
-                aria-label={L(`Last.fm de ${v.name}`, `${v.name} Last.fm`)}
-                value={value(v, "lastfm")}
-                placeholder="https://www.last.fm/user/…"
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(e) => setDrafts({ ...drafts, [key(v, "lastfm")]: e.target.value })}
-              />
-            </label>
-            <label className="block space-y-1 text-xs text-fg-muted">
-              <span>
-                {L(
-                  "ListenBrainz : nom d'utilisateur (gratuit, sans clé)",
-                  "ListenBrainz: username (free, no key)",
+        {!current.lastfmKey ? (
+          <p className="text-sm text-fg-muted">
+            {L(
+              "Last.fm : renseignez d'abord la clé API Last.fm ci-dessus.",
+              "Last.fm: set the Last.fm API key above first.",
+            )}
+          </p>
+        ) : null}
+        {current.viewers.length === 0 ? (
+          <p className="text-sm text-fg-muted">
+            {L(
+              "Aucun spectateur pour l'instant : ajoutez-en dans Spectateurs, puis revenez ici.",
+              "No viewers yet: add some in Viewers, then come back here.",
+            )}
+          </p>
+        ) : null}
+        {current.viewers.map((v) => {
+          const changed = SERVICES.some(
+            (s) => drafts[key(v, s)] !== undefined && drafts[key(v, s)] !== stored(v, s),
+          );
+          const linked = SERVICES.some((s) => Boolean(v.accounts[s]));
+          const errors = SERVICES.map((s) => v.accounts[s]?.error).filter(Boolean);
+          const last = Math.max(...SERVICES.map((s) => v.accounts[s]?.syncedAt ?? 0));
+          return (
+            <div key={v.id} className="space-y-2 rounded-lg border border-border p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{v.name}</span>
+                {v.syncing ? (
+                  <Badge variant="info">{L("Import en cours…", "Importing…")}</Badge>
+                ) : linked ? (
+                  <Badge variant={errors.length ? "warning" : "success"}>
+                    {L(`${v.playlists.length} playlist(s)`, `${v.playlists.length} playlist(s)`)}
+                    {last ? ` · ${when(last)}` : ""}
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary">{L("Non lié", "Not linked")}</Badge>
                 )}
-              </span>
-              <Input
-                className="h-9 w-full"
-                aria-label={L(`ListenBrainz de ${v.name}`, `${v.name} ListenBrainz`)}
-                value={value(v, "listenbrainz")}
-                placeholder="https://listenbrainz.org/user/…"
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(e) => setDrafts({ ...drafts, [key(v, "listenbrainz")]: e.target.value })}
-              />
-            </label>
-            {errors.length ? <p className="text-xs text-warning">{errors.join(" · ")}</p> : null}
-            {lastfm.data ? (
-              <LastFMLink viewer={v.id} data={lastfm.data} setData={lastfm.setData} />
-            ) : null}
-            {v.playlists.length ? (
-              <ul className="flex flex-wrap gap-1.5">
-                {v.playlists.map((p) => (
-                  <li key={p.id}>
-                    <Badge variant="outline">
-                      {p.name} ({p.tracks})
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" disabled={busy === v.id || !changed} onClick={() => void save(v)}>
-                {L("Enregistrer", "Save")}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy === v.id || !linked || v.syncing || changed}
-                onClick={() => void sync(v)}
-              >
-                <RefreshCw size={14} aria-hidden /> {L("Mettre à jour", "Refresh")}
-              </Button>
+              </div>
+              <label className="block space-y-1 text-xs text-fg-muted">
+                <span>
+                  {L(
+                    "Deezer : lien du profil ou de playlists",
+                    "Deezer: profile or playlist links",
+                  )}
+                </span>
+                <Input
+                  className="h-9 w-full"
+                  aria-label={L(`Deezer de ${v.name}`, `${v.name} Deezer`)}
+                  value={value(v, "deezer")}
+                  placeholder="https://www.deezer.com/fr/profile/123456"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(e) => setDrafts({ ...drafts, [key(v, "deezer")]: e.target.value })}
+                />
+              </label>
+              <label className="block space-y-1 text-xs text-fg-muted">
+                <span>{L("Last.fm : nom d'utilisateur", "Last.fm: username")}</span>
+                <Input
+                  className="h-9 w-full"
+                  aria-label={L(`Last.fm de ${v.name}`, `${v.name} Last.fm`)}
+                  value={value(v, "lastfm")}
+                  placeholder="https://www.last.fm/user/…"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(e) => setDrafts({ ...drafts, [key(v, "lastfm")]: e.target.value })}
+                />
+              </label>
+              <label className="block space-y-1 text-xs text-fg-muted">
+                <span>
+                  {L(
+                    "ListenBrainz : nom d'utilisateur (gratuit, sans clé)",
+                    "ListenBrainz: username (free, no key)",
+                  )}
+                </span>
+                <Input
+                  className="h-9 w-full"
+                  aria-label={L(`ListenBrainz de ${v.name}`, `${v.name} ListenBrainz`)}
+                  value={value(v, "listenbrainz")}
+                  placeholder="https://listenbrainz.org/user/…"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(e) =>
+                    setDrafts({ ...drafts, [key(v, "listenbrainz")]: e.target.value })
+                  }
+                />
+              </label>
+              {errors.length ? <p className="text-xs text-warning">{errors.join(" · ")}</p> : null}
+              {lastfm.data ? (
+                <LastFMLink viewer={v.id} data={lastfm.data} setData={lastfm.setData} />
+              ) : null}
+              {v.playlists.length ? (
+                <ul className="flex flex-wrap gap-1.5">
+                  {v.playlists.map((p) => (
+                    <li key={p.id}>
+                      <Badge variant="outline">
+                        {p.name} ({p.tracks})
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" disabled={busy === v.id || !changed} onClick={() => void save(v)}>
+                  {L("Enregistrer", "Save")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy === v.id || !linked || v.syncing || changed}
+                  onClick={() => void sync(v)}
+                >
+                  <RefreshCw size={14} aria-hidden /> {L("Mettre à jour", "Refresh")}
+                </Button>
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

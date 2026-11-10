@@ -184,6 +184,7 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		},
 	})
 	playlistAPI := &music.PlaylistAPI{Sync: rt.playlistSync(a), Viewers: a.pseViewers}
+	playlistAPI.Spotify = &music.SpotifyPlaylists{Store: playlistAPI.Sync.Store, Sealer: a.cfg}
 	playlists := playlistAPI.Handler()
 	lastfm := rt.scrobbler(a).Handler(playlistAPI.Known)
 	stats := music.StatsHandler(music.NewLibrary(a.db))

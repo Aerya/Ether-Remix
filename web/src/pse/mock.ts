@@ -78,6 +78,45 @@ const demoFeatures = [
 ];
 /** Réponses minimales du fork pour le serveur de démonstration Ether. */
 export function remixMock(route: string): Response | undefined {
+  if (route === "GET /pse/music/playlists")
+    return Response.json({
+      lastfmKey: false,
+      hours: 6,
+      viewers: [
+        { id: 1, name: "Alex", accounts: {}, playlists: [], syncing: false, spotify: false },
+      ],
+    });
+  if (route === "GET /pse/music/playlists/discover")
+    return Response.json({
+      items: [
+        { name: "Jazz au calme", url: "https://www.deezer.com/playlist/1" },
+        { name: "Voyage électronique", url: "https://www.deezer.com/playlist/2" },
+        { name: "Classiques soul", url: "https://www.deezer.com/playlist/3" },
+      ],
+      more: false,
+    });
+  if (route === "POST /pse/music/playlists/preview")
+    return Response.json({
+      token: "demo-preview",
+      name: "Jazz au calme",
+      source: "deezer",
+      total: 2,
+      skipped: 0,
+      tracks: [
+        { title: "So What", artist: "Miles Davis" },
+        { title: "Take Five", artist: "Dave Brubeck" },
+      ],
+    });
+  if (route === "POST /pse/music/playlists/import")
+    return Response.json({
+      id: "demo-import",
+      done: true,
+      processed: 2,
+      total: 2,
+      matched: 2,
+      missing: [],
+    });
+
   if (route === "GET /pse" || route === "PUT /pse")
     return Response.json({ features: demoFeatures });
   if (route.startsWith("POST /debrid/providers/") && route.endsWith("/key"))

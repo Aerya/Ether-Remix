@@ -2,7 +2,12 @@ import { fireEvent, render, screen, cleanup, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { compareUpdateVersions, REMIX_UPDATES, RemixUpdates } from "./RemixUpdates";
 
-const version = "0.2.37-remix.23.1";
+// Always newer than published notes, independent of the next Docker build number.
+const publishedBuild = Math.max(
+  ...REMIX_UPDATES.map((entry) => Number(entry.version.match(/-remix\.(\d+)\./)?.[1] ?? 0)),
+);
+const version = `0.2.37-remix.${publishedBuild + 1}.1`;
+const newerVersion = `0.2.37-remix.${publishedBuild + 2}.1`;
 const readKey = "ether-remix.updates.read";
 const legacyKey = "ether-remix.updates.seen";
 beforeEach(() => {
@@ -72,7 +77,7 @@ it("does not show the IPTV delivery again when migrating the latest legacy marke
   expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(
     REMIX_UPDATES.findIndex((entry) => entry.id === "2026-11-09-iptv-editor"),
   );
-  expect(screen.getByText(/v0.2.37-remix.23.1/)).toBeTruthy();
+  expect(screen.getByText((text) => text.includes(`v${version}`))).toBeTruthy();
 });
 
 it("does not repeat the same notes when a Docker build is retried or rebuilt", async () => {
@@ -80,19 +85,19 @@ it("does not repeat the same notes when a Docker build is retried or rebuilt", a
   await screen.findByRole("dialog");
   dismiss();
   first.unmount();
-  render(<RemixUpdates version="0.2.37-remix.23.2" />);
+  render(<RemixUpdates version={version.replace(/\.1$/, ".2")} />);
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 it("preserves a newer read version after rolling back and consulting history", async () => {
-  localStorage.setItem(readKey, JSON.stringify({ version: "0.2.37-remix.24.1", ids: [] }));
+  localStorage.setItem(readKey, JSON.stringify({ version: newerVersion, ids: [] }));
   render(<RemixUpdates version={version} />);
   expect(screen.queryByRole("dialog")).toBeNull();
   openManually();
   expect(await screen.findByText(/already read all|déjà lu toutes/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /Full history|Historique complet/ }));
   dismiss();
-  expect(JSON.parse(localStorage.getItem(readKey)!).version).toBe("0.2.37-remix.24.1");
+  expect(JSON.parse(localStorage.getItem(readKey)!).version).toBe(newerVersion);
 });
 
 it("excludes notes from a version newer than the running server", async () => {

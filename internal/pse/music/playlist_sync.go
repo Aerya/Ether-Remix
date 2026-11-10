@@ -555,13 +555,19 @@ func (s *PlaylistSync) lastfmTracks(ctx context.Context, user, method, period st
 // findTrack retrouve un titre Last.fm dans le catalogue Deezer ; le
 // résultat (ou l'absence) est gardé en base.
 func (s *PlaylistSync) findTrack(ctx context.Context, artist, title string) (Track, bool) {
+	t, ok, _ := s.findTrackResult(ctx, artist, title)
+	return t, ok
+}
+
+// findTrackResult distinguishes a missing match from a provider outage for imports.
+func (s *PlaylistSync) findTrackResult(ctx context.Context, artist, title string) (Track, bool, error) {
 	artist, title = strings.TrimSpace(artist), strings.TrimSpace(title)
 	if artist == "" || title == "" {
-		return Track{}, false
+		return Track{}, false, nil
 	}
 	key := foldWords(artist) + "\x00" + foldWords(title)
 	if t, ok, known := s.Store.match(ctx, key); known {
-		return t, ok
+		return t, ok, nil
 	}
 	clean := func(v string) string { return strings.NewReplacer(`"`, " ", `\`, " ").Replace(v) }
 	var best *Track
@@ -570,7 +576,7 @@ func (s *PlaylistSync) findTrack(ctx context.Context, artist, title string) (Tra
 		v := url.Values{"q": {q}, "limit": {"10"}}
 		if err := s.dz(ctx, "/search/track", v, &r); err != nil {
 			if ctx.Err() != nil || !errors.Is(err, ErrNotFound) {
-				return Track{}, false // erreur passagère : rien n'est gardé
+				return Track{}, false, err // erreur passagère : rien n'est gardé
 			}
 			continue
 		}
@@ -581,9 +587,9 @@ func (s *PlaylistSync) findTrack(ctx context.Context, artist, title string) (Tra
 	}
 	s.Store.saveMatch(ctx, key, best)
 	if best == nil {
-		return Track{}, false
+		return Track{}, false, nil
 	}
-	return *best, true
+	return *best, true, nil
 }
 
 // bestTrackMatch garde le premier résultat dont l'artiste et le titre

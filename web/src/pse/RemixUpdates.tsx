@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-09-seerrcatalog-connection-test",
+    id: "2026-11-10-playlists-palettes",
     version: "current",
+    date: "2026-11-10",
+    title: ["Des thèmes plus doux et vos playlists", "Softer themes and your playlists"],
+    items: [
+      [
+        "Six palettes au choix dans Apparence, chacune en clair ou sombre, avec aperçu immédiat et mémorisation par navigateur.",
+        "Six palettes in Appearance, each with light and dark modes, instant previews and browser-local preferences.",
+      ],
+      [
+        "Playlists : découverte Deezer, connexion Spotify personnelle, imports par lien ou fichier CSV/XSPF. Aperçu avant validation, choix du spectateur et suivi des titres retrouvés ou manquants.",
+        "Playlists: Deezer discovery, personal Spotify connection, link and CSV/XSPF imports. Preview before confirming, viewer selection and matched/unmatched track progress.",
+      ],
+      [
+        "Les imports créent des copies personnelles sans remplacer les autres playlists. Les profils Deezer publics, Last.fm et ListenBrainz conservent leur synchronisation automatique.",
+        "Imports create personal copies without replacing other playlists. Public Deezer profiles, Last.fm and ListenBrainz keep their automatic sync.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-09-seerrcatalog-connection-test",
+    version: "0.2.37-remix.23.1",
     date: "2026-11-09",
     title: ["Tester la connexion à SeerrCatalog", "Test the SeerrCatalog connection"],
     items: [

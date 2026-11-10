@@ -198,3 +198,18 @@ Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent ve
 ### Navigation et badges des affiches
 
 Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épisodes et les rotations de collections respectent l’état de chaque spectateur. Le catalogue « lisible uniquement » conserve des compteurs exacts, y compris les exceptions de langue.
+
+
+## Playlists et apparence
+
+Dans **Contenus et bibliothèques → Musique → Playlists** :
+
+- **Découvrir** : tendances et recherche Deezer ; connexion Spotify et liste de vos playlists ; liens vers ListenBrainz, Soundplate et DailyPlaylists pour découvrir d’autres sélections.
+- **Mes comptes** : profils Deezer publics, Last.fm et ListenBrainz synchronisés automatiquement (6 h par défaut). Les playlists Deezer privées ne sont pas accessibles par un simple lien de profil.
+- **Importer** : lien de playlist Deezer, Spotify ou ListenBrainz, ou fichier CSV/XSPF (2 Mo maximum). CSV : colonnes `title` et `artist`, ou `Track Name` et `Artist Name(s)` pour Exportify ; séparateurs virgule ou point-virgule. Les URL audio des fichiers XSPF ne sont jamais téléchargées.
+
+Choisissez le spectateur, vérifiez l’aperçu, puis validez. Une copie personnelle, éditable via Subsonic, est créée sans remplacer les autres playlists. Ces copies ne sont pas synchronisées automatiquement. L’import traite les 2 000 premiers éléments et affiche la progression ainsi que les titres non retrouvés dans le catalogue. La lecture dépend ensuite de vos sources musicales ; les métadonnées d’une playlist ne garantissent pas un flux audio disponible. Le suivi reste disponible une heure sur le serveur, mais ne survit pas à son redémarrage.
+
+**Spotify** : dans Découvrir → Spotify, saisissez le **Client ID** de votre application. Ajoutez dans le tableau de bord Spotify l’URI de redirection exacte affichée par Remix, puis connectez le compte pour le spectateur choisi. HTTPS est requis hors boucle locale. Aucun Client Secret n’est demandé : connexion OAuth avec PKCE, jetons chiffrés sur le serveur, accès en lecture seule et bouton de déconnexion. En mode développement, le propriétaire de l’application doit avoir Premium et autoriser les utilisateurs dans Spotify Developers. L’accès aux titres peut être refusé pour les playlists dont vous n’êtes ni propriétaire ni collaborateur ; un lien trouvé dans un annuaire ne contourne pas cette limite.
+
+**Apparence** : le bouton en forme de palette dans la barre supérieure propose Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine. Choisissez séparément le mode clair ou sombre ; l’aperçu est immédiat et le choix est conservé dans ce navigateur. Les autres utilisateurs gardent leurs propres préférences.
