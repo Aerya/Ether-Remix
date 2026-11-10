@@ -218,3 +218,17 @@ Choisissez le spectateur, vérifiez l’aperçu, puis validez. Une copie personn
 **Spotify** : dans Découvrir → Spotify, saisissez le **Client ID** de votre application. Ajoutez dans le tableau de bord Spotify l’URI de redirection exacte affichée par Remix, puis connectez le compte pour le spectateur choisi. HTTPS est requis hors boucle locale. Aucun Client Secret n’est demandé : connexion OAuth avec PKCE, jetons chiffrés sur le serveur, accès en lecture seule et bouton de déconnexion. En mode développement, le propriétaire de l’application doit avoir Premium et autoriser les utilisateurs dans Spotify Developers. L’accès aux titres peut être refusé pour les playlists dont vous n’êtes ni propriétaire ni collaborateur ; un lien trouvé dans un annuaire ne contourne pas cette limite.
 
 **Apparence** : le bouton en forme de palette dans la barre supérieure propose Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine. Choisissez séparément le mode clair ou sombre ; l’aperçu est immédiat et le choix est conservé dans ce navigateur. Les autres utilisateurs gardent leurs propres préférences.
+
+
+## Langues du catalogue
+
+Dans **Langues et qualité**, « Catalogue selon les langues » permet de choisir les langues originales et celles des releases indexées. Ces critères sont alternatifs : il suffit qu’un seul corresponde. Le français et les réglages existants sont conservés par défaut ; les noms techniques `PSE_FRENCH_*` restent compatibles.
+
+- `PSE_CATALOG_ORIGINAL_LANGUAGES=fr` : codes ISO des langues originales acceptées, séparés par des virgules. `none` désactive ce critère.
+- `PSE_CATALOG_COUNTRY_EVIDENCE=on` : conserve le critère historique des pays de sortie. `off` le désactive : une sortie dans un pays ne garantit pas une piste audio dans sa langue.
+- `PSE_FRENCH_RELEASES` accepte les langues proposées par Ether, en plus des marqueurs VF historiques. Les variantes espagnol latino/Espagne et portugais Brésil/Portugal sont distinctes ; une langue générique accepte ses variantes, une variante exige une annonce correspondante.
+- Dans le catalogue **lisible uniquement**, `lang=de,sub:es;min=1080` accepte une release audio allemande **ou** annonçant des sous-titres espagnols. Les exigences de résolution, codec et cache restent applicables. Les langues sont une liste d’acceptation, pas un classement de lecture ; les priorités de lecture restent dans Ether.
+
+Exemple allemand : langues originales `de` (ou `none` pour exiger des releases), langues de release `german`, indice de pays désactivé et filtre lisible `lang=de`. Ne pas cocher MULTi si une langue annoncée est requise : MULTi seul ne prouve aucune langue précise.
+
+La langue de l’interface et celle des métadonnées restent indépendantes. Les sources doivent annoncer les langues ; aucun flux n’est sondé pour les deviner. L’import StreamFusion reste spécialisé français. Les collections d’exception existantes, dont VOSTFR à la demande, conservent leur identité et leur comportement.

@@ -1,0 +1,302 @@
+[
+  {
+    "code": "af",
+    "fr": "afrikaans",
+    "en": "Afrikaans"
+  },
+  {
+    "code": "ar",
+    "fr": "arabe",
+    "en": "Arabic"
+  },
+  {
+    "code": "bg",
+    "fr": "bulgare",
+    "en": "Bulgarian"
+  },
+  {
+    "code": "bn",
+    "fr": "bengali",
+    "en": "Bangla"
+  },
+  {
+    "code": "bs",
+    "fr": "bosniaque",
+    "en": "Bosnian"
+  },
+  {
+    "code": "ca",
+    "fr": "catalan",
+    "en": "Catalan"
+  },
+  {
+    "code": "cs",
+    "fr": "tchèque",
+    "en": "Czech"
+  },
+  {
+    "code": "da",
+    "fr": "danois",
+    "en": "Danish"
+  },
+  {
+    "code": "de",
+    "fr": "allemand",
+    "en": "German"
+  },
+  {
+    "code": "el",
+    "fr": "grec",
+    "en": "Greek"
+  },
+  {
+    "code": "en",
+    "fr": "anglais",
+    "en": "English"
+  },
+  {
+    "code": "es",
+    "fr": "espagnol",
+    "en": "Spanish"
+  },
+  {
+    "code": "et",
+    "fr": "estonien",
+    "en": "Estonian"
+  },
+  {
+    "code": "fa",
+    "fr": "persan",
+    "en": "Persian"
+  },
+  {
+    "code": "fi",
+    "fr": "finnois",
+    "en": "Finnish"
+  },
+  {
+    "code": "fr",
+    "fr": "français",
+    "en": "French"
+  },
+  {
+    "code": "ga",
+    "fr": "irlandais",
+    "en": "Irish"
+  },
+  {
+    "code": "he",
+    "fr": "hébreu",
+    "en": "Hebrew"
+  },
+  {
+    "code": "hi",
+    "fr": "hindi",
+    "en": "Hindi"
+  },
+  {
+    "code": "hr",
+    "fr": "croate",
+    "en": "Croatian"
+  },
+  {
+    "code": "hu",
+    "fr": "hongrois",
+    "en": "Hungarian"
+  },
+  {
+    "code": "id",
+    "fr": "indonésien",
+    "en": "Indonesian"
+  },
+  {
+    "code": "is",
+    "fr": "islandais",
+    "en": "Icelandic"
+  },
+  {
+    "code": "it",
+    "fr": "italien",
+    "en": "Italian"
+  },
+  {
+    "code": "ja",
+    "fr": "japonais",
+    "en": "Japanese"
+  },
+  {
+    "code": "ka",
+    "fr": "géorgien",
+    "en": "Georgian"
+  },
+  {
+    "code": "kn",
+    "fr": "kannada",
+    "en": "Kannada"
+  },
+  {
+    "code": "ko",
+    "fr": "coréen",
+    "en": "Korean"
+  },
+  {
+    "code": "lt",
+    "fr": "lituanien",
+    "en": "Lithuanian"
+  },
+  {
+    "code": "lv",
+    "fr": "letton",
+    "en": "Latvian"
+  },
+  {
+    "code": "mk",
+    "fr": "macédonien",
+    "en": "Macedonian"
+  },
+  {
+    "code": "ml",
+    "fr": "malayalam",
+    "en": "Malayalam"
+  },
+  {
+    "code": "mn",
+    "fr": "mongol",
+    "en": "Mongolian"
+  },
+  {
+    "code": "mr",
+    "fr": "marathi",
+    "en": "Marathi"
+  },
+  {
+    "code": "ms",
+    "fr": "malais",
+    "en": "Malay"
+  },
+  {
+    "code": "nl",
+    "fr": "néerlandais",
+    "en": "Dutch"
+  },
+  {
+    "code": "no",
+    "fr": "norvégien",
+    "en": "Norwegian"
+  },
+  {
+    "code": "pl",
+    "fr": "polonais",
+    "en": "Polish"
+  },
+  {
+    "code": "pt",
+    "fr": "portugais",
+    "en": "Portuguese"
+  },
+  {
+    "code": "rm",
+    "fr": "romanche",
+    "en": "Romansh"
+  },
+  {
+    "code": "ro",
+    "fr": "roumain",
+    "en": "Romanian"
+  },
+  {
+    "code": "ru",
+    "fr": "russe",
+    "en": "Russian"
+  },
+  {
+    "code": "sk",
+    "fr": "slovaque",
+    "en": "Slovak"
+  },
+  {
+    "code": "sl",
+    "fr": "slovène",
+    "en": "Slovenian"
+  },
+  {
+    "code": "sq",
+    "fr": "albanais",
+    "en": "Albanian"
+  },
+  {
+    "code": "sr",
+    "fr": "serbe",
+    "en": "Serbian"
+  },
+  {
+    "code": "sv",
+    "fr": "suédois",
+    "en": "Swedish"
+  },
+  {
+    "code": "ta",
+    "fr": "tamoul",
+    "en": "Tamil"
+  },
+  {
+    "code": "te",
+    "fr": "télougou",
+    "en": "Telugu"
+  },
+  {
+    "code": "th",
+    "fr": "thaï",
+    "en": "Thai"
+  },
+  {
+    "code": "tl",
+    "fr": "filipino",
+    "en": "Filipino"
+  },
+  {
+    "code": "tr",
+    "fr": "turc",
+    "en": "Turkish"
+  },
+  {
+    "code": "uk",
+    "fr": "ukrainien",
+    "en": "Ukrainian"
+  },
+  {
+    "code": "ur",
+    "fr": "ourdou",
+    "en": "Urdu"
+  },
+  {
+    "code": "vi",
+    "fr": "vietnamien",
+    "en": "Vietnamese"
+  },
+  {
+    "code": "zh",
+    "fr": "chinois",
+    "en": "Chinese"
+  },
+  {
+    "code": "es-es",
+    "fr": "espagnol d’Espagne",
+    "en": "European Spanish"
+  },
+  {
+    "code": "es-419",
+    "fr": "espagnol d’Amérique latine",
+    "en": "Latin American Spanish"
+  },
+  {
+    "code": "pt-br",
+    "fr": "portugais brésilien",
+    "en": "Brazilian Portuguese"
+  },
+  {
+    "code": "pt-pt",
+    "fr": "portugais européen",
+    "en": "European Portuguese"
+  }
+]

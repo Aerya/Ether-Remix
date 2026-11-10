@@ -1,6 +1,7 @@
 package releasedb
 
 import (
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"strconv"
 	"strings"
 )
@@ -12,6 +13,7 @@ type Filter struct {
 	// "french" (ou "fr", "vf"), "vfq" (ou "qc"), "vff", "vfi", "multi",
 	// "english" (ou "en")… Deux valeurs spéciales : "vostfr" (ou
 	// "subfrench" : sous-titres français annoncés) et "vo" (aucun doublage annoncé, ou anglais).
+	// "sub:<code>" accepts announced subtitles as an alternative to audio.
 	Languages []string
 	// MinHeight / MaxHeight : bornes de résolution (720, 1080, 2160…).
 	MinHeight, MaxHeight int
@@ -47,6 +49,12 @@ func (f Filter) Match(r Release) bool {
 func wantedLanguage(r Release, want []string) bool {
 	var audio []string
 	for _, w := range want {
+		if code, ok := strings.CutPrefix(strings.ToLower(w), "sub:"); ok {
+			if anyLanguage(r.SubtitleLanguages, []string{code}) {
+				return true
+			}
+			continue
+		}
 		switch canonicalLanguage(w) {
 		case "vostfr":
 			if contains(r.SubtitleLanguages, "french") {
@@ -78,7 +86,7 @@ func anyLanguage(have, want []string) bool {
 	for _, w := range want {
 		w = canonicalLanguage(w)
 		for _, h := range have {
-			if h == w {
+			if h == w || releaseparse.LanguageMatch(h, w) == releaseparse.LanguageExactMatch {
 				return true
 			}
 		}

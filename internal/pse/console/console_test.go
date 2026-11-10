@@ -235,3 +235,23 @@ func TestLoadOverrides(t *testing.T) {
 		t.Fatal("un réglage inconnu ne doit pas être chargé")
 	}
 }
+
+func TestInternationalCatalogueChoices(t *testing.T) {
+	for _, feature := range Features {
+		for _, fd := range feature.Fields {
+			switch fd.Key {
+			case "PSE_CATALOG_ORIGINAL_LANGUAGES":
+				if _, err := validate(fd, "ja,de,ar", nil); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := validate(fd, "none,de", nil); err == nil {
+					t.Fatal("none must be exclusive")
+				}
+			case "PSE_FRENCH_RELEASES":
+				if _, err := validate(fd, "german,spanish-latino,portuguese-brazil,arabic", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}

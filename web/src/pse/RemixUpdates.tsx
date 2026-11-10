@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-statistics-dashboard",
+    id: "2026-11-10-international-languages",
     version: "current",
+    date: "2026-11-10",
+    title: ["Choisir les langues du catalogue", "Choose catalogue languages"],
+    items: [
+      [
+        "Les langues reconnues par Ether sont sélectionnables pour le catalogue et les releases, avec des variantes espagnoles et portugaises et des sous-titres facultatifs. Le français reste le réglage initial. Le critère de pays de sortie peut être désactivé ; MULTi reste un choix explicite.",
+        "Ether-supported languages can be selected for the catalogue and releases, including Spanish and Portuguese variants and optional subtitles. French remains the initial configuration. Release-country evidence can be disabled; MULTi remains an explicit choice.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-statistics-dashboard",
+    version: "0.2.37-remix.32.1",
     date: "2026-11-10",
     title: ["Les statistiques vous accueillent", "Statistics welcome you"],
     items: [

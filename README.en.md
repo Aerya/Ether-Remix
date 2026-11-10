@@ -25,7 +25,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 
 | Feature | What it provides |
 | --- | --- |
-| **French catalogue and quality** | Movies, shows and anime filtered by country, language (VFF, VFQ, VFi, MULTi…), resolution, codec and cache. Collection/library exceptions and **French subtitles on demand** with priority searches. **Playable only** mode requires a minimum release count; detailed rules below. |
+| **Catalogue languages and quality** | Movies, shows and anime filtered by country, accepted audio and subtitle languages (French defaults, other Ether-supported languages and regional variants), resolution, codec and cache. Collection/library exceptions and **French subtitles on demand** with priority searches. **Playable only** mode requires a minimum release count; detailed rules below. |
 | **Indexing and sources** | Stremio addons and Prowlarr, Jackett, NZBHydra2 indexers: background searches, daily budgets, playback pauses and collection/library priorities. Unified Ether and music sources, category/content sorting, on-demand debrid key display. |
 | **Libraries and collections** | Plex libraries by service, studio, anime, documentary, concert or live show; TMDB collections and imported Stremio catalogues, custom rows, presets and language exceptions. Configurable 1–168 h refresh. Anime under **Content and libraries → Anime**, with French/MULTi criteria and any addon manifest, using shared priorities. |
 | **SeerrCatalog** | Imports available requests, TMDB records and previously checked sources without duplicate searches; normal playback discovery remains the fallback. Optional integration, detailed below. |

@@ -11,6 +11,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/frenchcat"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
@@ -121,4 +122,26 @@ func TestPSEFrenchCatalogue(t *testing.T) {
 	if got := browse(""); len(got) != 2 {
 		t.Fatalf("liste mélangée (Fjord + série) : %v", got)
 	}
+	// Other language choices must not retain French productions or French release dates.
+	if _, err := db.ExecContext(ctx, `UPDATE catalog_titles SET language='de' WHERE key=?`, int64(space)); err != nil {
+		t.Fatal(err)
+	}
+	frenchcat.Override(frenchcat.Settings{Enabled: true, OriginalLanguages: []string{"de"}, Types: all})
+	if got := browse(core.TypeShow); len(got) != 1 || got[0] != space {
+		t.Fatalf("German original: %v", got)
+	}
+	if got := browse(core.TypeMovie); len(got) != 0 {
+		t.Fatalf("French country or MULTi leaked into German catalogue: %v", got)
+	}
+	frenchcat.Override(frenchcat.Settings{Enabled: true, OriginalLanguages: []string{}, Releases: []string{"german"}, Types: all})
+	if got := browse(core.TypeShow); len(got) != 0 {
+		t.Fatalf("original evidence disabled: %v", got)
+	}
+	if err := st.Save(ctx, []releasedb.Release{releasedb.FromCore(ftitle, 0, 0, "aio", core.Release{ID: "de", Info: releaseparse.Parse("Family.Fun.2020.GERMAN.1080p.WEB.x264-GRP"), Name: "Family.Fun.2020.GERMAN.1080p.WEB.x264-GRP", Protocol: "http"}, nil)}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := browse(core.TypeMovie); len(got) != 1 || got[0] != family {
+		t.Fatalf("German indexed release: %v", got)
+	}
+
 }

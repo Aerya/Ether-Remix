@@ -140,7 +140,7 @@ func NewPlayable(min int, filter string, pending bool) PlayableSettings {
 // le seuil Min.
 func (p PlayableSettings) signature() string {
 	f := p.Filter
-	return strings.Join([]string{"v2", strings.Join(f.Languages, ","), strconv.Itoa(f.MinHeight), strconv.Itoa(f.MaxHeight), strings.Join(f.VideoCodecs, ","), strconv.FormatBool(f.CachedOnly)}, "|")
+	return strings.Join([]string{"v3", strings.Join(f.Languages, ","), strconv.Itoa(f.MinHeight), strconv.Itoa(f.MaxHeight), strings.Join(f.VideoCodecs, ","), strconv.FormatBool(f.CachedOnly)}, "|")
 }
 
 var (
