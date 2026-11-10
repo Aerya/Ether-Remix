@@ -1,3 +1,4 @@
+import "./StatisticsCharts.css";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -351,7 +352,7 @@ export function CatalogHistory({
         {buckets.length ? (
           <div className="mt-5 overflow-x-auto">
             <div
-              className="flex h-56 min-w-[640px] items-end gap-2"
+              className="remix-stat-history flex h-56 min-w-[640px] items-end gap-2 border-b border-border"
               role="img"
               aria-label={series
                 .map((b) =>
@@ -382,7 +383,7 @@ export function CatalogHistory({
                   <div
                     className={
                       measured(b.start)
-                        ? "flex min-h-0 flex-col justify-end"
+                        ? "remix-stat-column flex min-h-0 flex-col justify-end"
                         : "flex min-h-0 flex-col justify-end rounded-sm border border-dashed border-border bg-surface/40"
                     }
                     style={{ height: measured(b.start) ? ((b.movies + b.shows) / max) * 185 : 185 }}
@@ -392,7 +393,8 @@ export function CatalogHistory({
                         className="rounded-t-sm"
                         style={{
                           height: (b.shows / (b.movies + b.shows)) * 100 + "%",
-                          background: "var(--viz-2)",
+                          background:
+                            "linear-gradient(to top, var(--viz-2), color-mix(in srgb, var(--viz-2) 65%, white))",
                         }}
                       />
                     ) : null}
@@ -401,7 +403,8 @@ export function CatalogHistory({
                         className={b.shows ? "" : "rounded-t-sm"}
                         style={{
                           height: (b.movies / (b.movies + b.shows)) * 100 + "%",
-                          background: "var(--viz-1)",
+                          background:
+                            "linear-gradient(to top, var(--viz-1), color-mix(in srgb, var(--viz-1) 65%, white))",
                         }}
                       />
                     ) : null}

@@ -16,6 +16,7 @@ vi.mock("./VostfrTitles", () => ({ VostfrTitles: () => <div>Titres en VOSTFR à 
 vi.mock("./RemixSources", () => ({
   RemixSources: ({ indexing }: { indexing: React.ReactNode }) => indexing,
 }));
+vi.mock("./IndexerDetails", () => ({ IndexerDetails: () => <div>Tableau statistiques</div> }));
 vi.mock("./SearchPriority", () => ({ SearchPriority: () => null }));
 vi.mock("./SourceOrder", () => ({ SourceOrder: () => null }));
 const txt = (s: string) => ({ fr: s, en: s });
@@ -103,4 +104,19 @@ it("redirects a legacy indexing anchor to its new source category", async () => 
     </MemoryRouter>,
   );
   expect(await screen.findByRole("heading", { name: "Indexation" })).toBeTruthy();
+});
+
+it("opens statistics when entering Remix without a tab", async () => {
+  apiFetch.mockResolvedValue({ features: [] });
+  render(
+    <MemoryRouter initialEntries={["/accent"]}>
+      <Routes>
+        <Route path="/accent/:tab?" element={<PsePage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Tableau statistiques")).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Statistiques" }).getAttribute("aria-selected")).toBe(
+    "true",
+  );
 });
