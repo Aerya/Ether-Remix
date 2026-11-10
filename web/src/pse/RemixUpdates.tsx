@@ -38,6 +38,21 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-10-scrob-refresh-status",
+    version: "0.2.37-remix.31.1",
+    date: "2026-11-10",
+    title: [
+      "Scrob : état actualisé et rafraîchissement Jellyfin",
+      "Scrob: live status and Jellyfin refresh",
+    ],
+    items: [
+      [
+        "Le dernier accès Jellyfin et l’état du webhook sont distingués et actualisés sans F5. La demande de rafraîchissement du catalogue virtuel ne renvoie plus une erreur 404. Les listes d’épisodes sans tri utilisent la pagination rapide au lieu de parcourir toutes les séries. Pull reste l’action d’import dans Scrob.",
+        "Latest Jellyfin access and webhook status are distinguished and refreshed without reloading. Virtual catalogue refresh requests no longer return 404. Episode lists without an explicit sort use fast pagination instead of walking every series. Pull remains the action that imports into Scrob.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-10-scrob-bidirectional",
     version: "0.2.37-remix.30.1",
     date: "2026-11-10",

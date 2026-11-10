@@ -17,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/scrobview"
+	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/pse/console"
 	"github.com/braedonsaunders/ether/internal/pse/frenchcat"
 	"github.com/braedonsaunders/ether/internal/pse/music"
@@ -177,9 +178,16 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		Pusher: func() *scrobpush.Pusher { return rt.scrob.Load() },
 		Viewers: func(ctx context.Context) ([]scrobpush.Viewer, error) {
 			vs, err := a.pseViewers(ctx)
+			if err != nil {
+				return nil, err
+			}
+			activity, err := identity.LastSurfaceActivity(ctx, a.db, "jellyfin", time.Now())
+			if err != nil {
+				return nil, err
+			}
 			out := make([]scrobpush.Viewer, 0, len(vs))
 			for _, v := range vs {
-				out = append(out, scrobpush.Viewer{ID: v.ID, Name: v.Name})
+				out = append(out, scrobpush.Viewer{ID: v.ID, Name: v.Name, JellyfinLastAt: activity[v.ID]})
 			}
 			return out, err
 		},

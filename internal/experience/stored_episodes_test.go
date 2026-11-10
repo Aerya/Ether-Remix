@@ -97,6 +97,13 @@ func TestStoredEpisodePageMatchesTheLibraryWalk(t *testing.T) {
 			t.Fatalf("the stored path expanded %d series", expanded)
 		}
 	}
+	// Scrob requests a specific library without SortBy. It must still page
+	// stored episodes rather than expand every series before returning one.
+	expanded = 0
+	page, err := svc.LibraryItems(ctx, viewer, core.Device{}, "2", frontend.ItemQuery{Recursive: true, Types: []core.MediaType{core.TypeEpisode}, Limit: 1})
+	if err != nil || len(page.Items) != 1 || expanded != 0 {
+		t.Fatalf("unsorted library: items=%d expanded=%d err=%v", len(page.Items), expanded, err)
+	}
 	// A custom episode order keeps the walk.
 	svc.d.StoredEpisodes.Customized = func(context.Context, *core.User) (bool, error) { return true, nil }
 	expanded = 0

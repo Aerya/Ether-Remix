@@ -130,6 +130,15 @@ func TestPSEScrobLibraries(t *testing.T) {
 		return out
 	}
 
+	// Scrob's Trigger Library Scan expects a quick successful empty response.
+	if code, _ := call("POST", "/Library/Refresh", ""); code != 204 {
+		t.Fatalf("refresh: %d", code)
+	}
+	anonymous := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(anonymous, httptest.NewRequest("POST", "/Library/Refresh", nil))
+	if anonymous.Code != 401 {
+		t.Fatalf("anonymous refresh: %d", anonymous.Code)
+	}
 	// Désactivé : seules les bibliothèques d'Ether.
 	if code, doc := call("GET", "/Users/"+uid+"/Views", ""); code != 200 || len(names(doc)) != 1 {
 		t.Fatalf("vues sans PSE : %d %v", code, names(doc))

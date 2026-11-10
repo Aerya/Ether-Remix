@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { ScrobLinks } from "./ScrobLinks";
 
@@ -77,4 +77,40 @@ it("creates a viewer-scoped Jellyfin connection only on request and masks its to
   expect(screen.getByLabelText("Token").getAttribute("type")).toBe("password");
   expect((screen.getByLabelText("User ID") as HTMLInputElement).value).toBe("jellyfin-user-seven");
   expect((button as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("refreshes Jellyfin activity without reloading or losing an unsaved webhook", async () => {
+  vi.useFakeTimers();
+  let seen = false;
+  apiFetch.mockReset();
+  apiFetch.mockImplementation(async () => ({
+    enabled: true,
+    viewers: [
+      {
+        id: 7,
+        name: "Alice",
+        url: "",
+        configured: false,
+        jellyfinLastAt: seen ? 1800000000 : undefined,
+      },
+    ],
+  }));
+  const mounted = render(<ScrobLinks />);
+  try {
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "https://scrob.example/private-draft" } });
+    seen = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText(/Last Jellyfin access|Dernier accès Jellyfin/)).toBeTruthy();
+    expect((input as HTMLInputElement).value).toBe("https://scrob.example/private-draft");
+    expect(screen.getByText(/Webhook non configuré|Webhook not configured/)).toBeTruthy();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
 });

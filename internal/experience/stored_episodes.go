@@ -84,7 +84,8 @@ func (c *episodeCursors) put(key string, after core.RatingKey) {
 // library from the stored episodes, in key order: one bounded read per page,
 // with no season refresh or provider lookup for series the page never
 // reaches. It applies only where that order is the sorted order (popularity,
-// which no episode has, ties by key) and the episode set is the
+// which no episode has, ties by key), or where no order was requested,
+// and the episode set is the
 // catalogue's: no custom episode order and a filter-free query. A restricted
 // viewer's exclusions go into the series predicate, so the total counts only
 // what they may see. ok is false otherwise.
@@ -92,7 +93,7 @@ func (s *Service) storedEpisodePage(ctx context.Context, v *core.User, library *
 	d := s.d.StoredEpisodes
 	if !d.complete() || library == nil || library.Type != core.TypeShow || !q.Recursive || len(q.Types) != 1 || q.Types[0] != core.TypeEpisode ||
 		q.Watched != nil || q.Favorite != nil || q.Season != nil || q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0 ||
-		q.Sort != core.SortPopularity || !plainItemFilter(q.Filter) || s.d.ParentTitles == nil {
+		(q.Sort != "" && q.Sort != core.SortPopularity) || !plainItemFilter(q.Filter) || s.d.ParentTitles == nil {
 		return core.Page{}, false, nil
 	}
 	show := core.Filter{Type: core.TypeShow, MaxContentRating: v.MaxContentRating}
