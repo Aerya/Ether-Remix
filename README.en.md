@@ -1,5 +1,6 @@
-> [!WARNING]
-> **BETA — Ether-Remix is still in active development. Bugs and breaking changes may occur.**
+# BETA — Ether-Remix
+
+**Still in active development: bugs and breaking changes may occur.**
 
 <p align="center">
   <picture>
@@ -23,22 +24,63 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 
 ## Features
 
-| Feature | What it provides |
-| --- | --- |
-| **French catalogue and quality** | Movies, shows and anime filtered by country, language (VFF, VFQ, VFi, MULTi…), resolution, codec and cache. Collection/library exceptions and **French subtitles on demand** with priority searches. **Playable only** mode requires a minimum release count; detailed rules below. |
-| **Indexing and sources** | Stremio addons and Prowlarr, Jackett, NZBHydra2 indexers: background searches, daily budgets, playback pauses and collection/library priorities. Unified Ether and music sources, category/content sorting, on-demand debrid key display. |
-| **Libraries and collections** | Plex libraries by service, studio, anime, documentary, concert or live show; TMDB collections and imported Stremio catalogues, custom rows, presets and language exceptions. Configurable 1–168 h refresh. Anime under **Content and libraries → Anime**, with French/MULTi criteria and any addon manifest, using shared priorities. |
-| **SeerrCatalog** | Imports available requests, TMDB records and previously checked sources without duplicate searches; normal playback discovery remains the fallback. Optional integration, detailed below. |
-| **Browsing and statistics** | Batched Plex/Jellyfin poster badges, per-viewer watch state, direct playable-catalogue access and exact counts. Remix opens on statistics, with coloured progress rings and a thin-bar history chart. TMDB comparison, daily/weekly/monthly/yearly history, period or cumulative values, movie/show/anime and source filters, live tracking and activity log. |
-| **Music** | Public Deezer catalogue through Plex/Plexamp, Jellyfin and Subsonic; per-user favourites and history, without local music files. Sources, automatic fallback and clients detailed below. |
-| **Playlists** | Deezer discovery, personal Spotify connection, Deezer/Spotify/ListenBrainz links or CSV/XSPF imports, with previews and matching progress. Public Deezer profiles, Last.fm and ListenBrainz sync; personal playlists editable through Subsonic. |
-| **Music discovery** | Favourites, recent plays, most-played tracks, country charts, discoveries and new releases from followed artists; genres, similar artists, radios and mixes where supported by the client. |
-| **Tracking and notifications** | One Jellyfin connection to Scrob, with directions and schedules chosen in Scrob; automatically refreshed activity and per-viewer watched status and ratings. Optional real-time webhook and history-only libraries; per-user Last.fm music scrobbling and Overview statistics. Dedicated **Notifications and tracking** tab. |
-| **Interface** | Six Remix tabs, grouped language/quality settings, music sources by family, collapsible source and priority sections preserving unsaved settings. Six palettes — Ether, Nord, Catppuccin, Solarized, Gruvbox, Rosé Pine — in light/dark mode, with instant preview and per-browser persistence under **Appearance**. |
-| **Updates** | Unread updates in the console; daily Ether synchronization, pre-merge checks, failure reporting and `amd64`/`arm64` Docker images. |
-Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio compatibility, along with debrid/Usenet video streaming, come from **Ether**. Ether-Remix extends these capabilities.
+### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
 
-Under **Sources → Stremio, Indexers and Indexing**, click a section title to collapse or expand it.
+- **French-oriented catalogue**: choose languages and variants — VFF, VFQ, VFi, MULTi… — along with resolution, codec and cache requirements.
+- **Playable-only catalogue**: show titles with a minimum number of releases matching your preferences. Search, collections, watchlists and continue watching remain accessible.
+- **Targeted exceptions**: allow other languages for selected collections or libraries without changing your general preferences.
+- **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled.
+- **Anime**: create TMDB-based libraries and collections with your French/MULTi preferences and any Stremio addons you choose.
+
+### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Unified sources and searches ahead of playback
+
+- **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
+- **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
+- **Controlled searches**: daily per-source budgets, pauses during playback, collection/library priorities and immediate manual searches.
+- **Search from Plex or Jellyfin**: top results never searched or previously without releases receive priority, subject to their retry interval.
+- **SeerrCatalog integration**: import availability and previously checked sources for Seerr requests without duplicate searches. Normal playback discovery remains the fallback.
+
+### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
+
+- Organize Plex libraries by **service, studio, anime, documentaries, concerts or live shows**.
+- Build their rows with TMDB collections, imported Stremio catalogues and ready-made presets.
+- Set language exceptions, search priorities and collection refresh intervals from **1 to 168 hours**.
+- Benefit from batched poster badge preparation in Plex and Jellyfin, per-viewer watch state and exact counts.
+
+### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) Music in your applications
+
+- Browse the **public Deezer catalogue** from Plex/Plexamp, Jellyfin clients or a Subsonic application: Symfonium, Feishin, Supersonic, DSub…
+- Listen through **Audius, Eclipse addons, DMM with Real-Debrid or your AllDebrid, Real-Debrid and TorBox accounts**, depending on enabled sources.
+- Choose source order: when a source fails, Remix tries the next one. A separate external HiFi API mode is also available.
+- Keep **per-user favourites and listening history**, without building a local music-file library. Available quality depends on the sources.
+
+### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Your playlists and new discoveries
+
+- **Browse Deezer playlists** and connect your Spotify account to find playlists you can access.
+- **Import by URL** from Deezer, Spotify or ListenBrainz, or from CSV/XSPF files.
+- Review the preview, choose the destination viewer and track matched or missing tracks. Imports create personal copies without replacing other playlists.
+- Synchronize public Deezer profiles, Last.fm and ListenBrainz; manage personal playlists through Subsonic clients.
+- Explore **country charts, recent plays, most-played tracks and new releases from followed artists**. Genres, similar artists, radios and mixes depend on the client.
+
+### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistics and tracking
+
+- Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
+- View history **by day, week, month or year**, as period or cumulative values, filtered by movies, shows, anime and sources.
+- Compare the local catalogue with TMDB totals and review operations in the activity log.
+- Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook and history-only libraries are optional.
+- Connect **Last.fm** per user for music scrobbling and find listening statistics in Overview.
+
+### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) An interface that fits your habits
+
+- Six tabs: **Sources**, **Languages and quality**, **French subtitles on demand**, **Content and libraries**, **Statistics**, **Notifications and tracking**.
+- Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
+- Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.
+
+### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) Ether, extended by Remix
+
+- Retains Ether's features and compatible clients: **Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio**, with its debrid and Usenet video sources.
+- Daily synchronization with the original project, checks before merging and failure reporting.
+- Docker images for **amd64 and arm64**, with update notes in the console.
 
 ## SeerrCatalog: from requests to available titles
 
