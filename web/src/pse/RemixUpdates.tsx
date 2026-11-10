@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-quality-mode-import",
+    id: "2026-11-10-music-activity",
     version: "current",
+    date: "2026-11-10",
+    title: ["La musique rejoint Activité", "Music joins Activity"],
+    items: [
+      [
+        "Les lectures signalées par Plex, Jellyfin/Emby et Subsonic apparaissent dans En cours. L’onglet Historique affiche aussi les écoutes musicales, avec filtres et pagination. Les sessions sans nouvelles expirent automatiquement.",
+        "Playback reported by Plex, Jellyfin/Emby and Subsonic appears in Now playing. History also shows music listens, with filters and pagination. Stale sessions expire automatically.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-quality-mode-import",
+    version: "0.2.37-remix.43.1",
     date: "2026-11-10",
     title: ["Un seul mode de filtrage à la fois", "One filtering mode at a time"],
     items: [

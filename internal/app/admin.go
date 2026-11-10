@@ -128,9 +128,7 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return out, err
 		},
-		SessionsStatus: func(context.Context) any {
-			return ownerSessionStatuses((ownerPlayback{Playback: a.playback, app: a}).Sessions())
-		},
+		SessionsStatus:       a.activitySessions, // PSE-HOOK: sessions musicales — voir docs/pse/FORK.fr.md
 		CacheStatus:          a.cacheStatus,
 		CacheRestartRequired: a.cacheRestartRequired,
 		ProvidersStatus:      func(context.Context) any { return a.fetcher.Stats() },

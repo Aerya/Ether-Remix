@@ -22,6 +22,7 @@ const PSEMusicSection = 5053
 
 // PSEMusicJellyfin décrit le serveur Jellyfin qui sert la musique.
 type PSEMusicJellyfin struct {
+	Protocol string
 	ServerID string
 	ViewID   string                // GUID de la bibliothèque Musique
 	Folder   func() map[string]any // objet de la bibliothèque, pour /Items/{ViewID}

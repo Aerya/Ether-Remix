@@ -115,6 +115,16 @@ L’import des disponibilités accepte une fiche déjà enregistrée même si el
 
 La recherche appelle les indexeurs configurés, avec vérification du titre/année ou de ses identifiants, et de l’épisode pour les séries. Les résultats SeerrCatalog retenus sont explicitement exclus de cette requête afin d’éviter une boucle de validation. Le client conserve ses critères de langue et décide de la disponibilité. Aucune collection ni exception globale de langue n’est créée. Un résultat incomplet doit être retenté, sans conclure à l’absence de sources.
 
+## Musique dans Activité
+
+Les observations musicales sont ajoutées à `/status/sessions`, utilisé par Activité → En cours et la Vue d’ensemble. Les timelines Plex et les rapports Jellyfin/Emby transmettent lecture, pause, position et arrêt ; Subsonic transmet le début via `scrobble?submission=false`. Les sessions sont isolées par spectateur, protocole et appareil. Les jetons et URL audio ne sont pas conservés. Aucun bouton d’arrêt vidéo n’est proposé pour ces observations musicales.
+
+Les sessions Plex/Jellyfin/Emby expirent après deux minutes sans rapport. Subsonic n’ayant généralement pas de signal d’arrêt, la session expire après la durée du morceau plus trente secondes (cinq minutes si elle est inconnue). Sans signal de lecture du client, aucune session n’est inventée à partir d’un téléchargement ou d’un préchargement. Les observations en mémoire disparaissent au redémarrage ou à la reconfiguration de la source.
+
+Activité → Historique présente aussi les lignes existantes de `pse_music_plays` dans une section musicale dédiée, via l’API propriétaire `/pse/music/history`. Période, année et spectateur filtrent cette section, paginée par cent écoutes. La durée affichée est celle du morceau, pas une mesure de temps écouté ; les indicateurs vidéo restent séparés. Les soumissions Subsonic alimentent l’historique ; Plex et Jellyfin/Emby le font à l’arrêt après au moins trente secondes, comme auparavant. Une simple notification de début ne crée pas d’historique.
+
+Points d’accroche : `internal/app/admin.go`, `internal/app/pse_console.go`, `internal/frontend/pse_music.go`, `internal/frontends/mediabrowser/pse_music.go`, `web/src/lib/health.ts`, `web/src/components/SessionArtwork.tsx`, `web/src/pages/activity/Activity.tsx` et `NowPlaying.tsx`.
+
 ## Sélection Concerts
 
 Le modèle Concerts exige le genre TMDB Musique (10402) et au moins un mot-clé de captation : `concert film` (156205), `music concert` (304615) ou `live concert` (318730). Le mot-clé générique `concert` (6029), qui peut décrire une scène de fiction, est retiré. Les sorties vidéo sont incluses. La pertinence prime sur l’exhaustivité : les captations mal renseignées peuvent manquer, et les erreurs de mots-clés TMDB restent possibles.

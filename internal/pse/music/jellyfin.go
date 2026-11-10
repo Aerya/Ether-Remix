@@ -1022,11 +1022,27 @@ func (q *jfReq) report(stopped bool) bool {
 	var body struct {
 		ItemId        string `json:"ItemId"`
 		PositionTicks int64  `json:"PositionTicks"`
+		IsPaused      bool   `json:"IsPaused"`
 	}
 	_ = json.Unmarshal(raw, &body)
 	kind, id, ok := ParseJellyfinGUID(body.ItemId)
 	if !ok {
 		return false
+	}
+	if kind == guidTrack {
+		state := "playing"
+		if body.IsPaused {
+			state = "paused"
+		}
+		if stopped {
+			state = "stopped"
+		}
+		protocol := q.j.Protocol
+		if protocol == "" {
+			protocol = "jellyfin"
+		}
+		ms := body.PositionTicks / 10_000
+		q.s.observeMusic(q.r, q.viewer, protocol, id, state, &ms, "")
 	}
 	if stopped && kind == guidTrack && body.PositionTicks >= 30*10_000_000 {
 		ctx := q.r.Context()

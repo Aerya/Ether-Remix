@@ -826,6 +826,10 @@ func (q *psemReq) state0(p string, v url.Values) bool {
 	ctx := q.ctx()
 	switch p {
 	case "/:/timeline":
+		if kind == psemTrack {
+			ms, _ := strconv.ParseInt(v.Get("time"), 10, 64)
+			q.m.observeMusic(q.r, q.viewer, "plex", id, v.Get("state"), &ms, "")
+		}
 		if v.Get("state") == "stopped" && kind == psemTrack {
 			if ms, _ := strconv.ParseInt(v.Get("time"), 10, 64); ms >= 30_000 {
 				q.m.Played(ctx, q.viewer, id)

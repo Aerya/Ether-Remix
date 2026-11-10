@@ -1,3 +1,4 @@
+import { Music2 } from "lucide-react";
 import { Artwork } from "./Artwork";
 import type { NowPlaying } from "../lib/health";
 import { initials } from "../lib/format";
@@ -18,6 +19,8 @@ export function SessionArtwork({
   className: string;
   posterTitle?: string;
 }) {
+  // PSE-HOOK: illustration musicale — voir docs/pse/FORK.fr.md
+  if (s.isMusic) return <Artwork alt={s.title} className={className} icon={<Music2 size={28} />} />;
   if (!s.isLive)
     return <Artwork src={poster} alt={s.title} title={posterTitle} className={className} />;
   return <LiveArtwork key={s.channelId} s={s} className={className} />;

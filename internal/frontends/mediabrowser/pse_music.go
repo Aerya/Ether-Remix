@@ -54,7 +54,7 @@ func (i *instance) pseMusic(next http.Handler) http.Handler {
 		if v, _, err := i.authenticate(r); err == nil && v != nil {
 			viewer = v.ID
 		}
-		j := frontend.PSEMusicJellyfin{ServerID: i.info.ID, ViewID: pseMusicViewID(), Folder: func() map[string]any {
+		j := frontend.PSEMusicJellyfin{Protocol: string(i.protocol), ServerID: i.info.ID, ViewID: pseMusicViewID(), Folder: func() map[string]any {
 			item, _ := i.pseMusicFolder()
 			return item
 		}}
@@ -117,6 +117,6 @@ func (i *instance) psePlaylists(r *http.Request, viewer *frontend.Viewer, items 
 	if m == nil || viewer == nil || offset > 0 {
 		return items, total
 	}
-	extra := m.JellyfinPlaylists(r.Context(), viewer.ID, frontend.PSEMusicJellyfin{ServerID: i.info.ID, ViewID: pseMusicViewID()})
+	extra := m.JellyfinPlaylists(r.Context(), viewer.ID, frontend.PSEMusicJellyfin{Protocol: string(i.protocol), ServerID: i.info.ID, ViewID: pseMusicViewID()})
 	return append(items, extra...), total + len(extra)
 }
