@@ -29,8 +29,8 @@ func fixture(t *testing.T, bad bool) (*Service, core.SearchRequest, core.Release
 			if !strings.Contains(r.URL.Path, "filename=") {
 				t.Error("missing filename")
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"subtitles": []any{map[string]string{"id": "source", "lang": "eng", "label": name + ".srt • fixture", "url": server.URL + "/addon/private/subtitle/source/eng.srt"}}})
-		case r.URL.Path == "/addon/private/subtitle/source/eng.srt":
+			_ = json.NewEncoder(w).Encode(map[string]any{"subtitles": []any{map[string]string{"id": "source", "lang": "eng", "label": name + ".srt / Other.Release.1080p-GROUP • fixture", "url": server.URL + "/addon/private/v1.4.97/subtitle/source/eng.srt"}}})
+		case r.URL.Path == "/addon/private/v1.4.97/subtitle/source/eng.srt":
 			fmt.Fprint(w, english)
 		case r.URL.Path == "/api/translate-file":
 			calls.Add(1)
@@ -153,5 +153,24 @@ func TestStrictSubtitleAndEndpointValidation(t *testing.T) {
 	}
 	if Canonical("Show.S01E01.1080p") == Canonical("Show.S01E02.1080p") {
 		t.Fatal("episode mismatch")
+	}
+}
+
+func TestProviderPathsAndExactAliases(t *testing.T) {
+	for _, p := range []string{"/addon/token/subtitle/id/fr.srt", "/addon/token/v1.4.97/subtitle/id/fr.srt"} {
+		if !subtitlePath(p, "token") {
+			t.Fatal(p)
+		}
+	}
+	for _, p := range []string{"/addon/other/subtitle/id/fr.srt", "/addon/token/admin/id/fr.srt", "/addon/token/../subtitle/id/fr.srt"} {
+		if subtitlePath(p, "token") {
+			t.Fatal(p)
+		}
+	}
+	if !matchesRelease("Movie.1080p-A / Movie.720p-B • provider", "Movie.720p-B.mkv") {
+		t.Fatal("exact alias rejected")
+	}
+	if matchesRelease("Movie.1080p-A / Movie.720p-B • provider", "Movie.720p-C") {
+		t.Fatal("wrong group accepted")
 	}
 }

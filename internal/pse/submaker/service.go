@@ -168,6 +168,30 @@ func fingerprint(c Settings, req core.SearchRequest, r core.Release) string {
 
 var separators = regexp.MustCompile(`[^\pL\pN]+`)
 
+// SubMaker may list several exact release aliases before its provider label.
+func matchesRelease(label, release string) bool {
+	for _, alias := range strings.Split(strings.Split(label, " • ")[0], " / ") {
+		if Canonical(alias) == Canonical(release) {
+			return true
+		}
+	}
+	return false
+}
+
+var providerVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$`)
+
+func subtitlePath(p, token string) bool {
+	prefix := "/addon/" + token + "/"
+	if !strings.HasPrefix(p, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(p, prefix), "/")
+	if len(parts) > 0 && providerVersion.MatchString(parts[0]) {
+		parts = parts[1:]
+	}
+	return len(parts) == 3 && parts[0] == "subtitle" && parts[1] != "" && parts[2] != ""
+}
+
 func Canonical(s string) string {
 	s = strings.TrimSpace(strings.Split(s, " • ")[0])
 	ext := strings.ToLower(path.Ext(s))
@@ -329,11 +353,11 @@ func (s *Service) resolve(ctx context.Context, w work) (*Proof, error) {
 			if name == "" {
 				name = sub.Label
 			}
-			if Canonical(name) != Canonical(w.rel.Name) {
+			if !matchesRelease(name, w.rel.Name) {
 				continue
 			}
 			u, e := url.Parse(sub.URL)
-			if e != nil || u.Host != base.Host || u.Scheme != base.Scheme || !strings.HasPrefix(u.Path, "/addon/"+token+"/subtitle/") {
+			if e != nil || u.Host != base.Host || u.Scheme != base.Scheme || !subtitlePath(u.Path, token) {
 				continue
 			}
 			original, e := s.request(ctx, "GET", u.String(), nil)
