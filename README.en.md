@@ -42,10 +42,12 @@ Under **Sources → Stremio, Indexers and Indexing**, click a section title to c
 
 ## SeerrCatalog: from requests to available titles
 
+Under **Sources → Stremio → SeerrCatalog**, one section groups **Availability to Remix** (import SeerrCatalog results) and **Search via Remix** (searches requested by SeerrCatalog). Each feature keeps its own switch and token. Test availability sharing in Remix and searches in SeerrCatalog. Standalone Prowlarr has separate settings in SeerrCatalog.
+
 [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog) turns Seerr requests into Stremio catalogues and shares availability checks and sources with Remix, avoiding duplicate searches.
 
 1. In SeerrCatalog, open **Settings → Ether Remix integration**, generate a token and enable export.
-2. In Remix, open **Sources → Stremio → SeerrCatalog → Ether Remix**, enter the base address (e.g. `https://seerrcatalog.example`, without `/api/…`) and token, enable and save. **Test connection** checks the feed without importing; synchronization runs every minute.
+2. In Remix, open **Sources → Stremio → SeerrCatalog → Availability to Remix**, enter the base address (e.g. `https://seerrcatalog.example`, without `/api/…`) and token, enable and save. **Test connection** checks the feed without importing; synchronization runs every minute.
 3. The updated SeerrCatalog automatically exports previously confirmed titles without running new searches.
 
 SeerrCatalog availability passes the **playable-only** filter without querying addons again. Other visibility filters and viewer playback policies still apply. Imports retrieve TMDB metadata without creating collections.
@@ -56,7 +58,7 @@ Paginated synchronization recovers changes and deletions after outages; incomple
 
 Equivalent variables: `PSE_SEERRCATALOG=on`, `PSE_SEERRCATALOG_URL=http://seerrcatalog:7000`, `PSE_SEERRCATALOG_TOKEN=…`. Disabled by default.
 
-**Complementary search for SeerrCatalog**: select Ether Remix in SeerrCatalog settings and enter its base URL. Generate a **dedicated search token** in that section, then paste it into **Remix → Sources → Stremio → Searches for SeerrCatalog** and enable searches. Save on both sides. Availability sharing has its own token and can remain disabled. After updating both applications, configure this new token: the old sharing token no longer authorizes searches. When addons return no primary-language release and user fallback is enabled, SeerrCatalog asks Remix to search its configured sources, including Prowlarr. SeerrCatalog still applies primary/fallback tags, deduplication and thresholds, keeping J+1/J+3 checks and permanent confirmation. Searches respect availability budgets and cannot circularly reuse SeerrCatalog observations. Torrents with infoHashes and actual HTTP streams can be returned; NZB URLs are never exposed as video streams. Test the connection from SeerrCatalog without launching a search.
+**Complementary search for SeerrCatalog**: open **SeerrCatalog → Settings → Ether Remix integration → Search via Remix**, enable search and enter the Remix base URL. Generate a **dedicated search token** in that section, then paste it into **Remix → Sources → Stremio → SeerrCatalog → Search via Remix** and enable searches. Save on both sides. Availability sharing has its own token and can remain disabled. After updating both applications, configure this new token: the old sharing token no longer authorizes searches. When addons return no primary-language release and user fallback is enabled, SeerrCatalog asks Remix to search its configured sources, including Prowlarr. SeerrCatalog still applies primary/fallback tags, deduplication and thresholds, keeping J+1/J+3 checks and permanent confirmation. Searches respect availability budgets and cannot circularly reuse SeerrCatalog observations. Torrents with infoHashes and actual HTTP streams can be returned; NZB URLs are never exposed as video streams. Test the connection from SeerrCatalog without launching a search.
 
 ## Music sources
 

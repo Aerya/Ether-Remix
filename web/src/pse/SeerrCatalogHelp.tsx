@@ -63,8 +63,8 @@ export function SeerrCatalogHelp({ status }: { status?: Record<string, unknown> 
       </Button>
       <p>
         {L(
-          "Teste les réglages enregistrés. Enregistrez vos modifications avant de tester. Aucun média n’est importé par ce test.",
-          "Tests saved settings. Save your changes before testing. This test does not import media.",
+          "Enregistrez avant de tester. Ce test vérifie le partage des disponibilités, sans importer de média.",
+          "Save before testing. This test checks availability sharing without importing media.",
         )}
       </p>
       <p role="status" aria-live="polite">
@@ -89,24 +89,10 @@ export function SeerrCatalogHelp({ status }: { status?: Record<string, unknown> 
           Ether Remix · GitHub
         </a>
       </p>
-      <ol className="list-decimal pl-5 space-y-1">
-        <li>
-          {L(
-            "Dans SeerrCatalog : Paramètres → Intégration Ether Remix, générez la clé puis activez l’export.",
-            "In SeerrCatalog: Settings → Ether Remix integration, generate the token and enable export.",
-          )}
-        </li>
-        <li>
-          {L(
-            "Renseignez son adresse de base (ex. https://seerrcatalog.example, sans /api/…), ainsi que la clé, activez puis enregistrez et testez la connexion. Les contenus déjà contrôlés doivent être revérifiés dans SeerrCatalog.",
-            "Enter its base address (e.g. https://seerrcatalog.example, without /api/…) and token, enable, save and test the connection. Previously checked items need another check in SeerrCatalog.",
-          )}
-        </li>
-      </ol>
       <p>
         {L(
-          "Disponibilité valable 26 h, liens réutilisés au maximum 30 min ; recherche habituelle à la lecture si les sources sont périmées ou échouent. Un épisode disponible ne garantit pas toute la série. Utilisez HTTPS hors réseau privé.",
-          "Availability lasts 26 h, links are reused for at most 30 min; playback falls back to normal discovery when sources expire or fail. One available episode does not guarantee the entire series. Use HTTPS outside a private network.",
+          "Les disponibilités confirmées restent valides jusqu’à suppression. À la lecture, Remix recherche des sources si les liens ont expiré ou échouent.",
+          "Confirmed availability stays valid until deletion. Playback falls back to normal discovery when links expire or fail.",
         )}
       </p>
       {sync?.lastSync && (

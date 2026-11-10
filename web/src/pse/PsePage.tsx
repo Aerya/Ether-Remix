@@ -1,4 +1,4 @@
-import { SettingsSection } from "../components/CollapsibleSections";
+import { CollapsibleBlock, SettingsSection } from "../components/CollapsibleSections";
 import { SourceHosting } from "./SourceHosting";
 import { Badge, Button, Checkbox, Input, Select, Switch, toast } from "@braedonsaunders/appkit-ui";
 import { RotateCcw } from "lucide-react";
@@ -227,9 +227,24 @@ function PseSettings() {
         {tab === "sources" ? (
           <RemixSources
             music={musicPart("source")}
-            stremio={current.features
-              .filter((f) => ["sfr", "seerrcatalog", "seerrcatalog_search"].includes(f.id))
-              .map((f) => renderFeature(f))}
+            stremio={
+              <>
+                {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
+                <CollapsibleBlock title="SeerrCatalog" id="seerrcatalog-integration">
+                  <div className="space-y-4 p-4">
+                    <p className="text-sm text-fg-muted">
+                      {L(
+                        "Deux fonctions indépendantes, chacune avec sa propre clé. Configurez-les aussi dans SeerrCatalog → Paramètres → Intégration Ether Remix.",
+                        "Two independent features, each with its own token. Also configure them in SeerrCatalog → Settings → Ether Remix integration.",
+                      )}
+                    </p>
+                    {current.features
+                      .filter((f) => ["seerrcatalog", "seerrcatalog_search"].includes(f.id))
+                      .map((f) => renderFeature(f))}
+                  </div>
+                </CollapsibleBlock>
+              </>
+            }
             indexing={
               <>
                 {featuresOfTab(tab, current.features)
