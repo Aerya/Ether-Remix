@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/extras"
+	"github.com/braedonsaunders/ether/internal/faillog"
 	"github.com/braedonsaunders/ether/internal/onair/encode"
 	"github.com/braedonsaunders/ether/internal/onair/families"
 	"github.com/braedonsaunders/ether/internal/onair/fonts"
@@ -21,6 +22,7 @@ import (
 	"golang.org/x/image/font/opentype"
 	"image"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,10 +32,11 @@ import (
 )
 
 type Options struct {
-	// Showcase adds the decade looks used by the shipped showcase channels.
+	// Showcase adds the decade looks and commercial reels used by the shipped showcase channels.
 	Showcase bool
 	// Changed runs after an owner style save has committed and locks are released.
 	Changed        func(context.Context) error
+	ReelsChanged   func(context.Context)
 	StyleChannels  func(context.Context) (map[string][]string, error)
 	ReelChannels   func(context.Context) (map[string][]string, error)
 	PluginSegment  func(string) (PluginSegment, bool)
@@ -46,13 +49,21 @@ type Options struct {
 	Acquire        func(context.Context) (context.Context, func(), error)
 	Bindings       func(context.Context, string, string, time.Time) (any, error)
 	// Upcoming supplies requests for the next three hours of watched channels.
-	Upcoming    func(context.Context) []core.ClipRequest
-	Logger      *slog.Logger
-	CacheBytes  int64
-	WorkingSize func() (int, int)
-	Artwork     func(context.Context, string) (image.Image, error)
+	Upcoming       func(context.Context) []core.ClipRequest
+	Logger         *slog.Logger
+	CacheBytes     int64
+	LinkCacheBytes int64
+	WorkingSize    func() (int, int)
+	Artwork        func(context.Context, string) (image.Image, error)
 	// Render is a seam for verifying that Ensure never executes work inline.
 	Render func(context.Context, scene.Document, raster.Bindings, string) error
+	// NormalizeClip is a seam for normalizing downloaded link media in offline tests.
+	NormalizeClip func(ctx context.Context, reel Reel, src, out string) (time.Duration, error)
+	// ValidateURL, ArchiveOrigin, HTTPClient and Now are seams for offline unit tests.
+	ValidateURL   func(context.Context, string) error
+	ArchiveOrigin string
+	HTTPClient    *http.Client
+	Now           func() time.Time
 	// AssetDir is the blob store for asset bytes (<data>/onair/assets);
 	// empty uses Dir/assets.
 	AssetDir string
@@ -89,11 +100,29 @@ type renderJob struct {
 type Service struct {
 	liveJobs       []renderJob
 	liveReady      chan struct{}
+	upcomingWake   chan struct{}
 	activeCancel   context.CancelFunc
 	activeBoundary time.Time
 	activeHash     string
+	activeChannel  string
+	// unwanted holds channels whose queued renders process must drop: a
+	// disabled, deleted or no-longer-watched channel. A fresh request for
+	// the channel clears it (enqueue).
+	unwanted map[string]bool
+	// hashChannel remembers which channel a pinned hash belongs to, so
+	// cancelling the channel releases its pins. Entries die with their pin.
+	hashChannel map[string]string
+	// wantedChannels is the channel set of the last watchUpcoming tick;
+	// channels that fall out of it are cancelled.
+	wantedChannels map[string]bool
 	resources      string
 	reelReady      map[string]bool
+	linkCache      map[string]linkEntry
+	reelClipIndex  map[string]reelClipMeta
+	linkChannels   map[string]map[string]bool
+	linkCancels    map[string]context.CancelFunc
+	manualLink     map[string]bool
+	linkFailLog    *faillog.Tracker
 	o              Options
 	db             *sql.DB
 	mu             sync.Mutex
@@ -135,6 +164,9 @@ func New(o Options) (*Service, error) {
 	if o.CacheBytes <= 0 {
 		o.CacheBytes = 2 << 30
 	}
+	if o.LinkCacheBytes <= 0 {
+		o.LinkCacheBytes = defaultLinkCacheBytes
+	}
 	if e := os.MkdirAll(o.Dir, 0750); e != nil {
 		return nil, e
 	}
@@ -150,8 +182,12 @@ func New(o Options) (*Service, error) {
 			FFmpeg:   o.FFmpeg,
 		})
 	}
+	linkFail := faillog.New(o.Logger, "onair: link clip resolution")
+	if o.Now != nil {
+		linkFail.Now = o.Now
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{blobs: blobStore{dir: o.AssetDir}, nodeID: o.NodeID, assetPoke: make(chan struct{}, 1), fetching: map[string]chan struct{}{}, reelReady: map[string]bool{}, resources: fonts.Version(), o: o, db: o.DB, looks: map[string]Look{}, cache: map[string]entry{}, pending: map[string]bool{}, renderTimes: map[string]time.Duration{}, pins: map[string]time.Time{}, progress: map[string]*Progress{}, lookJobs: map[string][]string{}, importCancels: map[string]context.CancelFunc{}, liveReady: make(chan struct{}, 1), jobs: make(chan renderJob, 128), clipJobs: make(chan renderJob, 64), importJobs: make(chan renderJob, 64), ctx: ctx, cancel: cancel}
+	s := &Service{blobs: blobStore{dir: o.AssetDir}, nodeID: o.NodeID, assetPoke: make(chan struct{}, 1), upcomingWake: make(chan struct{}, 1), fetching: map[string]chan struct{}{}, reelReady: map[string]bool{}, linkCache: map[string]linkEntry{}, reelClipIndex: map[string]reelClipMeta{}, linkChannels: map[string]map[string]bool{}, linkCancels: map[string]context.CancelFunc{}, manualLink: map[string]bool{}, linkFailLog: linkFail, resources: fonts.Version(), o: o, db: o.DB, looks: map[string]Look{}, cache: map[string]entry{}, pending: map[string]bool{}, renderTimes: map[string]time.Duration{}, pins: map[string]time.Time{}, progress: map[string]*Progress{}, lookJobs: map[string][]string{}, importCancels: map[string]context.CancelFunc{}, liveReady: make(chan struct{}, 1), jobs: make(chan renderJob, 128), clipJobs: make(chan renderJob, 64), importJobs: make(chan renderJob, 64), ctx: ctx, cancel: cancel}
 
 	if e := s.seed(ctx); e != nil {
 		cancel()
@@ -172,26 +208,28 @@ func New(o Options) (*Service, error) {
 		s.looks[l.ID] = l
 	}
 	s.loadCache()
+	s.loadLinkCache()
 	s.loadReels()
 
 	s.resumeConversions()
 	s.resumeImports()
-	// Warm only styles used by enabled channels. An empty planning result is
-	// not a request to render the entire bundled preview library.
-	for _, l := range ls {
-		l := l
-		if s.o.StaticRequests != nil {
-			s.enqueue(renderJob{Hash: "startup-" + l.ID, prepare: func(ctx context.Context) error {
-				if requests := s.o.StaticRequests(ctx, l.ID); len(requests) > 0 {
-					s.queueLook(l, requests)
-				}
-				return nil
-			}})
-		} else if len(l.ChannelIDs) > 0 {
-			s.queueLook(l, nil)
-		}
-	}
+	// No startup warming: rendering is viewer-driven. Looks render when a
+	// watched channel needs them (watchUpcoming/Ensure) or when the owner
+	// saves one in the console (enqueueLook). Warming every enabled
+	// channel's scenes at boot kept installs that never open Live TV
+	// rendering for hours after an upgrade invalidated the masters.
 	return s, nil
+}
+
+// WakeUpcoming signals watchUpcoming when viewer demand or look configuration starts.
+func (s *Service) WakeUpcoming() {
+	if s == nil || s.upcomingWake == nil {
+		return
+	}
+	select {
+	case s.upcomingWake <- struct{}{}:
+	default:
+	}
 }
 
 // Downloader returns the yt-dlp downloader shared with this service.
@@ -417,6 +455,12 @@ func (s *Service) plan(r core.ClipRequest) (renderJob, bool) {
 
 }
 func (s *Service) Clip(_ context.Context, r core.ClipRequest) (core.ClipRef, bool) {
+	if r.ReelClipID != "" {
+		if path, dur, ok := s.PeekCachedReelClip(r.ReelID, r.ReelClipID); ok {
+			return core.ClipRef{Hash: r.ReelClipID, Duration: dur, Path: path}, true
+		}
+		return core.ClipRef{}, false
+	}
 	j, ok := s.plan(r)
 	if !ok {
 		return core.ClipRef{}, false
@@ -452,6 +496,11 @@ func (s *Service) RenderLead(look, moment string) time.Duration {
 }
 
 func (s *Service) Ensure(_ context.Context, r core.ClipRequest) {
+	s.WakeUpcoming()
+	if r.ReelClipID != "" {
+		s.ensureReelClip(r)
+		return
+	}
 	s.mu.Lock()
 	l := s.looks[r.LookID]
 	s.mu.Unlock()
@@ -479,10 +528,71 @@ func (s *Service) Ensure(_ context.Context, r core.ClipRequest) {
 		}
 	}
 }
+
+// CancelChannel stops every queued and running render for a channel and
+// releases its pins: the channel was disabled, deleted, or fell out of
+// the requested set. The running render's context is cancelled, which
+// also kills its ffmpeg. Work already in the job channels is dropped by
+// process under the unwanted mark; a later request for the channel
+// clears the mark in enqueue.
+func (s *Service) CancelChannel(channelID string) {
+	if s == nil || channelID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.unwanted == nil {
+		s.unwanted = map[string]bool{}
+	}
+	s.unwanted[channelID] = true
+	kept := s.liveJobs[:0]
+	for _, j := range s.liveJobs {
+		if j.Request.ChannelID == channelID {
+			delete(s.pending, j.Hash)
+			delete(s.pins, j.Hash)
+			delete(s.hashChannel, j.Hash)
+			continue
+		}
+		kept = append(kept, j)
+	}
+	for i := len(kept); i < len(s.liveJobs); i++ {
+		s.liveJobs[i] = renderJob{}
+	}
+	s.liveJobs = kept
+	for h, ch := range s.hashChannel {
+		if ch == channelID {
+			delete(s.pins, h)
+			delete(s.hashChannel, h)
+			if v, ok := s.cache[h]; ok {
+				v.Pin = time.Time{}
+				s.cache[h] = v
+			}
+		}
+	}
+	linkCancels := s.cancelChannelLinksLocked(channelID)
+	cancel := s.activeCancel != nil && s.activeChannel == channelID
+	cancelFn := s.activeCancel
+	s.mu.Unlock()
+	if cancel {
+		cancelFn()
+	}
+	for _, fn := range linkCancels {
+		fn()
+	}
+}
+
 func (s *Service) enqueue(j renderJob) bool {
-	imminent := s.imminent(j)
+	imminent := !j.download && s.imminent(j)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if ch := j.Request.ChannelID; ch != "" {
+		delete(s.unwanted, ch)
+		if s.hashChannel == nil {
+			s.hashChannel = map[string]string{}
+		}
+		if j.scene() {
+			s.hashChannel[j.Hash] = ch
+		}
+	}
 	if s.pending[j.Hash] {
 		if imminent {
 			return s.queueLiveLocked(j)
@@ -608,7 +718,7 @@ func (s *Service) refreshProgress(id string) {
 }
 
 func (s *Service) imminent(j renderJob) bool {
-	now := time.Now()
+	now := s.now()
 	lead := s.RenderLead(j.Look, j.Doc.Moment)
 	if strings.HasPrefix(j.Doc.Moment, "plugin:") {
 		lead = max(lead, 15*time.Minute)
@@ -667,21 +777,68 @@ func (s *Service) queueLiveLocked(j renderJob) bool {
 
 func (s *Service) watchUpcoming() {
 	defer s.wg.Done()
-	tick := time.NewTicker(30 * time.Second)
-	defer tick.Stop()
-	for {
-		if ls, e := s.Looks(s.ctx); e == nil {
-			snapshot := map[string]Look{}
-			for _, l := range ls {
-				snapshot[l.ID] = l
+	var t *time.Timer
+	var timerCh <-chan time.Time
+	arm := func(d time.Duration) {
+		if t == nil {
+			t = time.NewTimer(d)
+		} else {
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
 			}
+			t.Reset(d)
+		}
+		timerCh = t.C
+	}
+	disarm := func() {
+		if t != nil {
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
+		}
+		timerCh = nil
+	}
+	defer disarm()
+	for {
+		// On a standalone server, s.looks is loaded in New() and updated by
+		// SaveLook/DeleteLook; only clustered servers need a database reload.
+		if s.o.Members != nil {
+			if ls, e := s.Looks(s.ctx); e == nil {
+				snapshot := map[string]Look{}
+				for _, l := range ls {
+					snapshot[l.ID] = l
+				}
+				s.mu.Lock()
+				s.looks = snapshot
+				s.evict()
+				s.evictLinksLocked("")
+				s.mu.Unlock()
+			}
+		} else {
 			s.mu.Lock()
-			s.looks = snapshot
-			s.evict()
+			if len(s.pins) > 0 {
+				s.evict()
+			}
+			s.evictLinksLocked("")
 			s.mu.Unlock()
 		}
+		wanted := map[string]bool{}
 		if s.o.Upcoming != nil {
-			for _, r := range s.o.Upcoming(s.ctx) {
+			requests := s.o.Upcoming(s.ctx)
+			for _, r := range requests {
+				if r.ChannelID != "" {
+					wanted[r.ChannelID] = true
+				}
+				if r.ReelClipID != "" {
+					s.ensureReelClip(r)
+					continue
+				}
 				j, ok := s.plan(r)
 				if !ok {
 					continue
@@ -689,6 +846,10 @@ func (s *Service) watchUpcoming() {
 				s.mu.Lock()
 				v := s.cache[j.Hash]
 				s.pins[j.Hash] = time.Now().Add(3 * time.Hour)
+				if s.hashChannel == nil {
+					s.hashChannel = map[string]string{}
+				}
+				s.hashChannel[j.Hash] = r.ChannelID
 				v.Pin = s.pins[j.Hash]
 				if v.Ref.Hash != "" {
 					s.cache[j.Hash] = v
@@ -696,11 +857,35 @@ func (s *Service) watchUpcoming() {
 				s.mu.Unlock()
 				s.enqueue(j)
 			}
+			// A channel that fell out of the request set (disabled,
+			// deleted, or unwatched past its window) stops rendering:
+			// queued and running work is cancelled, pins released.
+			s.mu.Lock()
+			var dropped []string
+			for ch := range s.wantedChannels {
+				if !wanted[ch] {
+					dropped = append(dropped, ch)
+				}
+			}
+			s.wantedChannels = wanted
+			s.mu.Unlock()
+			for _, ch := range dropped {
+				s.CancelChannel(ch)
+			}
+		}
+		s.mu.Lock()
+		active := len(wanted) > 0 || len(s.pins) > 0 || s.o.Members != nil
+		s.mu.Unlock()
+		if active {
+			arm(30 * time.Second)
+		} else {
+			disarm()
 		}
 		select {
 		case <-s.ctx.Done():
 			return
-		case <-tick.C:
+		case <-timerCh:
+		case <-s.upcomingWake:
 		}
 	}
 }
@@ -748,10 +933,29 @@ func (s *Service) run() {
 	}
 }
 
+func (s *Service) unwantedChannel(j renderJob) bool {
+	ch := j.Request.ChannelID
+	if ch == "" || !j.scene() {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unwanted[ch]
+}
+
 func (s *Service) process(j renderJob) {
+	// A cancelled channel's queued work leaves the lane without rendering.
+	if s.unwantedChannel(j) {
+		s.mu.Lock()
+		delete(s.pending, j.Hash)
+		delete(s.pins, j.Hash)
+		delete(s.hashChannel, j.Hash)
+		s.mu.Unlock()
+		return
+	}
 	// Obsolete airings cannot consume a lane ahead of future work. A repeated
 	// content hash will be admitted again with its next scheduled boundary.
-	if !j.Boundary.IsZero() && !j.Boundary.After(time.Now()) {
+	if !j.Boundary.IsZero() && !j.Boundary.After(s.now()) {
 		s.mu.Lock()
 		delete(s.pending, j.Hash)
 		s.mu.Unlock()
@@ -769,6 +973,7 @@ func (s *Service) process(j renderJob) {
 	if !j.download {
 		s.activeCancel = cancel
 		s.activeHash = j.Hash
+		s.activeChannel = j.Request.ChannelID
 		s.activeBoundary = time.Time{}
 		if imminent {
 			s.activeBoundary = j.Boundary
@@ -776,6 +981,8 @@ func (s *Service) process(j renderJob) {
 		} else if len(s.liveJobs) > 0 {
 			cancel()
 		}
+	} else if imminent {
+		ctx = WithBoundaryDeadline(ctx, j.Boundary)
 	}
 	s.mu.Unlock()
 	e := s.execute(ctx, j)
@@ -783,12 +990,14 @@ func (s *Service) process(j renderJob) {
 	if !j.download {
 		s.activeCancel = nil
 		s.activeHash = ""
+		s.activeChannel = ""
 		s.activeBoundary = time.Time{}
 	}
 	delete(s.pending, j.Hash)
 	s.refreshProgress(j.Look)
 	s.mu.Unlock()
-	if errors.Is(e, context.Canceled) && s.ctx.Err() == nil && !j.download {
+	// A preempted render re-queues; a channel-cancelled one does not.
+	if errors.Is(e, context.Canceled) && s.ctx.Err() == nil && !j.download && !s.unwantedChannel(j) {
 		s.enqueue(j)
 	}
 	if e != nil && s.ctx.Err() == nil && !errors.Is(e, context.Canceled) && j.scene() {
@@ -962,6 +1171,7 @@ func (s *Service) evict() {
 	for h, until := range s.pins {
 		if until.Before(time.Now()) {
 			delete(s.pins, h)
+			delete(s.hashChannel, h)
 		}
 	}
 	var total int64
@@ -998,7 +1208,7 @@ func (s *Service) loadAssets(ctx context.Context, j *renderJob) error {
 		refs[k] = d
 	}
 	collectSceneAssets(j.Doc.Layers, j.Bind.Bindings, refs)
-	for _, key := range []string{"type.display", "type.mono", "type.body", "logo"} {
+	for _, key := range []string{"type.display", "type.mono", "type.body", "logo", "brand.logo"} {
 		d, _ := j.Bind.Tokens[key].(string)
 		if len(d) == 64 {
 			refs[d] = d
@@ -1006,6 +1216,11 @@ func (s *Service) loadAssets(ctx context.Context, j *renderJob) error {
 	}
 	for slot, d := range refs {
 		if _, ok := j.Bind.Assets[d]; ok {
+			continue
+		}
+		if im := showcaseBugImage(d); im != nil {
+			j.Bind.Assets[d] = im
+			j.Bind.Slots[slot] = d
 			continue
 		}
 		if len(d) != 64 {

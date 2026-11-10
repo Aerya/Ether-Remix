@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/transcode"
 )
@@ -48,6 +47,14 @@ func (s *Server) observeRequest(r *http.Request, sr *statusRecorder, elapsed tim
 		if sr.sampling {
 			ev.Response = summarizePlexResponse(sr.sample, sr.truncated, sr.Header().Get("Content-Encoding"))
 		}
+	} else if status >= 400 && kind == frontend.DiagnosticKindDevice && pr.User != nil {
+		// ClassifyRequest maps most paths to a bare device sighting, which
+		// the recorder never ring-buffers. A rejection on such a path (a
+		// download, subscription or provider route, say) must still enter
+		// the ring as a request, so a capture started for that failure
+		// contains the 4xx in its pre-roll. While recording, the branch
+		// above already re-kinds every event to a request.
+		ev.Kind = frontend.DiagnosticKindRequest
 	}
 	s.d.Support.Observe(ev)
 }
@@ -62,7 +69,7 @@ func (s *Server) observePlaybackReported(pr *Request) {
 // observePlaybackDecision records a structured resolution for the support
 // capture. Viewer identity follows the same explicit export flags as requests;
 // the structured playback object itself never carries usernames or addresses.
-func (s *Server) observePlaybackDecision(ctx context.Context, pr *Request, p *playRequest, ps *core.PlaySession) {
+func (s *Server) observePlaybackDecision(ctx context.Context, pr *Request, p *playRequest, ps *frontend.PlaySession) {
 	if s == nil || s.d.Support == nil || s.d.DecisionTraces == nil || pr == nil || p == nil {
 		return
 	}
@@ -102,7 +109,7 @@ func (s *Server) observePlaybackDecision(ctx context.Context, pr *Request, p *pl
 	s.d.Support.Observe(ev)
 }
 
-func (s *Server) playbackVariants(pr *Request, key core.RatingKey, tr core.DecisionTrace, requested string, requestedPart int64) []frontend.DiagnosticPlaybackVariant {
+func (s *Server) playbackVariants(pr *Request, key frontend.RatingKey, tr frontend.DecisionTrace, requested string, requestedPart int64) []frontend.DiagnosticPlaybackVariant {
 	if pr == nil || pr.User == nil || s.playIDs == nil {
 		return nil
 	}
@@ -110,7 +117,7 @@ func (s *Server) playbackVariants(pr *Request, key core.RatingKey, tr core.Decis
 	if !ok || len(ids) == 0 {
 		return nil
 	}
-	byID := make(map[string]core.DecisionCandidate, len(tr.Candidates))
+	byID := make(map[string]frontend.DecisionCandidate, len(tr.Candidates))
 	for _, c := range tr.Candidates {
 		if c.ReleaseID != "" {
 			byID[c.ReleaseID] = c
@@ -175,7 +182,7 @@ func (s *Server) observePlaybackRequestStart(r *http.Request, pr *Request) {
 	s.d.Support.Observe(ev)
 }
 
-func (s *Server) observeClientAdmission(pr *Request, caps core.ClientCaps) {
+func (s *Server) observeClientAdmission(pr *Request, caps frontend.ClientCaps) {
 	if s.d.Support == nil || !s.d.Support.Recording() || pr == nil || pr.User == nil {
 		return
 	}
@@ -184,7 +191,7 @@ func (s *Server) observeClientAdmission(pr *Request, caps core.ClientCaps) {
 	s.d.Support.Observe(ev)
 }
 
-func (s *Server) supportClientFacts(pr *Request, effective core.ClientCaps, stage string) *frontend.DiagnosticClientFacts {
+func (s *Server) supportClientFacts(pr *Request, effective frontend.ClientCaps, stage string) *frontend.DiagnosticClientFacts {
 	if pr == nil {
 		return nil
 	}

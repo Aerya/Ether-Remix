@@ -6,7 +6,7 @@ package plex
 // detail pages, gives non-Auto variants stable integer Media/Part ids,
 // and maps a viewer's selection (mediaIndex on decision/start requests,
 // or a variant Part id on direct-play requests) back to the chosen
-// release for core.VariantPlayback.PrepareVariant.
+// release for frontend.VariantPlayback.PrepareVariant.
 //
 // PMS shapes (python-plexapi plexapi/media.py, plexapi/video.py):
 //   - Media carries `title` (the version name Plex apps show for named
@@ -38,8 +38,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plex/model"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 const variantRenderBudget = 3 * time.Second // incl. the resolver's in-flight wait
@@ -47,7 +48,7 @@ const variantRenderBudget = 3 * time.Second // incl. the resolver's in-flight wa
 // partTitle maps a Part id back to its title: the rating key itself for
 // the Auto part, or a registry id for a variant part (with its release).
 // releaseID is non-empty only when the registry resolved a variant.
-func (s *Server) partTitle(partID int64) (key core.RatingKey, releaseID string, ok bool) {
+func (s *Server) partTitle(partID int64) (key frontend.RatingKey, releaseID string, ok bool) {
 	if s.variantIDs != nil {
 		if ref, found := s.variantIDs.lookup(partID); found {
 			return ref.key, ref.releaseID, true
@@ -57,7 +58,7 @@ func (s *Server) partTitle(partID int64) (key core.RatingKey, releaseID string, 
 	// key when it is one. Subtitle selection does not trust that guess:
 	// handlePartSelect keeps the stream's own title when the part id is in
 	// the variant block and the registry did not claim it.
-	k := core.RatingKey(partID)
+	k := frontend.RatingKey(partID)
 	if k.Valid() && isPlayableKey(k) {
 		return k, "", true
 	}
@@ -75,13 +76,14 @@ func (s *Server) partTitle(partID int64) (key core.RatingKey, releaseID string, 
 // Ordinary details can gain versions as discovery completes. Explicit
 // pre-play and the selected queue item freeze a short-lived flow. Clustered
 // flows adopt the committed snapshot before returning metadata.
-func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *core.Title, stamp int64, probed core.MediaInfo, probedRelease string, ps *core.PlaySession) ([]model.Media, string) {
+func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.Title, stamp int64, probed frontend.MediaInfo, probedRelease string, ps *frontend.PlaySession) ([]model.Media, string) {
 	if s.d.Variants == nil || pr.User == nil {
 		return nil, ""
 	}
 	ik := s.playIdentityFor(pr, t.Key)
 	live := ps != nil
 	now := s.now()
+	caps := s.clientCapsForKey(pr, t.Key)
 	if s.versionFlows != nil && pr.versionItemKey == t.Key {
 		snap, err := s.versionFlows.call(ctx, ik, nil, versionRead, now, 0)
 		if err != nil {
@@ -91,12 +93,11 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *core.Titl
 		if snap.frozen {
 			s.playIDs.installVersionFlow(ik, snap.variants, snap.until, now)
 		} else if !live {
+			// The shared flow ended or expired: unfreeze, but keep the
+			// issued list (see endVersionFlow) so a restart re-read still
+			// answers with the Media/Part ids the client holds (#389).
 			s.playIDs.mu.Lock()
 			if e := s.playIDs.m[ik]; e != nil && e.admitting == 0 {
-				if e.frozen {
-					e.resolved = false
-					e.variants = nil
-				}
 				e.frozen = false
 				e.flowUntil = time.Time{}
 			}
@@ -104,7 +105,7 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *core.Titl
 		}
 	}
 	pin := s.playIDs.pinned(ik, live, now)
-	var vs []core.ReleaseVariant
+	var vs []frontend.ReleaseVariant
 	if (pin.frozen || pr.versionFlowKey == t.Key) && pin.resolved {
 		if len(pin.variants) < 2 {
 			if !live {
@@ -134,9 +135,9 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *core.Titl
 		}
 		if rel != "" && pin.autoAligned != rel && vs[0].Auto && vs[0].Release.ID != rel {
 			vctx, cancel := detailVariantContext(ctx, pr)
-			resolved, err := s.d.Variants.Variants(vctx, core.ResolveRequest{Title: t, Client: s.clientCapsForKey(pr, t.Key), User: pr.User, PlayedRelease: rel}, core.MaxVariants)
+			resolved, err := s.d.Variants.Variants(vctx, frontend.ResolveRequest{Title: t, Client: caps, User: pr.User, PlayedRelease: rel}, frontend.MaxVariants)
 			cancel()
-			var auto *core.ReleaseVariant
+			var auto *frontend.ReleaseVariant
 			if err == nil && len(resolved) > 0 && resolved[0].Auto && resolved[0].Release.ID == rel {
 				auto = &resolved[0]
 				vs[0] = resolved[0]
@@ -144,9 +145,8 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *core.Titl
 			s.playIDs.alignAuto(ik, auto, rel)
 		}
 	} else {
-		caps := s.clientCapsForKey(pr, t.Key)
 		vctx, cancel := detailVariantContext(ctx, pr)
-		resolved, err := s.d.Variants.Variants(vctx, core.ResolveRequest{Title: t, Client: caps, User: pr.User, PlayedRelease: probedRelease}, core.MaxVariants)
+		resolved, err := s.d.Variants.Variants(vctx, frontend.ResolveRequest{Title: t, Client: caps, User: pr.User, PlayedRelease: probedRelease}, frontend.MaxVariants)
 		cancel()
 		if err != nil {
 			s.log.Debug("variants unavailable", "key", t.Key, "err", err)
@@ -242,6 +242,7 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *core.Titl
 		} else if !v.Auto && sameVariantRelease(v.Release, vs[0].Release) && probedReady && !matchedNonAuto && !probeDisagrees(v.Info, probed) {
 			variant.Info = mergeProbedVariantInfo(v.Info, probed, v.Info.BitrateKbps > 0)
 		}
+		variant.Info = variantInfoForClient(variant.Info, caps)
 		m := buildMediaVariant(t, variant, stamp, s.variantIDs)
 		m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, now)
 		if s.previewAvailable(pr, t.Key, v.Release.ID) {
@@ -294,14 +295,14 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *core.Titl
 		}
 	}
 	edition := ""
-	if t.Type == core.TypeMovie {
+	if t.Type == frontend.TypeMovie {
 		edition = vs[0].Edition
 	}
 	return out, edition
 }
 
 // variantMediaID is the Media/Part id buildMediaVariant gives v.
-func (s *Server) variantMediaID(t *core.Title, v core.ReleaseVariant) int64 {
+func (s *Server) variantMediaID(t *frontend.Title, v frontend.ReleaseVariant) int64 {
 	if v.Auto || s.variantIDs == nil {
 		return int64(t.Key)
 	}
@@ -320,7 +321,38 @@ func anyMediaSelected(media []model.Media) bool {
 	return false
 }
 
-func buildMediaVariant(t *core.Title, v core.ReleaseVariant, stamp int64, registry *variantIDRegistry) model.Media {
+// variantInfoForClient describes the compatible HDR10 base layer on multi-
+// version lists when this client lacks the stream's Dolby Vision profile (or
+// has Dolby Vision turned off) and Ether will strip Dolby Vision RPUs into an
+// HDR10 remux. Without this, Bedrock MDE clients with a DOVIProfile limitation
+// (e.g. 2017 NVIDIA Shield darcy) reject the probed 4K Auto version and hijack
+// playback onto an unprobed lower-compatibility version with no subtitle list.
+func variantInfoForClient(info frontend.MediaInfo, caps frontend.ClientCaps) frontend.MediaInfo {
+	v := info.Video()
+	if v == nil || !v.DolbyVision {
+		return info
+	}
+	if (transcode.SupportsDVProfile(caps, v.DolbyVisionProfile) && !caps.DolbyVisionBaseOnly) || !transcode.HasHDR10Base(v, caps) {
+		return info
+	}
+	streams := append([]frontend.StreamInfo(nil), info.Streams...)
+	for i := range streams {
+		if streams[i].Type == "video" && streams[i].DolbyVision {
+			streams[i].DolbyVision = false
+			streams[i].DolbyVisionProfile = 0
+			streams[i].DolbyVisionLevel = 0
+			streams[i].DolbyVisionCompatibilityID = 0
+			streams[i].DolbyVisionVersion = ""
+			streams[i].DolbyVisionBLPresent = nil
+			streams[i].DolbyVisionELPresent = nil
+			streams[i].DolbyVisionRPUPresent = nil
+		}
+	}
+	info.Streams = streams
+	return info
+}
+
+func buildMediaVariant(t *frontend.Title, v frontend.ReleaseVariant, stamp int64, registry *variantIDRegistry) model.Media {
 	m := buildMedia(t, v.Info, stamp)
 	var id int64
 	if v.Auto || registry == nil {
@@ -394,7 +426,7 @@ func (s *Server) resolveVariantSelection(ctx context.Context, pr *Request, p *pl
 // alignPlayedAutoVariant updates Auto in place when the played release is a
 // same-tier alternative in vs[1:] and the VariantResolver did not already
 // align vs[0] (e.g. a static test stub).
-func alignPlayedAutoVariant(vs []core.ReleaseVariant, playedRelease string) {
+func alignPlayedAutoVariant(vs []frontend.ReleaseVariant, playedRelease string) {
 	if playedRelease == "" || len(vs) < 2 || !vs[0].Auto || vs[0].Release.ID == playedRelease {
 		return
 	}
@@ -412,7 +444,7 @@ func alignPlayedAutoVariant(vs []core.ReleaseVariant, playedRelease string) {
 		} else if lbl != "" && !strings.HasPrefix(lbl, "Auto") {
 			lbl = "Auto · " + lbl
 		}
-		vs[0] = core.ReleaseVariant{
+		vs[0] = frontend.ReleaseVariant{
 			ID:      v.Release.ID,
 			Label:   lbl,
 			Edition: v.Edition,
@@ -424,7 +456,7 @@ func alignPlayedAutoVariant(vs []core.ReleaseVariant, playedRelease string) {
 	}
 }
 
-func sameVariantRelease(a, b core.Release) bool {
+func sameVariantRelease(a, b frontend.Release) bool {
 	if a.ID != "" && a.ID == b.ID {
 		return true
 	}
@@ -433,7 +465,7 @@ func sameVariantRelease(a, b core.Release) bool {
 	return na != "" && strings.EqualFold(na, nb)
 }
 
-func mergeProbedVariantInfo(claimed, probed core.MediaInfo, keepReleaseBitrate bool) core.MediaInfo {
+func mergeProbedVariantInfo(claimed, probed frontend.MediaInfo, keepReleaseBitrate bool) frontend.MediaInfo {
 	out := probed
 	if keepReleaseBitrate && claimed.BitrateKbps > 0 {
 		out.BitrateKbps = claimed.BitrateKbps
@@ -447,19 +479,19 @@ func mergeProbedVariantInfo(claimed, probed core.MediaInfo, keepReleaseBitrate b
 	return out
 }
 
-func hasDolbyVision(info core.MediaInfo) bool {
+func hasDolbyVision(info frontend.MediaInfo) bool {
 	v := info.Video()
 	return v != nil && v.DolbyVision
 }
 
-func hasHDR10(info core.MediaInfo) bool {
+func hasHDR10(info frontend.MediaInfo) bool {
 	v := info.Video()
 	return v != nil && (v.ColorTransfer == "smpte2084" || v.ColorTransfer == "arib-std-b67")
 }
 
 // probeDisagrees reports that the file which played is not the picture or
 // audio the release name (or its stand-in) described.
-func probeDisagrees(claimed, probed core.MediaInfo) bool {
+func probeDisagrees(claimed, probed frontend.MediaInfo) bool {
 	if probed.Video() == nil {
 		return false
 	}
@@ -469,7 +501,7 @@ func probeDisagrees(claimed, probed core.MediaInfo) bool {
 	return audioCodecFamily(primaryAudioCodec(claimed)) != audioCodecFamily(primaryAudioCodec(probed))
 }
 
-func streamResolutionClass(info core.MediaInfo) int {
+func streamResolutionClass(info frontend.MediaInfo) int {
 	if v := info.Video(); v != nil {
 		return resolutionClass(v.Width, v.Height)
 	}
@@ -477,7 +509,7 @@ func streamResolutionClass(info core.MediaInfo) int {
 }
 
 func resolutionClass(w, h int) int {
-	tier := core.ResolutionTier(w, h)
+	tier := frontend.ResolutionTier(w, h)
 	if tier > 0 && tier < 720 {
 		return 480
 	}
@@ -501,7 +533,7 @@ func audioCodecFamily(c string) string {
 	}
 }
 
-func primaryAudioCodec(info core.MediaInfo) string {
+func primaryAudioCodec(info frontend.MediaInfo) string {
 	fallback := ""
 	for _, st := range info.Streams {
 		if st.Type != "audio" || st.Codec == "" {
@@ -519,7 +551,7 @@ func primaryAudioCodec(info core.MediaInfo) string {
 
 // probedAutoTitle keeps the release-name metadata (source, group, audio
 // details that still match) and replaces only what the probe proves wrong.
-func probedAutoTitle(rel core.Release, claimed, probed core.MediaInfo) string {
+func probedAutoTitle(rel frontend.Release, claimed, probed frontend.MediaInfo) string {
 	info := rel.Info
 	probedClass := streamResolutionClass(probed)
 	if streamResolutionClass(claimed) != probedClass || info.Height <= 0 {
@@ -543,7 +575,7 @@ func probedAutoTitle(rel core.Release, claimed, probed core.MediaInfo) string {
 	return plexAutoLabel(info)
 }
 
-func plexAutoLabel(info core.ReleaseInfo) string {
+func plexAutoLabel(info frontend.ReleaseInfo) string {
 	parts := []string{"Auto", plexQualityPhrase(info)}
 	if a := plexAudioPhrase(info); a != "" {
 		parts = append(parts, a)
@@ -554,7 +586,7 @@ func plexAutoLabel(info core.ReleaseInfo) string {
 	return strings.Join(parts, " · ")
 }
 
-func plexQualityPhrase(info core.ReleaseInfo) string {
+func plexQualityPhrase(info frontend.ReleaseInfo) string {
 	res := "SD"
 	switch {
 	case info.Height >= 1800:
@@ -573,13 +605,13 @@ func plexQualityPhrase(info core.ReleaseInfo) string {
 	case info.HDR10:
 		parts = append(parts, "HDR10")
 	}
-	if source := core.SourceLabel(info.Source); source != "" {
+	if source := frontend.SourceLabel(info.Source); source != "" {
 		parts = append(parts, source)
 	}
 	return strings.Join(parts, " ")
 }
 
-func plexAudioPhrase(info core.ReleaseInfo) string {
+func plexAudioPhrase(info frontend.ReleaseInfo) string {
 	codec := map[string]string{
 		"aac": "AAC", "ac3": "DD", "eac3": "DD+", "truehd": "TrueHD",
 		"dts": "DTS", "dtshd": "DTS-HD", "flac": "FLAC", "opus": "Opus", "mp3": "MP3",
@@ -602,10 +634,17 @@ func plexAudioPhrase(info core.ReleaseInfo) string {
 
 // preparePlayback prepares a play session, honouring a "Play Version"
 // pick when the playback manager supports it.
-func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playRequest) (*core.PlaySession, error) {
+func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playRequest) (*frontend.PlaySession, error) {
 	if s.versionFlows != nil {
 		ik := s.playIdentityFor(pr, p.key)
-		snap, err := s.versionFlows.call(ctx, ik, nil, versionFreeze, s.now(), playIdentityTTL)
+		// Freeze the list this client was issued, not an empty one: when
+		// the shared row has expired (90s pre-play TTL) or was never
+		// offered, freezing empty erased the issued identities, so the
+		// request's mediaIndex pointed outside the list and later renders
+		// collapsed to one Media (#389). An unexpired offered row still
+		// wins in the store; the local list only fills an absent one.
+		issued := s.playIDs.pinned(ik, true, s.now()).variants
+		snap, err := s.versionFlows.call(ctx, ik, issued, versionFreeze, s.now(), playIdentityTTL)
 		if err != nil {
 			return nil, err
 		}
@@ -645,7 +684,7 @@ func (s *Server) admittedMedia(p *playRequest) int64 {
 // prepareForRelease prepares a session on a specific release ("" = Auto).
 // When the playback manager cannot target a release, it logs and plays
 // the normal choice instead of failing.
-func (s *Server) prepareForRelease(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, releaseID string) (*core.PlaySession, error) {
+func (s *Server) prepareForRelease(ctx context.Context, user *frontend.User, key frontend.RatingKey, caps frontend.ClientCaps, releaseID string) (*frontend.PlaySession, error) {
 	return s.plexSources().Prepare(ctx, user, key, caps, releaseID, decisionSourceWait)
 }
 
@@ -668,7 +707,7 @@ type variantWatches struct {
 // title's search was not cached yet (#214). When a version list appears,
 // a library timeline entry tells the open page to reload, as PMS does on a
 // metadata change, so Play Version is there without leaving the page.
-func (s *Server) watchVariants(pr *Request, t *core.Title) {
+func (s *Server) watchVariants(pr *Request, t *frontend.Title) {
 	if s.d.Variants == nil || pr == nil || pr.User == nil || t == nil {
 		return
 	}
@@ -705,12 +744,12 @@ func (s *Server) watchVariants(pr *Request, t *core.Title) {
 			case <-timer.C:
 			}
 			if retryAdmission && s.detailSearchAllowed(pr) {
-				if refiller, ok := s.d.Variants.(core.SearchCacheRefiller); ok {
+				if refiller, ok := s.d.Variants.(frontend.SearchCacheRefiller); ok {
 					retryAdmission = refiller.RefillSearchCache(&title) == nil
 				}
 			}
 			vctx, cancel := context.WithTimeout(s.ctx, variantRenderBudget)
-			vs, err := s.d.Variants.Variants(vctx, core.ResolveRequest{Title: &title, Client: caps, User: &user}, core.MaxVariants)
+			vs, err := s.d.Variants.Variants(vctx, frontend.ResolveRequest{Title: &title, Client: caps, User: &user}, frontend.MaxVariants)
 			cancel()
 			if err == nil && len(vs) >= 2 {
 				s.notifyTimeline(title.Key, title.Type, "", user.ID)

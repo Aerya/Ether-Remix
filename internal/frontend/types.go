@@ -21,6 +21,67 @@ type ClientCaps = core.ClientCaps
 type PlaybackSourceHistory = core.PlaybackSourceHistory
 type Decision = core.Decision
 type FacetValue = core.FacetValue
+type User = core.User
+
+// Home hub values stay owned by core. Adapters render hubs through these
+// aliases.
+type Hub = core.Hub
+type HubContext = core.HubContext
+
+// Playback session and decision values stay owned by core. Adapters
+// observe and render them through these aliases.
+type PlaySession = core.PlaySession
+type DecisionKind = core.DecisionKind
+type DecisionCandidate = core.DecisionCandidate
+type DecisionTrace = core.DecisionTrace
+type ReleaseVariant = core.ReleaseVariant
+
+const (
+	DecisionDirectPlay = core.DecisionDirectPlay
+	DecisionRemux      = core.DecisionRemux
+	DecisionTranscode  = core.DecisionTranscode
+)
+
+func IsSurroundAudioCodec(c string) bool { return core.IsSurroundAudioCodec(c) }
+
+// Release and variant-resolution values stay owned by core. Adapters
+// describe and label versions through these aliases.
+type Source = core.Source
+type Release = core.Release
+type ReleaseInfo = core.ReleaseInfo
+type ResolveRequest = core.ResolveRequest
+
+const MaxVariants = core.MaxVariants
+
+func ResolutionTier(w, h int) int { return core.ResolutionTier(w, h) }
+
+func SourceLabel(s Source) string { return core.SourceLabel(s) }
+
+// Library browse and history values stay owned by core. Adapters build
+// queries and read results through these aliases.
+type BrowseQuery = core.BrowseQuery
+type CreditFilter = core.CreditFilter
+type Filter = core.Filter
+type FilterGroup = core.FilterGroup
+type StringFilter = core.StringFilter
+type SortOrder = core.SortOrder
+type SortSpec = core.SortSpec
+type HistoryEntry = core.HistoryEntry
+type HistoryQuery = core.HistoryQuery
+type HistoryCount = core.HistoryCount
+type WatchPage = core.WatchPage
+type TitleFacts = core.TitleFacts
+
+const (
+	SortAdded      = core.SortAdded
+	SortDuration   = core.SortDuration
+	SortPopularity = core.SortPopularity
+	SortRating     = core.SortRating
+	SortReleased   = core.SortReleased
+	SortTitle      = core.SortTitle
+	SortUpdated    = core.SortUpdated
+	SortYear       = core.SortYear
+)
 
 // Catalogue key kinds and constructors stay owned by core. Adapters compare
 // and rebuild parent keys through these aliases.

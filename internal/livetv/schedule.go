@@ -95,9 +95,14 @@ func weeklySchedule(c Channel, from, until time.Time) []Programme {
 	var out []Programme
 	// Repeat gaps remember what aired before the query window. Simulating
 	// that lookback (and no further) keeps two overlapping queries equal.
+	// Shipped showcase reels carry updated_at=0; only reels with a real post-epoch
+	// revision timestamp anchor the schedule before the bounded repeat lookback.
 	origin := from.Add(-lookback(c))
-	if c.reel != nil && !c.reel.Anchor.IsZero() && c.reel.Anchor.Before(from) {
+	if c.reel != nil && !c.reel.Anchor.IsZero() && c.reel.Anchor.Unix() > 0 && c.reel.Anchor.Before(from) {
 		origin = c.reel.Anchor.Add(-lookback(c))
+		if origin.Unix() < 0 {
+			origin = c.reel.Anchor
+		}
 	}
 	day := dayStart(origin, loc)
 	if day.After(origin) {
@@ -463,7 +468,10 @@ func fillGap(out *[]Programme, c Channel, filler []Item, fromCursor, end, winFro
 	}
 	// Each day starts further into the filler, so a short gap at the same
 	// time of night is not the same filler every night.
-	i := int((fromCursor.Unix() / 86400) % int64(len(filler)))
+	// Non-negative even for a cursor before 1970 (a zero time reaches here
+	// on a cold build): Go's % keeps the dividend's sign.
+	n := int64(len(filler))
+	i := int(((fromCursor.Unix()/86400)%n + n) % n)
 	for cursor.Before(end) && len(*out) < 20000 {
 		// Prefer the next filler that fits whole; cut one only when none does.
 		pick := i % len(filler)

@@ -229,6 +229,8 @@ type Catalog struct {
 	// filters read the current sets directly, so it keys their caches
 	// instead of invalidating the whole catalogue.
 	consoleGateGen atomic.Uint64
+	ownerPolicy    atomic.Pointer[func(context.Context, *core.Title) bool]
+	releaseGate    atomic.Pointer[func(context.Context, core.Title) bool]
 	listSummaryMu  sync.Mutex
 	listSummaries  map[core.RatingKey]listSummary
 	remoteSearches remoteSearchCache // search_remote_cache.go
@@ -239,6 +241,7 @@ type Catalog struct {
 	metadataProviders map[string]*metadataRegistration
 	metadataFlights   flight.Group[string, *core.Title]
 	viewerRules       viewerRuleCache
+	ownerIncludes     ownerIncludeCache
 	visibility        *libraryfilter.Filter // every rule: browsing and discovery
 	searchVis         *libraryfilter.Filter // rules scoped everywhere: explicit search
 	db                *sql.DB
@@ -276,6 +279,7 @@ type Catalog struct {
 
 	syncing      atomic.Bool
 	syncBatch    atomic.Int64 // adaptive sync write batch (sync.go nextSyncBatch)
+	syncContend  atomic.Int32 // consecutive sync attempts ended by write contention (sync.go)
 	detailWrites detailWrites // batched detail writes (detail_writer.go)
 	ftsFold      bool         // bulk writes fold new rows into the title FTS (fts_fold.go)
 	personFold   bool         // and new credits into person names (fts_fold.go)
@@ -312,6 +316,7 @@ type Catalog struct {
 	frozenMinute atomic.Bool
 	cacheMu      sync.RWMutex
 	titleCache   map[core.RatingKey]cachedStoredTitle
+	titleSeq     uint64 // monotonic insertion counter under cacheMu
 	// exportCache holds the latest export pages' titles for the viewer
 	// that read them (queryListRows), so the page's image signer, which
 	// reads the same titles right after, does not read them again; and the
@@ -345,6 +350,7 @@ type Catalog struct {
 	// titleIndexesSwapped is set once popularity left the title indexes
 	// (titleidx.go).
 	titleIndexesSwapped atomic.Bool
+	onStatusChange      func(progressOnly bool)
 }
 
 // SaferRatingSQL is the optional Plex overlay predicate for viewer limits.
@@ -360,6 +366,7 @@ type cachedStoredTitle struct {
 	st     storedTitle
 	gen    uint64
 	minute int64
+	seq    uint64
 }
 
 type cachedCount struct {
@@ -440,6 +447,19 @@ func (c *Catalog) now() time.Time {
 // handoff; with no recorded sync Run still syncs at once.
 func WithResumeSchedule() Option { return func(c *Catalog) { c.resumeSchedule = true } }
 
+// WithOnStatusChange registers a callback invoked when catalogue sync,
+// migration, year-correction or title-tally status changes. progressOnly is
+// true for incremental batch progress while a job is already running.
+func WithOnStatusChange(fn func(progressOnly bool)) Option {
+	return func(c *Catalog) { c.onStatusChange = fn }
+}
+
+func (c *Catalog) notifyStatus(progressOnly bool) {
+	if c != nil && c.onStatusChange != nil {
+		c.onStatusChange(progressOnly)
+	}
+}
+
 // New creates a catalogue. client may be nil (mirror-only / offline mode).
 func New(db *sql.DB, client TMDB, cfg config.Catalog, log *slog.Logger, opts ...Option) (*Catalog, error) {
 	if db == nil {
@@ -470,6 +490,9 @@ func New(db *sql.DB, client TMDB, cfg config.Catalog, log *slog.Logger, opts ...
 		fn(c)
 	}
 	if err := c.reloadViewerRules(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := c.reloadOwnerIncludes(context.Background()); err != nil {
 		return nil, err
 	}
 	c.loadTierHints(context.Background())
@@ -535,14 +558,14 @@ func MeetsThreshold(cfg config.Catalog, t core.Title, now time.Time) bool {
 		// A title with no date is treated as unreleased.
 		return false
 	}
-	minPop, minVotes := cfg.Bars()
-	popOK := minPop > 0 && t.Popularity >= minPop
-	voteOK := minVotes > 0 && t.VoteCount >= minVotes
-	return popOK || voteOK
+	return meetsBars(cfg, t)
 }
 
 func (c *Catalog) meetsThreshold(t core.Title) bool {
-	return MeetsThreshold(c.config(), t, c.now())
+	if MeetsThreshold(c.config(), t, c.now()) {
+		return true
+	}
+	return (t.Type == core.TypeMovie || t.Type == core.TypeShow) && !t.Adult && t.IsReleased(c.now()) && c.isOwnerIncluded(t.Key)
 }
 
 // SetTMDB replaces the remote metadata client. Nil answers from the local catalogue only.

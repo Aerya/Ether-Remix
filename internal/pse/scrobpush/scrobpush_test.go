@@ -178,3 +178,31 @@ func TestHandlerMasksAndKeepsLinks(t *testing.T) {
 		t.Fatalf("lien non retiré : %+v", all)
 	}
 }
+
+// Exercise all timeout layers: console handler, pusher context and HTTP client.
+func TestHandlerAcceptsSlowWebhook(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(16 * time.Second):
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	db, err := store.OpenMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	p := &Pusher{}
+	h := Handler(HandlerDeps{Links: Links{DB: db}, Pusher: func() *Pusher { return p }})
+	body, _ := json.Marshal(map[string]any{"viewer": 1, "url": server.URL + "/webhooks/jellyfin/1?api_key=test"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(string(body))))
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || !result.OK {
+		t.Fatalf("slow webhook failed: %s", rec.Body.String())
+	}
+}

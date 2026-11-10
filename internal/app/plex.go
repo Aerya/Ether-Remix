@@ -152,7 +152,7 @@ func (a *App) buildPlex(ctx context.Context, cfg config.Config) (http.Handler, e
 		// queues (which read Catalog directly) keep working.
 		deps.EpisodeOrder = a.episodeorder
 	}
-	deps.Discovery = a.discoveryFeatures
+	deps.Discovery = a.discoveryFeatures.Frontend()
 	deps.LiveTV = a.livetv
 	deps.Subtitles = plexSubtitles{a}
 	deps.TrackPreferences = a.trackprefs
@@ -164,7 +164,7 @@ func (a *App) buildPlex(ctx context.Context, cfg config.Config) (http.Handler, e
 	if a.support != nil {
 		deps.Support = a.support
 	}
-	deps.Extras = a.extras
+	deps.Extras = newPlexExtras(a.extras)
 	deps.Prerolls = a.prerollProvider()
 	deps.Trickplay = a.trickplay.Borrow()
 	a.wirePlexPolicy(&deps)
@@ -328,10 +328,12 @@ func repoFileURL(ref string) func(string) string {
 var commitRef = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 // sourceRef names the source this build came from: a release's tag
-// ("v0.3.6"), else the commit a development, PR or local build was made
-// from. "" when neither is known.
+// ("v0.3.6"), else the commit a release candidate, development, PR or local
+// build was made from. "" when neither is known.
 func sourceRef(version, commit, revision string) string {
-	if v := strings.TrimSpace(version); v != "dev" && !strings.ContainsAny(v, "+/ ") {
+	// Release candidates (0.3.7-rc.3) are not tagged on GitHub: only a
+	// release version names a tag; anything else is pinned to its commit.
+	if v := strings.TrimSpace(version); v != "dev" && !strings.ContainsAny(v, "+/ -") {
 		if _, err := updater.ParseVersion(v); err == nil {
 			return "v" + strings.TrimPrefix(v, "v")
 		}

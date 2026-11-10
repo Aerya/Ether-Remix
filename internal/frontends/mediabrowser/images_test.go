@@ -105,6 +105,126 @@ func TestImagesRequireScopedGrant(t *testing.T) {
 	}
 }
 
+// Issue #405: Jellyfin makes `tag` optional and some TV clients (Moonfin)
+// omit it. A tag-less request carrying the client's own credential is
+// served by minting the same scoped grant in-process; anonymous tag-less
+// requests, and tag-less requests for items the viewer may not see, stay
+// an indistinguishable 404.
+func TestTaglessImageServesOnlyForAuthenticatedViewer(t *testing.T) {
+	grants := &imageGrantsFake{}
+	ident := frontendtest.Identity{ResolveFunc: func(_ context.Context, token string) (*frontend.Viewer, error) {
+		if token != "grant" {
+			return nil, errors.New("bad token")
+		}
+		return &frontend.Viewer{ID: 1}, nil
+	}}
+	exp := frontendtest.Experience{ItemFunc: func(_ context.Context, r frontend.ItemRequest) (frontend.ItemDetail, error) {
+		return frontend.ItemDetail{Title: frontend.Title{Key: r.Key, Type: "movie", Title: "Movie"}, ImagesAuthoritative: true, Images: []frontend.Image{{Kind: "poster", Path: "/poster"}}}, nil
+	}}
+	inst, err := (Jellyfin{MachineID: "test"}).Mount(context.Background(), frontend.Host{Identity: ident, Experience: exp, ImageGrants: grants})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ids.RatingKeyGUID(5)
+	hidden := ids.RatingKeyGUID(6) // the grant fake denies every item but 5
+	cases := []struct {
+		name  string
+		url   string
+		token string
+		want  int
+	}{
+		{"authenticated no tag", "/Items/" + id + "/Images/Primary", "grant", 200},
+		{"authenticated no tag indexed", "/Items/" + id + "/Images/Primary/0", "grant", 200},
+		{"authenticated empty tag", "/Items/" + id + "/Images/Primary?tag=", "grant", 200},
+		{"api_key credential", "/Items/" + id + "/Images/Primary?api_key=grant", "", 200},
+		{"anonymous no tag", "/Items/" + id + "/Images/Primary", "", 404},
+		{"bad credential no tag", "/Items/" + id + "/Images/Primary", "nope", 404},
+		{"hidden item no tag", "/Items/" + hidden + "/Images/Primary", "grant", 404},
+		{"missing kind no tag", "/Items/" + id + "/Images/Backdrop", "grant", 404},
+		{"anonymous with forged tag", "/Items/" + id + "/Images/Primary?tag=forged", "", 404},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", tc.url, nil)
+		if tc.token != "" {
+			r.Header.Set("X-Emby-Token", tc.token)
+		}
+		inst.Handler().ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Fatalf("%s: got %d want %d (%s)", tc.name, w.Code, tc.want, w.Body.String())
+		}
+		if tc.want == 200 && w.Body.String() != "image" {
+			t.Fatalf("%s: body %q", tc.name, w.Body.String())
+		}
+	}
+}
+
+type publicExperience struct {
+	frontendtest.Experience
+}
+
+func (publicExperience) PublicArtwork(_ context.Context, _ frontend.Device, item frontend.RatingKey) ([]frontend.Image, *frontend.Viewer, bool, error) {
+	if item != 5 {
+		return nil, nil, false, nil
+	}
+	return []frontend.Image{{Kind: "poster", Path: "/poster"}}, &frontend.Viewer{ID: 1}, true, nil
+}
+
+type publicGrantsFake struct {
+	imageGrantsFake
+}
+
+func (*publicGrantsFake) ServePublic(w http.ResponseWriter, r *http.Request, _ frontend.Device, item frontend.RatingKey, img frontend.Image) {
+	if item != 5 || img.Path != "/poster" {
+		http.NotFound(w, r)
+		return
+	}
+	_, _ = w.Write([]byte("image"))
+}
+
+// Issue #405, anonymous half: Moonfin loads posters with no tag and no
+// credential at all. Those requests serve only title artwork the
+// experience reports as visible to every viewer; a forged tag never
+// falls through to the public path.
+func TestAnonymousTaglessImageServesOnlyPublicArtwork(t *testing.T) {
+	exp := publicExperience{Experience: frontendtest.Experience{ItemFunc: func(_ context.Context, r frontend.ItemRequest) (frontend.ItemDetail, error) {
+		return frontend.ItemDetail{Title: frontend.Title{Key: r.Key, Type: "movie", Title: "Movie"}, ImagesAuthoritative: true, Images: []frontend.Image{{Kind: "poster", Path: "/poster"}}}, nil
+	}}}
+	ident := frontendtest.Identity{ResolveFunc: func(_ context.Context, token string) (*frontend.Viewer, error) {
+		if token != "grant" {
+			return nil, errors.New("bad token")
+		}
+		return &frontend.Viewer{ID: 1}, nil
+	}}
+	inst, err := (Jellyfin{MachineID: "test"}).Mount(context.Background(), frontend.Host{Identity: ident, Experience: exp, ImageGrants: &publicGrantsFake{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, hidden := ids.RatingKeyGUID(5), ids.RatingKeyGUID(6)
+	cases := []struct {
+		name string
+		url  string
+		want int
+	}{
+		{"anonymous public poster", "/Items/" + id + "/Images/Primary", 200},
+		{"anonymous public poster indexed", "/Items/" + id + "/Images/Primary/0", 200},
+		{"anonymous hidden poster", "/Items/" + hidden + "/Images/Primary", 404},
+		{"anonymous missing kind", "/Items/" + id + "/Images/Backdrop", 404},
+		{"anonymous forged tag stays denied", "/Items/" + id + "/Images/Primary?tag=forged", 404},
+		{"anonymous unresolvable id", "/Items/not-a-guid/Images/Primary", 404},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		inst.Handler().ServeHTTP(w, httptest.NewRequest("GET", tc.url, nil))
+		if w.Code != tc.want {
+			t.Fatalf("%s: got %d want %d (%s)", tc.name, w.Code, tc.want, w.Body.String())
+		}
+		if tc.want == 200 && w.Body.String() != "image" {
+			t.Fatalf("%s: body %q", tc.name, w.Body.String())
+		}
+	}
+}
+
 func TestStillIsPrimaryWhenPosterIsAbsent(t *testing.T) {
 	grants := &imageGrantsFake{}
 	i := &instance{protocol: "jellyfin", host: frontend.Host{ImageGrants: grants}}

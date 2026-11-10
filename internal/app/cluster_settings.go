@@ -63,6 +63,7 @@ func (a *App) connectClusterHooks() {
 	a.users.SetBus(bus)
 	a.safety.SetBus(bus)
 	a.catalog.SetViewerRulesBus(bus)
+	a.catalog.SetIncludesBus(bus)
 	a.resolver.SetBus(bus)
 	a.personalize.SetBus(bus)
 	a.collections.SetBus(bus)
@@ -76,6 +77,7 @@ func (a *App) connectClusterHooks() {
 		if up {
 			a.media.RefreshLeases()
 		}
+		a.publishDashboard()
 	})
 	a.closers = append(a.closers, func() {
 		unsubAvail()
@@ -83,6 +85,7 @@ func (a *App) connectClusterHooks() {
 		a.users.Close()
 		a.safety.Close()
 		a.catalog.SetViewerRulesBus(nil)
+		a.catalog.SetIncludesBus(nil)
 		a.resolver.SetBus(nil)
 		a.personalize.SetBus(nil)
 		a.collections.SetBus(nil)

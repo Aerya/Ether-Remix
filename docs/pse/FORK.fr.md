@@ -64,6 +64,8 @@ Le `GITHUB_TOKEN` suffit : aucun jeton personnel ni secret de synchronisation n'
 
 ## Résolution manuelle d'un conflit
 
+Un conflit empêche volontairement la fusion ; relancer la même révision ne le résout pas. Intégrer le delta complet, conserver les ajouts du fork, puis avancer `upstream-base` uniquement avec la résolution validée. Les compilations et tests restent nécessaires même si Git ne signale plus de conflit : une interface déplacée peut demander d’adapter les raccordements Remix.
+
 Depuis un clone propre :
 
 ```bash

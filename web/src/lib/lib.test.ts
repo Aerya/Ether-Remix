@@ -58,6 +58,16 @@ describe("rules", () => {
     expect(newRule("genre")).toEqual({ field: "genre", op: "in", value: [] });
     expect(newRule("rating")).toEqual({ field: "rating", op: "gte", value: 7 });
     expect(newRule("released")).toEqual({ field: "released", op: "within", value: "30d" });
+    expect(newRule("latestSeasonPremiere")).toEqual({
+      field: "latestSeasonPremiere",
+      op: "within",
+      value: "30d",
+    });
+    expect(newRule("latestEpisode")).toEqual({
+      field: "latestEpisode",
+      op: "within",
+      value: "30d",
+    });
     expect(newRule("watched")).toEqual({ field: "watched", op: "is", value: true });
   });
 
@@ -94,6 +104,12 @@ describe("rules", () => {
     );
     expect(describeRule({ field: "released", op: "within", value: "6m" })).toBe(
       "Released in the last 6 months",
+    );
+    expect(describeRule({ field: "latestSeasonPremiere", op: "within", value: "180d" })).toBe(
+      "Latest season premiere in the last 180 days",
+    );
+    expect(describeRule({ field: "latestEpisode", op: "gte", value: "2026-06-01" })).toBe(
+      "Latest aired episode on or after 2026-06-01",
     );
     expect(describeRule({ field: "watched", op: "is", value: false })).toBe(
       "Not watched by the viewer",
@@ -534,14 +550,49 @@ describe("health", () => {
     expect(authFail.statusLabel).toBe("Needs attention");
     expect(authFail.summary).toBe("Login rejected. Check the username and password.");
     expect(catalogHealth({ lastSync: "2026-10-01T00:00:00Z" }, now).level).toBe("warn");
-    for (const running of [false, true]) {
-      const failed = catalogHealth(
-        { lastSync: now.toISOString(), sync: { running, lastError: "fixture: page failed" } },
+    expect(
+      catalogHealth(
+        {
+          browsableMovies: 38438,
+          browsableShows: 10000,
+          lastSync: now.toISOString(),
+          sync: { running: true, titlesSeen: 113420 },
+        },
         now,
-      );
-      expect(failed.level).toBe("warn");
-      expect(failed.details.some((line) => line.includes("fixture: page failed"))).toBe(true);
-    }
+      ).summary,
+    ).toBe("48,438 titles · syncing (113,420 checked)");
+    expect(
+      catalogHealth({ movies: 0, shows: 0, sync: { running: true, titlesSeen: 2500 } }, now)
+        .summary,
+    ).toBe("Syncing… 2,500 checked");
+    // A finished attempt's error warns; while its retry is running the
+    // card shows the sync in progress instead of asking for a fix, with
+    // the error kept in the details (#407).
+    const failed = catalogHealth(
+      { lastSync: now.toISOString(), sync: { running: false, lastError: "fixture: page failed" } },
+      now,
+    );
+    expect(failed.level).toBe("warn");
+    expect(failed.details.some((line) => line.includes("fixture: page failed"))).toBe(true);
+    const retrying = catalogHealth(
+      {
+        browsableMovies: 10,
+        browsableShows: 5,
+        lastSync: now.toISOString(),
+        sync: { running: true, titlesSeen: 40, lastError: "fixture: page failed" },
+      },
+      now,
+    );
+    expect(retrying.level).toBe("ok");
+    expect(retrying.summary).toBe("15 titles · syncing (40 checked)");
+    expect(retrying.details.some((line) => line.includes("fixture: page failed"))).toBe(true);
+    // And once that retry succeeds the error is gone entirely.
+    const recovered = catalogHealth(
+      { browsableMovies: 10, browsableShows: 5, lastSync: now.toISOString(), sync: {} },
+      now,
+    );
+    expect(recovered.level).toBe("ok");
+    expect(recovered.details.some((line) => line.includes("fixture: page failed"))).toBe(false);
     const correcting = catalogHealth(
       {
         lastSync: "2026-10-30T00:00:00Z",

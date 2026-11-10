@@ -451,6 +451,15 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.Close() // libera o instance lock (o db não foi aberto)
 		return nil, startFail(openFailure(err, dbCfg.IsPostgres()), fmt.Errorf("database: %w", err))
 	}
+	// The rest of construction writes through the gate in startup steps
+	// (restored-dump import, credential sealing, seeding). Hold the gate
+	// in maintenance mode until New returns so anything already writing
+	// beside it queues instead of failing at 10 s (#407).
+	if endHold, herr := store.MaintenanceHold(ctx, a.db); herr != nil {
+		a.log.Warn("startup maintenance hold", "err", herr)
+	} else {
+		defer endHold()
+	}
 	a.cfg.SetPolicyEpoch(a.publishPolicyConfig)
 	if err := a.checkRestoredIntegrity(ctx); err != nil {
 		return nil, err
@@ -644,6 +653,7 @@ func (a *App) applyConfig(c config.Config) {
 	// Re-publish section titles when Movies / TV Shows library names change.
 	a.publishLibrarySections()
 	a.registrar.Trigger()
+	a.publishDashboard()
 }
 
 // protectedReleases is every release that must survive cache eviction:
@@ -711,9 +721,22 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	defer stopPrivate()
+	// Credential sealing and the startup WAL checkpoint finish before
+	// background workers or the listener start, so neither waits on or
+	// contends with that write. The maintenance hold also queues the
+	// writers cluster/private startup already launched, for as long as
+	// the checkpoint takes, instead of failing them at 10 s (#407).
+	endHold, holdErr := store.MaintenanceHold(ctx, a.db)
+	if holdErr != nil {
+		a.log.Warn("startup maintenance hold", "err", holdErr)
+		endHold = func() {}
+	}
 	if err := a.migrateCredentials(ctx); err != nil {
+		endHold()
 		return fmt.Errorf("convert stored credentials: %w", err)
 	}
+	a.settleBeforeListen(ctx)
+	endHold()
 	var background backgroundGroup
 	defer background.Wait()
 	defer cancel()
@@ -752,14 +775,6 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.load.Run(ctx) })
 	background.start(func() { a.cache.Run(ctx) })
 	background.start(func() { a.cachefill.Run(ctx) })
-	if parityRunRegistrar() {
-		if a.clustered() {
-			background.start(func() { a.runRegistrarAsLeader(ctx) })
-			background.start(func() { a.registrar.RunPortMapping(ctx) })
-		} else if err := a.registrar.Start(ctx); err != nil {
-			a.log.Warn("plex.tv registrar", "err", err)
-		}
-	}
 
 	background.start(func() { a.housekeeping(ctx) })
 	background.start(func() { a.checkpointWAL(ctx) })
@@ -798,9 +813,6 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.runBudgets(ctx) })
 	background.start(func() { a.cluster.RunAsLeader(ctx, "prowlarr indexer sync", a.runProwlarrSync) })
 	background.start(func() { a.runEgress(ctx) })
-	// Credential sealing and the startup WAL checkpoint finish before the
-	// listener accepts a play. A play must not wait on that write.
-	a.settleBeforeListen(ctx)
 
 	front := a.opts.front
 	if front == nil {
@@ -837,6 +849,18 @@ func (a *App) Run(ctx context.Context) error {
 		"version", a.opts.Version, "spike", cfg.Spike.Enabled)
 	if next := startupNextStep(cfg, uiURL); next != "" {
 		a.log.Info(next)
+	}
+	// Start plex.tv publication and connectivity checks only after the
+	// front-end sections are registered and the listener gate is open, so
+	// the first servers.xml carries the library list and plex.tv's inbound
+	// connectivity probe never races a closed listener.
+	if parityRunRegistrar() {
+		if a.clustered() {
+			background.start(func() { a.runRegistrarAsLeader(ctx) })
+			background.start(func() { a.registrar.RunPortMapping(ctx) })
+		} else if err := a.registrar.Start(ctx); err != nil {
+			a.log.Warn("plex.tv registrar", "err", err)
+		}
 	}
 	if a.registrar != nil {
 		a.registrar.ListenerReady()

@@ -495,16 +495,32 @@ export function catalogHealth(v: unknown, now = new Date()): HealthItem {
   if (yearLine) details.push(yearLine);
   const tierLine = tierMigrationLine(v.tierMigration, now);
   if (tierLine) details.push(tierLine);
-  if (typeof sync.lastError === "string" && sync.lastError) {
-    const message = t("Last sync error: {error}", { error: sync.lastError });
-    details.push(message);
-    return { ...base, level: "warn", summary: message, details };
+  const lastError =
+    typeof sync.lastError === "string" && sync.lastError
+      ? t("Last sync error: {error}", { error: sync.lastError })
+      : "";
+  // While a retry is running the previous attempt's error is history,
+  // not a state to fix: show the sync in progress (the error stays in
+  // the details) and let the retry's own result decide. A transient
+  // failure right after startup must not alarm anyone (#407).
+  if (sync.running !== true && lastError) {
+    details.push(lastError);
+    return { ...base, level: "warn", summary: lastError, details };
   }
+  if (lastError) details.push(lastError);
   if (sync.running === true) {
+    const total = movies + shows;
+    const checked = formatNumber(num(sync.titlesSeen));
     return {
       ...base,
       level: "ok",
-      summary: t("Syncing… {count} titles seen", { count: formatNumber(num(sync.titlesSeen)) }),
+      summary:
+        total > 0
+          ? t("{count} titles · syncing ({checked} checked)", {
+              count: formatNumber(total),
+              checked,
+            })
+          : t("Syncing… {checked} checked", { checked }),
       details,
     };
   }

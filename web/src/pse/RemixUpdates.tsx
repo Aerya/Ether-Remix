@@ -38,6 +38,26 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-10-scrob-slow-connection",
+    version: "0.2.37-remix.37.1",
+    date: "2026-11-10",
+    title: ["Scrob : connexions lentes", "Scrob: slow connections"],
+    items: [[
+      "Le test du webhook et les envois de lecture attendent désormais jusqu’à 60 secondes au lieu de 15 pour les connexions lentes.",
+      "Webhook tests and playback events now wait up to 60 seconds instead of 15 on slow connections.",
+    ]],
+  },
+  {
+    id: "2026-11-10-ether-sync-recovered",
+    version: "0.2.37-remix.36.1",
+    date: "2026-11-10",
+    title: ["Mise à jour Ether et compatibilité Remix", "Ether update and Remix compatibility"],
+    items: [[
+      "Les nouveautés d’Ether sont intégrées, dont le décalage des sorties numériques/physiques et les corrections du guide TV. Les filtres Remix, les sections repliables et la préparation groupée des affiches sont conservés.",
+      "Ether updates include the digital/physical release offset and TV guide fixes. Remix filters, collapsible sections and batched poster preparation are preserved.",
+    ]],
+  },
+  {
     id: "2026-11-10-stats-searches-readable",
     version: "0.2.37-remix.35.1",
     date: "2026-11-10",
