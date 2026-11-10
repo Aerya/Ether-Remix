@@ -184,10 +184,13 @@ type job struct {
 // progressEvery espace les mises à jour de position pendant la lecture.
 const progressEvery = 60 * time.Second
 
+// webhookTimeout accommodates slow connections for tests and playback events.
+const webhookTimeout = 60 * time.Second
+
 func (p *Pusher) init() {
 	p.once.Do(func() {
 		if p.HTTP == nil {
-			p.HTTP = &http.Client{Timeout: 15 * time.Second}
+			p.HTTP = &http.Client{Timeout: webhookTimeout}
 		}
 		if p.Log == nil {
 			p.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -371,7 +374,7 @@ func (p *Pusher) send(ctx context.Context, j job) {
 }
 
 func (p *Pusher) post(ctx context.Context, target string, body []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, webhookTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {

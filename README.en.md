@@ -68,7 +68,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 - Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
 - View history **by day, week, month or year**, as period or cumulative values, filtered by movies, shows, anime and sources.
 - Compare the local catalogue with TMDB totals and review operations in the activity log.
-- Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook and history-only libraries are optional.
+- Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook (**60-second** timeout) and history-only libraries are optional.
 - Connect **Last.fm** per user for music scrobbling and find listening statistics in Overview.
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) An interface that fits your habits
