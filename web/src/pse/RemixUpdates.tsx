@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-statistics-dashboard",
+    id: "2026-11-10-seerrcatalog-independent-search-auth",
     version: "current",
+    date: "2026-11-10",
+    title: ["SeerrCatalog : recherches indépendantes", "SeerrCatalog: independent searches"],
+    items: [
+      [
+        "La recherche complémentaire possède maintenant sa propre clé et son propre interrupteur dans Sources → Stremio → Recherches pour SeerrCatalog. Le partage des disponibilités peut rester désactivé. Après mise à jour des deux applications, générez une clé dans SeerrCatalog → Recherche complémentaire et copiez-la dans ce nouveau bloc.",
+        "Complementary search now has its own token and switch under Sources → Stremio → Searches for SeerrCatalog. Availability sharing can remain disabled. After updating both applications, generate a token in SeerrCatalog → Complementary search and copy it into this new section.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-statistics-dashboard",
+    version: "0.2.37-remix.32.1",
     date: "2026-11-10",
     title: ["Les statistiques vous accueillent", "Statistics welcome you"],
     items: [

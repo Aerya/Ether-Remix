@@ -386,9 +386,15 @@ func (s *Service) Lookup(ctx context.Context, req core.SearchRequest) ([]core.Re
 // duplicates, missed deletions and updates; the supplied payload is never trusted.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := Load()
+	token, enabled := c.Token, c.valid()
+	if r.URL.Path == SearchPath {
+		toggle := strings.ToLower(pseenv.Get("PSE_SEERRCATALOG_SEARCH"))
+		token = pseenv.Get("PSE_SEERRCATALOG_SEARCH_TOKEN")
+		enabled = (toggle == "on" || toggle == "true" || toggle == "1") && len(token) >= 32
+	}
 	a := sha256.Sum256([]byte(r.Header.Get("Authorization")))
-	b := sha256.Sum256([]byte("Bearer " + c.Token))
-	if !c.valid() || subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
+	b := sha256.Sum256([]byte("Bearer " + token))
+	if !enabled || subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}

@@ -227,6 +227,12 @@ func (h *handler) put(w http.ResponseWriter, r *http.Request) {
 			errs["PSE_SEERRCATALOG_TOKEN"] = "Clé partagée requise (32 caractères minimum)"
 		}
 	}
+	switch strings.ToLower(effective("PSE_SEERRCATALOG_SEARCH")) {
+	case "on", "1", "true", "yes", "oui":
+		if len(effective("PSE_SEERRCATALOG_SEARCH_TOKEN")) < 32 {
+			errs["PSE_SEERRCATALOG_SEARCH_TOKEN"] = "Clé dédiée aux recherches requise (32 caractères minimum)"
+		}
+	}
 	if len(errs) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "Certains réglages sont invalides", "fields": errs})
 		return
@@ -330,7 +336,7 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 			return "", errors.New("adresse de base sans identifiants, paramètres ni fragment attendue")
 		}
 	}
-	if fd.Key == "PSE_SEERRCATALOG_TOKEN" && v != "" && len(v) < 32 {
+	if (fd.Key == "PSE_SEERRCATALOG_TOKEN" || fd.Key == "PSE_SEERRCATALOG_SEARCH_TOKEN") && v != "" && len(v) < 32 {
 		return "", errors.New("clé de 32 caractères minimum")
 	}
 	switch fd.Kind {
