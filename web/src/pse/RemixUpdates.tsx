@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-scrob-slow-connection",
+    id: "2026-11-10-seerrcatalog-settings-layout",
     version: "current",
+    date: "2026-11-10",
+    title: ["SeerrCatalog : des réglages regroupés", "SeerrCatalog: grouped settings"],
+    items: [
+      [
+        "Sources → Stremio réunit les disponibilités et la recherche via Remix dans une seule section SeerrCatalog. Chaque fonction conserve sa clé et son activation. Les explications et les étapes de connexion sont simplifiées.",
+        "Sources → Stremio groups availability and search via Remix in one SeerrCatalog section. Each feature keeps its own token and switch. Connection instructions are shorter and clearer.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-scrob-slow-connection",
+    version: "0.2.37-remix.37.1",
     date: "2026-11-10",
     title: ["Scrob : connexions lentes", "Scrob: slow connections"],
     items: [[

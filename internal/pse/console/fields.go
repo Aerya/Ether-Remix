@@ -200,21 +200,21 @@ var Features = communityFields([]Feature{
 	},
 	{
 		ID:          "seerrcatalog",
-		Title:       tx("SeerrCatalog → Ether Remix", "SeerrCatalog → Ether Remix"),
-		Description: tx("Réutilise les disponibilités vérifiées par votre SeerrCatalog sans rechercher les mêmes sources. Les règles de disponibilité de SeerrCatalog font foi pour ces titres, y compris dans le catalogue lisible uniquement.", "Reuse availability checked by your SeerrCatalog without searching the same sources. SeerrCatalog availability rules are trusted for these titles, including the playable-only catalogue."),
+		Title:       tx("Disponibilités vers Remix", "Availability to Remix"),
+		Description: tx("Importer les disponibilités et sources déjà vérifiées par SeerrCatalog, sans relancer leur recherche.", "Import availability and sources already checked by SeerrCatalog without searching again."),
 		Fields: []Field{
-			{Key: "PSE_SEERRCATALOG", Kind: KindToggle, Default: "off", Label: tx("Faire confiance à SeerrCatalog", "Trust SeerrCatalog"), Help: tx("Désactivé par défaut. Partage les sources des utilisateurs de SeerrCatalog avec cette instance Remix de confiance. La lecture conserve les règles du spectateur.", "Off by default. Shares SeerrCatalog users’ sources with this trusted Remix instance. Playback retains viewer policies.")},
+			{Key: "PSE_SEERRCATALOG", Kind: KindToggle, Default: "off", Label: tx("Importer les disponibilités", "Import availability"), Help: tx("Utilise les critères de SeerrCatalog. Les règles de lecture du spectateur restent appliquées.", "Uses SeerrCatalog criteria. Viewer playback policies still apply.")},
 			{Key: "PSE_SEERRCATALOG_URL", Kind: KindURL, Label: tx("Adresse de SeerrCatalog", "SeerrCatalog address"), Placeholder: "http://seerrcatalog:7000", Help: tx("Adresse de base, sans manifest ni chemin API. Synchronisation chaque minute, sans requête aux addons.", "Base address, without manifest or API path. Synchronizes every minute without addon requests.")},
-			{Key: "PSE_SEERRCATALOG_TOKEN", Kind: KindKey, Secret: true, Label: tx("Clé partagée", "Shared token"), Help: tx("Générez la clé dans les paramètres SeerrCatalog, puis collez-la ici. Elle reste masquée.", "Generate the token in SeerrCatalog settings and paste it here. It remains masked.")},
+			{Key: "PSE_SEERRCATALOG_TOKEN", Kind: KindKey, Secret: true, Label: tx("Clé de partage des disponibilités", "Availability sharing token"), Help: tx("Copiez la clé du bloc Disponibilités vers Remix dans SeerrCatalog.", "Copy the token from Availability to Remix in SeerrCatalog.")},
 		},
 	},
 	{
 		ID:          "seerrcatalog_search",
-		Title:       tx("Recherches pour SeerrCatalog", "Searches for SeerrCatalog"),
-		Description: tx("Autorise SeerrCatalog à rechercher dans les sources Remix. Indépendant du partage des disponibilités : aucune adresse SeerrCatalog ni activation de ce partage n’est nécessaire.", "Allows SeerrCatalog to search Remix sources. Independent of availability sharing: no SeerrCatalog URL or availability integration is required."),
+		Title:       tx("Recherche via Remix", "Search via Remix"),
+		Description: tx("Permet à SeerrCatalog de compléter ses recherches avec les sources de Remix, dont Prowlarr.", "Let SeerrCatalog complement its searches using Remix sources, including Prowlarr."),
 		Fields: []Field{
 			{Key: "PSE_SEERRCATALOG_SEARCH", Kind: KindToggle, Default: "off", Label: tx("Autoriser les recherches SeerrCatalog", "Allow SeerrCatalog searches")},
-			{Key: "PSE_SEERRCATALOG_SEARCH_TOKEN", Kind: KindKey, Secret: true, Label: tx("Clé dédiée aux recherches", "Dedicated search token"), Help: tx("Dans SeerrCatalog → Paramètres → Recherche complémentaire, générez et enregistrez une clé, puis collez-la ici (32 caractères minimum). Enregistrez et testez depuis SeerrCatalog. Cette clé n’autorise pas le partage des disponibilités.", "In SeerrCatalog → Settings → Complementary search, generate and save a token, then paste it here (at least 32 characters). Save and test from SeerrCatalog. This token does not authorize availability sharing.")},
+			{Key: "PSE_SEERRCATALOG_SEARCH_TOKEN", Kind: KindKey, Secret: true, Label: tx("Clé dédiée aux recherches", "Dedicated search token"), Help: tx("Copiez la clé du bloc Recherche via Remix dans SeerrCatalog (32 caractères minimum). Enregistrez ici, puis testez depuis SeerrCatalog.", "Copy the token from Search via Remix in SeerrCatalog (at least 32 characters). Save here, then test from SeerrCatalog.")},
 		},
 	},
 })
