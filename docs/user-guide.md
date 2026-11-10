@@ -1530,3 +1530,15 @@ Smarters Pro for Mac was checked for login and decoder activity, but sustained
 playback remains unverified. These are scoped checks, not certification of every
 IPTV app, physical TV, or provider. Upstream provider connection limits are
 enforced per Ether process; they are not a cluster-wide account quota.
+
+## Profils de qualité Remix
+
+Dans **Ether-Remix → Langues et qualité → Profils de qualité**, créez un profil global, Films/Séries, bibliothèque ou collection. Les règles imposent ou excluent des formats (WEB-DL, BluRay, Remux…), codecs, résolutions, HDR/Dolby Vision, tailles, langues, sous-titres, groupes, sources ou expressions régulières. Les raccourcis HDR10+, Atmos et canaux audio examinent le nom annoncé, sans analyser le fichier vidéo.
+
+Chaque règle combine ses conditions avec OU ou ET ; toutes les règles du profil s’appliquent. Une information absente ne satisfait pas une obligation, mais ne prouve pas une exclusion. Testez des noms de releases avant d’enregistrer (le test porte uniquement sur le profil affiché).
+
+La collection prime sur la bibliothèque, puis sur Films/Séries. Au même niveau, le premier profil correspondant gagne : les flèches changent cet ordre. Les profils globaux s’ajoutent, sauf si « Remplacer les filtres globaux » est coché. Cela ne remplace pas les filtres historiques du catalogue ni les contraintes de lecture Ether. Les profils ciblent les bibliothèques Remix et les collections partagées, sur leur appartenance matérialisée avant filtrage de visibilité. Une collection encore en construction ne fournit pas encore de membres. Un titre partagé garde le même profil dans les différents clients. Les appartenances sont actualisées après modification et périodiquement ; le recalcul du catalogue est effectué en arrière-plan.
+
+Les sources restent interrogées normalement. Les filtres contrôlent les releases acceptées pour le catalogue lisible et la lecture ; les résultats bruts restent conservés pour pouvoir assouplir les critères sans nouvelle recherche. Remix ne peut pas récupérer des résultats déjà masqués dans l’addon.
+
+**Import AIOStreams** : fournissez un export JSON déchiffré de la configuration, pas un manifest. L’analyse extrait uniquement les filtres compatibles ; les comptes et clés ne sont pas enregistrés. Consultez les avertissements, ajoutez les règles au brouillon, modifiez-les si nécessaire puis enregistrez. Les règles « included » (contournement), préférences de tri, limites, variantes, expressions conditionnelles et filtres distants ne sont pas reproduits. Les parseurs diffèrent : vérifiez le résultat, en particulier les regex appliquées au nom plutôt qu’au dossier/indexeur. Les regex RE2 acceptent `(?i)` pour ignorer la casse, mais pas les lookarounds ni les références arrière.
