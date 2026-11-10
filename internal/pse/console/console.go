@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/langtag"
+	"github.com/braedonsaunders/ether/internal/pse/submaker"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -346,6 +348,15 @@ func splitList(v string) []string {
 }
 
 func validate(fd Field, v string, sources []Option) (string, error) {
+	if fd.Key == "PSE_SUBMAKER_MANIFEST" && v != "" {
+		if _, _, err := submaker.Endpoint(v); err != nil {
+			return "", err
+		}
+	}
+	if (fd.Key == "PSE_SUBMAKER_SOURCE" || fd.Key == "PSE_SUBMAKER_TARGET") && langtag.Normalize(v) == "" {
+		return "", errors.New("code langue invalide")
+	}
+
 	if fd.Key == "PSE_SEERRCATALOG_URL" && v != "" {
 		u, e := url.Parse(v)
 		if e != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

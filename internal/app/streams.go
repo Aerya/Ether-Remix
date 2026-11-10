@@ -47,6 +47,36 @@ func (a *App) subtitlePrefs(ctx context.Context, u *core.User) subtitles.Prefere
 
 func (a *App) enrichSubtitles(ctx context.Context, t *core.Title, u *core.User, res *core.Resolution, src core.MediaSource, info *core.MediaInfo) {
 	a.subtitles.Enrich(ctx, t, a.subtitleUser(ctx, u), res, src, info, a.subtitlePrefs(ctx, u))
+	if t == nil || res == nil || info == nil || a.db == nil {
+		return
+	}
+	req := core.SearchRequest{IDs: t.IDs, Type: t.Type, Title: t.Title, Season: t.Season, Episode: t.Episode}
+	if t.Type == core.TypeEpisode || t.Key.Kind() == core.KindEpisode {
+		req.Type = core.TypeEpisode
+		req.IDs = t.ShowIDs
+		if req.IDs.TMDB == 0 {
+			req.IDs.TMDB = t.Key.TMDB()
+		}
+	}
+	if req.Type == core.TypeEpisode && req.Season == 0 {
+		req.Season, req.Episode = t.Key.Season(), t.Key.Episode()
+	}
+	if service := a.pseSubmaker(); service != nil {
+		if p := service.Cached(req, res.Release); p != nil {
+			track, err := a.subtitles.StoreExternal(t, p.Language, p.Release, []byte(p.SRT), p.Translated)
+			if err == nil {
+				for _, st := range info.Streams {
+					if st.Index >= track.Index {
+						track.Index = st.Index + 1
+					}
+				}
+				info.Streams = append(info.Streams, track)
+			}
+		} else {
+			service.Ensure(ctx, req, res.Release)
+		}
+	}
+
 }
 
 // plexSubtitles is plex.Deps.Subtitles: the OpenSubtitles service with the

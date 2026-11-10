@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/langtag"
+	"github.com/braedonsaunders/ether/internal/pse/submaker"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
@@ -21,19 +23,22 @@ var hashPattern = regexp.MustCompile(`(?i)^[a-f0-9]{40}$`)
 var imdbPattern = regexp.MustCompile(`^tt[0-9]{5,12}$`)
 
 type SearchInput struct {
-	Media   Media `json:"media"`
-	Season  int   `json:"season"`
-	Episode int   `json:"episode"`
+	SubtitleLanguage  string `json:"subtitleLanguage"`
+	ExternalSubtitles bool   `json:"externalSubtitles"`
+	Media             Media  `json:"media"`
+	Season            int    `json:"season"`
+	Episode           int    `json:"episode"`
 }
 type SearchStream struct {
-	Name              string         `json:"name"`
-	Title             string         `json:"title"`
-	InfoHash          string         `json:"infoHash,omitempty"`
-	URL               string         `json:"url,omitempty"`
-	BehaviorHints     map[string]any `json:"behaviorHints,omitempty"`
-	Languages         []string       `json:"languages,omitempty"`
-	SubtitleLanguages []string       `json:"subtitleLanguages,omitempty"`
-	Source            string         `json:"source"`
+	ExternalSubtitle  *submaker.Proof `json:"externalSubtitle,omitempty"`
+	Name              string          `json:"name"`
+	Title             string          `json:"title"`
+	InfoHash          string          `json:"infoHash,omitempty"`
+	URL               string          `json:"url,omitempty"`
+	BehaviorHints     map[string]any  `json:"behaviorHints,omitempty"`
+	Languages         []string        `json:"languages,omitempty"`
+	SubtitleLanguages []string        `json:"subtitleLanguages,omitempty"`
+	Source            string          `json:"source"`
 }
 
 // The caller is authenticated by ServeHTTP. No NZB/torrent download URL is
@@ -89,6 +94,8 @@ func (s *Service) serveSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []SearchStream{}
 	ignored := 0
+	pendingSubtitles := false
+	subtitleAttempts := 0
 	for _, rel := range releases {
 		if len(out) >= 100 {
 			break
@@ -117,7 +124,15 @@ func (s *Service) serveSearch(w http.ResponseWriter, r *http.Request) {
 			ignored++
 			continue
 		}
+		if in.ExternalSubtitles && s.Submaker != nil && subtitleAttempts < 2 && langtag.Normalize(in.SubtitleLanguage) == submaker.Load().Target {
+			proof, pending := s.Submaker.Ensure(ctx, req, rel)
+			if proof != nil || pending {
+				subtitleAttempts++
+			}
+			st.ExternalSubtitle = proof
+			pendingSubtitles = pendingSubtitles || pending
+		}
 		out = append(out, st)
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"schema": SearchSchema, "streams": out, "conclusive": !coverage.Incomplete() && ctx.Err() == nil, "ignored": ignored})
+	_ = json.NewEncoder(w).Encode(map[string]any{"schema": SearchSchema, "streams": out, "conclusive": !coverage.Incomplete() && ctx.Err() == nil, "ignored": ignored, "subtitlesPending": pendingSubtitles})
 }
