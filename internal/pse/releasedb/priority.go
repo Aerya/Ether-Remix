@@ -134,6 +134,72 @@ func (s *Service) SearchNow(ctx context.Context, keys []core.RatingKey) (int, er
 	if err := s.st.clearDue(ctx, keys); err != nil {
 		return 0, err
 	}
+	return s.enqueue(ctx, keys, 0)
+}
+
+// searchRetry : un titre cherché par un spectateur, déjà indexé sans
+// résultat, est retenté au plus une fois par searchRetry.
+const searchRetry = 6 * time.Hour
+
+// searchSoonMax borne les titres d'une recherche mis en tête de file, et
+// urgentMax la file à partir de laquelle une recherche n'ajoute plus rien :
+// une recherche au fil de la frappe ne doit pas la remplir.
+const (
+	searchSoonMax = 5
+	urgentMax     = 200
+)
+
+// SearchSoon met en tête de file les premiers titres d'une recherche
+// Plex ou Jellyfin. Seuls les titres jamais indexés, ou sans release et
+// indexés depuis plus de searchRetry, sont ajoutés : les autres gardent
+// leur échéance normale. Les budgets par source restent appliqués.
+func (s *Service) SearchSoon(ctx context.Context, keys []core.RatingKey) (int, error) {
+	if !s.d.Settings.Enabled || len(s.d.Settings.Types) == 0 {
+		return 0, ErrIndexerOff
+	}
+	now := s.d.Now()
+	var want []core.RatingKey
+	seen := map[core.RatingKey]bool{}
+	for _, k := range keys {
+		if len(want) >= searchSoonMax {
+			break
+		}
+		if seen[k] || (k.Kind() != core.KindMovie && k.Kind() != core.KindShow) {
+			continue
+		}
+		seen[k] = true
+		stale, err := s.st.searchStale(ctx, k, now)
+		if err != nil {
+			return 0, err
+		}
+		if stale {
+			want = append(want, k)
+		}
+	}
+	if len(want) == 0 {
+		return 0, nil
+	}
+	return s.enqueue(ctx, want, urgentMax)
+}
+
+// searchStale indique qu'un titre n'a jamais été indexé, ou n'a rien
+// donné et n'a pas été retenté depuis searchRetry.
+func (s *Store) searchStale(ctx context.Context, key core.RatingKey, now time.Time) (bool, error) {
+	var last int64
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT last_indexed,found FROM pse_index_titles WHERE title_key=?`, int64(key)).Scan(&last, &found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return found == 0 && now.Sub(time.Unix(last, 0)) >= searchRetry, nil
+}
+
+// enqueue ajoute des titres à la file « Chercher maintenant », sans
+// doublon ; limit borne la file par type (0 : sans limite).
+func (s *Service) enqueue(ctx context.Context, keys []core.RatingKey, limit int) (int, error) {
 	added := 0
 	for _, typ := range s.d.Settings.Types {
 		var want []core.RatingKey
@@ -155,6 +221,9 @@ func (s *Service) SearchNow(ctx context.Context, keys []core.RatingKey) (int, er
 			queued[t.Key] = true
 		}
 		for _, t := range page.Items {
+			if limit > 0 && len(s.urgent[typ]) >= limit {
+				break
+			}
 			if !queued[t.Key] {
 				queued[t.Key] = true
 				s.urgent[typ] = append(s.urgent[typ], t)
