@@ -33,11 +33,27 @@ export const REMIX_UPDATES = [
     items: [
       [
         "Ajoutez des dossiers vidéo ou audio montés dans Docker : bibliothèques locales, vidéos personnelles sans TMDB, analyse automatique et lecture sans déplacer vos fichiers.",
-        "Add video or audio folders mounted in Docker: local libraries, personal videos without TMDB, automatic scans and playback without moving files.",
+        "Add video or audio folders mounted in Docker: Remix/TMDB matching, personal videos preserved without a match, automatic scanning and in-place playback.",
       ],
       [
-        "Connectez iBroadcast par code OAuth en lecture seule. Sa bibliothèque rejoint Musique, avec des favoris et historiques distincts pour chaque spectateur.",
-        "Connect iBroadcast using read-only OAuth device authorization. Its library joins Music, with separate favourites and history for each viewer.",
+        "Dossiers et comptes iBroadcast privés par défaut, partage avec certains spectateurs ou tous. Plusieurs comptes personnels et import facultatif des playlists iBroadcast.",
+        "Private folders and iBroadcast accounts by default, with optional sharing. Multiple personal accounts and optional iBroadcast playlist imports.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-display-name",
+    version: "0.2.37-remix.48.1",
+    date: "2026-11-11",
+    title: ["Nom affiché des utilisateurs", "Viewer display names"],
+    items: [
+      [
+        "Sur la fiche d’un utilisateur, le crayon à côté de son nom permet de choisir le nom affiché dans les statistiques, l’activité et les listes. Plex ne l’écrase plus, et les lectures passées prennent le nouveau nom.",
+        "On a viewer’s page, the pencil next to their name sets the name shown in statistics, activity and lists. Plex no longer overwrites it, and past plays take the new name.",
+      ],
+      [
+        "La connexion ne change pas. Un champ vide rétablit le nom Plex.",
+        "Sign-in does not change. An empty field restores the Plex name.",
       ],
     ],
   },

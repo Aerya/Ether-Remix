@@ -447,7 +447,7 @@ func (s *Service) maxCandidates() int {
 
 // Available implements core.Resolver.
 func (s *Service) Available(ctx context.Context, key core.RatingKey) (bool, bool) {
-	if localmedia.IsKey(key) {
+	if localmedia.IsKey(key) || localmedia.Known(ctx, s.db, key) {
 		return true, localmedia.Known(ctx, s.db, key)
 	}
 	e, ok := s.getAvailability(ctx, int64(key))
@@ -607,8 +607,11 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
 	}
-	if localmedia.IsKey(req.Title.Key) {
-		return localmedia.Resolve(ctx, s.db, req)
+	if localmedia.IsKey(req.Title.Key) || localmedia.Known(ctx, s.db, req.Title.Key) {
+		res, err := localmedia.Resolve(ctx, s.db, req)
+		if err == nil || localmedia.IsKey(req.Title.Key) {
+			return res, err
+		}
 	}
 	if s.indexer == nil {
 		return nil, fmt.Errorf("resolver: no indexer configured")

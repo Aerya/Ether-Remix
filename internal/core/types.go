@@ -188,9 +188,11 @@ type User struct {
 	UUID      string `json:"uuid,omitempty"`
 	Username  string `json:"username"`
 	Title     string `json:"title"` // display name
-	Email     string `json:"email,omitempty"`
-	Thumb     string `json:"thumb,omitempty"`
-	IsOwner   bool   `json:"isOwner"`
+	// CustomName is the owner-chosen name; when set, Title already equals it.
+	CustomName string `json:"customName,omitempty"`
+	Email      string `json:"email,omitempty"`
+	Thumb      string `json:"thumb,omitempty"`
+	IsOwner    bool   `json:"isOwner"`
 
 	StreamLimit       int      `json:"streamLimit"`       // 0 = server default
 	MaxContentRating  string   `json:"maxContentRating"`  // "" = unrestricted, e.g. "PG-13", "TV-14"

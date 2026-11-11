@@ -35,10 +35,10 @@ func pseCatalogWhere(conds []string, args []any, f core.Filter, nowTS int64) ([]
 		return conds, args
 	}
 	if clause, values := releasedb.Playable().PlayableSQL(col); clause != "" {
-		conds, args = append(conds, "("+clause+" OR "+localmedia.KnownSQL(col)+")"), append(args, values...)
+		conds, args = append(conds, "("+clause+" OR "+localmedia.KnownSQL(col, f.CatalogViewerID)+")"), append(args, values...)
 	}
 	if clause, values := frenchcat.Current().SQL(col, typeCol, f.Type, nowTS); clause != "" {
-		conds, args = append(conds, "("+clause+" OR "+localmedia.KnownSQL(col)+")"), append(args, values...)
+		conds, args = append(conds, "("+clause+" OR "+localmedia.KnownSQL(col, f.CatalogViewerID)+")"), append(args, values...)
 	}
 	return conds, args
 }
@@ -57,8 +57,8 @@ func pseNeedsHomeReleases() bool { return frenchcat.Current().NeedsHomeReleases(
 
 // LocalMediaChanged invalidates browse caches after a local scan or removal.
 func (c *Catalog) LocalMediaChanged() { c.localMedia.Store(true); c.writeGen.Add(1) }
-func localMediaWhere() string {
-	return fmt.Sprintf("(t.key<%d OR t.key>=%d OR %s)", core.LocalKey(localmedia.VideoBase), core.LocalKey(localmedia.VideoBase+localmedia.Span), localmedia.KnownSQL("t.key"))
+func localMediaWhere(viewer int64) string {
+	return fmt.Sprintf("(t.key<%d OR t.key>=%d OR %s)", core.LocalKey(localmedia.VideoBase), core.LocalKey(localmedia.VideoBase+localmedia.Span), localmedia.KnownSQL("t.key", viewer))
 }
 func (c *Catalog) loadLocalMedia(ctx context.Context) {
 	var n int

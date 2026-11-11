@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -17,9 +18,9 @@ const pseDiscoveryBatch = 400
 // pseDiscoveryAllowed renvoie les clés qui respectent pseCatalogWhere.
 // active est faux quand aucune règle Remix n'est activée.
 func (c *Catalog) pseDiscoveryAllowed(ctx context.Context, keys []core.RatingKey) (allowed map[core.RatingKey]bool, active bool, err error) {
-	conds, condArgs := pseCatalogWhere(nil, nil, core.Filter{}, c.now().Unix())
+	conds, condArgs := pseCatalogWhere(nil, nil, core.Filter{CatalogViewerID: core.CatalogViewerID(ctx)}, c.now().Unix())
 	if c.localMedia.Load() {
-		conds = append(conds, localMediaWhere())
+		conds = append(conds, localMediaWhere(core.CatalogViewerID(ctx)))
 	}
 	if len(conds) == 0 {
 		return nil, false, nil
@@ -67,7 +68,7 @@ func (c *Catalog) PSEDiscoveryKeys(ctx context.Context, keys []core.RatingKey) (
 	}
 	out := make([]core.RatingKey, 0, len(keys))
 	for _, k := range keys {
-		if allowed[k] || c.isOwnerIncluded(k) {
+		if (!localmedia.IsKey(k) || allowed[k]) && (allowed[k] || c.isOwnerIncluded(k)) {
 			out = append(out, k)
 		}
 	}
@@ -98,6 +99,9 @@ func (c *Catalog) PSEDiscovery(ctx context.Context, items []core.Title) []core.T
 	out := make([]core.Title, 0, len(items))
 	for i := range items {
 		t := &items[i]
+		if localmedia.IsKey(t.Key) && !allowed[t.Key] {
+			continue
+		}
 		if (t.Type != core.TypeMovie && t.Type != core.TypeShow) || allowed[t.Key] || c.upcomingMovie(t) || c.isTitleOrShowOwnerIncluded(t) {
 			out = append(out, *t)
 		}

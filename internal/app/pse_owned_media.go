@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -51,10 +54,22 @@ func (a *App) startOwnedMedia() {
 	}
 	run(rt.localKick, rt.local.Scan)
 	run(rt.ibKick, func(ctx context.Context) error {
-		if !rt.ib.Status(ctx).Connected {
-			return nil
+		accounts, err := a.ibAccounts(ctx, 0)
+		if err != nil {
+			return err
 		}
-		return rt.ib.Sync(ctx)
+		for _, ac := range accounts {
+			ib, e := a.ibAccount(ctx, ac.ID)
+			if e != nil {
+				return e
+			}
+			if ib.Status(ctx).Connected {
+				if e = ib.Sync(ctx); e != nil {
+					a.log.Warn("synchronisation iBroadcast", "account", ac.ID, "err", e)
+				}
+			}
+		}
+		return nil
 	})
 }
 func (a *App) reloadOwnedMusic() {
@@ -80,7 +95,19 @@ func (a *App) publishLocalMedia(ctx context.Context, r localmedia.Root, files []
 		return music.ImportLocal(ctx, a.db, r, files)
 	}
 	for _, f := range files {
-		key := core.LocalKey(f.ID)
+		key := f.TitleKey
+		if key == 0 {
+			key = a.catalog.MatchLocalVideo(ctx, f)
+		}
+		if key != 0 {
+			f.TitleKey = key
+			raw, _ := json.Marshal(f)
+			if _, err := a.db.ExecContext(ctx, "UPDATE pse_local_files SET title_key=?,data=? WHERE id=?", key, string(raw), f.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		key = core.LocalKey(f.ID)
 		when := time.Unix(0, f.Modified)
 		if when.After(time.Now()) {
 			when = time.Now()
@@ -106,13 +133,13 @@ func (a *App) publishLocalMedia(ctx context.Context, r localmedia.Root, files []
 			break
 		}
 	}
-	genre, _ := json.Marshal("Local · " + r.Name)
-	spec := core.CollectionSpec{Name: r.Name, MediaType: "movie", Sources: []core.CollectionSource{{Kind: "catalog"}}, Rules: []core.CollectionRule{{Field: "genre", Op: "is", Value: genre}}, Match: "all", Sort: "title", Refresh: "live", Enabled: true, LocalOnly: true, TemplateID: marker}
+
+	spec := core.CollectionSpec{Name: r.Name, MediaType: "mixed", Sources: []core.CollectionSource{{Kind: "localFiles", Label: r.ID}}, Match: "all", Sort: "title", Refresh: "live", Enabled: true, LocalOnly: true, TemplateID: marker}
 	var saved *core.CollectionSpec
 	if existing != nil {
 		spec = *existing
-		spec.Sources = []core.CollectionSource{{Kind: "catalog"}}
-		spec.Rules = []core.CollectionRule{{Field: "genre", Op: "is", Value: genre}}
+		spec.Sources = []core.CollectionSource{{Kind: "localFiles", Label: r.ID}}
+		spec.Rules = nil
 		saved, err = a.collections.UpdateSpec(ctx, existing.ID, spec)
 	} else {
 		saved, err = a.collections.CreateSpec(ctx, spec)
@@ -134,7 +161,7 @@ func (a *App) publishLocalMedia(ctx context.Context, r localmedia.Root, files []
 			}
 		}
 	}
-	_, err = th.Create(ctx, themes.Library{Name: r.Name, Type: themes.TypeMovie, Collections: []string{saved.ID}, AllLanguages: true})
+	_, err = th.Create(ctx, themes.Library{Name: r.Name, Type: themes.TypeMixed, Collections: []string{saved.ID}, AllLanguages: true})
 	return err
 }
 func (a *App) removeLocalMedia(ctx context.Context, id string) error {
@@ -177,14 +204,102 @@ func (a *App) ownedMediaAPI() http.Handler {
 	a.ownedMedia()
 	rt := pseRuntimeOf(a)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, actor, admin := a.ownedActor(r)
+		if actor <= 0 {
+			http.Error(w, "authentification requise", 401)
+			return
+		}
+		r = r.WithContext(ctx)
+		if strings.HasPrefix(r.URL.Path, "/local") && !admin {
+			http.Error(w, "administrateur requis", 403)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		fail := func(err error) {
 			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "owned_media", "message": err.Error()}})
 		}
 		decode := func(v any) error { return json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(v) }
+		var ib *music.IBroadcast
+		if strings.HasPrefix(r.URL.Path, "/ibroadcast") {
+			id, _ := strconv.ParseInt(r.URL.Query().Get("account"), 10, 64)
+			policy, e := mediaaccess.Read(ctx, a.db, "ibroadcast:"+strconv.FormatInt(id, 10))
+			if e != nil || policy.OwnerID != actor {
+				http.Error(w, "compte introuvable", 404)
+				return
+			}
+			ib, e = a.ibAccount(ctx, id)
+			if e != nil {
+				fail(e)
+				return
+			}
+		}
 		switch r.Method + " " + r.URL.Path {
+		case "GET /accounts":
+			accounts, err := a.ibAccounts(ctx, actor)
+			if err != nil {
+				fail(err)
+				return
+			}
+			json.NewEncoder(w).Encode(accounts)
+			return
+		case "POST /accounts":
+			var b struct {
+				Name string `json:"name"`
+			}
+			if err := decode(&b); err != nil {
+				fail(err)
+				return
+			}
+			b.Name = strings.TrimSpace(b.Name)
+			if b.Name == "" || len(b.Name) > 120 {
+				fail(errors.New("nom de compte requis"))
+				return
+			}
+			id, err := a.createIBAccount(ctx, actor, b.Name)
+			if err != nil {
+				fail(err)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]int64{"id": id})
+			return
+		case "PUT /sharing":
+			var b struct {
+				Source          string             `json:"source"`
+				Policy          mediaaccess.Policy `json:"policy"`
+				ImportPlaylists bool               `json:"importPlaylists"`
+			}
+			if err := decode(&b); err != nil {
+				fail(err)
+				return
+			}
+			if err := mediaaccess.Update(ctx, a.db, b.Source, actor, b.Policy); err != nil {
+				fail(err)
+				return
+			}
+			if strings.HasPrefix(b.Source, "ibroadcast:") {
+				id, _ := strconv.ParseInt(strings.TrimPrefix(b.Source, "ibroadcast:"), 10, 64)
+				if _, err := a.db.ExecContext(ctx, "UPDATE pse_ib_accounts SET import_playlists=? WHERE id=? AND owner_user_id=?", b.ImportPlaylists, id, actor); err != nil {
+					fail(err)
+					return
+				}
+				wakeOwned(rt.ibKick)
+			}
+			a.catalog.LocalMediaChanged()
+			a.reloadOwnedMusic()
+		case "GET /viewers":
+			viewers, err := a.pseViewers(ctx)
+			if err != nil {
+				fail(err)
+				return
+			}
+			out := []map[string]any{}
+			for _, v := range viewers {
+				out = append(out, map[string]any{"id": v.ID, "name": v.Name})
+			}
+			json.NewEncoder(w).Encode(out)
+			return
 		case "GET /local":
 			roots, err := rt.local.Roots(r.Context())
 			if err != nil {
@@ -212,7 +327,7 @@ func (a *App) ownedMediaAPI() http.Handler {
 				return
 			}
 		case "GET /ibroadcast":
-			_ = json.NewEncoder(w).Encode(rt.ib.Status(r.Context()))
+			_ = json.NewEncoder(w).Encode(ib.Status(r.Context()))
 			return
 		case "POST /ibroadcast/connect":
 			var b struct {
@@ -222,14 +337,14 @@ func (a *App) ownedMediaAPI() http.Handler {
 				fail(err)
 				return
 			}
-			if err := rt.ib.Begin(r.Context(), b.Client); err != nil {
+			if err := ib.Begin(r.Context(), b.Client); err != nil {
 				fail(err)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(rt.ib.Status(r.Context()))
+			_ = json.NewEncoder(w).Encode(ib.Status(r.Context()))
 			return
 		case "POST /ibroadcast/poll":
-			connected, err := rt.ib.Poll(r.Context())
+			connected, err := ib.Poll(r.Context())
 			if err != nil {
 				fail(err)
 				return
@@ -237,16 +352,16 @@ func (a *App) ownedMediaAPI() http.Handler {
 			if connected {
 				wakeOwned(rt.ibKick)
 			}
-			_ = json.NewEncoder(w).Encode(rt.ib.Status(r.Context()))
+			_ = json.NewEncoder(w).Encode(ib.Status(r.Context()))
 			return
 		case "POST /ibroadcast/sync":
-			if !rt.ib.Status(r.Context()).Connected {
+			if !ib.Status(r.Context()).Connected {
 				fail(errors.New("connectez d’abord le compte iBroadcast"))
 				return
 			}
 			wakeOwned(rt.ibKick)
 		case "DELETE /ibroadcast":
-			if err := rt.ib.Disconnect(r.Context()); err != nil {
+			if err := ib.Disconnect(r.Context()); err != nil {
 				fail(err)
 				return
 			}

@@ -222,6 +222,7 @@ func (q *psemReq) empty() { q.p.Write(q.w, q.r, &model.MediaContainer{}) }
 // ServePlex répond aux requêtes Plex qui concernent la musique et renvoie
 // false pour toutes les autres, qu'Ether traite normalement.
 func (s *Server) ServePlex(w http.ResponseWriter, r *http.Request, viewer int64, p frontend.PSEMusicPlex) bool {
+	r = r.WithContext(withMusicViewer(r.Context(), viewer))
 	if viewer == 0 || !psemCandidate(r) {
 		return false
 	}
@@ -231,6 +232,7 @@ func (s *Server) ServePlex(w http.ResponseWriter, r *http.Request, viewer int64,
 
 // PlexSearch fournit la musique à la recherche globale de Plex.
 func (s *Server) PlexSearch(ctx context.Context, viewer int64, query string, limit int) (artists, albums, tracks []any) {
+	ctx = withMusicViewer(ctx, viewer)
 	query = strings.TrimSpace(query)
 	if viewer == 0 || query == "" {
 		return nil, nil, nil

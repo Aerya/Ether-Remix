@@ -800,11 +800,8 @@ func (m *Manager) unreserveLocked(id identity) {
 }
 
 func userLabel(u *core.User) string {
-	if u.Username != "" {
-		return u.Username
-	}
-	if u.Title != "" {
-		return u.Title
+	if name := u.ActivityName(); name != "" {
+		return name
 	}
 	return fmt.Sprintf("user %d", u.ID)
 }
@@ -827,6 +824,7 @@ func (m *Manager) PrepareSurface(ctx context.Context, user *core.User, key core.
 // prepareEntry is Prepare plus an optional picked release (prefer != "").
 // An existing session on a different release is replaced, never reused.
 func (m *Manager) prepareEntry(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession bool) (*core.PlaySession, error) {
+	ctx = core.WithCatalogViewer(ctx, user)
 	ps, _, err := m.prepareOwnedEntry(ctx, user, key, caps, prefer, exact, deferSupersession)
 	return ps, err
 }

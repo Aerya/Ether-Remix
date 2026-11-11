@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -38,29 +39,31 @@ CREATE INDEX pse_local_files_key ON pse_local_files(title_key);
 }
 
 type Root struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Kind string `json:"kind"`
+	Access mediaaccess.Policy `json:"access"`
+	ID     string             `json:"id"`
+	Name   string             `json:"name"`
+	Path   string             `json:"path"`
+	Kind   string             `json:"kind"`
 }
 type File struct {
-	ID         int64  `json:"id"`
-	RootID     string `json:"rootId"`
-	Path       string `json:"-"`
-	Kind       string `json:"kind"`
-	Name       string `json:"name"`
-	Album      string `json:"album,omitempty"`
-	Artist     string `json:"artist,omitempty"`
-	Duration   int    `json:"duration"`
-	Number     int    `json:"number,omitempty"`
-	Disc       int    `json:"disc,omitempty"`
-	Size       int64  `json:"size"`
-	Modified   int64  `json:"modified"`
-	MIME       string `json:"mime"`
-	Container  string `json:"container,omitempty"`
-	Codec      string `json:"codec,omitempty"`
-	Channels   int    `json:"channels,omitempty"`
-	SampleRate int    `json:"sampleRate,omitempty"`
+	TitleKey   core.RatingKey `json:"titleKey,omitempty"`
+	ID         int64          `json:"id"`
+	RootID     string         `json:"rootId"`
+	Path       string         `json:"-"`
+	Kind       string         `json:"kind"`
+	Name       string         `json:"name"`
+	Album      string         `json:"album,omitempty"`
+	Artist     string         `json:"artist,omitempty"`
+	Duration   int            `json:"duration"`
+	Number     int            `json:"number,omitempty"`
+	Disc       int            `json:"disc,omitempty"`
+	Size       int64          `json:"size"`
+	Modified   int64          `json:"modified"`
+	MIME       string         `json:"mime"`
+	Container  string         `json:"container,omitempty"`
+	Codec      string         `json:"codec,omitempty"`
+	Channels   int            `json:"channels,omitempty"`
+	SampleRate int            `json:"sampleRate,omitempty"`
 }
 type Status struct {
 	Running   bool   `json:"running"`
@@ -98,11 +101,23 @@ func (l *Library) Roots(ctx context.Context) ([]Root, error) {
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Access, _ = mediaaccess.Read(ctx, l.DB, "local:"+out[i].ID)
+	}
+	return out, nil
 }
 func (l *Library) Add(ctx context.Context, r Root) error {
 	l.opMu.Lock()
 	defer l.opMu.Unlock()
+	owner := core.CatalogViewerID(ctx)
+	if owner <= 0 {
+		return errors.New("propriétaire authentifié requis")
+	}
 	r.Name = strings.TrimSpace(r.Name)
 	r.Path = filepath.Clean(strings.TrimSpace(r.Path))
 	if !filepath.IsAbs(r.Path) || r.Path == "/" || len(r.Name) == 0 || len([]rune(r.Name)) > 60 || (r.Kind != "video" && r.Kind != "audio") {
@@ -125,8 +140,27 @@ func (l *Library) Add(ctx context.Context, r Root) error {
 	if l.DB.QueryRowContext(ctx, "SELECT kind FROM pse_local_roots WHERE id=?", r.ID).Scan(&oldKind) == nil && oldKind != r.Kind {
 		return errors.New("retirez la source avant de changer son type")
 	}
-	_, err = l.DB.ExecContext(ctx, "INSERT INTO pse_local_roots(id,name,path,kind) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind", r.ID, r.Name, r.Path, r.Kind)
-	return err
+	tx, err := l.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var prior int64
+	err = tx.QueryRowContext(ctx, "SELECT owner_user_id FROM pse_media_sources WHERE id=?", "local:"+r.ID).Scan(&prior)
+	if err == nil && prior != owner {
+		return errors.New("source appartenant à un autre spectateur")
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO pse_media_sources(id,owner_user_id) VALUES(?,?) ON CONFLICT(id) DO NOTHING", "local:"+r.ID, owner); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO pse_local_roots(id,name,path,kind) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind", r.ID, r.Name, r.Path, r.Kind)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (l *Library) Remove(ctx context.Context, id string) error {
 	l.opMu.Lock()
@@ -142,7 +176,14 @@ func (l *Library) Remove(ctx context.Context, id string) error {
 	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_local_roots WHERE id=?", id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_media_sources WHERE id=?", "local:"+id); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	mediaaccess.Changed()
+	return nil
 }
 func (l *Library) Status() Status { l.mu.Lock(); defer l.mu.Unlock(); return l.status }
 func (l *Library) Scan(ctx context.Context) error {
@@ -274,7 +315,10 @@ func (l *Library) scanRoot(ctx context.Context, r Root) error {
 		raw, _ := json.Marshal(f) // Relative path is stored separately, never sent to players.
 		var key core.RatingKey
 		if f.Kind == "video" {
-			key = core.LocalKey(f.ID)
+			key = f.TitleKey
+			if key == 0 {
+				key = core.LocalKey(f.ID)
+			}
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO pse_local_files(id,root_id,path,kind,size,modified,data,title_key) VALUES(?,?,?,?,?,?,?,?)", f.ID, r.ID, f.Path, f.Kind, f.Size, f.Modified, string(raw), key); err != nil {
 			return err
@@ -314,7 +358,7 @@ func (l *Library) Files(ctx context.Context, kind string) ([]File, error) {
 }
 func (l *Library) Open(ctx context.Context, id int64) (*os.File, File, error) {
 	var path, dir, raw string
-	err := l.DB.QueryRowContext(ctx, "SELECT f.path,r.path,f.data FROM pse_local_files f JOIN pse_local_roots r ON r.id=f.root_id WHERE f.id=?", id).Scan(&path, &dir, &raw)
+	err := l.DB.QueryRowContext(ctx, "SELECT f.path,r.path,f.data FROM pse_local_files f JOIN pse_local_roots r ON r.id=f.root_id WHERE f.id=? AND "+mediaaccess.Predicate("'local:'||r.id", core.CatalogViewerID(ctx)), id).Scan(&path, &dir, &raw)
 	if err != nil {
 		return nil, File{}, core.ErrNotAvailable
 	}

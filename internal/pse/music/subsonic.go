@@ -198,6 +198,7 @@ func (s *Server) authenticate(c *call) bool {
 		return false
 	}
 	c.viewer, c.user = viewer, user
+	c.r = c.r.WithContext(withMusicViewer(c.r.Context(), viewer))
 	return true
 }
 
@@ -1059,6 +1060,10 @@ func (s *Server) cover(c *call) {
 
 // relayImage relaie une pochette (kind 'c') ou une photo d'artiste ('p').
 func (s *Server) relayImage(w http.ResponseWriter, r *http.Request, kind byte, ref string, size int) {
+	if source, ok := s.o.Source.(*OwnedSource); ok && strings.HasPrefix(ref, "ib-") && !source.artAllowed(r.Context(), ref) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	if !imageRefRe.MatchString(ref) {
 		w.WriteHeader(http.StatusNotFound)
 		return

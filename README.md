@@ -21,6 +21,35 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
   <img src="https://img.shields.io/badge/licence-GPL--3.0-green" alt="GPL-3.0">
 </p>
 
+## Ether, en bref
+
+Ether est un serveur multimédia **à la demande**. Il présente tout le catalogue TMDB dans les applications que vous utilisez déjà, sans rien télécharger à l’avance. Quand vous lancez un titre, il choisit la meilleure release sur vos comptes debrid et vos fournisseurs Usenet, vérifie qu’elle fonctionne, puis la lit en flux. Pas de Sonarr, de Radarr, de client de téléchargement ni de montage à scanner. Il peut tourner à côté d’un Plex, Jellyfin ou Emby existant.
+
+Ether s’adapte à chaque application : c’est un serveur Plex pour les applications Plex, un serveur Jellyfin pour Infuse ou Swiftfin, et ainsi de suite. Chaque spectateur a son compte et son accueil personnalisé, et retrouve sa progression d’une application à l’autre. Les limites de flux et le contrôle parental s’appliquent partout.
+
+## Remix, en bref
+
+Ether-Remix est un fork d’Ether pensé pour un public francophone. Il garde tout le fonctionnement d’Ether et y ajoute un catalogue en français : l’accueil et les collections n’affichent que les titres disponibles en VF ou MULTi, ou lisibles selon vos critères. Une indexation en arrière-plan cherche les releases à l’avance (addons, indexeurs, SeerrCatalog, StreamFusion Reborn), pour qu’elles soient prêtes au moment de la lecture.
+
+Remix ajoute aussi la musique. Le catalogue Deezer se parcourt depuis Plexamp, les clients Jellyfin ou les applications Subsonic, et se lit en flux depuis vos comptes debrid ou des sources gratuites, sans rien stocker. S’y ajoutent des bibliothèques et collections personnalisées, des sous-titres traduits avec SubMaker, des statistiques détaillées et une console en français.
+
+## Applications compatibles
+
+| Accès | Applications |
+| --- | --- |
+| **Plex** | Applications officielles : Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, TV connectées (LG, Samsung, VIDAA), ordinateur et Web. Kodi via Plex for Kodi (PM4K). |
+| **Jellyfin** | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin pour Android TV, JellyCon (Kodi), Jellyfin pour Roku. |
+| **Emby** | Applications Emby (Android TV, iOS, Android, Roku, TV connectées) et Infuse. Emby for TV 2.x sur Apple TV n’est pas pris en charge. |
+| **Silo** | Apple TV, iOS, macOS, Android, Android TV. |
+| **Stremio** | Toutes les applications Stremio, via une extension personnelle. Une adresse HTTPS est nécessaire. |
+| **Fichiers (WebDAV)** | Infuse, VLC, Kodi, rclone. |
+| **M3U & XMLTV** | Channels DVR, TiviMate et lecteurs IPTV. |
+| **Xtream** | TiviMate, Televizo, IPTV Smarters… Désactivé par défaut. |
+| **DLNA** | TV et lecteurs du réseau local. |
+| **Musique** *(Remix)* | Plex et Plexamp, clients Jellyfin (Finamp…), applications Subsonic : Symfonium, Feishin, Supersonic, DSub… |
+
+Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
+
 ## Fonctionnalités
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
@@ -68,9 +97,9 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Vos fichiers et votre bibliothèque iBroadcast
 
 - **Vidéos et musique locales** : partagez des dossiers de l’hôte ou des montages réseau via les volumes Docker, en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer vos fichiers.
-- **Vidéos personnelles incluses**, sans fiche TMDB : une bibliothèque par dossier vidéo, avec une fiche par fichier. Les fichiers audio rejoignent Musique avec leurs artistes, albums et tags.
-- **iBroadcast** : connectez votre compte par code OAuth, importez sa bibliothèque et écoutez-la dans vos clients musicaux. Accès en lecture seule, MP3 128 kb/s ; favoris et écoutes propres à chaque spectateur dans Remix.
-- Les dossiers et le compte iBroadcast configurés sont partagés avec les spectateurs du serveur. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
+- **Vidéos locales** : rapprochement avec les fiches déjà présentes dans Remix, puis TMDB ; films et épisodes identifiés réutilisent leurs fiches. Sans correspondance fiable, les vidéos personnelles restent affichées telles quelles. Bibliothèques et collections par dossier ; artistes, albums et tags pour l’audio.
+- **iBroadcast** : chaque spectateur peut connecter ses comptes par code OAuth et importer leurs bibliothèques et, sur option, leurs playlists. Accès en lecture seule, MP3 128 kb/s ; favoris et écoutes personnels.
+- **Privé par défaut** pour les dossiers et comptes iBroadcast ; partage facultatif avec certains spectateurs ou tous. Les sources autorisées se retrouvent ensemble dans Musique. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
 
 ### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Vos playlists et de nouvelles découvertes
 
@@ -96,7 +125,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) La base Ether, enrichie par Remix
 
-- Conservation des fonctionnalités et clients compatibles d’Ether : **Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo et Stremio**, avec ses sources vidéo debrid et Usenet.
+- **Nom affiché** : renommez un utilisateur dans la console pour les statistiques et l’activité, même avec un compte Plex. La connexion ne change pas.
 - Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs.
 - Images Docker pour **amd64 et arm64** et présentation des nouveautés dans la console.
 

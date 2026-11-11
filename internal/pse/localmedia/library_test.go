@@ -31,7 +31,7 @@ func TestScanReopenRangeConfinementAndUnavailableRoot(t *testing.T) {
 	}
 	probes := 0
 	l := &Library{DB: db, Probe: func(context.Context, *os.File, string) (File, error) { probes++; return File{Duration: 60}, nil }}
-	ctx := t.Context()
+	ctx := core.WithCatalogViewer(t.Context(), &core.User{ID: 1})
 	if err := l.Add(ctx, Root{Name: "Famille", Path: dir, Kind: "video"}); err != nil {
 		t.Fatal(err)
 	}
@@ -97,13 +97,13 @@ func TestCorruptMediaNotImported(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "bad.mp4"), []byte("broken"), 0600)
 	l := &Library{DB: db, Probe: func(context.Context, *os.File, string) (File, error) { return File{}, errors.New("bad") }}
-	if err := l.Add(t.Context(), Root{Name: "Local", Path: dir, Kind: "video"}); err != nil {
+	if err := l.Add(core.WithCatalogViewer(t.Context(), &core.User{ID: 1}), Root{Name: "Local", Path: dir, Kind: "video"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Scan(t.Context()); err != nil {
+	if err := l.Scan(core.WithCatalogViewer(t.Context(), &core.User{ID: 1})); err != nil {
 		t.Fatal(err)
 	}
-	files, _ := l.Files(t.Context(), "video")
+	files, _ := l.Files(core.WithCatalogViewer(t.Context(), &core.User{ID: 1}), "video")
 	if len(files) != 0 || l.Status().Errors != 1 {
 		t.Fatal(files, l.Status())
 	}
@@ -131,18 +131,47 @@ func TestRealProbeReadsConfinedAudioDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := &Library{DB: store.OpenTest(t)}
-	if err := l.Add(t.Context(), Root{Name: "Audio", Path: dir, Kind: "audio"}); err != nil {
+	if err := l.Add(core.WithCatalogViewer(t.Context(), &core.User{ID: 1}), Root{Name: "Audio", Path: dir, Kind: "audio"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Scan(t.Context()); err != nil {
+	if err := l.Scan(core.WithCatalogViewer(t.Context(), &core.User{ID: 1})); err != nil {
 		t.Fatal(err)
 	}
-	ff, err := l.Files(t.Context(), "audio")
+	ff, err := l.Files(core.WithCatalogViewer(t.Context(), &core.User{ID: 1}), "audio")
 	if err != nil || len(ff) != 1 {
 		t.Fatal(ff, err, l.Status())
 	}
 	f := ff[0]
 	if f.Duration != 1 || f.SampleRate != 8000 || f.Channels != 1 || f.Codec != "pcm_s16le" || f.MIME != "audio/wav" {
 		t.Fatalf("probe: %+v", f)
+	}
+}
+
+func TestPrivateLocalFileRejectsOtherViewers(t *testing.T) {
+	db := store.OpenTest(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "private.mp4"), []byte("private"), 0600)
+	l := &Library{DB: db, Probe: func(context.Context, *os.File, string) (File, error) { return File{}, nil }}
+	owner := core.WithCatalogViewer(t.Context(), &core.User{ID: 1})
+	if err := l.Add(owner, Root{Name: "Private", Path: dir, Kind: "video"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Scan(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ff, _ := l.Files(t.Context(), "video")
+	key := core.LocalKey(ff[0].ID)
+	for _, viewer := range []int64{0, 2} {
+		ctx := core.WithCatalogViewer(t.Context(), &core.User{ID: viewer})
+		if Known(ctx, db, key) {
+			t.Fatal("private video visible")
+		}
+		if f, _, err := l.Open(ctx, ff[0].ID); err == nil {
+			f.Close()
+			t.Fatal("private bytes exposed")
+		}
+	}
+	if !Known(owner, db, key) {
+		t.Fatal("owner denied")
 	}
 }

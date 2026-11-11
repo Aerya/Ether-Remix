@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"strconv"
 	"sync"
 
@@ -291,6 +292,9 @@ func (c *Catalog) strictVisible(f *libraryfilter.Filter, strict bool, t *core.Ti
 }
 
 func (c *Catalog) VisibleForViewer(u *core.User, t *core.Title) bool {
+	if t != nil && localmedia.IsKey(t.Key) && !localmedia.Known(core.WithCatalogViewer(context.Background(), u), c.db, t.Key) {
+		return false
+	}
 	var id int64
 	if u != nil {
 		id = u.ID
@@ -339,6 +343,9 @@ func ReadViewerRulesRevision(ctx context.Context, db *sql.DB, id int64) (int64, 
 }
 
 func (c *Catalog) DiscoveryVisibleForViewer(u *core.User, t *core.Title) bool {
+	if t != nil && localmedia.IsKey(t.Key) && !localmedia.Known(core.WithCatalogViewer(context.Background(), u), c.db, t.Key) {
+		return false
+	}
 	var id int64
 	if u != nil {
 		id = u.ID

@@ -31,10 +31,11 @@ type PSEThemeRow struct {
 
 // PSETheme est une bibliothèque à thème.
 type PSETheme struct {
-	Section int
-	Title   string
-	Type    core.MediaType // movie ou show
-	Rows    []PSEThemeRow
+	VisibleTo func(*core.User) bool
+	Section   int
+	Title     string
+	Type      core.MediaType // movie ou show
+	Rows      []PSEThemeRow
 }
 
 // PSEThemes est implémenté par le service des bibliothèques à thème.

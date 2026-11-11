@@ -2,6 +2,8 @@ package music
 
 import (
 	"context"
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"net/url"
 	"strconv"
 	"sync"
@@ -109,4 +111,8 @@ func memoized[T any](m *memo, key string, now time.Time, fn func() (T, error)) (
 	m.data[key] = memoEntry{at: now, v: v}
 	m.mu.Unlock()
 	return v, nil
+}
+
+func memoizedFor[T any](ctx context.Context, m *memo, key string, now time.Time, fn func() (T, error)) (T, error) {
+	return memoized(m, strconv.FormatInt(core.CatalogViewerID(ctx), 10)+":"+strconv.FormatUint(mediaaccess.Revision(), 10)+":"+key, now, fn)
 }

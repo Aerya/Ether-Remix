@@ -410,6 +410,8 @@ type row struct {
 	OwnerEnabled bool
 	PlexShared   bool
 	HasPlex      bool
+	// PlexTitle is the stored plex.tv name; Title may carry the custom name.
+	PlexTitle string
 }
 
 var (
@@ -472,7 +474,7 @@ func HashToken(token string) string {
 }
 
 const userCols = `id, COALESCE(plex_id, 0), uuid, username, title, email, thumb, is_owner, is_home, restricted, active, origin,
-	plex_sections, stream_limit, max_content_rating, subtitle_languages, audio_languages, allowed_sections, last_seen_at, CASE WHEN created_at>0 THEN created_at ELSE COALESCE((SELECT MIN(event_time) FROM (SELECT verified_at AS event_time FROM identity_links WHERE viewer_id=auth_users.id AND verified_at>0 UNION ALL SELECT created_at AS event_time FROM auth_tokens WHERE user_id=auth_users.id AND created_at>0 UNION ALL SELECT last_seen_at AS event_time WHERE last_seen_at>0) AS known_times),0) END, updated_at, COALESCE(owner_enabled, 1), COALESCE(plex_shared, 1), plex_id`
+	plex_sections, stream_limit, max_content_rating, subtitle_languages, audio_languages, allowed_sections, last_seen_at, CASE WHEN created_at>0 THEN created_at ELSE COALESCE((SELECT MIN(event_time) FROM (SELECT verified_at AS event_time FROM identity_links WHERE viewer_id=auth_users.id AND verified_at>0 UNION ALL SELECT created_at AS event_time FROM auth_tokens WHERE user_id=auth_users.id AND created_at>0 UNION ALL SELECT last_seen_at AS event_time WHERE last_seen_at>0) AS known_times),0) END, updated_at, COALESCE(owner_enabled, 1), COALESCE(plex_shared, 1), plex_id, pse_display_name`
 
 func scanRow(sc interface{ Scan(...any) error }) (*row, error) {
 	var r row
@@ -481,8 +483,12 @@ func scanRow(sc interface{ Scan(...any) error }) (*row, error) {
 	var lastSeen, created, updated int64
 	var rawPlexID sql.NullInt64
 	if err := sc.Scan(&r.ID, &r.PlexID, &r.UUID, &r.Username, &r.Title, &r.Email, &r.Thumb, &isOwner, &home,
-		&restricted, &active, &r.Origin, &plexSecs, &r.StreamLimit, &r.MaxContentRating, &subs, &auds, &secs, &lastSeen, &created, &updated, &ownerEnabled, &plexShared, &rawPlexID); err != nil {
+		&restricted, &active, &r.Origin, &plexSecs, &r.StreamLimit, &r.MaxContentRating, &subs, &auds, &secs, &lastSeen, &created, &updated, &ownerEnabled, &plexShared, &rawPlexID, &r.CustomName); err != nil {
 		return nil, err
+	}
+	r.PlexTitle = r.Title
+	if r.CustomName != "" {
+		r.Title = r.CustomName
 	}
 	r.IsOwner, r.Home, r.Restricted, r.Active = isOwner == 1, home == 1, restricted == 1, active == 1
 	r.OwnerEnabled, r.PlexShared, r.HasPlex = ownerEnabled == 1, plexShared == 1, rawPlexID.Valid
@@ -1093,7 +1099,7 @@ func (s *Service) BootstrapOwner(ctx context.Context, p config.Plex) error {
 	acct := plextv.Account{ID: p.OwnerPlexID, Username: p.OwnerUsername, Title: p.OwnerUsername}
 	if r != nil {
 		// Keep the richer profile already stored.
-		acct.UUID, acct.Email, acct.Thumb, acct.Title = r.UUID, r.Email, r.Thumb, r.Title
+		acct.UUID, acct.Email, acct.Thumb, acct.Title = r.UUID, r.Email, r.Thumb, r.PlexTitle
 		if acct.Username == "" {
 			acct.Username = r.Username
 		}

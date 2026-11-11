@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/localmedia"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -21,10 +23,11 @@ func init() {
 // OwnedSource combines the configured online catalogue with explicitly shared
 // local/iBroadcast libraries. Reserved ID ranges keep provider IDs separate.
 type OwnedSource struct {
-	Remote Source
-	DB     *sql.DB
-	Local  *localmedia.Library
-	IB     *IBroadcast
+	Remote  Source
+	DB      *sql.DB
+	Local   *localmedia.Library
+	IB      *IBroadcast
+	Account func(context.Context, int64) (*IBroadcast, error)
 }
 
 func ownedID(id int64) bool { return id >= localmedia.AudioBase && id < 7_000_000_000_000 }
@@ -35,7 +38,7 @@ func ownedItems[T any](ctx context.Context, db *sql.DB, kind, q string, limit, o
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := db.QueryContext(ctx, "SELECT data FROM pse_music_owned WHERE kind=? AND name LIKE ? ESCAPE '!' ORDER BY name,item_id LIMIT ? OFFSET ?", kind, "%"+strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(q))+"%", limit, offset)
+	rows, err := db.QueryContext(ctx, "SELECT data FROM pse_music_owned WHERE "+mediaaccess.Predicate("provider", core.CatalogViewerID(ctx))+" AND kind=? AND name LIKE ? ESCAPE '!' ORDER BY name,item_id LIMIT ? OFFSET ?", kind, "%"+strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(q))+"%", limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +60,7 @@ func ownedItems[T any](ctx context.Context, db *sql.DB, kind, q string, limit, o
 func ownedGet[T any](ctx context.Context, db *sql.DB, kind string, id int64) (T, error) {
 	var v T
 	var raw string
-	err := db.QueryRowContext(ctx, "SELECT data FROM pse_music_owned WHERE kind=? AND item_id=?", kind, id).Scan(&raw)
+	err := db.QueryRowContext(ctx, "SELECT data FROM pse_music_owned WHERE "+mediaaccess.Predicate("provider", core.CatalogViewerID(ctx))+" AND kind=? AND item_id=?", kind, id).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return v, ErrNotFound
 	}
@@ -82,7 +85,7 @@ func joinedSearch[T any](ctx context.Context, s *OwnedSource, kind, q string, li
 		return local, nil
 	}
 	var count int
-	err = s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_music_owned WHERE kind=? AND name LIKE ? ESCAPE '!'", kind, "%"+strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(q))+"%").Scan(&count)
+	err = s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_music_owned WHERE "+mediaaccess.Predicate("provider", core.CatalogViewerID(ctx))+" AND kind=? AND name LIKE ? ESCAPE '!'", kind, "%"+strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(q))+"%").Scan(&count)
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +171,24 @@ func (s *OwnedSource) Artist(c context.Context, id int64) (Artist, []Album, erro
 	return a, aa, err
 }
 func (s *OwnedSource) Stream(c context.Context, id int64, q string) (Stream, error) {
-	if id >= 6_000_000_000_000 && id < 7_000_000_000_000 && s.IB != nil {
-		return s.IB.Stream(c, id, q)
+	if ownedID(id) && !ownedAllowed(c, s.DB, core.CatalogViewerID(c), KindTrack, id) {
+		return Stream{}, ErrNotFound
+	}
+	if id >= ibBase && id < ibBase+localmedia.Span {
+		if s.Account != nil {
+			var account int64
+			if s.DB.QueryRowContext(c, "SELECT account_id FROM pse_ibroadcast_tracks WHERE id=?", id).Scan(&account) != nil {
+				return Stream{}, ErrNotFound
+			}
+			ib, err := s.Account(c, account)
+			if err != nil {
+				return Stream{}, ErrNotFound
+			}
+			return ib.Stream(c, id, q)
+		}
+		if s.IB != nil {
+			return s.IB.Stream(c, id, q)
+		}
 	}
 	if id >= localmedia.AudioBase && id < localmedia.AudioBase+localmedia.Span && s.Local != nil {
 		f, meta, err := s.Local.Open(c, id)
@@ -339,8 +358,10 @@ func sortTracks(t []Track) {
 
 // Personal state wins, while current imported metadata stays fresh. Owned rows
 // are visible in the regular library without synthesising plays or favourites.
-const libraryItemsSQL = `(SELECT p.viewer_id,p.kind,p.item_id,p.name,COALESCE(o.data,p.data) AS data,p.added_at,p.starred_at,p.play_count,p.played_at FROM pse_music_items p LEFT JOIN pse_music_owned o ON o.kind=p.kind AND o.item_id=p.item_id
-UNION ALL SELECT ?,o.kind,o.item_id,o.name,o.data,o.added_at,0,0,0 FROM pse_music_owned o WHERE NOT EXISTS(SELECT 1 FROM pse_music_items p WHERE p.viewer_id=? AND p.kind=o.kind AND p.item_id=o.item_id))`
+func libraryItemsSQL(viewer int64) string {
+	return `(SELECT p.viewer_id,p.kind,p.item_id,p.name,COALESCE(o.data,p.data) AS data,p.added_at,p.starred_at,p.play_count,p.played_at FROM pse_music_items p LEFT JOIN pse_music_owned o ON o.kind=p.kind AND o.item_id=p.item_id WHERE (p.item_id<4000000000000 OR p.item_id>=7000000000000 OR ` + mediaaccess.Predicate("o.provider", viewer) + `)
+UNION ALL SELECT ?,o.kind,o.item_id,o.name,o.data,o.added_at,0,0,0 FROM pse_music_owned o WHERE ` + mediaaccess.Predicate("o.provider", viewer) + ` AND NOT EXISTS(SELECT 1 FROM pse_music_items p WHERE p.viewer_id=? AND p.kind=o.kind AND p.item_id=o.item_id))`
+}
 
 func (s *OwnedSource) Genres(c context.Context) ([]Genre, error) {
 	if d, ok := s.Remote.(Discoverer); ok {
@@ -385,7 +406,7 @@ func (s *OwnedSource) ArtistRadio(c context.Context, g int64, n int) ([]Track, e
 }
 
 func ownedRelated[T any](ctx context.Context, db *sql.DB, kind, column string, id int64) ([]T, error) {
-	rows, err := db.QueryContext(ctx, "SELECT data FROM pse_music_owned WHERE kind=? AND "+column+"=? ORDER BY name,item_id", kind, id)
+	rows, err := db.QueryContext(ctx, "SELECT data FROM pse_music_owned WHERE "+mediaaccess.Predicate("provider", core.CatalogViewerID(ctx))+" AND kind=? AND "+column+"=? ORDER BY name,item_id", kind, id)
 	if err != nil {
 		return nil, err
 	}
@@ -431,4 +452,20 @@ func trackSampleRate(t Track) int {
 		return t.SampleRate
 	}
 	return 44100
+}
+
+func withMusicViewer(ctx context.Context, viewer int64) context.Context {
+	return core.WithCatalogViewer(ctx, &core.User{ID: viewer})
+}
+func ownedAllowed(ctx context.Context, db *sql.DB, viewer int64, kind string, id int64) bool {
+	if !ownedID(id) {
+		return true
+	}
+	var n int
+	return db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_music_owned WHERE kind=? AND item_id=? AND "+mediaaccess.Predicate("provider", viewer), kind, id).Scan(&n) == nil && n > 0
+}
+
+func (s *OwnedSource) artAllowed(ctx context.Context, ref string) bool {
+	var n int
+	return s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_music_owned WHERE kind='album' AND data LIKE ? AND "+mediaaccess.Predicate("provider", core.CatalogViewerID(ctx)), `%"cover":"`+ref+`"%`).Scan(&n) == nil && n > 0
 }

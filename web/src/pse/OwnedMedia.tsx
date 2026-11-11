@@ -4,7 +4,8 @@ import { apiFetch } from "../lib/api";
 import { getLocale } from "../i18n";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const field = "rounded border border-border bg-surface p-2 w-full";
-type Root = { id: string; name: string; path: string; kind: string };
+type Access = { ownerId: number; sharedAll: boolean; viewers: number[]; group: string };
+type Root = { id: string; name: string; path: string; kind: string; access: Access };
 type LocalData = {
   roots: Root[];
   status: {
@@ -86,8 +87,8 @@ export function LocalMedia() {
       </p>
       <p className="text-sm text-fg-muted">
         {L(
-          "Films, épisodes, animés, concerts et vidéos personnelles : aucune fiche TMDB n’est requise. Les vidéos sont présentées individuellement, avec leur titre local. Les sources ajoutées sont partagées avec les spectateurs de Remix.",
-          "Movies, episodes, anime, concerts and home videos need no TMDB entry. Videos appear individually with their local title. Added sources are shared with Remix viewers.",
+          "Films, épisodes, animés, concerts et vidéos personnelles : aucune fiche TMDB n’est requise. Les fichiers identifiés rejoignent leurs fiches Remix/TMDB ; sans correspondance fiable, leur titre local est conservé. Les dossiers sont privés par défaut ; leur partage est facultatif.",
+          "Movies, episodes, anime, concerts and home videos need no TMDB entry. Identified files join their Remix/TMDB entries; files without a reliable match keep their local title. Folders are private by default; sharing is optional.",
         )}
       </p>
       <details className="text-sm">
@@ -161,6 +162,12 @@ export function LocalMedia() {
               {r.kind === "audio" ? L("Musique", "Music") : L("Vidéos", "Videos")}
             </span>
             <p className="break-all text-sm text-fg-muted">{r.path}</p>
+            <Sharing
+              source={"local:" + r.id}
+              access={r.access}
+              request={apiFetch}
+              saved={() => void refresh()}
+            />
           </div>
           <Button
             variant="outline"
@@ -204,7 +211,16 @@ export function LocalMedia() {
     </section>
   );
 }
-export function IBroadcastSource() {
+function IBroadcastAccount({
+  account,
+  request,
+  refresh,
+}: {
+  account: IBAccount;
+  request: typeof apiFetch;
+  refresh: () => void;
+}) {
+  const apiFetch: typeof request = (path, init) => request(path + "?account=" + account.id, init);
   const [data, setData] = useState<IBData>();
   const [client, setClient] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -249,13 +265,11 @@ export function IBroadcastSource() {
   }
   return (
     <section className="rounded-xl border border-border bg-surface p-5 space-y-4">
-      <h3 className="font-semibold">
-        iBroadcast · {L("Votre bibliothèque musicale", "Your music library")}
-      </h3>
+      <h3 className="font-semibold">iBroadcast · {account.name}</h3>
       <p className="text-sm text-fg-muted">
         {L(
-          "Retrouvez et écoutez votre musique iBroadcast dans Remix. Cette bibliothèque est partagée avec les spectateurs du serveur. La connexion se fait sur iBroadcast ; Remix ne conserve pas votre mot de passe.",
-          "Browse and play your iBroadcast music in Remix. This library is shared with the server’s viewers. Sign in on iBroadcast; Remix never stores your password.",
+          "Retrouvez et écoutez votre musique iBroadcast dans Remix. Ce compte est privé par défaut. Vous choisissez les spectateurs avec lesquels le partager. La connexion se fait sur iBroadcast ; Remix ne conserve pas votre mot de passe.",
+          "Browse and play your iBroadcast music in Remix. This account is private by default. You choose which viewers can access it. Sign in on iBroadcast; Remix never stores your password.",
         )}
       </p>
       <p className="text-sm text-fg-muted">
@@ -315,6 +329,13 @@ export function IBroadcastSource() {
           </p>
         </div>
       )}
+      <Sharing
+        source={"ibroadcast:" + account.id}
+        access={account.access}
+        playlists={account.importPlaylists}
+        request={request}
+        saved={refresh}
+      />
       <p className="text-sm" role="status">
         {data?.connected
           ? `${L("Connecté", "Connected")} · ${data.tracks} ${L("titres", "tracks")}`
@@ -351,5 +372,178 @@ export function IBroadcastSource() {
         </p>
       )}
     </section>
+  );
+}
+
+type IBAccount = { id: number; name: string; access: Access; importPlaylists: boolean };
+export function IBroadcastSource({ portalToken }: { portalToken?: string }) {
+  const [accounts, setAccounts] = useState<IBAccount[]>([]);
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const request: typeof apiFetch = async <T,>(path: string, init: RequestInit = {}) => {
+    if (!portalToken) return apiFetch<T>(path, init);
+    const response = await fetch("/ether/api" + path.replace(base, "/me/media/"), {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Ether-Request": "1",
+        Authorization: "Bearer " + portalToken,
+      },
+    });
+    const data = await response.json();
+    if (!response.ok)
+      throw new Error(
+        typeof data.error === "string"
+          ? data.error
+          : (data.error?.message ?? L("Requête refusée", "Request failed")),
+      );
+    return data as T;
+  };
+  async function refresh() {
+    try {
+      setAccounts(await request<IBAccount[]>(base + "accounts"));
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  useEffect(() => {
+    void refresh();
+  }, [portalToken]);
+  return (
+    <section className="space-y-4">
+      <h3 className="font-semibold">{L("Mes comptes iBroadcast", "My iBroadcast accounts")}</h3>
+      <p className="text-sm text-fg-muted">
+        {L(
+          "Chaque compte est privé par défaut. Les comptes auxquels vous avez accès se retrouvent ensemble dans Musique.",
+          "Each account is private by default. Accounts you can access appear together in Music.",
+        )}
+      </p>
+      <form
+        className="flex gap-2"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          try {
+            await request(base + "accounts", { method: "POST", body: JSON.stringify({ name }) });
+            setName("");
+            await refresh();
+          } catch (e) {
+            setError(String(e));
+          }
+        }}
+      >
+        <input
+          className={field}
+          required
+          maxLength={120}
+          aria-label={L("Nom du compte", "Account name")}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <Button type="submit">{L("Ajouter un compte", "Add account")}</Button>
+      </form>
+      {accounts.map((account) => (
+        <IBroadcastAccount
+          key={account.id}
+          account={account}
+          request={request}
+          refresh={() => void refresh()}
+        />
+      ))}
+      {error && <p role="alert">{error}</p>}
+    </section>
+  );
+}
+function Sharing({
+  source,
+  access,
+  playlists,
+  request,
+  saved,
+}: {
+  source: string;
+  access: Access;
+  playlists?: boolean;
+  request: typeof apiFetch;
+  saved: () => void;
+}) {
+  const [policy, setPolicy] = useState(access);
+  const [importPlaylists, setImport] = useState(playlists ?? false);
+  const [viewers, setViewers] = useState<{ id: number; name: string }[]>([]);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    void request<{ id: number; name: string }[]>(base + "viewers")
+      .then(setViewers)
+      .catch(() => {});
+  }, []);
+  if (!policy) return null;
+  return (
+    <details className="mt-3 rounded border border-border p-3 text-sm">
+      <summary className="cursor-pointer">
+        {policy.sharedAll
+          ? L("Partagé avec tous", "Shared with everyone")
+          : policy.viewers.length
+            ? L("Partage personnalisé", "Custom sharing")
+            : L("Privé · options de partage", "Private · sharing options")}
+      </summary>
+      <div className="mt-3 space-y-3">
+        <label className="flex gap-2">
+          <input
+            type="checkbox"
+            checked={policy.sharedAll}
+            onChange={(e) => setPolicy({ ...policy, sharedAll: e.target.checked })}
+          />
+          {L("Partager avec tous les spectateurs", "Share with all viewers")}
+        </label>
+        {!policy.sharedAll &&
+          viewers
+            .filter((v) => v.id !== policy.ownerId)
+            .map((v) => (
+              <label className="flex gap-2" key={v.id}>
+                <input
+                  type="checkbox"
+                  checked={policy.viewers.includes(v.id)}
+                  onChange={(e) =>
+                    setPolicy({
+                      ...policy,
+                      viewers: e.target.checked
+                        ? [...policy.viewers, v.id]
+                        : policy.viewers.filter((id) => id !== v.id),
+                    })
+                  }
+                />
+                {v.name}
+              </label>
+            ))}
+        {playlists !== undefined && (
+          <label className="flex gap-2">
+            <input
+              type="checkbox"
+              checked={importPlaylists}
+              onChange={(e) => setImport(e.target.checked)}
+            />
+            {L("Importer mes playlists iBroadcast", "Import my iBroadcast playlists")}
+          </label>
+        )}
+        <Button
+          variant="outline"
+          onClick={async () => {
+            try {
+              await request(base + "sharing", {
+                method: "PUT",
+                body: JSON.stringify({ source, policy, importPlaylists }),
+              });
+              setMessage(L("Enregistré", "Saved"));
+              saved();
+            } catch (e) {
+              setMessage(String(e));
+            }
+          }}
+        >
+          {L("Enregistrer le partage", "Save sharing")}
+        </Button>
+        <p role="status">{message}</p>
+      </div>
+    </details>
   );
 }

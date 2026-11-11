@@ -309,6 +309,7 @@ export interface Viewer {
   plexId: number;
   username: string;
   title: string;
+  customName?: string;
   thumb?: string;
   isOwner: boolean;
   accessStatus?: ViewerAccessStatus;

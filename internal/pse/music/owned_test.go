@@ -2,6 +2,7 @@ package music
 
 import (
 	"context"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,37 +25,41 @@ func TestLocalMusicLibraryStateAndRange(t *testing.T) {
 	}, Publish: func(ctx context.Context, r localmedia.Root, ff []localmedia.File) error {
 		return ImportLocal(ctx, db, r, ff)
 	}}
-	if err := l.Add(t.Context(), localmedia.Root{Name: "Audio", Path: dir, Kind: "audio"}); err != nil {
+	if err := l.Add(withMusicViewer(t.Context(), 7), localmedia.Root{Name: "Audio", Path: dir, Kind: "audio"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Scan(t.Context()); err != nil {
+	if err := l.Scan(withMusicViewer(t.Context(), 7)); err != nil {
+		t.Fatal(err)
+	}
+	roots, _ := l.Roots(t.Context())
+	if err := mediaaccess.Update(t.Context(), db, "local:"+roots[0].ID, 7, mediaaccess.Policy{Viewers: []int64{8}}); err != nil {
 		t.Fatal(err)
 	}
 	s := &OwnedSource{DB: db, Local: l, Remote: h.srv.o.Source}
 	h.srv.o.Source = s
-	tt, err := s.SearchTracks(t.Context(), "Track", 1, 0)
+	tt, err := s.SearchTracks(withMusicViewer(t.Context(), 7), "Track", 1, 0)
 	if err != nil || len(tt) != 1 {
 		t.Fatal(tt, err)
 	}
 	track := tt[0]
 	for _, viewer := range []int64{7, 8} {
-		items, err := h.srv.o.Library.List(t.Context(), viewer, KindTrack, ListOptions{})
+		items, err := h.srv.o.Library.List(withMusicViewer(t.Context(), 7), viewer, KindTrack, ListOptions{})
 		if err != nil || len(items) != 1 || items[0].PlayCount != 0 || items[0].StarredAt != 0 {
 			t.Fatal(items, err)
 		}
 	}
-	if err := h.srv.o.Library.StarTrack(t.Context(), 7, track, true); err != nil {
+	if err := h.srv.o.Library.StarTrack(withMusicViewer(t.Context(), 7), 7, track, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Scan(t.Context()); err != nil {
+	if err := l.Scan(withMusicViewer(t.Context(), 7)); err != nil {
 		t.Fatal(err)
 	} // preserves per-viewer stars, no duplicate
 	for _, viewer := range []int64{7, 8} {
-		n, err := h.srv.o.Library.Count(t.Context(), viewer, KindTrack)
+		n, err := h.srv.o.Library.Count(withMusicViewer(t.Context(), 7), viewer, KindTrack)
 		if err != nil || n != 1 {
 			t.Fatal(n, err)
 		}
-		items, err := h.srv.o.Library.List(t.Context(), viewer, KindTrack, ListOptions{Starred: true})
+		items, err := h.srv.o.Library.List(withMusicViewer(t.Context(), 7), viewer, KindTrack, ListOptions{Starred: true})
 		if err != nil || len(items) != map[int64]int{7: 1, 8: 0}[viewer] {
 			t.Fatal(items, err)
 		}
@@ -71,11 +76,11 @@ func TestLocalMusicLibraryStateAndRange(t *testing.T) {
 	if w.Body.String() == "fLaC0123456789" {
 		t.Fatal("unauthenticated file exposure")
 	}
-	roots, _ := l.Roots(t.Context())
-	if err := l.Remove(t.Context(), roots[0].ID); err != nil {
+	roots, _ = l.Roots(withMusicViewer(t.Context(), 7))
+	if err := l.Remove(withMusicViewer(t.Context(), 7), roots[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Stream(t.Context(), track.ID, ""); err == nil {
+	if _, err := s.Stream(withMusicViewer(t.Context(), 7), track.ID, ""); err == nil {
 		t.Fatal("removed source playable")
 	}
 }

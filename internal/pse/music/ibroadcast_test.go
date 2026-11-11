@@ -2,6 +2,7 @@ package music
 
 import (
 	"encoding/json"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,9 @@ import (
 
 func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 	db := store.OpenTest(t)
+	if err := mediaaccess.Create(t.Context(), db, "ibroadcast", 7); err != nil {
+		t.Fatal(err)
+	}
 	polls, refreshes := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reply := func(v any) { _ = json.NewEncoder(w).Encode(v) }
@@ -96,11 +100,11 @@ func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 		t.Fatal(playlistTracks, err)
 	}
 	owned := &OwnedSource{DB: db, IB: s}
-	tt, err := owned.SearchTracks(t.Context(), "Song", 10, 0)
+	tt, err := owned.SearchTracks(withMusicViewer(t.Context(), 7), "Song", 10, 0)
 	if err != nil || len(tt) != 1 || tt[0].Artist.Name != "Artist" {
 		t.Fatal(tt, err)
 	}
-	st, err := owned.Stream(t.Context(), tt[0].ID, "LOSSLESS")
+	st, err := owned.Stream(withMusicViewer(t.Context(), 7), tt[0].ID, "LOSSLESS")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +129,7 @@ func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM pse_music_playlists WHERE source='ibroadcast'").Scan(&playlistsLeft); err != nil || playlistsLeft != 0 {
 		t.Fatal(playlistsLeft, err)
 	}
-	if _, err = owned.Stream(t.Context(), tt[0].ID, ""); err == nil {
+	if _, err = owned.Stream(withMusicViewer(t.Context(), 7), tt[0].ID, ""); err == nil {
 		t.Fatal("disconnected stream accepted")
 	}
 }

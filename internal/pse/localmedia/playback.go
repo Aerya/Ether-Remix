@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,27 +12,36 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 )
 
 func IsKey(k core.RatingKey) bool {
 	return int64(k) >= int64(core.LocalKey(VideoBase)) && int64(k) < int64(core.LocalKey(VideoBase+Span))
 }
 func FileID(k core.RatingKey) int64 { return int64(k) - int64(core.LocalKey(0)) }
-func KnownSQL(col string) string {
-	return "EXISTS (SELECT 1 FROM pse_local_files lf JOIN pse_local_roots lr ON lr.id=lf.root_id WHERE lf.kind='video' AND lf.title_key=" + col + ")"
+func KnownSQL(col string, viewer ...int64) string {
+	acl := ""
+	if len(viewer) > 0 {
+		acl = " AND " + mediaaccess.Predicate("'local:'||lr.id", viewer[0])
+	}
+	parent := fmt.Sprintf("(lf.title_key>=%d AND lf.title_key<%d AND ((lf.title_key-%d)/10000000)+%d=%s)", core.EpisodeKey(0, 0, 0), int64(core.EpisodeKey(0, 0, 0))+1000000000000000, core.EpisodeKey(0, 0, 0), core.ShowKey(0), col)
+	return "EXISTS (SELECT 1 FROM pse_local_files lf JOIN pse_local_roots lr ON lr.id=lf.root_id WHERE lf.kind='video' AND (lf.title_key=" + col + " OR " + parent + ")" + acl + ")"
 }
 func Known(ctx context.Context, db *sql.DB, key core.RatingKey) bool {
-	if db == nil || !IsKey(key) {
+	if db == nil {
 		return false
 	}
 	var n int
-	return db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_local_files WHERE id=? AND kind='video'", FileID(key)).Scan(&n) == nil && n > 0
+	return db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_local_files WHERE title_key=? AND kind='video' AND "+mediaaccess.Predicate("'local:'||root_id", core.CatalogViewerID(ctx)), key).Scan(&n) == nil && n > 0
 }
 func Resolve(ctx context.Context, db *sql.DB, req core.ResolveRequest) (*core.Resolution, error) {
-	if req.Title == nil || !IsKey(req.Title.Key) {
+	if req.Title == nil {
 		return nil, core.ErrNotAvailable
 	}
-	id := FileID(req.Title.Key)
+	var id int64
+	if err := db.QueryRowContext(ctx, "SELECT id FROM pse_local_files WHERE title_key=? AND "+mediaaccess.Predicate("'local:'||root_id", core.CatalogViewerID(ctx))+" ORDER BY size DESC,id LIMIT 1", req.Title.Key).Scan(&id); err != nil {
+		return nil, core.ErrNotAvailable
+	}
 	rid := "remix-local:" + strconv.FormatInt(id, 10)
 	for _, bad := range req.Exclude {
 		if bad == rid {

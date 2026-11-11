@@ -111,6 +111,9 @@ func (c *Catalog) visibleTitle(t *core.Title) bool {
 // network refresh. Missing or hidden records fail closed; callers may use
 // the normal catalogue path separately to populate the local mirror.
 func (c *Catalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if localmedia.IsKey(key) && !localmedia.Known(ctx, c.db, key) {
+		return nil, core.ErrNotFound
+	}
 	stored, err := c.loadByKey(ctx, key)
 	if err != nil {
 		return nil, err
@@ -123,6 +126,9 @@ func (c *Catalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Titl
 }
 
 func (c *Catalog) StoredTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if localmedia.IsKey(key) && !localmedia.Known(ctx, c.db, key) {
+		return nil, core.ErrNotFound
+	}
 	st, err := c.loadByKey(ctx, key)
 	if err != nil {
 		if errors.Is(err, core.ErrNotFound) {

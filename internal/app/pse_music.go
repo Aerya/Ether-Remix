@@ -64,7 +64,7 @@ func (a *App) newPSEMusic(cfg music.Settings) *music.Server {
 	a.ownedMedia()
 	rt := pseRuntimeOf(a)
 	return music.NewServer(music.Options{
-		Source:    &music.OwnedSource{Remote: cfg.NewSource(a.newPSEMusicDebrid()), DB: a.db, Local: rt.local, IB: rt.ib},
+		Source:    &music.OwnedSource{Remote: cfg.NewSource(a.newPSEMusicDebrid()), DB: a.db, Local: rt.local, IB: rt.ib, Account: a.ibAccount},
 		Library:   music.NewLibrary(a.db),
 		Playlists: pseRuntimeOf(a).playlistSync(a).Store,
 		Auth: func(ctx context.Context, username, password string) (int64, error) {

@@ -38,6 +38,7 @@ type pseRuntime struct {
 	ownedOnce         sync.Once
 	local             *localmedia.Library
 	ib                *music.IBroadcast
+	ibAccounts        map[int64]*music.IBroadcast
 	localKick, ibKick chan struct{}
 	submakerOnce      sync.Once
 	submaker          *submaker.Service

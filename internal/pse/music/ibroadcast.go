@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/pse/localmedia"
@@ -64,6 +65,7 @@ type IBStatus struct {
 // IBroadcast uses the documented OAuth device flow. Passwords and access tokens
 // are never exposed by its owner API. Endpoints are replaceable only in tests.
 type IBroadcast struct {
+	playlistImport               atomic.Bool
 	AccountID                    int64 // Stable local account identity; zero is the legacy account.
 	OwnerID                      int64
 	ImportPlaylists              bool
@@ -543,7 +545,7 @@ func (s *IBroadcast) sync(ctx context.Context) error {
 		available[id] = tt[len(tt)-1]
 	}
 	var lists []Playlist
-	if s.ImportPlaylists && s.OwnerID > 0 {
+	if (s.ImportPlaylists || s.playlistImport.Load()) && s.OwnerID > 0 {
 		lists, err = ibPlaylists(lib.Library["playlists"], available)
 		if err != nil {
 			return err
@@ -581,7 +583,7 @@ func (s *IBroadcast) sync(ctx context.Context) error {
 	if err := ReplaceOwned(ctx, s.DB, s.provider(), tt); err != nil {
 		return err
 	}
-	if s.ImportPlaylists && s.OwnerID > 0 {
+	if (s.ImportPlaylists || s.playlistImport.Load()) && s.OwnerID > 0 {
 		return (&Playlists{DB: s.DB}).replace(ctx, s.OwnerID, s.provider(), lists)
 	}
 	return nil
@@ -618,3 +620,5 @@ func (s *IBroadcast) ImageURL(ref string, size int) string {
 	}
 	return "https://artwork.ibroadcast.com/artwork/" + strconv.FormatInt(id, 10) + "-" + strconv.Itoa(pickSize([]int{150, 300, 1000}, size))
 }
+
+func (s *IBroadcast) SetPlaylistImport(on bool) { s.playlistImport.Store(on) }
