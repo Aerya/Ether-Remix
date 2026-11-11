@@ -1,4 +1,5 @@
-import { Button, SettingsSection } from "@braedonsaunders/appkit-ui";
+import { Button } from "@braedonsaunders/appkit-ui";
+import { SettingsSection } from "../components/CollapsibleSections";
 import { useEffect, useMemo, useState } from "react";
 import { getLocale } from "../i18n";
 import { api } from "../lib/api";

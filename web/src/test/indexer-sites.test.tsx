@@ -24,7 +24,10 @@ const builtinIndexer: Indexer = {
 };
 
 async function openAddSite() {
-  fireEvent.click(await screen.findByRole("button", { name: /Add indexer/ }, WAIT));
+  const add = await screen.findByRole("button", { name: /Add indexer/ }, WAIT);
+  const block = add.closest("details");
+  if (block && !block.open) fireEvent.click(block.querySelector("summary")!);
+  fireEvent.click(add);
   fireEvent.click(await screen.findByRole("menuitem", { name: "Site…" }));
   return screen.findByRole("dialog", { name: "Add a site" });
 }
@@ -229,7 +232,10 @@ describe("Sources › Indexers sites", () => {
 
   it("still adds Newznab and Torznab URLs from the same menu", async () => {
     renderApp("/sources/indexers");
-    fireEvent.click(await screen.findByRole("button", { name: /Add indexer/ }, WAIT));
+    const add = await screen.findByRole("button", { name: /Add indexer/ }, WAIT);
+    const block = add.closest("details");
+    if (block && !block.open) fireEvent.click(block.querySelector("summary")!);
+    fireEvent.click(add);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Newznab or Torznab URL…" }));
     const drawer = await screen.findByRole("dialog", { name: "New indexer" });
     expect(within(drawer).getByRole("radiogroup", { name: "Protocol" })).toBeInTheDocument();

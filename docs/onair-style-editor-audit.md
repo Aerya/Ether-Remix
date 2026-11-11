@@ -11,7 +11,7 @@ Screenshots and persona records: `thread-storage/thr_cp7svgfc62/v035/gallery-loo
 | Revert draft chip | Restores prior whole draft | Live stage changes; joins undo history. |
 | Name | `Look.name` | Gallery/drawer title; ident binds preview channel name when previewing a real channel. Both header and manual field labeled. |
 | Logo upload / monogram | `Brand.logo`, image asset digest or short monogram | Same owner-logo layer in browser and Go. Accessible upload. |
-| Tagline | `Brand.tagline` | Ident/off-air/welcome tag layers bind the brand token, with explicit layer text taking precedence. Channel tagline/accent overrides also preview live. |
+| Tagline | `Brand.tagline` | Ident/off-air/welcome tag layers bind the brand token, with explicit layer text taking precedence. Channel tagline/remix overrides also preview live. |
 | Four role colours | `Brand.palette` | Browser tokens and server tokens; contrast checked live and server rejects text contrast below 4.5:1. |
 | Palette preset / shuffle | Palette plus seed | Live output changes. |
 | Bundled type pair | `Brand.type` | Bundled browser FontFace and Go font selection. |

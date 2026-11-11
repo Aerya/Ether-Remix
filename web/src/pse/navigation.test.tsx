@@ -15,11 +15,11 @@ it("keeps one source entry and maps legacy source addresses without losing param
     },
   ]);
   const links = nav.flatMap((g) => g.items);
-  expect(links.some((i) => i.href === "/accent")).toBe(true);
+  expect(links.some((i) => i.href === "/remix")).toBe(true);
   expect(links.some((i) => i.href === "/sources")).toBe(false);
-  expect(sourcesHref("stremio", "?new=addon")).toBe("/accent/sources?new=addon&source=stremio");
-  expect(sourcesHref("usage", "?days=30")).toBe("/accent/statistiques?days=30&view=usage");
-  expect(legacyRemixRoute("animes")).toBe("/accent/contenus?content=animes");
+  expect(sourcesHref("stremio", "?new=addon")).toBe("/remix/sources?new=addon&source=stremio");
+  expect(sourcesHref("usage", "?days=30")).toBe("/remix/statistiques?days=30&view=usage");
+  expect(legacyRemixRoute("animes")).toBe("/remix/contenus?content=animes");
 });
 
 it("preserves native IPTV provider IDs when redirecting to Remix", () => {

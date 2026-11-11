@@ -67,7 +67,7 @@ beforeEach(() => {
 });
 function remix(search = "?source=iptv") {
   return render(
-    <MemoryRouter initialEntries={["/accent/sources" + search]}>
+    <MemoryRouter initialEntries={["/remix/sources" + search]}>
       <RemixSources music={null} indexing={null} />
       <Location />
     </MemoryRouter>,

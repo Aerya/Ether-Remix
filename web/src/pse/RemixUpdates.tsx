@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-source-cache-resilience",
+    id: "2026-11-11-remix-settings-layout",
     version: "current",
+    date: "2026-11-11",
+    title: ["Configuration Remix réorganisée", "Reorganized Remix settings"],
+    items: [
+      [
+        "Les adresses passent à /ether/remix ; vos anciens liens restent utilisables. Les blocs de configuration sont repliés par défaut et leurs titres harmonisés.",
+        "Addresses now use /ether/remix; old links still work. Configuration sections start collapsed and share consistent headings.",
+      ],
+      [
+        "iBroadcast rejoint Eclipse et DMM dans les sources musicales. L’adresse Subsonic et les compteurs de bibliothèque sont regroupés dans Contenus et bibliothèques → Musique.",
+        "iBroadcast joins Eclipse and DMM in music sources. The Subsonic address and library counts are grouped under Content & libraries → Music.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-source-cache-resilience",
+    version: "0.2.37-remix.52.1",
     date: "2026-11-11",
     title: [
       "Sources plus résilientes et recherche StreamFusion",

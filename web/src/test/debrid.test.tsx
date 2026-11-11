@@ -15,6 +15,13 @@ import { calls, renderApp } from "./harness";
 
 const WAIT = { timeout: 4000 };
 
+function revealSource(element: HTMLElement) {
+  const block = element.closest("details");
+  expect(block).not.toHaveAttribute("open");
+  if (block) fireEvent.click(block.querySelector("summary")!);
+  expect(element).toBeVisible();
+}
+
 async function choose(label: string, option: string) {
   fireEvent.click(screen.getByRole("button", { name: label }));
   fireEvent.click(await screen.findByRole("option", { name: option }));
@@ -46,7 +53,7 @@ describe("Sources › Debrid", () => {
 
   it("lists providers with their kind and live status", async () => {
     const { fake } = renderApp("/sources/debrid");
-    expect(await screen.findByRole("button", { name: "Edit Real-Debrid" }, WAIT)).toBeVisible();
+    revealSource(await screen.findByRole("button", { name: "Edit Real-Debrid" }, WAIT));
     const list = screen.getByRole("region", { name: "Debrid providers" });
     expect(within(list).getByRole("button", { name: "Edit TorBox backup" })).toBeInTheDocument();
     expect(within(list).getByText("TorBox")).toBeInTheDocument();
@@ -75,7 +82,7 @@ describe("Sources › Debrid", () => {
         ix.protocol === "torrent" ? { ...ix, enabled: false } : ix,
       );
     });
-    expect(await screen.findByText(/no torrent source is set up yet/, {}, WAIT)).toBeVisible();
+    revealSource(await screen.findByText(/no torrent source is set up yet/, {}, WAIT));
     expect(screen.getByRole("link", { name: "Add one" })).toHaveAttribute(
       "href",
       "/sources/indexers",
@@ -174,7 +181,7 @@ describe("Sources › Indexers protocol", () => {
 
   it("does not nag when a debrid account is ready", async () => {
     renderApp("/sources/indexers");
-    expect(await screen.findByRole("button", { name: "Edit Torrent Tracker" }, WAIT)).toBeVisible();
+    revealSource(await screen.findByRole("button", { name: "Edit Torrent Tracker" }, WAIT));
     expect(screen.queryByRole("link", { name: "Add a debrid provider" })).toBeNull();
   });
 

@@ -1,4 +1,5 @@
-import { Badge, Button, SettingsSection, Switch, toast } from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Switch, toast } from "@braedonsaunders/appkit-ui";
+import { SettingsSection } from "../components/CollapsibleSections";
 import { X } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -40,9 +41,16 @@ interface SubmakerVostfr {
   queued?: number;
 }
 
-const STATES: Record<SubtitleState, { fr: string; en: string; variant: "success" | "secondary" | "warning" }> = {
+const STATES: Record<
+  SubtitleState,
+  { fr: string; en: string; variant: "success" | "secondary" | "warning" }
+> = {
   "french-audio": { fr: "VF disponible", en: "French audio", variant: "success" },
-  announced: { fr: "Sous-titres FR annoncés", en: "French subtitles announced", variant: "success" },
+  announced: {
+    fr: "Sous-titres FR annoncés",
+    en: "French subtitles announced",
+    variant: "success",
+  },
   ready: { fr: "SRT français prêt", en: "French SRT ready", variant: "success" },
   translated: { fr: "SRT traduit (IA)", en: "Translated SRT (AI)", variant: "success" },
   pending: { fr: "SRT en préparation", en: "Preparing SRT", variant: "secondary" },
@@ -88,11 +96,17 @@ function SubmakerSwitch({
         checked={data.enabled}
         disabled={busy || (!data.available && !data.enabled)}
         onChange={(e) => void toggle(e.currentTarget.checked)}
-        aria-label={L("Préparer les sous-titres français avec SubMaker", "Prepare French subtitles with SubMaker")}
+        aria-label={L(
+          "Préparer les sous-titres français avec SubMaker",
+          "Prepare French subtitles with SubMaker",
+        )}
       />
       <div className="min-w-0 text-sm">
         <p className="font-medium text-fg">
-          {L("Préparer les sous-titres français avec SubMaker", "Prepare French subtitles with SubMaker")}
+          {L(
+            "Préparer les sous-titres français avec SubMaker",
+            "Prepare French subtitles with SubMaker",
+          )}
         </p>
         <p className="text-xs text-fg-muted">
           {data.available
@@ -105,7 +119,10 @@ function SubmakerSwitch({
                 "Enable SubMaker with a valid manifest first.",
               )}{" "}
           {!data.available ? (
-            <Link className="text-primary underline" to="/accent/sources?source=stremio#submaker-integration">
+            <Link
+              className="text-primary underline"
+              to="/remix/sources?source=stremio#submaker-integration"
+            >
               {L("Réglages SubMaker", "SubMaker settings")}
             </Link>
           ) : null}
@@ -158,7 +175,9 @@ export function VostfrTitles() {
       )}
     >
       <div className="space-y-3 px-4 py-3">
-        {subs.data ? <SubmakerSwitch data={subs.data} onChange={(next) => subs.setData(next)} /> : null}
+        {subs.data ? (
+          <SubmakerSwitch data={subs.data} onChange={(next) => subs.setData(next)} />
+        ) : null}
         <TitleSearch
           label={L("Chercher un film ou une série", "Search a movie or show")}
           placeholder={L("Chercher un film ou une série…", "Search a movie or show…")}
