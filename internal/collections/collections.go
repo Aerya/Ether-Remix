@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/contentrating"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -574,6 +575,17 @@ type personalEntry struct {
 // serve returns the members a user sees: content-rating and personal
 // rules applied, personal order, limit, rotation.
 func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.User, wait bool) ([]core.RatingKey, error) {
+	ctx = core.WithCatalogViewer(ctx, user)
+	viewer := core.CatalogViewerID(ctx)
+	if user != nil {
+		viewer = user.ID
+	}
+	for _, src := range row.spec.Sources {
+		if src.Kind == "localFiles" && !mediaaccess.Allowed(ctx, s.db, "local:"+src.Label, viewer) {
+			return nil, nil
+		}
+	}
+
 	ms, err := s.membersFor(ctx, row, wait)
 	if err != nil {
 		return nil, err

@@ -65,6 +65,9 @@ func (s *Server) pseCanSeeTheme(u *core.User, id int) bool {
 	if !ok {
 		return false
 	}
+	if th.VisibleTo != nil && !th.VisibleTo(u) {
+		return false
+	}
 	base, ok := s.untitledSectionFor(th.Type)
 	return ok && s.canSeeSection(u, base.ID)
 }
@@ -82,7 +85,7 @@ func (s *Server) pseWithThemes(u *core.User, secs []Section) []Section {
 	}
 	out := secs
 	for _, th := range t.Themes() {
-		if visible[th.Type] && len(th.Rows) > 0 {
+		if visible[th.Type] && len(th.Rows) > 0 && (th.VisibleTo == nil || th.VisibleTo(u)) {
 			out = append(out, s.pseThemeSection(th))
 		}
 	}

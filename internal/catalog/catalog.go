@@ -223,6 +223,7 @@ type tmdbRef struct{ client TMDB }
 
 // Catalog implements core.Catalog.
 type Catalog struct {
+	localMedia            atomic.Bool // PSE: persisted local-video rows require source membership checks
 	consoleEvidencePolicy atomic.Pointer[func() string]
 	consoleGatePolicies   atomic.Pointer[func() (string, string)]
 	// consoleGateGen counts hidden-set publications. Only release-gate
@@ -506,6 +507,7 @@ func New(db *sql.DB, client TMDB, cfg config.Catalog, log *slog.Logger, opts ...
 	c.ftsFold = ftsFoldAvailable(ctx, db)
 	c.personFold = personFoldAvailable(ctx, db)
 	c.startupContext = nil
+	c.loadLocalMedia(ctx)
 	return c, nil
 }
 

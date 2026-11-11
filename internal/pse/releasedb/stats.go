@@ -86,7 +86,7 @@ func (s *Store) TypeCounts(ctx context.Context, min int) (map[string]Counts, err
 FROM catalog_titles c
 LEFT JOIN pse_index_titles t ON t.title_key=c.key
 LEFT JOIN pse_playable p ON p.title_key=c.key
-WHERE c.type IN ('movie','show') AND c.browsable=1
+WHERE c.type IN ('movie','show') AND c.browsable=1 AND c.key<9000000000000000
 GROUP BY c.type`
 	out := map[string]Counts{}
 	for _, anime := range []bool{false, true} {
@@ -127,7 +127,7 @@ func (s *Store) KeyCounts(ctx context.Context, keys []core.RatingKey, min int) (
 	seen := make(map[core.RatingKey]bool, len(keys))
 	uniq := make([]any, 0, len(keys))
 	for _, k := range keys {
-		if !seen[k] {
+		if k.Kind() != core.KindLocal && !seen[k] {
 			seen[k] = true
 			uniq = append(uniq, int64(k))
 		}

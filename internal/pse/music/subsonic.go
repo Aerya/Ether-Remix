@@ -198,6 +198,7 @@ func (s *Server) authenticate(c *call) bool {
 		return false
 	}
 	c.viewer, c.user = viewer, user
+	c.r = c.r.WithContext(withMusicViewer(c.r.Context(), viewer))
 	return true
 }
 
@@ -334,7 +335,7 @@ func (s *Server) state(ctx context.Context, viewer int64, kind string, id int64)
 }
 
 func (s *Server) songEl(name string, t Track, st userState) *el {
-	mime, suffix := s.contentType()
+	mime, suffix := s.trackContentType(t)
 	e := node(name, "id", trackID(t.ID), "parent", albumIDOrEmpty(t.Album.ID), "isDir", false,
 		"title", t.Title, "album", t.Album.Title, "artist", t.Artist.Name)
 	e.opt("track", int64(t.Number)).opt("discNumber", int64(t.Volume)).opt("year", int64(t.Album.Year()))
@@ -967,6 +968,17 @@ func (s *Server) relayAudio(w http.ResponseWriter, r *http.Request, id int64) er
 			}
 			return last
 		}
+		if st.Open != nil {
+			f, modified, err := st.Open()
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			w.Header().Set("Content-Type", st.Mime)
+			w.Header().Set("X-Accent-Audio-Source", st.Provider)
+			http.ServeContent(w, r, "audio", modified, f)
+			return nil
+		}
 		res, err := s.openAudio(ctx, r, st.URL)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -1048,6 +1060,10 @@ func (s *Server) cover(c *call) {
 
 // relayImage relaie une pochette (kind 'c') ou une photo d'artiste ('p').
 func (s *Server) relayImage(w http.ResponseWriter, r *http.Request, kind byte, ref string, size int) {
+	if source, ok := s.o.Source.(*OwnedSource); ok && strings.HasPrefix(ref, "ib-") && !source.artAllowed(r.Context(), ref) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	if !imageRefRe.MatchString(ref) {
 		w.WriteHeader(http.StatusNotFound)
 		return

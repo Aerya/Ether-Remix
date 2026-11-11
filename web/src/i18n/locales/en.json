@@ -4009,6 +4009,7 @@
   "m_0f07303b32517e": "Clear cached bytes for {title}? The release stays playable and is fetched again the next time it plays. Active or paused playback must be stopped first. Protected bytes may remain until background work ends.",
   "m_0f0ad430471ab7": "Display language",
   "m_0f0b18d569c736": "Nothing shown",
+  "m_0f0c72e5ba4050": "Files in an indexed local folder",
   "m_0f0c7468f067cd": "Noto Sans",
   "m_0f0e5bb0502cf7": "How people sign in",
   "m_0f0f1d9646b986": "That Plex account doesn't own this server. Sign in with the account that set Ether up.",

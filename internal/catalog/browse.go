@@ -462,7 +462,7 @@ func (c *Catalog) LibraryPosters(ctx context.Context, typ core.MediaType, limit 
 // rules, so every such viewer's identical filter shares one cached page and
 // total. A viewer with rules of their own keeps their id and revision.
 func (c *Catalog) policyKeyFilter(f core.Filter) core.Filter {
-	if f.CatalogViewerID == 0 {
+	if f.CatalogViewerID == 0 || c.localMedia.Load() {
 		return f
 	}
 	c.viewerRules.RLock()
@@ -601,6 +601,9 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 	}
 	// PSE-HOOK: catalogue lisible uniquement et en français — voir docs/pse/FORK.fr.md
 	conds, args = pseCatalogWhere(conds, args, f, nowTS)
+	if c.localMedia.Load() {
+		conds = append(conds, localMediaWhere(f.CatalogViewerID))
+	}
 	// Facets query children directly rather than through storedEpisodesWhere.
 	// They inherit their show's decision and episodes apply their own too.
 	if (f.Type == core.TypeEpisode || f.Type == core.TypeSeason) && f.HiddenShowGeneration != "" {

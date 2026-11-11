@@ -131,7 +131,7 @@ func (s *Server) Genres(ctx context.Context) []Genre {
 	if !ok {
 		return nil
 	}
-	g, _ := memoized(s.discover, "genres", s.clock(), func() ([]Genre, error) { return d.Genres(ctx) })
+	g, _ := memoizedFor(ctx, s.discover, "genres", s.clock(), func() ([]Genre, error) { return d.Genres(ctx) })
 	return g
 }
 
@@ -155,9 +155,9 @@ func (s *Server) GenreCharts(ctx context.Context, genre int64) ([]Artist, []Albu
 	}
 	k := strconv.FormatInt(genre, 10)
 	now := s.clock()
-	ar, _ := memoized(s.discover, "ga:"+k, now, func() ([]Artist, error) { return d.GenreArtists(ctx, genre, 50) })
-	al, _ := memoized(s.discover, "gl:"+k, now, func() ([]Album, error) { return d.GenreAlbums(ctx, genre, 100) })
-	tr, _ := memoized(s.discover, "gt:"+k, now, func() ([]Track, error) { return d.GenreTracks(ctx, genre, 100) })
+	ar, _ := memoizedFor(ctx, s.discover, "ga:"+k, now, func() ([]Artist, error) { return d.GenreArtists(ctx, genre, 50) })
+	al, _ := memoizedFor(ctx, s.discover, "gl:"+k, now, func() ([]Album, error) { return d.GenreAlbums(ctx, genre, 100) })
+	tr, _ := memoizedFor(ctx, s.discover, "gt:"+k, now, func() ([]Track, error) { return d.GenreTracks(ctx, genre, 100) })
 	return ar, al, tr
 }
 
@@ -167,7 +167,7 @@ func (s *Server) Similar(ctx context.Context, artist int64, limit int) []Artist 
 	if !ok || artist <= 0 {
 		return nil
 	}
-	ar, _ := memoized(s.discover, "rel:"+strconv.FormatInt(artist, 10), s.clock(), func() ([]Artist, error) { return d.Related(ctx, artist, 20) })
+	ar, _ := memoizedFor(ctx, s.discover, "rel:"+strconv.FormatInt(artist, 10), s.clock(), func() ([]Artist, error) { return d.Related(ctx, artist, 20) })
 	if limit > 0 && len(ar) > limit {
 		ar = ar[:limit]
 	}
@@ -180,7 +180,7 @@ func (s *Server) Radio(ctx context.Context, artist int64, limit int) []Track {
 	if !ok || artist <= 0 {
 		return nil
 	}
-	tr, _ := memoized(s.discover, "radio:"+strconv.FormatInt(artist, 10), s.clock(), func() ([]Track, error) { return d.ArtistRadio(ctx, artist, 50) })
+	tr, _ := memoizedFor(ctx, s.discover, "radio:"+strconv.FormatInt(artist, 10), s.clock(), func() ([]Track, error) { return d.ArtistRadio(ctx, artist, 50) })
 	if limit > 0 && len(tr) > limit {
 		tr = tr[:limit]
 	}
@@ -193,7 +193,7 @@ func (s *Server) TopTracks(ctx context.Context, artist int64, limit int) []Track
 	if !ok || artist <= 0 {
 		return nil
 	}
-	tr, _ := memoized(s.discover, "top:"+strconv.FormatInt(artist, 10), s.clock(), func() ([]Track, error) { return t.ArtistTop(ctx, artist, 50) })
+	tr, _ := memoizedFor(ctx, s.discover, "top:"+strconv.FormatInt(artist, 10), s.clock(), func() ([]Track, error) { return t.ArtistTop(ctx, artist, 50) })
 	if limit > 0 && len(tr) > limit {
 		tr = tr[:limit]
 	}
