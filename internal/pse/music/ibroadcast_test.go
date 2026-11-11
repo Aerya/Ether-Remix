@@ -46,15 +46,16 @@ func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 			reply(map[string]any{"result": true, "user": map[string]any{"id": "42"}, "settings": map[string]string{"streaming_server": "https://streaming.ibroadcast.com"}})
 		case "/library":
 			reply(map[string]any{"result": true, "library": map[string]any{
-				"tracks":  map[string]any{"map": map[string]int{"title": 0, "artist_id": 1, "album_id": 2, "length": 3, "file": 4, "trashed": 5, "artwork_id": 6, "track": 7}, "10": []any{"Song", 20, 30, 99, "/128/a/b/123", false, 40, 1}, "11": []any{"Deleted", 20, 30, 99, "/128/a/b/124", true, 40, 2}},
-				"artists": map[string]any{"map": map[string]any{"name": 0, "artists_additional_map": map[string]int{"artist_id": 0}}, "20": []any{"Artist"}}, "albums": map[string]any{"map": map[string]any{"name": 0, "artists_additional_map": map[string]int{"artist_id": 0}}, "30": []any{"Album"}}}})
+				"playlists": map[string]any{"map": map[string]int{"name": 0, "tracks": 1}, "1": []any{"Ma sélection", []any{10, 11, 10}}},
+				"tracks":    map[string]any{"map": map[string]int{"title": 0, "artist_id": 1, "album_id": 2, "length": 3, "file": 4, "trashed": 5, "artwork_id": 6, "track": 7}, "10": []any{"Song", 20, 30, 99, "/128/a/b/123", false, 40, 1}, "11": []any{"Deleted", 20, 30, 99, "/128/a/b/124", true, 40, 2}},
+				"artists":   map[string]any{"map": map[string]any{"name": 0, "artists_additional_map": map[string]int{"artist_id": 0}}, "20": []any{"Artist"}}, "albums": map[string]any{"map": map[string]any{"name": 0, "artists_additional_map": map[string]int{"artist_id": 0}}, "30": []any{"Album"}}}})
 		default:
 			t.Errorf("unexpected endpoint %s", r.URL.Path)
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	s := &IBroadcast{DB: db, Sealer: fakeSealer{}, HTTP: server.Client(), OAuthURL: server.URL, APIURL: server.URL + "/status", LibraryURL: server.URL + "/library"}
+	s := &IBroadcast{OwnerID: 7, ImportPlaylists: true, DB: db, Sealer: fakeSealer{}, HTTP: server.Client(), OAuthURL: server.URL, APIURL: server.URL + "/status", LibraryURL: server.URL + "/library"}
 	if err := s.Begin(t.Context(), "client"); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +87,14 @@ func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 	if refreshes != 1 || s.Status(t.Context()).Tracks != 1 {
 		t.Fatal(refreshes, s.Status(t.Context()))
 	}
+	var playlistRaw string
+	if err := db.QueryRow("SELECT tracks FROM pse_music_playlists WHERE viewer_id=7 AND source='ibroadcast'").Scan(&playlistRaw); err != nil {
+		t.Fatal(err)
+	}
+	var playlistTracks []Track
+	if err := json.Unmarshal([]byte(playlistRaw), &playlistTracks); err != nil || len(playlistTracks) != 2 || playlistTracks[0].ID != playlistTracks[1].ID {
+		t.Fatal(playlistTracks, err)
+	}
 	owned := &OwnedSource{DB: db, IB: s}
 	tt, err := owned.SearchTracks(t.Context(), "Song", 10, 0)
 	if err != nil || len(tt) != 1 || tt[0].Artist.Name != "Artist" {
@@ -111,6 +120,10 @@ func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 	}
 	if s.Status(t.Context()).Connected || s.Status(t.Context()).Tracks != 0 {
 		t.Fatal("still connected")
+	}
+	var playlistsLeft int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pse_music_playlists WHERE source='ibroadcast'").Scan(&playlistsLeft); err != nil || playlistsLeft != 0 {
+		t.Fatal(playlistsLeft, err)
 	}
 	if _, err = owned.Stream(t.Context(), tt[0].ID, ""); err == nil {
 		t.Fatal("disconnected stream accepted")

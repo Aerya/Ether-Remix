@@ -23,6 +23,7 @@ const ibAgent = "Ether-Remix/1.0"
 
 func init() {
 	store.Register("pse_ibroadcast", 1, `CREATE TABLE pse_ibroadcast(id INTEGER PRIMARY KEY,credentials TEXT NOT NULL);CREATE TABLE pse_ibroadcast_tracks(id INTEGER PRIMARY KEY,data TEXT NOT NULL);`)
+	store.Register("pse_ibroadcast", 2, `ALTER TABLE pse_ibroadcast_tracks ADD COLUMN account_id INTEGER NOT NULL DEFAULT 1;CREATE INDEX pse_ibroadcast_tracks_account ON pse_ibroadcast_tracks(account_id);`)
 }
 
 type ibCredentials struct {
@@ -63,6 +64,9 @@ type IBStatus struct {
 // IBroadcast uses the documented OAuth device flow. Passwords and access tokens
 // are never exposed by its owner API. Endpoints are replaceable only in tests.
 type IBroadcast struct {
+	AccountID                    int64 // Stable local account identity; zero is the legacy account.
+	OwnerID                      int64
+	ImportPlaylists              bool
 	DB                           *sql.DB
 	Sealer                       Sealer
 	HTTP                         *http.Client
@@ -73,6 +77,24 @@ type IBroadcast struct {
 	status                       IBStatus
 }
 
+func (s *IBroadcast) accountID() int64 {
+	if s.AccountID > 0 {
+		return s.AccountID
+	}
+	return 1
+}
+func (s *IBroadcast) provider() string {
+	if s.AccountID > 0 {
+		return "ibroadcast:" + strconv.FormatInt(s.AccountID, 10)
+	}
+	return "ibroadcast"
+}
+func (s *IBroadcast) sealScope() string {
+	if s.AccountID > 0 {
+		return s.provider()
+	}
+	return "server"
+}
 func (s *IBroadcast) client() *http.Client {
 	c := s.HTTP
 	if c == nil {
@@ -94,10 +116,10 @@ func (s *IBroadcast) load(ctx context.Context) (ibCredentials, error) {
 	if s.Sealer == nil {
 		return c, errors.New("chiffrement indisponible")
 	}
-	if err := s.DB.QueryRowContext(ctx, "SELECT credentials FROM pse_ibroadcast WHERE id=1").Scan(&raw); err != nil {
+	if err := s.DB.QueryRowContext(ctx, "SELECT credentials FROM pse_ibroadcast WHERE id=?", s.accountID()).Scan(&raw); err != nil {
 		return c, err
 	}
-	plain, _, err := s.Sealer.OpenField(raw, "pse-ibroadcast", "server")
+	plain, _, err := s.Sealer.OpenField(raw, "pse-ibroadcast", s.sealScope())
 	if err != nil {
 		return c, err
 	}
@@ -112,11 +134,11 @@ func (s *IBroadcast) save(ctx context.Context, c ibCredentials) error {
 	if err != nil {
 		return err
 	}
-	sealed, err := s.Sealer.SealField(string(raw), "pse-ibroadcast", "server")
+	sealed, err := s.Sealer.SealField(string(raw), "pse-ibroadcast", s.sealScope())
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx, "INSERT INTO pse_ibroadcast(id,credentials) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET credentials=excluded.credentials", sealed)
+	_, err = s.DB.ExecContext(ctx, "INSERT INTO pse_ibroadcast(id,credentials) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET credentials=excluded.credentials", s.accountID(), sealed)
 	return err
 }
 func (s *IBroadcast) Status(ctx context.Context) IBStatus {
@@ -126,7 +148,7 @@ func (s *IBroadcast) Status(ctx context.Context) IBStatus {
 	c, err := s.load(ctx)
 	v.Connected = err == nil && c.Refresh != ""
 	v.Client = c.Client
-	_ = s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_ibroadcast_tracks").Scan(&v.Tracks)
+	_ = s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_ibroadcast_tracks WHERE account_id=?", s.accountID()).Scan(&v.Tracks)
 	if p := s.pending; p != nil && time.Now().Before(p.Until) {
 		v.UserCode = p.UserCode
 		v.URL = p.Complete
@@ -298,11 +320,20 @@ func (s *IBroadcast) Disconnect(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, q := range []string{"DELETE FROM pse_ibroadcast", "DELETE FROM pse_ibroadcast_tracks", "DELETE FROM pse_music_owned WHERE provider='ibroadcast'"} {
-		if _, err = tx.ExecContext(ctx, q); err != nil {
+	for _, q := range []struct {
+		sql string
+		arg any
+	}{
+		{"DELETE FROM pse_ibroadcast WHERE id=?", s.accountID()},
+		{"DELETE FROM pse_ibroadcast_tracks WHERE account_id=?", s.accountID()},
+		{"DELETE FROM pse_music_owned WHERE provider=?", s.provider()},
+		{"DELETE FROM pse_music_playlists WHERE source=?", s.provider()},
+	} {
+		if _, err = tx.ExecContext(ctx, q.sql, q.arg); err != nil {
 			return err
 		}
 	}
+
 	return tx.Commit()
 }
 
@@ -472,6 +503,10 @@ func (s *IBroadcast) sync(ctx context.Context) error {
 	tt := []Track{}
 	links := map[int64]ibTrack{}
 	user := strconv.FormatInt(userID, 10)
+	if s.AccountID > 0 {
+		user = s.provider() + ":" + user
+	}
+	available := map[string]Track{}
 	for id := range tracks.Rows {
 		if tracks.trashed(id) {
 			continue
@@ -505,6 +540,14 @@ func (s *IBroadcast) sync(ctx context.Context) error {
 		}
 		links[trackID] = ibTrack{ID: trackID, FileID: fileID, Path: path, MIME: tracks.text(id, "type")}
 		tt = append(tt, Track{MIME: "audio/mpeg", Container: "mp3", Codec: "mp3", ID: trackID, Title: tracks.text(id, "title"), Duration: int(tracks.num(id, "length")), Number: int(tracks.num(id, "track")), Volume: int(albums.num(alid, "disc")), Artist: artist, Album: album})
+		available[id] = tt[len(tt)-1]
+	}
+	var lists []Playlist
+	if s.ImportPlaylists && s.OwnerID > 0 {
+		lists, err = ibPlaylists(lib.Library["playlists"], available)
+		if err != nil {
+			return err
+		}
 	}
 	// Publish links first; both snapshots are serialized against disconnect.
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -512,12 +555,12 @@ func (s *IBroadcast) sync(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_ibroadcast_tracks"); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_ibroadcast_tracks WHERE account_id=?", s.accountID()); err != nil {
 		return err
 	}
 	for id, link := range links {
 		raw, _ := json.Marshal(link)
-		if _, err = tx.ExecContext(ctx, "INSERT INTO pse_ibroadcast_tracks(id,data) VALUES(?,?)", id, string(raw)); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO pse_ibroadcast_tracks(id,data,account_id) VALUES(?,?,?)", id, string(raw), s.accountID()); err != nil {
 			return err
 		}
 	}
@@ -535,11 +578,17 @@ func (s *IBroadcast) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return ReplaceOwned(ctx, s.DB, "ibroadcast", tt)
+	if err := ReplaceOwned(ctx, s.DB, s.provider(), tt); err != nil {
+		return err
+	}
+	if s.ImportPlaylists && s.OwnerID > 0 {
+		return (&Playlists{DB: s.DB}).replace(ctx, s.OwnerID, s.provider(), lists)
+	}
+	return nil
 }
 func (s *IBroadcast) Stream(ctx context.Context, id int64, quality string) (Stream, error) {
 	var raw string
-	if s.DB.QueryRowContext(ctx, "SELECT data FROM pse_ibroadcast_tracks WHERE id=?", id).Scan(&raw) != nil {
+	if s.DB.QueryRowContext(ctx, "SELECT data FROM pse_ibroadcast_tracks WHERE id=? AND account_id=?", id, s.accountID()).Scan(&raw) != nil {
 		return Stream{}, ErrNotFound
 	}
 	var t ibTrack
