@@ -9,6 +9,12 @@ Cette intégration facultative est désactivée par défaut. Elle utilise une in
 3. Autorisez le périmètre global ou ajoutez des exceptions pour les bibliothèques/collections, puis **Enregistrer le périmètre**. La collection prime sur la bibliothèque, puis sur le global ; à priorité égale, la première règle correspondante gagne. Un titre SeerrCatalog sans appartenance connue utilise le global.
 4. Pour [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), configurez aussi la recherche via Remix et sa clé dédiée. Dans les filtres utilisateur SeerrCatalog, activez les sous-titres externes et choisissez la même langue cible que Remix. Le partage des disponibilités garde sa propre activation et sa propre clé.
 
+## VOSTFR à la demande
+
+Dans **Remix → VOSTFR à la demande**, l’option **Préparer les sous-titres français avec SubMaker** (désactivée par défaut) place les titres choisis dans le périmètre SubMaker, même si le global est coupé. Elle n’est proposée que lorsque SubMaker est activé avec un manifeste valide. Une règle de collection explicite dans le périmètre SubMaker reste prioritaire ; une règle de bibliothèque ne l’est pas.
+
+À l’activation, les titres sans sous-titres français connus sont recherchés à nouveau ; SubMaker prépare ensuite les releases trouvées, dans la limite du budget quotidien. Chaque titre affiche un état : VF disponible, sous-titres FR annoncés, SRT français prêt, SRT traduit (IA), en préparation, échec (nouvel essai plus tard), sans sous-titres FR ou aucune release indexée. Pour une série, l’état reflète l’épisode préparé lors de l’indexation ; les autres épisodes le sont à la lecture.
+
 ## Recherche et lecture
 
 Remix recherche d’abord un sous-titre dans la langue cible, puis dans la langue source. Le nom du fichier de sous-titres doit correspondre exactement au nom normalisé de la release (extension, ponctuation et casse neutralisées). Une simple correspondance de titre ne suffit pas. Certains fournisseurs n’exposent pas ce nom : leurs résultats ne sont alors pas validés automatiquement.

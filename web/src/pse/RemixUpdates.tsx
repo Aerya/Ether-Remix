@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-display-name",
+    id: "2026-11-11-vostfr-submaker",
     version: "current",
+    date: "2026-11-11",
+    title: ["VOSTFR à la demande avec SubMaker", "On-demand VOSTFR with SubMaker"],
+    items: [
+      [
+        "Dans l’onglet VOSTFR à la demande, une option prépare les sous-titres français des titres choisis avec SubMaker. Elle n’est disponible que si SubMaker est activé avec un manifeste valide.",
+        "In the VOSTFR on demand tab, an option prepares French subtitles for the chosen titles with SubMaker. It is only available when SubMaker is enabled with a valid manifest.",
+      ],
+      [
+        "Chaque titre affiche l’état de ses sous-titres : VF disponible, sous-titres annoncés, SRT prêt ou traduit, en préparation, ou rien pour l’instant.",
+        "Each title shows its subtitle state: French audio, announced subtitles, SRT ready or translated, preparing, or nothing yet.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-display-name",
+    version: "0.2.37-remix.48.1",
     date: "2026-11-11",
     title: ["Nom affiché des utilisateurs", "Viewer display names"],
     items: [

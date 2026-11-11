@@ -41,6 +41,7 @@ func (a *App) pseSubmaker() *submaker.Service {
 			}
 			return false
 		}
+		s.VOSTFR = a.pseSubmakerVostfr(rt)
 		rt.submaker = s
 		a.closers = append(a.closers, s.Close)
 	})

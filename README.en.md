@@ -58,7 +58,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - **French-oriented catalogue**: choose languages and variants — VFF, VFQ, VFi, MULTi… — and cache requirements. A movie not yet available in French shows neither on Home (Trending included) nor in collections.
 - **Playable-only catalogue**: show titles with a minimum number of releases matching your preferences. The rule also covers Home and collections; search, watchlists, continue watching and upcoming collections stay complete.
 - **Targeted exceptions**: allow other languages for selected collections or libraries without changing your general preferences.
-- **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled.
+- **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled. Optionally, SubMaker prepares their French subtitles, and each title shows its subtitle state.
 - **Anime**: create TMDB-based libraries and collections with your French/MULTi preferences and any Stremio addons you choose.
 
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Unified sources and searches ahead of playback

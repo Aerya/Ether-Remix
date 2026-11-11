@@ -1,6 +1,7 @@
-import { Button, SettingsSection, toast } from "@braedonsaunders/appkit-ui";
+import { Badge, Button, SettingsSection, Switch, toast } from "@braedonsaunders/appkit-ui";
 import { X } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Artwork } from "../components/Artwork";
 import { TitleSearch } from "../components/pickers";
 import { titleSubtitle } from "../components/Poster";
@@ -19,6 +20,101 @@ import { useTitle } from "../lib/titles";
 const ENDPOINT = "/pse/themes/vostfr";
 const L = (fr: string, en: string) => (getLocale().toLowerCase().startsWith("fr") ? fr : en);
 
+const SUBMAKER = "/pse/submaker/vostfr";
+
+/** État des sous-titres d'un titre VOSTFR (internal/pse/submaker/vostfr.go). */
+type SubtitleState =
+  | "french-audio"
+  | "announced"
+  | "ready"
+  | "translated"
+  | "pending"
+  | "failed"
+  | "none"
+  | "unindexed";
+
+interface SubmakerVostfr {
+  available: boolean;
+  enabled: boolean;
+  titles: { key: string; state: SubtitleState }[];
+  queued?: number;
+}
+
+const STATES: Record<SubtitleState, { fr: string; en: string; variant: "success" | "secondary" | "warning" }> = {
+  "french-audio": { fr: "VF disponible", en: "French audio", variant: "success" },
+  announced: { fr: "Sous-titres FR annoncés", en: "French subtitles announced", variant: "success" },
+  ready: { fr: "SRT français prêt", en: "French SRT ready", variant: "success" },
+  translated: { fr: "SRT traduit (IA)", en: "Translated SRT (AI)", variant: "success" },
+  pending: { fr: "SRT en préparation", en: "Preparing SRT", variant: "secondary" },
+  failed: { fr: "Échec, nouvel essai plus tard", en: "Failed, retried later", variant: "warning" },
+  none: { fr: "Sans sous-titres FR", en: "No French subtitles", variant: "warning" },
+  unindexed: { fr: "Aucune release indexée", en: "No release indexed", variant: "secondary" },
+};
+
+/** Interrupteur SubMaker de l'onglet VOSTFR ; absent si SubMaker n'est pas chargé. */
+function SubmakerSwitch({
+  data,
+  onChange,
+}: {
+  data: SubmakerVostfr;
+  onChange: (next: SubmakerVostfr) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const toggle = async (enabled: boolean) => {
+    setBusy(true);
+    try {
+      const next = await apiFetch<SubmakerVostfr>(SUBMAKER, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      onChange(next);
+      if (enabled && next.queued)
+        toast.success(
+          L(
+            `${next.queued} recherche(s) relancée(s) pour préparer les sous-titres`,
+            `${next.queued} search(es) queued to prepare subtitles`,
+          ),
+        );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-border-subtle p-3">
+      <Switch
+        checked={data.enabled}
+        disabled={busy || (!data.available && !data.enabled)}
+        onChange={(e) => void toggle(e.currentTarget.checked)}
+        aria-label={L("Préparer les sous-titres français avec SubMaker", "Prepare French subtitles with SubMaker")}
+      />
+      <div className="min-w-0 text-sm">
+        <p className="font-medium text-fg">
+          {L("Préparer les sous-titres français avec SubMaker", "Prepare French subtitles with SubMaker")}
+        </p>
+        <p className="text-xs text-fg-muted">
+          {data.available
+            ? L(
+                "Pour ces titres, SubMaker cherche un SRT français correspondant à la release, ou traduit un SRT, dans la limite de son budget quotidien. Une règle de collection explicite dans SubMaker reste prioritaire.",
+                "For these titles, SubMaker looks for a French SRT matching the release, or translates one, within its daily budget. An explicit collection rule in SubMaker still wins.",
+              )
+            : L(
+                "Activez d’abord SubMaker avec un manifeste valide.",
+                "Enable SubMaker with a valid manifest first.",
+              )}{" "}
+          {!data.available ? (
+            <Link className="text-primary underline" to="/accent/sources?source=stremio#submaker-integration">
+              {L("Réglages SubMaker", "SubMaker settings")}
+            </Link>
+          ) : null}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 interface VostfrData {
   keys: string[];
   max: number;
@@ -26,6 +122,8 @@ interface VostfrData {
 
 export function VostfrTitles() {
   const doc = useAsync(() => apiFetch<VostfrData>(ENDPOINT), []);
+  const subs = useAsync(() => apiFetch<SubmakerVostfr>(SUBMAKER).catch(() => null), []);
+  const states = new Map((subs.data?.titles ?? []).map((t) => [t.key, t.state]));
   const [keys, setKeys] = useState<string[] | null>(null);
   const [known, setKnown] = useState<Record<string, TitleCard>>({});
   const [busy, setBusy] = useState(false);
@@ -41,6 +139,7 @@ export function VostfrTitles() {
       });
       const next = await apiFetch<VostfrData>(ENDPOINT);
       setKeys(next.keys);
+      void subs.reload();
       return result;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -59,6 +158,7 @@ export function VostfrTitles() {
       )}
     >
       <div className="space-y-3 px-4 py-3">
+        {subs.data ? <SubmakerSwitch data={subs.data} onChange={(next) => subs.setData(next)} /> : null}
         <TitleSearch
           label={L("Chercher un film ou une série", "Search a movie or show")}
           placeholder={L("Chercher un film ou une série…", "Search a movie or show…")}
@@ -103,6 +203,7 @@ export function VostfrTitles() {
                 key={key}
                 keyId={key}
                 hint={known[key]}
+                subtitles={subs.data?.enabled ? states.get(key) : undefined}
                 disabled={busy}
                 onRemove={(type) => void send(key, type, false)}
               />
@@ -117,11 +218,13 @@ export function VostfrTitles() {
 function VostfrRow({
   keyId,
   hint,
+  subtitles,
   disabled,
   onRemove,
 }: {
   keyId: string;
   hint?: TitleCard;
+  subtitles?: SubtitleState;
   disabled: boolean;
   onRemove: (type: string) => void;
 }) {
@@ -137,6 +240,11 @@ function VostfrRow({
           <span className="block truncate text-xs text-fg-muted">{titleSubtitle(card)}</span>
         ) : null}
       </span>
+      {subtitles ? (
+        <Badge variant={STATES[subtitles].variant} className="shrink-0">
+          {L(STATES[subtitles].fr, STATES[subtitles].en)}
+        </Badge>
+      ) : null}
       <Button
         type="button"
         variant="ghost"
