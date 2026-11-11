@@ -21,6 +21,35 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
   <img src="https://img.shields.io/badge/licence-GPL--3.0-green" alt="GPL-3.0">
 </p>
 
+## Ether at a glance
+
+Ether is an **on-demand** media server. It shows the whole TMDB catalogue inside the apps you already use, without downloading anything in advance. When you play a title, it picks the best release from your debrid accounts and Usenet providers, checks that it works, then streams it. No Sonarr, Radarr, download client or mount to scan. It can run alongside an existing Plex, Jellyfin or Emby server.
+
+Ether adapts to each app: it is a Plex server to Plex apps, a Jellyfin server to Infuse or Swiftfin, and so on. Every viewer has their own account and personal Home, and resumes where they left off from one app to another. Stream limits and parental controls apply everywhere.
+
+## Remix at a glance
+
+Ether-Remix is a fork of Ether built for French speakers. It keeps everything Ether does and adds a French catalogue: Home and collections only show titles available in French or MULTi, or playable under your criteria. Background indexing looks for releases in advance (addons, indexers, SeerrCatalog, StreamFusion Reborn), so they are ready when playback starts.
+
+Remix also adds music. The Deezer catalogue can be browsed from Plexamp, Jellyfin clients or Subsonic apps, and streams from your debrid accounts or free sources, with nothing stored. On top of that come custom libraries and collections, subtitles translated with SubMaker, detailed statistics and a console in French.
+
+## Compatible apps
+
+| Access | Apps |
+| --- | --- |
+| **Plex** | Official apps: Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, smart TVs (LG, Samsung, VIDAA), desktop and Web. Kodi through Plex for Kodi (PM4K). |
+| **Jellyfin** | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin for Android TV, JellyCon (Kodi), Jellyfin for Roku. |
+| **Emby** | Emby apps (Android TV, iOS, Android, Roku, smart TVs) and Infuse. Emby for TV 2.x on Apple TV is not supported. |
+| **Silo** | Apple TV, iOS, macOS, Android, Android TV. |
+| **Stremio** | Any Stremio app, through a personal addon. An HTTPS address is required. |
+| **Files (WebDAV)** | Infuse, VLC, Kodi, rclone. |
+| **M3U & XMLTV** | Channels DVR, TiviMate and IPTV players. |
+| **Xtream** | TiviMate, Televizo, IPTV Smarters… Off by default. |
+| **DLNA** | TVs and players on the local network. |
+| **Music** *(Remix)* | Plex and Plexamp, Jellyfin clients (Finamp…), Subsonic apps: Symfonium, Feishin, Supersonic, DSub… |
+
+Turn access on under **Console → Apps**. Each viewer finds their links and app passwords on their **Your account** page.
+
 ## Features
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
@@ -90,7 +119,6 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) Ether, extended by Remix
 
 - **Display name**: rename a viewer in the console for statistics and activity, even with a Plex account. Sign-in does not change.
-- Retains Ether's features and compatible clients: **Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio**, with its debrid and Usenet video sources.
 - Daily synchronization with the original project, checks before merging and failure reporting.
 - Docker images for **amd64 and arm64**, with update notes in the console.
 
