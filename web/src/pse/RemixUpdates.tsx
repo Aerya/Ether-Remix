@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-local-media-ibroadcast",
+    id: "2026-11-11-submaker-prefer-ready",
     version: "current",
+    date: "2026-11-11",
+    title: ["Release déjà sous-titrée en priorité", "Subtitled release first"],
+    items: [
+      [
+        "À qualité, langue et score de formats égaux, la lecture choisit la release dont SubMaker a déjà préparé le SRT. Une meilleure release reste prioritaire, même sans sous-titres.",
+        "With equal quality, language and format score, playback picks the release whose SRT SubMaker already prepared. A better release still ranks first, even without subtitles.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-local-media-ibroadcast",
+    version: "0.2.37-remix.49.1",
     date: "2026-11-11",
     title: ["Vos médias locaux et iBroadcast", "Your local media and iBroadcast"],
     items: [
