@@ -40,6 +40,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 - **Search from Plex or Jellyfin**: top results never searched or previously without releases receive priority, subject to their retry interval.
 - **SeerrCatalog availability**: import confirmed availability and recent sources from [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), without another search for the playable-only catalogue. Confirmation persists until deletion; expired playback sources are searched again when needed.
 - **Searches for SeerrCatalog**: authorize complementary searches through Remix sources, including Prowlarr, using a dedicated token. Search and availability sharing are independent features grouped in the SeerrCatalog settings.
+- **StreamFusion Reborn database**: import French, MULTi or VOSTFR releases from your instance, read-only. A title added to the catalogue later also gets its releases. [Setup, in French](docs/pse/STREAMFUSION.fr.md).
 
 ### ![](https://api.iconify.design/lucide/captions.svg?color=%2314b8a6&width=24&height=24) External subtitles and translation with SubMaker
 
@@ -108,6 +109,7 @@ Migrating from Ether? The data format is preserved: back up `/config`, stop the 
 | Installation, settings, music sources, playlists, Scrob and clients | [Configuration guide](docs/pse/GUIDE.en.md) |
 | Title visibility, priorities and search intervals | [Catalogue and indexing](docs/pse/CATALOGUE.en.md) |
 | Availability sharing and complementary searches | [SeerrCatalog integration](docs/pse/SEERRCATALOG.en.md) |
+| Read-only import from a StreamFusion Reborn database | [StreamFusion Reborn, in French](docs/pse/STREAMFUSION.fr.md) |
 | Public or self-hosted instance, languages and translation limits | [SubMaker](docs/pse/SUBMAKER.en.md) |
 
 ## Origin and license
