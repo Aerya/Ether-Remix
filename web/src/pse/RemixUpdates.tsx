@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-music-activity",
+    id: "2026-11-11-sfr-late-titles",
     version: "current",
+    date: "2026-11-11",
+    title: ["StreamFusion rattrape les titres tardifs", "StreamFusion catches up late titles"],
+    items: [
+      [
+        "Un titre ajouté au catalogue après l’import de ses releases StreamFusion Reborn, par exemple via Tendances, les récupère au passage suivant et devient lisible. La recherche se fait par lots et s’interrompt pendant les lectures.",
+        "A title added to the catalogue after its StreamFusion Reborn releases were imported now gets them on the next run and becomes playable. The lookup runs in batches and pauses during playback.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-music-activity",
+    version: "0.2.37-remix.44.1",
     date: "2026-11-10",
     title: ["La musique rejoint Activité", "Music joins Activity"],
     items: [
