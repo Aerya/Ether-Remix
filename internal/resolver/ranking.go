@@ -74,6 +74,11 @@ func compareCandidates(a, b candidate) bool {
 	if x.protocol != y.protocol {
 		return x.protocol
 	}
+	// Remix: among equal quality, language and format score, the release
+	// whose subtitles SubMaker already prepared goes first.
+	if a.subtitled != b.subtitled {
+		return a.subtitled
+	}
 	if x.family != y.family {
 		return x.family < y.family
 	}

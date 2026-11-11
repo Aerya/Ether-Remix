@@ -265,6 +265,8 @@ type Service struct {
 
 	extend extendState // descriptor registry for ranking/rules (extend_registry.go)
 
+	pse pseState // Remix ranking hooks (pse_subtitled.go)
+
 	invalMu sync.Mutex
 	inval   *clusterbus.Invalidator // nil on a standalone server
 }
@@ -1695,6 +1697,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 	if hot != nil && len(cands) > 0 {
 		s.addPluginScores(hot, profile, cands, trace)
 	}
+	s.markSubtitled(ctx, t, cands, trace)
 	if fallback {
 		order := sourceOrder(profile.QualityOrder)
 		sort.SliceStable(cands, func(i, j int) bool {
