@@ -50,7 +50,7 @@ Remix ajoute aussi la musique. Le catalogue Deezer se parcourt depuis Plexamp, l
 
 Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
 
-## Fonctionnalités
+## Fonctionnalités Remix
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
