@@ -9,7 +9,7 @@ import "github.com/braedonsaunders/ether/internal/extend"
 func (a *App) registerPSEDescriptors(r *extend.Registry) error {
 	label := extend.Text{Source: "Ether-Remix"}
 	meta := extend.PageMeta{
-		Route: "/accent", NavGroup: extend.NavGroupTop, InNav: true,
+		Route: "/remix", NavGroup: extend.NavGroupTop, InNav: true,
 		Keywords: extend.Text{Source: "remix accent sources stremio torrent usenet debrid vf french français langues qualité catalogue indexer indexation animes bibliothèques statistiques scrob music musique subsonic hifi notifications"},
 	}
 	return r.Register(

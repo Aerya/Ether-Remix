@@ -32,7 +32,7 @@ Open **http://&lt;host&gt;:32400/ether/** (or the `ETHER_PORT` port) and follow 
 
 ### Configuring Ether-Remix from the console
 
-Every addition is configured in the console, under **Ether-Remix** (`/ether/accent`): switches, options and the state of each feature (indexed titles, playable titles, music library…). A value saved on that page replaces the environment variable of the same name and applies without a restart; the ↺ button goes back to the variable or the default. The variables below still work for a deployment fully described in `compose.yaml`.
+Every addition is configured in the console, under **Ether-Remix** (`/ether/remix`): switches, options and the state of each feature (indexed titles, playable titles, music library…). A value saved on that page replaces the environment variable of the same name and applies without a restart; the ↺ button goes back to the variable or the default. The variables below still work for a deployment fully described in `compose.yaml`.
 
 Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_DIR`, `PUID`/`PGID`…): see [docs/install.md](../install.md). Ether-Remix-specific variables:
 
@@ -275,3 +275,8 @@ The resolver's “Remember searches for” duration is a strict ceiling (six hou
 During a temporary outage (timeout, connection failure, server error or automatic pause after repeated failures), results expired for less than 24 hours may serve as fallback candidates. They are neither renewed nor stored as a fresh complete search. Only torrent/NZB descriptors are reused; expired direct HTTP streams are excluded. Debrid cache hints are cleared and the normal playback path validates candidates. Background availability searches do not use this fallback.
 
 This does not hide credential errors, exhausted quotas, cancellation or valid empty responses. Disabling caching or the source disables this fallback too. Changes to the source address, credentials or search configuration invalidate the cache identity. Fallback use is logged as `using expired search candidates`.
+
+
+### Navigation and configuration
+
+The console uses `/ether/remix`. Old bookmarks redirect with their parameters preserved. Configuration sections start collapsed; opening or closing them preserves drafts. Sources → Music streaming groups Eclipse, DMM / Real-Debrid, iBroadcast and other providers. Subsonic address and library counts are under Content & libraries → Music. For Spotify, use `/ether/remix/contenus?content=musique` as the allowed callback path; callbacks already started with the old path remain accepted.

@@ -29,6 +29,10 @@ it("replie indépendamment les blocs et conserve les saisies et actions", async 
   );
   const settings = screen.getByText("Réglages").closest("details")!;
   const indexers = screen.getByText("Indexeurs").closest("details")!;
+  expect(settings.open).toBe(false);
+  expect(indexers.open).toBe(false);
+  await user.click(screen.getByText("Réglages"));
+  await user.click(screen.getByText("Indexeurs"));
   await user.type(screen.getByRole("textbox", { name: "Adresse" }), "https://example.test");
   await user.click(screen.getByText("Réglages"));
   expect(settings.open).toBe(false);
@@ -84,7 +88,7 @@ it("ouvre le bloc lorsqu’un lien cible un réglage masqué", () => {
 it("révèle un réglage depuis la recherche même si son bloc est replié", async () => {
   Element.prototype.scrollIntoView ??= () => {};
   render(
-    <MemoryRouter initialEntries={[settingHref("/accent/sources?source=indexation", "limit")]}>
+    <MemoryRouter initialEntries={[settingHref("/remix/sources?source=indexation", "limit")]}>
       <CollapsibleSections.Provider value={true}>
         <SettingsSection title="Indexation">
           <SettingAnchor id="limit">

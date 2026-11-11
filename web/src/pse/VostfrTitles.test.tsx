@@ -41,7 +41,11 @@ const show = () =>
   );
 
 it("turns SubMaker on for VOSTFR titles and shows their subtitle state", async () => {
-  submaker = { available: true, enabled: false, titles: [{ key: "1000000000000010", state: "translated" }] };
+  submaker = {
+    available: true,
+    enabled: false,
+    titles: [{ key: "1000000000000010", state: "translated" }],
+  };
   show();
   const toggle = await screen.findByRole("switch", { name: /SubMaker/ });
   expect(screen.queryByText(/SRT traduit|Translated SRT/)).toBeNull();
@@ -56,7 +60,7 @@ it("disables the switch and links to the settings while SubMaker is not configur
   const toggle = await screen.findByRole("switch", { name: /SubMaker/ });
   expect((toggle as HTMLInputElement).disabled).toBe(true);
   expect(screen.getByRole("link", { name: /SubMaker/ }).getAttribute("href")).toBe(
-    "/accent/sources?source=stremio#submaker-integration",
+    "/remix/sources?source=stremio#submaker-integration",
   );
 });
 

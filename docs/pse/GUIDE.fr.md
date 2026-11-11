@@ -32,7 +32,7 @@ Ouvrez **http://&lt;hôte&gt;:32400/ether/** (ou le port `ETHER_PORT`) et suivez
 
 ### Régler Ether-Remix depuis la console
 
-Tous les ajouts se règlent dans la console, menu **Ether-Remix** (`/ether/accent`) : activation, options et état de chaque fonction (titres indexés, titres lisibles, bibliothèque musicale…). Une valeur enregistrée sur cette page remplace la variable d'environnement du même nom et s'applique sans redémarrer ; le bouton ↺ revient à la variable ou à la valeur par défaut. Les variables ci-dessous restent utilisables pour un déploiement entièrement décrit dans le `compose.yaml`.
+Tous les ajouts se règlent dans la console, menu **Ether-Remix** (`/ether/remix`) : activation, options et état de chaque fonction (titres indexés, titres lisibles, bibliothèque musicale…). Une valeur enregistrée sur cette page remplace la variable d'environnement du même nom et s'applique sans redémarrer ; le bouton ↺ revient à la variable ou à la valeur par défaut. Les variables ci-dessous restent utilisables pour un déploiement entièrement décrit dans le `compose.yaml`.
 
 Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, `ETHER_DATA_DIR`, `PUID`/`PGID`…) : voir [docs/install.md](../install.md). Variables propres à Ether-Remix :
 
@@ -275,3 +275,8 @@ La durée « Mémoriser les recherches » du résolveur est un plafond strict (s
 Lors d’une panne temporaire (délai, connexion, erreur serveur ou suspension automatique après des pannes répétées), les résultats expirés depuis moins de 24 heures peuvent servir de candidats de secours. Ils ne sont ni renouvelés ni enregistrés comme une recherche fraîche complète. Seuls les descripteurs torrent/NZB sont repris ; les liens HTTP directs expirés sont exclus. Les indications de cache debrid sont retirées et le parcours normal valide la lecture. Les recherches de disponibilité en arrière-plan ne bénéficient pas de ce repli.
 
 Ce mécanisme ne masque pas une erreur d’identifiants, un quota épuisé, une annulation ou une réponse vide valide. Désactiver le cache ou la source désactive également ce repli. Les changements d’adresse, d’identifiants ou de configuration de recherche invalident l’identité du cache. Les reprises sont signalées dans les journaux comme `using expired search candidates`.
+
+
+### Navigation et configuration
+
+La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus et bibliothèques → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.

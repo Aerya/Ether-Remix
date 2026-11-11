@@ -1,4 +1,5 @@
-import { Badge, Button, Input, Select, SettingsSection, toast } from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Input, Select, toast } from "@braedonsaunders/appkit-ui";
+import { SettingsSection } from "../components/CollapsibleSections";
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { getLocale } from "../i18n";

@@ -1,6 +1,10 @@
 import { Submaker } from "./Submaker";
 import { QualityProfiles } from "./QualityProfiles";
-import { CollapsibleBlock, SettingsSection } from "../components/CollapsibleSections";
+import {
+  CollapsibleBlock,
+  CollapsibleSections,
+  SettingsSection,
+} from "../components/CollapsibleSections";
 import { SourceHosting } from "./SourceHosting";
 import { Badge, Button, Checkbox, Input, Select, Switch, toast } from "@braedonsaunders/appkit-ui";
 import { RotateCcw } from "lucide-react";
@@ -79,7 +83,7 @@ const fr = () => getLocale().toLowerCase().startsWith("fr");
 const L = (frText: string, enText: string) => (fr() ? frText : enText);
 const T = (text: Text) => (fr() ? text.fr : text.en);
 
-const BASE = "/accent";
+const BASE = "/remix";
 
 /** Onglets de la page ; une section inconnue va dans le dernier. */
 const TABS = REMIX_TABS;
@@ -104,19 +108,26 @@ function valuesOf(data: PseData | null): Record<string, string> | null {
 export default function PsePage() {
   const { tab } = useParams();
   const location = useLocation();
+  if (location.pathname.startsWith("/accent"))
+    return (
+      <Navigate
+        replace
+        to={location.pathname.replace(/^\/accent/, "/remix") + location.search + location.hash}
+      />
+    );
   if (!tab)
-    return <Navigate replace to={"/accent/statistiques" + location.search + location.hash} />;
+    return <Navigate replace to={"/remix/statistiques" + location.search + location.hash} />;
   let legacy = legacyRemixRoute(tab);
   const field = location.hash.match(/^#pse-(pse_[a-z_]+)$/i)?.[1]?.toUpperCase();
   if (tab === "films" && (field?.startsWith("PSE_INDEXER") || location.hash === "#pse-indexer"))
-    legacy = "/accent/sources?source=indexation";
+    legacy = "/remix/sources?source=indexation";
   if (tab === "musique" && field)
     legacy =
       musicFieldPlacement(field) === "source"
-        ? "/accent/sources?source=musique"
+        ? "/remix/sources?source=musique"
         : musicFieldPlacement(field) === "tracking"
-          ? "/accent/suivi"
-          : "/accent/contenus?content=musique";
+          ? "/remix/suivi"
+          : "/remix/contenus?content=musique";
   return legacy ? <Navigate replace to={legacy + location.hash} /> : <PseSettings />;
 }
 
@@ -230,152 +241,160 @@ function PseSettings() {
         "Movies, shows, anime and music. Settings apply without a restart.",
       )}
     >
-      <div className="space-y-6">
-        {tab === "sources" ? (
-          <RemixSources
-            music={musicPart("source")}
-            stremio={
-              <>
-                {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
-                <CollapsibleBlock title="SubMaker" id="submaker-integration">
-                  {current.features.filter((f) => f.id === "submaker").map((f) => renderFeature(f))}
-                  <Submaker />
-                </CollapsibleBlock>
-                <CollapsibleBlock title="SeerrCatalog" id="seerrcatalog-integration">
-                  <div className="space-y-4 p-4">
-                    <p className="text-sm text-fg-muted">
-                      {L(
-                        "Deux fonctions indépendantes, chacune avec sa propre clé. Configurez-les aussi dans SeerrCatalog → Paramètres → Intégration Ether Remix.",
-                        "Two independent features, each with its own token. Also configure them in SeerrCatalog → Settings → Ether Remix integration.",
-                      )}
-                    </p>
+      <CollapsibleSections.Provider key={tab} value={tab !== "statistiques"}>
+        <div className="space-y-6">
+          {tab === "sources" ? (
+            <RemixSources
+              music={musicPart("source")}
+              stremio={
+                <>
+                  {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
+                  <CollapsibleBlock title="SubMaker" id="submaker-integration">
                     {current.features
-                      .filter((f) => ["seerrcatalog", "seerrcatalog_search"].includes(f.id))
+                      .filter((f) => f.id === "submaker")
                       .map((f) => renderFeature(f))}
-                  </div>
-                </CollapsibleBlock>
-              </>
-            }
-            indexing={
-              <>
-                {featuresOfTab(tab, current.features)
-                  .filter((f) => !["sfr", "seerrcatalog", "seerrcatalog_search"].includes(f.id))
-                  .map((f) => renderFeature(f))}
-                <SearchPriority />
-              </>
-            }
-          />
-        ) : null}
-        {tab === "priorites" ? <SourceOrder /> : null}
-        {tab === "contenus" ? (
-          <>
-            <nav
-              className="flex flex-wrap gap-2"
-              aria-label={L("Types de contenus", "Content types")}
-            >
-              {[
-                ["films", "Films", "Movies"],
-                ["series", "Séries", "Shows"],
-                ["animes", "Animes", "Anime"],
-                ["musique", "Musique", "Music"],
-                ["bibliotheques", "Toutes les bibliothèques", "All libraries"],
-              ].map(([key, fr, en]) => (
-                <Button
-                  key={key}
-                  variant={content === key ? "default" : "outline"}
-                  aria-pressed={content === key}
-                  onClick={() =>
-                    setParams((p) => {
-                      const n = new URLSearchParams(p);
-                      n.set("content", key!);
-                      return n;
-                    })
+                    <Submaker />
+                  </CollapsibleBlock>
+                  <CollapsibleBlock title="SeerrCatalog" id="seerrcatalog-integration">
+                    <div className="space-y-4 p-4">
+                      <p className="text-sm text-fg-muted">
+                        {L(
+                          "Deux fonctions indépendantes, chacune avec sa propre clé. Configurez-les aussi dans SeerrCatalog → Paramètres → Intégration Ether Remix.",
+                          "Two independent features, each with its own token. Also configure them in SeerrCatalog → Settings → Ether Remix integration.",
+                        )}
+                      </p>
+                      {current.features
+                        .filter((f) => ["seerrcatalog", "seerrcatalog_search"].includes(f.id))
+                        .map((f) => renderFeature(f))}
+                    </div>
+                  </CollapsibleBlock>
+                </>
+              }
+              indexing={
+                <>
+                  {featuresOfTab(tab, current.features)
+                    .filter((f) => !["sfr", "seerrcatalog", "seerrcatalog_search"].includes(f.id))
+                    .map((f) => renderFeature(f))}
+                  <SearchPriority />
+                </>
+              }
+            />
+          ) : null}
+          {tab === "priorites" ? <SourceOrder /> : null}
+          {tab === "contenus" ? (
+            <>
+              <nav
+                className="flex flex-wrap gap-2"
+                aria-label={L("Types de contenus", "Content types")}
+              >
+                {[
+                  ["films", "Films", "Movies"],
+                  ["series", "Séries", "Shows"],
+                  ["animes", "Animes", "Anime"],
+                  ["musique", "Musique", "Music"],
+                  ["bibliotheques", "Toutes les bibliothèques", "All libraries"],
+                ].map(([key, fr, en]) => (
+                  <Button
+                    key={key}
+                    variant={content === key ? "default" : "outline"}
+                    aria-pressed={content === key}
+                    onClick={() =>
+                      setParams((p) => {
+                        const n = new URLSearchParams(p);
+                        n.set("content", key!);
+                        return n;
+                      })
+                    }
+                  >
+                    {L(fr!, en!)}
+                  </Button>
+                ))}
+              </nav>
+              {content === "animes" ? (
+                <p className="text-sm text-fg-muted">
+                  {L(
+                    "Les animés utilisent vos critères de langue habituels. Les addons Stremio se configurent dans Sources.",
+                    "Anime uses your usual language criteria. Configure Stremio addons in Sources.",
+                  )}{" "}
+                  <Link className="underline" to="/remix/sources?source=stremio">
+                    {L("Gérer les sources Stremio", "Manage Stremio sources")}
+                  </Link>
+                </p>
+              ) : null}
+              {content === "musique" ? (
+                musicPart("content")
+              ) : (
+                <ThemeLibraries
+                  key={content}
+                  preset={content === "animes" ? "anime" : undefined}
+                  mediaType={
+                    content === "films" ? "movie" : content === "series" ? "show" : undefined
                   }
-                >
-                  {L(fr!, en!)}
-                </Button>
-              ))}
-            </nav>
-            {content === "animes" ? (
-              <p className="text-sm text-fg-muted">
-                {L(
-                  "Les animés utilisent vos critères de langue habituels. Les addons Stremio se configurent dans Sources.",
-                  "Anime uses your usual language criteria. Configure Stremio addons in Sources.",
-                )}{" "}
-                <Link className="underline" to="/accent/sources?source=stremio">
-                  {L("Gérer les sources Stremio", "Manage Stremio sources")}
-                </Link>
-              </p>
-            ) : null}
-            {content === "musique" ? (
-              musicPart("content")
-            ) : (
-              <ThemeLibraries
-                key={content}
-                preset={content === "animes" ? "anime" : undefined}
-                mediaType={
-                  content === "films" ? "movie" : content === "series" ? "show" : undefined
-                }
-              />
-            )}
-          </>
-        ) : null}
-        {tab === "langues" ? (
-          <>
-            <QualityProfiles onMode={setQualityActive} />
-            {qualityActive ? (
-              <p className="rounded border border-border p-3 text-sm">
-                {L(
-                  "Critères simples désactivés : les profils de qualité les remplacent. Le nombre minimum de releases reste applicable.",
-                  "Simple criteria disabled: quality profiles replace them. The minimum release count still applies.",
-                )}
-              </p>
-            ) : null}
-            <ThemeLibraries exceptionsOnly />
-          </>
-        ) : null}
-        {tab === "demande" ? <VostfrTitles /> : null}
-        {tab === "statistiques" ? (
-          <>
-            <nav
-              className="flex flex-wrap gap-2"
-              aria-label={L("Vues statistiques", "Statistics views")}
-            >
-              {[
-                ["indexation", "Indexation", "Indexing"],
-                ["sources", "Sources", "Sources"],
-                ["usage", "Utilisation", "Usage"],
-              ].map(([key, fr, en]) => (
-                <Button
-                  key={key}
-                  variant={stats === key ? "default" : "outline"}
-                  onClick={() =>
-                    setParams((p) => {
-                      const n = new URLSearchParams(p);
-                      n.set("view", key!);
-                      return n;
-                    })
-                  }
-                >
-                  {L(fr!, en!)}
-                </Button>
-              ))}
-            </nav>
-            {stats === "indexation" ? (
-              <IndexerDetails />
-            ) : (
-              <>
-                <StatisticsPeriod />
-                <SourceStatistics view={stats === "usage" ? "usage" : "statistics"} />
-              </>
-            )}
-          </>
-        ) : null}
-        {tab !== "sources" && tab !== "contenus"
-          ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
-          : null}
-        {tab === "suivi" ? musicPart("tracking") : null}
-      </div>
+                />
+              )}
+            </>
+          ) : null}
+          {tab === "langues" ? (
+            <>
+              <CollapsibleBlock
+                title={L("Profils de qualité des releases", "Release quality profiles")}
+              >
+                <QualityProfiles onMode={setQualityActive} />
+              </CollapsibleBlock>
+              {qualityActive ? (
+                <p className="rounded border border-border p-3 text-sm">
+                  {L(
+                    "Critères simples désactivés : les profils de qualité les remplacent. Le nombre minimum de releases reste applicable.",
+                    "Simple criteria disabled: quality profiles replace them. The minimum release count still applies.",
+                  )}
+                </p>
+              ) : null}
+              <ThemeLibraries exceptionsOnly />
+            </>
+          ) : null}
+          {tab === "demande" ? <VostfrTitles /> : null}
+          {tab === "statistiques" ? (
+            <>
+              <nav
+                className="flex flex-wrap gap-2"
+                aria-label={L("Vues statistiques", "Statistics views")}
+              >
+                {[
+                  ["indexation", "Indexation", "Indexing"],
+                  ["sources", "Sources", "Sources"],
+                  ["usage", "Utilisation", "Usage"],
+                ].map(([key, fr, en]) => (
+                  <Button
+                    key={key}
+                    variant={stats === key ? "default" : "outline"}
+                    onClick={() =>
+                      setParams((p) => {
+                        const n = new URLSearchParams(p);
+                        n.set("view", key!);
+                        return n;
+                      })
+                    }
+                  >
+                    {L(fr!, en!)}
+                  </Button>
+                ))}
+              </nav>
+              {stats === "indexation" ? (
+                <IndexerDetails />
+              ) : (
+                <>
+                  <StatisticsPeriod />
+                  <SourceStatistics view={stats === "usage" ? "usage" : "statistics"} />
+                </>
+              )}
+            </>
+          ) : null}
+          {tab !== "sources" && tab !== "contenus"
+            ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
+            : null}
+          {tab === "suivi" ? musicPart("tracking") : null}
+        </div>
+      </CollapsibleSections.Provider>
       <SaveBar
         dirty={changed}
         saving={saving}
@@ -467,7 +486,6 @@ function FeatureSection({
   if (feature.id === "music" && placement === "source")
     return (
       <MusicSourceSettings
-        status={<StatusLine feature={feature} />}
         fields={feature.fields.map((fd) => ({
           key: fd.key,
           advanced: fd.advanced,
@@ -478,13 +496,7 @@ function FeatureSection({
     );
   if (feature.id === "sfr")
     return (
-      <details className="rounded border border-border" id="pse-sfr">
-        <summary className="cursor-pointer select-none px-4 py-3 font-medium">
-          {T(feature.title)}
-        </summary>
-        <p className="border-t border-border px-4 py-3 text-sm text-fg-muted">
-          {T(feature.description)}
-        </p>
+      <CollapsibleBlock id="pse-sfr" title={T(feature.title)} description={T(feature.description)}>
         <StatusLine feature={feature} />
         {basic.map(row)}
         <SfrHelp />
@@ -496,12 +508,14 @@ function FeatureSection({
             {advanced.map(row)}
           </details>
         ) : null}
-      </details>
+      </CollapsibleBlock>
     );
   return (
     <div id={`pse-${feature.id}`}>
       <SettingsSection title={T(feature.title)} description={T(feature.description)}>
-        <StatusLine feature={feature} />
+        {feature.id !== "music" || placement === "content" ? (
+          <StatusLine feature={feature} />
+        ) : null}
         {basic.map(row)}
         {feature.id === "seerrcatalog" ? <SeerrCatalogHelp status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}

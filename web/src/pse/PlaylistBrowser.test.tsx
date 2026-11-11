@@ -60,7 +60,7 @@ it("rejects an OAuth callback not initiated in this browser", async () => {
   window.history.replaceState(
     null,
     "",
-    "/ether/accent/contenus?content=musique&code=foreign&state=foreign",
+    "/ether/remix/contenus?content=musique&code=foreign&state=foreign",
   );
   sessionStorage.removeItem("remix.spotify.pending");
   render(<PlaylistBrowser viewers={viewers} mode="discover" refresh={() => {}} />);

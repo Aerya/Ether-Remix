@@ -140,7 +140,7 @@ export const remixDescriptors: Descriptor[] = [
     icon: "Languages",
     group: "",
     order: 15,
-    meta: { route: "/accent", navGroup: "", inNav: true },
+    meta: { route: "/remix", navGroup: "", inNav: true },
   },
   {
     kind: "navItem",
@@ -150,6 +150,6 @@ export const remixDescriptors: Descriptor[] = [
     icon: "Languages",
     group: "",
     order: 15,
-    meta: { route: "/accent", page: "pse" },
+    meta: { route: "/remix", page: "pse" },
   },
 ];
