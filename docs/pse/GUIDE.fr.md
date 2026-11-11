@@ -227,6 +227,8 @@ Pour les règles de visibilité et les délais de recherche, voir [Catalogue et 
 
 ### Historique commun et Écoute
 
+**Nom affiché** : sur la fiche d’un utilisateur (**Spectateurs**), le crayon à côté de son nom permet de choisir le nom utilisé dans les statistiques, l’activité et les listes. Plex ne l’écrase pas et les lectures déjà enregistrées prennent le nouveau nom. La connexion ne change pas. Un champ vide rétablit le nom Plex.
+
 **Activité → Historique** réunit films, séries et musique dans un tableau chronologique commun, avec recherche, tri, pagination et fiche de détail. La liste contient les 500 dernières lectures de la période sélectionnée. Les écoutes musicales gardent leurs métadonnées artiste/album ; la durée indiquée est celle du morceau, pas le temps réellement écouté. Les mesures de complétion et de durée de session restent explicitement réservées à la vidéo.
 
 **Activité → Écoute** reprend les filtres période, année et utilisateur de Visionnage. Les compteurs, écoutes par jour, grille jour/heure et classements par morceau, artiste, album et auditeur portent sur toute la période, sans la limite de l’historique. Les graphiques utilisent le fuseau du navigateur. Les anciennes écoutes sont incluses, même si la source musicale est désactivée.

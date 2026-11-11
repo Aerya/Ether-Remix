@@ -800,11 +800,8 @@ func (m *Manager) unreserveLocked(id identity) {
 }
 
 func userLabel(u *core.User) string {
-	if u.Username != "" {
-		return u.Username
-	}
-	if u.Title != "" {
-		return u.Title
+	if name := u.ActivityName(); name != "" {
+		return name
 	}
 	return fmt.Sprintf("user %d", u.ID)
 }
