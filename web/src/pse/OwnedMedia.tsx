@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { apiFetch } from "../lib/api";
 import { getLocale } from "../i18n";
@@ -377,6 +377,7 @@ function IBroadcastAccount({
 
 type IBAccount = { id: number; name: string; access: Access; importPlaylists: boolean };
 export function IBroadcastSource({ portalToken }: { portalToken?: string }) {
+  const nameHelpId = useId();
   const [accounts, setAccounts] = useState<IBAccount[]>([]);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
@@ -420,7 +421,7 @@ export function IBroadcastSource({ portalToken }: { portalToken?: string }) {
         )}
       </p>
       <form
-        className="flex gap-2"
+        className="flex flex-wrap items-end gap-3"
         onSubmit={async (e) => {
           e.preventDefault();
           try {
@@ -432,16 +433,30 @@ export function IBroadcastSource({ portalToken }: { portalToken?: string }) {
           }
         }}
       >
-        <input
-          className={field}
-          required
-          maxLength={120}
-          aria-label={L("Nom du compte", "Account name")}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
+        <div className="w-full sm:w-80">
+          <label className="block text-sm">
+            <span className="mb-1 block">
+              {L("Nom du compte dans Remix", "Account name in Remix")}
+            </span>
+            <input
+              className={field}
+              required
+              maxLength={120}
+              placeholder={L("Ex. : Ma musique", "E.g. My music")}
+              aria-describedby={nameHelpId}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+        </div>
         <Button type="submit">{L("Ajouter un compte", "Add account")}</Button>
       </form>
+      <p id={nameHelpId} className="text-sm text-fg-muted">
+        {L(
+          "Choisissez un nom pour identifier votre compte iBroadcast dans Remix. Après l’ajout, vous pourrez connecter ce compte à iBroadcast.",
+          "Choose a name to identify your iBroadcast account in Remix. After adding it, you can connect this account to iBroadcast.",
+        )}
+      </p>
       {accounts.map((account) => (
         <IBroadcastAccount
           key={account.id}
