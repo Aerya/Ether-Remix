@@ -44,10 +44,10 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 | `PSE_INDEXER_DAILY` | `1000` | Maximum requests per source per day (UTC). |
 | `PSE_INDEXER_PACE` | `10s` | Minimum delay between two titles (at least `2s`). |
 | `PSE_INDEXER_TYPES` | `movie,show` | Indexed types (`movie`, `show`). A show is searched through its first episode. |
-| `PSE_PLAYABLE` | `off` | `on` enables the "playable only" catalogue. |
+| `PSE_PLAYABLE` | `off` | `on` enables the "playable only" catalogue, with the same scope as `PSE_FRENCH`. |
 | `PSE_PLAYABLE_MIN` | `2` | Distinct releases (same name counts once) needed to list a title. |
 | `PSE_PLAYABLE_FILTER` | *(none)* | Releases that count, e.g. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Languages: `fr` (any French dub: FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (French subtitles announced), `vo` (no dub announced)… Changing the filter recomputes the catalogue at startup, without reindexing. |
-| `PSE_FRENCH` | `off` | `on` enables the French-language catalogue. |
+| `PSE_FRENCH` | `off` | `on` enables the French-language catalogue: Movies and Shows pages, Home rows (including Trending), collections and similar titles. Upcoming collections, the watchlist and Continue Watching are left alone. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Countries whose digital or physical release counts (ISO codes). `FR,CA` adds Canada, not always dubbed in French. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Indexed release languages that count (`vfq` for Québec French only, `vff`…). |
 | `PSE_FRENCH_TYPES` | `movie,show` | Filtered types. `movie` leaves shows untouched. |

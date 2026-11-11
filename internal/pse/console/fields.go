@@ -83,10 +83,10 @@ var Features = communityFields([]Feature{
 	{
 		ID:          "french",
 		Title:       tx("Catalogue en français", "French catalogue"),
-		Description: tx("N'affiche que les films et séries disponibles en français : œuvre française, sortie numérique ou TV dans les pays choisis, ou release VF/MULTi indexée.", "Only lists titles available in French: French original, digital or TV release in the chosen countries, or an indexed French/MULTi release."),
+		Description: tx("N'affiche que les films et séries disponibles en français, y compris dans les rangées de l'accueil et les collections : œuvre française, sortie numérique ou TV dans les pays choisis, ou release VF/MULTi indexée.", "Only lists titles available in French, including Home rows and collections: French original, digital or TV release in the chosen countries, or an indexed French/MULTi release."),
 		Fields: []Field{
 			{Key: "PSE_FRENCH", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
-				Help: tx("S'applique aux listes du catalogue (accueil, bibliothèques, recommandations). La liste de suivi, les collections et la recherche restent complètes.", "Applies to catalogue lists (home, libraries, recommendations). Watchlist, collections and search stay complete.")},
+				Help: tx("S'applique à l'accueil, aux bibliothèques, aux recommandations et aux collections. La liste de suivi, la recherche et les collections de sorties à venir restent complètes.", "Applies to home, libraries, recommendations and collections. Watchlist, search and upcoming collections stay complete.")},
 			{Key: "PSE_FRENCH_COUNTRIES", Advanced: true, Kind: KindCountries, Default: "FR", Placeholder: "FR,CA", Label: tx("Pays de sortie", "Release countries"),
 				Help: tx("Codes ISO séparés par des virgules. Une sortie numérique, physique ou TV dans l'un de ces pays compte. CA ajoute le Canada, pas toujours doublé en français.", "Comma-separated ISO codes. A digital, physical or TV release in one of them counts. CA adds Canada, not always dubbed in French.")},
 			{Key: "PSE_FRENCH_RELEASES", Kind: KindMulti, Default: "french,multi", Options: langOptions, Label: tx("Langues de release", "Release languages"),
@@ -133,7 +133,7 @@ var Features = communityFields([]Feature{
 		Description: tx("Ne liste que les titres ayant assez de releases indexées correspondant à vos critères. Nécessite l'indexation.", "Only lists titles with enough indexed releases matching your criteria. Needs indexing."),
 		Fields: []Field{
 			{Key: "PSE_PLAYABLE", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
-				Help: tx("La liste de suivi, les collections, « Reprendre » et la recherche restent complètes.", "Watchlist, collections, continue watching and search stay complete.")},
+				Help: tx("S'applique aussi à l'accueil et aux collections. La liste de suivi, « Reprendre », la recherche et les collections de sorties à venir restent complètes.", "Also applies to home and collections. Watchlist, continue watching, search and upcoming collections stay complete.")},
 			{Key: "PSE_PLAYABLE_MIN", Kind: KindNumber, Default: "2", Min: ptr(1), Max: ptr(50), Label: tx("Releases minimum", "Minimum releases"),
 				Help: tx("Releases distinctes (même nom = une seule) nécessaires pour lister un titre.", "Distinct releases (same name counts once) needed to list a title.")},
 			{Key: "PSE_PLAYABLE_SINGLE", Kind: KindToggle, Default: "off", Label: tx("Afficher aussi les titres à risque", "Also show risky titles"),

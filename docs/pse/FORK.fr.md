@@ -28,6 +28,7 @@ Les fichiers d'Ether ne sont modifiés que pour des **points d'accroche** : quel
 | `internal/notify/notify.go` (`deliver`) | notifications FR (`internal/notify/pse_localize.go`) |
 | `internal/app/build_integrations.go` | indexeur de releases (`internal/app/pse_indexer.go`), API Subsonic (`internal/app/pse_music.go`) |
 | `internal/catalog/browse.go` (`browseWhere`) | catalogue lisible uniquement et en français (`internal/catalog/pse_hooks.go`) |
+| `internal/app/build_personalization.go` (`FilterAvailable`), `internal/app/collections.go` (`collectionOptions`), `internal/catalog/lists.go` (`Similar`), `internal/collections/collections.go` (`serve` renommé `serveMembers`, franchises) | filtre français et lisible des rangées d'accueil, des collections et des titres similaires (`internal/catalog/pse_discovery.go`, `internal/collections/pse_keys.go`) |
 | `internal/catalog/browse_tally.go` (`tallyTotal`) | décompte précalculé ignoré quand les filtres Ether-Remix s'appliquent (`pseFiltersCatalog`) |
 | `internal/core/interfaces.go` (`Filter.PSEUnplayable`, `Filter.PSEThemed`) | parcours de l'indexeur PSE hors catalogue « lisible uniquement » (`internal/app/pse_indexer.go`) ; filtre VF des bibliothèques à thème malgré `IncludeKeys` (`internal/catalog/pse_hooks.go`) |
 | `internal/catalog/sync.go` (tâche de fond) | dates de sortie pour le catalogue en français (`internal/catalog/pse_hooks.go`) |
