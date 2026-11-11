@@ -25,6 +25,7 @@ type candidate struct {
 	bandwidth   int             // fits client cap (+1), unknown (0), or exceeds it (-1)
 	yearGuessed bool            // accepted despite a series year that differs from the show's
 	cf          int             // custom format score: every matching format, plugin points included
+	subtitled   bool            // Remix: SubMaker already prepared its subtitles (pse_subtitled.go)
 	keys        rankKeys        // the Radarr/Sonarr comparer keys (ranking.go)
 	prepared    *candidateCheck // validation overlapped with descriptor discovery
 	graceStart  time.Time       // discovery start, set only when preparation overran the grace

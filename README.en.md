@@ -62,7 +62,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - **French-oriented catalogue**: choose languages and variants — VFF, VFQ, VFi, MULTi… — and cache requirements. A movie not yet available in French shows neither on Home (Trending included) nor in collections.
 - **Playable-only catalogue**: show titles with a minimum number of releases matching your preferences. The rule also covers Home and collections; search, watchlists, continue watching and upcoming collections stay complete.
 - **Targeted exceptions**: allow other languages for selected collections or libraries without changing your general preferences.
-- **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled.
+- **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled. Optionally, SubMaker prepares their French subtitles, and each title shows its subtitle state.
 - **Anime**: create TMDB-based libraries and collections with your French/MULTi preferences and any Stremio addons you choose.
 
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Your local movies and personal videos
@@ -86,7 +86,8 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - **Choose your instance**: use [public](https://submaker.elfhosted.com/configure) or self-hosted [SubMaker](https://github.com/xtremexq/StremioSubMaker) with a personal manifest; the integration is disabled by default.
 - **Languages and scopes**: choose source/target languages, English → French by default, and allow processing globally or per library/collection.
 - **Controlled preparation**: find an SRT matching the release, translate when necessary, and manage processing with a queue, cache and daily budget. Only complete, validated results are accepted; translations must retain timestamps and cue counts.
-- **Playback and SeerrCatalog**: attach the prepared SRT to its matching release and send it to SeerrCatalog through authenticated search. A pending translation does not confirm availability; restart an already open playback after preparation. [Setup and limitations](docs/pse/SUBMAKER.en.md).
+- **Playback and SeerrCatalog**: attach the prepared SRT to its matching release and send it to SeerrCatalog through authenticated search. A pending translation does not confirm availability; restart an already open playback after preparation.
+- **Subtitled release first**: with equal quality, audio language and format score, playback picks the release whose SRT is already ready over one with more seeders or a larger file. [Setup and limitations](docs/pse/SUBMAKER.en.md).
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
 

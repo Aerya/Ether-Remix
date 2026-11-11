@@ -99,11 +99,14 @@ type work struct {
 	cfg Settings
 }
 type Service struct {
-	DB     *sql.DB
-	HTTP   *http.Client
-	Match  func(context.Context, Rule, core.RatingKey) bool
+	DB    *sql.DB
+	HTTP  *http.Client
+	Match func(context.Context, Rule, core.RatingKey) bool
+	// VOSTFR links the "VOSTFR on demand" titles; see vostfr.go.
+	VOSTFR VostfrHooks
 	mu     sync.Mutex
 	scopes Scopes
+	vostfr bool
 	queue  chan work
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -116,6 +119,9 @@ func New(db *sql.DB, client *http.Client) *Service {
 	var raw string
 	if db.QueryRow("SELECT value FROM remix_submaker_scopes WHERE id=1").Scan(&raw) == nil {
 		_ = json.Unmarshal([]byte(raw), &s.scopes)
+	}
+	if db.QueryRow("SELECT value FROM remix_submaker_scopes WHERE id=?", vostfrRow).Scan(&raw) == nil {
+		s.vostfr = raw == "on"
 	}
 	_, _ = db.Exec("UPDATE remix_submaker_jobs SET state='interrupted',error='Interrupted; retry on next search',updated=0 WHERE state IN ('queued','running')")
 	s.wg.Add(1)
@@ -141,7 +147,7 @@ func Key(req core.SearchRequest) core.RatingKey {
 }
 func (s *Service) Allowed(ctx context.Context, req core.SearchRequest) bool {
 	s.mu.Lock()
-	c := s.scopes
+	c, vostfr := s.scopes, s.vostfr
 	s.mu.Unlock()
 	allowed := c.Global
 	rank := 0
@@ -158,6 +164,11 @@ func (s *Service) Allowed(ctx context.Context, req core.SearchRequest) bool {
 			allowed = r.Enabled
 			rank = p
 		}
+	}
+	// The VOSTFR switch counts as a collection rule placed after the owner's
+	// own: an explicit collection rule matching the title still wins.
+	if vostfr && rank < 2 && s.isVostfr(ctx, key) {
+		allowed = true
 	}
 	return allowed
 }

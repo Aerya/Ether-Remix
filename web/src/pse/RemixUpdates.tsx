@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-local-media-ibroadcast",
+    id: "2026-11-11-vostfr-submaker",
     version: "current",
+    date: "2026-11-11",
+    title: ["VOSTFR à la demande avec SubMaker", "On-demand VOSTFR with SubMaker"],
+    items: [
+      [
+        "Dans l’onglet VOSTFR à la demande, une option prépare les sous-titres français des titres choisis avec SubMaker. Elle n’est disponible que si SubMaker est activé avec un manifeste valide.",
+        "In the VOSTFR on demand tab, an option prepares French subtitles for the chosen titles with SubMaker. It is only available when SubMaker is enabled with a valid manifest.",
+      ],
+      [
+        "Chaque titre affiche l’état de ses sous-titres : VF disponible, sous-titres annoncés, SRT prêt ou traduit, en préparation, ou rien pour l’instant.",
+        "Each title shows its subtitle state: French audio, announced subtitles, SRT ready or translated, preparing, or nothing yet.",
+      ],
+      [
+        "À la lecture, à qualité, langue et score de formats égaux, Remix choisit la release dont le SRT est déjà prêt. Une meilleure release reste prioritaire, même sans sous-titres.",
+        "At playback, with equal quality, language and format score, Remix picks the release whose SRT is already ready. A better release still ranks first, even without subtitles.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-local-media-ibroadcast",
+    version: "0.2.37-remix.49.1",
     date: "2026-11-11",
     title: ["Vos médias locaux et iBroadcast", "Your local media and iBroadcast"],
     items: [

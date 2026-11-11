@@ -50,17 +50,7 @@ func (a *App) enrichSubtitles(ctx context.Context, t *core.Title, u *core.User, 
 	if t == nil || res == nil || info == nil || a.db == nil {
 		return
 	}
-	req := core.SearchRequest{IDs: t.IDs, Type: t.Type, Title: t.Title, Season: t.Season, Episode: t.Episode}
-	if t.Type == core.TypeEpisode || t.Key.Kind() == core.KindEpisode {
-		req.Type = core.TypeEpisode
-		req.IDs = t.ShowIDs
-		if req.IDs.TMDB == 0 {
-			req.IDs.TMDB = t.Key.TMDB()
-		}
-	}
-	if req.Type == core.TypeEpisode && req.Season == 0 {
-		req.Season, req.Episode = t.Key.Season(), t.Key.Episode()
-	}
+	req := pseSubmakerRequest(t)
 	if service := a.pseSubmaker(); service != nil {
 		if p := service.Cached(req, res.Release); p != nil {
 			track, err := a.subtitles.StoreExternal(t, p.Language, p.Release, []byte(p.SRT), p.Translated)
