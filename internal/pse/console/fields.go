@@ -83,7 +83,7 @@ var Features = communityFields([]Feature{
 	{
 		ID:          "french",
 		Title:       tx("Catalogue en français", "French catalogue"),
-		Description: tx("N'affiche que les films et séries disponibles en français : œuvre française, sortie numérique ou TV dans les pays choisis, ou release VF/MULTi indexée.", "Only lists titles available in French: French original, digital or TV release in the chosen countries, or an indexed French/MULTi release."),
+		Description: tx("N'affiche que les films et séries disponibles en français, y compris dans les rangées de l'accueil et les collections : œuvre française, sortie numérique ou TV dans les pays choisis, ou release VF/MULTi indexée.", "Only lists titles available in French, including Home rows and collections: French original, digital or TV release in the chosen countries, or an indexed French/MULTi release."),
 		Fields: []Field{
 			{Key: "PSE_FRENCH", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
 				Help: tx("S'applique aux listes du catalogue (accueil, bibliothèques, recommandations). La liste de suivi, les collections et la recherche restent complètes.", "Applies to catalogue lists (home, libraries, recommendations). Watchlist, collections and search stay complete.")},

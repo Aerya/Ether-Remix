@@ -10,9 +10,11 @@ import (
 // uniquement » (PSE_PLAYABLE=on) et catalogue en français (PSE_FRENCH=on).
 // Voir docs/pse/FORK.fr.md.
 //
-// Les listes demandées par clé (IncludeKeys : watchlist, collections,
-// reprise de lecture) et l'explorateur de règles du propriétaire ne sont
-// pas filtrés, sauf les bibliothèques à thème (PSEThemed).
+// Les listes demandées par clé (IncludeKeys : watchlist, reprise de lecture)
+// et l'explorateur de règles du propriétaire ne sont pas filtrés, sauf les
+// bibliothèques à thème (PSEThemed). Les rangées de l'accueil, les
+// collections et les titres similaires appliquent ces mêmes conditions dans
+// pse_discovery.go.
 func pseCatalogWhere(conds []string, args []any, f core.Filter, nowTS int64) ([]string, []any) {
 	if (f.IncludeKeys != nil && !f.PSEThemed) || f.RuleVisibility != "" {
 		return conds, args

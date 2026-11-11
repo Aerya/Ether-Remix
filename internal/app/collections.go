@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/collections"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/llm"
 )
 
@@ -28,6 +30,10 @@ func (a *App) collectionOptions(cfg config.Config) []collections.Option {
 		collections.WithTMDB(a.tmdb),
 		collections.WithArtwork(renderer, a.images),
 		collections.WithCatalogConfig(func() config.Catalog { return a.cfg.Read().Catalog }),
+		// PSE-HOOK: filtre français et lisible — voir docs/pse/FORK.fr.md
+		collections.WithPSEDiscovery(func(ctx context.Context, keys []core.RatingKey) ([]core.RatingKey, error) {
+			return a.catalog.PSEDiscoveryKeys(ctx, keys)
+		}),
 		collections.WithTraktConfig(func() config.Trakt { return a.cfg.Read().Trakt }),
 		collections.WithSealer(a.cfg),
 		collections.WithLLM(chat),

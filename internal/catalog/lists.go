@@ -862,7 +862,8 @@ func (c *Catalog) Similar(ctx context.Context, key core.RatingKey, limit int) ([
 	items, err := reqmemo.Do(ctx, fmt.Sprintf("catalog:similar:%p:%d:%d", c, key, limit), func() ([]core.Title, error) {
 		return c.similar(ctx, key, limit)
 	})
-	return copySummaryTitles(items), err
+	// PSE-HOOK: filtre français et lisible — voir docs/pse/FORK.fr.md
+	return c.PSEDiscovery(ctx, copySummaryTitles(items)), err
 }
 
 func copySummaryTitles(items []core.Title) []core.Title {

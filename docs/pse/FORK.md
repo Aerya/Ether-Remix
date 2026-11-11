@@ -28,6 +28,7 @@ Ether files are only changed for **hook points**: a few lines calling PSE code (
 | `internal/notify/notify.go` (`deliver`) | French notifications (`internal/notify/pse_localize.go`) |
 | `internal/app/build_integrations.go` | release indexer (`internal/app/pse_indexer.go`), Subsonic API (`internal/app/pse_music.go`) |
 | `internal/catalog/browse.go` (`browseWhere`) | playable-only and French-language catalogue (`internal/catalog/pse_hooks.go`) |
+| `internal/app/build_personalization.go` (`FilterAvailable`), `internal/app/collections.go` (`collectionOptions`), `internal/catalog/lists.go` (`Similar`), `internal/collections/collections.go` (`serve` renamed `serveMembers`, franchises) | French and playable filter for Home rows, collections and similar titles (`internal/catalog/pse_discovery.go`, `internal/collections/pse_keys.go`) |
 | `internal/catalog/browse_tally.go` (`tallyTotal`) | precomputed tally skipped when Ether-Remix filters apply (`pseFiltersCatalog`) |
 | `internal/core/interfaces.go` (`Filter.PSEUnplayable`, `Filter.PSEThemed`) | PSE indexer walks titles outside the playable-only catalogue (`internal/app/pse_indexer.go`); French filter on themed libraries despite `IncludeKeys` (`internal/catalog/pse_hooks.go`) |
 | `internal/catalog/sync.go` (background loop) | release dates for the French-language catalogue (`internal/catalog/pse_hooks.go`) |

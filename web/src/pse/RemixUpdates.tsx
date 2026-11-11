@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-music-activity",
+    id: "2026-11-11-french-rows",
     version: "current",
+    date: "2026-11-11",
+    title: ["Accueil et collections en français", "French Home rows and collections"],
+    items: [
+      [
+        "Le catalogue en français et « lisible uniquement » s’appliquent aussi aux rangées de l’accueil (Tendances, Top 10…), aux collections et aux titres similaires. Un film pas encore sorti en France n’y apparaît plus.",
+        "The French and playable-only catalogues now also apply to Home rows (Trending, Top 10…), collections and similar titles. A movie not yet out in France no longer shows there.",
+      ],
+      [
+        "Restent intactes : les collections de sorties à venir, la watchlist, la reprise de lecture et la recherche.",
+        "Left alone: upcoming collections, the watchlist, Continue Watching and search.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-music-activity",
+    version: "0.2.37-remix.44.1",
     date: "2026-11-10",
     title: ["La musique rejoint Activité", "Music joins Activity"],
     items: [

@@ -127,7 +127,8 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		Ranker:       parityRankerOptions(),
 		DB:           a.db, Catalog: a.catalog, State: a.state, Events: a.state, Users: a.users,
 		FilterAvailable: func(ctx context.Context, ts []core.Title) []core.Title {
-			ts = a.catalog.FilterVisibility(ctx, ts)
+			// PSE-HOOK: filtre français et lisible — voir docs/pse/FORK.fr.md
+			ts = a.catalog.PSEDiscovery(ctx, a.catalog.FilterVisibility(ctx, ts))
 			if a.availability == nil {
 				return ts
 			}
