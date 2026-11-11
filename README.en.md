@@ -50,7 +50,7 @@ Remix also adds music. The Deezer catalogue can be browsed from Plexamp, Jellyfi
 
 Turn access on under **Console → Apps**. Each viewer finds their links and app passwords on their **Your account** page.
 
-## Features
+## Remix Features
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
 
