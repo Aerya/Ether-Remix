@@ -469,7 +469,8 @@ what you want to change:
 | --- | --- |
 | Connect providers and indexers | **Sources** |
 | Inspect a failed source search | **Quality › History**, then open the attempt |
-| Inspect observed playback | **Activity › History** |
+| Inspect observed playback | **Activity › History** — movies, shows and music in one chronological table |
+| Explore music listening trends | **Activity › Listening** — daily counts, time heatmap and rankings, filtered by period and user |
 | Change one viewer's track preferences | **Viewers › viewer › Audio & subtitles** |
 | Change household audio and subtitles | **Playback › Audio & subtitles** |
 | Arrange rows in Plex | **Home** |

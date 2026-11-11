@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { NowPlaying } from "../pages/activity/NowPlaying";
@@ -52,33 +52,75 @@ describe("Music activity", () => {
       expect(rows[0]?.progress).toBeCloseTo(12 / 201);
     },
   );
-  it("paginates music history and resets when the viewer filter changes", async () => {
-    vi.mocked(apiFetch).mockImplementation(async (path) => ({
+  it("mixes music and video in one chronological table and opens music details", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({
       plays: [
         {
           id: 1,
           viewerId: 7,
-          title: String(path).includes("offset=100") ? "Second page" : "One More Time",
+          title: "One More Time",
           artist: "Daft Punk",
           album: "Discovery",
           duration: 201,
-          playedAt: 1794300000,
+          playedAt: 20,
         },
       ],
-      total: 101,
-    }));
-    const { rerender } = render(<MusicHistory query="?days=30&user=7" viewers={[]} />);
-    expect(await screen.findByText("One More Time")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    expect(await screen.findByText("Second page")).toBeInTheDocument();
-    rerender(<MusicHistory query="?days=30&user=8" viewers={[]} />);
-    await waitFor(() =>
-      expect(apiFetch).toHaveBeenLastCalledWith("/pse/music/history?days=30&user=8&offset=0"),
+      total: 1,
+    });
+    const video = {
+      id: "video",
+      userId: 7,
+      username: "Alice",
+      title: "A film",
+      device: "TV",
+      platform: "",
+      decision: "",
+      started: 10,
+      ended: 11,
+      bytes: 0,
+      watchedMs: 1000,
+      completed: true,
+      failovers: 0,
+      error: "",
+    };
+    render(
+      <MemoryRouter>
+        <MusicHistory
+          query="?days=30"
+          viewers={[]}
+          history={[video]}
+          summary={undefined}
+          error={null}
+          onRetry={vi.fn()}
+        />
+      </MemoryRouter>,
     );
+    expect(await screen.findByText("One More Time")).toBeInTheDocument();
+    expect(screen.getByText("A film")).toBeInTheDocument();
+    expect(screen.getAllByRole("table")).toHaveLength(1);
+    const tableRows = screen.getAllByRole("row");
+    expect(tableRows[1]).toHaveTextContent("One More Time");
+    expect(tableRows[2]).toHaveTextContent("A film");
+    fireEvent.click(screen.getByText("One More Time"));
+    expect(await screen.findByText("Discovery")).toBeInTheDocument();
+    expect(
+      vi.mocked(apiFetch).mock.calls.some(([path]) => String(path).includes("/stats/plays/music")),
+    ).toBe(false);
   });
   it("reports history loading failures", async () => {
     vi.mocked(apiFetch).mockRejectedValue(new Error("Unavailable"));
-    render(<MusicHistory query="?days=30" viewers={[]} />);
+    render(
+      <MemoryRouter>
+        <MusicHistory
+          query="?days=30"
+          viewers={[]}
+          history={[]}
+          summary={undefined}
+          error={null}
+          onRetry={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
     expect(await screen.findByText("Unavailable")).toBeInTheDocument();
   });
 });
