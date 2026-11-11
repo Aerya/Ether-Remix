@@ -285,7 +285,7 @@ func (c *Client) cachePut(ctx context.Context, key string, results []core.Releas
 		key, c.indexerID(), raw, exp.Unix()); err != nil {
 		c.log.Debug("newznab cache save failed", "indexer", c.Name(), "err", err)
 	}
-	if _, err := c.db.ExecContext(ctx, `DELETE FROM newznab_cache WHERE expires_at < ?`, c.now().Unix()); err != nil {
+	if _, err := c.db.ExecContext(ctx, `DELETE FROM newznab_cache WHERE expires_at < ?`, c.now().Add(-staleSearchGrace).Unix()); err != nil {
 		c.log.Debug("newznab cache prune failed", "indexer", c.Name(), "err", err)
 	}
 }

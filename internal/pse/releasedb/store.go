@@ -98,6 +98,7 @@ type Release struct {
 	SubtitleLanguages []string
 	DebridCached      []string
 	DebridUncached    []string
+	CacheUntil        int64
 	FirstSeen         time.Time
 	LastSeen          time.Time
 }
@@ -173,12 +174,12 @@ func (s *Store) Save(ctx context.Context, rs []Release, now time.Time) error {
 
 func saveTx(ctx context.Context, tx *sql.Tx, rs []Release, now time.Time) error {
 	for _, r := range rs {
-		_, err := tx.ExecContext(ctx, `INSERT INTO pse_releases(id,title_key,media_type,season,episode,source_id,source_name,protocol,name,size,height,video_codec,audio_codec,hdr,dolby_vision,languages,subtitle_languages,debrid_cached,debrid_uncached,first_seen,last_seen)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET title_key=excluded.title_key,season=excluded.season,episode=excluded.episode,source_name=excluded.source_name,protocol=excluded.protocol,name=excluded.name,size=excluded.size,height=excluded.height,video_codec=excluded.video_codec,audio_codec=excluded.audio_codec,hdr=excluded.hdr,dolby_vision=excluded.dolby_vision,languages=excluded.languages,subtitle_languages=excluded.subtitle_languages,debrid_cached=excluded.debrid_cached,debrid_uncached=excluded.debrid_uncached,last_seen=excluded.last_seen`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO pse_releases(id,title_key,media_type,season,episode,source_id,source_name,protocol,name,size,height,video_codec,audio_codec,hdr,dolby_vision,languages,subtitle_languages,debrid_cached,debrid_uncached,first_seen,last_seen,cache_until)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET title_key=excluded.title_key,season=excluded.season,episode=excluded.episode,source_name=excluded.source_name,protocol=excluded.protocol,name=excluded.name,size=excluded.size,height=excluded.height,video_codec=excluded.video_codec,audio_codec=excluded.audio_codec,hdr=excluded.hdr,dolby_vision=excluded.dolby_vision,languages=excluded.languages,subtitle_languages=excluded.subtitle_languages,debrid_cached=excluded.debrid_cached,debrid_uncached=excluded.debrid_uncached,last_seen=excluded.last_seen,cache_until=excluded.cache_until`,
 			r.ID, int64(r.TitleKey), string(r.Type), r.Season, r.Episode, r.SourceID, r.SourceName, r.Protocol, r.Name, r.Size, r.Height,
 			r.VideoCodec, r.AudioCodec, boolInt(r.HDR), boolInt(r.DolbyVision), join(r.Languages), join(r.SubtitleLanguages), join(r.DebridCached), join(r.DebridUncached),
-			now.Unix(), now.Unix())
+			now.Unix(), now.Unix(), r.CacheUntil)
 		if err != nil {
 			return err
 		}
@@ -189,7 +190,7 @@ ON CONFLICT(id) DO UPDATE SET title_key=excluded.title_key,season=excluded.seaso
 // Releases renvoie les releases indexées d'un titre qui respectent f, les
 // plus récemment vues en premier.
 func (s *Store) Releases(ctx context.Context, key core.RatingKey, f Filter) ([]Release, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,title_key,media_type,season,episode,source_id,source_name,protocol,name,size,height,video_codec,audio_codec,hdr,dolby_vision,languages,subtitle_languages,debrid_cached,debrid_uncached,first_seen,last_seen
+	rows, err := s.db.QueryContext(ctx, `SELECT id,title_key,media_type,season,episode,source_id,source_name,protocol,name,size,height,video_codec,audio_codec,hdr,dolby_vision,languages,subtitle_languages,debrid_cached,debrid_uncached,first_seen,last_seen,cache_until
 FROM pse_releases WHERE title_key=? ORDER BY last_seen DESC, name`, int64(key))
 	if err != nil {
 		return nil, err
@@ -203,13 +204,16 @@ FROM pse_releases WHERE title_key=? ORDER BY last_seen DESC, name`, int64(key))
 		var hdr, dv int
 		var first, last int64
 		if err := rows.Scan(&r.ID, &key, &typ, &r.Season, &r.Episode, &r.SourceID, &r.SourceName, &r.Protocol, &r.Name, &r.Size, &r.Height,
-			&r.VideoCodec, &r.AudioCodec, &hdr, &dv, &langs, &subs, &cached, &uncached, &first, &last); err != nil {
+			&r.VideoCodec, &r.AudioCodec, &hdr, &dv, &langs, &subs, &cached, &uncached, &first, &last, &r.CacheUntil); err != nil {
 			return nil, err
 		}
 		r.TitleKey, r.Type = core.RatingKey(key), core.MediaType(typ)
 		r.HDR, r.DolbyVision = hdr != 0, dv != 0
 		r.Languages, r.SubtitleLanguages, r.DebridCached = split(langs), split(subs), split(cached)
 		r.DebridUncached = split(uncached)
+		if r.CacheUntil > 0 && r.CacheUntil <= s.now().Unix() {
+			r.DebridCached = nil
+		}
 		r.FirstSeen, r.LastSeen = time.Unix(first, 0), time.Unix(last, 0)
 		if f.Match(r) {
 			out = append(out, r)

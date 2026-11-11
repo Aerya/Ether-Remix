@@ -101,7 +101,7 @@ func TestSFRCycle(t *testing.T) {
 	if err != nil || len(rels) != 1 {
 		t.Fatalf("releases %v %v", rels, err)
 	}
-	if rels[0].SourceID != SFRSourceID || len(rels[0].DebridCached) != 1 || rels[0].DebridCached[0] != "alldebrid" {
+	if rels[0].SourceID != SFRSourceID || len(rels[0].DebridCached) != 0 {
 		t.Fatalf("release %+v", rels[0])
 	}
 	if st := e.s.st.LoadSFRStatus(e.ctx); st.State != "ok" || st.Releases != 1 || st.Titles != 1 {

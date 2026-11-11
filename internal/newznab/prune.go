@@ -36,7 +36,7 @@ func (m *Manager) Prune(ctx context.Context) (int64, error) {
 	}
 	n, _ := res.RowsAffected()
 	total += n
-	res, err = m.db.ExecContext(ctx, `DELETE FROM newznab_cache WHERE expires_at<?`, t.Unix())
+	res, err = m.db.ExecContext(ctx, `DELETE FROM newznab_cache WHERE expires_at<?`, t.Add(-staleSearchGrace).Unix())
 	if err != nil {
 		return total, err
 	}

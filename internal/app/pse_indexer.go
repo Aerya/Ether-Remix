@@ -16,6 +16,7 @@ func (a *App) buildPSEIndexer() {
 	}
 	rt := pseRuntimeOf(a)
 	rt.prepare(a)
+	a.reapplyAddonIndexers()
 	a.pseQuality()
 	a.pseThemes()
 	a.buildPSEScrob()

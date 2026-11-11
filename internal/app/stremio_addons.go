@@ -36,7 +36,7 @@ func (a *App) installAddon(ctx context.Context, in plugins.AddonInstall) (plugin
 // addonIndexers expands the indexer list for the running search manager
 // (adapters.ExpandAddonIndexers).
 func (a *App) addonIndexers(ctx context.Context, rows []config.Indexer) []config.Indexer {
-	return adapters.ExpandAddonIndexers(ctx, a.pluginManager(), rows)
+	return sfrIndexers(adapters.ExpandAddonIndexers(ctx, a.pluginManager(), rows))
 }
 
 // migrateLegacyStremio moves the add-on roles entered by link outside the
@@ -73,4 +73,8 @@ func (a *App) reapplyAddonIndexers() {
 		return
 	}
 	a.indexers.ApplyConfig(a.withAddonIndexers(a.cfg.Get()))
+	// Runtime sources are absent from the persisted config fingerprint. Drop
+	// resolver results too, so disabled sources and old credentials cannot
+	// survive in the resolver-level cache after a source settings change.
+	a.invalidatePluginSourceCaches()
 }

@@ -90,6 +90,8 @@ func LoadSFRSettings() SFRSettings {
 type sfrRow struct {
 	ID, Name, Hash, Media, Seasons, Episodes string
 	Size, TMDB, Stamp                        int64
+	Cached                                   []string
+	CacheUntil                               int64
 }
 
 type sfrReader interface {
@@ -114,7 +116,10 @@ ORDER BY id LIMIT $4`
 	sfrTitlesSQL = sfrSelectSQL + ` AND tmdb_id = ANY($2::bigint[])` + sfrFiltersSQL
 )
 
-type pgxSFR struct{ conn *pgx.Conn }
+type pgxSFR struct {
+	conn           *pgx.Conn
+	cacheAvailable bool
+}
 
 func openPgxSFR(ctx context.Context, url string) (sfrReader, error) {
 	cfg, err := pgx.ParseConfig(url)
@@ -128,7 +133,10 @@ func openPgxSFR(ctx context.Context, url string) (sfrReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &pgxSFR{conn: conn}, nil
+	p := &pgxSFR{conn: conn}
+	// A deployment without this optional table remains searchable; no cache is assumed.
+	_ = conn.QueryRow(ctx, `SELECT COALESCE(has_table_privilege(to_regclass('public.debrid_cache'), 'SELECT'),false)`).Scan(&p.cacheAvailable)
+	return p, nil
 }
 
 func (p *pgxSFR) close() { _ = p.conn.Close(context.Background()) }
@@ -155,7 +163,12 @@ func (p *pgxSFR) read(ctx context.Context, limit int, query string, args ...any)
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err == nil {
+		p.attachCache(ctx, out)
+	}
+	return out, err
 }
 
 // sfrFirstEpisode : une série est représentée par S01E01, un pack de la
@@ -176,7 +189,7 @@ func sfrFirstEpisode(seasons, episodes string) bool {
 
 func sfrSignature(s SFRSettings) string {
 	sum := sha256.Sum256([]byte(s.URL))
-	return strconv.FormatBool(s.Private) + "|" + hex.EncodeToString(sum[:8])
+	return "cache-proof-v2|" + strconv.FormatBool(s.Private) + "|" + hex.EncodeToString(sum[:8])
 }
 
 // État conservé dans pse_state, pour reprendre après un redémarrage.
@@ -261,9 +274,11 @@ type sfrTitle struct {
 func (s *Store) sfrUnchecked(ctx context.Context, before time.Time, limit int) ([]sfrTitle, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.key,c.tmdb_id FROM catalog_titles c
 LEFT JOIN pse_sfr_checked k ON k.title_key=c.key
-WHERE c.type IN ('movie','show') AND c.tmdb_id>0 AND COALESCE(k.checked_at,0)<?
-  AND NOT EXISTS (SELECT 1 FROM pse_releases r WHERE r.source_id=? AND r.title_key=c.key)
-ORDER BY COALESCE(k.checked_at,0),c.popularity DESC,c.key LIMIT ?`, before.Unix(), SFRSourceID, limit)
+WHERE c.type IN ('movie','show') AND c.tmdb_id>0 AND (
+ (COALESCE(k.checked_at,0)<? AND NOT EXISTS (SELECT 1 FROM pse_releases r WHERE r.source_id=? AND r.title_key=c.key))
+ OR (COALESCE(k.checked_at,0)<? AND EXISTS (SELECT 1 FROM pse_releases r WHERE r.source_id=? AND r.title_key=c.key AND r.cache_until>0 AND r.cache_until<=?))
+)
+ORDER BY COALESCE(k.checked_at,0),c.popularity DESC,c.key LIMIT ?`, before.Unix(), SFRSourceID, s.now().Add(-sfrDefaultStep).Unix(), SFRSourceID, s.now().Unix(), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -292,15 +307,6 @@ ON CONFLICT(title_key) DO UPDATE SET checked_at=excluded.checked_at`, int64(t.Ke
 		}
 	}
 	return tx.Commit()
-}
-
-// sfrMark évite à l'indexeur de chercher tout de suite un titre importé, sans
-// écraser un titre où il a déjà trouvé des releases.
-func (s *Store) sfrMark(ctx context.Context, key core.RatingKey, typ core.MediaType, found int, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO pse_index_titles(title_key,media_type,last_indexed,next_due,found,status) VALUES(?,?,?,?,?,'found')
-ON CONFLICT(title_key) DO UPDATE SET last_indexed=excluded.last_indexed,next_due=excluded.next_due,found=excluded.found,status='found' WHERE pse_index_titles.found=0`,
-		int64(key), string(typ), now.Unix(), now.Add(refreshFound).Unix(), found)
-	return err
 }
 
 // sfrSave enregistre une page et renvoie le nombre de releases gardées.
@@ -347,17 +353,17 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 		}
 		rel := core.Release{ID: strings.ToLower(r.Hash), Name: r.Name, Size: r.Size, Indexer: sfrName,
 			Protocol: core.ProtocolTorrent, Info: releaseparse.Parse(r.Name)}
-		batch = append(batch, FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, []string{"alldebrid"}))
+		saved := FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, r.Cached)
+		saved.CacheUntil = r.CacheUntil
+		batch = append(batch, saved)
 		found[target{key, typ}]++
 	}
 	if err := s.st.Save(ctx, batch, now); err != nil {
 		return 0, err
 	}
 	p := Playable()
-	for t, n := range found {
-		if err := s.st.sfrMark(ctx, t.key, t.typ, n, now); err != nil {
-			return 0, err
-		}
+	for t := range found {
+		// Imported metadata alone must not postpone a real source search.
 		if p.Enabled {
 			if err := s.st.RefreshPlayable(ctx, t.key, p); err != nil {
 				return 0, err

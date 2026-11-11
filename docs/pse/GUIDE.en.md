@@ -267,3 +267,11 @@ In **Sources → Music streaming → iBroadcast**, or your **personal portal** a
 4. Import starts after authorization, then runs hourly; **Refresh library** starts it manually.
 
 Each iBroadcast account is **private by default**, belongs to the viewer who connects it and has separate encrypted credentials. You can add multiple accounts and optionally share each with selected viewers or everyone. Authorized libraries appear together in Music; favourites and listening history remain personal. Enable **Import my iBroadcast playlists** to bring them into your clients, preserving track order and repeated songs while skipping deleted or unavailable tracks. Playlists refresh with the library and remain personal to the account owner. Tracks stream as **MP3 128 kbps**, including free accounts. Playlist and tag edits are not written back to iBroadcast. Tokens are encrypted in the database, refreshed automatically and excluded from client responses. Disconnecting removes the library from Remix; revoke the provider authorization separately in iBroadcast **Apps**.
+
+## Search caching and source outages
+
+The resolver's “Remember searches for” duration is a strict ceiling (six hours by default). A title's age never overrides it. Empty results expire sooner: up to three minutes for recent or undated titles, thirty minutes for older titles, always within the configured ceiling. A successful empty search replaces previous results.
+
+During a temporary outage (timeout, connection failure, server error or automatic pause after repeated failures), results expired for less than 24 hours may serve as fallback candidates. They are neither renewed nor stored as a fresh complete search. Only torrent/NZB descriptors are reused; expired direct HTTP streams are excluded. Debrid cache hints are cleared and the normal playback path validates candidates. Background availability searches do not use this fallback.
+
+This does not hide credential errors, exhausted quotas, cancellation or valid empty responses. Disabling caching or the source disables this fallback too. Changes to the source address, credentials or search configuration invalidate the cache identity. Fallback use is logged as `using expired search candidates`.

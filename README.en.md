@@ -75,11 +75,12 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
+- **Temporary indexer outages**: reuse results expired for less than 24 hours without renewing their validity or bypassing playback checks. Access errors and quotas remain enforced.
 - **Controlled searches**: daily per-source budgets, pauses during playback, collection/library priorities and immediate manual searches.
 - **Search from Plex or Jellyfin**: top results never searched or previously without releases receive priority, subject to their retry interval.
 - **SeerrCatalog availability**: import confirmed availability and recent sources from [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), without another search for the playable-only catalogue. Confirmation persists until deletion; expired playback sources are searched again when needed.
 - **Searches for SeerrCatalog**: authorize complementary searches through Remix sources, including Prowlarr, using a dedicated token. Search and availability sharing are independent features grouped in the SeerrCatalog settings.
-- **StreamFusion Reborn database**: import French, MULTi or VOSTFR releases from your instance, read-only. A title added to the catalogue later also gets its releases. [Setup, in French](docs/pse/STREAMFUSION.fr.md).
+- **StreamFusion Reborn database**: import French, MULTi or VOSTFR releases and search movies, episodes and packs directly in your read-only database. Debrid cache evidence expires; playback rechecks availability and retains other sources as fallbacks. Titles added to the catalogue later are also caught up. [Setup, in French](docs/pse/STREAMFUSION.fr.md).
 
 ### ![](https://api.iconify.design/lucide/captions.svg?color=%2314b8a6&width=24&height=24) External subtitles and translation with SubMaker
 

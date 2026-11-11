@@ -155,6 +155,8 @@ func (s *Service) Start() {
 		ctx, cancel := context.WithCancel(context.Background())
 		s.sfrStop = cancel
 		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.watchSFRCache(ctx) }()
+		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			s.runSFR(ctx, cfg)
