@@ -26,8 +26,8 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
 
 - **Quality profiles**: formats, codecs, resolutions, HDR/Dolby Vision, size, languages and regex, globally or per library/collection. Choose profiles or simple criteria without stacking them, including detailed formats, unknown resolution, original language and declared debrid cache. Import AIOStreams from JSON or a manifest/saved source with the configuration password, preview and edit before saving (variants are not reproduced).
-- **French-oriented catalogue**: choose languages and variants — VFF, VFQ, VFi, MULTi… — and cache requirements.
-- **Playable-only catalogue**: show titles with a minimum number of releases matching your preferences. Search, collections, watchlists and continue watching remain accessible.
+- **French-oriented catalogue**: choose languages and variants — VFF, VFQ, VFi, MULTi… — and cache requirements. A movie not yet available in French shows neither on Home (Trending included) nor in collections.
+- **Playable-only catalogue**: show titles with a minimum number of releases matching your preferences. The rule also covers Home and collections; search, watchlists, continue watching and upcoming collections stay complete.
 - **Targeted exceptions**: allow other languages for selected collections or libraries without changing your general preferences.
 - **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled.
 - **Anime**: create TMDB-based libraries and collections with your French/MULTi preferences and any Stremio addons you choose.
