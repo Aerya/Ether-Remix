@@ -8,6 +8,8 @@ function portalFetch(extra?: (url: string, init?: RequestInit) => Response | und
   return vi.fn(async (url: string, init?: RequestInit) => {
     const hit = extra?.(url, init);
     if (hit) return hit;
+    if (url.endsWith("/media/accounts") || url.endsWith("/media/viewers"))
+      return new Response(JSON.stringify([]));
     if (url.endsWith("/bootstrap"))
       return new Response(JSON.stringify({ signInMethods: ["local", "plex"], version: "1" }));
     if (url.endsWith("/login"))
