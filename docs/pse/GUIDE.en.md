@@ -224,3 +224,9 @@ Choose a viewer, inspect the preview and confirm. Import creates a personal copy
 [Configure external subtitles and optional translation](SUBMAKER.en.md), globally or per library/collection, with SeerrCatalog.
 
 For visibility rules and search intervals, see [Catalogue and indexing](CATALOGUE.en.md). To connect the addon, see [SeerrCatalog](SEERRCATALOG.en.md).
+
+### Unified history and Listening
+
+**Activity → History** combines movies, shows and music in one chronological table, with search, sorting, pagination and details. The list contains the latest 500 plays in the selected period. Music retains artist/album metadata; its duration is the track length, not measured listening time. Completion and session-duration metrics remain explicitly video-only.
+
+**Activity → Listening** uses the same period, year and user filters as Viewing. Counts, daily listens, weekday/hour heatmap and track, artist, album and listener rankings cover the entire period, independently of the history limit. Charts use the browser time zone. Existing listens remain included even when the music source is disabled.

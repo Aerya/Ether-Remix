@@ -25,7 +25,7 @@ type HistoryPage struct {
 
 // History ne modifie pas les écoutes existantes et reste disponible lorsque
 // la source musicale est désactivée. Durée = durée du titre, pas temps écouté.
-func (l *Library) History(ctx context.Context, from, to time.Time, viewer int64, offset int) (HistoryPage, error) {
+func (l *Library) History(ctx context.Context, from, to time.Time, viewer int64, offset int, limits ...int) (HistoryPage, error) {
 	out := HistoryPage{Plays: []HistoryPlay{}}
 	where := " WHERE played_at>=? AND played_at<?"
 	args := []any{from.Unix(), to.Unix()}
@@ -36,8 +36,12 @@ func (l *Library) History(ctx context.Context, from, to time.Time, viewer int64,
 	if err := l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_music_plays"+where, args...).Scan(&out.Total); err != nil {
 		return out, err
 	}
-	args = append(args, max(0, offset))
-	rows, err := l.db.QueryContext(ctx, "SELECT id,viewer_id,title,artist,album,duration,played_at FROM pse_music_plays"+where+" ORDER BY played_at DESC,id DESC LIMIT 100 OFFSET ?", args...)
+	limit := 100
+	if len(limits) > 0 {
+		limit = min(500, max(1, limits[0]))
+	}
+	args = append(args, limit, max(0, offset))
+	rows, err := l.db.QueryContext(ctx, "SELECT id,viewer_id,title,artist,album,duration,played_at FROM pse_music_plays"+where+" ORDER BY played_at DESC,id DESC LIMIT ? OFFSET ?", args...)
 	if err != nil {
 		return out, err
 	}
@@ -84,7 +88,22 @@ func HistoryHandler(l *Library) http.Handler {
 		}
 		offset, _ := strconv.Atoi(q.Get("offset"))
 		offset = max(0, offset)
-		result, err := l.History(r.Context(), from, to, viewer, offset)
+		if r.URL.Path == "/music/listening" {
+			tz, _ := strconv.Atoi(q.Get("tz"))
+			result, err := l.Listening(r.Context(), from, to, viewer, tz)
+			if err != nil {
+				http.Error(w, "Statistiques musicales indisponibles", 500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(result)
+			return
+		}
+		limit := 100
+		if n, err := strconv.Atoi(q.Get("limit")); err == nil {
+			limit = n
+		}
+		result, err := l.History(r.Context(), from, to, viewer, offset, limit)
 		if err != nil {
 			http.Error(w, "Historique musical indisponible", 500)
 			return
