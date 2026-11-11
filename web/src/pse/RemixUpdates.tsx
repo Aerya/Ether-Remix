@@ -38,6 +38,18 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-11-unified-history-listening",
+    version: "0.2.37-remix.45.1",
+    date: "2026-11-11",
+    title: ["Un historique commun et un onglet Écoute", "Unified history and a Listening tab"],
+    items: [
+      [
+        "Films, séries et musique partagent le même historique chronologique. Écoute regroupe les tendances et classements musicaux, filtrés par période, année et utilisateur.",
+        "Movies, shows and music share one chronological history. Listening groups music trends and rankings, filtered by period, year and user.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-10-music-activity",
     version: "0.2.37-remix.44.1",
     date: "2026-11-10",

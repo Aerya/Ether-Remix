@@ -329,7 +329,7 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 			diagnose.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == "/music/history" {
+		if r.URL.Path == "/music/history" || r.URL.Path == "/music/listening" {
 			musicHistory.ServeHTTP(w, r)
 			return
 		}
