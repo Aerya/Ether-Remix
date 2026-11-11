@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
@@ -145,6 +146,11 @@ func (c *Catalog) RefreshStoredTitle(ctx context.Context, key core.RatingKey) (*
 
 func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
 	switch key.Kind() {
+	case core.KindLocal:
+		if !localmedia.Known(ctx, c.db, key) {
+			return nil, core.ErrNotFound
+		}
+		return c.StoredTitle(ctx, key)
 	case core.KindMovie:
 		return c.getMovie(ctx, key.TMDB())
 	case core.KindShow:

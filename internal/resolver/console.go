@@ -363,6 +363,9 @@ func (s *Service) SearchReleases(ctx context.Context, t *core.Title, opts Search
 	if t == nil {
 		return nil, fmt.Errorf("resolver: nil title")
 	}
+	if t.Key.Kind() == core.KindLocal {
+		return &ConsoleSearch{TitleKey: t.Key, TitleName: consoleTitleName(t), Cached: true, Releases: []ConsoleRelease{}}, nil
+	}
 	if s.indexer == nil {
 		return nil, fmt.Errorf("resolver: no indexer configured")
 	}

@@ -556,7 +556,7 @@ func (q *jfReq) albumDTO(a Album, st jfState) map[string]any {
 
 func (q *jfReq) trackDTO(t Track, st jfState) map[string]any {
 	d := q.base(guidTrack, t.ID, t.Title, st)
-	_, suffix := q.s.contentType()
+	_, suffix := q.s.trackContentType(t)
 	d["Type"] = "Audio"
 	d["IsFolder"] = false
 	d["MediaType"] = "Audio"
@@ -607,11 +607,8 @@ func (q *jfReq) trackDTO(t Track, st jfState) map[string]any {
 }
 
 func (q *jfReq) mediaSource(t Track) map[string]any {
-	_, suffix := q.s.contentType()
-	codec := suffix
-	if suffix == "m4a" {
-		codec = "aac"
-	}
+	_, suffix := q.s.trackContentType(t)
+	codec := trackCodec(t, suffix)
 	guid := JellyfinGUID(guidTrack, t.ID)
 	return map[string]any{
 		"Protocol": "File", "Id": guid, "Path": guid + "." + suffix, "Type": "Default",
@@ -628,9 +625,9 @@ func (q *jfReq) mediaSource(t Track) map[string]any {
 		"ReadAtNativeFramerate": false,
 		"MediaStreams": []any{map[string]any{
 			"Codec": codec, "Type": "Audio", "Index": 0, "IsDefault": true,
-			"Channels": 2, "SampleRate": 44100, "IsExternal": false,
+			"Channels": trackChannels(t), "SampleRate": trackSampleRate(t), "IsExternal": false,
 			"IsTextSubtitleStream": false, "SupportsExternalStream": false,
-			"DisplayTitle": strings.ToUpper(codec) + " - Stereo",
+			"DisplayTitle": strings.ToUpper(codec),
 		}},
 		"MediaAttachments":        []any{},
 		"Formats":                 []any{},

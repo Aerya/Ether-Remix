@@ -119,7 +119,7 @@ func (q *psemReq) section(md *model.Metadata) {
 
 func (q *psemReq) artistMD(a Artist) model.Metadata {
 	rk := psemKey(psemArtist, a.ID)
-	md := model.Metadata{RatingKey: rk, Key: "/library/metadata/" + rk + "/children", GUID: "deezer://artist/" + strconv.FormatInt(a.ID, 10),
+	md := model.Metadata{RatingKey: rk, Key: "/library/metadata/" + rk + "/children", GUID: musicGUID("artist", a.ID),
 		Type: "artist", Title: a.Name, TitleSort: strings.ToLower(strings.TrimSpace(a.Name)), Thumb: psemThumb(rk, 'p', a.Picture)}
 	md.SetElement("Directory")
 	q.section(&md)
@@ -129,7 +129,7 @@ func (q *psemReq) artistMD(a Artist) model.Metadata {
 
 func (q *psemReq) albumMD(a Album) model.Metadata {
 	rk := psemKey(psemAlbum, a.ID)
-	md := model.Metadata{RatingKey: rk, Key: "/library/metadata/" + rk + "/children", GUID: "deezer://album/" + strconv.FormatInt(a.ID, 10),
+	md := model.Metadata{RatingKey: rk, Key: "/library/metadata/" + rk + "/children", GUID: musicGUID("album", a.ID),
 		Type: "album", Title: a.Title, TitleSort: strings.ToLower(strings.TrimSpace(a.Title)), Thumb: psemThumb(rk, 'c', a.Cover), Year: a.Year()}
 	if a.Artist.ID != 0 {
 		ark := psemKey(psemArtist, a.Artist.ID)
@@ -150,13 +150,10 @@ func (q *psemReq) albumMD(a Album) model.Metadata {
 
 func (q *psemReq) trackMD(t Track) model.Metadata {
 	rk := psemKey(psemTrack, t.ID)
-	_, suffix := q.m.Container()
-	codec := suffix
-	if suffix == "m4a" {
-		codec = "aac"
-	}
+	_, suffix := q.m.trackContentType(t)
+	codec := trackCodec(t, suffix)
 	dur := int64(t.Duration) * 1000
-	md := model.Metadata{RatingKey: rk, Key: "/library/metadata/" + rk, GUID: "deezer://track/" + strconv.FormatInt(t.ID, 10),
+	md := model.Metadata{RatingKey: rk, Key: "/library/metadata/" + rk, GUID: musicGUID("track", t.ID),
 		Type: "track", Title: t.Title, TitleSort: strings.ToLower(strings.TrimSpace(t.Title)), Duration: dur}
 	if t.Number > 0 {
 		md.Index = model.Ptr(t.Number)
@@ -186,10 +183,10 @@ func (q *psemReq) trackMD(t Track) model.Metadata {
 		md.OriginalTitle = t.Artist.Name
 	}
 	pid := psemBase*int64(psemTrack) + t.ID
-	md.Media = []model.Media{{ID: pid, Duration: dur, AudioChannels: 2, AudioCodec: codec, Container: suffix,
+	md.Media = []model.Media{{ID: pid, Duration: dur, AudioChannels: trackChannels(t), AudioCodec: codec, Container: suffix,
 		Part: []model.Part{{ID: pid, Key: "/library/parts/" + rk + "/0/file." + suffix, Duration: dur, Container: suffix,
 			File:   "/ether/musique/" + strconv.FormatInt(t.ID, 10) + "." + suffix,
-			Stream: []model.Stream{{ID: pid, StreamType: 2, Selected: model.Ptr(true), Default: model.Ptr(true), Codec: codec, Index: model.Ptr(0), Channels: 2, DisplayTitle: strings.ToUpper(codec)}}}}}}
+			Stream: []model.Stream{{ID: pid, StreamType: 2, Selected: model.Ptr(true), Default: model.Ptr(true), Codec: codec, Index: model.Ptr(0), Channels: trackChannels(t), DisplayTitle: strings.ToUpper(codec)}}}}}}
 	md.SetElement("Track")
 	q.section(&md)
 	q.userState(&md, KindTrack, t.ID)
@@ -1045,4 +1042,12 @@ func (q *psemReq) writeQueue(pq *psemQueue) {
 func psemContainer() *model.MediaContainer {
 	return &model.MediaContainer{AllowSync: model.Ptr(false), Identifier: model.LibraryIdentifier,
 		MediaTagPrefix: model.MediaTagPrefix, MediaTagVersion: model.MediaTagVersion}
+}
+
+func musicGUID(kind string, id int64) string {
+	scheme := "deezer"
+	if ownedID(id) {
+		scheme = "ether-remix"
+	}
+	return scheme + "://" + kind + "/" + strconv.FormatInt(id, 10)
 }

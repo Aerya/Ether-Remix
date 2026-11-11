@@ -20,6 +20,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/pse/console"
 	"github.com/braedonsaunders/ether/internal/pse/frenchcat"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 	"github.com/braedonsaunders/ether/internal/pse/notifyfr"
 	"github.com/braedonsaunders/ether/internal/pse/quality"
@@ -34,24 +35,28 @@ import (
 // pseRuntime regroupe l'état des ajouts PSE d'une instance d'App, sans
 // ajouter de champ à la structure d'Ether.
 type pseRuntime struct {
-	submakerOnce  sync.Once
-	submaker      *submaker.Service
-	qualityOnce   sync.Once
-	quality       *quality.Service
-	addons        music.AddonRegistry
-	statistics    statistics.Service
-	once          sync.Once
-	mu            sync.Mutex
-	seerr         *seerrcatalog.Service
-	indexer       *releasedb.Service
-	music         atomic.Pointer[music.Server]
-	musicConf     music.Settings
-	musicAccounts [32]byte
-	scrob         atomic.Pointer[scrobpush.Pusher]
-	plOnce        sync.Once
-	playlists     *music.PlaylistSync
-	thOnce        sync.Once
-	themes        *themes.Service
+	ownedOnce         sync.Once
+	local             *localmedia.Library
+	ib                *music.IBroadcast
+	localKick, ibKick chan struct{}
+	submakerOnce      sync.Once
+	submaker          *submaker.Service
+	qualityOnce       sync.Once
+	quality           *quality.Service
+	addons            music.AddonRegistry
+	statistics        statistics.Service
+	once              sync.Once
+	mu                sync.Mutex
+	seerr             *seerrcatalog.Service
+	indexer           *releasedb.Service
+	music             atomic.Pointer[music.Server]
+	musicConf         music.Settings
+	musicAccounts     [32]byte
+	scrob             atomic.Pointer[scrobpush.Pusher]
+	plOnce            sync.Once
+	playlists         *music.PlaylistSync
+	thOnce            sync.Once
+	themes            *themes.Service
 	// exemptKick relance la mise à jour des exceptions de langue.
 	exemptKick chan struct{}
 	lfmOnce    sync.Once
@@ -146,7 +151,7 @@ func (rt *pseRuntime) reloadMusic(a *App) {
 		return
 	}
 	rt.musicConf, rt.musicAccounts = cfg, fingerprint
-	if !cfg.Enabled() {
+	if !cfg.Enabled() && !a.hasOwnedMusic(context.Background()) {
 		rt.music.Store(nil)
 		frontend.SetPSEMusic(nil)
 		return
@@ -280,7 +285,12 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	if s := a.pseSubmaker(); s != nil {
 		submakerAPI = s.Handler()
 	}
+	ownedAPI := a.ownedMediaAPI()
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/owned/") {
+			http.StripPrefix("/owned", ownedAPI).ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/quality/manifest" {
 			a.pseQualityImport(w, r)
 			return

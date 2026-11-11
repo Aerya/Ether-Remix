@@ -63,7 +63,14 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 - Browse the **public Deezer catalogue** from Plex/Plexamp, Jellyfin clients or a Subsonic application: Symfonium, Feishin, Supersonic, DSub…
 - Listen through **Audius, Eclipse addons, DMM with Real-Debrid or your AllDebrid, Real-Debrid and TorBox accounts**, depending on enabled sources.
 - Choose source order: when a source fails, Remix tries the next one. External HiFi API mode is used only when no other music source is active.
-- Keep **per-user favourites and listening history**, without building a local music-file library. Available quality depends on the sources.
+- Keep **per-user favourites and listening history**. Available quality depends on the sources.
+
+### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Your files and iBroadcast library
+
+- **Local video and music**: share host folders or network mounts through read-only Docker volumes. Scan on demand and hourly, without moving or deleting files.
+- **Personal videos included**, with no TMDB entry required: one library per video folder, with one item per file. Audio files join Music with their artists, albums and tags.
+- **iBroadcast**: connect your account through OAuth device authorization, import its library and play it in your music clients. Read-only access, MP3 128 kbps; favourites and listening history remain personal to each Remix viewer.
+- Configured folders and the iBroadcast account are shared with the server’s viewers. [Setup and formats](docs/pse/GUIDE.en.md#local-media-and-ibroadcast).
 
 ### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Your playlists and new discoveries
 

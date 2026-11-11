@@ -23,7 +23,7 @@ type Source interface {
 
 // imageRefRe accepte les références d'image des deux catalogues : UUID
 // TIDAL ou empreinte MD5 Deezer.
-var imageRefRe = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$`)
+var imageRefRe = regexp.MustCompile(`^(?:ib-[1-9][0-9]{0,18}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$`)
 
 var coverSizes = []int{80, 160, 320, 640, 1280}
 var pictureSizes = []int{160, 320, 480, 750}

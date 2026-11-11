@@ -21,6 +21,7 @@ func (a *App) mountPSEMusic(mux *http.ServeMux) {
 	rt := pseRuntimeOf(a)
 	rt.prepare(a)
 	rt.reloadMusic(a)
+	a.startOwnedMedia()
 	// Account and priority changes must invalidate music links as well.
 	a.cfg.Subscribe(func(config.Config) { rt.reloadMusic(a) })
 	a.startPSEPlaylists(rt)
@@ -60,8 +61,10 @@ func (a *App) newPSEMusic(cfg music.Settings) *music.Server {
 		a.log.Warn("musique Ether-Remix indisponible", "err", err)
 		return nil
 	}
+	a.ownedMedia()
+	rt := pseRuntimeOf(a)
 	return music.NewServer(music.Options{
-		Source:    cfg.NewSource(a.newPSEMusicDebrid()),
+		Source:    &music.OwnedSource{Remote: cfg.NewSource(a.newPSEMusicDebrid()), DB: a.db, Local: rt.local, IB: rt.ib},
 		Library:   music.NewLibrary(a.db),
 		Playlists: pseRuntimeOf(a).playlistSync(a).Store,
 		Auth: func(ctx context.Context, username, password string) (int64, error) {

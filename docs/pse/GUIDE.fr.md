@@ -230,3 +230,38 @@ Pour les règles de visibilité et les délais de recherche, voir [Catalogue et 
 **Activité → Historique** réunit films, séries et musique dans un tableau chronologique commun, avec recherche, tri, pagination et fiche de détail. La liste contient les 500 dernières lectures de la période sélectionnée. Les écoutes musicales gardent leurs métadonnées artiste/album ; la durée indiquée est celle du morceau, pas le temps réellement écouté. Les mesures de complétion et de durée de session restent explicitement réservées à la vidéo.
 
 **Activité → Écoute** reprend les filtres période, année et utilisateur de Visionnage. Les compteurs, écoutes par jour, grille jour/heure et classements par morceau, artiste, album et auditeur portent sur toute la période, sans la limite de l’historique. Les graphiques utilisent le fuseau du navigateur. Les anciennes écoutes sont incluses, même si la source musicale est désactivée.
+
+## Médias locaux et iBroadcast
+
+### Dossiers vidéo et audio
+
+Ajoutez vos dossiers dans les volumes de la stack Dockge-Enhanced, puis redémarrez le conteneur :
+
+```yaml
+volumes:
+  - ./config:/config
+  - ./cache:/cache
+  - /chemin/hote/videos:/media/videos:ro
+  - /chemin/hote/musique:/media/musique:ro
+```
+
+Dans **Sources → Fichiers locaux**, indiquez un nom unique, le chemin **dans le conteneur** (`/media/videos`, par exemple) et le type vidéo ou audio. Un dossier réseau doit être monté sur l’hôte avant de démarrer la stack. Le compte du conteneur doit pouvoir lire ses fichiers.
+
+L’analyse se lance après ajout, au démarrage, chaque heure et avec **Analyser maintenant**. Le panneau affiche sa progression et ses erreurs. Les métadonnées inchangées sont réutilisées. Un dossier inaccessible conserve son index précédent ; une analyse réussie retire les fichiers disparus de la bibliothèque. Retirer une source ne supprime jamais les fichiers. Les liens symboliques sont ignorés.
+
+Les vidéos — films, épisodes, animés, concerts ou vidéos personnelles — apparaissent **comme fichiers individuels**, avec une bibliothèque et une collection par source. Aucun rapprochement TMDB ni regroupement automatique en saisons n’est effectué. Elles utilisent le moteur de lecture vidéo d’Ether et ne nécessitent pas de release distante : les règles FR/lisible et les recherches externes ne s’appliquent pas à ces fichiers. Les compteurs d’indexation TMDB ne les incluent pas.
+
+La musique locale rejoint la bibliothèque Musique et ses clients Plex/Plexamp, Jellyfin/Emby et Subsonic. Les tags fournissent titre, artiste, album, disque et piste ; à défaut, Remix utilise le nom du fichier et du dossier. Les fichiers sont servis dans leur format d’origine : la compatibilité audio dépend du client. Les fichiers locaux ne sont jamais envoyés à un fournisseur musical.
+
+Formats analysés : MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, OGV, VOB, 3GP ; MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, APE, WMA et ALAC. Un fichier doit contenir un flux du type choisi et être lisible par `ffprobe`. L’image Docker Linux fournit cet outil. Les fichiers sont partagés avec les spectateurs autorisés du serveur ; n’exposez que les dossiers souhaités.
+
+### Compte iBroadcast
+
+Dans **Sources → Streaming musical → iBroadcast** :
+
+1. Sur [iBroadcast](https://media.ibroadcast.com/), ouvrez le menu du compte → **Apps → developer**, puis créez une application privée.
+2. Dans son édition, choisissez **Grant Type → Device Code**, enregistrez et copiez le **Client ID** dans Remix. Aucun Client Secret, mot de passe ou URL de retour n’est nécessaire.
+3. Cliquez **Connecter iBroadcast**, ouvrez le lien et autorisez les accès au compte et à la bibliothèque **en lecture seule**. Le panneau se met à jour automatiquement.
+4. L’import démarre après autorisation, puis chaque heure ; **Actualiser la bibliothèque** permet de le relancer.
+
+La bibliothèque iBroadcast est partagée avec les spectateurs du serveur, tout en conservant leurs favoris, playlists Remix et historiques séparés. Cette intégration lit les pistes en **MP3 128 kb/s**, y compris avec un compte gratuit ; elle ne synchronise pas les playlists ni les modifications de tags vers iBroadcast. Les jetons sont chiffrés dans la base, renouvelés automatiquement et absents des réponses destinées aux clients. Déconnecter retire la bibliothèque de Remix ; pour révoquer également l’autorisation auprès du fournisseur, utilisez **Apps** sur iBroadcast.

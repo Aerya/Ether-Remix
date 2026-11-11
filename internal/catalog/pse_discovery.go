@@ -18,6 +18,9 @@ const pseDiscoveryBatch = 400
 // active est faux quand aucune règle Remix n'est activée.
 func (c *Catalog) pseDiscoveryAllowed(ctx context.Context, keys []core.RatingKey) (allowed map[core.RatingKey]bool, active bool, err error) {
 	conds, condArgs := pseCatalogWhere(nil, nil, core.Filter{}, c.now().Unix())
+	if c.localMedia.Load() {
+		conds = append(conds, localMediaWhere())
+	}
 	if len(conds) == 0 {
 		return nil, false, nil
 	}

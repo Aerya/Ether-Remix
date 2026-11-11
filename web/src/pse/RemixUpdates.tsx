@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-french-rows",
+    id: "2026-11-11-local-media-ibroadcast",
     version: "current",
+    date: "2026-11-11",
+    title: ["Vos médias locaux et iBroadcast", "Your local media and iBroadcast"],
+    items: [
+      [
+        "Ajoutez des dossiers vidéo ou audio montés dans Docker : bibliothèques locales, vidéos personnelles sans TMDB, analyse automatique et lecture sans déplacer vos fichiers.",
+        "Add video or audio folders mounted in Docker: local libraries, personal videos without TMDB, automatic scans and playback without moving files.",
+      ],
+      [
+        "Connectez iBroadcast par code OAuth en lecture seule. Sa bibliothèque rejoint Musique, avec des favoris et historiques distincts pour chaque spectateur.",
+        "Connect iBroadcast using read-only OAuth device authorization. Its library joins Music, with separate favourites and history for each viewer.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-french-rows",
+    version: "0.2.37-remix.47.1",
     date: "2026-11-11",
     title: ["Accueil et collections en français", "French Home rows and collections"],
     items: [

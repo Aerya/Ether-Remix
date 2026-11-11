@@ -63,7 +63,14 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 - Parcourez le **catalogue Deezer public** depuis Plex/Plexamp, les clients Jellyfin ou une application Subsonic : Symfonium, Feishin, Supersonic, DSub…
 - Écoutez via **Audius, les addons Eclipse, DMM avec Real-Debrid ou vos comptes AllDebrid, Real-Debrid et TorBox**, selon les sources activées.
 - Définissez l’ordre des sources : lorsqu’une source échoue, Remix essaie les suivantes. Le mode HiFi API externe s’utilise seulement lorsqu’aucune autre source musicale n’est active.
-- Retrouvez vos **favoris et votre historique par utilisateur**, sans constituer une bibliothèque de fichiers musicaux locaux. La qualité disponible dépend des sources.
+- Retrouvez vos **favoris et votre historique par utilisateur**. La qualité disponible dépend des sources.
+
+### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Vos fichiers et votre bibliothèque iBroadcast
+
+- **Vidéos et musique locales** : partagez des dossiers de l’hôte ou des montages réseau via les volumes Docker, en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer vos fichiers.
+- **Vidéos personnelles incluses**, sans fiche TMDB : une bibliothèque par dossier vidéo, avec une fiche par fichier. Les fichiers audio rejoignent Musique avec leurs artistes, albums et tags.
+- **iBroadcast** : connectez votre compte par code OAuth, importez sa bibliothèque et écoutez-la dans vos clients musicaux. Accès en lecture seule, MP3 128 kb/s ; favoris et écoutes propres à chaque spectateur dans Remix.
+- Les dossiers et le compte iBroadcast configurés sont partagés avec les spectateurs du serveur. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
 
 ### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Vos playlists et de nouvelles découvertes
 

@@ -460,7 +460,7 @@ func (c *Catalog) tallyTotal(ctx context.Context, f core.Filter, where string, a
 		return total - watched, true, nil
 	}
 	s, ok := c.tallyShape(f)
-	if !ok || pseFiltersCatalog(f) { // PSE-HOOK: filtres Accent hors décompte — voir docs/pse/FORK.fr.md
+	if !ok || c.localMedia.Load() || pseFiltersCatalog(f) { // PSE-HOOK: filtres Accent hors décompte — voir docs/pse/FORK.fr.md
 		return 0, false, nil
 	}
 	table, dims, dimArgs, member, memberArgs := "catalog_browse_tally", "", []any(nil), "", []any(nil)

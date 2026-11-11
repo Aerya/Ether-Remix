@@ -230,3 +230,38 @@ For visibility rules and search intervals, see [Catalogue and indexing](CATALOGU
 **Activity → History** combines movies, shows and music in one chronological table, with search, sorting, pagination and details. The list contains the latest 500 plays in the selected period. Music retains artist/album metadata; its duration is the track length, not measured listening time. Completion and session-duration metrics remain explicitly video-only.
 
 **Activity → Listening** uses the same period, year and user filters as Viewing. Counts, daily listens, weekday/hour heatmap and track, artist, album and listener rankings cover the entire period, independently of the history limit. Charts use the browser time zone. Existing listens remain included even when the music source is disabled.
+
+## Local media and iBroadcast
+
+### Video and audio folders
+
+Add folders to your Dockge-Enhanced stack volumes and restart the container:
+
+```yaml
+volumes:
+  - ./config:/config
+  - ./cache:/cache
+  - /host/path/videos:/media/videos:ro
+  - /host/path/music:/media/music:ro
+```
+
+In **Sources → Local files**, enter a unique name, the **container path** (for example `/media/videos`) and video or audio type. Mount network folders on the host before starting the stack. The container user needs read access.
+
+Scans run after adding a folder, at startup, hourly and with **Scan now**. The panel shows progress and errors. Unchanged metadata is reused. Unavailable folders retain their previous index; successful scans remove missing files from the library. Removing a source never deletes files. Symbolic links are skipped.
+
+Videos — movies, episodes, anime, concerts and personal recordings — appear **as individual files**, with a library and collection for each source. There is no automatic TMDB matching or season grouping. They use Ether’s video playback engine and need no remote release: French/playable filters and external release searches do not apply. TMDB indexing counters exclude them.
+
+Local audio joins Music in Plex/Plexamp, Jellyfin/Emby and Subsonic clients. Tags supply title, artist, album, disc and track; filenames and folder names are used as fallbacks. Files are served in their original format, so audio compatibility depends on the client. Local files are never sent to a music provider.
+
+Recognized formats: MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, OGV, VOB, 3GP; MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, APE, WMA and ALAC. Files must contain the selected stream type and be readable by `ffprobe`, included in the Linux Docker image. Files are shared with authorized server viewers; expose only the intended folders.
+
+### iBroadcast account
+
+In **Sources → Music streaming → iBroadcast**:
+
+1. On [iBroadcast](https://media.ibroadcast.com/), open the account menu → **Apps → developer** and create a private application.
+2. Edit it, select **Grant Type → Device Code**, save and copy its **Client ID** into Remix. No Client Secret, password or redirect URL is needed.
+3. Click **Connect iBroadcast**, open the link and authorize **read-only** account and library access. The panel updates automatically.
+4. Import starts after authorization, then runs hourly; **Refresh library** starts it manually.
+
+The iBroadcast library is shared with server viewers, while favourites, Remix playlists and listening history remain per viewer. Tracks stream as **MP3 128 kbps**, including free accounts. This integration does not synchronize playlists or tag edits back to iBroadcast. Tokens are encrypted in the database, refreshed automatically and excluded from client responses. Disconnecting removes the library from Remix; revoke the provider authorization separately in iBroadcast **Apps**.

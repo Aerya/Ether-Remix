@@ -601,6 +601,9 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 	}
 	// PSE-HOOK: catalogue lisible uniquement et en français — voir docs/pse/FORK.fr.md
 	conds, args = pseCatalogWhere(conds, args, f, nowTS)
+	if c.localMedia.Load() {
+		conds = append(conds, localMediaWhere())
+	}
 	// Facets query children directly rather than through storedEpisodesWhere.
 	// They inherit their show's decision and episodes apply their own too.
 	if (f.Type == core.TypeEpisode || f.Type == core.TypeSeason) && f.HiddenShowGeneration != "" {
