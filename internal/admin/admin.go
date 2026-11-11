@@ -137,6 +137,7 @@ type Deps struct {
 
 	// Extensions are owner-authenticated API subtrees keyed by relative path.
 	Extensions map[string]http.Handler
+	OwnedMedia http.Handler
 	// PublicExtensions are API subtrees that authorise each request
 	// themselves (the add-on settings relay takes a short-lived token).
 	PublicExtensions map[string]http.Handler
@@ -363,6 +364,7 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/me/favorites-mirror", h.portalFavoritesMirror)
 	mux.HandleFunc("POST /api/me/favorites-mirror", h.portalFavoritesMirror)
 	mux.HandleFunc("GET /api/me/apps", h.portalConnectApps)
+	mux.HandleFunc("/api/me/media/", h.portalOwnedMedia)
 	mux.HandleFunc("POST /api/me/apps/{surface}", h.portalConnectApps)
 	mux.HandleFunc("POST /api/me/link/plex", h.limitIdentityAuth(h.handlePlexLinkStart))
 	mux.HandleFunc("GET /api/me/link/plex/{handle}", h.limitIdentityPoll(h.handlePlexLinkPoll))

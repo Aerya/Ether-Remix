@@ -211,6 +211,25 @@
   },
   {
     "kind": "collectionSource",
+    "id": "localFiles",
+    "owner": "builtin",
+    "label": {
+      "source": "Local files"
+    },
+    "hint": {
+      "source": "Files in an indexed local folder"
+    },
+    "meta": {
+      "defaults": {},
+      "mediaTypes": [
+        "movie",
+        "show",
+        "mixed"
+      ]
+    }
+  },
+  {
+    "kind": "collectionSource",
     "id": "tmdbPerson",
     "owner": "builtin",
     "label": {

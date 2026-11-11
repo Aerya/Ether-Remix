@@ -824,6 +824,7 @@ func (m *Manager) PrepareSurface(ctx context.Context, user *core.User, key core.
 // prepareEntry is Prepare plus an optional picked release (prefer != "").
 // An existing session on a different release is replaced, never reused.
 func (m *Manager) prepareEntry(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession bool) (*core.PlaySession, error) {
+	ctx = core.WithCatalogViewer(ctx, user)
 	ps, _, err := m.prepareOwnedEntry(ctx, user, key, caps, prefer, exact, deferSupersession)
 	return ps, err
 }

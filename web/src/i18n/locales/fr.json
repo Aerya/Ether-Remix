@@ -4097,6 +4097,7 @@
   "m_0f07303b32517e": "Effacer les octets en cache de {title} ? La release reste lisible et sera de nouveau récupérée à sa prochaine lecture. Toute lecture en cours ou en pause doit d’abord être arrêtée. Les octets protégés peuvent subsister jusqu’à la fin des tâches en arrière-plan.",
   "m_0f0ad430471ab7": "Langue d’affichage",
   "m_0f0b18d569c736": "Rien d’affiché",
+  "m_0f0c72e5ba4050": "Fichiers dans un dossier local indexé",
   "m_0f0c7468f067cd": "Noto Sans",
   "m_0f0e5bb0502cf7": "Comment les utilisateurs se connectent",
   "m_0f0f1d9646b986": "Ce compte Plex n’est pas propriétaire de ce serveur. Connectez-vous avec le compte qui a configuré Ether.",

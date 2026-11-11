@@ -64,6 +64,7 @@ func (a *App) buildAdmin() http.Handler {
 		Config:           a.cfg,
 		Frontends:        a.frontends.control,
 		Extensions:       a.extensionHandlers(),
+		OwnedMedia:       a.ownedMediaAPI(),
 		PublicExtensions: a.publicExtensionHandlers(),
 		ValidateExtra:    a.validateExtra,
 		Logger:           a.log.With("component", "admin"),

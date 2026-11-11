@@ -191,3 +191,20 @@ func TestCachedHintsDirectStreams(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalVideosNeverReachRemoteIndexers(t *testing.T) {
+	s := New(Deps{DB: store.OpenTest(t), Settings: Settings{Types: []core.MediaType{core.TypeMovie}}, Search: func(context.Context, core.SearchRequest) ([]core.Release, error) {
+		t.Fatal("personal title sent to remote indexer")
+		return nil, nil
+	}})
+	local := core.Title{Key: core.LocalKey(3_000_000_000_001), Type: core.TypeMovie, Title: "Private home video"}
+	if err := s.IndexTitle(t.Context(), local, []source{{id: "remote"}}); err != nil {
+		t.Fatal(err)
+	}
+	s.urgent[core.TypeMovie] = []core.Title{local}
+	s.prio[core.TypeMovie] = []core.Title{local}
+	s.d.Priority = func(context.Context, core.MediaType) []PriorityKey { return nil }
+	if _, ok, err := s.nextPriority(t.Context(), core.TypeMovie, time.Now()); err != nil || ok {
+		t.Fatal(ok, err)
+	}
+}

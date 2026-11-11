@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/pse/quality"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
@@ -446,6 +447,9 @@ func (s *Service) maxCandidates() int {
 
 // Available implements core.Resolver.
 func (s *Service) Available(ctx context.Context, key core.RatingKey) (bool, bool) {
+	if localmedia.IsKey(key) || localmedia.Known(ctx, s.db, key) {
+		return true, localmedia.Known(ctx, s.db, key)
+	}
 	e, ok := s.getAvailability(ctx, int64(key))
 	if !ok {
 		return false, false
@@ -602,6 +606,12 @@ func flightKey(req core.ResolveRequest, profile core.QualityProfile) string {
 func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.Resolution, error) {
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
+	}
+	if localmedia.IsKey(req.Title.Key) || localmedia.Known(ctx, s.db, req.Title.Key) {
+		res, err := localmedia.Resolve(ctx, s.db, req)
+		if err == nil || localmedia.IsKey(req.Title.Key) {
+			return res, err
+		}
 	}
 	if s.indexer == nil {
 		return nil, fmt.Errorf("resolver: no indexer configured")

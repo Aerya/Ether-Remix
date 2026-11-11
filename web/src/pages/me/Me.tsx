@@ -1,3 +1,4 @@
+import { IBroadcastSource } from "../../pse/OwnedMedia";
 import { t } from "../../i18n";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Alert, AlertDescription, Button, Card, Input, Label } from "@braedonsaunders/appkit-ui";
@@ -502,6 +503,7 @@ export default function Me() {
         {signedIn ? (
           <>
             <ConnectApps base="/me" token={token} />
+            <IBroadcastSource key={token} portalToken={token} />
             <SignInMethods base="/me" token={token} />
           </>
         ) : null}

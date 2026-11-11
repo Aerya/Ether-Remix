@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/markers"
 	"github.com/braedonsaunders/ether/internal/playback"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/trackprefs"
 	"github.com/braedonsaunders/ether/internal/transcode"
@@ -199,7 +200,7 @@ func playbackEngine(a *App) core.Engine {
 	if a.opts.FixtureMedia != nil {
 		return a.opts.FixtureMedia
 	}
-	return parityEngine(a.media, a.opts.DataDir)
+	return localmedia.Engine{Engine: parityEngine(a.media, a.opts.DataDir), Library: &localmedia.Library{DB: a.db}}
 }
 
 func playbackFetchNZB(a *App, dataDir string) func(context.Context, core.Release) ([]byte, error) {

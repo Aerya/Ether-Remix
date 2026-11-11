@@ -24,7 +24,7 @@ func (s *Server) AlbumTracks(ctx context.Context, id int64) (Album, []Track, err
 		a Album
 		t []Track
 	}
-	p, err := memoized(s.cache, "al:"+strconv.FormatInt(id, 10), s.clock(), func() (pair, error) {
+	p, err := memoizedFor(ctx, s.cache, "al:"+strconv.FormatInt(id, 10), s.clock(), func() (pair, error) {
 		a, t, err := s.o.Source.Album(ctx, id)
 		return pair{a, t}, err
 	})
@@ -37,7 +37,7 @@ func (s *Server) ArtistAlbums(ctx context.Context, id int64) (Artist, []Album, e
 		a  Artist
 		al []Album
 	}
-	p, err := memoized(s.cache, "ar:"+strconv.FormatInt(id, 10), s.clock(), func() (pair, error) {
+	p, err := memoizedFor(ctx, s.cache, "ar:"+strconv.FormatInt(id, 10), s.clock(), func() (pair, error) {
 		a, al, err := s.o.Source.Artist(ctx, id)
 		return pair{a, al}, err
 	})
@@ -47,12 +47,13 @@ func (s *Server) ArtistAlbums(ctx context.Context, id int64) (Artist, []Album, e
 // TrackFor renvoie un titre, depuis la bibliothèque du spectateur si elle
 // le connaît.
 func (s *Server) TrackFor(ctx context.Context, viewer, id int64) (Track, error) {
+	ctx = withMusicViewer(ctx, viewer)
 	if it, ok, _ := s.o.Library.Get(ctx, viewer, KindTrack, id); ok {
 		if t := decode[Track](it); t.Title != "" {
 			return t, nil
 		}
 	}
-	return memoized(s.cache, "tr:"+strconv.FormatInt(id, 10), s.clock(), func() (Track, error) {
+	return memoizedFor(ctx, s.cache, "tr:"+strconv.FormatInt(id, 10), s.clock(), func() (Track, error) {
 		return s.o.Source.Track(ctx, id)
 	})
 }
@@ -64,7 +65,7 @@ func (s *Server) ArtistTopTracks(ctx context.Context, id int64) []Track {
 	if !ok {
 		return nil
 	}
-	tracks, _ := memoized(s.cache, "top:"+strconv.FormatInt(id, 10), s.clock(), func() ([]Track, error) {
+	tracks, _ := memoizedFor(ctx, s.cache, "top:"+strconv.FormatInt(id, 10), s.clock(), func() ([]Track, error) {
 		return tt.ArtistTop(ctx, id, 50)
 	})
 	return tracks
@@ -77,9 +78,9 @@ func (s *Server) Charts(ctx context.Context) ([]Artist, []Album, []Track) {
 		return nil, nil, nil
 	}
 	now := s.clock()
-	ar, _ := memoized(s.charts, "artists", now, func() ([]Artist, error) { return ch.ChartArtists(ctx, 100) })
-	al, _ := memoized(s.charts, "albums", now, func() ([]Album, error) { return ch.ChartAlbums(ctx, 100) })
-	tr, _ := memoized(s.charts, "tracks", now, func() ([]Track, error) { return ch.ChartTracks(ctx, 100) })
+	ar, _ := memoizedFor(ctx, s.charts, "artists", now, func() ([]Artist, error) { return ch.ChartArtists(ctx, 100) })
+	al, _ := memoizedFor(ctx, s.charts, "albums", now, func() ([]Album, error) { return ch.ChartAlbums(ctx, 100) })
+	tr, _ := memoizedFor(ctx, s.charts, "tracks", now, func() ([]Track, error) { return ch.ChartTracks(ctx, 100) })
 	return ar, al, tr
 }
 
@@ -93,7 +94,7 @@ func (s *Server) Search(ctx context.Context, q string, limit int) ([]Artist, []A
 		tr []Track
 	}
 	key := strconv.Itoa(limit) + ":" + strings.ToLower(strings.TrimSpace(q))
-	r, _ := memoized(s.searches, key, s.clock(), func() (res, error) {
+	r, _ := memoizedFor(ctx, s.searches, key, s.clock(), func() (res, error) {
 		ctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		defer cancel()
 		src := s.o.Source

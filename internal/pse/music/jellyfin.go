@@ -125,6 +125,7 @@ func (q *jfReq) result(items []any, total, start int) {
 // viewer vaut 0 pour une requête sans identifiant valide : seules les
 // images y sont servies.
 func (s *Server) ServeJellyfin(w http.ResponseWriter, r *http.Request, viewer int64, j Jellyfin) bool {
+	*r = *r.WithContext(withMusicViewer(r.Context(), viewer))
 	segs := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	low := make([]string, len(segs))
 	for i, p := range segs {
@@ -410,7 +411,7 @@ func (q *jfReq) album(ctx context.Context, id int64) (Album, []Track, error) {
 		a Album
 		t []Track
 	}
-	p, err := memoized(q.s.cache, "al:"+strconv.FormatInt(id, 10), q.s.clock(), func() (pair, error) {
+	p, err := memoizedFor(ctx, q.s.cache, "al:"+strconv.FormatInt(id, 10), q.s.clock(), func() (pair, error) {
 		a, t, err := q.s.o.Source.Album(ctx, id)
 		return pair{a, t}, err
 	})
@@ -422,7 +423,7 @@ func (q *jfReq) artist(ctx context.Context, id int64) (Artist, []Album, error) {
 		a  Artist
 		al []Album
 	}
-	p, err := memoized(q.s.cache, "ar:"+strconv.FormatInt(id, 10), q.s.clock(), func() (pair, error) {
+	p, err := memoizedFor(ctx, q.s.cache, "ar:"+strconv.FormatInt(id, 10), q.s.clock(), func() (pair, error) {
 		a, al, err := q.s.o.Source.Artist(ctx, id)
 		return pair{a, al}, err
 	})
@@ -435,7 +436,7 @@ func (q *jfReq) track(ctx context.Context, id int64) (Track, error) {
 			return t, nil
 		}
 	}
-	return memoized(q.s.cache, "tr:"+strconv.FormatInt(id, 10), q.s.clock(), func() (Track, error) {
+	return memoizedFor(ctx, q.s.cache, "tr:"+strconv.FormatInt(id, 10), q.s.clock(), func() (Track, error) {
 		return q.s.o.Source.Track(ctx, id)
 	})
 }
@@ -556,7 +557,7 @@ func (q *jfReq) albumDTO(a Album, st jfState) map[string]any {
 
 func (q *jfReq) trackDTO(t Track, st jfState) map[string]any {
 	d := q.base(guidTrack, t.ID, t.Title, st)
-	_, suffix := q.s.contentType()
+	_, suffix := q.s.trackContentType(t)
 	d["Type"] = "Audio"
 	d["IsFolder"] = false
 	d["MediaType"] = "Audio"
@@ -607,11 +608,8 @@ func (q *jfReq) trackDTO(t Track, st jfState) map[string]any {
 }
 
 func (q *jfReq) mediaSource(t Track) map[string]any {
-	_, suffix := q.s.contentType()
-	codec := suffix
-	if suffix == "m4a" {
-		codec = "aac"
-	}
+	_, suffix := q.s.trackContentType(t)
+	codec := trackCodec(t, suffix)
 	guid := JellyfinGUID(guidTrack, t.ID)
 	return map[string]any{
 		"Protocol": "File", "Id": guid, "Path": guid + "." + suffix, "Type": "Default",
@@ -628,9 +626,9 @@ func (q *jfReq) mediaSource(t Track) map[string]any {
 		"ReadAtNativeFramerate": false,
 		"MediaStreams": []any{map[string]any{
 			"Codec": codec, "Type": "Audio", "Index": 0, "IsDefault": true,
-			"Channels": 2, "SampleRate": 44100, "IsExternal": false,
+			"Channels": trackChannels(t), "SampleRate": trackSampleRate(t), "IsExternal": false,
 			"IsTextSubtitleStream": false, "SupportsExternalStream": false,
-			"DisplayTitle": strings.ToUpper(codec) + " - Stereo",
+			"DisplayTitle": strings.ToUpper(codec),
 		}},
 		"MediaAttachments":        []any{},
 		"Formats":                 []any{},
@@ -765,7 +763,7 @@ func (q *jfReq) artistChildren(ctx context.Context, id int64, types []string, st
 	var out []any
 	if hasType(types, "Audio") && !hasType(types, "MusicAlbum") {
 		if tt, ok := q.s.o.Source.(TopTracker); ok {
-			tracks, _ := memoized(q.s.cache, "top:"+strconv.FormatInt(id, 10), q.s.clock(), func() ([]Track, error) {
+			tracks, _ := memoizedFor(ctx, q.s.cache, "top:"+strconv.FormatInt(id, 10), q.s.clock(), func() ([]Track, error) {
 				return tt.ArtistTop(ctx, id, 50)
 			})
 			for _, t := range tracks {
@@ -870,7 +868,7 @@ func (q *jfReq) library(ctx context.Context, types []string, st jfState) []any {
 			add(a.ID, q.artistDTO(a, st))
 		}
 		if charts {
-			as, _ := memoized(q.s.charts, "artists", now, func() ([]Artist, error) { return ch.ChartArtists(ctx, 100) })
+			as, _ := memoizedFor(ctx, q.s.charts, "artists", now, func() ([]Artist, error) { return ch.ChartArtists(ctx, 100) })
 			for _, a := range as {
 				add(a.ID, q.artistDTO(a, st))
 			}
@@ -881,7 +879,7 @@ func (q *jfReq) library(ctx context.Context, types []string, st jfState) []any {
 			add(t.ID, q.trackDTO(t, st))
 		}
 		if charts {
-			ts, _ := memoized(q.s.charts, "tracks", now, func() ([]Track, error) { return ch.ChartTracks(ctx, 100) })
+			ts, _ := memoizedFor(ctx, q.s.charts, "tracks", now, func() ([]Track, error) { return ch.ChartTracks(ctx, 100) })
 			for _, t := range ts {
 				add(t.ID, q.trackDTO(t, st))
 			}
@@ -892,7 +890,7 @@ func (q *jfReq) library(ctx context.Context, types []string, st jfState) []any {
 			add(a.ID, q.albumDTO(a, st))
 		}
 		if charts {
-			as, _ := memoized(q.s.charts, "albums", now, func() ([]Album, error) { return ch.ChartAlbums(ctx, 100) })
+			as, _ := memoizedFor(ctx, q.s.charts, "albums", now, func() ([]Album, error) { return ch.ChartAlbums(ctx, 100) })
 			for _, a := range as {
 				add(a.ID, q.albumDTO(a, st))
 			}
@@ -926,7 +924,7 @@ func (q *jfReq) latest() {
 		}
 	}
 	if ch, ok := q.s.o.Source.(Charter); ok {
-		as, _ := memoized(q.s.charts, "albums", q.s.clock(), func() ([]Album, error) { return ch.ChartAlbums(ctx, 100) })
+		as, _ := memoizedFor(ctx, q.s.charts, "albums", q.s.clock(), func() ([]Album, error) { return ch.ChartAlbums(ctx, 100) })
 		for _, a := range as {
 			if !seen[a.ID] {
 				seen[a.ID] = true

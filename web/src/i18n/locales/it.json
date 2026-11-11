@@ -4097,6 +4097,7 @@
   "m_0f07303b32517e": "Cancellare i byte in cache di {title}? La release resta riproducibile e verrà scaricata di nuovo alla prossima riproduzione. Prima occorre interrompere le riproduzioni attive o in pausa. I byte protetti possono rimanere finché non termina il lavoro in background.",
   "m_0f0ad430471ab7": "Lingua di visualizzazione",
   "m_0f0b18d569c736": "Niente di mostrato",
+  "m_0f0c72e5ba4050": "File in una cartella locale indicizzata",
   "m_0f0c7468f067cd": "Noto Sans",
   "m_0f0e5bb0502cf7": "Come effettuano l'accesso gli utenti",
   "m_0f0f1d9646b986": "Quell'account Plex non è il proprietario di questo server. Accedi con l'account che ha configurato Ether.",

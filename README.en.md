@@ -31,7 +31,11 @@ Ether adapts to each app: it is a Plex server to Plex apps, a Jellyfin server to
 
 Ether-Remix is a fork of Ether built for French speakers. It keeps everything Ether does and adds a French catalogue: Home and collections only show titles available in French or MULTi, or playable under your criteria. Background indexing looks for releases in advance (addons, indexers, SeerrCatalog, StreamFusion Reborn), so they are ready when playback starts.
 
-Remix also adds music. The Deezer catalogue can be browsed from Plexamp, Jellyfin clients or Subsonic apps, and streams from your debrid accounts or free sources, with nothing stored. On top of that come custom libraries and collections, subtitles translated with SubMaker, detailed statistics and a console in French.
+Your **local videos**, movies, episodes and personal recordings also join your libraries: Remix looks for a match in its catalogue, then TMDB, and keeps a local presentation when there is no reliable match.
+
+For **music**, bring together the Deezer catalogue, your audio files and your iBroadcast accounts in Plexamp, Jellyfin clients or Subsonic apps. Free music sources and debrid accounts provide additional streaming options; playlists can be browsed, imported and managed per user. Local folders and iBroadcast accounts are private by default, with optional sharing.
+
+Custom libraries and collections, subtitles translated with SubMaker, detailed statistics and a French console round out these features.
 
 ## Compatible apps
 
@@ -61,6 +65,12 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled. Optionally, SubMaker prepares their French subtitles, and each title shows its subtitle state.
 - **Anime**: create TMDB-based libraries and collections with your French/MULTi preferences and any Stremio addons you choose.
 
+### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Your local movies and personal videos
+
+- **Host folders or network mounts**: expose them through read-only Docker volumes. Scan on demand and hourly, without moving or deleting files.
+- **Catalogue matching**: search existing Remix entries first, then TMDB; identified movies and episodes reuse their entries. Without a reliable match, personal videos retain their local presentation.
+- **Libraries and collections per folder**, private by default; optionally share with selected viewers or everyone. [Setup and formats](docs/pse/GUIDE.en.md#local-media-and-ibroadcast).
+
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Unified sources and searches ahead of playback
 
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
@@ -88,18 +98,22 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) Music in your applications
 
-- **Music activity**: current playback reported by Plex, Jellyfin/Emby and Subsonic; one chronological history for video and music; a **Listening** tab with daily trends, listening times and track, artist, album and listener rankings, filterable by period and user.
 - Browse the **public Deezer catalogue** from Plex/Plexamp, Jellyfin clients or a Subsonic application: Symfonium, Feishin, Supersonic, DSub…
 - Listen through **Audius, Eclipse addons, DMM with Real-Debrid or your AllDebrid, Real-Debrid and TorBox accounts**, depending on enabled sources.
+- **Local music**: play your files in their original format, with artists, albums and tags, from host folders or network mounts exposed through read-only Docker volumes. Scan on demand and hourly, without moving or deleting files.
+- **iBroadcast**: each viewer can connect multiple accounts through OAuth device authorization and browse their libraries. Read-only access, MP3 128 kbps playback; optional playlist import.
+- **Private access and sharing**: music folders and iBroadcast accounts are private by default, optionally shared with selected viewers or everyone. Authorized sources appear together in Music. [Setup and formats](docs/pse/GUIDE.en.md#local-media-and-ibroadcast).
 - Choose source order: when a source fails, Remix tries the next one. External HiFi API mode is used only when no other music source is active.
-- Keep **per-user favourites and listening history**, without building a local music-file library. Available quality depends on the sources.
+- Keep **per-user favourites and listening history**. Available quality depends on the sources.
+- **Music activity**: current playback reported by Plex, Jellyfin/Emby and Subsonic; one chronological history for video and music; a **Listening** tab with daily trends, listening times and track, artist, album and listener rankings, filterable by period and user.
 
-### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Your playlists and new discoveries
+#### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Your playlists and new discoveries
 
 - **Browse Deezer playlists** and connect your Spotify account to find playlists you can access.
 - **Import by URL** from Deezer, Spotify or ListenBrainz, or from CSV/XSPF files.
 - Review the preview, choose the destination viewer and track matched or missing tracks. Imports create personal copies without replacing other playlists.
 - Synchronize public Deezer profiles, Last.fm and ListenBrainz; manage personal playlists through Subsonic clients.
+- **iBroadcast playlists**: enable import for each connected account; track order and repetitions are preserved, with updates without duplicates and no changes sent to iBroadcast.
 - Explore **country charts, recent plays, most-played tracks and new releases from followed artists**. Genres, similar artists, radios and mixes depend on the client.
 
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistics and tracking

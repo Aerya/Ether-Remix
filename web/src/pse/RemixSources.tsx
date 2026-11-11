@@ -1,3 +1,4 @@
+import { LocalMedia, IBroadcastSource } from "./OwnedMedia";
 import { CollapsibleSections } from "../components/CollapsibleSections";
 import { AddSourceGallery, type GalleryChoice } from "../pages/sources/cards";
 import type { DebridKind } from "../lib/types";
@@ -19,6 +20,7 @@ const CATEGORIES = [
   ["usenet", "Usenet", "Usenet"],
   ["debrid", "Debrid", "Debrid"],
   ["musique", "Streaming musical", "Music streaming"],
+  ["local", "Fichiers locaux", "Local files"],
   ["iptv", "IPTV", "IPTV"],
   ["indexation", "Indexation", "Indexing"],
 ] as const;
@@ -112,18 +114,20 @@ export function RemixSources({
       </nav>
       <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
         <span>{L("Contenus concernés :", "Relevant content:")}</span>
-        {(category === "musique"
-          ? [L("Musique", "Music")]
-          : category === "iptv"
-            ? [L("Télévision en direct", "Live TV")]
-            : [
-                L("Films", "Movies"),
-                L("Séries", "Shows"),
-                L("Animes", "Anime"),
-                ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
-                  ? [L("Musique via debrid", "Music via debrid")]
-                  : []),
-              ]
+        {(category === "local"
+          ? [L("Vidéos", "Videos"), L("Musique", "Music")]
+          : category === "musique"
+            ? [L("Musique", "Music")]
+            : category === "iptv"
+              ? [L("Télévision en direct", "Live TV")]
+              : [
+                  L("Films", "Movies"),
+                  L("Séries", "Shows"),
+                  L("Animes", "Anime"),
+                  ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
+                    ? [L("Musique via debrid", "Music via debrid")]
+                    : []),
+                ]
         ).map((label) => (
           <Badge key={label} variant="outline">
             {label}
@@ -192,7 +196,13 @@ export function RemixSources({
         {category === "debrid" ? <DebridSources addKind={debridAdd} /> : null}
         {category === "usenet" ? <UsenetProviders addNonce={usenetAdd} /> : null}
         {category === "iptv" ? <IPTVProviders sourceParam="iptvSource" /> : null}
-        {category === "musique" ? music : null}
+        {category === "musique" ? (
+          <>
+            <IBroadcastSource />
+            {music}
+          </>
+        ) : null}
+        {category === "local" ? <LocalMedia /> : null}
         {category === "indexation" ? indexing : null}
       </CollapsibleSections.Provider>
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />

@@ -42,6 +42,22 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-11-local-media-ibroadcast",
+    version: "0.2.37-remix.49.1",
+    date: "2026-11-11",
+    title: ["Vos médias locaux et iBroadcast", "Your local media and iBroadcast"],
+    items: [
+      [
+        "Ajoutez des dossiers vidéo ou audio montés dans Docker : bibliothèques locales, vidéos personnelles sans TMDB, analyse automatique et lecture sans déplacer vos fichiers.",
+        "Add video or audio folders mounted in Docker: Remix/TMDB matching, personal videos preserved without a match, automatic scanning and in-place playback.",
+      ],
+      [
+        "Dossiers et comptes iBroadcast privés par défaut, partage avec certains spectateurs ou tous. Plusieurs comptes personnels et import facultatif des playlists iBroadcast.",
+        "Private folders and iBroadcast accounts by default, with optional sharing. Multiple personal accounts and optional iBroadcast playlist imports.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-11-display-name",
     version: "0.2.37-remix.48.1",
     date: "2026-11-11",
