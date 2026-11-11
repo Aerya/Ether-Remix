@@ -2737,6 +2737,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
       return json([]);
     }
     if (seg[0] === "viewers" && seg[2] === "favorite-episode-alert") return json({ enabled: true });
+    if (seg[0] === "viewers" && seg[2] === "display-name" && method === "PUT") {
+      const renamed = VIEWERS.find((v) => v.id === Number(seg[1]));
+      if (!renamed) return err(404, "not_found", "no such viewer");
+      const name = ((body as { name?: string }).name ?? "").trim();
+      renamed.customName = name || undefined;
+      renamed.title = name || renamed.username;
+      return json({ viewer: renamed });
+    }
 
     if (p === "/users/local" && method === "POST") {
       const b = body as { username?: string; password?: string };

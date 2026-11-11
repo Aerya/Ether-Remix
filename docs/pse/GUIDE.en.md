@@ -227,6 +227,8 @@ For visibility rules and search intervals, see [Catalogue and indexing](CATALOGU
 
 ### Unified history and Listening
 
+**Display name**: on a viewer’s page (**Viewers**), the pencil next to their name sets the name used in statistics, activity and lists. Plex does not overwrite it and plays already recorded take the new name. Sign-in does not change. An empty field restores the Plex name.
+
 **Activity → History** combines movies, shows and music in one chronological table, with search, sorting, pagination and details. The list contains the latest 500 plays in the selected period. Music retains artist/album metadata; its duration is the track length, not measured listening time. Completion and session-duration metrics remain explicitly video-only.
 
 **Activity → Listening** uses the same period, year and user filters as Viewing. Counts, daily listens, weekday/hour heatmap and track, artist, album and listener rankings cover the entire period, independently of the history limit. Charts use the browser time zone. Existing listens remain included even when the music source is disabled.

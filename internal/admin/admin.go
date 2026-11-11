@@ -225,6 +225,8 @@ type Deps struct {
 	// imported or inactive viewers. It must never be used for authentication.
 	// Nil preserves the active-user fallback for smaller integrations.
 	ViewerDirectory func(context.Context) ([]ViewerRecord, error)
+	// RenameViewer stores the owner-chosen display name; "" restores the Plex one.
+	RenameViewer func(ctx context.Context, id int64, name string) error
 
 	// TestTimeout bounds each wizard test call (default 20s).
 	TestTimeout time.Duration

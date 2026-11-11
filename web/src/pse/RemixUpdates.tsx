@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-french-rows",
+    id: "2026-11-11-display-name",
     version: "current",
+    date: "2026-11-11",
+    title: ["Nom affiché des utilisateurs", "Viewer display names"],
+    items: [
+      [
+        "Sur la fiche d’un utilisateur, le crayon à côté de son nom permet de choisir le nom affiché dans les statistiques, l’activité et les listes. Plex ne l’écrase plus, et les lectures passées prennent le nouveau nom.",
+        "On a viewer’s page, the pencil next to their name sets the name shown in statistics, activity and lists. Plex no longer overwrites it, and past plays take the new name.",
+      ],
+      [
+        "La connexion ne change pas. Un champ vide rétablit le nom Plex.",
+        "Sign-in does not change. An empty field restores the Plex name.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-french-rows",
+    version: "0.2.37-remix.47.1",
     date: "2026-11-11",
     title: ["Accueil et collections en français", "French Home rows and collections"],
     items: [

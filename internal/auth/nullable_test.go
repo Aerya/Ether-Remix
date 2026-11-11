@@ -26,6 +26,13 @@ func TestNullablePlexIDMigrationPreservesCredentials(t *testing.T) {
 	if _, err := db.Exec(`ALTER TABLE auth_users DROP COLUMN plex_shared`); err != nil {
 		t.Fatal(err)
 	}
+	// Remix's display-name column migrates after every auth version.
+	if _, err := db.Exec(`ALTER TABLE auth_users DROP COLUMN pse_display_name`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE component='pse_auth'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE component='auth' AND version=6`); err != nil {
 		t.Fatal(err)
 	}

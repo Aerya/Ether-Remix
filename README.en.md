@@ -89,6 +89,7 @@ A fork of [Ether](https://github.com/braedonsaunders/ether), Ether-Remix adds a 
 
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) Ether, extended by Remix
 
+- **Display name**: rename a viewer in the console for statistics and activity, even with a Plex account. Sign-in does not change.
 - Retains Ether's features and compatible clients: **Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo and Stremio**, with its debrid and Usenet video sources.
 - Daily synchronization with the original project, checks before merging and failure reporting.
 - Docker images for **amd64 and arm64**, with update notes in the console.

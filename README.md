@@ -89,6 +89,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) La base Ether, enrichie par Remix
 
+- **Nom affiché** : renommez un utilisateur dans la console pour les statistiques et l’activité, même avec un compte Plex. La connexion ne change pas.
 - Conservation des fonctionnalités et clients compatibles d’Ether : **Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo et Stremio**, avec ses sources vidéo debrid et Usenet.
 - Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs.
 - Images Docker pour **amd64 et arm64** et présentation des nouveautés dans la console.

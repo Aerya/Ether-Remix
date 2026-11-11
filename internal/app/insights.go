@@ -43,7 +43,7 @@ func (a *App) buildInsights() {
 		if err != nil || u == nil {
 			return ""
 		}
-		return u.Username
+		return u.ActivityName()
 	}, Debrid: func() []stats.DebridSample {
 		if a.debrid == nil {
 			return nil

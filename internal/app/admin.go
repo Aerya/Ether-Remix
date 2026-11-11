@@ -190,6 +190,7 @@ func (a *App) buildAdmin() http.Handler {
 		ResolverTraces:     func(context.Context) (any, error) { return a.resolver.Traces(), nil },
 		Users:              a.users,
 		ViewerDirectory:    a.viewerDirectory,
+		RenameViewer:       a.renameViewer,
 		Personalization:    a.personalize,
 		Collections:        a.collections,
 		CatalogHelper:      a.collections,
