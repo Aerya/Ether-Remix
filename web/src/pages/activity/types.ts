@@ -37,6 +37,7 @@ export type Summary = {
 };
 
 export type Play = {
+  music?: { artist: string; album: string; duration: number };
   id: string;
   userId: number;
   username: string;

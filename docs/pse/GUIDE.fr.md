@@ -224,3 +224,9 @@ Choisissez le spectateur, vérifiez l’aperçu, puis validez. Une copie personn
 [Configurer les sous-titres externes et la traduction facultative](SUBMAKER.fr.md), globalement ou par bibliothèque/collection, avec SeerrCatalog.
 
 Pour les règles de visibilité et les délais de recherche, voir [Catalogue et indexation](CATALOGUE.fr.md). Pour connecter l’addon, voir [SeerrCatalog](SEERRCATALOG.fr.md).
+
+### Historique commun et Écoute
+
+**Activité → Historique** réunit films, séries et musique dans un tableau chronologique commun, avec recherche, tri, pagination et fiche de détail. La liste contient les 500 dernières lectures de la période sélectionnée. Les écoutes musicales gardent leurs métadonnées artiste/album ; la durée indiquée est celle du morceau, pas le temps réellement écouté. Les mesures de complétion et de durée de session restent explicitement réservées à la vidéo.
+
+**Activité → Écoute** reprend les filtres période, année et utilisateur de Visionnage. Les compteurs, écoutes par jour, grille jour/heure et classements par morceau, artiste, album et auditeur portent sur toute la période, sans la limite de l’historique. Les graphiques utilisent le fuseau du navigateur. Les anciennes écoutes sont incluses, même si la source musicale est désactivée.
