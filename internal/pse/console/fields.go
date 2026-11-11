@@ -115,7 +115,7 @@ var Features = communityFields([]Feature{
 	{
 		ID:          "sfr",
 		Title:       tx("Base StreamFusion Reborn auto-hébergée", "Self-hosted StreamFusion Reborn database"),
-		Description: tx("Met à jour le catalogue et la détection VF depuis votre base, sans interroger les sources titre par titre. La lecture continue de passer par vos sources.", "Updates the catalogue and French detection from your database, without querying sources title by title. Playback still goes through your sources."),
+		Description: tx("Importe le catalogue et recherche les films ou épisodes dans votre base en lecture seule. La disponibilité debrid est vérifiée avant lecture ; vos autres sources restent utilisables.", "Imports the catalogue and searches movies or episodes in your read-only database. Debrid availability is checked before playback; other sources remain available."),
 		Fields: []Field{
 			{Key: "PSE_SFR", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
 				Help: tx("Désactivé par défaut. Le premier import lit toute la base, par lots.", "Off by default. The first import reads the whole database in batches.")},

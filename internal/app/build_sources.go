@@ -66,6 +66,9 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		NZBDir:         filepath.Join(dataDir, "nzb"),
 		ClientIdentity: cfg.ClientIdentity,
 		Backend: func(ix config.Indexer) (newznab.Backend, error) {
+			if ix.ID == sfrSearchID {
+				return sfrBackend{}, nil
+			}
 			if ix.IsStremio() {
 				return a.addons.Backend(ix)
 			}

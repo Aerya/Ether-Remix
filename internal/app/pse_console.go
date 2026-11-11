@@ -175,6 +175,7 @@ func (rt *pseRuntime) apply(a *App) {
 	frenchcat.Override(frenchcat.Load())
 	releasedb.OverridePlayable(releasedb.LoadPlayable())
 	rt.reloadMusic(a)
+	a.reapplyAddonIndexers()
 	go rt.restartIndexer(a) // Close attend la fin du titre en cours
 }
 

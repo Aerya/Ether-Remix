@@ -1014,7 +1014,7 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 // nothing for speculative work, which never asks the fallbacks.
 const primaryMissKey = "|primary-miss"
 
-func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
+func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core.Release, resultErr error) {
 	cfg := c.Config()
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("indexer %q is disabled", c.Name())
@@ -1023,6 +1023,13 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 		return nil, nil
 	}
 	key := cacheKey(c, req)
+	defer func() {
+		if resultErr != nil && len(out) == 0 {
+			if stale, ok := c.staleFallback(ctx, key, resultErr); ok {
+				out, resultErr = stale, nil
+			}
+		}
+	}()
 	ctx = withCacheAge(ctx, req.Released)
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})
@@ -1284,7 +1291,7 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps, id config.Id
 // season-pack queries when the primary Search results had no playable
 // candidate. Results are cached under a separate rescue key and respect
 // the indexer's daily budget and rate-limit state.
-func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
+func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out []core.Release, resultErr error) {
 	if cfg := c.Config(); !cfg.Enabled {
 		return nil, fmt.Errorf("indexer %q is disabled", c.Name())
 	}
@@ -1293,6 +1300,13 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 		return nil, nil
 	}
 	key := cacheKey(c, req) + "|rescue"
+	defer func() {
+		if resultErr != nil && len(out) == 0 {
+			if stale, ok := c.staleFallback(ctx, key, resultErr); ok {
+				out, resultErr = stale, nil
+			}
+		}
+	}()
 	ctx = withCacheAge(ctx, req.Released)
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})

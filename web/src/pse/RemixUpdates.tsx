@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-vostfr-submaker",
+    id: "2026-11-11-source-cache-resilience",
     version: "current",
+    date: "2026-11-11",
+    title: [
+      "Sources plus résilientes et recherche StreamFusion",
+      "Resilient sources and StreamFusion search",
+    ],
+    items: [
+      [
+        "En cas de panne temporaire, Remix peut reprendre les anciens résultats torrent/NZB pendant 24 heures après leur expiration, avec les vérifications de lecture habituelles.",
+        "During temporary outages, Remix can reuse torrent/NZB results for 24 hours after expiry, with normal playback checks.",
+      ],
+      [
+        "La base StreamFusion fournit aussi des candidats par film, saison et épisode. Les preuves de cache debrid sont vérifiées par service et expirent ; un import ne suppose plus une disponibilité AllDebrid.",
+        "The StreamFusion database also supplies movie, season and episode candidates. Debrid cache evidence is service-specific and expires; imports no longer assume AllDebrid availability.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-vostfr-submaker",
+    version: "0.2.37-remix.50.1",
     date: "2026-11-11",
     title: ["VOSTFR à la demande avec SubMaker", "On-demand VOSTFR with SubMaker"],
     items: [

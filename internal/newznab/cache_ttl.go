@@ -5,12 +5,9 @@ import (
 	"time"
 )
 
-// An indexer's results for an old title barely change, so they are kept
-// longer than a new title's: a title out under a month keeps the client's
-// base lifetime (6 hours by default), one out over a year keeps a week, and
-// ages in between scale. A search that found nothing is kept briefly for a
-// title out under a week (an episode checked before its upload is searched
-// again soon after it drops) and longer for anything older.
+// Calculate an age-based suggested lifetime. cachePut always caps it at
+// the owner's configured lifetime: old titles never silently override that
+// limit. Empty recent searches expire sooner so new uploads can be found.
 const (
 	cacheFreshAge  = 30 * 24 * time.Hour
 	cacheOldAge    = 365 * 24 * time.Hour
