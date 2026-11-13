@@ -24,6 +24,7 @@ vi.mock("./RemixSources", () => ({
 vi.mock("./IndexerDetails", () => ({ IndexerDetails: () => <div>Tableau statistiques</div> }));
 vi.mock("./SearchPriority", () => ({ SearchPriority: () => null }));
 vi.mock("./OwnedMedia", () => ({ IBroadcastSource: () => null }));
+vi.mock("./MusicAccess", () => ({ MusicAccess: () => null }));
 vi.mock("./MusicPlaylists", () => ({ MusicPlaylists: () => null }));
 vi.mock("./SourceOrder", () => ({ SourceOrder: () => null }));
 const txt = (s: string) => ({ fr: s, en: s });

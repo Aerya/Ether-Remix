@@ -71,8 +71,9 @@ func (a *App) newPSEMusic(cfg music.Settings) *music.Server {
 			viewer, _, err := local.Authenticate(ctx, username, password)
 			return viewer, err
 		},
-		Quality: cfg.Quality,
-		Logger:  a.log.With("component", "pse-music"),
+		TokenAuth: a.pseMusicTokenAuth,
+		Quality:   cfg.Quality,
+		Logger:    a.log.With("component", "pse-music"),
 	})
 }
 

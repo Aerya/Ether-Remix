@@ -289,6 +289,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	}
 	ownedAPI := a.ownedMediaAPI()
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/music/access" {
+			a.pseMusicAccess(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/owned/") {
 			http.StripPrefix("/owned", ownedAPI).ServeHTTP(w, r)
 			return

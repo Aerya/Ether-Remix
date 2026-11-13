@@ -16,6 +16,7 @@ import { SettingsRow } from "../components/SettingsRow";
 import { getLocale } from "../i18n";
 import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
+import { MusicAccess } from "./MusicAccess";
 import { MusicPlaylists } from "./MusicPlaylists";
 import { IndexerDetails } from "./IndexerDetails";
 import { MusicSourceSettings } from "./MusicSourceSettings";
@@ -519,7 +520,12 @@ function FeatureSection({
         {basic.map(row)}
         {feature.id === "seerrcatalog" ? <SeerrCatalogHelp status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
-        {feature.id === "music" && placement === "content" ? <MusicPlaylists /> : null}
+        {feature.id === "music" && placement === "content" ? (
+          <>
+            <MusicAccess />
+            <MusicPlaylists />
+          </>
+        ) : null}
         {advanced.length ? (
           <details className="border-t border-border">
             <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-fg-muted hover:text-fg">

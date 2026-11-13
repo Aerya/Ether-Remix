@@ -144,7 +144,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 1. **Install** `ghcr.io/aerya/ether-remix:latest` using the [provided Compose file](docs/pse/GUIDE.en.md#installation), through Dockge-Enhanced. The image is public; no GHCR login is required.
 2. **Open the console** at `http://<host>:32400/ether/` and follow the setup assistant. Set the port with `ETHER_PORT`.
 3. **Configure your sources**—debrid, Usenet, indexers and addons—under **Ether-Remix → Sources**, then your languages, content and libraries in their respective tabs.
-4. **Connect your clients**. For Subsonic, use the server address, a local password account and **legacy** authentication; prefer HTTPS for remote access.
+4. **Connect your clients**. For Arpeggi and token-authenticated Subsonic clients, create access under **Content & libraries → Music → Music clients**: server address, dedicated music username and password, revocable per viewer. Local accounts still work with **legacy** authentication. Use HTTPS remotely.
 
 Migrating from Ether? The data format is preserved: back up `/config`, stop the old server and reuse its `/config` and `/cache` volumes.
 
