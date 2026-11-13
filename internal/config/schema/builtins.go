@@ -14,10 +14,8 @@ func Builtins() []Builtin {
 	return []Builtin{
 		// SERVER
 		{ID: "server", ConfigKey: "server", Label: extend.T("What viewers see"), Schema: Schema{Groups: []Group{
-			{ID: "identity", Title: extend.T("What viewers see"), Description: extend.T("The names apps show for this server and its libraries."), Fields: []Field{
+			{ID: "identity", Title: extend.T("What viewers see"), Description: extend.T("The name apps show for this server."), Fields: []Field{
 				{Key: "friendlyName", Label: extend.T("Server name"), Kind: KindText, Help: extend.T("How the server appears in apps.")},
-				{Key: "moviesLibraryName", Label: extend.T("Movies library name"), Kind: KindText, Help: extend.T("Name shown in Plex. A rename inside Plex does not stick.")},
-				{Key: "tvShowsLibraryName", Label: extend.T("TV Shows library name"), Kind: KindText, Help: extend.T("Name shown in Plex. A rename inside Plex does not stick.")},
 			}},
 			{ID: "connect", Title: extend.T("How apps connect"), Description: extend.T("The address apps use to reach this computer."), Fields: []Field{
 				{Key: "port", Label: extend.T("Port"), Kind: KindNumber, Help: extend.T("Plex apps expect 32400. A restart is needed after changing it."), Min: F(1), Max: F(65535), Step: F(1)},
@@ -90,6 +88,7 @@ func Builtins() []Builtin {
 			{Title: extend.T("Versions in the app"), Description: extend.T("Extra copies of the same picture, after Auto."), Fields: []Field{
 				{Key: "sameQualityAlternatives", Label: extend.T("Same-quality versions to offer"), Kind: KindNumber, Help: extend.T("Listed after Auto in the app's version menu."), Min: F(0), Max: F(3), Step: F(1)},
 				{Key: "alternativesPerResolution", Label: extend.T("Offer alternatives at every resolution"), Kind: KindBool, Help: extend.T("Apply the alternatives count to each available resolution, up to seven versions total. Auto stays first; profile and device limits still apply.")},
+				{Key: "alternativesPerSource", Label: extend.T("Offer each source at every resolution"), Kind: KindBool, Help: extend.T("Keep one WEB-DL, Blu-ray and Remux choice at each resolution in Play Version when available. Auto still follows your profile.")},
 				{Key: "offerHigherVersions", Label: extend.T("Offer higher versions"), Kind: KindBool, Help: extend.T("Version menus can list releases taller than the profile. Off keeps the ceiling you set. HDR and file-size limits still apply.")},
 			}},
 		}}},
@@ -153,6 +152,7 @@ func Builtins() []Builtin {
 				{Key: "apiKey", Label: extend.T("API key"), Kind: KindSecret},
 				{Key: "username", Label: extend.T("Username"), Kind: KindText},
 				{Key: "password", Label: extend.T("Password"), Kind: KindSecret},
+				{Key: "automaticPreferred", Label: extend.T("Download a subtitle automatically when playback starts"), Kind: KindBool, Help: extend.T("When a viewer's subtitle setting asks for subtitles and none in their language is available, Ether downloads one once the video starts playing. Uses one OpenSubtitles download per title per viewer, so standard accounts may run out sooner.")},
 			}},
 		}}},
 		// UPDATES
@@ -180,6 +180,8 @@ func Builtins() []Builtin {
 			{Title: extend.T("Chapters and skip markers"), Fields: []Field{
 				{Key: "theIntroDb", Label: extend.T("Look up intro and credits markers"), Kind: KindBool, Help: extend.T("Use the public TheIntroDB lookup, cached per episode and runtime.")},
 				{Key: "apiKey", Label: extend.T("Optional TheIntroDB key"), Kind: KindSecret},
+				{Key: "skipDb", Label: extend.T("Also look up SkipDB"), Kind: KindBool, Help: extend.T("Add the open SkipDB lookup as a second source, cached per episode and runtime.")},
+				{Key: "skipDbApiKey", Label: extend.T("Optional SkipDB key"), Kind: KindSecret, Help: extend.T("Reading SkipDB is open; a key only raises its rate limit.")},
 			}},
 		}}},
 		// DEBRID
@@ -231,10 +233,8 @@ func Builtins() []Builtin {
 		}}},
 		// clusterServerGroups()
 		{ID: "serverCluster", ConfigKey: "server", Label: extend.T("What viewers see"), Schema: Schema{Groups: []Group{
-			{ID: "identity", Title: extend.T("What viewers see"), Description: extend.T("The names apps show for this server and its libraries."), Fields: []Field{
+			{ID: "identity", Title: extend.T("What viewers see"), Description: extend.T("The name apps show for this server."), Fields: []Field{
 				{Key: "friendlyName", Label: extend.T("Server name"), Kind: KindText, Help: extend.T("How the server appears in apps.")},
-				{Key: "moviesLibraryName", Label: extend.T("Movies library name"), Kind: KindText, Help: extend.T("Name shown in Plex. A rename inside Plex does not stick.")},
-				{Key: "tvShowsLibraryName", Label: extend.T("TV Shows library name"), Kind: KindText, Help: extend.T("Name shown in Plex. A rename inside Plex does not stick.")},
 			}},
 			{ID: "connect", Title: extend.T("How apps connect"), Description: extend.T("The address apps use to reach this computer."), Fields: []Field{}, More: []Field{
 				{Key: "webFrameOrigins", Label: extend.T("Sites that may embed this page"), Kind: KindList, Help: extend.T("Exact addresses allowed to frame the owner page. Empty means nowhere."), Placeholder: "https://home.example.com"},

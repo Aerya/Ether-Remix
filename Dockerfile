@@ -12,14 +12,28 @@
 #   scripts/fetch-ffmpeg.sh linux-$(go env GOARCH) && docker build .
 # docker buildx per-arch builds pass TARGETARCH automatically.
 
+# ---- build the web console (embedded by go:embed) --------------------------
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN corepack enable && corepack prepare pnpm@10 --activate
+WORKDIR /src/web
+COPY web/package.json web/pnpm-lock.yaml web/.pnpmfile.cjs ./
+RUN pnpm install --frozen-lockfile
+# Style Studio/On Air and schema typechecks import shared data from internal/.
+COPY internal/onair/ /src/internal/onair/
+COPY internal/config/schema/testdata/ /src/internal/config/schema/testdata/
+COPY web/ ./
+RUN pnpm build && test -f /src/internal/admin/dist/index.html
+
 # ---- build the server (pure Go) -------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 # go.mod replaces qjs with the vendored sandbox fork; it must exist before download.
 COPY third_party/ third_party/
 RUN go mod download
 COPY . .
+COPY --from=web /src/internal/admin/dist/ internal/admin/dist/
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=

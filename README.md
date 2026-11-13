@@ -54,6 +54,8 @@ Des bibliothèques et collections personnalisées, des sous-titres traduits avec
 
 Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
 
+**Mise à jour du 13 novembre 2026 :** intégration d’Ether jusqu’à `5b8ef628` et correction de la synchronisation automatique : les déplacements de fichiers sont suivis et les conflits détaillés pour préserver les ajouts Remix.
+
 ## Fonctionnalités Remix
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences

@@ -10,6 +10,11 @@ type Title = core.Title
 type Collection = core.Collection
 type Person = core.Person
 type RatingKey = core.RatingKey
+
+// ItemRef is a plugin item's stable identity (spec §2.2). Protocols that
+// address plugin items by their ItemRef verbatim (Stremio's "pk:" id) exchange
+// it through the host seam rather than importing core.
+type ItemRef = core.ItemRef
 type Playlist = core.Playlist
 type MediaType = core.MediaType
 type Page = core.Page
@@ -22,6 +27,15 @@ type PlaybackSourceHistory = core.PlaybackSourceHistory
 type Decision = core.Decision
 type FacetValue = core.FacetValue
 type User = core.User
+
+// LibraryID names one library (built-ins 1 = Movies, 2 = TV Shows).
+type LibraryID = core.LibraryID
+
+// The built-in libraries.
+const (
+	LibraryMovies = core.LibraryMovies
+	LibraryShows  = core.LibraryShows
+)
 
 // Home hub values stay owned by core. Adapters render hubs through these
 // aliases.
@@ -76,6 +90,7 @@ const (
 	SortAdded      = core.SortAdded
 	SortDuration   = core.SortDuration
 	SortPopularity = core.SortPopularity
+	SortPlayed     = core.SortPlayed
 	SortRating     = core.SortRating
 	SortReleased   = core.SortReleased
 	SortTitle      = core.SortTitle

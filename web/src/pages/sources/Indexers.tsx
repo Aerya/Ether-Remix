@@ -9,11 +9,13 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Globe, Link2, Plus, Puzzle, Search } from "lucide-react";
+import { Globe, Link2, Plus, Puzzle, Search, Server } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { getLocale, localized, t, tn } from "../../i18n";
+import { searchSelectLabels } from "../../i18n/appkit-labels";
+import { useLocale } from "../../i18n/react";
 import { ActionMenu } from "../../components/ActionMenu";
 import { MoreOptions } from "../../components/ConfigSection";
 import { Meter } from "../../components/charts";
@@ -28,12 +30,16 @@ import {
 } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { SortableList } from "../../components/Sortable";
+import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { api, errorMessage, newId } from "../../lib/api";
 import { isPlainObject } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import type { Indexer, IndexerProtocol, SiteDefinition, SiteTestResult } from "../../lib/types";
+import { useResolver } from "../releases/resolverDraft";
 import { searchIdentityOptions } from "../settings/schema";
+import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
+import { REGIONAL_TRACK_TAGS } from "../setup/language";
 import { ClientIdentity } from "./ClientIdentity";
 import { hasUsableDebrid } from "./Debrid";
 import {
@@ -92,8 +98,78 @@ function blankStremioIndexer(priority: number): Indexer {
   return { ...blankIndexer(priority), kind: "stremio", protocol: "torrent" };
 }
 
+/**
+ * A self-hosted Zilean instance: its Torznab endpoint is searched like any
+ * other torrent indexer, so results stream through debrid.
+ */
+function blankZileanIndexer(priority: number): Indexer {
+  return { ...blankIndexer(priority), kind: "zilean", protocol: "torrent" };
+}
+
 export function isStremio(ix: { kind?: string }) {
   return ix.kind === "stremio";
+}
+
+export function isZilean(ix: { kind?: string }) {
+  return ix.kind === "zilean";
+}
+
+/**
+ * The per-indexer release language: the audio language of the releases an
+ * indexer returns, used only to fill a bare DUAL/MULTI whose name names no
+ * dub. Empty is Automatic — the site's own declared language, when it has
+ * one.
+ */
+function ReleaseLanguageSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { locale } = useLocale();
+  const options = useMemo(() => {
+    const display = (code: string) => {
+      try {
+        return new Intl.DisplayNames([locale], { type: "language" }).of(code) ?? code;
+      } catch {
+        return code;
+      }
+    };
+    const seen = new Set<string>();
+    const out: { value: string; label: string }[] = [{ value: "", label: t("Automatic") }];
+    for (const tag of LANGUAGE_TAGS) {
+      if (seen.has(tag.toLowerCase())) continue;
+      seen.add(tag.toLowerCase());
+      out.push({ value: tag, label: `${display(tag)} (${tag})` });
+    }
+    for (const tag of REGIONAL_TRACK_TAGS) {
+      if (seen.has(tag.toLowerCase())) continue;
+      seen.add(tag.toLowerCase());
+      out.push({ value: tag, label: `${display(tag)} (${tag})` });
+    }
+    if (value && !out.some((o) => o.value === value)) {
+      out.push({ value, label: `${display(value)} (${value})` });
+    }
+    return out.sort((a, b) => {
+      if (a.value === "") return -1;
+      if (b.value === "") return 1;
+      return a.label.localeCompare(b.label, locale);
+    });
+  }, [locale, value]);
+  return (
+    <div className="w-56">
+      <SearchSelect
+        {...searchSelectLabels()}
+        value={value}
+        options={options}
+        onChange={onChange}
+        ariaLabel={t("Release language")}
+        searchable
+        noneLabel={t("Automatic")}
+      />
+    </div>
+  );
 }
 
 export { addonUrlHasDebridKey, normalizeAddonUrl } from "../../components/addons/addons";
@@ -182,7 +258,7 @@ export function IndexerList({
   view = "all", // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
 }: {
   version?: number;
-  addRequest?: { nonce: number; type: "site" | "newznab" | "stremio"; name?: string } | null;
+  addRequest?: { nonce: number; type: "site" | "newznab" | "stremio" | "zilean"; name?: string } | null;
   view?: PseIndexerView;
 }) {
   const { dashboard, refreshDashboard } = useApp();
@@ -263,7 +339,9 @@ export function IndexerList({
             ...blankStremioIndexer(indexers.length),
             ...(addRequest.name ? { name: addRequest.name } : {}),
           }
-        : blankIndexer(indexers.length),
+        : addRequest.type === "zilean"
+          ? blankZileanIndexer(indexers.length)
+          : blankIndexer(indexers.length),
     );
   }, [addRequest, cfg, indexers.length]);
 
@@ -276,7 +354,9 @@ export function IndexerList({
           url: normalizeAddonUrl(editing.draft.url),
           protocol: "torrent" as const,
         }
-      : editing.draft;
+      : isZilean(editing.draft)
+        ? { ...editing.draft, url: editing.draft.url.trim(), protocol: "torrent" as const }
+        : editing.draft;
     const list =
       index < indexers.length
         ? indexers.map((ix, j) => (j === index ? draft : ix))
@@ -359,6 +439,7 @@ export function IndexerList({
   const needsDebrid = indexers.some((ix) => isTorrent(ix) && ix.enabled) && !hasUsableDebrid(cfg);
   const builtin = draft ? isBuiltin(draft) : false;
   const stremio = draft ? isStremio(draft) : false;
+  const zilean = draft ? isZilean(draft) : false;
   const draftDef = draft && builtin ? defFor(draft) : undefined;
 
   return (
@@ -418,6 +499,12 @@ export function IndexerList({
                   icon: Puzzle,
                   onSelect: () => open(indexers.length, blankStremioIndexer(indexers.length)),
                 },
+                {
+                  key: "zilean",
+                  label: t("Zilean instance…"),
+                  icon: Server,
+                  onSelect: () => open(indexers.length, blankZileanIndexer(indexers.length)),
+                },
               ].filter((item) => view === "all" || item.key !== "stremio")}
             >
               <Plus size={14} /> {t("Add indexer")}
@@ -441,7 +528,7 @@ export function IndexerList({
                 view === "indexers"
                   ? pseStremioText.indexersEmpty()
                   : t(
-                      "Add a site, a Newznab or Torznab indexer, or a Stremio addon so Ether can find releases.",
+                      "Add a site, a Newznab or Torznab indexer, a Stremio addon or a Zilean instance so Ether can find releases.",
                     )
               }
             />
@@ -540,6 +627,8 @@ export function IndexerList({
                         </>
                       ) : isStremio(ix) ? (
                         <Badge variant="outline">{t("Stremio addon")}</Badge>
+                      ) : isZilean(ix) ? (
+                        <Badge variant="outline">{t("Zilean")}</Badge>
                       ) : (
                         <Badge variant="outline">{protocolLabel(ix)}</Badge>
                       )}
@@ -643,7 +732,9 @@ export function IndexerList({
               ? (draftDef?.name ?? t("New site"))
               : stremio
                 ? t("New Stremio addon")
-                : t("New indexer")
+                : zilean
+                  ? t("New Zilean instance")
+                  : t("New indexer")
             : draft && editing
               ? indexerName(draft, editing.index)
               : ""
@@ -656,9 +747,11 @@ export function IndexerList({
                 ? getLocale().startsWith("fr")
                   ? "Addon Stremio · Flux directs / torrents"
                   : "Stremio addon · Direct streams / torrents"
-                : isTorrent(draft)
-                  ? t("Torznab indexer")
-                  : t("Newznab indexer")
+                : zilean
+                  ? t("Zilean · Torrent")
+                  : isTorrent(draft)
+                    ? t("Torznab indexer")
+                    : t("Newznab indexer")
             : undefined
         }
         onSave={() => void save()}
@@ -790,6 +883,26 @@ export function IndexerList({
                   onChange={(v) => set({ enabled: v })}
                 />
               </SettingsSection>
+            ) : zilean ? (
+              <SettingsSection title={t("Instance")}>
+                <TextRow label={t("Name")} value={draft.name} onChange={(v) => set({ name: v })} />
+                <TextRow
+                  label={t("Instance URL")}
+                  type="url"
+                  value={draft.url}
+                  placeholder="http://zilean:8181"
+                  help={t(
+                    "Paste the Zilean instance's address. Ether queries its Torznab API and streams the torrents it indexes through your debrid account.",
+                  )}
+                  error={errors.url}
+                  onChange={(v) => set({ url: v })}
+                />
+                <BoolRow
+                  label={t("Enabled")}
+                  value={draft.enabled}
+                  onChange={(v) => set({ enabled: v })}
+                />
+              </SettingsSection>
             ) : (
               <>
                 <SettingsSection title={t("Connection")}>
@@ -870,6 +983,25 @@ export function IndexerList({
               <SiteSettingsFields def={draftDef} draft={draft} onChange={set} errors={errors} />
             ) : null}
             <MoreOptions label={t("More options")}>
+              {stremio ? null : (
+                <SettingsSection
+                  title={t("Release language")}
+                  description={t(
+                    "The audio language of the releases this indexer returns. It fills the dub a bare DUAL or MULTI release name leaves unnamed; a language named in a release always wins. Sites that declare their own language use it unless you set one here.",
+                  )}
+                >
+                  <SettingsRow
+                    title={t("Language")}
+                    description={t("Automatic uses the site's own language, when it declares one.")}
+                    control={
+                      <ReleaseLanguageSelect
+                        value={draft.language ?? ""}
+                        onChange={(v) => set({ language: v })}
+                      />
+                    }
+                  />
+                </SettingsSection>
+              )}
               <SettingsSection
                 title={t("Optional daily caps")}
                 description={
@@ -951,5 +1083,60 @@ export function IndexerList({
         ) : null}
       </RecordDrawer>
     </>
+  );
+}
+
+/**
+ * Sources › Indexers: the owner switch that lets a detail page's
+ * file-availability check open on-demand add-on stream links. Off by
+ * default; when off an undecided check never hides Play. Warm-ups,
+ * prefetch, discovery and idle background work always refuse.
+ */
+export function AddonStreamsSection() {
+  const { config, resolver } = useResolver();
+  const saved = useMemo(
+    () => (resolver ? Boolean(resolver.openOnDemandAddonStreams) : null),
+    [resolver],
+  );
+  const { draft, setDraft, dirty, reset } = useDraft<boolean>(saved);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  if (config.error) return <ErrorPanel error={config.error} onRetry={() => void config.reload()} />;
+  if (draft === null) return null;
+  async function submit() {
+    if (draft === null) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.putSection("resolver", { openOnDemandAddonStreams: draft });
+      toast.success(t("Setting saved"));
+      await config.reload();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <SettingsSection title={t("Add-on streams")}>
+      <BoolRow
+        label={t("Let availability checks open add-on streams")}
+        value={draft}
+        help={t(
+          "Off by default. When on, the file check behind a detail page may open an on-demand add-on link within its existing timeouts and limits. Opening a link can make the add-on fetch, import or download the release. Warm-ups, prefetch and other background work never open links.",
+        )}
+        onChange={setDraft}
+      />
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        error={error}
+        onSave={submit}
+        onDiscard={() => {
+          reset();
+          setError(null);
+        }}
+      />
+    </SettingsSection>
   );
 }

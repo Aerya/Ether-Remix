@@ -14,6 +14,7 @@ import (
 
 var (
 	reYear                 = regexp.MustCompile(`\b(188[89]|189\d|19\d{2}|20\d{2})\b`)
+	reTemporadaSE          = regexp.MustCompile(`(?i)(^|[^\p{L}\p{N}])T(\d{1,2})E(\d{1,3})\b`)
 	reSE                   = regexp.MustCompile(`(?i)\bS(\d{1,2})[\s\p{So}\x{FE0F}\x{200D}-]*E(\d{1,3})((?:\s*E\d{1,3})*)(?:\s*-\s*E?(\d{1,3}))?(?:v(\d))?\b`)
 	reSpanishCapUnderscore = regexp.MustCompile(`(?i)\b(Cap(?:[ií]tulo)?[.\s]*\d{1,4})_(\d{1,4})\b`)
 	reSpanishEpisode       = regexp.MustCompile(`(?i)\b(?:Cap|Cap[ií]tulo)\s*(\d{3,4})(?:\s*(?:-|al|a)\s*(?:Cap(?:[ií]tulo)?\s*)?(\d{1,4}))?\b`)
@@ -78,7 +79,7 @@ var languages = []struct{ token, name string }{
 	{"SWE", "swedish"}, {"DAN", "danish"}, {"THA", "thai"}, {"VIE", "vietnamese"}, {"CHI", "chinese"},
 	// Explicit regional language tags are used by WEB release groups.
 	// Do not treat bare country codes (BR/US/GB) as audio languages.
-	{"PT-BR", LanguagePortugueseBrazil}, {"BRAZILIAN", LanguagePortugueseBrazil}, {"DUBLADO", LanguagePortugueseBrazil}, {"PT-PT", LanguagePortuguesePortugal},
+	{"PT-BR", LanguagePortugueseBrazil}, {"BRAZILIAN", LanguagePortugueseBrazil}, {"DUBLADO", LanguagePortugueseBrazil}, {"NACIONAL", LanguagePortugueseBrazil}, {"PT-PT", LanguagePortuguesePortugal},
 	{"ES-ES", LanguageSpanishSpain}, {"ES-MX", LanguageSpanishLatino}, {"ES-419", LanguageSpanishLatino},
 	{"EN-US", "english"}, {"EN-GB", "english"},
 }
@@ -98,6 +99,9 @@ func Parse(name string) core.ReleaseInfo {
 	if raw == "" {
 		return info
 	}
+	// Spanish and Portuguese groups write "T07E09" (Temporada 7, episode 9)
+	// for "S07E09".
+	raw = reTemporadaSE.ReplaceAllString(raw, "${1}S${2}E${3}")
 	stem, group, container := parseGroup(raw)
 	info.Group = group
 	info.Container = container
@@ -548,10 +552,6 @@ func spanishEpisodeMatches(raw, spaced string) []spanishChapterMatch {
 	return out
 }
 
-func spanishEpisodeLocations(spaced string) [][]int {
-	return spanishEpisodeLocationsWithRaw("", spaced)
-}
-
 func spanishEpisodeLocationsWithRaw(raw, spaced string) [][]int {
 	matches := spanishEpisodeMatches(raw, spaced)
 	out := make([][]int, 0, len(matches))
@@ -561,10 +561,6 @@ func spanishEpisodeLocationsWithRaw(raw, spaced string) [][]int {
 	return out
 }
 
-func spanishEpisodeIndex(spaced string) []int {
-	return spanishEpisodeIndexWithRaw("", spaced)
-}
-
 func spanishEpisodeIndexWithRaw(raw, spaced string) []int {
 	for _, m := range spanishEpisodeMatches(raw, spaced) {
 		if m.loc[0] > 0 {
@@ -572,12 +568,6 @@ func spanishEpisodeIndexWithRaw(raw, spaced string) []int {
 		}
 	}
 	return nil
-}
-
-// parseEpisodes fills seasons and episodes and returns the offset of the
-// marker it read them from, or -1.
-func parseEpisodes(spaced, upper string, info *core.ReleaseInfo) int {
-	return parseEpisodesWithRaw("", spaced, upper, info)
 }
 
 func parseEpisodesWithRaw(raw, spaced, upper string, info *core.ReleaseInfo) int {

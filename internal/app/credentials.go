@@ -34,6 +34,7 @@ var sealedTables = []struct{ table, column string }{
 	{"simkl_devices", "device_code"},
 	{"simkl_tokens", "access_token"},
 	{"simkl_tokens", "refresh_token"},
+	{"mdblist_accounts", "api_key"},
 	{"trakt_tokens", "access_token"},
 	{"trakt_tokens", "refresh_token"},
 	{"notify_channels", "config"},
@@ -41,6 +42,7 @@ var sealedTables = []struct{ table, column string }{
 	{"livetv_sources", "data"},
 	{"cardigann_sessions", "cookies"},
 	{"ratings_settings", "value"},
+	{"watchlist_settings", "value"},
 	{"clusterconfig_secrets", "value"},
 	{"availability_releases", "payload"},
 	{"availability_feed_items", "payload"},
@@ -155,6 +157,9 @@ func (a *App) migrateStoredSecrets(ctx context.Context) (int, error) {
 	}
 	if a.ratings != nil {
 		run("ratings", a.ratings.MigrateSecrets)
+	}
+	if a.watchlist != nil {
+		run("watchlist", a.watchlist.MigrateSecrets)
 	}
 	if a.livetv != nil {
 		run("livetv", a.livetv.MigrateSecrets)

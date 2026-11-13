@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
@@ -46,15 +47,19 @@ type Factory struct {
 //     sidecar connects out; calls go over Factory.Tunnel.
 //   - an http(s) manifest URL, or any other http(s) URL that is not
 //     a github.com repo page: URL mode against that base.
-//   - a github.com repo URL: a repo is not an endpoint, so the
-//     plugin is served by a sidecar over the tunnel.
+//   - a github.com repo URL: a repo is not an endpoint, so an Ether
+//     plugin is served by a sidecar over the tunnel. A plain Stremio
+//     add-on published as static files in the repo (manifest.json at
+//     its root, e.g. "USA TV Next") needs no sidecar: its routes are
+//     read from raw.githubusercontent.com, where the installer found
+//     its manifest.
 func (f *Factory) RuntimeFactory() plugins.RuntimeFactory {
 	return func(inst plugins.Installed) (plugins.Runtime, error) {
 		if inst.Manifest.Ether != nil && inst.Manifest.Ether.Runtime.Kind != "" &&
 			inst.Manifest.Ether.Runtime.Kind != "remote" {
 			return nil, fmt.Errorf("plugin %s: remote factory cannot open runtime kind %q", inst.ID, inst.Manifest.Ether.Runtime.Kind)
 		}
-		mode, base := endpointFor(inst.SourceURL)
+		mode, base := endpointOf(inst.SourceURL, inst.Manifest)
 		switch mode {
 		case endpointTunnel:
 			if f.Tunnel == nil {
@@ -87,6 +92,31 @@ func (f *Factory) RuntimeFactory() plugins.RuntimeFactory {
 	}
 }
 
+// endpointOf picks a plugin's endpoint: endpointFor, except that a plain
+// Stremio add-on from a GitHub repo reads its static routes from
+// raw.githubusercontent.com instead of waiting for a sidecar.
+func endpointOf(source string, man plugins.Manifest) (endpointMode, string) {
+	mode, base := endpointFor(source)
+	if mode == endpointTunnel && man.IsStremioOnly() {
+		if raw, ok := githubRawBase(source); ok {
+			return endpointURL, raw
+		}
+	}
+	return mode, base
+}
+
+// SidecarState reports whether a remote plugin is served by a sidecar over
+// the tunnel and whether that sidecar is connected now (plugins.SidecarState).
+func (f *Factory) SidecarState(r plugins.Record) (needsSidecar, connected bool) {
+	if r.Manifest.RuntimeKind() != "remote" {
+		return false, false
+	}
+	if mode, _ := endpointOf(r.SourceURL, r.Manifest); mode != endpointTunnel {
+		return false, false
+	}
+	return true, f.Tunnel != nil && f.Tunnel.IsConnected(r.ID)
+}
+
 type endpointMode int
 
 const (
@@ -115,6 +145,32 @@ func endpointFor(source string) (endpointMode, string) {
 	default:
 		return endpointNone, ""
 	}
+}
+
+// githubRawBase maps a github.com repo link to the raw-file base its
+// static Stremio routes are served from: the branch the link names
+// (/tree/<branch> or /blob/<branch>/...), else HEAD, which GitHub
+// resolves to the default branch.
+func githubRawBase(source string) (string, bool) {
+	u, err := url.Parse(strings.TrimSpace(source))
+	if err != nil || !strings.EqualFold(u.Hostname(), "github.com") {
+		return "", false
+	}
+	parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+	if len(parts) < 2 {
+		return "", false
+	}
+	owner, repo := parts[0], strings.TrimSuffix(parts[1], ".git")
+	ref := "HEAD"
+	if len(parts) >= 4 && (parts[2] == "tree" || parts[2] == "blob") {
+		ref = parts[3]
+	}
+	for _, seg := range []string{owner, repo, ref} {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", false
+		}
+	}
+	return "https://raw.githubusercontent.com/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/" + url.PathEscape(ref), true
 }
 
 // contractRuntime adapts a transport Runtime to plugins.Runtime.
@@ -319,6 +375,68 @@ func (a HostAdapter) CollectionsUpsert(ctx context.Context, pluginID string, col
 		return err
 	}
 	return mapHostErr(h.CollectionsUpsert(ctx, collection))
+}
+
+func (a HostAdapter) KindUpsert(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := h.KindUpsert(ctx, kindKey, items)
+	return n, mapHostErr(err)
+}
+
+func (a HostAdapter) KindDelete(ctx context.Context, pluginID, kindKey string, externalIDs []string) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.KindDelete(ctx, kindKey, externalIDs))
+}
+
+func (a HostAdapter) KindItems(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	page, err := h.KindItems(ctx, kindKey, cursor, limit)
+	return page, mapHostErr(err)
+}
+
+func (a HostAdapter) ResolveSources(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return nil, err
+	}
+	cands, err := h.ResolveSources(ctx, q)
+	return cands, mapHostErr(err)
+}
+
+func (a HostAdapter) CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return "", err
+	}
+	ref, err := h.CachePut(ctx, libraryKey, name, r)
+	return ref, mapHostErr(err)
+}
+
+func (a HostAdapter) CacheOpen(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return nil, err
+	}
+	rc, err := h.CacheOpen(ctx, blobRef)
+	return rc, mapHostErr(err)
+}
+
+func (a HostAdapter) StreamURL(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return "", err
+	}
+	u, err := h.StreamURL(plugins.WithViewer(ctx, viewerID), itemRef)
+	return u, mapHostErr(err)
 }
 
 func (a HostAdapter) Settings(ctx context.Context, pluginID string) (map[string]any, error) {

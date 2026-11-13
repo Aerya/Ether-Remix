@@ -32,7 +32,7 @@ Source entry points for this boundary:
 | Identity providers, grants and local accounts | [`internal/identity`](../internal/identity) |
 | Shared session broker | [`internal/sessions/broker.go`](../internal/sessions/broker.go) |
 | Release resolution and playback | [`internal/resolver`](../internal/resolver), [`internal/playback`](../internal/playback) |
-| Plex adapter | [`internal/plex/frontend.go`](../internal/plex/frontend.go) |
+| Plex adapter | [`internal/frontends/plex/frontend.go`](../internal/frontends/plex/frontend.go) |
 | Jellyfin and Emby adapters | [`internal/frontends/mediabrowser`](../internal/frontends/mediabrowser) |
 | Silo adapter | [`internal/frontends/silo`](../internal/frontends/silo) |
 | Application composition and frontend registration | [`internal/app/frontend_runtime.go`](../internal/app/frontend_runtime.go) |
@@ -44,7 +44,7 @@ without Plex. See [setup](user-guide.md#set-up) for the user-facing flow.
 ## Migration and support status
 
 The ownership above is the architectural direction, not a claim that every
-implementation has already been extracted. Legacy `internal/plex` and
+implementation has already been extracted. `internal/frontends/plex` and
 app-specific paths still contain behavior being moved behind shared contracts.
 Artwork selection, rendering, palettes and queues now live in
 `internal/artwork/service`; discovery localization and overlay selection live in
@@ -54,11 +54,10 @@ This extraction still requires the recorded focused and Plex parity gates; see
 [artwork extraction evidence](plex-adapter/artwork.md). Other legacy
 dependencies remain migration debt to remove while preserving Plex behavior.
 
-The import boundary for implementations under `internal/frontends` is recorded
-in [`internal/frontend/depguard_test.go`](../internal/frontend/depguard_test.go).
-Plex production imports are ratcheted there too: new internal imports fail.
-The package still imports playback domain packages, so it is not yet held to
-the frontends-only rule. Rename-aware line accounting is in
+The import boundary for implementations under `internal/frontends` (including
+`internal/frontends/plex`) is recorded in
+[`internal/frontend/depguard_test.go`](../internal/frontend/depguard_test.go).
+Rename-aware line accounting is in
 [plex size](plex-adapter/size.md). Protocol adapters and shared
 contracts also do not establish native-client certification, complete
 conformance or performance parity.
@@ -171,7 +170,9 @@ section (public host name, public port, custom server URLs and your own
 certificate) applies to every app, not only Plex. Enabled protocols expose
 configuration tabs, with changes edited in place. Drawers are for records. There
 is no generic Settings menu. The [owner guide](user-guide.md) distinguishes native
-client targets from unsupported web shells. No third-party web client is shipped.
+client targets from web shells. Emby Web is not provided; the official Jellyfin
+Web build is downloaded from `repo.jellyfin.org` when Jellyfin is turned on and served at
+`/web` on the Jellyfin port, so the Jellyfin apps that wrap it work too.
 Conformance, native-client certification, performance comparisons and owner-device
 acceptance are pending until versioned receipts cover the exact integrated build.
 

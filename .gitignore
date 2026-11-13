@@ -4,6 +4,7 @@
 /ether-tray
 /ether.exe
 /ether-tray.exe
+# Ether-Remix conserve la console compilée pour les builds Go directs.
 node_modules/
 .pnpm-store/
 *.db
@@ -17,6 +18,7 @@ node_modules/
 *.md
 /docs/benchmarks/
 !/README.md
+!/CONTRIBUTING.md
 !/CHANGELOG.md
 !/UPGRADING.md
 !/LEGAL.md

@@ -33,10 +33,18 @@ func TestNullablePlexIDMigrationPreservesCredentials(t *testing.T) {
 	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE component='pse_auth'`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`ALTER TABLE auth_users RENAME COLUMN allowed_libraries TO allowed_sections`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE component='auth' AND version=6`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE component='auth' AND version=4`); err != nil {
+		t.Fatal(err)
+	}
+	// auth/4 rebuilds auth_users on SQLite and alters plex_id in place on
+	// PostgreSQL; auth/9 then renames allowed_sections to allowed_libraries.
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE component='auth' AND version=9`); err != nil {
 		t.Fatal(err)
 	}
 	// identity_links migrates after auth, so a database still before auth/4

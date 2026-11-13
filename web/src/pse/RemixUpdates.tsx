@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-13-subsonic-token-access",
+    id: "2026-11-13-upstream-sync",
     version: "current",
+    date: "2026-11-13",
+    title: ["Synchronisation Ether réparée", "Ether synchronization repaired"],
+    items: [
+      [
+        "Les nouveautés d’Ether jusqu’au 12 novembre sont intégrées. La synchronisation suit désormais les déplacements de fichiers et détaille les conflits pour préserver les ajouts Remix.",
+        "Ether updates through November 12 are integrated. Synchronization now tracks file moves and reports conflicts in detail to preserve Remix additions.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-13-subsonic-token-access",
+    version: "0.2.37-remix.54.1",
     date: "2026-11-13",
     title: ["Connexion des clients musicaux par jeton", "Token authentication for music clients"],
     items: [

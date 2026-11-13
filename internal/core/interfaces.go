@@ -21,6 +21,10 @@ const (
 	SortDuration   SortOrder = "duration"
 	SortAdded      SortOrder = "added"   // movie/episode release or air date; series and seasons use the latest aired episode, then the premiere
 	SortUpdated    SortOrder = "updated" // actual catalogue metadata update time
+	// SortPlayed orders a viewer's played titles by when they last played
+	// them (Jellyfin/Emby "DatePlayed"). It is served from the viewer's watch
+	// rows, never the catalogue's sort columns.
+	SortPlayed SortOrder = "played"
 )
 
 // SortSpec pairs a catalogue sort column with its direction.
@@ -88,21 +92,40 @@ type Filter struct {
 
 	// AvailabilityKeepKeys are the viewer's active playback sessions.
 	AvailabilityKeepKeys []RatingKey `json:"-"`
-	// Availability generations pin one evaluated hidden set across SQL reads.
-	HiddenMovieGeneration   string `json:"-"`
-	HiddenShowGeneration    string `json:"-"`
-	HiddenEpisodeGeneration string `json:"-"`
+	// GatePolicy and Gate* bounds evaluate the sticky availability_gate
+	// table directly in SQL without materializing hidden sets.
+	GatePolicy         string `json:"-"`
+	MovieGateCutoff    int64  `json:"-"`
+	ShowGateCutoff     int64  `json:"-"`
+	EpisodeGateCutoff  int64  `json:"-"`
+	GateNow            int64  `json:"-"`
+	GateUpcomingMovies bool   `json:"-"`
+	GateRev            uint64 `json:"-"`
+	// Availability hidden-set seqs pin one evaluated hidden set (an
+	// interval snapshot) across SQL reads on legacy read-only databases.
+	HiddenMovieSeq   int64 `json:"-"`
+	HiddenShowSeq    int64 `json:"-"`
+	HiddenEpisodeSeq int64 `json:"-"`
 	// ChildVisibility is the viewer policy evaluated on hydrated episodes.
-	ChildVisibility *Filter            `json:"-"`
-	RuleVisibility  string             `json:"-"` // owner-only rules browser: hidden or shown
-	PreviewRules    []LibraryExclusion `json:"-"`
-	PreviewFallback string             `json:"-"`
-	KnownAddedDate  bool               `json:"-"` // only released/aired titles, before pagination
+	ChildVisibility         *Filter            `json:"-"`
+	RuleVisibility          string             `json:"-"` // owner-only rules browser: hidden, shown or all
+	ApplyCanonicalInPreview bool               `json:"-"` // filter-library rules preview keeps canonical rules
+	PreviewRules            []LibraryExclusion `json:"-"`
+	PreviewFallback         string             `json:"-"`
+	ExtraRules              []LibraryExclusion `json:"-"` // saved rules on a filter library
+	ExtraFallback           string             `json:"-"`
+	KnownAddedDate          bool               `json:"-"` // only released/aired titles, before pagination
 	// ExcludeKeys applies local visibility policy before counting and pagination.
 	ExcludeKeys []RatingKey `json:"-"`
 	// IncludeKeys, when set, restricts the page to these keys before
 	// counting and pagination. An empty list matches nothing.
 	IncludeKeys []RatingKey `json:"-"`
+	// CollectionMembers, when non-zero, restricts the page to the
+	// materialised members of the owner collection with this id before
+	// counting and pagination. It is a SQL semi-join on collections_members,
+	// so a collection library pages in one statement whatever its size. A
+	// deleted collection (no members) matches nothing.
+	CollectionMembers int64 `json:"-"`
 	// ExcludeGenres and ExcludeKeywords remove viewer-blocked facts before
 	// counting and pagination. Matching is case-insensitive.
 	ExcludeGenres         []string        `json:"-"`

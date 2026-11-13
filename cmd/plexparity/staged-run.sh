@@ -104,6 +104,16 @@ for name, changes in replacements.items():
   if old in ('deps.Config = a.cfg.Read', 'deps.Config = a.cfg.Get') and 'deps.Now = parityClock()' in text: continue
   if old == 'deps.Config = a.cfg.Read' and text.count(old) == 0 and text.count('deps.Config = a.cfg.Get') == 1: continue
   if old == 'deps.Config = a.cfg.Get' and text.count(old) == 0 and text.count('deps.Config = a.cfg.Read') == 1: continue
+  if old == 'a.catalogOptions()...)' and text.count(old) == 0 and text.count('append(a.catalogOptions(), catalog.WithStartupContext(ctx))') == 1:
+   text = text.replace('append(a.catalogOptions(), catalog.WithStartupContext(ctx))', 'append(append(a.catalogOptions(), parityCatalogueOptions()...), catalog.WithStartupContext(ctx))', 1); continue
+  if old in ('deps.Config = a.cfg.Read', 'deps.Config = a.cfg.Get') and 'deps.Config = a.cfg.' not in text: continue
+  hooks = set(re.findall(r'parity\w+\(', new))
+  if text.count(old) == 0 and hooks and all(h in text for h in hooks): continue
+  if old.endswith('.Options{\n'):
+   i = text.find(old)
+   window = text[i:i+4000] if i >= 0 else ''
+   inserted = [l.strip().rstrip(',') for l in new[len(old):].splitlines() if l.strip()]
+   if inserted and all(f.replace(' ', '') in window.replace(' ', '').replace('\t', '') for f in inserted): continue
   if text.count(old) != 1: raise SystemExit(f"cannot apply parity seam: {path}: expected exactly one {old!r}")
   text = text.replace(old, new, 1)
  path.write_text(text)
@@ -117,8 +127,8 @@ if not re.search(r'Ranker:\s*parityRankerOptions\(\)', data):
  if count != 1: raise SystemExit('cannot preserve parity ranker schedule')
 personal.write_text(data)
 checks = {
- "build_identity.go": r'auth\.Options\{\s*Now:\s*parityClock\(\)',
- "build_personalization.go": r'personalize\.Options\{\s*Now:\s*parityClock\(\)',
+ "build_identity.go": r'auth\.Options\{[\s\S]{0,4000}?\bNow:\s*parityClock\(\)',
+ "build_personalization.go": r'personalize\.Options\{[\s\S]{0,4000}?\bNow:\s*parityClock\(\)',
 }
 for name, pattern in checks.items():
  if not re.search(pattern, (root / name).read_text()): raise SystemExit(f"missing clock seam in {name}")
@@ -182,8 +192,12 @@ PYCODE
  cp "$root/harness/parity_session_fixture.go" "$root/$tree/internal/livetv/"
  cp "$root/harness/parity_clock_fixture.go" "$root/$tree/internal/transcode/"
  cp "$root/harness/parity_warm_settle.go" "$root/$tree/internal/playback/"
- cp "$root/harness/parity_warm_route.go" "$root/$tree/internal/plex/"
- python3 - "$root/$tree/internal/plex/routes.go" <<'PYCODE'
+ # Plex lived in internal/plex before the move to the shared frontend host (v0.3.7 and older);
+ # those trees carry their own warm route.
+ plexdir=internal/frontends/plex
+ [ -d "$root/$tree/$plexdir" ] || plexdir=internal/plex
+ [ -f "$root/$tree/$plexdir/parity_warm_route.go" ] || cp "$root/harness/parity_warm_route.go" "$root/$tree/$plexdir/"
+ python3 - "$root/$tree/$plexdir/routes.go" <<'PYCODE'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = p.read_text()
@@ -193,8 +207,8 @@ if s.count(needle) != 1:
 p.write_text(s.replace(needle, needle + '\tr.Get("/parity/warm-settled", s.handleParityWarmSettled)\n\tr.Get("/parity/warm-probe", s.handleParityWarmProbe)\n', 1))
 PYCODE
  if [ "$tree" = baseline ] && [ "$counterfactual" = 1 ]; then
-  cp "$root/harness/policy_counterfactual.go.txt" "$root/$tree/internal/plex/zz_parity_policy_counterfactual.go"
-  python3 - "$root/$tree/internal/plex/handlers_hubs.go" <<'PYCODE'
+  cp "$root/harness/policy_counterfactual.go.txt" "$root/$tree/$plexdir/zz_parity_policy_counterfactual.go"
+  python3 - "$root/$tree/$plexdir/handlers_hubs.go" <<'PYCODE'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]);s=p.read_text()
 search='func (s *Server) runSearch(ctx context.Context, pr *Request, query string, sectionID, limit int) ([]core.Title, error) {'
@@ -209,6 +223,10 @@ done
 mkdir -p "$root/baseline/cmd/parityseed" "$root/candidate/cmd/plexparity"
 cp "$root/harness/seed.go" "$root/baseline/cmd/parityseed/seed.go"
 cp "$root/harness/ranker_fixture.go" "$root/baseline/cmd/parityseed/ranker_fixture.go"
+# Viewer library restrictions were AllowedSections []int before v0.3.8.
+if ! grep -q 'AllowedLibraries' "$root/baseline/internal/core/types.go"; then
+  sed -i -e 's/AllowedLibraries = \[\]core.LibraryID{1}/AllowedSections = []int{1}/' -e 's/AllowedLibraries = nil/AllowedSections = nil/' "$root/baseline/cmd/parityseed/seed.go"
+fi
 # The current seed imports packages the baseline tree may not have yet.
 # They are stdlib-only, so the baseline module can compile them.
 if [ ! -d "$root/baseline/internal/contentrating" ] && [ -d "$root/driver/internal/contentrating" ]; then
@@ -249,8 +267,8 @@ docker run --rm "${runner_args[@]}" --network "$network" \
  -v "$root/baseline":/baseline -v "$root/candidate":/candidate -v "$root/driver":/driver -v "$root/work":/work \
  -v prism-gomod:/go/pkg/mod -v prism-gobuild:/root/.cache/go-build \
  -v "$HOME/prism-test/.cache/ffmpeg":/ffmpeg:ro \
- -e ETHER_PARITY_ATTRIBUTION="$attribution" -e ETHER_PARITY_CROWD_DIAG="$crowd_diag" -e ETHER_PARITY_NOTIFICATIONS_ONLY="$notifications_only" -e ETHER_PARITY_LIVETV_ONLY="$livetv_only" -e ETHER_PARITY_DOWNLOADS_ONLY="$downloads_only" -e ETHER_PARITY_TRICKPLAY_ONLY="$trickplay_only" -e ETHER_PARITY_SUBTITLES_ONLY="$subtitles_only" -e ETHER_PARITY_IPTV_ONLY="$iptv_only" -e ETHER_PARITY_POLICY_COUNTERFACTUAL="$counterfactual" -e ETHER_PARITY_TRAIN_RANKER="$train_ranker" -e ETHER_PARITY_RANKER_TRAIN_ONLY="$ranker_train_only" -e ETHER_PARITY_BOTH_MODELS="$both_models" -e ETHER_PARITY_EXPIRY_ONLY="$expiry_only" -e ETHER_PARITY_CLUSTER_ONLY="$cluster_only" -e ETHER_PARITY_INFUSE_ONLY="$infuse_only" -e ETHER_PARITY_EXPECT_EARLY_RESUME="$expect_early_resume" -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false -e PATH=/ffmpeg/linux-amd64:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
- prism-go:1.27.3 bash -c '
+ -e ETHER_PARITY_ATTRIBUTION="$attribution" -e ETHER_PARITY_CROWD_DIAG="$crowd_diag" -e ETHER_PARITY_NOTIFICATIONS_ONLY="$notifications_only" -e ETHER_PARITY_LIVETV_ONLY="$livetv_only" -e ETHER_PARITY_DOWNLOADS_ONLY="$downloads_only" -e ETHER_PARITY_TRICKPLAY_ONLY="$trickplay_only" -e ETHER_PARITY_SUBTITLES_ONLY="$subtitles_only" -e ETHER_PARITY_IPTV_ONLY="$iptv_only" -e ETHER_PARITY_POLICY_COUNTERFACTUAL="$counterfactual" -e ETHER_PARITY_TRAIN_RANKER="$train_ranker" -e ETHER_PARITY_RANKER_TRAIN_ONLY="$ranker_train_only" -e ETHER_PARITY_BOTH_MODELS="$both_models" -e ETHER_PARITY_EXPIRY_ONLY="$expiry_only" -e ETHER_PARITY_CLUSTER_ONLY="$cluster_only" -e ETHER_PARITY_INFUSE_ONLY="$infuse_only" -e ETHER_PARITY_EXPECT_EARLY_RESUME="$expect_early_resume" -e ETHER_PARITY_LENIENT_BASELINE="${ETHER_PARITY_LENIENT_BASELINE:-0}" -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false -e PATH=/ffmpeg/linux-amd64:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+ prism-go:1.27.4 bash -c '
  set -e
  if [ "$ETHER_PARITY_RANKER_TRAIN_ONLY" = 2 ]; then
   cd /driver

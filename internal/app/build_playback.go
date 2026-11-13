@@ -110,6 +110,16 @@ func (a *App) buildPlaybackPresentation() {
 			}
 			return a.cfg.Get().Catalog.Language
 		},
+		ProfileLanguages: func(ctx context.Context, user int64, _ core.RatingKey) []string {
+			if a.resolver == nil || a.users == nil {
+				return nil
+			}
+			u, err := a.users.ActiveUser(ctx, user)
+			if err != nil || u == nil {
+				return nil
+			}
+			return a.resolver.ProfileFor(core.ClientCaps{}, u).PreferredLanguages
+		},
 		PlexLayer: func(_ context.Context, user int64) (trackprefs.PlexLayer, bool) {
 			if a.users == nil {
 				return trackprefs.PlexLayer{}, false
@@ -128,7 +138,7 @@ func (a *App) buildPlaybackPresentation() {
 	})
 	a.markers = markers.New(markers.Options{DB: a.db, Logger: log.With("component", "markers"), Config: func() markers.Lookup {
 		c := a.cfg.Get().Markers
-		return markers.Lookup{Enabled: c.TheIntroDB, APIKey: c.APIKey, IntroOff: !c.OfferIntro(), CreditsOff: !c.OfferCredits(), SourceOrder: c.SourceOrder}
+		return markers.Lookup{Enabled: c.TheIntroDB, APIKey: c.APIKey, IntroOff: !c.OfferIntro(), CreditsOff: !c.OfferCredits(), SourceOrder: c.SourceOrder, SkipDB: c.SkipDB}
 	}, Aligner: a.subtitles.TimelineAligner(), Dialogue: a.markerDialogue})
 	a.buildAdoption()
 }

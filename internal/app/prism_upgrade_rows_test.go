@@ -126,10 +126,33 @@ func withoutSeededMeta(t *testing.T, name string, rows []string) []string {
 	return kept
 }
 
+type upgradeColumnRename struct {
+	to        string
+	component string
+	version   int
+}
+
+// upgradeRenamedColumns are delivered columns a later migration renamed;
+// their values must survive under the new name once that migration applies
+// (and under the original name when a PostgreSQL transaction rolls back).
+var upgradeRenamedColumns = map[string]map[string]upgradeColumnRename{
+	"auth_users": {"allowed_sections": {to: "allowed_libraries", component: "auth", version: 9}}, // auth/9 (v0.3.8 libraries)
+}
+
 func assertUpgradeTables(t *testing.T, db *sql.DB, before map[string]upgradeTable) {
 	t.Helper()
+	applied, err := store.AppliedMigrations(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, table := range before {
-		if got := withoutSeededMeta(t, name, readUpgradeRows(t, db, name, table.columns)); !reflect.DeepEqual(got, withoutSeededMeta(t, name, table.rows)) {
+		columns := append([]string(nil), table.columns...)
+		for i, col := range columns {
+			if rename, ok := upgradeRenamedColumns[name][col]; ok && applied[rename.component] >= rename.version {
+				columns[i] = rename.to
+			}
+		}
+		if got := withoutSeededMeta(t, name, readUpgradeRows(t, db, name, columns)); !reflect.DeepEqual(got, withoutSeededMeta(t, name, table.rows)) {
 			// Fixture credentials are synthetic; include the whole row to identify the lost field.
 			t.Errorf("delivered table %s columns %v: got %v want %v", name, table.columns, got, table.rows)
 		}
@@ -177,7 +200,7 @@ func TestPrismUpgradeSQLiteLateFailureRecovery(t *testing.T) {
 	}
 	raw := openSQLiteRW(t, path)
 	assertUpgradeTables(t, raw, before)
-	if got := maxMigration(t, raw, "auth"); got != 8 {
+	if got := maxMigration(t, raw, "auth"); got != 9 {
 		t.Fatalf("completed auth steps lost: %d", got)
 	}
 	if got := maxMigration(t, raw, "catalog"); got != 9 {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -27,6 +27,12 @@ type viewFactKey struct {
 	rating   string
 	sections string
 }
+
+// viewFactCacheLimit bounds remembered (viewer, view) counts. Entries
+// are keyed by viewer, view, rating and section set, so without a cap
+// the map grows with every distinct combination ever browsed and is
+// never pruned (a stale generation only replaces its own key).
+const viewFactCacheLimit = 4096
 
 type viewFactCache struct {
 	mu sync.Mutex
@@ -71,6 +77,11 @@ func (c *viewFactCache) store(key viewFactKey, fact viewFact) {
 	if c.m == nil {
 		c.m = map[viewFactKey]viewFact{}
 	}
+	if _, exists := c.m[key]; !exists && len(c.m) >= viewFactCacheLimit {
+		// Counts are cheap to recompute and generation-checked on
+		// read, so dropping the whole map when full is safe.
+		clear(c.m)
+	}
 	c.m[key] = fact
 }
 
@@ -78,7 +89,7 @@ func (i *instance) viewFactKey(viewer *frontend.Viewer, viewID string) (viewFact
 	if i.host.PageFreshness == nil || viewer == nil {
 		return viewFactKey{}, 0, false
 	}
-	sections := append([]int(nil), viewer.AllowedSections...)
-	sort.Ints(sections)
+	sections := append([]frontend.LibraryID(nil), viewer.AllowedLibraries...)
+	slices.Sort(sections)
 	return viewFactKey{viewer: viewer.ID, view: viewID, rating: viewer.MaxContentRating, sections: fmt.Sprint(sections)}, i.host.PageFreshness().Catalog, true
 }

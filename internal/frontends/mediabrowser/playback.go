@@ -50,8 +50,8 @@ func (p *playbackRequest) UnmarshalJSON(data []byte) error {
 		EnableDirectStream  *caps.FlexBool     `json:"EnableDirectStream"`
 		EnableTranscoding   *caps.FlexBool     `json:"EnableTranscoding"`
 		StartTimeTicks      caps.FlexInt64     `json:"StartTimeTicks"`
-		AudioStreamIndex    *caps.FlexInt      `json:"AudioStreamIndex"`
-		SubtitleStreamIndex *caps.FlexInt      `json:"SubtitleStreamIndex"`
+		AudioStreamIndex    json.RawMessage    `json:"AudioStreamIndex"`
+		SubtitleStreamIndex json.RawMessage    `json:"SubtitleStreamIndex"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -63,11 +63,19 @@ func (p *playbackRequest) UnmarshalJSON(data []byte) error {
 		b := bool(*f)
 		return &b
 	}
-	flexInt := func(f *caps.FlexInt) *int {
-		if f == nil {
+	// Jellyfin Web posts "SubtitleStreamIndex":"" when no subtitle is
+	// chosen; an empty string (or null) is no choice, not stream 0, which
+	// is the video stream and made every plan NoCompatibleStream.
+	flexInt := func(raw json.RawMessage) *int {
+		t := strings.TrimSpace(string(raw))
+		if t == "" || t == "null" || t == `""` {
 			return nil
 		}
-		n := int(*f)
+		var f caps.FlexInt
+		if json.Unmarshal(raw, &f) != nil {
+			return nil
+		}
+		n := int(f)
 		return &n
 	}
 	*p = playbackRequest{
@@ -336,8 +344,43 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	if i.extraPlayback(w, r, v, key, playback) {
 		return
 	}
-	planRequest := frontend.PlanRequest{Viewer: v, Device: dev, Protocol: i.protocol, Item: key, Channel: channel, Version: version, ResolvedRelease: resolvedRelease, DetailSource: detailSource, ExpectedSourceETag: expectedETag, Caps: capability.Client, Intent: intent}
-	plan, err := i.host.Sessions.Plan(r.Context(), planRequest)
+	versionRequested := version != "" || detailSource != ""
+	// The ranked release variants are listed (and Auto may switch to one) only
+	// when the client did not pick a version and this is a single playable
+	// item, never a live channel or a plugin kind.
+	var variants []frontend.ReleaseVariant
+	if i.host.Editions != nil && !versionRequested && channel == "" && !key.IsPluginKey() {
+		if title, ok := i.playbackTitle(r, v, key); ok {
+			variants = i.releaseVariants(r, scope, title)
+		}
+	}
+	listVersions := len(variants) > 0
+	autoSwitchedRelease := ""
+	planBase := frontend.PlanRequest{Viewer: v, Device: dev, Protocol: i.protocol, Item: key, Channel: channel, Version: version, ResolvedRelease: resolvedRelease, DetailSource: detailSource, ExpectedSourceETag: expectedETag, Caps: capability.Client, Intent: intent}
+	// Auto skips a video transcode: when the automatic pick would re-encode
+	// video for this device and a ranked alternative would not, play the
+	// first alternative that avoids it (up to maxAutoTranscodeTrials). The
+	// choice is made from estimated plans first so the release about to be
+	// skipped is never opened and probed.
+	var plan frontend.PlayPlan
+	err = nil
+	planned, triedAlternatives := false, false
+	if playback && !versionRequested && len(variants) > 1 {
+		estimate := planBase
+		estimate.Intent.Estimate = true
+		if guess, e := i.host.Sessions.Plan(r.Context(), estimate); e == nil && videoTranscode(guess) {
+			triedAlternatives = true
+			if release := i.avoidVideoTranscode(r.Context(), planBase, variants); release != "" {
+				if alt, p, handle, ok := i.autoSwitchPlan(r, scope, planBase, release); ok {
+					planBase, plan, planned = alt, p, true
+					autoSwitchedRelease, version = release, handle
+				}
+			}
+		}
+	}
+	if !planned {
+		plan, err = i.host.Sessions.Plan(r.Context(), planBase)
+	}
 	if err != nil {
 		if playback && noCompatibleStream(err) {
 			i.writeNoCompatibleStream(w)
@@ -350,6 +393,16 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		i.writeNoCompatibleStream(w)
 		return
 	}
+	// The estimate can miss a transcode the probed media reveals: check the
+	// real plan too.
+	if playback && !versionRequested && !triedAlternatives && videoTranscode(plan) && len(variants) > 1 {
+		if release := i.avoidVideoTranscode(r.Context(), planBase, variants); release != "" {
+			if alt, p, handle, ok := i.autoSwitchPlan(r, scope, planBase, release); ok {
+				planBase, plan = alt, p
+				autoSwitchedRelease, version = release, handle
+			}
+		}
+	}
 	if !allowed && plan.Decision.Kind == "transcode" {
 		http.Error(w, "Playback unavailable", 422)
 		return
@@ -357,6 +410,11 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	sourceID = ids.RatingKeyGUID(key)
 	if channel != "" {
 		sourceID = wireID
+	} else if autoSwitchedRelease != "" {
+		// Auto played a different release than it would have: identify it by
+		// its scoped handle (the session was planned through it), never the
+		// raw release id.
+		sourceID = version
 	} else if version != "" {
 		sourceID = version
 	} else if detailSource != "" {
@@ -400,7 +458,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 
 	playID := ""
 	if !playback && channel == "" && (opts.DirectPlay || opts.DirectStream) {
-		if path := i.lazySourceURL(r, credential, planRequest); path != "" {
+		if path := i.lazySourceURL(r, credential, planBase); path != "" {
 			source["Path"] = path
 		}
 	}
@@ -415,6 +473,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 				i.host.Log.Warn("jellyfin static PlaybackInfo open", "err", err)
 			}
 		} else {
+			i.rememberAnonymousSession(r, v, session.ID, key, channel, dev, version, detailSource, sourceID)
 			format := frontend.StreamDirect
 			if channel != "" || (plan.Decision.Kind != "directplay" && (plan.Decision.Kind != "copy" || !plan.Decision.AudioCopy)) {
 				format = frontend.StreamHLS
@@ -511,6 +570,15 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if (i.protocol == "emby" || i.protocol == "jellyfin") && channel == "" {
 		applyPlannedStreamIndexes(source, media, plan.Decision)
+	}
+	// With no explicit version pick, list Auto then the ranked release
+	// variants so the app's version picker offers them; a pick resolves to
+	// the exact release through the returned MediaSource Id.
+	if listVersions && !versionRequested && autoSwitchedRelease == "" {
+		if sources := i.releaseVersionSourcesFor(r, scope, key, variants, source); sources != nil {
+			jsonReply(w, map[string]any{"MediaSources": sources, "PlaySessionId": playID})
+			return
+		}
 	}
 	jsonReply(w, map[string]any{"MediaSources": []any{source}, "PlaySessionId": playID})
 }
@@ -790,6 +858,9 @@ func (i *instance) playbackRoutes() error {
 		if err := i.router.Handle(method, "/Videos/{id}/{name}", http.HandlerFunc(i.streamAlias)); err != nil {
 			return err
 		}
+		if err := i.router.Handle(method, "/Audio/{id}/{name}", http.HandlerFunc(i.streamAlias)); err != nil {
+			return err
+		}
 	}
 	if err := i.router.Handle("GET", "/MediaSegments/{itemId}", http.HandlerFunc(i.mediaSegments)); err != nil {
 		return err
@@ -803,7 +874,7 @@ func (i *instance) playbackRoutes() error {
 	for _, entry := range []struct {
 		path    string
 		stopped bool
-	}{{"/Sessions/Playing", false}, {"/Sessions/Playing/Progress", false}, {"/Sessions/Playing/Stopped", true}} {
+	}{{"/Sessions/Playing", false}, {"/Sessions/Playing/Progress", false}, {"/Sessions/Playing/Ping", false}, {"/Sessions/Playing/Stopped", true}} {
 		stop := entry.stopped
 		started := entry.path == "/Sessions/Playing"
 		if err := i.router.Handle("POST", entry.path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { i.timeline(w, r, stop, started) })); err != nil {
@@ -1017,6 +1088,12 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 	}
 	viewer, credential, err := i.viewer(r)
 	if err != nil || viewer == nil {
+		// A stream alias with no credential at all is answered from a
+		// session the viewer just opened from this peer (anonymousStreamKey
+		// is set by the middleware). Anything else stays 401.
+		if _, anonymous := r.Context().Value(anonymousStreamKey{}).(bool); anonymous && i.serveAnonymousStream(w, r, name) {
+			return
+		}
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
@@ -1063,8 +1140,8 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 	}
 	format := frontend.StreamDirect
 	switch {
-	case name == "stream", strings.HasPrefix(name, "stream."):
-	case name == "master.m3u8":
+	case name == "stream", strings.HasPrefix(name, "stream."), name == "universal":
+	case name == "master.m3u8", name == "main.m3u8":
 		format = frontend.StreamHLS
 	default:
 		http.NotFound(w, r)
@@ -1163,47 +1240,5 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if version != "" && i.host.VersionHandles.MatchSession(i.identityContext(r), versionScope, version, sessionID) != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if detailSource != "" {
-		planner, ok := i.host.Sessions.(frontend.DetailPlanner)
-		if !ok || planner.MatchDetailSession(i.identityContext(r), versionScope, detailSource, sessionID) != nil {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	// PlaybackInfo already started this direct file. Serve that URL here so
-	// the client does not pay a second round trip, or a second stream start.
-	if format == frontend.StreamDirect {
-		for _, session := range sessions {
-			if session.ID != sessionID || !directFilePath(session.MediaPath) {
-				continue
-			}
-			req := r.Clone(r.Context())
-			u := *req.URL
-			u.Path = session.MediaPath
-			u.RawPath = ""
-			req.URL = &u
-			if i.protocol == "emby" {
-				i.embyMediaHeaders(w, req)
-			}
-			i.host.Sessions.ServeMedia(w, req)
-			return
-		}
-	}
-	url, err := i.host.Sessions.StartStream(r.Context(), access, sessionID, frontend.StreamRequest{Format: format})
-	if err != nil {
-		streamError(i.protocol, w, err)
-		return
-	}
-	if !strings.HasPrefix(url, "/sessions/media/") || strings.ContainsAny(url, "\r\n") {
-		http.Error(w, "Unavailable", 503)
-		return
-	}
-	if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
-		url = prefix + url
-	}
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	i.serveAliasSession(w, r, access, sessions, sessionID, versionScope, version, detailSource, format)
 }

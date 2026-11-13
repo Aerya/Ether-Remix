@@ -40,7 +40,10 @@ type Source struct {
 
 // Preview is what the install sheet shows before the owner confirms.
 type Preview struct {
-	Manifest         Manifest `json:"manifest"`
+	Manifest Manifest `json:"manifest"`
+	// Summary is the manifest summary with any "$t:" reference resolved
+	// from the package's own strings.
+	Summary          string   `json:"summary,omitempty"`
 	PermissionLines  []string `json:"permissions"`
 	NeedsViewers     bool     `json:"needsViewers"`
 	NeedsFolders     bool     `json:"needsFolders"`
@@ -409,6 +412,9 @@ func (p *Preview) resolve() error {
 			}
 		}
 	}
+	if man := p.Manifest; man.Ether != nil {
+		p.Summary = pluginText(p.resolvedStrings, man.Ether.Summary)
+	}
 	return nil
 }
 
@@ -486,6 +492,16 @@ type InstallOptions struct {
 	Shadow     bool
 	// AcceptAddedPermissions confirms an update that asks for more.
 	AcceptAddedPermissions bool
+	// ReplaceLibraries confirms a non-additive media-kind upgrade that
+	// replaces the plugin's library contents (spec §2.5).
+	ReplaceLibraries bool
+}
+
+func mediaKindsOf(m Manifest) []MediaKindMeta {
+	if m.Ether == nil {
+		return nil
+	}
+	return m.Ether.Contributes.MediaKinds
 }
 
 // Install installs (or updates to) a previewed source.
@@ -517,6 +533,11 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			// Same-version reinstall is allowed (Studio); older is not.
 			if CompareSemVer(man.Version, cur.Version) < 0 {
 				return Record{}, fmt.Errorf("plugins: version %s is older than the installed %s; use rollback", man.Version, cur.Version)
+			}
+		}
+		if !opts.ReplaceLibraries {
+			if err := ValidateMediaKindsUpgrade(mediaKindsOf(cur.Manifest), mediaKindsOf(man)); err != nil {
+				return Record{}, err
 			}
 		}
 		added := PermissionDiff(cur.Manifest, man)
@@ -1021,8 +1042,42 @@ type TestResult struct {
 	Details []string `json:"details,omitempty"`
 }
 
-// Test calls the plugin's /ether/test.
+// stremioProbe checks a plain Stremio add-on the Stremio way: its manifest
+// answers 200 with a JSON object naming an id. A plain add-on has no
+// /ether/test or /ether/health (those are Ether plugin routes), so asking
+// for them reads the add-on's 404 page.
+func (m *Manager) stremioProbe(ctx context.Context, id string) error {
+	resp, err := m.Call(ctx, id, Request{Method: http.MethodGet, Path: "/manifest.json"})
+	if err != nil {
+		return err
+	}
+	if resp.Status != http.StatusOK {
+		return fmt.Errorf("plugins: add-on %s manifest answered HTTP %d", id, resp.Status)
+	}
+	var man struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(resp.Body, &man) != nil || man.ID == "" {
+		return fmt.Errorf("plugins: add-on %s manifest was not understood", id)
+	}
+	return nil
+}
+
+func (m *Manager) stremioOnly(ctx context.Context, id string) bool {
+	rec, err := m.store.record(ctx, id)
+	return err == nil && rec.Manifest.IsStremioOnly()
+}
+
+// Test calls the plugin's /ether/test; a plain Stremio add-on is tested by
+// reading its manifest.
 func (m *Manager) Test(ctx context.Context, id string) (TestResult, error) {
+	if m.stremioOnly(ctx, id) {
+		if err := m.stremioProbe(ctx, id); err != nil {
+			return TestResult{OK: false, Message: "The add-on did not answer."}, nil
+		}
+		m.recordOK(ctx, id)
+		return TestResult{OK: true, Message: "The add-on answered."}, nil
+	}
 	resp, err := m.Call(ctx, id, Request{Method: "POST", Path: "/ether/test"})
 	if err != nil {
 		return TestResult{}, err
@@ -1056,6 +1111,12 @@ func (m *Manager) Options(ctx context.Context, id, field string, query ...map[st
 // A failing call feeds the failure policy through Call already; a plugin
 // reporting attention or error is recorded without counting as a crash.
 func (m *Manager) CheckHealth(ctx context.Context, id string) (Health, error) {
+	if m.stremioOnly(ctx, id) {
+		if err := m.stremioProbe(ctx, id); err == nil {
+			m.recordOK(ctx, id)
+		}
+		return m.store.health(ctx, id)
+	}
 	resp, err := m.Call(ctx, id, Request{Method: "GET", Path: "/ether/health"})
 	if err != nil {
 		h, herr := m.store.health(ctx, id)

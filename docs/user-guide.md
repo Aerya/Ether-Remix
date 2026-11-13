@@ -44,16 +44,18 @@ Downloads: not supported.
 | Emby for TV (Apple TV, 2.x web-shell) | 2.0.9 | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported |
 <!-- /certification-matrix:emby -->
 
-Jellyfin for Android phones and Jellyfin Desktop are unsupported: they wrap
-Jellyfin Web, which Ether does not ship. Ether's `/web` page gives connection
-instructions; it is not a browser media player.
+Jellyfin's own apps that wrap Jellyfin Web — Android phones, iPhone/iPad,
+Desktop, LG webOS and Xbox — now work: Ether downloads the official Jellyfin Web
+build when you turn Jellyfin on (about 32 MB, once) and serves it at
+`http://<server>:<jellyfin port>/web/`. Opening that URL in a browser works the
+same way. Emby Web is not provided, and Emby apps that need a server-hosted Emby
+Web (Emby for Apple TV 2.x) remain unsupported.
 Ether does not bundle Emby Web; the externally hosted client has not yet been
 certified against Ether. Emby for Android TV is in the matrix and is not
 certified yet. Emby for TV 2.0.9 on Apple TV is unsupported: it
 requests server-hosted Emby Web assets, which Ether does not ship, and reports
 that the server needs updating. For Apple TV, try Infuse or Swiftfin with
 Ether; their feature support remains subject to the test matrix above.
-
 Emby's own app restrictions still apply. Its [Premiere feature matrix](https://support.emby.media/support/articles/Premiere-Feature-Matrix.html)
 lists full playback in the iOS and Android mobile apps as requiring an App
 Unlock or Premiere; Windows, Linux, macOS and game-console apps require
@@ -61,6 +63,18 @@ Premiere for full playback. It lists free full playback for Roku, Apple TV and
 LG/Samsung TVs, and up to five TV devices for Android TV or Fire TV; Live TV
 requires Premiere. Availability and device limits can change, so consult Emby's
 matrix. Ether does not provide or emulate an Emby Premiere entitlement.
+
+### Choose a version
+
+When a title has more than one release, the Jellyfin and Emby apps' version
+picker lists Ether's top ranked releases: an **Auto** entry, which is the
+release Ether picks for the device, followed by each ranked release named by
+its resolution, source, codec/HDR, audio and size, such as
+`2160p WEB-DL HEVC DV · TrueHD 7.1 · 18.4 GB`. Picking a version plays exactly
+that release. **Auto** avoids a video transcode when another release can play
+directly or remux for the device, trying up to three next-ranked releases
+before it accepts a video transcode; an audio-only conversion does not count
+as a reason to switch.
 
 ## Silo apps
 
@@ -108,7 +122,7 @@ certification and exact-build conformance remain pending.
 
 | Surface | Intended clients and connection | Limits |
 | --- | --- | --- |
-| Jellyfin | Android TV, Swiftfin, Findroid, Streamyfin, Infuse, JellyCon, Roku; server URL and viewer sign-in | Native feature matrix above is pending; Android phone and Desktop web shells are unsupported |
+| Jellyfin | Android TV, Swiftfin, Findroid, Streamyfin, Infuse, JellyCon, Roku; also Android phones, iPhone/iPad, Desktop, LG webOS and Xbox through the Jellyfin Web build served at `/web/`; server URL and viewer sign-in | Native feature matrix above is pending; the Jellyfin Web build is downloaded when Jellyfin is turned on (~32 MB) |
 | Emby | Native clients using the server URL and Ether viewer account | No bundled Web; Apple TV Emby for TV 2.x web shell is unsupported; app licensing still applies |
 | Silo | Apple and Android native apps; server URL and viewer sign-in or pairing | Versioned device acceptance pending; see Silo limits above |
 | Stremio | Install the viewer-specific addon from the viewer portal in Stremio | Addon API only; no hosted Stremio web player |
@@ -502,7 +516,11 @@ alternative, the menu can show two 4K, two 1080p and two 720p releases when
 eligible results exist. Auto counts as the first release in its resolution,
 stays first in the menu, and the total stays within seven entries. Ether gives
 each resolution a place before filling extra copies, removes duplicate files,
-and preserves profile and device limits. **Offer higher versions** remains a
+and preserves profile and device limits. Turn on **Offer each source at every
+resolution** to keep one WEB-DL, Blu-ray and Remux choice at each resolution
+that appears, so a lighter WEB-DL still shows beside a tier full of remuxes;
+Auto is unchanged and still follows your profile. **Offer higher versions**
+remains a
 separate opt-in for choices above the profile's resolution ceiling. The new
 mode is off by default.
 

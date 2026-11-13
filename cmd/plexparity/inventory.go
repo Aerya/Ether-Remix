@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	protocol "github.com/braedonsaunders/ether/internal/conform/plex"
-	server "github.com/braedonsaunders/ether/internal/plex"
+	server "github.com/braedonsaunders/ether/internal/frontends/plex"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -65,6 +65,8 @@ func missingRoutes() []string {
 // unprobedRoutes are GET routes the offline parity world cannot compare
 // byte for byte, each with the reason. They are not counted as covered.
 var unprobedRoutes = map[string]string{
+	"/service/ultrablur/colors":                                            "colours come from the artwork palette cache, which the offline world does not warm",
+	"/services/ultrablur/colors":                                           "colours come from the artwork palette cache, which the offline world does not warm",
 	"/library/parts/{part}/{changestamp}/":                                 "PM4K bare changestamp route has no offline parity request",
 	"/statistics/resources":                                                "live host CPU and memory samples differ between any two processes",
 	"/{ttype:video|music|audio|subtitles}/:/transcode/universal/start":     "Plex for Mac's protocol=http conversion streams from a live FFmpeg the offline world does not run",
@@ -80,6 +82,9 @@ var unprobedRoutes = map[string]string{
 	// guard them (metadata_guid_list_test.go, livetv_logo_compat_test.go).
 	"/library/metadata/plex:/*":           "new route in v0.3.6 (Infuse Watchlist plex:// identity paths); baselines answer 404",
 	"/livetv/logos/{channel}/{signature}": "new route in v0.3.6 (Apple TV guide logos); baselines answer 404 and the signature is an HMAC under a per-node key",
+	// New in v0.3.8; v0.2.58 and main answer 404. Unit tests in
+	// internal/frontends/plex guard it.
+	"/library/metadata/{key}/subscription/modes": "new route in v0.3.8 (Plex for Mac download subscription modes, #365); baselines answer 404",
 }
 
 func inventorySummary() string { m := missingRoutes(); return strings.Join(m, ", ") }

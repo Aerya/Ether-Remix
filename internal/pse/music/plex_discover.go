@@ -3,7 +3,7 @@ package music
 import (
 	"strconv"
 
-	"github.com/braedonsaunders/ether/internal/plex/model"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
 // Découverte côté Plex : rangées « Découvertes » et tops par pays sur

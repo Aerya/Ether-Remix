@@ -30,8 +30,9 @@ export interface Indexer {
   /** "usenet" (Newznab, the default when empty or absent) or "torrent" (Torznab). */
   protocol?: IndexerProtocol | "";
   /**
-   * "cardigann" for a built-in site, "stremio" for a Stremio stream addon
-   * (always protocol "torrent"); empty or "newznab" for a Newznab/Torznab URL.
+   * "cardigann" for a built-in site, "stremio" for a Stremio stream addon,
+   * "zilean" for a self-hosted Zilean instance (always protocol "torrent");
+   * empty or "newznab" for a Newznab/Torznab URL.
    */
   kind?: IndexerKind | "";
   /** Installed definition id of a built-in site. */
@@ -42,6 +43,13 @@ export interface Indexer {
   secretSettings?: Record<string, string> | null;
   /** Client identity preset overriding the global policy for this indexer. */
   clientIdentity?: string;
+  /**
+   * The audio language of the releases this indexer returns, as a BCP 47
+   * tag ("pt-BR"). It is evidence for a bare DUAL/MULTI whose name names no
+   * dub; an explicit language in a release name always wins. Overrides a
+   * built-in site's definition language when set.
+   */
+  language?: string;
 }
 
 /**
@@ -66,7 +74,7 @@ export interface IdentityPreset {
 }
 
 export type IndexerProtocol = "usenet" | "torrent";
-type IndexerKind = "newznab" | "cardigann" | "stremio";
+type IndexerKind = "newznab" | "cardigann" | "stremio" | "zilean";
 
 /** Definitions source and FlareSolverr for built-in sites (config.indexerSites). */
 export interface IndexerSitesConfig {
@@ -236,7 +244,10 @@ export interface PosterProviderConfig {
 }
 
 export interface EtherConfig {
-  frontends?: Record<string, { enabled: boolean; settings?: Record<string, unknown> }>;
+  frontends?: Record<
+    string,
+    { enabled: boolean; publicUrl?: string; settings?: Record<string, unknown> }
+  >;
   frontendPorts?: Record<string, number>;
   posters?: PosterProviderConfig;
   availability?: AvailabilityConfig;
@@ -245,8 +256,6 @@ export interface EtherConfig {
     port: number;
     bindAddress: string;
     friendlyName: string;
-    moviesLibraryName: string;
-    tvShowsLibraryName: string;
     machineIdentifier: string;
     logLevel: string;
     defaultStreamLimit: number;
@@ -351,6 +360,7 @@ export interface EtherConfig {
     maxCandidates: number;
     sameQualityAlternatives: number;
     alternativesPerResolution?: boolean;
+    alternativesPerSource?: boolean;
     offerHigherVersions?: boolean;
     blockedGroups: string[] | null;
     blockedTerms: string[] | null;
@@ -361,6 +371,8 @@ export interface EtherConfig {
     sourceOrder?: { families?: string[]; content?: Record<string, string[]> };
     sourceAlwaysFirst?: boolean;
     customFormats?: CustomFormatDefinition[] | null;
+    /** Let a detail page's file-availability check open on-demand add-on streams. */
+    openOnDemandAddonStreams?: boolean;
   };
   quality: {
     profiles: QualityProfile[] | null;
@@ -393,10 +405,13 @@ export interface EtherConfig {
   };
   trakt: { enabled: boolean; clientId: string; clientSecret: string };
   simkl?: { enabled: boolean; clientId: string; clientSecret: string };
+  mdblist?: { enabled: boolean };
   plexServers?: { enabled: boolean };
   markers?: {
     theIntroDb: boolean;
     apiKey: string;
+    skipDb?: boolean;
+    skipDbApiKey?: string;
     skipIntro?: boolean;
     skipCredits?: boolean;
     sourceOrder?: string[];
@@ -414,6 +429,11 @@ export interface EtherConfig {
     apiKey: string;
     username: string;
     password: string;
+    automaticPreferred?: boolean;
+  };
+  subdl: {
+    enabled: boolean;
+    apiKey: string;
   };
   llm: {
     enabled: boolean;
@@ -614,7 +634,7 @@ export interface EtherUser {
   streamLimit: number;
   /** Content rating limit; "" is unrestricted. */
   maxContentRating: string;
-  allowedSections: number[] | null;
+  allowedLibraries: number[] | null;
 }
 
 /** GET /api/updates/ — the server's self-update manager. */
@@ -941,6 +961,8 @@ export interface AvailabilityConfig {
   movieEvidenceDays?: number;
   /** playable, digital, or immediate. Empty is derived from the gate flags. */
   mode?: string;
+  movieMode?: string;
+  showMode?: string;
   /** gentle, normal, unlimited, or custom. Empty is treated as normal. */
   effort?: string;
   catchUp?: boolean;

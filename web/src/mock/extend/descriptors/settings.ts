@@ -23,7 +23,7 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
               source: "What viewers see",
             },
             description: {
-              source: "The names apps show for this server and its libraries.",
+              source: "The name apps show for this server.",
             },
             fields: [
               {
@@ -33,26 +33,6 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 help: {
                   source: "How the server appears in apps.",
-                },
-                kind: "text",
-              },
-              {
-                key: "moviesLibraryName",
-                label: {
-                  source: "Movies library name",
-                },
-                help: {
-                  source: "Name shown in Plex. A rename inside Plex does not stick.",
-                },
-                kind: "text",
-              },
-              {
-                key: "tvShowsLibraryName",
-                label: {
-                  source: "TV Shows library name",
-                },
-                help: {
-                  source: "Name shown in Plex. A rename inside Plex does not stick.",
                 },
                 kind: "text",
               },
@@ -653,6 +633,15 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 kind: "bool",
               },
               {
+                key: "alternativesPerSource",
+                label: { source: "Offer each source at every resolution" },
+                help: {
+                  source:
+                    "Keep one WEB-DL, Blu-ray and Remux choice at each resolution in Play Version when available. Auto still follows your profile.",
+                },
+                kind: "bool",
+              },
+              {
                 key: "offerHigherVersions",
                 label: {
                   source: "Offer higher versions",
@@ -1223,6 +1212,17 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 kind: "secret",
               },
+              {
+                key: "automaticPreferred",
+                label: {
+                  source: "Download a subtitle automatically when playback starts",
+                },
+                help: {
+                  source:
+                    "When a viewer's subtitle setting asks for subtitles and none in their language is available, Ether downloads one once the video starts playing. Uses one OpenSubtitles download per title per viewer, so standard accounts may run out sooner.",
+                },
+                kind: "bool",
+              },
             ],
           },
         ],
@@ -1414,6 +1414,27 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 key: "apiKey",
                 label: {
                   source: "Optional TheIntroDB key",
+                },
+                kind: "secret",
+              },
+              {
+                key: "skipDb",
+                label: {
+                  source: "Also look up SkipDB",
+                },
+                help: {
+                  source:
+                    "Add the open SkipDB lookup as a second source, cached per episode and runtime.",
+                },
+                kind: "bool",
+              },
+              {
+                key: "skipDbApiKey",
+                label: {
+                  source: "Optional SkipDB key",
+                },
+                help: {
+                  source: "Reading SkipDB is open; a key only raises its rate limit.",
                 },
                 kind: "secret",
               },
@@ -1829,7 +1850,7 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
               source: "What viewers see",
             },
             description: {
-              source: "The names apps show for this server and its libraries.",
+              source: "The name apps show for this server.",
             },
             fields: [
               {
@@ -1839,26 +1860,6 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 help: {
                   source: "How the server appears in apps.",
-                },
-                kind: "text",
-              },
-              {
-                key: "moviesLibraryName",
-                label: {
-                  source: "Movies library name",
-                },
-                help: {
-                  source: "Name shown in Plex. A rename inside Plex does not stick.",
-                },
-                kind: "text",
-              },
-              {
-                key: "tvShowsLibraryName",
-                label: {
-                  source: "TV Shows library name",
-                },
-                help: {
-                  source: "Name shown in Plex. A rename inside Plex does not stick.",
                 },
                 kind: "text",
               },

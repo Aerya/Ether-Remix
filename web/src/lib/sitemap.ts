@@ -78,7 +78,7 @@ const PAGES = localized<PageDef[]>(() => [
     sections: [],
     keywords: searchTerms(
       msg(
-        "users friends accounts people overview home taste recent activity audio subtitles limits sign-in devices lists alerts",
+        "users friends accounts people overview home taste recent activity audio subtitles limits sign-in devices lists alerts watchlist monitoring",
       ),
     ),
   },
@@ -125,20 +125,28 @@ const PAGES = localized<PageDef[]>(() => [
     ),
   },
   {
-    href: "/catalog",
-    title: t("Catalog"),
+    href: "/libraries",
+    title: t("Libraries"),
     sections: [
       {
-        key: "rules",
-        title: t("Rules"),
-        keywords: searchTerms(msg("hide show rules library exclusions")),
+        key: "1/rules",
+        title: t("Movies · Rules"),
+        keywords: searchTerms(msg("hide show rules movie exclusions visibility")),
       },
       {
-        key: "settings",
-        title: t("Catalog settings"),
-        keywords: searchTerms(
-          msg("tmdb language region obscure new releases playable digital watchlist monitoring"),
-        ),
+        key: "1/settings",
+        title: t("Movies · Settings"),
+        keywords: searchTerms(msg("tmdb language region obscure new releases playable digital")),
+      },
+      {
+        key: "2/rules",
+        title: t("TV Shows · Rules"),
+        keywords: searchTerms(msg("hide show rules tv exclusions visibility")),
+      },
+      {
+        key: "2/settings",
+        title: t("TV Shows · Settings"),
+        keywords: searchTerms(msg("tmdb language region obscure new releases episodes")),
       },
     ],
     keywords: searchTerms(msg("catalogue movies shows browse search library")),
@@ -366,6 +374,12 @@ const PAGES = localized<PageDef[]>(() => [
         keywords: searchTerms(msg("simkl sync history")),
       },
       {
+        key: "mdblist",
+        href: "/services/overview#mdblist",
+        title: "MDBList",
+        keywords: searchTerms(msg("mdblist sync history")),
+      },
+      {
         key: "llm",
         href: "/services/overview#llm",
         title: t("Language model"),
@@ -376,6 +390,12 @@ const PAGES = localized<PageDef[]>(() => [
         href: "/services/overview#opensubtitles",
         title: "OpenSubtitles",
         keywords: searchTerms(msg("subtitles")),
+      },
+      {
+        key: "subdl",
+        href: "/services/overview#subdl",
+        title: "SubDL",
+        keywords: searchTerms(msg("subtitles subdl")),
       },
       {
         key: "ratings",

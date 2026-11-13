@@ -23,6 +23,9 @@ const (
 	pmsOutRows      = 200
 	pmsOutWrites    = 50
 	pmsDuePerTick   = 8
+	// pmsCatchUp paces consecutive passes while a full-history backfill still
+	// has pages left, independent of the mapping's steady-state interval.
+	pmsCatchUp = time.Minute
 	// pmsEchoBefore/After bound how far a PMS history row may sit from
 	// Ether's own scrobble of that title and still be its echo. PMS stamps
 	// the view with its own clock, so both sides allow for skew.
@@ -33,6 +36,26 @@ const (
 	// pmsNoMatchRetry is how long a title that did not match is left alone.
 	pmsNoMatchRetry = 24 * time.Hour
 )
+
+var (
+	pmsMovieMin   = int64(core.MovieKey(0))
+	pmsMovieMax   = int64(core.ShowKey(0))
+	pmsEpisodeMin = int64(core.EpisodeKey(0, 0, 0))
+	pmsEpisodeMax = int64(core.CollectionKey(0))
+)
+
+// viewerWatchCounts counts one viewer's own watched and in-progress movie and
+// episode rows on the primary key of state_watch, never touching the catalogue.
+func (s *Servers) viewerWatchCounts(ctx context.Context, userID int64) (watched, inProgress int, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT
+		COALESCE(SUM(CASE WHEN view_count>0 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN view_count=0 AND view_offset_ns>0 THEN 1 ELSE 0 END), 0)
+		FROM state_watch
+		WHERE user_id=? AND (view_count>0 OR view_offset_ns>0)
+		  AND ((rating_key>? AND rating_key<?) OR (rating_key>? AND rating_key<?))`,
+		userID, pmsMovieMin, pmsMovieMax, pmsEpisodeMin, pmsEpisodeMax).Scan(&watched, &inProgress)
+	return watched, inProgress, err
+}
 
 // Run syncs due mappings until ctx ends or Close. Start it under cluster
 // leadership; the per-mapping lease also serializes overlapping leaders and
@@ -47,12 +70,13 @@ func (s *Servers) Run(ctx context.Context) {
 			return
 		case <-s.closed:
 			return
+		case <-s.wake:
 		case <-tick.C:
 		}
 	}
 }
 
-// RunOnce syncs up to pmsDuePerTick due mappings.
+// RunOnce syncs up to pmsDuePerTick due mappings and step-aside inventories.
 func (s *Servers) syncEnabled() bool { return s.enabled == nil || s.enabled() }
 
 func (s *Servers) RunOnce(ctx context.Context) {
@@ -82,12 +106,15 @@ func (s *Servers) RunOnce(ctx context.Context) {
 			s.log.Info("plex media server sync paused", "server", d.server, "account", d.account, "err", err.Error())
 		}
 	}
+	s.runDueHeld(ctx)
 }
 
-// SyncNow runs every mapping of one server now. A server that asked Ether
-// to wait (HTTP 429) is still left alone until it said.
+// SyncNow runs every mapping of one server now (and its step-aside inventory
+// when enabled). A server that asked Ether to wait (HTTP 429) is still left
+// alone until it said.
 func (s *Servers) SyncNow(ctx context.Context, id int64) (PMSServer, error) {
-	if _, err := s.loadServer(ctx, id); err != nil {
+	srv, err := s.loadServer(ctx, id)
+	if err != nil {
 		return PMSServer{}, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT account_id FROM plexwatch_pms_viewer WHERE server_id=? AND direction<>0 ORDER BY account_id`, id)
@@ -107,7 +134,17 @@ func (s *Servers) SyncNow(ctx context.Context, id int64) (PMSServer, error) {
 			return PMSServer{}, err
 		}
 	}
+	if srv.stepAside {
+		if err := s.syncHeld(ctx, id); err != nil && ctx.Err() != nil {
+			return PMSServer{}, err
+		}
+	}
 	return s.Server(ctx, id)
+}
+
+type pmsCachedItem struct {
+	ratingKey core.RatingKey
+	checkedAt int64
 }
 
 type pmsPair struct {
@@ -120,11 +157,21 @@ type pmsPair struct {
 	serverToken, writeToken     string
 	inCursor                    int64
 	inSkip                      int
+	inBackfill                  int
+	inBackfillRead              int
+	inBackfillTotal             int
+	inBackfillDone              int64
 	outCursor, outKey           int64
 	outBaseline                 int64
+	outBackfill                 int
+	outBackfillKey              int64
+	outBackfillSent             int
+	outBackfillTotal            int
+	outBackfillDone             int64
 	sections                    []pmsSection
 	sectionsLoaded              bool
 	pulled, pushed              bool
+	items                       map[int64]pmsCachedItem
 }
 
 func (s *Servers) syncPair(ctx context.Context, serverID, accountID int64) error {
@@ -171,9 +218,15 @@ func (s *Servers) loadPair(ctx context.Context, serverID, accountID, lease int64
 	p := &pmsPair{serverID: serverID, accountID: accountID, lease: lease}
 	var owner int
 	var token string
-	err = s.db.QueryRowContext(ctx, `SELECT user_id,owner,token,direction,interval_min,failures,in_cursor,in_skip,out_cursor,out_key,out_baseline
+	err = s.db.QueryRowContext(ctx, `SELECT user_id,owner,token,direction,interval_min,failures,in_cursor,in_skip,
+		in_backfill,in_backfill_read,in_backfill_total,in_backfill_done,
+		out_cursor,out_key,out_baseline,
+		out_backfill,out_backfill_key,out_backfill_sent,out_backfill_total,out_backfill_done
 		FROM plexwatch_pms_viewer WHERE server_id=? AND account_id=? AND lease=?`, serverID, accountID, lease).
-		Scan(&p.userID, &owner, &token, &p.direction, &p.interval, &p.failures, &p.inCursor, &p.inSkip, &p.outCursor, &p.outKey, &p.outBaseline)
+		Scan(&p.userID, &owner, &token, &p.direction, &p.interval, &p.failures, &p.inCursor, &p.inSkip,
+			&p.inBackfill, &p.inBackfillRead, &p.inBackfillTotal, &p.inBackfillDone,
+			&p.outCursor, &p.outKey, &p.outBaseline,
+			&p.outBackfill, &p.outBackfillKey, &p.outBackfillSent, &p.outBackfillTotal, &p.outBackfillDone)
 	if err != nil {
 		return nil, err
 	}
@@ -205,8 +258,14 @@ func (s *Servers) runPair(ctx context.Context, p *pmsPair) error {
 		p.pulled = true
 	}
 	if p.direction&pmsSend != 0 && p.writeToken != "" {
-		if err := s.push(ctx, p); err != nil {
+		writes, err := s.push(ctx, p)
+		if err != nil {
 			return err
+		}
+		if p.outBackfill != pmsBackfillIdle {
+			if err := s.pushBackfill(ctx, p, pmsOutWrites-writes); err != nil {
+				return err
+			}
 		}
 		p.pushed = true
 	}
@@ -214,8 +273,9 @@ func (s *Servers) runPair(ctx context.Context, p *pmsPair) error {
 }
 
 // finishPair records the outcome and schedules the next pass: the configured
-// interval after success, exponential backoff after failure, and at least
-// the server's Retry-After for 429, applied to every mapping of that server.
+// interval after success, pmsCatchUp while a full-history backfill still has
+// pages left, exponential backoff after failure, and at least the server's
+// Retry-After for 429, applied to every mapping of that server.
 func (s *Servers) finishPair(ctx context.Context, p *pmsPair, err error) error {
 	now := s.now()
 	interval := p.interval
@@ -223,8 +283,10 @@ func (s *Servers) finishPair(ctx context.Context, p *pmsPair, err error) error {
 		interval = 10
 	}
 	delay := time.Duration(interval) * time.Minute
+	jitter := time.Duration((p.accountID*31+p.userID)%61) * time.Second
 	problem, failures, nextAllowed := "", 0, int64(0)
 	serverProblem := ""
+	wakeNow := false
 	var st *StatusError
 	isStatus := errors.As(err, &st)
 	if err != nil {
@@ -250,8 +312,22 @@ func (s *Servers) finishPair(ctx context.Context, p *pmsPair, err error) error {
 			delay = min(st.RetryAfter, 24*time.Hour)
 		}
 		nextAllowed = now.Add(delay).UnixNano()
+	} else {
+		var curIn, curOut int
+		_ = s.db.QueryRowContext(ctx, `SELECT in_backfill,out_backfill FROM plexwatch_pms_viewer WHERE server_id=? AND account_id=? AND lease=?`,
+			p.serverID, p.accountID, p.lease).Scan(&curIn, &curOut)
+		inPending := p.direction&pmsReceive != 0 && curIn != pmsBackfillIdle
+		outPending := p.direction&pmsSend != 0 && p.writeToken != "" && curOut != pmsBackfillIdle
+		if inPending || outPending {
+			jitter = 0
+			if (inPending && p.inBackfill == pmsBackfillIdle && curIn == pmsBackfillQueued) || (outPending && p.outBackfill == pmsBackfillIdle && curOut == pmsBackfillQueued) {
+				delay = 0
+				wakeNow = true
+			} else {
+				delay = pmsCatchUp
+			}
+		}
 	}
-	jitter := time.Duration((p.accountID*31+p.userID)%61) * time.Second
 	next := now.Add(delay + jitter).UnixNano()
 	pulled, pushed := int64(0), int64(0)
 	if p.pulled {
@@ -267,8 +343,12 @@ func (s *Servers) finishPair(ctx context.Context, p *pmsPair, err error) error {
 		return e
 	}
 	if isStatus && st.Status == http.StatusTooManyRequests {
-		// One server's limit covers every account it serves.
+		// One server's limit covers every account and inventory pass it serves.
 		if _, e := s.db.ExecContext(ctx, `UPDATE plexwatch_pms_viewer SET next_allowed=CASE WHEN next_allowed<? THEN ? ELSE next_allowed END WHERE server_id=?`,
+			nextAllowed, nextAllowed, p.serverID); e != nil {
+			return e
+		}
+		if _, e := s.db.ExecContext(ctx, `UPDATE plexwatch_pms SET held_next_allowed=CASE WHEN held_next_allowed<? THEN ? ELSE held_next_allowed END WHERE id=?`,
 			nextAllowed, nextAllowed, p.serverID); e != nil {
 			return e
 		}
@@ -279,6 +359,9 @@ func (s *Servers) finishPair(ctx context.Context, p *pmsPair, err error) error {
 			return e
 		}
 	}
+	if wakeNow {
+		s.signal()
+	}
 	return nil
 }
 
@@ -286,10 +369,24 @@ func (s *Servers) finishPair(ctx context.Context, p *pmsPair, err error) error {
 // The cursor is (second, rows already read at that second), so many views
 // stamped with one second (a season marked watched) page correctly.
 func (s *Servers) pull(ctx context.Context, p *pmsPair) error {
+	backfill := p.inBackfill != pmsBackfillIdle
+	if p.inBackfill == pmsBackfillQueued {
+		p.inCursor, p.inSkip = 1, 0
+		p.inBackfill, p.inBackfillRead, p.inBackfillTotal = pmsBackfillRunning, 0, 0
+		if err := s.saveInCursor(ctx, p, backfill, nil); err != nil {
+			return err
+		}
+	}
 	for page := 0; page < pmsHistoryPages; page++ {
-		items, err := p.client.history(ctx, p.serverToken, p.accountID, p.inCursor-1, p.inSkip, pmsHistoryPage)
+		items, total, err := p.client.history(ctx, p.serverToken, p.accountID, p.inCursor-1, p.inSkip, pmsHistoryPage)
 		if err != nil {
 			return err
+		}
+		if p.inBackfill == pmsBackfillRunning {
+			est := p.inBackfillRead - p.inSkip + max(total, p.inSkip+len(items))
+			if est > p.inBackfillTotal {
+				p.inBackfillTotal = est
+			}
 		}
 		for _, h := range items {
 			at := int64(h.ViewedAt)
@@ -297,27 +394,45 @@ func (s *Servers) pull(ctx context.Context, p *pmsPair) error {
 				continue // before the cursor: the server ignored the filter
 			}
 			if err := s.applyHistory(ctx, p, h); err != nil {
-				return s.saveInCursor(ctx, p, err)
+				return s.saveInCursor(ctx, p, backfill, err)
 			}
 			if at == p.inCursor {
 				p.inSkip++
 			} else {
 				p.inCursor, p.inSkip = at, 1
 			}
-		}
-		if err := s.saveInCursor(ctx, p, nil); err != nil {
-			return err
+			if p.inBackfill == pmsBackfillRunning {
+				p.inBackfillRead++
+				if p.inBackfillRead > p.inBackfillTotal {
+					p.inBackfillTotal = p.inBackfillRead
+				}
+			}
 		}
 		if len(items) < pmsHistoryPage {
-			return nil
+			if p.inBackfill == pmsBackfillRunning {
+				p.inBackfill = pmsBackfillIdle
+				p.inBackfillDone = s.now().Unix()
+				p.inBackfillTotal = p.inBackfillRead
+			}
+			return s.saveInCursor(ctx, p, backfill, nil)
+		}
+		if err := s.saveInCursor(ctx, p, backfill, nil); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (s *Servers) saveInCursor(ctx context.Context, p *pmsPair, cause error) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE plexwatch_pms_viewer SET in_cursor=?,in_skip=? WHERE server_id=? AND account_id=? AND lease=?`,
-		p.inCursor, p.inSkip, p.serverID, p.accountID, p.lease)
+func (s *Servers) saveInCursor(ctx context.Context, p *pmsPair, backfill bool, cause error) error {
+	var err error
+	if backfill {
+		_, err = s.db.ExecContext(ctx, `UPDATE plexwatch_pms_viewer SET in_cursor=?,in_skip=?,in_backfill=CASE WHEN (direction&2)<>0 THEN ? ELSE 0 END,in_backfill_read=?,in_backfill_total=?,in_backfill_done=?
+			WHERE server_id=? AND account_id=? AND lease=?`,
+			p.inCursor, p.inSkip, p.inBackfill, p.inBackfillRead, p.inBackfillTotal, p.inBackfillDone, p.serverID, p.accountID, p.lease)
+	} else {
+		_, err = s.db.ExecContext(ctx, `UPDATE plexwatch_pms_viewer SET in_cursor=?,in_skip=? WHERE server_id=? AND account_id=? AND lease=?`,
+			p.inCursor, p.inSkip, p.serverID, p.accountID, p.lease)
+	}
 	if cause != nil {
 		return cause
 	}
@@ -416,12 +531,12 @@ type pmsLocalRow struct {
 
 // push sends Ether changes after the cursor. Only rows whose updated_at
 // moved are read (state_watch_updated index), never the viewer's library.
-func (s *Servers) push(ctx context.Context, p *pmsPair) error {
+func (s *Servers) push(ctx context.Context, p *pmsPair) (int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT rating_key,view_count,view_offset_ns,watch_at,last_viewed_at,updated_at FROM state_watch
 		WHERE user_id=? AND updated_at>=? AND (updated_at>? OR rating_key>?) ORDER BY updated_at,rating_key LIMIT ?`,
 		p.userID, p.outCursor, p.outCursor, p.outKey, pmsOutRows)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var batch []pmsLocalRow
 	for rows.Next() {
@@ -429,14 +544,14 @@ func (s *Servers) push(ctx context.Context, p *pmsPair) error {
 		var key, offset int64
 		if err := rows.Scan(&key, &r.count, &offset, &r.watchAt, &r.viewed, &r.updatedAt); err != nil {
 			rows.Close()
-			return err
+			return 0, err
 		}
 		r.key, r.offset = core.RatingKey(key), time.Duration(offset)
 		batch = append(batch, r)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	writes := 0
 	var cause error
@@ -457,8 +572,94 @@ func (s *Servers) push(ctx context.Context, p *pmsPair) error {
 	_, err = s.db.ExecContext(ctx, `UPDATE plexwatch_pms_viewer SET out_cursor=?,out_key=? WHERE server_id=? AND account_id=? AND lease=?`,
 		p.outCursor, p.outKey, p.serverID, p.accountID, p.lease)
 	if cause != nil {
-		return cause
+		return writes, cause
 	}
+	return writes, err
+}
+
+// pushBackfill walks this viewer's watched and in-progress movies and episodes
+// in rating_key order when the owner requested a full send, bounded by budget
+// writes and pmsHistoryPages pages per pass.
+func (s *Servers) pushBackfill(ctx context.Context, p *pmsPair, budget int) error {
+	if budget <= 0 {
+		return nil
+	}
+	if p.outBackfill == pmsBackfillQueued {
+		watched, inProg, err := s.viewerWatchCounts(ctx, p.userID)
+		if err != nil {
+			return err
+		}
+		p.outBackfill = pmsBackfillRunning
+		p.outBackfillKey = 0
+		p.outBackfillSent = 0
+		p.outBackfillTotal = watched + inProg
+		if err := s.saveOutBackfill(ctx, p); err != nil {
+			return err
+		}
+	}
+	for page := 0; page < pmsHistoryPages && budget > 0; page++ {
+		rows, err := s.db.QueryContext(ctx, `SELECT rating_key,view_count,view_offset_ns,watch_at,last_viewed_at,updated_at FROM state_watch
+			WHERE user_id=? AND rating_key>? AND (view_count>0 OR view_offset_ns>0)
+			  AND ((rating_key>? AND rating_key<?) OR (rating_key>? AND rating_key<?))
+			ORDER BY rating_key LIMIT ?`,
+			p.userID, p.outBackfillKey, pmsMovieMin, pmsMovieMax, pmsEpisodeMin, pmsEpisodeMax, pmsOutRows)
+		if err != nil {
+			return err
+		}
+		var batch []pmsLocalRow
+		for rows.Next() {
+			var r pmsLocalRow
+			var key, offset int64
+			if err := rows.Scan(&key, &r.count, &offset, &r.watchAt, &r.viewed, &r.updatedAt); err != nil {
+				rows.Close()
+				return err
+			}
+			r.key, r.offset = core.RatingKey(key), time.Duration(offset)
+			batch = append(batch, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		processed := 0
+		var cause error
+		for _, r := range batch {
+			n, err := s.pushRowMode(ctx, p, r, true)
+			if err != nil {
+				cause = err
+				break
+			}
+			budget -= n
+			processed++
+			p.outBackfillKey = int64(r.key)
+			p.outBackfillSent++
+			if p.outBackfillSent > p.outBackfillTotal {
+				p.outBackfillTotal = p.outBackfillSent
+			}
+			if budget <= 0 {
+				break
+			}
+		}
+		done := cause == nil && processed == len(batch) && len(batch) < pmsOutRows
+		if done {
+			p.outBackfill = pmsBackfillIdle
+			p.outBackfillDone = s.now().Unix()
+			p.outBackfillTotal = p.outBackfillSent
+		}
+		if err := s.saveOutBackfill(ctx, p); err != nil && cause == nil {
+			return err
+		}
+		if cause != nil || done {
+			return cause
+		}
+	}
+	return nil
+}
+
+func (s *Servers) saveOutBackfill(ctx context.Context, p *pmsPair) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE plexwatch_pms_viewer SET out_backfill=CASE WHEN (direction&1)<>0 THEN ? ELSE 0 END,out_backfill_key=?,out_backfill_sent=?,out_backfill_total=?,out_backfill_done=?
+		WHERE server_id=? AND account_id=? AND lease=?`,
+		p.outBackfill, p.outBackfillKey, p.outBackfillSent, p.outBackfillTotal, p.outBackfillDone, p.serverID, p.accountID, p.lease)
 	return err
 }
 
@@ -467,8 +668,16 @@ func (s *Servers) push(ctx context.Context, p *pmsPair) error {
 // since this server and title were last reconciled and the server does not
 // already hold it, which is what keeps imports from echoing.
 func (s *Servers) pushRow(ctx context.Context, p *pmsPair, r pmsLocalRow) (int, error) {
+	return s.pushRowMode(ctx, p, r, false)
+}
+
+func (s *Servers) pushRowMode(ctx context.Context, p *pmsPair, r pmsLocalRow, backfill bool) (int, error) {
 	watched := r.count > 0
 	localAt := max(r.watchAt, r.viewed)
+	localSec := int64(0)
+	if localAt > 0 {
+		localSec = time.Unix(0, localAt).Unix()
+	}
 	rec, has, err := s.loadSent(ctx, p, r.key)
 	if err != nil {
 		return 0, err
@@ -509,12 +718,20 @@ func (s *Servers) pushRow(ctx context.Context, p *pmsPair, r pmsLocalRow) (int, 
 			}
 			return 0, nil
 		}
-		if localAt < p.outBaseline {
+		if has && rec.localWatched && rec.localAt == localAt {
+			return 0, nil // server held a newer unwatched state at this local clock
+		}
+		if !backfill && localAt < p.outBaseline {
 			return 0, nil // watched before sending was turned on
 		}
 		ok, err := read()
 		if err != nil || !ok {
 			return 0, err
+		}
+		if remote.ViewCount == 0 && remote.LastViewedAt > 0 && int64(remote.LastViewedAt) > localSec {
+			// Unwatched or progressed on the server after Ether's watch mark.
+			rec.remoteWatched, rec.localWatched, rec.localAt = false, true, localAt
+			return 0, s.saveSent(ctx, p, r.key, rec)
 		}
 		rec.remoteWatched, rec.localWatched, rec.localAt, rec.offsetMS = true, true, localAt, 0
 		if remote.ViewCount == 0 {
@@ -534,7 +751,7 @@ func (s *Servers) pushRow(ctx context.Context, p *pmsPair, r pmsLocalRow) (int, 
 		switch {
 		case remote.ViewCount == 0:
 			rec.remoteWatched = false
-		case int64(remote.LastViewedAt) > time.Unix(0, localAt).Unix():
+		case int64(remote.LastViewedAt) > localSec:
 			// Watched on the server after Ether's unwatch: the server is newer.
 		default:
 			if err := p.writeErr(p.client.mark(ctx, p.writeToken, rec.pmsKey, false)); err != nil {
@@ -549,8 +766,8 @@ func (s *Servers) pushRow(ctx context.Context, p *pmsPair, r pmsLocalRow) (int, 
 		}
 	}
 	// Resume position: sent for unwatched titles in progress in Ether,
-	// never over a title the server has watched.
-	if r.offset <= 0 || localAt < p.outBaseline || (has && rec.remoteWatched) {
+	// never over a title the server has watched or touched more recently.
+	if r.offset <= 0 || (!backfill && localAt < p.outBaseline) || (has && rec.remoteWatched) {
 		return writes, nil
 	}
 	offsetMS := r.offset.Milliseconds()
@@ -565,7 +782,9 @@ func (s *Servers) pushRow(ctx context.Context, p *pmsPair, r pmsLocalRow) (int, 
 		rec.remoteWatched, rec.localWatched, rec.localAt = true, false, localAt
 		return writes, s.saveSent(ctx, p, r.key, rec)
 	}
-	if absDuration(time.Duration(int64(remote.ViewOffset)-offsetMS)*time.Millisecond) >= pmsOffsetStep {
+	remoteNewer := (remote.LastViewedAt > 0 && int64(remote.LastViewedAt) > localSec) ||
+		(localAt < p.outBaseline && remote.LastViewedAt == 0 && remote.ViewOffset > 0)
+	if !remoteNewer && absDuration(time.Duration(int64(remote.ViewOffset)-offsetMS)*time.Millisecond) >= pmsOffsetStep {
 		if err := p.writeErr(p.client.progress(ctx, p.writeToken, rec.pmsKey, r.offset)); err != nil {
 			var st *StatusError
 			if errors.As(err, &st) && st.Status == http.StatusBadRequest {
@@ -709,6 +928,12 @@ func (s *Servers) keyFromMetadata(ctx context.Context, p *pmsPair, md pmsMetadat
 			return 0, "no_match", nil
 		}
 		return k, "", err
+	case "show":
+		k, err := s.keyFromIDs(ctx, pmsIDs(md), core.TypeShow)
+		if k == 0 && err == nil {
+			return 0, "no_match", nil
+		}
+		return k, "", err
 	case "episode":
 		season, episode := int(md.ParentIndex), int(md.Index)
 		if show := md.showKey(); show > 0 && episodeNumbersFit(season, episode) {
@@ -742,12 +967,28 @@ func (s *Servers) keyFromMetadata(ctx context.Context, p *pmsPair, md pmsMetadat
 
 // showKey maps a PMS show to an Ether show, cached like any item.
 func (s *Servers) showKey(ctx context.Context, p *pmsPair, pmsShow int64) (core.RatingKey, error) {
+	if p.items != nil {
+		if item, ok := p.items[pmsShow]; ok {
+			if item.ratingKey > 0 {
+				return item.ratingKey, nil
+			}
+			if s.now().Sub(time.Unix(item.checkedAt, 0)) < pmsNoMatchRetry {
+				return 0, nil
+			}
+		}
+	}
 	var cached, checked int64
 	err := s.db.QueryRowContext(ctx, `SELECT rating_key,checked_at FROM plexwatch_pms_item WHERE server_id=? AND pms_key=?`, p.serverID, pmsShow).Scan(&cached, &checked)
 	switch {
 	case err == nil && cached > 0:
+		if p.items != nil {
+			p.items[pmsShow] = pmsCachedItem{ratingKey: core.RatingKey(cached), checkedAt: checked}
+		}
 		return core.RatingKey(cached), nil
 	case err == nil && s.now().Sub(time.Unix(checked, 0)) < pmsNoMatchRetry:
+		if p.items != nil {
+			p.items[pmsShow] = pmsCachedItem{checkedAt: checked}
+		}
 		return 0, nil
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return 0, err
@@ -765,9 +1006,13 @@ func (s *Servers) showKey(ctx context.Context, p *pmsPair, pmsShow int64) (core.
 			return 0, err
 		}
 	}
+	checked = s.now().Unix()
 	_, err = s.db.ExecContext(ctx, `INSERT INTO plexwatch_pms_item(server_id,pms_key,rating_key,checked_at) VALUES(?,?,?,?)
 		ON CONFLICT(server_id,pms_key) DO UPDATE SET rating_key=excluded.rating_key,checked_at=excluded.checked_at`,
-		p.serverID, pmsShow, int64(k), s.now().Unix())
+		p.serverID, pmsShow, int64(k), checked)
+	if err == nil && p.items != nil {
+		p.items[pmsShow] = pmsCachedItem{ratingKey: k, checkedAt: checked}
+	}
 	return k, err
 }
 
@@ -807,7 +1052,12 @@ func pmsIDs(md pmsMetadata) []pmsID {
 	return out
 }
 
+type storedTitleCatalog interface {
+	StoredTitle(ctx context.Context, key core.RatingKey) (*core.Title, error)
+}
+
 func (s *Servers) keyFromIDs(ctx context.Context, ids []pmsID, typ core.MediaType) (core.RatingKey, error) {
+	stored, hasStored := s.catalog.(storedTitleCatalog)
 	for _, id := range ids {
 		if id.source == "tmdb" {
 			n, err := strconv.ParseInt(id.value, 10, 64)
@@ -820,6 +1070,17 @@ func (s *Servers) keyFromIDs(ctx context.Context, ids []pmsID, typ core.MediaTyp
 			}
 			if s.catalog == nil {
 				return k, nil
+			}
+			if hasStored {
+				if st, serr := stored.StoredTitle(ctx, k); serr == nil && st != nil {
+					if st.Adult {
+						continue
+					}
+					if st.Type == typ {
+						return k, nil
+					}
+					continue
+				}
 			}
 			t, err := s.catalog.Get(ctx, k)
 			if errors.Is(err, core.ErrNotFound) {

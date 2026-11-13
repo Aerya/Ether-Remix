@@ -93,6 +93,11 @@ CREATE UNIQUE INDEX auth_users_one_owner ON auth_users(is_owner) WHERE is_owner=
 	store.Register("auth", 4, sqliteAuthV4)
 	store.RegisterDialect("auth", 4, store.Postgres, `ALTER TABLE auth_users ALTER COLUMN plex_id DROP NOT NULL;`)
 	store.RegisterSQLiteApply("auth", 4, applySQLiteAuthV4)
+	// v0.3.8: viewer sharing is library sharing (§1.4). Values carry over
+	// because Movies=1 and Shows=2 already are the library ids. RENAME
+	// COLUMN has the same syntax on SQLite and PostgreSQL, and the
+	// logical-restore history reads it from this SQL.
+	store.Register("auth", 9, `ALTER TABLE auth_users RENAME COLUMN allowed_sections TO allowed_libraries;`)
 
 }
 
@@ -474,7 +479,7 @@ func HashToken(token string) string {
 }
 
 const userCols = `id, COALESCE(plex_id, 0), uuid, username, title, email, thumb, is_owner, is_home, restricted, active, origin,
-	plex_sections, stream_limit, max_content_rating, subtitle_languages, audio_languages, allowed_sections, last_seen_at, CASE WHEN created_at>0 THEN created_at ELSE COALESCE((SELECT MIN(event_time) FROM (SELECT verified_at AS event_time FROM identity_links WHERE viewer_id=auth_users.id AND verified_at>0 UNION ALL SELECT created_at AS event_time FROM auth_tokens WHERE user_id=auth_users.id AND created_at>0 UNION ALL SELECT last_seen_at AS event_time WHERE last_seen_at>0) AS known_times),0) END, updated_at, COALESCE(owner_enabled, 1), COALESCE(plex_shared, 1), plex_id, pse_display_name`
+	plex_sections, stream_limit, max_content_rating, subtitle_languages, audio_languages, allowed_libraries, last_seen_at, CASE WHEN created_at>0 THEN created_at ELSE COALESCE((SELECT MIN(event_time) FROM (SELECT verified_at AS event_time FROM identity_links WHERE viewer_id=auth_users.id AND verified_at>0 UNION ALL SELECT created_at AS event_time FROM auth_tokens WHERE user_id=auth_users.id AND created_at>0 UNION ALL SELECT last_seen_at AS event_time WHERE last_seen_at>0) AS known_times),0) END, updated_at, COALESCE(owner_enabled, 1), COALESCE(plex_shared, 1), plex_id, pse_display_name`
 
 func scanRow(sc interface{ Scan(...any) error }) (*row, error) {
 	var r row
@@ -495,7 +500,7 @@ func scanRow(sc interface{ Scan(...any) error }) (*row, error) {
 	_ = json.Unmarshal([]byte(plexSecs), &r.PlexSections)
 	_ = json.Unmarshal([]byte(subs), &r.SubtitleLanguages)
 	_ = json.Unmarshal([]byte(auds), &r.AudioLanguages)
-	_ = json.Unmarshal([]byte(secs), &r.AllowedSections)
+	_ = json.Unmarshal([]byte(secs), &r.AllowedLibraries)
 	if created > 0 {
 		r.CreatedAt = time.Unix(created, 0).UTC()
 	}
@@ -657,11 +662,15 @@ func (r *row) effective() core.User {
 	u := r.User
 	u.SubtitleLanguages = append([]string{}, r.SubtitleLanguages...)
 	u.AudioLanguages = append([]string{}, r.AudioLanguages...)
-	u.AllowedSections = append([]int{}, r.AllowedSections...)
-	if len(u.AllowedSections) == 0 && len(r.PlexSections) > 0 && !r.IsOwner {
+	u.AllowedLibraries = append([]core.LibraryID{}, r.AllowedLibraries...)
+	if len(u.AllowedLibraries) == 0 && len(r.PlexSections) > 0 && !r.IsOwner {
 		// No Ether-side restriction: honour the sections the owner shared
-		// on plex.tv.
-		u.AllowedSections = append([]int{}, r.PlexSections...)
+		// on plex.tv. Plex section id == LibraryID (§1.4), so no
+		// translation table is needed.
+		u.AllowedLibraries = make([]core.LibraryID, len(r.PlexSections))
+		for i, sec := range r.PlexSections {
+			u.AllowedLibraries[i] = core.LibraryID(sec)
+		}
 	}
 	return u
 }
@@ -1152,8 +1161,31 @@ func (s *Service) setOwnerTx(ctx context.Context, a plextv.Account, serverToken 
 	}
 	defer tx.Rollback()
 	// A Plex claim attaches to the existing local owner, retaining its viewer
-	// ID and all state. A Plex ID already linked to another viewer must fail
-	// rather than silently merging two people's state.
+	// ID and all state. The claim is a plex.tv sign-in, so the claimer
+	// controls this Plex account: a non-owner viewer row already holding it
+	// (a Plex app that signed in before the claim) is the same person, and
+	// is merged into the owner rather than refusing the claim with a
+	// constraint error.
+	var localOwner, holder int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM auth_users WHERE is_owner=1 AND plex_id IS NULL`).Scan(&localOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if localOwner != 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM auth_users WHERE plex_id=? AND is_owner=0 AND origin<>'dlna_guest'`, a.ID).Scan(&holder); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if holder != 0 {
+		if err := store.MergeViewer(ctx, tx, holder, localOwner); err != nil {
+			return fmt.Errorf("auth: merge Plex viewer into owner: %w", err)
+		}
+		if err := store.PurgeViewer(ctx, tx, holder); err != nil {
+			return err
+		}
+		if err := deleteViewerRow(ctx, tx, holder); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET plex_id=? WHERE is_owner=1 AND plex_id IS NULL`, a.ID); err != nil {
 		return fmt.Errorf("auth: attach Plex owner: %w", err)
 	}
@@ -1467,16 +1499,16 @@ func (s *Service) Owner(ctx context.Context) (*core.User, error) {
 // Identity fields come from plex.tv and are ignored.
 // plexShareEcho reports sections that are only the plex.tv share effective()
 // filled in for a viewer without an Ether-side library restriction.
-func (s *Service) plexShareEcho(id int64, secs []int) bool {
+func (s *Service) plexShareEcho(id int64, secs []core.LibraryID) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r := s.users[id]
-	if r == nil || r.IsOwner || len(r.AllowedSections) > 0 || len(r.PlexSections) == 0 || len(secs) != len(r.PlexSections) {
+	if r == nil || r.IsOwner || len(r.AllowedLibraries) > 0 || len(r.PlexSections) == 0 || len(secs) != len(r.PlexSections) {
 		return false
 	}
-	have := map[int]bool{}
+	have := map[core.LibraryID]bool{}
 	for _, sec := range r.PlexSections {
-		have[sec] = true
+		have[core.LibraryID(sec)] = true
 	}
 	for _, sec := range secs {
 		if !have[sec] {
@@ -1504,20 +1536,20 @@ func (s *Service) UpdateUser(ctx context.Context, u core.User) error {
 	}
 	subs, _ := json.Marshal(norm(u.SubtitleLanguages))
 	auds, _ := json.Marshal(norm(u.AudioLanguages))
-	secs := u.AllowedSections
+	secs := u.AllowedLibraries
 	if secs == nil {
-		secs = []int{}
+		secs = []core.LibraryID{}
 	}
 	if s.plexShareEcho(u.ID, secs) {
 		// The caller passed back the plex.tv share that ActiveUser and the
 		// viewer list fill in when Ether adds no restriction of its own.
 		// Storing it would freeze today's share: libraries later shared or
 		// unshared on app.plex.tv would stop applying to this viewer.
-		secs = []int{}
+		secs = []core.LibraryID{}
 	}
 	secJSON, _ := json.Marshal(secs)
 	res, err := s.db.ExecContext(ctx, `UPDATE auth_users SET stream_limit=?, max_content_rating=?, subtitle_languages=?,
-		audio_languages=?, allowed_sections=?, updated_at=? WHERE id=?`,
+		audio_languages=?, allowed_libraries=?, updated_at=? WHERE id=?`,
 		u.StreamLimit, strings.TrimSpace(u.MaxContentRating), string(subs), string(auds), string(secJSON), s.o.Now().Unix(), u.ID)
 	if err != nil {
 		return fmt.Errorf("auth: update user: %w", err)

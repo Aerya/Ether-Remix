@@ -34,8 +34,8 @@ Ether files are only changed for **hook points**: a few lines calling PSE code (
 | `internal/catalog/sync.go` (background loop) | release dates for the French-language catalogue (`internal/catalog/pse_hooks.go`) |
 | `internal/frontends/mediabrowser/browse.go` (views, `/Items`, folder) | "Vus et notés" libraries, `AnyProviderIdEquals` (`internal/frontends/mediabrowser/pse_scrob.go`) |
 | `internal/frontends/mediabrowser/frontend.go` (`Handler`, wrapped router) | Music library for Jellyfin clients (`internal/frontends/mediabrowser/pse_music.go`, `internal/pse/music/jellyfin.go`) |
-| `internal/plex/routes.go` (middleware after `authenticate`), `internal/plex/handlers_library.go` (`handleSections`), `internal/plex/handlers_server.go` (`handleProviders`), `internal/plex/handlers_hubs.go` (`handleHubSearch`, `handleLibrarySearch`) | Music section for Plex clients (`internal/plex/pse_music.go`, `internal/pse/music/plex.go`); bridge without importing `internal/pse`: `internal/frontend/pse_music.go` |
-| `internal/plex/playlist_queries.go` (`writePlaylistListing`), `internal/frontends/mediabrowser/playlists.go` (`writePlaylists`) | Deezer and Last.fm playlists added to Ether's playlists (`internal/plex/pse_music.go`, `internal/frontends/mediabrowser/pse_music.go`, `internal/pse/music/playlists*.go`) |
+| `internal/frontends/plex/routes.go` (middleware after `authenticate`), `internal/frontends/plex/handlers_library.go` (`handleSections`), `internal/frontends/plex/handlers_server.go` (`handleProviders`), `internal/frontends/plex/handlers_hubs.go` (`handleHubSearch`, `handleLibrarySearch`) | Music section for Plex clients (`internal/frontends/plex/pse_music.go`, `internal/pse/music/plex.go`); bridge without importing `internal/pse`: `internal/frontend/pse_music.go` |
+| `internal/frontends/plex/playlist_queries.go` (`writePlaylistListing`), `internal/frontends/mediabrowser/playlists.go` (`writePlaylists`) | Deezer and Last.fm playlists added to Ether's playlists (`internal/frontends/plex/pse_music.go`, `internal/frontends/mediabrowser/pse_music.go`, `internal/pse/music/playlists*.go`) |
 | `internal/frontends/mediabrowser/userdata.go` (`mutationRoutes`) | `POST …/UserData` (`internal/frontends/mediabrowser/pse_scrob.go`) |
 | `internal/app/extensions.go` (`extensionHandlers`) | PSE page API `/ether/api/pse/` (`internal/app/pse_console.go`, `internal/pse/console`) |
 | `internal/app/extend_builtins.go` | "PSE" menu entry (`internal/app/pse_descriptors.go`) |
@@ -44,7 +44,7 @@ Ether files are only changed for **hook points**: a few lines calling PSE code (
 | `internal/collections/builtins.go` (`refreshInterval`), `internal/collections/spec.go` (`refresh` validation), `web/src/lib/contract.ts` (`Refresh` type) | free "Nh" collection refresh, 1 to 168 h (`internal/collections/pse_refresh.go`, `web/src/pse/refresh.ts`) |
 | `web/src/pages/collections/SettingsPanels.tsx` (Refresh field), `web/src/pages/collections/Editor.tsx` and `web/src/pages/collections/CollectionDetail.tsx` (refresh label) | "Every N h" choice (`web/src/pse/RefreshField.tsx`) |
 | `web/src/pages/collections/Gallery.tsx` (import, header) | "Import an add-on" button: one collection per Stremio add-on catalog (`web/src/pse/AddonCatalogImport.tsx`) |
-| `internal/plex/server.go` (`sectionByID`, `canSeeSection`), `internal/plex/handlers_library.go` (`handleSections`, `parseBrowse`), `internal/plex/handlers_server.go` (`handleProviders`), `internal/plex/handlers_hubs.go` (`buildSectionHubs`), `internal/plex/handlers_metadata.go` (`sectionCollections`) | themed libraries for Plex clients, sections 5101 to 5199 (`internal/plex/pse_themes.go`, `internal/pse/themes`, `internal/collections/pse_keys.go`); bridge without importing `internal/pse`: `internal/frontend/pse_themes.go`; indexer priority titles: `internal/app/pse_themes.go` |
+| `internal/frontends/plex/server.go` (`sectionByID`, `canSeeSection`), `internal/frontends/plex/handlers_library.go` (`handleSections`, `parseBrowse`), `internal/frontends/plex/handlers_server.go` (`handleProviders`), `internal/frontends/plex/handlers_hubs.go` (`buildSectionHubs`), `internal/frontends/plex/handlers_metadata.go` (`sectionCollections`) | themed libraries for Plex clients, sections 5101 to 5199 (`internal/frontends/plex/pse_themes.go`, `internal/pse/themes`, `internal/collections/pse_keys.go`); bridge without importing `internal/pse`: `internal/frontend/pse_themes.go`; indexer priority titles: `internal/app/pse_themes.go` |
 | `web/src/App.tsx` (import, `BUILTIN_PAGES` with `/:tab?` tabs, `Languages` icon in the lucide import and `NAV_ICONS`) | Ether-Remix page (`web/src/pse/PsePage.tsx`), at the top of the menu under Overview (`internal/app/pse_descriptors.go`) |
 | `web/src/App.tsx` (sidebar footer) | version number linking to the GitHub repository (`web/src/pse/VersionLink.tsx`) |
 | `web/src/pages/Home.tsx` (import, `ActivityPanel` column) | Music panel on the Overview (`web/src/pse/MusicActivity.tsx`, `internal/pse/music/plays.go`) |
@@ -54,11 +54,11 @@ Every PSE setting goes through `internal/pse/pseenv`: the value saved in the con
 
 ## Automatic synchronization
 
-Every day at 05:17 UTC, the workflow compares Ether with the public revision recorded in `.github/pse/upstream-base`. It applies only the delta using a three-way merge, without importing private history or adding Ether commits as parents.
+Every day at 05:17 UTC, the workflow compares Ether with the public revision recorded in `.github/pse/upstream-base`. It runs a three-way merge of the fork and Ether from that revision, without importing private history or adding Ether commits as parents. The merge goes through temporary commits sharing that revision, so Git follows files and directories Ether moves: a Remix file added in a directory Ether moves follows it, and a Remix change to a moved file lands in its new location.
 
 The three READMEs, `.github/`, `docs/pse/`, `internal/pse/` and `web/src/pse/` remain owned by Ether-Remix. Ether workflow changes require manual review. The embedded UI is rebuilt from merged sources.
 
-Conflicts open an issue and leave main unchanged. Otherwise a temporary branch is published and Go/web checks run against its exact commit. Only that verified commit can be promoted; promotion fails if main has advanced. Docker images for amd64 and arm64 are then rebuilt.
+Conflicts open an issue and leave main unchanged. It lists the conflicting files, each conflict's kind (content, file deleted by Ether but modified by Remix, and so on) and the run link. Otherwise a temporary branch is published and Go/web checks run against its exact commit. Only that verified commit can be promoted; promotion fails if main has advanced. Docker images for amd64 and arm64 are then rebuilt.
 
 The built-in `GITHUB_TOKEN` is sufficient: no personal token or synchronization secret is needed, since upstream workflows are excluded.
 
@@ -72,7 +72,8 @@ git fetch https://github.com/braedonsaunders/ether.git main
 upstream_sha=$(git rev-parse FETCH_HEAD)
 git switch -c sync/manual origin/main
 python3 .github/pse/apply-upstream.py "$upstream_sha"
-# Resolve conflicts while preserving Ether-Remix additions.
+# On conflict (exit code 2), files carry <<<<<<< ||||||| >>>>>>> markers.
+# Resolve them while preserving Ether-Remix additions; git diff --name-only --diff-filter=U lists them.
 git add -A
 printf '%s\n' "$upstream_sha" > .github/pse/upstream-base
 git add .github/pse/upstream-base
