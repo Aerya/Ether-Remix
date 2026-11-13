@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-11-remix-settings-layout",
+    id: "2026-11-13-subsonic-token-access",
     version: "current",
+    date: "2026-11-13",
+    title: ["Connexion des clients musicaux par jeton", "Token authentication for music clients"],
+    items: [
+      [
+        "Arpeggi et les clients Subsonic utilisant des jetons peuvent se connecter avec un accès musical dédié par spectateur. Créez ou révoquez-le dans Contenus et bibliothèques → Musique → Clients musicaux, sans modifier le mot de passe de votre compte.",
+        "Arpeggi and token-authenticated Subsonic clients can connect with dedicated music access per viewer. Create or revoke it under Content & libraries → Music → Music clients without changing your account password.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-remix-settings-layout",
+    version: "0.2.37-remix.53.1",
     date: "2026-11-11",
     title: ["Configuration Remix réorganisée", "Reorganized Remix settings"],
     items: [

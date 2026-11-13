@@ -84,8 +84,8 @@ The panel automatically refreshes the viewer’s latest Jellyfin access (Scrob o
 ### Connecting a music client (Subsonic)
 
 1. In **Console → Ether-Remix → Sources → Music streaming**, enable **AllDebrid**, **Real-Debrid** and/or **TorBox**, or paste an Eclipse addon manifest. Keys and indexers are reused from Ether-Remix. **Test** checks the account and searches for a link (without checking audio); **Test sources** reads the first audio bytes to identify the format. With several accounts of the same service in **Sources › Debrid**, they are tried in priority order.
-2. In the client, add a **Subsonic / OpenSubsonic** server: URL `http://<host>:32400` (or the `ETHER_PORT` port), your Ether-Remix account credentials (local password accounts).
-3. Enable the client's **plain-text password / legacy authentication** option: Ether-Remix only stores hashes, so token authentication (`t`/`s`) is refused (code 41). Use HTTPS (reverse proxy) outside your LAN.
+2. Under **Content & libraries → Music → Music clients**, the administrator creates access for a viewer. Copy the server address, `music-…` username and music password into Arpeggi or another **Subsonic / OpenSubsonic** client. The password is shown only when created and works with token authentication (`t`/`s`), including for viewers who sign into Remix through Plex.
+3. Use HTTPS outside your LAN. Each viewer has one music access, restricted to their permissions; replacing or revoking it rejects subsequent requests from every client using it. The main login password is independent. Clients using local accounts can keep **legacy** authentication.
 
 Debrid services follow Eclipse in the order set in **Sources → Debrid** (the highest-priority enabled account determines the service’s rank, then all its enabled accounts are tried in priority order). Changing accounts or priorities automatically refreshes the resolvers and their caches. Audius retains its first/fallback placement. Files are relayed without local storage or conversion: FLAC/Hi-Res depends on the actual file.
 
@@ -109,7 +109,7 @@ TorBox enforces cached-only additions. Real-Debrid no longer provides a cache pr
 
 **Sending plays to Last.fm**: with the Last.fm API key and shared secret, each viewer can click **Connect Last.fm** in **Console → Ether-Remix → Sources → Music streaming**, authorize Ether-Remix on last.fm, then **I authorized Ether-Remix**. Their completed plays are then sent every 2 minutes (plays from before linking or older than 14 days are not sent). The **Overview** also shows a **Music** panel: plays, hours and listeners over the last 30 days, top tracks and artists.
 
-**Feishin and other Subsonic clients**: use Ether-Remix's address, your username and a local password (Your account › Sign-in methods, including for an account signed in through Plex), and tick **Enable legacy authentication**: Ether-Remix does not accept Subsonic token authentication.
+**Arpeggi, Feishin and other Subsonic clients**: use the generated music credentials above with token authentication. If using the local account password instead, enable **Enable legacy authentication**.
 
 The library fills up with favourites (artists, albums, tracks) and plays. Search queries Deezer live; on playback Ether-Remix resolves the track through the enabled sources and relays the stream. Playlists and genres are supported. Lyrics and audio transcoding are not: the stream is relayed as is.
 
