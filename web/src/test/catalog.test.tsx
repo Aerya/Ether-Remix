@@ -318,7 +318,11 @@ describe("Catalog workspace", () => {
     fail = false;
     fireEvent.click(retry);
     await waitFor(() => expect(screen.getByText("No matching titles")).toBeInTheDocument());
-    fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
+    // A pending catalogue refresh can briefly replace the empty state with
+    // skeletons. Wait for the action itself before trying to click it.
+    await waitFor(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
+    });
     await waitFor(() => expect(screen.getByLabelText("Find a title")).toHaveValue(""));
   });
 });
