@@ -54,11 +54,11 @@ Every PSE setting goes through `internal/pse/pseenv`: the value saved in the con
 
 ## Automatic synchronization
 
-Every day at 05:17 UTC, the workflow compares Ether with the public revision recorded in `.github/pse/upstream-base`. It applies only the delta using a three-way merge, without importing private history or adding Ether commits as parents.
+Every day at 05:17 UTC, the workflow compares Ether with the public revision recorded in `.github/pse/upstream-base`. It runs a three-way merge of the fork and Ether from that revision, without importing private history or adding Ether commits as parents. The merge goes through temporary commits sharing that revision, so Git follows files and directories Ether moves: a Remix file added in a directory Ether moves follows it, and a Remix change to a moved file lands in its new location.
 
 The three READMEs, `.github/`, `docs/pse/`, `internal/pse/` and `web/src/pse/` remain owned by Ether-Remix. Ether workflow changes require manual review. The embedded UI is rebuilt from merged sources.
 
-Conflicts open an issue and leave main unchanged. Otherwise a temporary branch is published and Go/web checks run against its exact commit. Only that verified commit can be promoted; promotion fails if main has advanced. Docker images for amd64 and arm64 are then rebuilt.
+Conflicts open an issue and leave main unchanged. It lists the conflicting files, each conflict's kind (content, file deleted by Ether but modified by Remix, and so on) and the run link. Otherwise a temporary branch is published and Go/web checks run against its exact commit. Only that verified commit can be promoted; promotion fails if main has advanced. Docker images for amd64 and arm64 are then rebuilt.
 
 The built-in `GITHUB_TOKEN` is sufficient: no personal token or synchronization secret is needed, since upstream workflows are excluded.
 
@@ -72,7 +72,8 @@ git fetch https://github.com/braedonsaunders/ether.git main
 upstream_sha=$(git rev-parse FETCH_HEAD)
 git switch -c sync/manual origin/main
 python3 .github/pse/apply-upstream.py "$upstream_sha"
-# Resolve conflicts while preserving Ether-Remix additions.
+# On conflict (exit code 2), files carry <<<<<<< ||||||| >>>>>>> markers.
+# Resolve them while preserving Ether-Remix additions; git diff --name-only --diff-filter=U lists them.
 git add -A
 printf '%s\n' "$upstream_sha" > .github/pse/upstream-base
 git add .github/pse/upstream-base

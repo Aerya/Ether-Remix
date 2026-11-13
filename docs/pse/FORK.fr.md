@@ -55,11 +55,11 @@ Les réglages PSE passent tous par `internal/pse/pseenv` : la valeur enregistré
 
 ## Synchronisation automatique
 
-Chaque jour à 05:17 UTC, le workflow compare Ether à la révision publique enregistrée dans `.github/pse/upstream-base`. Il applique uniquement le delta depuis cette révision avec une fusion à trois voies, sans importer l'ancien historique privé ni ajouter les commits Ether comme parents.
+Chaque jour à 05:17 UTC, le workflow compare Ether à la révision publique enregistrée dans `.github/pse/upstream-base`. Il fusionne à trois voies le fork et Ether depuis cette révision, sans importer l'ancien historique privé ni ajouter les commits Ether comme parents. La fusion passe par des commits temporaires qui partagent cette révision : Git suit ainsi les fichiers et dossiers déplacés par Ether. Un fichier Remix ajouté dans un dossier qu'Ether déplace suit ce dossier, et une modification Remix d'un fichier déplacé est reportée au nouvel emplacement.
 
 Les trois README, `.github/`, `docs/pse/`, `internal/pse/` et `web/src/pse/` restent propres à Ether-Remix. Les changements des workflows Ether nécessitent une revue manuelle. L'interface embarquée est reconstruite depuis les sources fusionnées.
 
-En cas de conflit, une issue est ouverte et main reste inchangée. Sinon, une branche temporaire est publiée, puis les contrôles Go et web s'exécutent sur son commit exact. Seul ce commit validé peut être intégré ; si main a avancé entre-temps, la publication est refusée. Les images amd64 et arm64 sont ensuite reconstruites.
+En cas de conflit, une issue est ouverte et main reste inchangée. Elle liste les fichiers en conflit, le type de chaque conflit (contenu, fichier supprimé par Ether mais modifié par Remix, etc.) et le lien vers l'exécution. Sinon, une branche temporaire est publiée, puis les contrôles Go et web s'exécutent sur son commit exact. Seul ce commit validé peut être intégré ; si main a avancé entre-temps, la publication est refusée. Les images amd64 et arm64 sont ensuite reconstruites.
 
 Le `GITHUB_TOKEN` suffit : aucun jeton personnel ni secret de synchronisation n'est requis, car les workflows upstream sont exclus du delta.
 
@@ -75,7 +75,8 @@ git fetch https://github.com/braedonsaunders/ether.git main
 upstream_sha=$(git rev-parse FETCH_HEAD)
 git switch -c sync/manuel origin/main
 python3 .github/pse/apply-upstream.py "$upstream_sha"
-# En cas de conflit, résoudre les fichiers en préservant les ajouts Ether-Remix.
+# En cas de conflit (code 2), les fichiers contiennent les marqueurs <<<<<<< ||||||| >>>>>>>.
+# Les résoudre en préservant les ajouts Ether-Remix ; git diff --name-only --diff-filter=U les liste.
 git add -A
 printf '%s\n' "$upstream_sha" > .github/pse/upstream-base
 git add .github/pse/upstream-base
