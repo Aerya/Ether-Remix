@@ -54,6 +54,8 @@ Custom libraries and collections, subtitles translated with SubMaker, detailed s
 
 Turn access on under **Console → Apps**. Each viewer finds their links and app passwords on their **Your account** page.
 
+**November 13, 2026 update:** integrated Ether through `5b8ef628` and repaired automatic synchronization: file moves are tracked and conflicts reported in detail to preserve Remix additions.
+
 ## Remix Features
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
