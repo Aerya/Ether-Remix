@@ -38,15 +38,20 @@ type Album struct {
 }
 
 type Track struct {
-	ID       int64  `json:"id"`
-	Title    string `json:"title"`
-	Duration int    `json:"duration"`
-	Number   int    `json:"number,omitempty"`
-	Volume   int    `json:"volume,omitempty"`
-	Artist   Artist `json:"artist"`
-	Album    Album  `json:"album"`
-	ISRC     string `json:"isrc,omitempty"`
-	Explicit bool   `json:"explicit,omitempty"`
+	MIME       string `json:"mime,omitempty"`
+	Container  string `json:"container,omitempty"`
+	Codec      string `json:"codec,omitempty"`
+	Channels   int    `json:"channels,omitempty"`
+	SampleRate int    `json:"sampleRate,omitempty"`
+	ID         int64  `json:"id"`
+	Title      string `json:"title"`
+	Duration   int    `json:"duration"`
+	Number     int    `json:"number,omitempty"`
+	Volume     int    `json:"volume,omitempty"`
+	Artist     Artist `json:"artist"`
+	Album      Album  `json:"album"`
+	ISRC       string `json:"isrc,omitempty"`
+	Explicit   bool   `json:"explicit,omitempty"`
 }
 
 // Year renvoie l'année de sortie, ou 0.
@@ -354,6 +359,8 @@ func (c *Client) Track(ctx context.Context, id int64) (Track, error) {
 
 // Stream décrit un flux audio direct.
 type Stream struct {
+	// Open is set only by a trusted local source; remote URLs never become paths.
+	Open      func() (io.ReadSeekCloser, time.Time, error) `json:"-"`
 	Provider  string
 	ExpiresAt int64
 	URL       string

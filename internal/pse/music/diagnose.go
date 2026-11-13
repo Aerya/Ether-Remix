@@ -180,6 +180,7 @@ func chain(cfg Settings, debrid DebridSources, hc *http.Client) ([]namedResolver
 // DiagnoseSource teste seulement la source nommée only (nom affiché dans
 // le rapport), ou toutes si only est vide.
 func DiagnoseSource(ctx context.Context, cfg Settings, debrid DebridSources, query, only string, hc *http.Client) (Diagnosis, error) {
+	ctx = WithCachedOnly(ctx)
 	if hc == nil {
 		hc = &http.Client{Timeout: 20 * time.Second}
 	}

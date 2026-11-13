@@ -91,3 +91,5 @@ Main client (`PSE_TORRENT_…`); clients 2 and 3 in their own blocks (`PSE_TORRE
 - Magnets carry the trackers of the original `.torrent`: the client fetches metadata from peers.
 - In cluster mode, only the node that sees the download folder can play these files.
 - The daily addition cap resets when Remix restarts.
+
+A complete copy takes priority over an unfinished copy on another client. An offline client does not block new downloads on healthy clients. Pending albums are checked again on the next playback attempt after a minimum delay of 5 seconds. Music diagnostics never start downloads.

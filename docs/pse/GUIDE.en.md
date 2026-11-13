@@ -32,7 +32,7 @@ Open **http://&lt;host&gt;:32400/ether/** (or the `ETHER_PORT` port) and follow 
 
 ### Configuring Ether-Remix from the console
 
-Every addition is configured in the console, under **Ether-Remix** (`/ether/accent`): switches, options and the state of each feature (indexed titles, playable titles, music library…). A value saved on that page replaces the environment variable of the same name and applies without a restart; the ↺ button goes back to the variable or the default. The variables below still work for a deployment fully described in `compose.yaml`.
+Every addition is configured in the console, under **Ether-Remix** (`/ether/remix`): switches, options and the state of each feature (indexed titles, playable titles, music library…). A value saved on that page replaces the environment variable of the same name and applies without a restart; the ↺ button goes back to the variable or the default. The variables below still work for a deployment fully described in `compose.yaml`.
 
 Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_DIR`, `PUID`/`PGID`…): see [docs/install.md](../install.md). Ether-Remix-specific variables:
 
@@ -44,10 +44,10 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 | `PSE_INDEXER_DAILY` | `1000` | Maximum requests per source per day (UTC). |
 | `PSE_INDEXER_PACE` | `10s` | Minimum delay between two titles (at least `2s`). |
 | `PSE_INDEXER_TYPES` | `movie,show` | Indexed types (`movie`, `show`). A show is searched through its first episode. |
-| `PSE_PLAYABLE` | `off` | `on` enables the "playable only" catalogue. |
+| `PSE_PLAYABLE` | `off` | `on` enables the "playable only" catalogue, with the same scope as `PSE_FRENCH`. |
 | `PSE_PLAYABLE_MIN` | `2` | Distinct releases (same name counts once) needed to list a title. |
 | `PSE_PLAYABLE_FILTER` | *(none)* | Releases that count, e.g. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Languages: `fr` (any French dub: FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (French subtitles announced), `vo` (no dub announced)… Changing the filter recomputes the catalogue at startup, without reindexing. |
-| `PSE_FRENCH` | `off` | `on` enables the French-language catalogue. |
+| `PSE_FRENCH` | `off` | `on` enables the French-language catalogue: Movies and Shows pages, Home rows (including Trending), collections and similar titles. Upcoming collections, the watchlist and Continue Watching are left alone. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Countries whose digital or physical release counts (ISO codes). `FR,CA` adds Canada, not always dubbed in French. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Indexed release languages that count (`vfq` for Québec French only, `vff`…). |
 | `PSE_FRENCH_TYPES` | `movie,show` | Filtered types. `movie` leaves shows untouched. |
@@ -84,8 +84,8 @@ The panel automatically refreshes the viewer’s latest Jellyfin access (Scrob o
 ### Connecting a music client (Subsonic)
 
 1. In **Console → Ether-Remix → Sources → Music streaming**, enable **AllDebrid**, **Real-Debrid** and/or **TorBox**, or paste an Eclipse addon manifest. Keys and indexers are reused from Ether-Remix. **Test** checks the account and searches for a link (without checking audio); **Test sources** reads the first audio bytes to identify the format. With several accounts of the same service in **Sources › Debrid**, they are tried in priority order.
-2. In the client, add a **Subsonic / OpenSubsonic** server: URL `http://<host>:32400` (or the `ETHER_PORT` port), your Ether-Remix account credentials (local password accounts).
-3. Enable the client's **plain-text password / legacy authentication** option: Ether-Remix only stores hashes, so token authentication (`t`/`s`) is refused (code 41). Use HTTPS (reverse proxy) outside your LAN.
+2. Under **Content & libraries → Music → Music clients**, the administrator creates access for a viewer. Copy the server address, `music-…` username and music password into Arpeggi or another **Subsonic / OpenSubsonic** client. The password is shown only when created and works with token authentication (`t`/`s`), including for viewers who sign into Remix through Plex.
+3. Use HTTPS outside your LAN. Each viewer has one music access, restricted to their permissions; replacing or revoking it rejects subsequent requests from every client using it. The main login password is independent. Clients using local accounts can keep **legacy** authentication.
 
 Debrid services follow Eclipse in the order set in **Sources → Debrid** (the highest-priority enabled account determines the service’s rank, then all its enabled accounts are tried in priority order). Changing accounts or priorities automatically refreshes the resolvers and their caches. Audius retains its first/fallback placement. Files are relayed without local storage or conversion: FLAC/Hi-Res depends on the actual file.
 
@@ -109,7 +109,7 @@ TorBox enforces cached-only additions. Real-Debrid no longer provides a cache pr
 
 **Sending plays to Last.fm**: with the Last.fm API key and shared secret, each viewer can click **Connect Last.fm** in **Console → Ether-Remix → Sources → Music streaming**, authorize Ether-Remix on last.fm, then **I authorized Ether-Remix**. Their completed plays are then sent every 2 minutes (plays from before linking or older than 14 days are not sent). The **Overview** also shows a **Music** panel: plays, hours and listeners over the last 30 days, top tracks and artists.
 
-**Feishin and other Subsonic clients**: use Ether-Remix's address, your username and a local password (Your account › Sign-in methods, including for an account signed in through Plex), and tick **Enable legacy authentication**: Ether-Remix does not accept Subsonic token authentication.
+**Arpeggi, Feishin and other Subsonic clients**: use the generated music credentials above with token authentication. If using the local account password instead, enable **Enable legacy authentication**.
 
 The library fills up with favourites (artists, albums, tracks) and plays. Search queries Deezer live; on playback Ether-Remix resolves the track through the enabled sources and relays the stream. Playlists and genres are supported. Lyrics and audio transcoding are not: the stream is relayed as is.
 
@@ -224,3 +224,59 @@ Choose a viewer, inspect the preview and confirm. Import creates a personal copy
 [Configure external subtitles and optional translation](SUBMAKER.en.md), globally or per library/collection, with SeerrCatalog.
 
 For visibility rules and search intervals, see [Catalogue and indexing](CATALOGUE.en.md). To connect the addon, see [SeerrCatalog](SEERRCATALOG.en.md).
+
+### Unified history and Listening
+
+**Display name**: on a viewer’s page (**Viewers**), the pencil next to their name sets the name used in statistics, activity and lists. Plex does not overwrite it and plays already recorded take the new name. Sign-in does not change. An empty field restores the Plex name.
+
+**Activity → History** combines movies, shows and music in one chronological table, with search, sorting, pagination and details. The list contains the latest 500 plays in the selected period. Music retains artist/album metadata; its duration is the track length, not measured listening time. Completion and session-duration metrics remain explicitly video-only.
+
+**Activity → Listening** uses the same period, year and user filters as Viewing. Counts, daily listens, weekday/hour heatmap and track, artist, album and listener rankings cover the entire period, independently of the history limit. Charts use the browser time zone. Existing listens remain included even when the music source is disabled.
+
+## Local media and iBroadcast
+
+### Video and audio folders
+
+Add folders to your Dockge-Enhanced stack volumes and restart the container:
+
+```yaml
+volumes:
+  - ./config:/config
+  - ./cache:/cache
+  - /host/path/videos:/media/videos:ro
+  - /host/path/music:/media/music:ro
+```
+
+In **Sources → Local files**, enter a unique name, the **container path** (for example `/media/videos`) and video or audio type. Mount network folders on the host before starting the stack. The container user needs read access.
+
+Scans run after adding a folder, at startup, hourly and with **Scan now**. The panel shows progress and errors. Unchanged metadata is reused. Unavailable folders retain their previous index; successful scans remove missing files from the library. Removing a source never deletes files. Symbolic links are skipped.
+
+Videos are matched **against the Remix catalogue first, then TMDB**. Movie names with a year (`Title.2020.mkv`) and explicit episodes (`Show.S01E02.mkv`) allow conservative identification: exact normalized title, matching year and a unique result. Identified files reuse existing entries, including the corresponding seasons and episodes, and provide local playback. Without a reliable match, a video keeps its filename title and needs no TMDB entry. Each folder feeds a library and collection; personal videos do not inflate TMDB counters.
+
+Local audio joins Music in Plex/Plexamp, Jellyfin/Emby and Subsonic clients. Tags supply title, artist, album, disc and track; filenames and folder names are used as fallbacks. Files are served in their original format, so audio compatibility depends on the client. Local files are never sent to a music provider.
+
+Recognized formats: MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, OGV, VOB, 3GP; MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, APE, WMA and ALAC. Files must contain the selected stream type and be readable by `ffprobe`, included in the Linux Docker image. Folders are **private by default**, accessible only to the owner who adds them. Under **Private · sharing options**, select individual viewers or everyone and save. Only the administrator can add server filesystem paths.
+
+### iBroadcast account
+
+In **Sources → Music streaming → iBroadcast**, or your **personal portal** as a viewer, first choose **Add account** and give it a name:
+
+1. On [iBroadcast](https://media.ibroadcast.com/), open the account menu → **Apps → developer** and create a private application.
+2. Edit it, select **Grant Type → Device Code**, save and copy its **Client ID** into Remix. No Client Secret, password or redirect URL is needed.
+3. Click **Connect iBroadcast**, open the link and authorize **read-only** account and library access. The panel updates automatically.
+4. Import starts after authorization, then runs hourly; **Refresh library** starts it manually.
+
+Each iBroadcast account is **private by default**, belongs to the viewer who connects it and has separate encrypted credentials. You can add multiple accounts and optionally share each with selected viewers or everyone. Authorized libraries appear together in Music; favourites and listening history remain personal. Enable **Import my iBroadcast playlists** to bring them into your clients, preserving track order and repeated songs while skipping deleted or unavailable tracks. Playlists refresh with the library and remain personal to the account owner. Tracks stream as **MP3 128 kbps**, including free accounts. Playlist and tag edits are not written back to iBroadcast. Tokens are encrypted in the database, refreshed automatically and excluded from client responses. Disconnecting removes the library from Remix; revoke the provider authorization separately in iBroadcast **Apps**.
+
+## Search caching and source outages
+
+The resolver's “Remember searches for” duration is a strict ceiling (six hours by default). A title's age never overrides it. Empty results expire sooner: up to three minutes for recent or undated titles, thirty minutes for older titles, always within the configured ceiling. A successful empty search replaces previous results.
+
+During a temporary outage (timeout, connection failure, server error or automatic pause after repeated failures), results expired for less than 24 hours may serve as fallback candidates. They are neither renewed nor stored as a fresh complete search. Only torrent/NZB descriptors are reused; expired direct HTTP streams are excluded. Debrid cache hints are cleared and the normal playback path validates candidates. Background availability searches do not use this fallback.
+
+This does not hide credential errors, exhausted quotas, cancellation or valid empty responses. Disabling caching or the source disables this fallback too. Changes to the source address, credentials or search configuration invalidate the cache identity. Fallback use is logged as `using expired search candidates`.
+
+
+### Navigation and configuration
+
+The console uses `/ether/remix`. Old bookmarks redirect with their parameters preserved. Configuration sections start collapsed; opening or closing them preserves drafts. Sources → Music streaming groups Eclipse, DMM / Real-Debrid, iBroadcast and other providers. Subsonic address and library counts are under Content & libraries → Music. For Spotify, use `/ether/remix/contenus?content=musique` as the allowed callback path; callbacks already started with the old path remain accepted.

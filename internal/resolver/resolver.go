@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/pse/quality"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
@@ -264,6 +265,8 @@ type Service struct {
 
 	extend extendState // descriptor registry for ranking/rules (extend_registry.go)
 
+	pse pseState // Remix ranking hooks (pse_subtitled.go)
+
 	invalMu sync.Mutex
 	inval   *clusterbus.Invalidator // nil on a standalone server
 }
@@ -456,6 +459,9 @@ func (s *Service) maxCandidates() int {
 
 // Available implements core.Resolver.
 func (s *Service) Available(ctx context.Context, key core.RatingKey) (bool, bool) {
+	if localmedia.IsKey(key) || localmedia.Known(ctx, s.db, key) {
+		return true, localmedia.Known(ctx, s.db, key)
+	}
 	e, ok := s.getAvailability(ctx, int64(key))
 	if !ok {
 		return false, false
@@ -612,6 +618,12 @@ func flightKey(req core.ResolveRequest, profile core.QualityProfile) string {
 func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.Resolution, error) {
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
+	}
+	if localmedia.IsKey(req.Title.Key) || localmedia.Known(ctx, s.db, req.Title.Key) {
+		res, err := localmedia.Resolve(ctx, s.db, req)
+		if err == nil || localmedia.IsKey(req.Title.Key) {
+			return res, err
+		}
 	}
 	if s.indexer == nil {
 		return nil, fmt.Errorf("resolver: no indexer configured")
@@ -1571,7 +1583,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		if t.ShowKey != 0 {
 			qualityKey = t.ShowKey
 		}
-		if !quality.Allow(s.db, qualityKey, t.Type, rel) {
+		if !quality.Allow(s.db, qualityKey, t.Type, rel, titleOriginalLanguage(t)) {
 			reason = "release preference: Remix quality profile"
 		} else if s.HardSubtitleBlocked(ctx, rel) {
 			reason = "blocked hardcoded subtitles"
@@ -1695,6 +1707,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 	if hot != nil && len(cands) > 0 {
 		s.addPluginScores(hot, profile, cands, trace)
 	}
+	s.markSubtitled(ctx, t, cands, trace)
 	if fallback {
 		order := sourceOrder(profile.QualityOrder)
 		sort.SliceStable(cands, func(i, j int) bool {

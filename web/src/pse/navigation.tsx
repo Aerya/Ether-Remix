@@ -31,17 +31,17 @@ export const REMIX_TABS = [
 ] as const;
 
 export function legacyRemixRoute(tab?: string): string | null {
-  if (tab === "films") return "/accent/langues";
-  if (tab === "animes") return "/accent/contenus?content=animes";
-  if (tab === "musique") return "/accent/contenus?content=musique";
-  if (tab === "bibliotheques") return "/accent/contenus?content=bibliotheques";
+  if (tab === "films") return "/remix/langues";
+  if (tab === "animes") return "/remix/contenus?content=animes";
+  if (tab === "musique") return "/remix/contenus?content=musique";
+  if (tab === "bibliotheques") return "/remix/contenus?content=bibliotheques";
   return null;
 }
 export function sourcesHref(tab = "debrid", search = "") {
   const params = new URLSearchParams(search);
   if (["stats", "statistics", "usage"].includes(tab)) {
     params.set("view", tab === "usage" ? "usage" : "sources");
-    return `/accent/statistiques?${params}`;
+    return `/remix/statistiques?${params}`;
   }
   if (tab === "iptv" && params.has("source")) {
     params.set("iptvSource", params.get("source")!);
@@ -54,7 +54,7 @@ export function sourcesHref(tab = "debrid", search = "") {
         ? tab
         : "debrid",
   );
-  return `/accent/sources?${params}`;
+  return `/remix/sources?${params}`;
 }
 export function RemixSourcesRedirect() {
   const { tab } = useParams();

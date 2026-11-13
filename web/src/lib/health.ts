@@ -1,4 +1,4 @@
-import { t, tn } from "../i18n";
+import { t, tn, getLocale } from "../i18n";
 import {
   formatBytes,
   formatDate,
@@ -944,6 +944,12 @@ export function computeHealth(
 // ---- Now playing --------------------------------------------------------------
 
 export interface NowPlaying {
+  // PSE-HOOK: observations musicales — voir docs/pse/FORK.fr.md
+  isMusic?: boolean;
+  artist?: string;
+  album?: string;
+  viewerState?: string;
+  canStop?: boolean;
   node?: string;
   processor?: string;
   cluster?: {
@@ -1033,6 +1039,11 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
     else if (size > 0 && bufferedBytes > 0)
       buffered = Math.min(1, (progress ?? 0) + bufferedBytes / size);
     return {
+      isMusic: s.isMusic === true,
+      artist: str(s.artist),
+      album: str(s.album),
+      viewerState: str(s.viewerState),
+      canStop: s.canStop !== false,
       node: str(s.node),
       processor: isPlainObject(s.encoder) ? str(s.encoder.processor) : undefined,
       protocol: str(pick(client, "protocol", "Protocol")) || "plex",
@@ -1090,7 +1101,15 @@ export function channelLabel(s: Pick<NowPlaying, "channelName" | "channelNumber"
  * re-encodes the audio is transcoding only the audio. Anything else,
  * including no decision yet, is still starting.
  */
-export function decisionLabel(s: Pick<NowPlaying, "decision" | "videoCopy" | "audioCopy">): string {
+export function decisionLabel(
+  s: Pick<NowPlaying, "decision" | "videoCopy" | "audioCopy" | "isMusic" | "viewerState">,
+): string {
+  if (s.isMusic)
+    return s.viewerState === "paused"
+      ? t("Paused")
+      : getLocale().startsWith("fr")
+        ? "Musique"
+        : "Music";
   const audioOnly = s.videoCopy && !s.audioCopy;
   switch (s.decision) {
     case "directplay":

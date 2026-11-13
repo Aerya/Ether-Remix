@@ -28,6 +28,7 @@ Ether files are only changed for **hook points**: a few lines calling PSE code (
 | `internal/notify/notify.go` (`deliver`) | French notifications (`internal/notify/pse_localize.go`) |
 | `internal/app/build_integrations.go` | release indexer (`internal/app/pse_indexer.go`), Subsonic API (`internal/app/pse_music.go`) |
 | `internal/catalog/browse.go` (`browseWhere`) | playable-only and French-language catalogue (`internal/catalog/pse_hooks.go`) |
+| `internal/app/build_personalization.go` (`FilterAvailable`), `internal/app/collections.go` (`collectionOptions`), `internal/catalog/lists.go` (`Similar`), `internal/collections/collections.go` (`serve` renamed `serveMembers`, franchises) | French and playable filter for Home rows, collections and similar titles (`internal/catalog/pse_discovery.go`, `internal/collections/pse_keys.go`) |
 | `internal/catalog/browse_tally.go` (`tallyTotal`) | precomputed tally skipped when Ether-Remix filters apply (`pseFiltersCatalog`) |
 | `internal/core/interfaces.go` (`Filter.PSEUnplayable`, `Filter.PSEThemed`) | PSE indexer walks titles outside the playable-only catalogue (`internal/app/pse_indexer.go`); French filter on themed libraries despite `IncludeKeys` (`internal/catalog/pse_hooks.go`) |
 | `internal/catalog/sync.go` (background loop) | release dates for the French-language catalogue (`internal/catalog/pse_hooks.go`) |
@@ -98,8 +99,20 @@ The sync script merges JSON translation conflicts by key only when edits are ind
 
 The protected `internal/catalog/pse_tier_sources.go` adapter classifies fork tables for Ether’s catalogue migration: language exceptions remain protected, while automatic indexing caches do not retain the entire catalogue.
 
+## Music in Activity
+
+Music observations join `/status/sessions`, shared by Activity → Now playing and Overview. Plex timelines and Jellyfin/Emby reports carry playing, paused, position and stopped events; Subsonic reports starts through `scrobble?submission=false`. Sessions are isolated by viewer, protocol and device. Audio URLs and tokens are never retained. Video stop controls are not offered for music observations.
+
+Plex/Jellyfin/Emby sessions expire after two minutes without reports. Subsonic generally has no stop signal, so observations expire after track duration plus thirty seconds (five minutes when unknown). Clients must report playback; downloads and prefetches do not create sessions. In-memory observations reset on restart or music-source reconfiguration.
+
+Activity → History also shows existing `pse_music_plays` rows in a dedicated music section via the owner-only `/pse/music/history` API. Period, year and viewer filters apply, with pages of one hundred listens. Displayed duration is track length, not measured listening time; video statistics remain separate. Subsonic submissions populate history; Plex and Jellyfin/Emby record stops after at least thirty seconds, as before. Start notifications alone do not create history.
+
+Hooks: `internal/app/admin.go`, `internal/app/pse_console.go`, `internal/frontend/pse_music.go`, `internal/frontends/mediabrowser/pse_music.go`, `web/src/lib/health.ts`, `web/src/components/SessionArtwork.tsx`, `web/src/pages/activity/Activity.tsx` and `NowPlaying.tsx`.
+
 ## Concert selection
 
 The Concerts preset requires the TMDB Music genre (10402) and at least one recorded-performance keyword: `concert film` (156205), `music concert` (304615) or `live concert` (318730). The generic `concert` keyword (6029), which may describe a fictional scene, is removed. Video releases are included. Precision takes priority over completeness: poorly tagged recordings may be missing, and incorrect TMDB keywords can still produce false positives.
 
 At startup, the three original standard queries in preset-created collections are upgraded and their members rebuilt in the background. IDs, names and other settings are retained, including renamed collections. Custom queries and personal collections are not migrated. Titles leave Concerts after rebuilding; no media is deleted.
+
+Owned media: `internal/pse/localmedia` confines file access to configured roots; `pse_owned_media.go` publishes collections/libraries and schedules scans. Catalogue hooks preserve local keys without remote searches; resolver/playback delegate to local files. `music/owned.go` shares metadata without merging viewer history; `music/ibroadcast.go` handles OAuth and temporary playback URLs. Upstream synchronization workflows and footer versioning are unchanged.

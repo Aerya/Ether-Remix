@@ -42,6 +42,7 @@ import { ViewerAccess } from "./ViewerAccess";
 import { ViewerActions } from "./ViewerActions";
 import { ViewerPlayback } from "./ViewerPlayback";
 import { ViewerStatus, viewerLifecycle, viewerStatus } from "./ViewerStatus";
+import { ViewerDisplayName } from "../../pse/ViewerDisplayName";
 
 const TABS = [
   "overview",
@@ -163,6 +164,7 @@ export default function ViewerProfile() {
             <div className="min-w-0 flex-1">
               <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold text-fg">
                 {name}
+                <ViewerDisplayName viewer={v} onChange={() => void viewer.reload()} />
                 {life.paused ? (
                   <Badge variant="warning">{t("Paused")}</Badge>
                 ) : (

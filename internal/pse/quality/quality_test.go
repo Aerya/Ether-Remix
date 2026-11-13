@@ -76,7 +76,7 @@ func TestExclusionUnknownAndInvalidRegex(t *testing.T) {
 	}
 }
 func TestAIOImportPreviewDoesNotCopySecrets(t *testing.T) {
-	r, e := ImportAIO(json.RawMessage(`{"apiKey":"private-secret","requiredEncodes":["HEVC","AV1"],"requiredQualities":["WEB-DL","Unknown"],"includedLanguages":["French"],"excludedRegexPatterns":["/CAM/i"]}`))
+	r, e := ImportAIO(json.RawMessage(`{"apiKey":"private-secret","requiredEncodes":["HEVC","AV1"],"requiredQualities":["WEB-DL","UnsupportedFormat"],"includedLanguages":["French"],"excludedRegexPatterns":["/CAM/i"]}`))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -96,5 +96,29 @@ func TestAIOImportPreviewDoesNotCopySecrets(t *testing.T) {
 	}
 	if evaluate(ps[0].policy, release("Film.WEB-DL.x265")).Rejected {
 		t.Fatal("valid HEVC rejected")
+	}
+}
+
+func TestImportOriginalLanguageUsesCatalogueContext(t *testing.T) {
+	out, err := ImportAIO(json.RawMessage(`{"requiredLanguages":["French","Original"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Rules) != 1 {
+		t.Fatal("Original not imported")
+	}
+	p, err := compilePolicy(out.Rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := core.Release{Info: core.ReleaseInfo{Languages: []string{"japanese"}}}
+	if evaluate(p, r, "ja").Rejected {
+		t.Fatal("original Japanese rejected")
+	}
+	if !evaluate(p, r, "fr").Rejected {
+		t.Fatal("non-original Japanese accepted")
+	}
+	if !evaluate(p, r).Rejected {
+		t.Fatal("missing original must not invent a match")
 	}
 }

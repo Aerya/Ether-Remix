@@ -22,6 +22,7 @@ function backend() {
       const hit = experience.handle("GET", seg, url.searchParams);
       let body: unknown = hit?.body ?? { value: null };
       if (!hit && url.pathname.endsWith("/users")) body = { users: [] };
+      if (url.pathname.endsWith("/pse/music/history")) body = { plays: [], total: 0 };
       return new Response(JSON.stringify(body), { status: hit?.status ?? 200 });
     }),
   );

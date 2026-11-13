@@ -22,6 +22,7 @@ vi.mock("./MusicAddons", () => ({
     </div>
   ),
 }));
+vi.mock("./OwnedMedia", () => ({ IBroadcastSource: () => <p>Comptes iBroadcast fixture</p> }));
 vi.mock("./MusicSources", () => ({ MusicSources: () => <p>Diagnostic fixture</p> }));
 it("keeps Eclipse settings, DMM and Real-Debrid together, and other sources separate", async () => {
   const keys = [
@@ -38,7 +39,6 @@ it("keeps Eclipse settings, DMM and Real-Debrid together, and other sources sepa
   render(
     <MemoryRouter>
       <MusicSourceSettings
-        status={<p>Music status</p>}
         fields={keys.map((key) => ({
           key,
           community: key === "COMMUNITY",
@@ -60,7 +60,11 @@ it("keeps Eclipse settings, DMM and Real-Debrid together, and other sources sepa
     within(screen.getByText("RD account").closest("#music-realdebrid") as HTMLElement).getByRole(
       "link",
     ),
-  ).toHaveAttribute("href", "/accent/sources?source=debrid");
+  ).toHaveAttribute("href", "/remix/sources?source=debrid");
+  fireEvent.click(screen.getByRole("tab", { name: "iBroadcast" }));
+  expect(
+    screen.getByText("Comptes iBroadcast fixture").closest("[role=tabpanel]"),
+  ).not.toHaveAttribute("hidden");
   expect(screen.queryByDisplayValue("••••")).toBeNull();
   expect(screen.getByText("Diagnostic fixture")).toBeTruthy();
 });

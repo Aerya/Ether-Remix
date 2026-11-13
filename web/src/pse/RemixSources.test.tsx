@@ -67,7 +67,7 @@ beforeEach(() => {
 });
 function remix(search = "?source=iptv") {
   return render(
-    <MemoryRouter initialEntries={["/accent/sources" + search]}>
+    <MemoryRouter initialEntries={["/remix/sources" + search]}>
       <RemixSources music={null} indexing={null} />
       <Location />
     </MemoryRouter>,
@@ -121,4 +121,21 @@ it("retains the native Ether IPTV source query outside Remix", async () => {
   expect(await screen.findByText("Editing King")).toBeTruthy();
   fireEvent.click(screen.getByText("Close fixture"));
   expect(screen.getByTestId("location").textContent).toBe("");
+});
+
+it("renders torrent clients in their own source category", () => {
+  render(
+    <MemoryRouter initialEntries={["/remix/sources?source=torrent"]}>
+      <RemixSources
+        music={null}
+        indexing={<p>Indexing fixture</p>}
+        torrent={<p>Torrent clients fixture</p>}
+      />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("Torrent clients fixture")).toBeTruthy();
+  expect(screen.queryByText("Indexing fixture")).toBeNull();
+  expect(screen.getByRole("tab", { name: "Torrent client" }).getAttribute("aria-selected")).toBe(
+    "true",
+  );
 });

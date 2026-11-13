@@ -64,6 +64,7 @@ func (a *App) buildAdmin() http.Handler {
 		Config:           a.cfg,
 		Frontends:        a.frontends.control,
 		Extensions:       a.extensionHandlers(),
+		OwnedMedia:       a.ownedMediaAPI(),
 		PublicExtensions: a.publicExtensionHandlers(),
 		ValidateExtra:    a.validateExtra,
 		Logger:           a.log.With("component", "admin"),
@@ -128,9 +129,7 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return out, err
 		},
-		SessionsStatus: func(context.Context) any {
-			return ownerSessionStatuses((ownerPlayback{Playback: a.playback, app: a}).Sessions())
-		},
+		SessionsStatus:       a.activitySessions, // PSE-HOOK: sessions musicales — voir docs/pse/FORK.fr.md
 		CacheStatus:          a.cacheStatus,
 		CacheRestartRequired: a.cacheRestartRequired,
 		ProvidersStatus:      func(context.Context) any { return a.fetcher.Stats() },
@@ -192,6 +191,7 @@ func (a *App) buildAdmin() http.Handler {
 		ResolverTraces:     func(context.Context) (any, error) { return a.resolver.Traces(), nil },
 		Users:              a.users,
 		ViewerDirectory:    a.viewerDirectory,
+		RenameViewer:       a.renameViewer,
 		Personalization:    a.personalize,
 		Collections:        a.collections,
 		CatalogHelper:      a.collections,

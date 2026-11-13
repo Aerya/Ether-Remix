@@ -70,7 +70,7 @@ export function PlaylistBrowser({
   const [error, setError] = useState("");
   const [clientID, setClientID] = useState("");
   const callbackStarted = useRef(false);
-  const redirectURI = `${window.location.origin}/ether/accent/contenus?content=musique`;
+  const redirectURI = `${window.location.origin}/ether/remix/contenus?content=musique`;
   const selected = viewers.find((v) => v.id === viewer);
   const running = job && !job.done;
   const locked = busy || Boolean(running);

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/contentrating"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -78,9 +79,11 @@ type Service struct {
 	art         *artwork.Renderer
 	images      *artwork.Images
 	catCfg      func() config.Catalog
-	kinds       *KindRegistry
-	traktCfg    func() config.Trakt
-	sealer      config.FieldSealer
+	// PSE-HOOK : filtre français et lisible des pages de collections.
+	pseDiscovery func(context.Context, []core.RatingKey) ([]core.RatingKey, error)
+	kinds        *KindRegistry
+	traktCfg     func() config.Trakt
+	sealer       config.FieldSealer
 
 	liveTTL     time.Duration
 	tick        time.Duration
@@ -571,7 +574,18 @@ type personalEntry struct {
 
 // serve returns the members a user sees: content-rating and personal
 // rules applied, personal order, limit, rotation.
-func (s *Service) serve(ctx context.Context, row *specRow, user *core.User, wait bool) ([]core.RatingKey, error) {
+func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.User, wait bool) ([]core.RatingKey, error) {
+	ctx = core.WithCatalogViewer(ctx, user)
+	viewer := core.CatalogViewerID(ctx)
+	if user != nil {
+		viewer = user.ID
+	}
+	for _, src := range row.spec.Sources {
+		if src.Kind == "localFiles" && !mediaaccess.Allowed(ctx, s.db, "local:"+src.Label, viewer) {
+			return nil, nil
+		}
+	}
+
 	ms, err := s.membersFor(ctx, row, wait)
 	if err != nil {
 		return nil, err
@@ -1079,6 +1093,10 @@ func (s *Service) getFranchise(ctx context.Context, user *core.User, key core.Ra
 		}
 		return nil, err
 	}
+	items, err = s.pseFilterTitles(ctx, items)
+	if err != nil {
+		return nil, err
+	}
 	allowed := filterTitlesByRating(items, user)
 	c := &core.Collection{Key: key, Title: name, Kind: "franchise", Type: core.TypeMovie, ChildCount: len(allowed)}
 	if art, err := s.mirror.CollectionArt(ctx, key.TMDB()); err == nil {
@@ -1096,6 +1114,9 @@ func (s *Service) getFranchise(ctx context.Context, user *core.User, key core.Ra
 func (s *Service) franchiseItems(ctx context.Context, user *core.User, key core.RatingKey, offset, limit int) (core.Page, error) {
 	_, items, err := s.cat.Collection(ctx, key.TMDB())
 	if err != nil {
+		return core.Page{}, err
+	}
+	if items, err = s.pseFilterTitles(ctx, items); err != nil {
 		return core.Page{}, err
 	}
 	items = filterTitlesByRating(items, user)

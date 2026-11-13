@@ -37,3 +37,82 @@ func TestQualityChangeRecountsWithoutLosingSearchResults(t *testing.T) {
 		t.Fatalf("restored count = %d", n)
 	}
 }
+
+func TestQualityModeReplacesLegacyCriteriaAndRestoresThem(t *testing.T) {
+	e := newFreshEnv(t)
+	e.stub.rels["a"] = []core.Release{frRelease("Film.FRENCH.1080p-GOOD")}
+	e.index(t, 1)
+	q, err := quality.New(e.ctx, e.s.Store().db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	legacy := NewPlayable(1, "min=2160", false)
+	// Use the field directly to avoid depending on filter syntax here.
+	legacy.Filter.MinHeight = 2160
+	if err = q.Save(e.ctx, quality.Config{Mode: "profiles"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.s.Store().RefreshPlayable(e.ctx, 1, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.playable(t, 1); n != 1 {
+		t.Fatalf("profiles retained legacy floor: %d", n)
+	}
+	if err = q.Save(e.ctx, quality.Config{Mode: "simple"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.s.Store().RefreshPlayable(e.ctx, 1, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.playable(t, 1); n != 0 {
+		t.Fatalf("simple mode failed to restore floor: %d", n)
+	}
+}
+
+func TestQualityOriginalAndCacheSurviveIndexing(t *testing.T) {
+	e := newFreshEnv(t)
+	db := e.s.Store().db
+	if _, err := db.ExecContext(e.ctx, `CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY,language TEXT); INSERT INTO catalog_titles(key,language) VALUES(1,'ja')`); err != nil {
+		t.Fatal(err)
+	}
+	q, err := quality.New(e.ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	rules := []core.ReleaseRule{
+		{ID: "original", Name: "Original", Action: "require", Match: "any", Conditions: []core.ReleaseCondition{{Field: "remix_language", Operator: "equals", Value: "Original"}}},
+		{ID: "cached", Name: "No uncached", Action: "avoid", Match: "any", Conditions: []core.ReleaseCondition{{Field: "remix_cache", Operator: "equals", Value: "uncached"}}},
+	}
+	if err = q.Save(e.ctx, quality.Config{Mode: "profiles", Profiles: []quality.Profile{{ID: "p", Name: "P", Scope: "global", Rules: rules}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"cached", "uncached", "unknown"} {
+		r := core.Release{ID: state, Name: "Film.JAPANESE.1080p.WEB-DL-" + state, Protocol: core.ProtocolHTTP, Info: core.ReleaseInfo{Height: 1080, Languages: []string{"japanese"}}}
+		if state == "cached" {
+			r.DebridCached = []string{"realdebrid"}
+		}
+		if state == "uncached" {
+			r.DebridUncached = []string{"realdebrid"}
+		}
+		e.stub.rels["a"] = append(e.stub.rels["a"], r)
+	}
+	e.index(t, 1)
+	if n := e.playable(t, 1); n != 2 {
+		t.Fatalf("original/cache count=%d", n)
+	}
+	rs, err := e.s.Store().Releases(e.ctx, 1, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rs {
+		if len(r.DebridUncached) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("uncached evidence lost in storage")
+	}
+}

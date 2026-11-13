@@ -442,7 +442,7 @@ func (s *session) snapshot(now time.Time) *core.PlaySession {
 		Key:               s.ident.key,
 		StartedAt:         s.startedAt,
 		TitleName:         s.titleName,
-		Username:          s.user.Username,
+		Username:          s.user.ActivityName(),
 		Client:            s.caps,
 		Decision:          s.decision,
 		DeliveryDecision:  s.deliveryDecision,
@@ -463,9 +463,6 @@ func (s *session) snapshot(now time.Time) *core.PlaySession {
 	}
 	if measuredProtocol(s.caps.Protocol) {
 		ps.Experience = s.exp.snapshot(now)
-	}
-	if s.user.Username == "" {
-		ps.Username = s.user.Title
 	}
 	if g := s.cur; g != nil {
 		res := *g.res

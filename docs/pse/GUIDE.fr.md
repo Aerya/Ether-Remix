@@ -32,7 +32,7 @@ Ouvrez **http://&lt;hôte&gt;:32400/ether/** (ou le port `ETHER_PORT`) et suivez
 
 ### Régler Ether-Remix depuis la console
 
-Tous les ajouts se règlent dans la console, menu **Ether-Remix** (`/ether/accent`) : activation, options et état de chaque fonction (titres indexés, titres lisibles, bibliothèque musicale…). Une valeur enregistrée sur cette page remplace la variable d'environnement du même nom et s'applique sans redémarrer ; le bouton ↺ revient à la variable ou à la valeur par défaut. Les variables ci-dessous restent utilisables pour un déploiement entièrement décrit dans le `compose.yaml`.
+Tous les ajouts se règlent dans la console, menu **Ether-Remix** (`/ether/remix`) : activation, options et état de chaque fonction (titres indexés, titres lisibles, bibliothèque musicale…). Une valeur enregistrée sur cette page remplace la variable d'environnement du même nom et s'applique sans redémarrer ; le bouton ↺ revient à la variable ou à la valeur par défaut. Les variables ci-dessous restent utilisables pour un déploiement entièrement décrit dans le `compose.yaml`.
 
 Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, `ETHER_DATA_DIR`, `PUID`/`PGID`…) : voir [docs/install.md](../install.md). Variables propres à Ether-Remix :
 
@@ -44,10 +44,10 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 | `PSE_INDEXER_DAILY` | `1000` | Requêtes maximum par source et par jour (UTC). |
 | `PSE_INDEXER_PACE` | `10s` | Délai minimum entre deux titres (minimum `2s`). |
 | `PSE_INDEXER_TYPES` | `movie,show` | Types indexés (`movie`, `show`). Une série est cherchée via son premier épisode. |
-| `PSE_PLAYABLE` | `off` | `on` active le catalogue « lisible uniquement ». |
+| `PSE_PLAYABLE` | `off` | `on` active le catalogue « lisible uniquement », avec la même portée que `PSE_FRENCH`. |
 | `PSE_PLAYABLE_MIN` | `2` | Releases distinctes (même nom = une seule) nécessaires pour lister un titre. |
 | `PSE_PLAYABLE_FILTER` | *(aucun)* | Releases prises en compte, ex. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Langues : `fr` (toute VF : FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (sous-titres français annoncés), `vo` (aucun doublage annoncé)… Changer de filtre recalcule le catalogue au démarrage, sans réindexer. |
-| `PSE_FRENCH` | `off` | `on` active le catalogue en français. |
+| `PSE_FRENCH` | `off` | `on` active le catalogue en français : pages Films et Séries, rangées de l'accueil (dont Tendances), collections et titres similaires. Les collections de sorties à venir, la watchlist et la reprise de lecture restent intactes. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Pays dont une sortie numérique ou physique compte (codes ISO). `FR,CA` ajoute le Canada, pas toujours doublé en français. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Langues de release indexée qui comptent (`vfq` pour le québécois seul, `vff`…). |
 | `PSE_FRENCH_TYPES` | `movie,show` | Types filtrés. `movie` laisse les séries intactes. |
@@ -84,8 +84,8 @@ Le panneau actualise automatiquement le dernier accès Jellyfin du spectateur (S
 ### Connecter un client musique (Subsonic)
 
 1. Dans **Console → Ether-Remix → Sources → Streaming musical**, activez les comptes souhaités : **AllDebrid**, **Real-Debrid** et/ou **TorBox**, ou collez le lien manifest d’un addon Eclipse. Les clés et les indexeurs sont ceux déjà configurés dans Ether-Remix. **Tester** vérifie le compte puis cherche un lien (sans vérifier l’audio) ; **Tester les sources** ouvre les premiers octets audio pour constater le format. Avec plusieurs comptes d’un même service dans **Sources › Debrid**, ils sont essayés dans l’ordre de priorité.
-2. Dans le client, ajoutez un serveur **Subsonic / OpenSubsonic** : URL `http://<hôte>:32400` (ou le port `ETHER_PORT`), identifiants de votre compte Ether-Remix (comptes locaux à mot de passe).
-3. Activez l'option **mot de passe en clair / authentification legacy** du client : Ether-Remix ne conserve que des hachages, l'authentification par jeton (`t`/`s`) est refusée (code 41). Utilisez HTTPS (proxy inverse) hors de votre réseau local.
+2. Dans **Contenus et bibliothèques → Musique → Clients musicaux**, l’administrateur crée un accès pour le spectateur. Recopiez l’adresse du serveur, l’identifiant `music-…` et le mot de passe musical dans **Subsonic / OpenSubsonic** dans Arpeggi ou votre client. Le mot de passe musical n’est affiché qu’à sa création ; il fonctionne avec l’authentification par jeton (`t`/`s`), y compris pour les spectateurs connectés à Remix par Plex.
+3. Utilisez HTTPS hors du réseau local. Chaque spectateur dispose d’un accès musical, limité à ses droits ; le remplacer ou le révoquer coupe les prochaines requêtes de tous les clients qui l’utilisent. Le mot de passe principal reste indépendant. Les clients configurés avec un compte local peuvent continuer en mode **legacy**.
 
 Les services debrid sont essayés après Eclipse, selon leur priorité dans **Sources → Debrid** (le compte actif le plus prioritaire détermine le rang du service, puis tous ses comptes actifs sont essayés dans leur ordre de priorité). Les changements de comptes ou de priorité renouvellent automatiquement les résolveurs et leurs caches. Audius conserve son placement avant les sources ou en repli. Les fichiers sont relayés sans stockage local ni conversion : FLAC/Hi-Res seulement si le fichier disponible l’est réellement.
 
@@ -109,7 +109,7 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Envoi des écoutes à Last.fm** : avec la clé API et le secret partagé Last.fm, chaque spectateur peut cliquer sur **Connecter Last.fm** dans **Console → Ether-Remix → Sources → Streaming musical**, autoriser Ether-Remix sur last.fm, puis **J'ai autorisé Ether-Remix**. Ses écoutes complètes sont ensuite envoyées toutes les 2 minutes (celles d'avant la liaison et de plus de 14 jours ne partent pas). La **Vue d'ensemble** affiche aussi un bloc **Musique** : écoutes, heures et auditeurs des 30 derniers jours, titres et artistes les plus écoutés.
 
-**Feishin et autres clients Subsonic** : utilisez l'adresse d'Ether-Remix, votre nom d'utilisateur et un mot de passe local (Votre compte › Méthodes de connexion, y compris pour un compte connecté via Plex), et cochez **Enable legacy authentication** : Ether-Remix n'accepte pas l'authentification Subsonic par jeton.
+**Arpeggi, Feishin et autres clients Subsonic** : utilisez les identifiants musicaux générés ci-dessus avec l’authentification par jeton. Si vous choisissez le mot de passe local du compte, activez **Enable legacy authentication**.
 
 La bibliothèque se remplit avec les favoris (artistes, albums, titres) et les écoutes. La recherche interroge Deezer en direct ; à la lecture, Ether-Remix résout le titre auprès des sources activées et relaie le flux. Les playlists et les genres sont pris en charge. Les paroles et le transcodage audio ne le sont pas : le flux est relayé tel quel.
 
@@ -224,3 +224,59 @@ Choisissez le spectateur, vérifiez l’aperçu, puis validez. Une copie personn
 [Configurer les sous-titres externes et la traduction facultative](SUBMAKER.fr.md), globalement ou par bibliothèque/collection, avec SeerrCatalog.
 
 Pour les règles de visibilité et les délais de recherche, voir [Catalogue et indexation](CATALOGUE.fr.md). Pour connecter l’addon, voir [SeerrCatalog](SEERRCATALOG.fr.md).
+
+### Historique commun et Écoute
+
+**Nom affiché** : sur la fiche d’un utilisateur (**Spectateurs**), le crayon à côté de son nom permet de choisir le nom utilisé dans les statistiques, l’activité et les listes. Plex ne l’écrase pas et les lectures déjà enregistrées prennent le nouveau nom. La connexion ne change pas. Un champ vide rétablit le nom Plex.
+
+**Activité → Historique** réunit films, séries et musique dans un tableau chronologique commun, avec recherche, tri, pagination et fiche de détail. La liste contient les 500 dernières lectures de la période sélectionnée. Les écoutes musicales gardent leurs métadonnées artiste/album ; la durée indiquée est celle du morceau, pas le temps réellement écouté. Les mesures de complétion et de durée de session restent explicitement réservées à la vidéo.
+
+**Activité → Écoute** reprend les filtres période, année et utilisateur de Visionnage. Les compteurs, écoutes par jour, grille jour/heure et classements par morceau, artiste, album et auditeur portent sur toute la période, sans la limite de l’historique. Les graphiques utilisent le fuseau du navigateur. Les anciennes écoutes sont incluses, même si la source musicale est désactivée.
+
+## Médias locaux et iBroadcast
+
+### Dossiers vidéo et audio
+
+Ajoutez vos dossiers dans les volumes de la stack Dockge-Enhanced, puis redémarrez le conteneur :
+
+```yaml
+volumes:
+  - ./config:/config
+  - ./cache:/cache
+  - /chemin/hote/videos:/media/videos:ro
+  - /chemin/hote/musique:/media/musique:ro
+```
+
+Dans **Sources → Fichiers locaux**, indiquez un nom unique, le chemin **dans le conteneur** (`/media/videos`, par exemple) et le type vidéo ou audio. Un dossier réseau doit être monté sur l’hôte avant de démarrer la stack. Le compte du conteneur doit pouvoir lire ses fichiers.
+
+L’analyse se lance après ajout, au démarrage, chaque heure et avec **Analyser maintenant**. Le panneau affiche sa progression et ses erreurs. Les métadonnées inchangées sont réutilisées. Un dossier inaccessible conserve son index précédent ; une analyse réussie retire les fichiers disparus de la bibliothèque. Retirer une source ne supprime jamais les fichiers. Les liens symboliques sont ignorés.
+
+Les vidéos sont rapprochées **d’abord du catalogue Remix, puis de TMDB**. Un nom de film avec année (`Titre.2020.mkv`) ou un épisode explicite (`Série.S01E02.mkv`) permet une identification prudente : titre normalisé exact, année concordante et résultat unique. Un fichier identifié utilise la fiche existante, avec les saisons et épisodes correspondants, et fournit une lecture locale. Sans correspondance fiable, il garde son titre de fichier, sans fiche TMDB obligatoire. Chaque dossier alimente une bibliothèque et une collection ; les vidéos personnelles ne gonflent pas les compteurs TMDB.
+
+La musique locale rejoint la bibliothèque Musique et ses clients Plex/Plexamp, Jellyfin/Emby et Subsonic. Les tags fournissent titre, artiste, album, disque et piste ; à défaut, Remix utilise le nom du fichier et du dossier. Les fichiers sont servis dans leur format d’origine : la compatibilité audio dépend du client. Les fichiers locaux ne sont jamais envoyés à un fournisseur musical.
+
+Formats analysés : MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, OGV, VOB, 3GP ; MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, APE, WMA et ALAC. Un fichier doit contenir un flux du type choisi et être lisible par `ffprobe`. L’image Docker Linux fournit cet outil. Les dossiers sont **privés par défaut**, réservés au propriétaire qui les ajoute. Dans **Privé · options de partage**, choisissez certains spectateurs ou tous, puis enregistrez. Seul l’administrateur peut ajouter des chemins du serveur.
+
+### Compte iBroadcast
+
+Dans **Sources → Streaming musical → iBroadcast**, ou dans votre **espace personnel** pour un compte spectateur, commencez par **Ajouter un compte** avec un nom :
+
+1. Sur [iBroadcast](https://media.ibroadcast.com/), ouvrez le menu du compte → **Apps → developer**, puis créez une application privée.
+2. Dans son édition, choisissez **Grant Type → Device Code**, enregistrez et copiez le **Client ID** dans Remix. Aucun Client Secret, mot de passe ou URL de retour n’est nécessaire.
+3. Cliquez **Connecter iBroadcast**, ouvrez le lien et autorisez les accès au compte et à la bibliothèque **en lecture seule**. Le panneau se met à jour automatiquement.
+4. L’import démarre après autorisation, puis chaque heure ; **Actualiser la bibliothèque** permet de le relancer.
+
+Chaque compte iBroadcast est **privé par défaut**, appartient au spectateur qui le connecte et possède ses propres identifiants chiffrés. Plusieurs comptes peuvent être ajoutés. Le partage facultatif avec certains spectateurs ou tous se règle pour chaque compte ; les bibliothèques autorisées apparaissent ensemble dans Musique. Les favoris et historiques restent personnels. Activez **Importer mes playlists iBroadcast** pour les retrouver dans vos clients : leur ordre et les morceaux répétés sont conservés ; les pistes supprimées ou absentes sont ignorées. L’import est actualisé avec la bibliothèque et les playlists importées restent personnelles au propriétaire du compte. Cette intégration lit les pistes en **MP3 128 kb/s**, y compris avec un compte gratuit ; elle ne renvoie pas de modifications de playlists ou de tags vers iBroadcast. Les jetons sont chiffrés dans la base, renouvelés automatiquement et absents des réponses destinées aux clients. Déconnecter retire la bibliothèque de Remix ; pour révoquer également l’autorisation auprès du fournisseur, utilisez **Apps** sur iBroadcast.
+
+## Cache des recherches et pannes de sources
+
+La durée « Mémoriser les recherches » du résolveur est un plafond strict (six heures par défaut). L’ancienneté du titre ne permet pas de le dépasser. Les réponses vides sont conservées moins longtemps : jusqu’à trois minutes pour un titre récent ou sans date, trente minutes pour un titre ancien, toujours dans le plafond configuré. Une recherche vide réussie remplace les anciens résultats.
+
+Lors d’une panne temporaire (délai, connexion, erreur serveur ou suspension automatique après des pannes répétées), les résultats expirés depuis moins de 24 heures peuvent servir de candidats de secours. Ils ne sont ni renouvelés ni enregistrés comme une recherche fraîche complète. Seuls les descripteurs torrent/NZB sont repris ; les liens HTTP directs expirés sont exclus. Les indications de cache debrid sont retirées et le parcours normal valide la lecture. Les recherches de disponibilité en arrière-plan ne bénéficient pas de ce repli.
+
+Ce mécanisme ne masque pas une erreur d’identifiants, un quota épuisé, une annulation ou une réponse vide valide. Désactiver le cache ou la source désactive également ce repli. Les changements d’adresse, d’identifiants ou de configuration de recherche invalident l’identité du cache. Les reprises sont signalées dans les journaux comme `using expired search candidates`.
+
+
+### Navigation et configuration
+
+La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus et bibliothèques → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.

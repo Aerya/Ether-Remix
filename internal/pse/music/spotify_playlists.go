@@ -62,7 +62,7 @@ var spotifyClientID = regexp.MustCompile(`^[a-fA-F0-9]{32}$`)
 
 func (s *SpotifyPlaylists) begin(viewer int64, client, redirect string) (string, error) {
 	u, err := url.Parse(redirect)
-	if err != nil || u.User != nil || u.RawQuery != "content=musique" || u.Fragment != "" || u.Path != "/ether/accent/contenus" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "[::1]" || u.Hostname() == "::1"))) || u.Host == "" || !spotifyClientID.MatchString(client) {
+	if err != nil || u.User != nil || u.RawQuery != "content=musique" || u.Fragment != "" || (u.Path != "/ether/remix/contenus" && u.Path != "/ether/accent/contenus") || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "[::1]" || u.Hostname() == "::1"))) || u.Host == "" || !spotifyClientID.MatchString(client) {
 		return "", errors.New("Client ID ou URI de retour Spotify invalide (HTTPS requis hors boucle locale)")
 	}
 	if s.Sealer == nil {

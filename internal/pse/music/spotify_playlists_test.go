@@ -62,7 +62,10 @@ func TestSpotifyPKCEStateRefreshAndPreview(t *testing.T) {
 	defer server.Close()
 	s := &SpotifyPlaylists{Store: &Playlists{DB: db}, Sealer: fakeSealer{}, API: server.URL, TokenURL: server.URL + "/token", HTTP: server.Client()}
 	client := strings.Repeat("a", 32)
-	redirect := "https://remix.example/ether/accent/contenus?content=musique"
+	redirect := "https://remix.example/ether/remix/contenus?content=musique"
+	if _, err := s.begin(7, client, "https://remix.example/ether/accent/contenus?content=musique"); err != nil {
+		t.Fatal("legacy callback refused", err)
+	}
 	auth, err := s.begin(7, client, redirect)
 	if err != nil {
 		t.Fatal(err)

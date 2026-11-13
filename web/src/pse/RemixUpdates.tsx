@@ -26,9 +26,9 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-10-torrent-client",
+    id: "2026-11-13-torrent-client",
     version: "current",
-    date: "2026-11-10",
+    date: "2026-11-13",
     title: ["Client torrent en option", "Optional torrent client"],
     items: [
       [
@@ -46,6 +46,173 @@ export const REMIX_UPDATES = [
       [
         "Le client peut être distant, mais Remix doit voir son dossier de téléchargement (même machine ou partage NFS/SMB). Vos comptes debrid restent en « cache uniquement ». Réglages : Sources → Client torrent.",
         "The client can be remote, but Remix must see its download folder (same machine or NFS/SMB share). Your debrid accounts stay cached-only. Settings: Sources → Torrent client.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-13-subsonic-token-access",
+    version: "0.2.37-remix.55.1",
+    date: "2026-11-13",
+    title: ["Connexion des clients musicaux par jeton", "Token authentication for music clients"],
+    items: [
+      [
+        "Arpeggi et les clients Subsonic utilisant des jetons peuvent se connecter avec un accès musical dédié par spectateur. Créez ou révoquez-le dans Contenus et bibliothèques → Musique → Clients musicaux, sans modifier le mot de passe de votre compte.",
+        "Arpeggi and token-authenticated Subsonic clients can connect with dedicated music access per viewer. Create or revoke it under Content & libraries → Music → Music clients without changing your account password.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-remix-settings-layout",
+    version: "0.2.37-remix.53.1",
+    date: "2026-11-11",
+    title: ["Configuration Remix réorganisée", "Reorganized Remix settings"],
+    items: [
+      [
+        "Les adresses passent à /ether/remix ; vos anciens liens restent utilisables. Les blocs de configuration sont repliés par défaut et leurs titres harmonisés.",
+        "Addresses now use /ether/remix; old links still work. Configuration sections start collapsed and share consistent headings.",
+      ],
+      [
+        "iBroadcast rejoint Eclipse et DMM dans les sources musicales. L’adresse Subsonic et les compteurs de bibliothèque sont regroupés dans Contenus et bibliothèques → Musique.",
+        "iBroadcast joins Eclipse and DMM in music sources. The Subsonic address and library counts are grouped under Content & libraries → Music.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-source-cache-resilience",
+    version: "0.2.37-remix.52.1",
+    date: "2026-11-11",
+    title: [
+      "Sources plus résilientes et recherche StreamFusion",
+      "Resilient sources and StreamFusion search",
+    ],
+    items: [
+      [
+        "En cas de panne temporaire, Remix peut reprendre les anciens résultats torrent/NZB pendant 24 heures après leur expiration, avec les vérifications de lecture habituelles.",
+        "During temporary outages, Remix can reuse torrent/NZB results for 24 hours after expiry, with normal playback checks.",
+      ],
+      [
+        "La base StreamFusion fournit aussi des candidats par film, saison et épisode. Les preuves de cache debrid sont vérifiées par service et expirent ; un import ne suppose plus une disponibilité AllDebrid.",
+        "The StreamFusion database also supplies movie, season and episode candidates. Debrid cache evidence is service-specific and expires; imports no longer assume AllDebrid availability.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-vostfr-submaker",
+    version: "0.2.37-remix.50.1",
+    date: "2026-11-11",
+    title: ["VOSTFR à la demande avec SubMaker", "On-demand VOSTFR with SubMaker"],
+    items: [
+      [
+        "Dans l’onglet VOSTFR à la demande, une option prépare les sous-titres français des titres choisis avec SubMaker. Elle n’est disponible que si SubMaker est activé avec un manifeste valide.",
+        "In the VOSTFR on demand tab, an option prepares French subtitles for the chosen titles with SubMaker. It is only available when SubMaker is enabled with a valid manifest.",
+      ],
+      [
+        "Chaque titre affiche l’état de ses sous-titres : VF disponible, sous-titres annoncés, SRT prêt ou traduit, en préparation, ou rien pour l’instant.",
+        "Each title shows its subtitle state: French audio, announced subtitles, SRT ready or translated, preparing, or nothing yet.",
+      ],
+      [
+        "À la lecture, à qualité, langue et score de formats égaux, Remix choisit la release dont le SRT est déjà prêt. Une meilleure release reste prioritaire, même sans sous-titres.",
+        "At playback, with equal quality, language and format score, Remix picks the release whose SRT is already ready. A better release still ranks first, even without subtitles.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-local-media-ibroadcast",
+    version: "0.2.37-remix.49.1",
+    date: "2026-11-11",
+    title: ["Vos médias locaux et iBroadcast", "Your local media and iBroadcast"],
+    items: [
+      [
+        "Ajoutez des dossiers vidéo ou audio montés dans Docker : bibliothèques locales, vidéos personnelles sans TMDB, analyse automatique et lecture sans déplacer vos fichiers.",
+        "Add video or audio folders mounted in Docker: Remix/TMDB matching, personal videos preserved without a match, automatic scanning and in-place playback.",
+      ],
+      [
+        "Dossiers et comptes iBroadcast privés par défaut, partage avec certains spectateurs ou tous. Plusieurs comptes personnels et import facultatif des playlists iBroadcast.",
+        "Private folders and iBroadcast accounts by default, with optional sharing. Multiple personal accounts and optional iBroadcast playlist imports.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-display-name",
+    version: "0.2.37-remix.48.1",
+    date: "2026-11-11",
+    title: ["Nom affiché des utilisateurs", "Viewer display names"],
+    items: [
+      [
+        "Sur la fiche d’un utilisateur, le crayon à côté de son nom permet de choisir le nom affiché dans les statistiques, l’activité et les listes. Plex ne l’écrase plus, et les lectures passées prennent le nouveau nom.",
+        "On a viewer’s page, the pencil next to their name sets the name shown in statistics, activity and lists. Plex no longer overwrites it, and past plays take the new name.",
+      ],
+      [
+        "La connexion ne change pas. Un champ vide rétablit le nom Plex.",
+        "Sign-in does not change. An empty field restores the Plex name.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-french-rows",
+    version: "0.2.37-remix.47.1",
+    date: "2026-11-11",
+    title: ["Accueil et collections en français", "French Home rows and collections"],
+    items: [
+      [
+        "Le catalogue en français et « lisible uniquement » s’appliquent aussi aux rangées de l’accueil (Tendances, Top 10…), aux collections et aux titres similaires. Un film pas encore sorti en France n’y apparaît plus.",
+        "The French and playable-only catalogues now also apply to Home rows (Trending, Top 10…), collections and similar titles. A movie not yet out in France no longer shows there.",
+      ],
+      [
+        "Restent intactes : les collections de sorties à venir, la watchlist, la reprise de lecture et la recherche.",
+        "Left alone: upcoming collections, the watchlist, Continue Watching and search.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-sfr-late-titles",
+    version: "0.2.37-remix.46.1",
+    date: "2026-11-11",
+    title: ["StreamFusion rattrape les titres tardifs", "StreamFusion catches up late titles"],
+    items: [
+      [
+        "Un titre ajouté au catalogue après l’import de ses releases StreamFusion Reborn, par exemple via Tendances, les récupère au passage suivant et devient lisible. La recherche se fait par lots et s’interrompt pendant les lectures.",
+        "A title added to the catalogue after its StreamFusion Reborn releases were imported now gets them on the next run and becomes playable. The lookup runs in batches and pauses during playback.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-11-unified-history-listening",
+    version: "0.2.37-remix.45.1",
+    date: "2026-11-11",
+    title: ["Un historique commun et un onglet Écoute", "Unified history and a Listening tab"],
+    items: [
+      [
+        "Films, séries et musique partagent le même historique chronologique. Écoute regroupe les tendances et classements musicaux, filtrés par période, année et utilisateur.",
+        "Movies, shows and music share one chronological history. Listening groups music trends and rankings, filtered by period, year and user.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-music-activity",
+    version: "0.2.37-remix.44.1",
+    date: "2026-11-10",
+    title: ["La musique rejoint Activité", "Music joins Activity"],
+    items: [
+      [
+        "Les lectures signalées par Plex, Jellyfin/Emby et Subsonic apparaissent dans En cours. L’onglet Historique affiche aussi les écoutes musicales, avec filtres et pagination. Les sessions sans nouvelles expirent automatiquement.",
+        "Playback reported by Plex, Jellyfin/Emby and Subsonic appears in Now playing. History also shows music listens, with filters and pagination. Stale sessions expire automatically.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-10-quality-mode-import",
+    version: "0.2.37-remix.43.1",
+    date: "2026-11-10",
+    title: ["Un seul mode de filtrage à la fois", "One filtering mode at a time"],
+    items: [
+      [
+        "Les profils remplacent les critères simples du catalogue quand ils sont activés. Vos anciens critères sont conservés pour revenir au mode simple. Les langues sont mieux alignées.",
+        "Enabled profiles replace simple catalogue criteria. Previous criteria are preserved when switching back. Language options are aligned.",
+      ],
+      [
+        "Import AIOStreams depuis une source enregistrée ou un manifest, avec le mot de passe de configuration et aperçu. Formats détaillés, résolutions inconnues, langue originale et annonces de cache sont pris en charge. Les manifests avec variante importent les filtres de base.",
+        "Import AIOStreams from a saved source or manifest with the configuration password and a preview. Detailed formats, unknown resolutions, original language and cache hints are supported. Variant manifests import base filters.",
       ],
     ],
   },

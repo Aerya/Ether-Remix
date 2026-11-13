@@ -277,7 +277,7 @@ func (r *registry) desired() []unitRow {
 		}
 		if ps == nil {
 			ps = &core.PlaySession{ID: e.group, UserID: e.slot.user.ID, ClientID: e.slot.caps.ClientID,
-				Username: e.slot.user.Username, Client: e.slot.caps}
+				Username: e.slot.user.ActivityName(), Client: e.slot.caps}
 		}
 		rows = append(rows, unitRow{id: groupID(e.group), user: e.slot.user.ID, client: e.slot.caps.ClientID,
 			grp: func() string {

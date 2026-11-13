@@ -1,10 +1,13 @@
-import { SettingsSection, Badge, Button } from "@braedonsaunders/appkit-ui";
+import { Badge, Button } from "@braedonsaunders/appkit-ui";
+import { SettingsSection } from "../components/CollapsibleSections";
 import { Link, useSearchParams, useLocation } from "react-router-dom";
 import { Fragment, type ReactNode } from "react";
 import { getLocale } from "../i18n";
 import { api } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { MusicAddons } from "./MusicAddons";
+import { IBroadcastSource } from "./OwnedMedia";
+import { CollapsibleBlock } from "../components/CollapsibleSections";
 import { MusicSources } from "./MusicSources";
 
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
@@ -52,7 +55,7 @@ function RealDebridAccounts() {
       ) : (
         <p>{L("Aucun compte Real-Debrid configuré.", "No Real-Debrid account configured.")}</p>
       )}
-      <Link className="text-primary underline" to="/accent/sources?source=debrid">
+      <Link className="text-primary underline" to="/remix/sources?source=debrid">
         {L(
           "Configurer les comptes dans Sources → Debrid",
           "Configure accounts under Sources → Debrid",
@@ -67,16 +70,10 @@ function RealDebridAccounts() {
     </div>
   );
 }
-export function MusicSourceSettings({
-  fields,
-  status,
-}: {
-  fields: SourceField[];
-  status: ReactNode;
-}) {
+export function MusicSourceSettings({ fields }: { fields: SourceField[] }) {
   const [params, setParams] = useSearchParams();
   const location = useLocation();
-  const groups = ["eclipse", "realdebrid", "other", "diagnostic"];
+  const groups = ["eclipse", "realdebrid", "ibroadcast", "other", "diagnostic"];
   const hash = location.hash.toLowerCase();
   const hashField = fields.find((f) => hash.includes(f.key.toLowerCase()));
   const active = groups.includes(params.get("musicGroup") ?? "")
@@ -92,11 +89,10 @@ export function MusicSourceSettings({
     others = group("other");
   return (
     <div className="space-y-6" id="pse-music">
-      {status}
       <p className="text-sm text-fg-muted">
         {L(
-          "Le catalogue musical est fourni par Deezer. Choisissez les sources qui trouvent et lisent les pistes ; un champ de manifest vide désactive la source.",
-          "Deezer provides the music catalogue. Choose the sources that find and play tracks; an empty manifest disables that source.",
+          "Le catalogue de découverte musicale est fourni par Deezer. Choisissez les sources qui trouvent et lisent les pistes ; un champ de manifest vide désactive la source.",
+          "Deezer provides the music discovery catalogue. Choose the sources that find and play tracks; an empty manifest disables that source.",
         )}
       </p>
       <nav
@@ -107,6 +103,7 @@ export function MusicSourceSettings({
         {[
           ["eclipse", "Eclipse"],
           ["realdebrid", "DMM / Real-Debrid"],
+          ["ibroadcast", "iBroadcast"],
           ["other", L("Autres sources", "Other sources")],
           ["diagnostic", L("Diagnostic audio", "Audio diagnostics")],
         ].map(([id, label]) => (
@@ -169,6 +166,18 @@ export function MusicSourceSettings({
         </SettingsSection>
       </div>
       <div
+        id="music-ibroadcast"
+        role="tabpanel"
+        aria-labelledby="music-tab-ibroadcast"
+        hidden={active !== "ibroadcast"}
+      >
+        <CollapsibleBlock title="iBroadcast">
+          <div className="p-5">
+            <IBroadcastSource />
+          </div>
+        </CollapsibleBlock>
+      </div>
+      <div
         id="music-other"
         role="tabpanel"
         aria-labelledby="music-tab-other"
@@ -198,7 +207,9 @@ export function MusicSourceSettings({
         aria-labelledby="music-tab-diagnostic"
         hidden={active !== "diagnostic"}
       >
-        <MusicSources />
+        <CollapsibleBlock title={L("Diagnostic audio", "Audio diagnostics")}>
+          <MusicSources />
+        </CollapsibleBlock>
       </section>
     </div>
   );

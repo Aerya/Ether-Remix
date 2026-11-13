@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 
-/** Only the source tabs opt in; nested settings retain their existing layout. */
+/** Configuration pages opt in; nested settings retain their existing layout. */
 export const CollapsibleSections = createContext(false);
 
 export function CollapsibleBlock({
@@ -17,7 +17,7 @@ export function CollapsibleBlock({
   children,
   className,
   id,
-  open = true,
+  open = false,
 }: {
   title: ReactNode;
   description?: ReactNode;

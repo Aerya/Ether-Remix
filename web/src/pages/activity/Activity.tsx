@@ -5,7 +5,10 @@ import { api, apiFetch } from "../../lib/api";
 import { useAsync, useInterval } from "../../lib/hooks";
 import { fetchLiveSessions, LIVE_SESSIONS_MS, useLiveSessionsRefresh } from "../../lib/sessions";
 import { clusterActivity } from "./cluster";
-import { PlayHistory, ViewingFilters } from "./History";
+// PSE-HOOK: historique musical — voir docs/pse/FORK.fr.md
+import { Listening, L } from "../../pse/Listening";
+import { MusicHistory } from "../../pse/MusicHistory";
+import { ViewingFilters } from "./History";
 import { Experience, ExperiencePeriod } from "./Experience";
 import { NowPlaying, ProtocolFilter, useNowView, ViewSwitch } from "./NowPlaying";
 import { Delivery } from "./Delivery";
@@ -18,6 +21,7 @@ const TABS = localized(
       { key: "now", label: t("Now playing") },
       { key: "history", label: t("History") },
       { key: "viewing", label: t("Viewing") },
+      { key: "listening", label: L("Écoute", "Listening") },
       { key: "delivery", label: t("Delivery") },
       { key: "experience", label: t("Experience") },
     ] as const,
@@ -123,12 +127,19 @@ export default function Activity() {
       ) : (
         <>
           {tab === "history" ? (
-            <PlayHistory
-              history={viewing.data?.history}
-              summary={viewing.data?.summary}
-              error={viewing.error}
-              onRetry={() => void viewing.reload()}
-            />
+            <>
+              <MusicHistory
+                key={query}
+                query={query}
+                viewers={viewers.data ?? []}
+                history={viewing.data?.history}
+                summary={viewing.data?.summary}
+                error={viewing.error}
+                onRetry={() => void viewing.reload()}
+              />
+            </>
+          ) : tab === "listening" ? (
+            <Listening key={query} query={query} viewers={viewers.data ?? []} />
           ) : tab === "viewing" ? (
             <Viewing
               summary={viewing.data?.summary}

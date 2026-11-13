@@ -66,6 +66,9 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		NZBDir:         filepath.Join(dataDir, "nzb"),
 		ClientIdentity: cfg.ClientIdentity,
 		Backend: func(ix config.Indexer) (newznab.Backend, error) {
+			if ix.ID == sfrSearchID {
+				return sfrBackend{}, nil
+			}
 			if ix.IsStremio() {
 				return a.addons.Backend(ix)
 			}
@@ -121,6 +124,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	}
 	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, AnimeCour: animeCour, Logger: log.With("component", "resolver")})
 	a.resolver.SetSourceSignals(a.debrid)
+	a.resolver.SetSubtitled(a.pseSubtitled)
 	a.closers = append(a.closers, func() { a.resolver.Close() })
 
 	a.load = sysload.New(sysload.Options{Logger: log.With("component", "sysload")})

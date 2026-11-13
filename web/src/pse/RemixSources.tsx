@@ -1,4 +1,5 @@
-import { CollapsibleSections } from "../components/CollapsibleSections";
+import { LocalMedia } from "./OwnedMedia";
+import { CollapsibleSections, CollapsibleBlock } from "../components/CollapsibleSections";
 import { AddSourceGallery, type GalleryChoice } from "../pages/sources/cards";
 import type { DebridKind } from "../lib/types";
 import { Badge, Button } from "@braedonsaunders/appkit-ui";
@@ -20,6 +21,7 @@ const CATEGORIES = [
   ["debrid", "Debrid", "Debrid"],
   ["torrent", "Client torrent", "Torrent client"],
   ["musique", "Streaming musical", "Music streaming"],
+  ["local", "Fichiers locaux", "Local files"],
   ["iptv", "IPTV", "IPTV"],
   ["indexation", "Indexation", "Indexing"],
 ] as const;
@@ -115,20 +117,22 @@ export function RemixSources({
       </nav>
       <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
         <span>{L("Contenus concernés :", "Relevant content:")}</span>
-        {(category === "musique"
-          ? [L("Musique", "Music")]
-          : category === "iptv"
-            ? [L("Télévision en direct", "Live TV")]
-            : [
-                L("Films", "Movies"),
-                L("Séries", "Shows"),
-                L("Animes", "Anime"),
-                ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
-                  ? [L("Musique via debrid", "Music via debrid")]
-                  : category === "torrent"
-                    ? [L("Musique", "Music")]
-                    : []),
-              ]
+        {(category === "local"
+          ? [L("Vidéos", "Videos"), L("Musique", "Music")]
+          : category === "musique"
+            ? [L("Musique", "Music")]
+            : category === "iptv"
+              ? [L("Télévision en direct", "Live TV")]
+              : [
+                  L("Films", "Movies"),
+                  L("Séries", "Shows"),
+                  L("Animes", "Anime"),
+                  ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
+                    ? [L("Musique via debrid", "Music via debrid")]
+                    : category === "torrent"
+                      ? [L("Musique", "Music")]
+                      : []),
+                ]
         ).map((label) => (
           <Badge key={label} variant="outline">
             {label}
@@ -141,9 +145,7 @@ export function RemixSources({
           )}
         </span>
       </div>
-      <CollapsibleSections.Provider
-        value={["stremio", "indexeurs", "indexation"].includes(category)}
-      >
+      <CollapsibleSections.Provider value={true}>
         {category === "stremio" ? (
           <>
             <IndexerList view="stremio" addRequest={add} />
@@ -194,11 +196,28 @@ export function RemixSources({
             <NewReleaseBudgetSection />
           </>
         ) : null}
-        {category === "debrid" ? <DebridSources addKind={debridAdd} /> : null}
+        {category === "debrid" ? (
+          <CollapsibleBlock title="Debrid">
+            <DebridSources addKind={debridAdd} />
+          </CollapsibleBlock>
+        ) : null}
+        {category === "usenet" ? (
+          <CollapsibleBlock title="Usenet">
+            <UsenetProviders addNonce={usenetAdd} />
+          </CollapsibleBlock>
+        ) : null}
+        {category === "iptv" ? (
+          <CollapsibleBlock title="IPTV">
+            <IPTVProviders sourceParam="iptvSource" />
+          </CollapsibleBlock>
+        ) : null}
         {category === "torrent" ? torrent : null}
-        {category === "usenet" ? <UsenetProviders addNonce={usenetAdd} /> : null}
-        {category === "iptv" ? <IPTVProviders sourceParam="iptvSource" /> : null}
-        {category === "musique" ? music : null}
+        {category === "musique" ? <>{music}</> : null}
+        {category === "local" ? (
+          <CollapsibleBlock title={L("Fichiers locaux", "Local files")}>
+            <LocalMedia />
+          </CollapsibleBlock>
+        ) : null}
         {category === "indexation" ? indexing : null}
       </CollapsibleSections.Provider>
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />

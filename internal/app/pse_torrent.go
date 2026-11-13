@@ -174,8 +174,11 @@ func (m *pseTorrentMusicAccount) OpenCached(ctx context.Context, hit music.Torre
 				}
 			}
 			return debrid.File{}, music.ErrNotCached
-		}}, hit.Seeders > 0)
+		}}, hit.Seeders > 0 && !music.CachedOnly(ctx))
 	if err != nil {
+		if errors.As(err, new(*core.LocalDownloadError)) {
+			return nil, fmt.Errorf("%w: %w", music.ErrDownloadPending, err)
+		}
 		if errors.Is(err, core.ErrNotCached) || errors.Is(err, core.ErrDownloadRefused) || errors.Is(err, music.ErrNotCached) {
 			return nil, music.ErrNotCached
 		}

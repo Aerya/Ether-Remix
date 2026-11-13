@@ -210,7 +210,7 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
     if (
       meta.route === "/sources" &&
       descriptors.some(
-        (item) => item.kind === "page" && (item.meta as PageMeta | undefined)?.route === "/accent",
+        (item) => item.kind === "page" && (item.meta as PageMeta | undefined)?.route === "/remix",
       )
     )
       continue;
@@ -543,6 +543,7 @@ function Shell() {
           <SettingFocus />
           <Suspense fallback={<PageFallback />}>
             <Routes>
+              <Route path="/remix/:tab?" element={<PsePage />} />
               <Route path="/accent/:tab?" element={<PsePage />} />
               <Route path="/setup" element={<Setup />} />
               <Route path="/mcp/authorize" element={<McpAuthorize />} />

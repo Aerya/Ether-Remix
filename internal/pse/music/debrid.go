@@ -55,6 +55,9 @@ type DebridAccount interface {
 	Unlock(ctx context.Context, file DebridFile) (Stream, error)
 }
 
+// ErrDownloadPending signale un téléchargement local à revérifier rapidement.
+var ErrDownloadPending = errors.New("music: album en cours de téléchargement")
+
 // ErrNotCached signale un album absent du cache debrid.
 var ErrNotCached = errors.New("music: album absent du cache debrid")
 
@@ -333,12 +336,15 @@ func (r *DebridResolver) lookup(ctx context.Context, t Track, fails int) debridA
 // failed garde un état de panne avec une attente bornée.
 func (r *DebridResolver) failed(a debridAlbum, err error, fails int) debridAlbum {
 	wait := debridBackoff(fails)
+	if errors.Is(err, ErrDownloadPending) {
+		wait, fails = 5*time.Second, 0
+	}
 	a.fails, a.retry = fails, r.now().Add(wait)
 	if len(a.torrents) == 0 {
 		a.until = a.retry
 	}
 	if !errors.Is(err, ErrDebridUnavailable) {
-		err = fmt.Errorf("%w : %v", ErrDebridUnavailable, err)
+		err = fmt.Errorf("%w : %w", ErrDebridUnavailable, err)
 	}
 	a.err = err
 	return a

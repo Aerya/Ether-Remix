@@ -18,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // Import des releases françaises depuis la base PostgreSQL d'une instance
@@ -37,7 +38,25 @@ const (
 	sfrOverlap     = int64(48 * 60 * 60) // synchronisations SFR qui gardent leur date d'origine
 	sfrDefaultStep = 6 * time.Hour
 	sfrMinStep     = 30 * time.Minute
+
+	// Rattrapage des titres arrivés au catalogue après leur import. Sans index
+	// sur tmdb_id, chaque requête parcourt la table : le nombre de requêtes et
+	// le temps de lecture sont donc bornés à chaque passage.
+	sfrTitlesBatch   = 500
+	sfrTitlesBatches = 20
+	sfrTitlesRows    = 20000
+	sfrTitlesBudget  = 2 * time.Minute
+	sfrTitlesRecheck = 30 * 24 * time.Hour
 )
+
+func init() {
+	store.Register("pse_releases", 9, `
+CREATE TABLE pse_sfr_checked(
+  title_key INTEGER PRIMARY KEY,
+  checked_at INTEGER NOT NULL DEFAULT 0
+);
+`)
+}
 
 // SFRSettings règle l'import (variables PSE_SFR*).
 type SFRSettings struct {
@@ -71,24 +90,36 @@ func LoadSFRSettings() SFRSettings {
 type sfrRow struct {
 	ID, Name, Hash, Media, Seasons, Episodes string
 	Size, TMDB, Stamp                        int64
+	Cached                                   []string
+	CacheUntil                               int64
 }
 
 type sfrReader interface {
 	page(ctx context.Context, after string, since int64, private bool, limit int) ([]sfrRow, error)
+	titles(ctx context.Context, ids []int64, after string, private bool, limit int) ([]sfrRow, error)
 	close()
 }
 
-const sfrPageSQL = `SELECT id, raw_title, COALESCE(size,0), info_hash, tmdb_id, tmdb_media_type,
+// Les deux lectures partagent les mêmes filtres.
+const (
+	sfrSelectSQL = `SELECT id, raw_title, COALESCE(size,0), info_hash, tmdb_id, tmdb_media_type,
   COALESCE(GREATEST(updated_at,created_at),0), COALESCE(parsed_data->>'seasons',''), COALESCE(parsed_data->>'episodes','')
 FROM public.torrent_items
-WHERE id > $1 AND COALESCE(GREATEST(updated_at,created_at),0) >= $2
+WHERE id > $1`
+	sfrFiltersSQL = `
   AND tmdb_id IS NOT NULL AND tmdb_media_type IN ('movie','tv') AND COALESCE(info_hash,'') <> ''
   AND languages::text[] && ARRAY['fr','multi','vostfr']::text[]
   AND ($3::boolean OR privacy IS DISTINCT FROM 'private')
   AND COALESCE(parsed_data->>'trash','false') <> 'true' AND COALESCE(parsed_data->>'adult','false') <> 'true'
 ORDER BY id LIMIT $4`
+	sfrPageSQL   = sfrSelectSQL + ` AND COALESCE(GREATEST(updated_at,created_at),0) >= $2` + sfrFiltersSQL
+	sfrTitlesSQL = sfrSelectSQL + ` AND tmdb_id = ANY($2::bigint[])` + sfrFiltersSQL
+)
 
-type pgxSFR struct{ conn *pgx.Conn }
+type pgxSFR struct {
+	conn           *pgx.Conn
+	cacheAvailable bool
+}
 
 func openPgxSFR(ctx context.Context, url string) (sfrReader, error) {
 	cfg, err := pgx.ParseConfig(url)
@@ -102,18 +133,29 @@ func openPgxSFR(ctx context.Context, url string) (sfrReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &pgxSFR{conn: conn}, nil
+	p := &pgxSFR{conn: conn}
+	// A deployment without this optional table remains searchable; no cache is assumed.
+	_ = conn.QueryRow(ctx, `SELECT COALESCE(has_table_privilege(to_regclass('public.debrid_cache'), 'SELECT'),false)`).Scan(&p.cacheAvailable)
+	return p, nil
 }
 
 func (p *pgxSFR) close() { _ = p.conn.Close(context.Background()) }
 
 func (p *pgxSFR) page(ctx context.Context, after string, since int64, private bool, limit int) ([]sfrRow, error) {
-	rows, err := p.conn.Query(ctx, sfrPageSQL, after, since, private, limit)
+	return p.read(ctx, limit, sfrPageSQL, after, since, private, limit)
+}
+
+func (p *pgxSFR) titles(ctx context.Context, ids []int64, after string, private bool, limit int) ([]sfrRow, error) {
+	return p.read(ctx, limit, sfrTitlesSQL, after, ids, private, limit)
+}
+
+func (p *pgxSFR) read(ctx context.Context, limit int, query string, args ...any) ([]sfrRow, error) {
+	rows, err := p.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]sfrRow, 0, limit)
+	out := make([]sfrRow, 0, min(limit, sfrPage))
 	for rows.Next() {
 		var r sfrRow
 		if err := rows.Scan(&r.ID, &r.Name, &r.Size, &r.Hash, &r.TMDB, &r.Media, &r.Stamp, &r.Seasons, &r.Episodes); err != nil {
@@ -121,7 +163,12 @@ func (p *pgxSFR) page(ctx context.Context, after string, since int64, private bo
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err == nil {
+		p.attachCache(ctx, out)
+	}
+	return out, err
 }
 
 // sfrFirstEpisode : une série est représentée par S01E01, un pack de la
@@ -142,7 +189,7 @@ func sfrFirstEpisode(seasons, episodes string) bool {
 
 func sfrSignature(s SFRSettings) string {
 	sum := sha256.Sum256([]byte(s.URL))
-	return strconv.FormatBool(s.Private) + "|" + hex.EncodeToString(sum[:8])
+	return "cache-proof-v2|" + strconv.FormatBool(s.Private) + "|" + hex.EncodeToString(sum[:8])
 }
 
 // État conservé dans pse_state, pour reprendre après un redémarrage.
@@ -217,13 +264,49 @@ func (s *Store) sfrKeys(ctx context.Context, typ core.MediaType, ids []int64) (m
 	return out, rows.Err()
 }
 
-// sfrMark évite à l'indexeur de chercher tout de suite un titre importé, sans
-// écraser un titre où il a déjà trouvé des releases.
-func (s *Store) sfrMark(ctx context.Context, key core.RatingKey, typ core.MediaType, found int, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO pse_index_titles(title_key,media_type,last_indexed,next_due,found,status) VALUES(?,?,?,?,?,'found')
-ON CONFLICT(title_key) DO UPDATE SET last_indexed=excluded.last_indexed,next_due=excluded.next_due,found=excluded.found,status='found' WHERE pse_index_titles.found=0`,
-		int64(key), string(typ), now.Unix(), now.Add(refreshFound).Unix(), found)
-	return err
+type sfrTitle struct {
+	Key  core.RatingKey
+	TMDB int64
+}
+
+// sfrUnchecked liste les titres sans release SFR à vérifier : ceux jamais
+// vérifiés d'abord, puis les plus anciennement vérifiés.
+func (s *Store) sfrUnchecked(ctx context.Context, before time.Time, limit int) ([]sfrTitle, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT c.key,c.tmdb_id FROM catalog_titles c
+LEFT JOIN pse_sfr_checked k ON k.title_key=c.key
+WHERE c.type IN ('movie','show') AND c.tmdb_id>0 AND (
+ (COALESCE(k.checked_at,0)<? AND NOT EXISTS (SELECT 1 FROM pse_releases r WHERE r.source_id=? AND r.title_key=c.key))
+ OR (COALESCE(k.checked_at,0)<? AND EXISTS (SELECT 1 FROM pse_releases r WHERE r.source_id=? AND r.title_key=c.key AND r.cache_until>0 AND r.cache_until<=?))
+)
+ORDER BY COALESCE(k.checked_at,0),c.popularity DESC,c.key LIMIT ?`, before.Unix(), SFRSourceID, s.now().Add(-sfrDefaultStep).Unix(), SFRSourceID, s.now().Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []sfrTitle
+	for rows.Next() {
+		var key, tmdb int64
+		if err := rows.Scan(&key, &tmdb); err != nil {
+			return nil, err
+		}
+		out = append(out, sfrTitle{core.RatingKey(key), tmdb})
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) sfrChecked(ctx context.Context, titles []sfrTitle, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, t := range titles {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pse_sfr_checked(title_key,checked_at) VALUES(?,?)
+ON CONFLICT(title_key) DO UPDATE SET checked_at=excluded.checked_at`, int64(t.Key), now.Unix()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // sfrSave enregistre une page et renvoie le nombre de releases gardées.
@@ -270,17 +353,17 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 		}
 		rel := core.Release{ID: strings.ToLower(r.Hash), Name: r.Name, Size: r.Size, Indexer: sfrName,
 			Protocol: core.ProtocolTorrent, Info: releaseparse.Parse(r.Name)}
-		batch = append(batch, FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, []string{"alldebrid"}))
+		saved := FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, r.Cached)
+		saved.CacheUntil = r.CacheUntil
+		batch = append(batch, saved)
 		found[target{key, typ}]++
 	}
 	if err := s.st.Save(ctx, batch, now); err != nil {
 		return 0, err
 	}
 	p := Playable()
-	for t, n := range found {
-		if err := s.st.sfrMark(ctx, t.key, t.typ, n, now); err != nil {
-			return 0, err
-		}
+	for t := range found {
+		// Imported metadata alone must not postpone a real source search.
 		if p.Enabled {
 			if err := s.st.RefreshPlayable(ctx, t.key, p); err != nil {
 				return 0, err
@@ -320,6 +403,9 @@ func (s *Service) sfrForget(ctx context.Context) error {
 			}
 		}
 	}
+	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM pse_sfr_checked`); err != nil {
+		return err
+	}
 	for _, k := range []string{"sfr_after", "sfr_since", "sfr_max", "sfr_cursor", "sfr_done"} {
 		if err := s.st.sfrSet(ctx, k, ""); err != nil {
 			return err
@@ -337,6 +423,81 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+// sfrIdle attend la fin des lectures en cours.
+func (s *Service) sfrIdle(ctx context.Context) error {
+	for s.d.Active != nil && s.d.Active() {
+		if !sleepCtx(ctx, sfrActiveWait) {
+			return ctx.Err()
+		}
+	}
+	return ctx.Err()
+}
+
+// sfrCatchUp cherche dans SFR les titres du catalogue sans release importée :
+// un titre arrivé après l'import de ses releases n'est plus revu par la
+// lecture incrémentale. Un lot n'est marqué vérifié qu'une fois lu en entier.
+func (s *Service) sfrCatchUp(ctx context.Context, reader sfrReader, cfg SFRSettings) error {
+	var spent time.Duration
+	checked, saved := 0, 0
+	for range sfrTitlesBatches {
+		if spent >= sfrTitlesBudget {
+			break
+		}
+		if err := s.sfrIdle(ctx); err != nil {
+			return err
+		}
+		now := s.d.Now()
+		list, err := s.st.sfrUnchecked(ctx, now.Add(-sfrTitlesRecheck), sfrTitlesBatch)
+		if err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			break
+		}
+		ids := make([]int64, len(list))
+		for i, t := range list {
+			ids[i] = t.TMDB
+		}
+		after := ""
+		for {
+			start := s.d.Now()
+			rows, err := reader.titles(ctx, ids, after, cfg.Private, sfrTitlesRows)
+			spent += s.d.Now().Sub(start)
+			if err != nil {
+				return fmt.Errorf("lecture impossible: %w", err)
+			}
+			for chunk := range slices.Chunk(rows, sfrPage) {
+				if err := s.sfrIdle(ctx); err != nil {
+					return err
+				}
+				n, err := s.sfrSave(ctx, chunk)
+				if err != nil {
+					return err
+				}
+				saved += n
+			}
+			if len(rows) < sfrTitlesRows {
+				break
+			}
+			after = rows[len(rows)-1].ID
+		}
+		if err := s.st.sfrChecked(ctx, list, now); err != nil {
+			return err
+		}
+		checked += len(list)
+		if len(list) < sfrTitlesBatch {
+			break
+		}
+		if !sleepCtx(ctx, sfrPause) {
+			return ctx.Err()
+		}
+	}
+	if checked > 0 {
+		s.d.Logger.Info("pse streamfusion catch-up done", "titles", checked, "releases", saved)
+	}
+	return nil
 }
 
 // sfrCycle lit ce qui a changé depuis le dernier passage. Le premier passage
@@ -391,10 +552,8 @@ func (s *Service) sfrCycle(ctx context.Context, cfg SFRSettings) error {
 	}
 	_ = s.st.sfrSetStatus(ctx, SFRStatus{State: "running", Releases: int(done)})
 	for {
-		for s.d.Active != nil && s.d.Active() {
-			if !sleepCtx(ctx, sfrActiveWait) {
-				return ctx.Err()
-			}
+		if err := s.sfrIdle(ctx); err != nil {
+			return err
 		}
 		rows, err := reader.page(ctx, after, since, cfg.Private, sfrPage)
 		if err != nil {
@@ -427,6 +586,19 @@ func (s *Service) sfrCycle(ctx context.Context, cfg SFRSettings) error {
 		}
 	}
 	now := s.d.Now()
+	for k, v := range map[string]string{"sfr_cursor": strconv.FormatInt(top, 10), "sfr_after": "", "sfr_since": "", "sfr_max": "", "sfr_done": "", "sfr_last": strconv.FormatInt(now.Unix(), 10)} {
+		if err := s.st.sfrSet(ctx, k, v); err != nil {
+			return err
+		}
+	}
+	// Un rattrapage en échec reprend au passage suivant, sans relancer tout
+	// l'import au rythme des nouvelles tentatives.
+	if err := s.sfrCatchUp(ctx, reader, cfg); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		s.d.Logger.Warn("pse streamfusion catch-up failed", "err", err)
+	}
 	// Une release toujours présente dans SFR ne doit pas expirer entre deux
 	// passages incrémentaux.
 	if _, err := s.st.db.ExecContext(ctx, `UPDATE pse_releases SET last_seen=? WHERE source_id=?`, now.Unix(), SFRSourceID); err != nil {
@@ -437,11 +609,6 @@ func (s *Service) sfrCycle(ctx context.Context, cfg SFRSettings) error {
 		return err
 	}
 	st.State, st.Last = "ok", now.Unix()
-	for k, v := range map[string]string{"sfr_cursor": strconv.FormatInt(top, 10), "sfr_after": "", "sfr_since": "", "sfr_max": "", "sfr_done": "", "sfr_last": strconv.FormatInt(now.Unix(), 10)} {
-		if err := s.st.sfrSet(ctx, k, v); err != nil {
-			return err
-		}
-	}
 	s.d.Logger.Info("pse streamfusion import done", "releases", st.Releases, "titles", st.Titles)
 	return s.st.sfrSetStatus(ctx, st)
 }

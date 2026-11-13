@@ -1,5 +1,6 @@
+import { L } from "../../pse/Listening";
 import { Badge, EmptyState, Input, PagedTable, Select } from "@braedonsaunders/appkit-ui";
-import { CheckCircle2, Clock, History as HistoryIcon, PlayCircle, Users } from "lucide-react";
+import { CheckCircle2, Clock, History as HistoryIcon, PlayCircle, Headphones } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
@@ -76,6 +77,7 @@ export function ViewingFilters({
 }
 
 function statusCell(p: Play) {
+  if (p.music) return <Badge variant="secondary">{L("Écoute déclarée", "Reported listen")}</Badge>;
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-1">
@@ -99,7 +101,9 @@ export function PlayHistory({
   summary,
   error,
   onRetry,
+  musicTotal,
 }: {
+  musicTotal?: number;
   history: Play[] | undefined;
   summary: Summary | undefined;
   error: unknown;
@@ -117,7 +121,28 @@ export function PlayHistory({
       },
       { preventScrollReset: true },
     );
-  const drawer = <PlayDrawer id={playId} onClose={() => openPlay(null)} />;
+  const musicPlay = history?.find((p) => p.id === playId && p.music);
+  const drawer = playId?.startsWith("music:") ? (
+    <Drawer open onClose={() => openPlay(null)} title={musicPlay?.title || L("Écoute", "Listen")}>
+      {musicPlay ? (
+        <dl className="divide-y divide-border">
+          <Detail label={L("Artiste", "Artist")}>{musicPlay.music?.artist || DASH}</Detail>
+          <Detail label={L("Album", "Album")}>{musicPlay.music?.album || DASH}</Detail>
+          <Detail label={t("Viewer")}>{musicPlay.username}</Detail>
+          <Detail label={t("Started")}>{formatDateTime(new Date(musicPlay.started * 1000))}</Detail>
+          <Detail label={L("Durée du morceau", "Track length")}>
+            {formatSeconds((musicPlay.music?.duration || 0) * 1000)}
+          </Detail>
+        </dl>
+      ) : (
+        <p>
+          {L("Écoute absente de la sélection actuelle.", "Listen not in the current selection.")}
+        </p>
+      )}
+    </Drawer>
+  ) : (
+    <PlayDrawer id={playId} onClose={() => openPlay(null)} />
+  );
   if (error && !history)
     return (
       <>
@@ -130,17 +155,17 @@ export function PlayHistory({
       <KpiRow>
         <Kpi
           label={t("Plays")}
-          value={summary ? formatNumber(summary.plays, 0) : DASH}
+          value={summary ? formatNumber(summary.plays + (musicTotal ?? 0), 0) : DASH}
           icon={<PlayCircle size={18} />}
         />
         <Kpi
-          label={t("Viewers")}
-          value={summary ? formatNumber(summary.users.length, 0) : DASH}
-          icon={<Users size={18} />}
+          label={L("Écoutes musicales", "Music listens")}
+          value={musicTotal != null ? formatNumber(musicTotal, 0) : DASH}
+          icon={<Headphones size={18} />}
           tone="info"
         />
         <Kpi
-          label={t("Average session")}
+          label={L("Session vidéo moyenne", "Average video session")}
           value={
             summary && summary.plays
               ? t("{minutes} min", { minutes: fixed(summary.watchedMs / summary.plays / 60000, 0) })
@@ -150,7 +175,7 @@ export function PlayHistory({
           tone="info"
         />
         <Kpi
-          label={t("Completion rate")}
+          label={L("Complétion vidéo", "Video completion")}
           value={summary && summary.plays ? formatPercent(summary.completed / summary.plays) : DASH}
           icon={<CheckCircle2 size={18} />}
           tone="success"
@@ -174,11 +199,24 @@ export function PlayHistory({
             {
               key: "title",
               header: t("Title / viewer"),
-              search: (p) => p.title + " " + p.username,
+              search: (p) =>
+                p.title +
+                " " +
+                p.username +
+                " " +
+                (p.music ? p.music.artist + " " + p.music.album : ""),
               sortValue: (p) => p.title,
               cell: (p) => (
                 <>
-                  <p className="font-medium text-fg">{p.title}</p>
+                  <p className="font-medium text-fg">
+                    {p.title}{" "}
+                    {p.music && <Badge variant="secondary">{L("Musique", "Music")}</Badge>}
+                  </p>
+                  {p.music && (
+                    <p className="text-xs text-fg-muted">
+                      {[p.music.artist, p.music.album].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
                   <p className="text-xs text-fg-muted">{p.username || t("Unknown viewer")}</p>
                 </>
               ),
@@ -195,17 +233,27 @@ export function PlayHistory({
               search: (p) => (p.device || p.platform) + " " + p.decision,
               cell: (p) => (
                 <>
-                  {p.device || p.platform || t("Unknown")}
+                  {p.music ? DASH : p.device || p.platform || t("Unknown")}
                   <span className="block text-xs text-fg-muted">{p.decision}</span>
                 </>
               ),
             },
             {
               key: "duration",
-              header: t("Viewing time"),
+              header: L("Durée", "Duration"),
               align: "right",
-              sortValue: (p) => p.watchedMs,
-              cell: (p) => t("{minutes} min", { minutes: fixed(p.watchedMs / 60000, 0) }),
+              sortValue: (p) => (p.music ? p.music.duration * 1000 : p.watchedMs),
+              cell: (p) =>
+                p.music ? (
+                  <>
+                    {formatSeconds(p.music.duration * 1000)}
+                    <span className="block text-xs text-fg-muted">
+                      {L("Durée du morceau", "Track length")}
+                    </span>
+                  </>
+                ) : (
+                  t("{minutes} min", { minutes: fixed(p.watchedMs / 60000, 0) })
+                ),
             },
             { key: "status", header: t("Status"), cell: statusCell },
           ]}
@@ -285,7 +333,8 @@ function PlayDrawer({ id, onClose }: { id: string | null; onClose: () => void })
                 {p.hdr ? <Badge variant="secondary">HDR</Badge> : null}
               </div>
               <p className="text-sm text-fg-muted">
-                {p.username || t("Unknown viewer")} · {p.device || p.platform || t("Unknown")}
+                {p.username || t("Unknown viewer")} ·{" "}
+                {p.music ? DASH : p.device || p.platform || t("Unknown")}
               </p>
             </div>
           </div>

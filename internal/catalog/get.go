@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
@@ -110,6 +111,9 @@ func (c *Catalog) visibleTitle(t *core.Title) bool {
 // network refresh. Missing or hidden records fail closed; callers may use
 // the normal catalogue path separately to populate the local mirror.
 func (c *Catalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if localmedia.IsKey(key) && !localmedia.Known(ctx, c.db, key) {
+		return nil, core.ErrNotFound
+	}
 	stored, err := c.loadByKey(ctx, key)
 	if err != nil {
 		return nil, err
@@ -122,6 +126,9 @@ func (c *Catalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Titl
 }
 
 func (c *Catalog) StoredTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if localmedia.IsKey(key) && !localmedia.Known(ctx, c.db, key) {
+		return nil, core.ErrNotFound
+	}
 	st, err := c.loadByKey(ctx, key)
 	if err != nil {
 		if errors.Is(err, core.ErrNotFound) {
@@ -145,6 +152,11 @@ func (c *Catalog) RefreshStoredTitle(ctx context.Context, key core.RatingKey) (*
 
 func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
 	switch key.Kind() {
+	case core.KindLocal:
+		if !localmedia.Known(ctx, c.db, key) {
+			return nil, core.ErrNotFound
+		}
+		return c.StoredTitle(ctx, key)
 	case core.KindMovie:
 		return c.getMovie(ctx, key.TMDB())
 	case core.KindShow:

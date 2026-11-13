@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"hash/fnv"
 	"strconv"
 	"strings"
@@ -270,7 +271,16 @@ func (p *Playlists) List(ctx context.Context, viewer int64) ([]Playlist, error) 
 		_ = json.Unmarshal([]byte(raw), &pl.Tracks)
 		out = append(out, pl)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	allowed := p.allowedOwnedTracks(ctx, viewer)
+	for i := range out {
+		out[i].Tracks = filterOwnedPlaylist(out[i].Tracks, allowed)
+	}
+	return out, nil
 }
 
 // Get renvoie une playlist d'un spectateur.
@@ -286,6 +296,7 @@ func (p *Playlists) Get(ctx context.Context, viewer, id int64) (Playlist, bool, 
 		return Playlist{}, false, err
 	}
 	_ = json.Unmarshal([]byte(raw), &pl.Tracks)
+	pl.Tracks = filterOwnedPlaylist(pl.Tracks, p.allowedOwnedTracks(ctx, viewer))
 	return pl, true, nil
 }
 
@@ -316,4 +327,29 @@ func (p *Playlists) saveMatch(ctx context.Context, key string, t *Track) {
 	}
 	_, _ = p.DB.ExecContext(ctx, `INSERT INTO pse_music_matches(key,track,checked_at) VALUES(?,?,?)
 ON CONFLICT(key) DO UPDATE SET track=excluded.track, checked_at=excluded.checked_at`, key, raw, p.now().Unix())
+}
+
+func (p *Playlists) allowedOwnedTracks(ctx context.Context, viewer int64) map[int64]bool {
+	out := map[int64]bool{}
+	rows, err := p.DB.QueryContext(ctx, "SELECT item_id FROM pse_music_owned WHERE kind='track' AND "+mediaaccess.Predicate("provider", viewer))
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			out[id] = true
+		}
+	}
+	return out
+}
+func filterOwnedPlaylist(tt []Track, allowed map[int64]bool) []Track {
+	out := make([]Track, 0, len(tt))
+	for _, t := range tt {
+		if !ownedID(t.ID) || allowed[t.ID] {
+			out = append(out, t)
+		}
+	}
+	return out
 }

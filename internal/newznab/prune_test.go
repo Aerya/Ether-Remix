@@ -22,7 +22,7 @@ func TestManagerPruneDropsOldBudgetDays(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO newznab_cache VALUES ('old','a','[]',?), ('new','a','[]',?)`, now.Add(-time.Minute).Unix(), now.Add(time.Hour).Unix()); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO newznab_cache VALUES ('old','a','[]',?), ('new','a','[]',?)`, now.Add(-staleSearchGrace-time.Minute).Unix(), now.Add(time.Hour).Unix()); err != nil {
 		t.Fatal(err)
 	}
 	n, err := m.Prune(ctx)

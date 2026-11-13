@@ -74,6 +74,7 @@ function backend(cluster = false) {
       else if (url.includes("/extend/registry")) v = { version: 1, descriptors: notifyDescriptors };
       else if (url.includes("/stats/summary")) v = emptySummary;
       else if (url.includes("/stats/history")) v = [];
+      else if (url.includes("/pse/music/history")) v = { plays: [], total: 0 };
       else if (url.endsWith("/users"))
         v = {
           users: [

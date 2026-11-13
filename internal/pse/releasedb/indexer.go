@@ -155,6 +155,8 @@ func (s *Service) Start() {
 		ctx, cancel := context.WithCancel(context.Background())
 		s.sfrStop = cancel
 		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.watchSFRCache(ctx) }()
+		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			s.runSFR(ctx, cfg)
@@ -338,6 +340,9 @@ func (s *Service) next(ctx context.Context) (core.Title, error) {
 			}
 			t := s.queue[typ][0]
 			s.queue[typ] = s.queue[typ][1:]
+			if t.Key.Kind() == core.KindLocal {
+				continue
+			}
 			due, err := s.st.dueAt(ctx, t.Key)
 			if err != nil {
 				return core.Title{}, err
@@ -353,9 +358,12 @@ func (s *Service) next(ctx context.Context) (core.Title, error) {
 // nextPriority renvoie le prochain titre prioritaire à échéance. La liste
 // est relue au plus toutes les 30 minutes.
 func (s *Service) nextPriority(ctx context.Context, typ core.MediaType, now time.Time) (core.Title, bool, error) {
-	if len(s.urgent[typ]) > 0 {
+	for len(s.urgent[typ]) > 0 {
 		t := s.urgent[typ][0]
 		s.urgent[typ] = s.urgent[typ][1:]
+		if t.Key.Kind() == core.KindLocal {
+			continue
+		}
 		return t, true, nil
 	}
 	if s.d.Priority == nil {
@@ -380,6 +388,9 @@ func (s *Service) nextPriority(ctx context.Context, typ core.MediaType, now time
 	for len(s.prio[typ]) > 0 {
 		t := s.prio[typ][0]
 		s.prio[typ] = s.prio[typ][1:]
+		if t.Key.Kind() == core.KindLocal {
+			continue
+		}
 		due, err := s.st.dueFor(ctx, t.Key, s.levels[t.Key])
 		if err != nil {
 			return core.Title{}, false, err
@@ -416,6 +427,10 @@ func (s *Service) fill(ctx context.Context, typ core.MediaType) error {
 // IndexTitle interroge chaque source pour un titre et enregistre ce qui
 // est trouvé.
 func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source) error {
+	// Local files, including personal videos, must never be sent to external indexers.
+	if t.Key.Kind() == core.KindLocal {
+		return nil
+	}
 	// A recent SeerrCatalog availability replaces this duplicate catalogue check.
 	if seerrcatalog.Trusted(ctx, s.st.db, t.Key) {
 		return nil

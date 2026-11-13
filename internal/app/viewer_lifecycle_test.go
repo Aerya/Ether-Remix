@@ -39,6 +39,8 @@ func TestViewerMergeAndPurgeAcrossComponents(t *testing.T) {
 	if err := users.RefreshViewers(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Music application secrets are revoked for the merged identity.
+	exec(`INSERT INTO pse_music_access(viewer_id,secret) VALUES(?, 'source-secret'),(?, 'target-secret')`, src, dst)
 	// Watch state: both have key 10 (target wins), only source has 11.
 	exec(`INSERT INTO state_watch(user_id,rating_key,view_offset_ns) VALUES(?,10,200),(?,10,100),(?,11,110)`, dst, src, src)
 	// History unions: 2 source rows + 1 target row.
@@ -68,6 +70,12 @@ func TestViewerMergeAndPurgeAcrossComponents(t *testing.T) {
 			t.Fatal(err)
 		}
 		return n
+	}
+	if n := count(`SELECT COUNT(*) FROM pse_music_access WHERE viewer_id=?`, src); n != 0 {
+		t.Fatal("merged music access survived")
+	}
+	if n := count(`SELECT COUNT(*) FROM pse_music_access WHERE viewer_id=?`, dst); n != 1 {
+		t.Fatal("target music access lost")
 	}
 	var offset int64
 	if err := db.QueryRowContext(ctx, `SELECT view_offset_ns FROM state_watch WHERE user_id=? AND rating_key=10`, dst).Scan(&offset); err != nil || offset != 200 {
@@ -101,7 +109,8 @@ func TestViewerMergeAndPurgeAcrossComponents(t *testing.T) {
 	}
 	// Nothing anywhere still belongs to the source.
 	left := map[string]string{
-		"state_watch": "user_id", "state_history": "user_id", "state_playlists": "user_id",
+		"pse_music_access": "viewer_id",
+		"state_watch":      "user_id", "state_history": "user_id", "state_playlists": "user_id",
 		"stats_plays": "user_id", "personalize_plays": "user_id", "playback_resume": "user_id",
 		"watchlist_items": "user_id", "favorites_items": "viewer_id", "trackprefs_rules": "user_id",
 		"identity_links": "viewer_id", "identity_grants": "viewer_id", "collections_specs": "owner_user_id",

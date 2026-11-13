@@ -34,6 +34,9 @@ func (s *Service) Handler() http.Handler {
 		return map[string]any{"scopes": c, "jobs": jobs}
 	}
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) { reply(w, 200, view()) })
+	vostfrGet, vostfrPut := s.vostfrHandler(reply)
+	mux.HandleFunc("GET /vostfr", vostfrGet)
+	mux.HandleFunc("PUT /vostfr", vostfrPut)
 	mux.HandleFunc("PUT /", func(w http.ResponseWriter, r *http.Request) {
 		var c Scopes
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&c) != nil || len(c.Rules) > 64 {

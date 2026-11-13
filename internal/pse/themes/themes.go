@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"sort"
 	"strings"
 	"sync"
@@ -103,13 +104,14 @@ type Service struct {
 	db   *sql.DB
 	cols Collections
 
-	mu     sync.RWMutex
-	libs   []Library
-	free   []string                  // collections exemptées du filtre de langue
-	titles map[string]string         // nom des collections
-	types  map[string]string         // type des collections (movie, show, mixed)
-	keys   map[string]core.RatingKey // clé Plex des collections
-	hooks  PriorityHooks
+	mu      sync.RWMutex
+	libs    []Library
+	free    []string                  // collections exemptées du filtre de langue
+	titles  map[string]string         // nom des collections
+	types   map[string]string         // type des collections (movie, show, mixed)
+	keys    map[string]core.RatingKey // clé Plex des collections
+	hooks   PriorityHooks
+	private map[string]string
 }
 
 // New charge les bibliothèques enregistrées.
@@ -145,11 +147,15 @@ func (s *Service) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	private := map[string]string{}
 	titles, types, keys := map[string]string{}, map[string]string{}, map[string]core.RatingKey{}
 	if s.cols != nil {
 		if specs, err := s.cols.ListSpecs(ctx); err == nil {
 			for _, sp := range specs {
 				titles[sp.ID], types[sp.ID] = sp.Name, sp.MediaType
+				if strings.HasPrefix(sp.TemplateID, "remix-local-") {
+					private[sp.ID] = "local:" + strings.TrimPrefix(sp.TemplateID, "remix-local-")
+				}
 				if k, err := core.ParseRatingKey(sp.RatingKey); err == nil {
 					keys[sp.ID] = k
 				}
@@ -158,6 +164,7 @@ func (s *Service) Reload(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	s.libs, s.free, s.titles, s.types, s.keys = libs, free, titles, types, keys
+	s.private = private
 	s.mu.Unlock()
 	return nil
 }
@@ -205,6 +212,25 @@ func (s *Service) Themes() []frontend.PSETheme {
 // du type (ou mixtes).
 func (s *Service) theme(l Library, section int, title string, typ core.MediaType, filter bool) frontend.PSETheme {
 	th := frontend.PSETheme{Section: section, Title: title, Type: typ}
+	sources := []string{}
+	for _, id := range l.Collections {
+		if p := s.private[id]; p != "" {
+			sources = append(sources, p)
+		}
+	}
+	if len(sources) > 0 {
+		th.VisibleTo = func(u *core.User) bool {
+			if u == nil {
+				return false
+			}
+			for _, p := range sources {
+				if !mediaaccess.Allowed(context.Background(), s.db, p, u.ID) {
+					return false
+				}
+			}
+			return true
+		}
+	}
 	for _, c := range l.Collections {
 		if ct := s.types[c]; filter && ct != "" && ct != "mixed" && ct != string(typ) {
 			continue

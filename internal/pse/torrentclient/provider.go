@@ -110,6 +110,9 @@ func (p *Provider) CheckCached(ctx context.Context, hashes []string) (map[string
 // client ne cache pas un torrent présent sur un autre.
 func (p *Provider) find(ctx context.Context, hash string) (*Slot, *Torrent, error) {
 	var firstErr error
+	var pendingSlot *Slot
+	var pendingTorrent *Torrent
+	answered := false
 	for _, s := range p.Slots {
 		t, err := s.Client.Get(ctx, hash)
 		if err != nil {
@@ -118,9 +121,20 @@ func (p *Provider) find(ctx context.Context, hash string) (*Slot, *Torrent, erro
 			}
 			continue
 		}
-		if t != nil {
+		answered = true
+		if t != nil && t.Done {
 			return s, t, nil
 		}
+		if t != nil && pendingTorrent == nil {
+			pendingSlot, pendingTorrent = s, t
+		}
+	}
+	if pendingTorrent != nil {
+		return pendingSlot, pendingTorrent, nil
+	}
+	// Un client indisponible ne bloque pas les ajouts sur les clients sains.
+	if answered {
+		return nil, nil, nil
 	}
 	return nil, nil, firstErr
 }
@@ -194,7 +208,7 @@ func (p *Provider) Acquire(ctx context.Context, req debrid.AcquireRequest) (*deb
 
 // AcquireMusic est Acquire pour un album (un seul ajout à la fois).
 func (p *Provider) AcquireMusic(ctx context.Context, req debrid.AcquireRequest, download bool) (*debrid.Acquired, error) {
-	req.CachedOnly = !download
+	req.CachedOnly = req.CachedOnly || !download
 	return p.acquire(ctx, req, true)
 }
 
@@ -211,7 +225,7 @@ func (p *Provider) acquire(ctx context.Context, req debrid.AcquireRequest, music
 		return nil, p.wrap(err)
 	}
 	if t == nil {
-		if req.CachedOnly || !p.Settings.Download || (music && !p.Settings.Music) || req.Magnet == "" {
+		if req.CachedOnly || core.IsBackgroundCheck(ctx) || !p.Settings.Download || (music && !p.Settings.Music) || req.Magnet == "" {
 			return nil, core.ErrNotCached
 		}
 		return nil, p.add(ctx, hash, req.Magnet, music)

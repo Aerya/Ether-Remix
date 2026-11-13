@@ -161,8 +161,8 @@ type ListOptions struct {
 
 // List renvoie les entrées d'un type pour un utilisateur.
 func (l *Library) List(ctx context.Context, viewer int64, kind string, o ListOptions) ([]Item, error) {
-	q := `SELECT kind,item_id,data,added_at,starred_at,play_count,played_at FROM pse_music_items WHERE viewer_id=? AND kind=?`
-	args := []any{viewer, kind}
+	q := `SELECT kind,item_id,data,added_at,starred_at,play_count,played_at FROM ` + libraryItemsSQL(viewer) + ` items WHERE viewer_id=? AND kind=?`
+	args := []any{viewer, viewer, viewer, kind}
 	if o.Starred {
 		q += ` AND starred_at>0`
 	}
@@ -208,6 +208,9 @@ func (l *Library) List(ctx context.Context, viewer int64, kind string, o ListOpt
 
 // Get renvoie une entrée, ou ok=false si elle n'est pas dans la bibliothèque.
 func (l *Library) Get(ctx context.Context, viewer int64, kind string, id int64) (Item, bool, error) {
+	if !ownedAllowed(ctx, l.db, viewer, kind, id) {
+		return Item{}, false, nil
+	}
 	var it Item
 	var data string
 	err := l.db.QueryRowContext(ctx, `SELECT kind,item_id,data,added_at,starred_at,play_count,played_at FROM pse_music_items WHERE viewer_id=? AND kind=? AND item_id=?`, viewer, kind, id).
@@ -225,7 +228,7 @@ func (l *Library) Get(ctx context.Context, viewer int64, kind string, id int64) 
 // Count renvoie le nombre d'entrées d'un type.
 func (l *Library) Count(ctx context.Context, viewer int64, kind string) (int, error) {
 	var n int
-	err := l.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pse_music_items WHERE viewer_id=? AND kind=?`, viewer, kind).Scan(&n)
+	err := l.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+libraryItemsSQL(viewer)+` items WHERE viewer_id=? AND kind=?`, viewer, viewer, viewer, kind).Scan(&n)
 	return n, err
 }
 

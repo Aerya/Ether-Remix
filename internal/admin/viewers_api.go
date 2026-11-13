@@ -62,6 +62,7 @@ func (h *Handler) personalizationRoutes(api func(pattern string, fn http.Handler
 	api("GET /api/viewers/{id}/catalog-rules", h.handleViewerCatalogRules)
 	api("PUT /api/viewers/{id}/catalog-rules", h.handleViewerCatalogRules)
 	api("GET /api/viewers/{id}", h.handleViewer)
+	api("PUT /api/viewers/{id}/display-name", h.handleViewerDisplayName)
 	api("GET /api/viewers/{id}/taste", h.handleViewerTaste)
 	api("PUT /api/viewers/{id}/taste/overrides", h.handleViewerOverrides)
 	api("GET /api/viewers/{id}/home", h.handleViewerHome)
@@ -140,6 +141,7 @@ type viewer struct {
 	PlexID          int64           `json:"plexId"`
 	Username        string          `json:"username"`
 	Title           string          `json:"title"`
+	CustomName      string          `json:"customName,omitempty"`
 	Thumb           string          `json:"thumb,omitempty"`
 	IsOwner         bool            `json:"isOwner"`
 	AccessStatus    string          `json:"accessStatus"`
@@ -150,7 +152,7 @@ type viewer struct {
 }
 
 func toViewer(u ViewerRecord, st core.ViewerStats) viewer {
-	v := viewer{ID: u.ID, PlexID: u.PlexID, Username: u.Username, Title: u.Title, Thumb: u.Thumb, IsOwner: u.IsOwner,
+	v := viewer{ID: u.ID, PlexID: u.PlexID, Username: u.Username, Title: u.Title, CustomName: u.CustomName, Thumb: u.Thumb, IsOwner: u.IsOwner,
 		AccessStatus: u.accessStatus(), Plays30d: st.Plays30d, HoursWatched30d: st.HoursWatched30d, Lifecycle: lifecycleOf(u)}
 	if v.Title == "" {
 		v.Title = u.Username

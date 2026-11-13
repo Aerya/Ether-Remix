@@ -51,7 +51,7 @@ func (a *App) clusterConsoleHandler() http.Handler {
 							}
 							if assignments[i].Playback.Viewer == "" && a.users != nil && assignments[i].ViewerID > 0 {
 								if viewer, err := a.users.User(ctx, assignments[i].ViewerID); err == nil && viewer != nil {
-									assignments[i].Playback.Viewer = viewer.Username
+									assignments[i].Playback.Viewer = viewer.ActivityName()
 								}
 							}
 						}

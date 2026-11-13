@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/store"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -18,6 +19,9 @@ func (c *Catalog) visibilityFilter() *libraryfilter.Filter {
 
 // visibleFor is visibleWith for ctx's viewer, failing closed for a strict one.
 func (c *Catalog) visibleFor(ctx context.Context, f *libraryfilter.Filter, t *core.Title) bool {
+	if t != nil && localmedia.IsKey(t.Key) && !localmedia.Known(ctx, c.db, t.Key) {
+		return false
+	}
 	id := core.CatalogViewerID(ctx)
 	if t != nil && !c.hasCustomViewerRules(id) && c.isTitleOrShowOwnerIncluded(t) {
 		return c.visibleWith(nil, t)
@@ -67,6 +71,15 @@ func (c *Catalog) visibleWith(f *libraryfilter.Filter, t *core.Title) bool {
 // An explicit search context (core.WithExplicitSearch) skips rules the owner
 // limited to browsing.
 func (c *Catalog) FilterVisibility(ctx context.Context, ts []core.Title) []core.Title {
+	if c.localMedia.Load() {
+		visible := make([]core.Title, 0, len(ts))
+		for _, t := range ts {
+			if !localmedia.IsKey(t.Key) || localmedia.Known(ctx, c.db, t.Key) {
+				visible = append(visible, t)
+			}
+		}
+		ts = visible
+	}
 	f := c.visibilityFor(ctx)
 	if f.Passive() && !(c.config().ReleaseMode == config.ModeDigital) {
 		return ts

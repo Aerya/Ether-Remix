@@ -61,8 +61,8 @@ Client principal (`PSE_TORRENT_…`) ; clients 2 et 3 dans leurs propres blocs (
 
 ## Plusieurs clients
 
-- Un torrent complet sur n'importe quel client se lit.
-- Un nouveau téléchargement part sur le premier client qui a la place et l'accepte : le principal, puis le 2, puis le 3.
+- Un torrent complet sur n'importe quel client se lit, même si une copie est encore en cours sur un client prioritaire.
+- Un nouveau téléchargement part sur le premier client qui a la place et l'accepte : le principal, puis le 2, puis le 3. Un client hors ligne ne bloque pas les autres.
 
 ## Place libre
 
@@ -91,3 +91,5 @@ Client principal (`PSE_TORRENT_…`) ; clients 2 et 3 dans leurs propres blocs (
 - Les magnets portent les trackers du `.torrent` d'origine : le client récupère les métadonnées auprès des pairs.
 - En mode cluster, seul le nœud qui voit le dossier de téléchargement peut lire ces fichiers.
 - Le plafond d'ajouts par jour est remis à zéro au redémarrage de Remix.
+
+Un album en cours de téléchargement est revérifié au prochain essai de lecture, après un délai minimal de 5 secondes. Les diagnostics musicaux ne lancent aucun téléchargement.

@@ -25,11 +25,12 @@ type Authenticator func(ctx context.Context, username, password string) (viewerI
 
 // Options configure le serveur Subsonic.
 type Options struct {
-	Source  Source // catalogue et flux (Deezer + Eclipse, ou HiFi API)
-	Library *Library
-	Auth    Authenticator
-	Quality string       // qualité demandée à la HiFi API (LOSSLESS par défaut)
-	Media   *http.Client // client des flux audio et des pochettes
+	Source    Source // catalogue et flux (Deezer + Eclipse, ou HiFi API)
+	Library   *Library
+	Auth      Authenticator
+	TokenAuth func(context.Context, string, string, string) (int64, error)
+	Quality   string       // qualité demandée à la HiFi API (LOSSLESS par défaut)
+	Media     *http.Client // client des flux audio et des pochettes
 	// Playlists : playlists importées de Deezer et Last.fm (facultatif).
 	Playlists *Playlists
 	Logger    *slog.Logger
@@ -37,11 +38,14 @@ type Options struct {
 
 // Server sert l'API Subsonic sous /rest/.
 type Server struct {
-	o      Options
-	auth   *authCache
-	clock  func() time.Time
-	cache  *memo // albums, artistes et titres (clients Jellyfin)
-	charts *memo // classements
+	nowMu       sync.Mutex
+	nowSequence uint64
+	nowPlaying  map[string]MusicSession
+	o           Options
+	auth        *authCache
+	clock       func() time.Time
+	cache       *memo // albums, artistes et titres (clients Jellyfin)
+	charts      *memo // classements
 	// discover : styles, classements par style, artistes proches, radios.
 	discover *memo
 	// recherches des frontaux Jellyfin et Plex
@@ -167,8 +171,24 @@ func (s *Server) routes() map[string]func(*call) {
 func (s *Server) authenticate(c *call) bool {
 	user, pass := c.param("u"), c.param("p")
 	if c.param("t") != "" || c.param("s") != "" {
-		c.fail(errTokenNoSupp, "Authentification par jeton non prise en charge : activez le mot de passe en clair (legacy) dans le client")
-		return false
+		if s.o.TokenAuth == nil {
+			c.fail(errTokenNoSupp, "Authentification par jeton indisponible")
+			return false
+		}
+		if user == "" || c.param("t") == "" || c.param("s") == "" {
+			c.fail(errMissingParam, "Paramètres u, t et s requis")
+			return false
+		}
+		viewer, err := s.auth.checkUncached(c.r.Context(), func(ctx context.Context, u, _ string) (int64, error) {
+			return s.o.TokenAuth(ctx, u, c.param("t"), c.param("s"))
+		}, user, "")
+		if err != nil {
+			c.fail(errWrongAuth, "Accès musical incorrect ou révoqué ; utilisez le mot de passe musical généré dans Remix")
+			return false
+		}
+		c.viewer, c.user = viewer, user
+		c.r = c.r.WithContext(withMusicViewer(c.r.Context(), viewer))
+		return true
 	}
 	if c.param("apiKey") != "" {
 		c.fail(42, "Clé d'API non prise en charge : utilisez identifiant et mot de passe")
@@ -196,6 +216,7 @@ func (s *Server) authenticate(c *call) bool {
 		return false
 	}
 	c.viewer, c.user = viewer, user
+	c.r = c.r.WithContext(withMusicViewer(c.r.Context(), viewer))
 	return true
 }
 
@@ -221,10 +242,18 @@ func newAuthCache() *authCache {
 }
 
 func (a *authCache) check(ctx context.Context, fn Authenticator, user, pass string) (int64, error) {
+	return a.checkMode(ctx, fn, user, pass, true)
+}
+
+func (a *authCache) checkUncached(ctx context.Context, fn Authenticator, user, pass string) (int64, error) {
+	return a.checkMode(ctx, fn, user, pass, false)
+}
+
+func (a *authCache) checkMode(ctx context.Context, fn Authenticator, user, pass string, cache bool) (int64, error) {
 	key := sha256.Sum256([]byte(user + "\x00" + pass))
 	now := a.now()
 	a.mu.Lock()
-	if e, ok := a.ok[key]; ok && now.Before(e.until) {
+	if e, ok := a.ok[key]; cache && ok && now.Before(e.until) {
 		a.mu.Unlock()
 		return e.viewer, nil
 	}
@@ -255,7 +284,9 @@ func (a *authCache) check(ctx context.Context, fn Authenticator, user, pass stri
 	if len(a.ok) > 512 {
 		a.ok = map[[32]byte]authEntry{}
 	}
-	a.ok[key] = authEntry{viewer: viewer, until: now.Add(10 * time.Minute)}
+	if cache {
+		a.ok[key] = authEntry{viewer: viewer, until: now.Add(10 * time.Minute)}
+	}
 	return viewer, nil
 }
 
@@ -332,7 +363,7 @@ func (s *Server) state(ctx context.Context, viewer int64, kind string, id int64)
 }
 
 func (s *Server) songEl(name string, t Track, st userState) *el {
-	mime, suffix := s.contentType()
+	mime, suffix := s.trackContentType(t)
 	e := node(name, "id", trackID(t.ID), "parent", albumIDOrEmpty(t.Album.ID), "isDir", false,
 		"title", t.Title, "album", t.Album.Title, "artist", t.Artist.Name)
 	e.opt("track", int64(t.Number)).opt("discNumber", int64(t.Volume)).opt("year", int64(t.Album.Year()))
@@ -896,7 +927,10 @@ func (s *Server) scrobble(c *call) {
 		return
 	}
 	if c.param("submission") == "false" {
-		c.ok(nil) // « en cours de lecture » : rien à enregistrer
+		if kind, id, ok := parseID(ids[0]); ok && kind == KindTrack {
+			s.observeMusic(c.r, c.viewer, "subsonic", id, "playing", nil, c.user)
+		}
+		c.ok(nil) // Observation uniquement : pas d’entrée dans l’historique.
 		return
 	}
 	ctx := c.r.Context()
@@ -969,6 +1003,17 @@ func (s *Server) relayAudio(w http.ResponseWriter, r *http.Request, id int64) er
 				ctx = WithSkippedStreams(ctx, st.URL)
 				continue
 			}
+			return nil
+		}
+		if st.Open != nil {
+			f, modified, err := st.Open()
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			w.Header().Set("Content-Type", st.Mime)
+			w.Header().Set("X-Accent-Audio-Source", st.Provider)
+			http.ServeContent(w, r, "audio", modified, f)
 			return nil
 		}
 		res, err := s.openAudio(ctx, r, st.URL)
@@ -1079,6 +1124,10 @@ func (s *Server) cover(c *call) {
 
 // relayImage relaie une pochette (kind 'c') ou une photo d'artiste ('p').
 func (s *Server) relayImage(w http.ResponseWriter, r *http.Request, kind byte, ref string, size int) {
+	if source, ok := s.o.Source.(*OwnedSource); ok && strings.HasPrefix(ref, "ib-") && !source.artAllowed(r.Context(), ref) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	if !imageRefRe.MatchString(ref) {
 		w.WriteHeader(http.StatusNotFound)
 		return

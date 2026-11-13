@@ -21,33 +21,76 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
   <img src="https://img.shields.io/badge/licence-GPL--3.0-green" alt="GPL-3.0">
 </p>
 
-## Fonctionnalités
+## Ether, en bref
+
+Ether est un serveur multimédia **à la demande**. Il présente tout le catalogue TMDB dans les applications que vous utilisez déjà, sans rien télécharger à l’avance. Quand vous lancez un titre, il choisit la meilleure release sur vos comptes debrid et vos fournisseurs Usenet, vérifie qu’elle fonctionne, puis la lit en flux. Pas de Sonarr, de Radarr, de client de téléchargement ni de montage à scanner. Il peut tourner à côté d’un Plex, Jellyfin ou Emby existant.
+
+Ether s’adapte à chaque application : c’est un serveur Plex pour les applications Plex, un serveur Jellyfin pour Infuse ou Swiftfin, et ainsi de suite. Chaque spectateur a son compte et son accueil personnalisé, et retrouve sa progression d’une application à l’autre. Les limites de flux et le contrôle parental s’appliquent partout.
+
+## Remix, en bref
+
+Ether-Remix est un fork d’Ether pensé pour un public francophone. Il garde tout le fonctionnement d’Ether et y ajoute un catalogue en français : l’accueil et les collections n’affichent que les titres disponibles en VF ou MULTi, ou lisibles selon vos critères. Une indexation en arrière-plan cherche les releases à l’avance (addons, indexeurs, SeerrCatalog, StreamFusion Reborn), pour qu’elles soient prêtes au moment de la lecture.
+
+Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent aussi vos bibliothèques : Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient.
+
+Côté **musique**, réunissez le catalogue Deezer, vos fichiers audio et vos comptes iBroadcast dans Plexamp, les clients Jellyfin ou les applications Subsonic. Les sources musicales gratuites et les comptes debrid complètent la lecture en streaming ; les playlists peuvent être parcourues, importées et gérées par utilisateur. Dossiers locaux et comptes iBroadcast sont privés par défaut, avec partage facultatif.
+
+Des bibliothèques et collections personnalisées, des sous-titres traduits avec SubMaker, des statistiques détaillées et une console en français complètent ces usages.
+
+## Applications compatibles
+
+| Accès | Applications |
+| --- | --- |
+| **Plex** | Applications officielles : Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, TV connectées (LG, Samsung, VIDAA), ordinateur et Web. Kodi via Plex for Kodi (PM4K). |
+| **Jellyfin** | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin pour Android TV, JellyCon (Kodi), Jellyfin pour Roku. |
+| **Emby** | Applications Emby (Android TV, iOS, Android, Roku, TV connectées) et Infuse. Emby for TV 2.x sur Apple TV n’est pas pris en charge. |
+| **Silo** | Apple TV, iOS, macOS, Android, Android TV. |
+| **Stremio** | Toutes les applications Stremio, via une extension personnelle. Une adresse HTTPS est nécessaire. |
+| **Fichiers (WebDAV)** | Infuse, VLC, Kodi, rclone. |
+| **M3U & XMLTV** | Channels DVR, TiviMate et lecteurs IPTV. |
+| **Xtream** | TiviMate, Televizo, IPTV Smarters… Désactivé par défaut. |
+| **DLNA** | TV et lecteurs du réseau local. |
+| **Musique** *(Remix)* | Plex et Plexamp, clients Jellyfin (Finamp…), applications Subsonic : Symfonium, Feishin, Supersonic, DSub… |
+
+Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
+
+## Fonctionnalités Remix
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
-- **Profils de qualité** : formats, codecs, résolutions, HDR/Dolby Vision, taille, langues et regex, globalement ou par bibliothèque/collection. Import des filtres compatibles AIOStreams depuis un export JSON, avec aperçu et modification avant enregistrement.
-- **Catalogue orienté français** : choisissez vos langues et variantes — VFF, VFQ, VFi, MULTi… — et vos exigences de disponibilité en cache.
-- **Catalogue « lisible uniquement »** : affichez les titres disposant d’un minimum de releases correspondant à vos critères. La recherche, les collections, la watchlist et la reprise de lecture restent accessibles.
+- **Profils de qualité** : formats, codecs, résolutions, HDR/Dolby Vision, taille, langues et regex, globalement ou par bibliothèque/collection. Mode profils ou critères simples, sans cumul ; formats détaillés, résolution inconnue, langue originale et cache debrid annoncé. Import AIOStreams par JSON ou manifest/source enregistrée avec le mot de passe de configuration, aperçu et modification avant enregistrement (variantes non reproduites).
+- **Catalogue orienté français** : choisissez vos langues et variantes — VFF, VFQ, VFi, MULTi… — et vos exigences de disponibilité en cache. Un film pas encore disponible en français n’apparaît ni sur l’accueil (Tendances comprises) ni dans les collections.
+- **Catalogue « lisible uniquement »** : affichez les titres disposant d’un minimum de releases correspondant à vos critères. La règle vaut aussi pour l’accueil et les collections ; la recherche, la watchlist, la reprise de lecture et les collections de sorties à venir restent complètes.
 - **Exceptions ciblées** : autorisez d’autres langues pour certaines collections ou bibliothèques, sans modifier vos préférences générales.
-- **VOSTFR à la demande** : ajoutez les titres souhaités ; chaque ajout lance une recherche prioritaire lorsque l’indexation est active.
+- **VOSTFR à la demande** : ajoutez les titres souhaités ; chaque ajout lance une recherche prioritaire lorsque l’indexation est active. En option, SubMaker prépare leurs sous-titres français, et chaque titre affiche l’état de ses sous-titres.
 - **Animés** : créez leurs bibliothèques et collections à partir de TMDB, avec vos préférences FR/MULTi et les addons Stremio de votre choix.
+
+### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Vos vidéos locales, films et vidéos personnelles
+
+- **Dossiers de l’hôte ou montages réseau** : exposez-les par des volumes Docker en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer vos fichiers.
+- **Rapprochement avec le catalogue** : recherche dans les fiches déjà présentes dans Remix, puis TMDB ; films et épisodes identifiés réutilisent leurs fiches. Sans correspondance fiable, les vidéos personnelles restent affichées telles quelles.
+- **Bibliothèques et collections par dossier**, privées par défaut ; partage facultatif avec certains spectateurs ou tous. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
 
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Des sources réunies et une recherche anticipée
 
+- **Console Remix** : réglages regroupés dans `/ether/remix`, blocs repliables fermés par défaut ; iBroadcast rejoint les fournisseurs musicaux et les informations Subsonic restent dans Contenus → Musique.
 - **Configuration commune à Ether et Remix** : addons Stremio, indexeurs, services Usenet, comptes debrid, sources musicales et IPTV réunis dans un même espace.
 - **Indexation en arrière-plan** : recherchez les releases via vos addons et indexeurs Prowlarr, Jackett ou NZBHydra2 avant le lancement d’une lecture.
+- **Panne temporaire d’un indexeur** : réutilisez ses résultats expirés depuis moins de 24 heures, sans prolonger leur validité ni contourner les vérifications de lecture. Les erreurs d’accès et les quotas restent respectés.
 - **Recherches maîtrisées** : budgets quotidiens par source, pause pendant la lecture, priorités par collection ou bibliothèque et recherche manuelle immédiate.
 - **Recherche depuis Plex ou Jellyfin** : les premiers résultats jamais cherchés ou restés sans release passent en priorité, selon leur délai de nouvelle tentative.
 - **Disponibilités SeerrCatalog** : importez les disponibilités confirmées et les sources récentes de [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), sans nouvelle recherche pour le catalogue « lisible uniquement ». La confirmation persiste jusqu’à suppression ; les sources de lecture périmées sont recherchées à nouveau si nécessaire.
 - **Recherches pour SeerrCatalog** : autorisez les recherches complémentaires dans les sources Remix, notamment Prowlarr, avec une clé dédiée. Recherche et partage des disponibilités sont deux fonctions indépendantes, regroupées dans les réglages SeerrCatalog.
 - **Client torrent en option** : envoyez les releases de Prowlarr ou Jackett à un à trois clients qBittorrent ou rTorrent/ruTorrent, avec ratio et durée de partage par client et par tracker, cross-seed et alerte de place libre. Le client peut être distant, mais Remix doit voir son dossier de téléchargement (même machine ou partage NFS/SMB) pour lire les fichiers. Désactivé par défaut ; les comptes debrid restent en cache uniquement. [Détails](docs/pse/TORRENT.fr.md)
+- **Base StreamFusion Reborn** : importez les releases françaises, MULTi ou VOSTFR et recherchez directement films, épisodes et packs dans votre base en lecture seule. Les preuves de cache debrid expirent ; la lecture revérifie la disponibilité et conserve le recours aux autres sources. Les titres ajoutés plus tard au catalogue sont aussi rattrapés. [Mise en place](docs/pse/STREAMFUSION.fr.md).
 
 ### ![](https://api.iconify.design/lucide/captions.svg?color=%2314b8a6&width=24&height=24) Sous-titres externes et traduction avec SubMaker
 
 - **Instance au choix** : utilisez [SubMaker](https://github.com/xtremexq/StremioSubMaker) [public](https://submaker.elfhosted.com/configure) ou auto-hébergé avec un manifeste personnel ; l’intégration est désactivée par défaut.
 - **Langues et périmètres** : choisissez les langues source/cible, anglais → français par défaut, et autorisez le traitement globalement ou par bibliothèque/collection.
 - **Préparation contrôlée** : recherche d’un SRT correspondant à la release, traduction si nécessaire, file d’attente, cache et budget journalier. Seuls les résultats complets et validés sont retenus ; les traductions doivent conserver les timecodes et le nombre de répliques.
-- **Lecture et SeerrCatalog** : ajoutez le SRT préparé aux pistes de la release correspondante et transmettez-le à SeerrCatalog par la recherche authentifiée. Une traduction en attente ne confirme pas la disponibilité ; une lecture déjà ouverte doit être relancée après préparation. [Configuration et limites](docs/pse/SUBMAKER.fr.md).
+- **Lecture et SeerrCatalog** : ajoutez le SRT préparé aux pistes de la release correspondante et transmettez-le à SeerrCatalog par la recherche authentifiée. Une traduction en attente ne confirme pas la disponibilité ; une lecture déjà ouverte doit être relancée après préparation.
+- **Release déjà sous-titrée en priorité** : à qualité, langue audio et score de formats égaux, la lecture choisit la release dont le SRT est déjà prêt plutôt qu’une autre ayant plus de seeders ou un fichier plus gros. [Configuration et limites](docs/pse/SUBMAKER.fr.md).
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Des bibliothèques et collections personnalisées
 
@@ -61,15 +104,20 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 
 - Parcourez le **catalogue Deezer public** depuis Plex/Plexamp, les clients Jellyfin ou une application Subsonic : Symfonium, Feishin, Supersonic, DSub…
 - Écoutez via **Audius, les addons Eclipse, DMM avec Real-Debrid ou vos comptes AllDebrid, Real-Debrid et TorBox**, selon les sources activées.
+- **Musique locale** : lisez vos fichiers dans leur format d’origine, avec artistes, albums et tags, depuis des dossiers de l’hôte ou des montages réseau exposés par des volumes Docker en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer les fichiers.
+- **iBroadcast** : chaque spectateur peut connecter plusieurs comptes par code OAuth et retrouver leurs bibliothèques. Accès en lecture seule, lecture MP3 128 kb/s ; import des playlists en option.
+- **Accès privés et partage** : dossiers musicaux et comptes iBroadcast sont privés par défaut, partageables avec certains spectateurs ou tous. Les sources autorisées apparaissent ensemble dans Musique. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
 - Définissez l’ordre des sources : lorsqu’une source échoue, Remix essaie les suivantes. Le mode HiFi API externe s’utilise seulement lorsqu’aucune autre source musicale n’est active.
-- Retrouvez vos **favoris et votre historique par utilisateur**, sans constituer une bibliothèque de fichiers musicaux locaux. La qualité disponible dépend des sources.
+- Retrouvez vos **favoris et votre historique par utilisateur**. La qualité disponible dépend des sources.
+- **Activité musicale** : lectures en cours signalées par Plex, Jellyfin/Emby et Subsonic ; historique chronologique commun aux vidéos et à la musique ; onglet **Écoute** avec tendances quotidiennes, horaires et classements par morceau, artiste, album et auditeur, filtrables par période et utilisateur.
 
-### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Vos playlists et de nouvelles découvertes
+#### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Vos playlists et de nouvelles découvertes
 
 - **Parcourez les playlists Deezer** et connectez votre compte Spotify pour retrouver vos playlists accessibles.
 - **Importez par lien** depuis Deezer, Spotify ou ListenBrainz, ou à partir d’un fichier CSV/XSPF.
 - Vérifiez l’aperçu, choisissez le spectateur destinataire et suivez les titres retrouvés ou manquants. Les imports créent des copies personnelles sans remplacer vos autres playlists.
 - Synchronisez les profils Deezer publics, Last.fm et ListenBrainz ; gérez vos playlists personnelles depuis les clients Subsonic.
+- **Playlists iBroadcast** : activez leur import pour chaque compte connecté ; ordre des titres et répétitions conservés, actualisation sans doublons, sans modification chez iBroadcast.
 - Explorez les **tops par pays, écoutes récentes, titres les plus écoutés et nouveautés des artistes suivis**. Genres, artistes similaires, radios et mix sont proposés selon le client.
 
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistiques et suivi
@@ -88,7 +136,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) La base Ether, enrichie par Remix
 
-- Conservation des fonctionnalités et clients compatibles d’Ether : **Plex, Jellyfin, Emby, Infuse, Swiftfin, Silo et Stremio**, avec ses sources vidéo debrid et Usenet.
+- **Nom affiché** : renommez un utilisateur dans la console pour les statistiques et l’activité, même avec un compte Plex. La connexion ne change pas.
 - Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs.
 - Images Docker pour **amd64 et arm64** et présentation des nouveautés dans la console.
 
@@ -97,7 +145,7 @@ Fork d’[Ether](https://github.com/braedonsaunders/ether), Ether-Remix ajoute u
 1. **Installer** `ghcr.io/aerya/ether-remix:latest` avec le [Compose fourni](docs/pse/GUIDE.fr.md#installation), via Dockge-Enhanced. L’image est publique, sans connexion à GHCR.
 2. **Ouvrir la console** sur `http://<hôte>:32400/ether/` et suivre l’assistant. Le port se règle avec `ETHER_PORT`.
 3. **Configurer les sources** debrid, Usenet, indexeurs et addons dans **Ether-Remix → Sources**, puis vos langues, contenus et bibliothèques dans les onglets correspondants.
-4. **Connecter vos clients**. Pour Subsonic, utiliser l’adresse du serveur, un compte local avec mot de passe et l’authentification **legacy** ; préférer HTTPS pour un accès distant.
+4. **Connecter vos clients**. Pour Arpeggi et les clients Subsonic à jeton, créer un accès dans **Contenus et bibliothèques → Musique → Clients musicaux** : adresse du serveur, identifiant et mot de passe musicaux dédiés, révocables par spectateur. Les comptes locaux restent utilisables en mode **legacy**. Utiliser HTTPS à distance.
 
 Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/config`, arrêtez l’ancien serveur et réutilisez ses volumes `/config` et `/cache`.
 
@@ -108,6 +156,7 @@ Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/c
 | Installation, réglages, sources musicales, playlists, Scrob et clients | [Guide de configuration](docs/pse/GUIDE.fr.md) |
 | Visibilité des titres, priorités et délais de recherche | [Catalogue et indexation](docs/pse/CATALOGUE.fr.md) |
 | Partage des disponibilités et recherches complémentaires | [Intégration SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) |
+| Import en lecture seule depuis une base StreamFusion Reborn | [StreamFusion Reborn](docs/pse/STREAMFUSION.fr.md) |
 | Instance publique ou auto-hébergée, langues et limites de traduction | [SubMaker](docs/pse/SUBMAKER.fr.md) |
 
 ## Origine et licence
