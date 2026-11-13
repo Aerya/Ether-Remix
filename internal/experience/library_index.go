@@ -79,7 +79,9 @@ func (s *Service) indexedLibraryPage(ctx context.Context, v *core.User, library 
 func (s *Service) browsePageEnd(ctx context.Context, v *core.User, q core.BrowseQuery) (core.Page, error) {
 	var key string
 	if s.cursors != nil && q.Limit > 0 && core.BrowseSeekable(q) {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%+v|%s|%v|%v", v.ID, q.Filter, q.Sort, q.Desc, q.NoTotal)))
+		cf := q.Filter
+		cf.MovieGateCutoff, cf.ShowGateCutoff, cf.EpisodeGateCutoff, cf.GateNow, cf.GateRev = cf.MovieGateCutoff/60, cf.ShowGateCutoff/60, cf.EpisodeGateCutoff/60, cf.GateNow/60, 0
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%+v|%s|%v|%v", v.ID, cf, q.Sort, q.Desc, q.NoTotal)))
 		key = "page|" + hex.EncodeToString(sum[:16]) + "|"
 		if after, ok := s.cursors.get(key + strconv.Itoa(q.Offset)); ok && q.Offset > 0 {
 			seek := q
@@ -186,9 +188,16 @@ func viewerBrowseFilter(filter core.Filter, v *core.User, ex LibraryPageExclusio
 		return filter, false, false
 	}
 	filter.ExcludeKeys = append(append([]core.RatingKey{}, filter.ExcludeKeys...), ex.Keys...)
-	filter.HiddenMovieGeneration = ex.Availability.HiddenMovieGeneration
-	filter.HiddenShowGeneration = ex.Availability.HiddenShowGeneration
-	filter.HiddenEpisodeGeneration = ex.Availability.HiddenEpisodeGeneration
+	filter.GatePolicy = ex.Availability.GatePolicy
+	filter.MovieGateCutoff = ex.Availability.MovieGateCutoff
+	filter.ShowGateCutoff = ex.Availability.ShowGateCutoff
+	filter.EpisodeGateCutoff = ex.Availability.EpisodeGateCutoff
+	filter.GateNow = ex.Availability.GateNow
+	filter.GateUpcomingMovies = ex.Availability.GateUpcomingMovies
+	filter.GateRev = ex.Availability.GateRev
+	filter.HiddenMovieSeq = ex.Availability.HiddenMovieSeq
+	filter.HiddenShowSeq = ex.Availability.HiddenShowSeq
+	filter.HiddenEpisodeSeq = ex.Availability.HiddenEpisodeSeq
 	filter.DigitalDiscovery = ex.Availability.DigitalDiscovery
 	filter.DigitalDateEvidence = ex.Availability.DigitalDateEvidence
 	filter.HomeReleaseOffsetDays = ex.Availability.HomeReleaseOffsetDays
@@ -259,9 +268,10 @@ func (s *Service) indexedPageHolds(ctx context.Context, v *core.User, items []co
 	}
 	// The played and favorite checks ran for the whole page above.
 	q.Watched, q.Favorite = nil, nil
+	vis := withoutSectionCheck(s.d.Visibility)
 	kept := items
 	if !availabilityInSQL {
-		kept = s.d.Visibility.Available(ctx, v, items)
+		kept = vis.Available(ctx, v, items)
 	}
 	have := make(map[core.RatingKey]bool, len(kept))
 	for _, title := range kept {
@@ -269,7 +279,7 @@ func (s *Service) indexedPageHolds(ctx context.Context, v *core.User, items []co
 	}
 	for i := range items {
 		title := items[i]
-		if !have[title.Key] || !s.d.Visibility.TitleAllowed(v, &title) || !s.d.Visibility.Playable(ctx, v, &title) {
+		if !have[title.Key] || !vis.TitleAllowed(v, &title) || !vis.Playable(ctx, v, &title) {
 			return false
 		}
 		ok, err := s.matchesUserQuery(ctx, v, title, q)

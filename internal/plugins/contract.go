@@ -17,7 +17,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/stremio"
+	"io"
 	"net/http"
 	"time"
 )
@@ -34,6 +36,9 @@ const (
 	KindNotificationChannel Kind = "notification_channel"
 	KindLiveTVSource        Kind = "livetv_source"
 	KindExtension           Kind = "extension"
+	// KindContent plugins declare media kinds; the owner meets each one
+	// as a Library (spec §2.1).
+	KindContent Kind = "content"
 )
 
 // Capability is one thing a plugin can do (SPEC §5.1.3).
@@ -56,6 +61,13 @@ const (
 	CapUI              Capability = "ui"
 	CapOnAirContent    Capability = "onair_content"
 	CapLiveTVPack      Capability = "livetv_pack"
+	// Content-kind capabilities (spec §2.1). Catalog provider, kind
+	// resolver and matcher need kind content; a frontend adapter may
+	// also be an extension over the built-in libraries.
+	CapCatalogProvider Capability = "catalog_provider"
+	CapKindResolver    Capability = "kind_resolver"
+	CapFrontendAdapter Capability = "frontend_adapter"
+	CapMatcher         Capability = "matcher"
 )
 
 // Reserved capabilities are known names a manifest may not claim in v1.
@@ -128,6 +140,10 @@ type EtherBlock struct {
 	Repo    string      `json:"repo,omitempty"`
 	Icon    string      `json:"icon,omitempty"`
 	Runtime RuntimeDecl `json:"runtime"`
+	// Sidecar tells the console how to run a remote plugin's program: a
+	// Docker image, a download+command pair, or neither (docs only). Only
+	// meaningful when Runtime.Kind is "remote".
+	Sidecar *SidecarDecl `json:"sidecar,omitempty"`
 	// Cluster is "leader" (default) or "every_node".
 	Cluster     string      `json:"cluster,omitempty"`
 	Health      HealthDecl  `json:"health,omitempty"`
@@ -164,6 +180,21 @@ type RuntimeDecl struct {
 	Module string `json:"module,omitempty"`
 }
 
+// SidecarDecl says how a remote plugin's program comes to be: a Docker image,
+// a download with a start command, or documentation only. Every field is
+// optional; an empty block is valid but the console shows only the pairing
+// code.
+type SidecarDecl struct {
+	// Docker is an image reference (registry/name:tag or @sha256).
+	Docker string `json:"docker,omitempty"`
+	// Download is an https URL to the program.
+	Download string `json:"download,omitempty"`
+	// Command starts the program after download (single line, <= 200 chars).
+	Command string `json:"command,omitempty"`
+	// Docs is an https URL with setup instructions.
+	Docs string `json:"docs,omitempty"`
+}
+
 // HealthDecl declares the health-check interval (minimum 15s).
 type HealthDecl struct {
 	Interval string `json:"interval,omitempty"`
@@ -183,7 +214,10 @@ type Permissions struct {
 	Viewers     ViewerPerms `json:"viewers,omitempty" yaml:"viewers,omitempty"`
 	Collections string      `json:"collections,omitempty" yaml:"collections,omitempty"` // ""|none|write
 	Folders     string      `json:"folders,omitempty" yaml:"folders,omitempty"`         // ""|none|read
-	Secrets     []string    `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+	// Sources lets a kind resolver ask Ether to find bytes through the
+	// owner's indexers and debrid accounts (spec §4.5).
+	Sources string   `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
+	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 }
 
 // ViewerPerms holds the three viewer permission levels.
@@ -219,6 +253,14 @@ type Contributes struct {
 	Pages          []PageMeta          `json:"pages,omitempty"`
 	Slots          []SlotMeta          `json:"slots,omitempty"`
 	Commands       []CommandMeta       `json:"commands,omitempty"`
+	// MediaKinds declares the content kinds this plugin serves; each entry
+	// that declares a library block becomes its own library (spec §2.1).
+	MediaKinds []MediaKindMeta `json:"mediaKinds,omitempty"`
+	// FrontendAdapters declares protocol surfaces this plugin serves
+	// through Ether's generic adapter frontend (spec §6.5).
+	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
+	// Setup declares guided setup steps for any plugin kind (§8).
+	Setup *SetupMeta `json:"setup,omitempty"`
 }
 
 // SourceMeta is mandatory for stream_source.
@@ -331,6 +373,141 @@ type CommandMeta struct {
 	Action string `json:"action"` // plugin action name
 }
 
+// MediaKindMeta declares one content kind (spec §2.1).
+type MediaKindMeta struct {
+	Key     string             `json:"key"` // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
+	Label   string             `json:"label"`
+	Library KindLibraryDecl    `json:"library,omitzero"`
+	Levels  []KindLevel        `json:"levels"`           // 1..5, first is the root
+	Fields  []KindField        `json:"fields,omitempty"` //
+	Art     []KindArt          `json:"art,omitempty"`    // roles beyond poster/backdrop/thumb/logo
+	Present core.Presentations `json:"present,omitzero"`
+	Browse  KindBrowseDecl     `json:"browse"`
+	Sync    KindSyncDecl       `json:"sync"`
+	Cache   KindCacheDecl      `json:"cache,omitempty"`
+	Match   KindMatchDecl      `json:"match,omitempty"`
+}
+
+// KindLibraryDecl is the optional library created for a kind on install.
+type KindLibraryDecl struct {
+	Name string `json:"name"` // default name; the owner may rename it after
+	Icon string `json:"icon,omitempty"`
+}
+
+// KindLevel is one hierarchy level of a kind.
+type KindLevel struct {
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
+	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
+}
+
+// KindField is one declared item field.
+type KindField struct {
+	Key     string   `json:"key"`  // ^[a-z][a-zA-Z0-9_]{0,39}$
+	Type    string   `json:"type"` // string|int|float|bool|date|duration|enum|strings|people
+	Label   string   `json:"label"`
+	Indexed bool     `json:"indexed,omitempty"` // gets a typed column in the item store
+	Enum    []string `json:"enum,omitempty"`
+}
+
+// KindArt declares one extra artwork role.
+type KindArt struct {
+	Role  string `json:"role"`
+	Label string `json:"label"`
+}
+
+// Builtin kind art roles; declared roles must not repeat them.
+var BuiltinKindArtRoles = map[string]bool{"poster": true, "backdrop": true, "thumb": true, "logo": true}
+
+// KindBrowseDecl is how a kind library is browsed.
+type KindBrowseDecl struct {
+	Sorts        []string `json:"sorts,omitempty"`        // subset of title|added|released|year|rating|index
+	Facets       []string `json:"facets,omitempty"`       // field keys; each must be indexed
+	Search       bool     `json:"search"`                 // full-text over the title plus SearchFields
+	SearchFields []string `json:"searchFields,omitempty"` // declared text fields included in search
+	// LiveSearch: client searches also call the plugin's /search route
+	// with a short budget; results are upserted and merged (§15.4).
+	LiveSearch bool `json:"liveSearch,omitempty"`
+}
+
+// Kind sync modes (spec §3.5 as narrowed by §15.4: no ondemand mode).
+const (
+	KindSyncPull = "pull"
+	KindSyncPush = "push"
+)
+
+// KindSyncDecl is how a kind's items reach Ether's store. Mode is empty
+// only for a resolver-only kind, which owns no item sync; a catalog
+// provider must pick pull or push.
+type KindSyncDecl struct {
+	Mode    string `json:"mode"`              // pull|push
+	Refresh string `json:"refresh,omitempty"` // at least 15m, pull only
+}
+
+// KindCacheDecl is the per-library blob cache budget (§5.4).
+type KindCacheDecl struct {
+	MaxBytes int64  `json:"maxBytes,omitempty"` // 0 = server default
+	TTL      string `json:"ttl,omitempty"`
+}
+
+// Blob cache budget defaults (§15.5): the per-library default quota and
+// the shared absolute cap. The shared cap is also bounded by 5% of the
+// cache disk at runtime, which only the cache owner can measure.
+const (
+	DefaultKindCacheMaxBytes int64 = 2 << 30
+	SharedKindCacheCapBytes  int64 = 10 << 30
+)
+
+// EffectiveMaxBytes resolves the declared cache cap against the default.
+func (c KindCacheDecl) EffectiveMaxBytes() int64 {
+	if c.MaxBytes <= 0 {
+		return DefaultKindCacheMaxBytes
+	}
+	return c.MaxBytes
+}
+
+// KindMatchDecl holds matcher defaults for a kind (spec §7).
+type KindMatchDecl struct {
+	// ThresholdDefault is the score (0..1) at or above which an
+	// automatic match is accepted; 0 leaves the server default.
+	ThresholdDefault float64 `json:"thresholdDefault,omitempty"`
+}
+
+// FrontendAdapterMeta declares one plugin-provided protocol surface
+// (spec §6.5).
+type FrontendAdapterMeta struct {
+	Key          string   `json:"key"`
+	Label        string   `json:"label"`
+	ProtocolHint string   `json:"protocolHint"` // opds|subsonic|custom
+	PathPrefix   string   `json:"pathPrefix"`
+	DefaultPort  int      `json:"defaultPort,omitempty"`
+	Clients      []string `json:"clients,omitempty"`
+	Auth         string   `json:"auth,omitempty"` // ether_token (default)|basic|none_lan
+	// Libraries lists the plugin's media-kind keys this adapter publishes.
+	// Ether resolves each key to the library the kind created and admits a
+	// viewer only to the libraries they may see; a viewer who sees none of
+	// them is answered 404. Empty means the adapter is not library-scoped.
+	Libraries []string `json:"libraries,omitempty"`
+}
+
+// SetupMeta declares guided setup for any plugin kind (spec §8).
+type SetupMeta struct {
+	Steps []SetupStep `json:"steps"`
+}
+
+// SetupStep is one setup wizard step. An empty Test means saving the
+// fields is the whole step; otherwise Ether posts the step's saved
+// field values to Test, conventionally /ether/v1/setup/<key>/test.
+type SetupStep struct {
+	Key      string   `json:"key"`
+	Label    string   `json:"label"`
+	Hint     string   `json:"hint,omitempty"`
+	Fields   []string `json:"fields"` // settings field keys this step collects
+	Test     string   `json:"test"`   // plugin route, or "" for no test
+	Required bool     `json:"required"`
+}
+
 // Request is one HTTP-shaped call from Ether to a plugin (SPEC §5.1.2).
 // Hosted plugins receive the same object in-process.
 type Request struct {
@@ -411,6 +588,29 @@ type Host interface {
 	SetWatchState(ctx context.Context, viewerID int64, titleID string, watched bool) error
 	// CollectionsUpsert needs collections: write; journalled.
 	CollectionsUpsert(ctx context.Context, collection json.RawMessage) error
+
+	// KindUpsert and KindDelete need catalog_provider and a push-mode
+	// kind (spec §3.6): the sync engine is the only writer for pull
+	// kinds. Writes are journalled in shadow mode without applying.
+	KindUpsert(ctx context.Context, kindKey string, items []core.KindItem) (accepted int, err error)
+	KindDelete(ctx context.Context, kindKey string, externalIDs []string) error
+	// KindItems reads the plugin's own library back, keyset-paged.
+	KindItems(ctx context.Context, kindKey, cursor string, limit int) (core.KindPage, error)
+	// ResolveSources needs kind_resolver and permissions.sources
+	// (search to look, acquire to open debrid content, §4.5).
+	ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error)
+	// CachePut stores one blob in a kind library's cache namespace and
+	// returns its "blob:<sha256>" reference; CacheOpen reads one back.
+	CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (blobRef string, err error)
+	CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error)
+
+	// StreamURL mints a short-lived, scoped ticket for one of this
+	// plugin's own kind items and returns the Ether stream URL a frontend
+	// adapter embeds instead of a plugin URL (spec §6.5). The viewer is
+	// the one the proxied request authenticated (X-Ether-Viewer); items
+	// from another plugin, or a library the viewer cannot see, are
+	// refused. Bytes are then served by Ether, never by the plugin.
+	StreamURL(ctx context.Context, itemRef string) (string, error)
 
 	// FoldersList and FoldersStat need folders: read and an owner-picked
 	// root. They never return file contents.

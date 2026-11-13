@@ -20,7 +20,12 @@ func (i *instance) socket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	conn, err := websocket.Accept(w, r, nil)
+	// The viewer is already authenticated from an explicit token (header or
+	// query; this surface never reads cookies), so a page on another origin
+	// cannot ride a viewer's session and the origin check guards nothing.
+	// Packaged TV apps send "Origin: null", and web clients hosted elsewhere
+	// send their own origin; Jellyfin accepts both.
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
 	}
@@ -67,7 +72,7 @@ func (i *instance) socket(w http.ResponseWriter, r *http.Request) {
 		if i.host.Sessions == nil {
 			return write(map[string]any{"MessageType": "Sessions", "Data": []any{}})
 		}
-		rows, err := i.sessionRows(ctx, viewer, device(r))
+		rows, err := i.sessionRows(ctx, viewer, device(r), clientAddress(r, i.host.ClientIP))
 		if err != nil {
 			return err
 		}

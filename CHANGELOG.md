@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.8
+
+- **Memory:** Ether now sets an automatic soft memory limit at startup (90% of the container/cgroup limit when one exists, otherwise half of physical RAM, floor 1 GiB; logged with its source), so memory no longer climbs unbounded on small machines; set `GOMEMLIMIT` to override — it always wins.
+- **Performance:** availability hidden sets publish only the titles that
+  changed (interval membership instead of a full copy per refresh), so a
+  large library no longer holds the database writer for ~1 s every minute
+  or two and churns the database file; an unchanged set writes nothing.
+
+- **Playback:** HLS fMP4 streams that copy video while converting audio no longer stall on a spinner at multi-segment GOPs or hang on resume on LG webOS TVs, and evicted segments regenerate on demand while open sessions remain active (#417).
+- **Apps:** per-app **Public address** (Apps > Jellyfin, Emby, etc.) so an app routed through its own host name (e.g. `jelly.example.com`) shows that address on Connect and `/ether/me` instead of the Plex host; Plex keeps its custom server URLs, and apps without one keep the server-wide address (#413).
+- **Subtitles:** **Download a subtitle automatically when playback starts** switch under **Integrations > OpenSubtitles** (`openSubtitles.automaticPreferred`, off by default) (#286).
+- **Watchlists:** paste Plex's **Friends' Watchlist RSS** and **Your Watchlist RSS** URLs under **Catalog > Settings > Watchlists** (sealed at rest): because Plex's friends feed does not say which friend added what, Friends' Watchlist RSS publishes a shared **Your friends want to watch** Home row and collection while feeding availability checks, alerts, and warm-up alongside the owner's watchlist (#337).
+- **Trakt:** Viewers can connect Trakt from **Viewers > Limits** or on `/ether/me` using Trakt's activation code flow, syncing watch history, ratings and watchlists per viewer.
+- **Console:** **Plex Media Server sync** (**Integrations > Overview**) and **Plex account sync** (**Viewers > Limits**) are now named for what they sync with, and each viewer's **Limits** tab also shows their Plex Media Server mappings alongside their Plex account status.
+- **Plex Media Server sync:** per-mapping **Bring in full history from this server** and **Send Ether's full history to this server** actions under **Integrations > Plex Media Server sync** walk older watch history in pages in the background with live progress and never overwrite newer watch state on either side.
+
 ## 0.3.7 (2026-11-09)
 
 - **Performance:** On Air graphics render only for watched channels, so the

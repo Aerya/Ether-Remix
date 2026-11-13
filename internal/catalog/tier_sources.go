@@ -108,6 +108,7 @@ var tierTouchSources = []touchSource{
 	{table: "plexwatch_pms_item", column: "rating_key"},
 	{table: "plexwatch_pms_sent", column: "rating_key"},
 	{table: "simkl_outbox", column: "rating_key"},
+	{table: "mdblist_outbox", column: "rating_key"},
 	{table: "trakt_import_queue", column: "event_json", form: touchScan},
 	{table: "plex_downloads", column: "snapshot", form: touchScan},
 	{table: "plex_playqueues", column: "data", form: touchScan},
@@ -178,6 +179,9 @@ var tierUntouchedTables = []string{
 	"livetv_programmes", "livetv_guide_", "livetv_numbers", "livetv_sources", "livetv_policies",
 	"livetv_channel_epoch", "livetv_plex_guide_gate", "livetv_source_history", "artwork_image_",
 	"subtitles_auto_attempts", "subtitles_auto_provider_pause",
+	// Libraries hold owner filter definitions and plugin-owned items; a
+	// plugin match naming a removed title is promoted again on open.
+	"libraries", "libraries_", "plugin_", "plugins_setup",
 	// Id mappings (see above).
 	"frontend_compact_ids", "frontend_compact_id_counters", "silo_source_offer_ids", "frontend_client_families", "frontend_clients_seen",
 	// Accounts, identity, sessions and devices.
@@ -186,7 +190,8 @@ var tierUntouchedTables = []string{
 	"sessions_xtream_connections", "viewer_alert_preferences", "viewer_episode_scan", "viewer_policy_",
 	"viewer_push_subscriptions", "favorites_mirror", "notinterested_revisions", "state_playlist_markers",
 	"state_source_sequence", "simkl_devices", "simkl_post_pacing", "simkl_tokens", "trakt_tokens",
-	"plexwatch_account", "plexwatch_fence", "plexwatch_pin", "plexwatch_pms", "plexwatch_pms_unmatched",
+	"mdblist_accounts", "mdblist_post_pacing",
+	"plexwatch_account", "plexwatch_fence", "plexwatch_pin", "plexwatch_pms", "plexwatch_pms_held", "plexwatch_pms_unmatched",
 	"plexwatch_pms_viewer", "plex_counters", "personalize_overrides", "personalize_ranker",
 	"personalize_row_impressions", "personalize_serves", "personalize_home_layout", "trackprefs_rules",
 	"episodeorder_groups", "watchlist_meta", "watchlist_settings", "migrate_plans",

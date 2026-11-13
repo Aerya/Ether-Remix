@@ -23,7 +23,10 @@ import { PlexWatchSync } from "./sections/PlexWatchSync";
 import { FromPlexDefaults } from "./FromPlexDefaults";
 import { ViewerLiveTVAccess } from "./sections/ViewerLiveTV";
 import { ViewerSimkl } from "./sections/ViewerSimkl";
+import { ViewerMDBList } from "./sections/ViewerMDBList";
+import { ViewerTrakt } from "./sections/ViewerTrakt";
 import { KID_PRESETS, ListText, normalizePolicy, type SafetyPolicy } from "./shared";
+import { librariesApi } from "../libraries/api";
 
 const HOURS = Array.from({ length: 24 }, (_, h) => ({
   value: h,
@@ -46,6 +49,99 @@ function TimeZoneSelect({ value, onChange }: { value: string; onChange: (zone: s
       searchable
       {...searchSelectLabels()}
     />
+  );
+}
+
+/** Libraries this viewer can open (empty restriction = every library, §1.4). */
+function ViewerLibraries({
+  userId,
+  allowed,
+  isOwner,
+  onSaved,
+}: {
+  userId: number;
+  allowed?: number[] | null;
+  isOwner?: boolean;
+  onSaved: () => void;
+}) {
+  const libs = useAsync((signal) => librariesApi.list(signal), []);
+  const [draft, setDraft] = useState<number[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const all = libs.data ?? [];
+  const current = draft ?? allowed ?? [];
+  const unrestricted = current.length === 0;
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(allowed ?? []);
+  const toggleLibrary = (id: number, on: boolean) =>
+    setDraft((prev) => {
+      const base = prev ?? allowed ?? [];
+      return on ? [...base, id].sort((a, b) => a - b) : base.filter((x) => x !== id);
+    });
+  return (
+    <SettingsSection
+      title={t("Libraries this viewer can open")}
+      description={t(
+        "With every library allowed, new libraries open for this viewer too. Pick libraries to limit them to just those.",
+      )}
+    >
+      {libs.loading ? (
+        <LoadingRows rows={2} />
+      ) : (
+        <>
+          <SettingsRow
+            title={t("All libraries")}
+            control={
+              <Switch
+                aria-label={t("All libraries")}
+                checked={unrestricted || Boolean(isOwner)}
+                disabled={Boolean(isOwner)}
+                onChange={(e) => setDraft(e.target.checked ? [] : all.map((l) => l.id))}
+              />
+            }
+          />
+          {!unrestricted && !isOwner
+            ? all.map((l) => (
+                <SettingsRow
+                  key={l.id}
+                  title={l.name}
+                  control={
+                    <Switch
+                      aria-label={l.name}
+                      checked={current.includes(l.id)}
+                      onChange={(e) => toggleLibrary(l.id, e.target.checked)}
+                    />
+                  }
+                />
+              ))
+            : null}
+          {isOwner ? (
+            <p className="px-5 py-4 text-sm text-fg-muted">
+              {t("The owner can always open every library.")}
+            </p>
+          ) : (
+            <div className="pt-2">
+              <Button
+                size="sm"
+                disabled={!dirty || saving}
+                onClick={() => {
+                  setSaving(true);
+                  api
+                    .updateUser(userId, { allowedLibraries: current })
+                    .then(() => {
+                      toast.success(t("Saved"));
+                      setDraft(null);
+                      onSaved();
+                    })
+                    .catch((e: unknown) => toast.error(errorMessage(e)))
+                    .finally(() => setSaving(false));
+                }}
+              >
+                {t("Save")}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+    </SettingsSection>
   );
 }
 
@@ -119,7 +215,9 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
   const l = limits.draft;
   const p = rules.draft;
   const noUser = users.data && (!user || !l);
+  const trakt = config.data?.trakt;
   const simkl = config.data?.simkl;
+  const mdblist = config.data?.mdblist;
   return (
     <div className="space-y-6">
       <ViewerCatalogRules key={id} id={id} region={String(config.data?.catalog?.region || "US")} />
@@ -201,6 +299,13 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
             />
           </SettingsSection>
 
+          <ViewerLibraries
+            userId={id}
+            allowed={user?.allowedLibraries}
+            isOwner={user?.isOwner}
+            onSaved={() => void users.reload()}
+          />
+
           <SettingsSection title={t("Playback restrictions")}>
             {user && l ? (
               <StreamLimitRow
@@ -280,7 +385,11 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
       <PlexWatchSync viewerId={id} plexId={viewer.plexId} />
 
       {config.data ? (
-        <ViewerSimkl viewerId={id} ready={Boolean(simkl?.enabled && simkl.clientId.trim())} />
+        <>
+          <ViewerTrakt viewerId={id} ready={Boolean(trakt?.enabled && trakt.clientId.trim())} />
+          <ViewerSimkl viewerId={id} ready={Boolean(simkl?.enabled && simkl.clientId.trim())} />
+          <ViewerMDBList viewerId={id} ready={Boolean(mdblist?.enabled)} />
+        </>
       ) : null}
 
       <SaveBar

@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -19,236 +19,243 @@ import (
 )
 
 const (
-	// hiddenRetentionSeconds covers the 5-minute pagingCut lifetime plus a
-	// 1-minute in-flight query slack so paginated clients see an immutable cut
-	// without keeping 60 full copies of ~60k movie exclusions on disk.
-	hiddenRetentionSeconds      = 6 * 60
-	maxRetiredHiddenGenerations = 5
-	hiddenInsertBatch           = 500
+	hiddenRetentionSeconds = 6 * 60
+	maxRetiredHiddenSeqs   = 5
+	hiddenInsertBatch      = 500
+	hiddenOpenSeq          = math.MaxInt64
 )
 
-// publishHidden leaves older generations available to requests already using
-// them. The pointer moves only after every member of the new set is stored.
+type hiddenDB interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func pruneHiddenRetention(ctx context.Context, db hiddenDB, kind string, curSeq, now int64) (int64, error) {
+	floor := curSeq
+	rows, err := db.QueryContext(ctx, `SELECT seq FROM availability_hidden_retired WHERE kind=? AND retired_at>=? ORDER BY seq DESC LIMIT ?`, kind, now-hiddenRetentionSeconds, maxRetiredHiddenSeqs)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if seq < floor {
+			floor = seq
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	res, err := db.ExecContext(ctx, `DELETE FROM availability_hidden WHERE kind=? AND to_seq<=?`, kind, floor)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if _, err := db.ExecContext(ctx, `DELETE FROM availability_hidden_retired WHERE kind=? AND seq<?`, kind, floor); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// HiddenPublish reports one publishHidden: the membership rows it wrote
+// (Added inserts + Removed closes), the resulting seq, and how long its
+// transaction held the writer.
+type HiddenPublish struct {
+	Added, Removed int
+	Seq            int64
+	Hold           time.Duration
+}
+
+// PublishHiddenSet publishes keys as kind's hidden set under the current
+// policy. Retained for the library-scale performance harness.
+func (s *Service) PublishHiddenSet(ctx context.Context, kind string, keys []core.RatingKey) (HiddenPublish, error) {
+	switch kind {
+	case hiddenMovies, hiddenShows, hiddenEpisodes:
+	default:
+		return HiddenPublish{}, fmt.Errorf("availability: unknown hidden kind %q", kind)
+	}
+	input := s.snapshotFor(ctx)
+	return s.publishHiddenMeasured(ctx, kind, hiddenPolicy(kind, input), keys)
+}
+
 func (s *Service) publishHidden(ctx context.Context, kind, policy string, keys []core.RatingKey) error {
+	_, err := s.publishHiddenMeasured(ctx, kind, policy, keys)
+	return err
+}
+
+func (s *Service) publishHiddenMeasured(ctx context.Context, kind, policy string, keys []core.RatingKey) (HiddenPublish, error) {
 	sorted := append([]core.RatingKey(nil), keys...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	hash := sha256.New()
-	var buf [8]byte
-	for _, key := range sorted {
-		binary.BigEndian.PutUint64(buf[:], uint64(key))
-		_, _ = hash.Write(buf[:])
-	}
-	sum := hash.Sum(nil)
-	gen := hex.EncodeToString(sum[:8])
+	sorted = slices.Compact(sorted)
+	started := time.Now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return HiddenPublish{}, err
 	}
 	defer tx.Rollback()
 	if err = store.LockKey(ctx, store.DialectOf(s.db), tx, "availability-hidden-"+kind); err != nil {
-		return err
+		return HiddenPublish{}, err
 	}
-	// A refresh usually republishes the same set. Browse results read only
-	// the current generation and policy, so an unchanged pair keeps the
-	// catalogue's page cache: invalidating it on every refresh made each
-	// browse on a large library a cache miss.
-	var prevGen, prevPolicy string
-	err = tx.QueryRowContext(ctx, `SELECT generation,policy FROM availability_hidden_current WHERE kind=?`, kind).Scan(&prevGen, &prevPolicy)
+	var prevSeq int64
+	var prevPolicy string
+	err = tx.QueryRowContext(ctx, `SELECT seq,policy FROM availability_hidden_current WHERE kind=?`, kind).Scan(&prevSeq, &prevPolicy)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return HiddenPublish{}, err
 	}
 	published := err == nil
-	changed := prevGen != gen || prevPolicy != policy
-	now := s.now().Unix()
-	if !published || prevGen != gen {
-		// A replaced generation keeps answering requests already using it
-		// for hiddenRetentionSeconds from retirement: stamp its rows once.
-		// An unchanged set writes no rows at all.
-		if published && prevGen != "" {
-			if _, err = tx.ExecContext(ctx, `UPDATE availability_hidden SET created_at=? WHERE kind=? AND generation=?`, now, kind, prevGen); err != nil {
-				return err
-			}
+	var added, removed []core.RatingKey
+	rows, err := tx.QueryContext(ctx, `SELECT rating_key FROM availability_hidden WHERE kind=? AND to_seq=? ORDER BY rating_key`, kind, int64(hiddenOpenSeq))
+	if err != nil {
+		return HiddenPublish{}, err
+	}
+	i := 0
+	for rows.Next() {
+		var cur int64
+		if err := rows.Scan(&cur); err != nil {
+			rows.Close()
+			return HiddenPublish{}, err
 		}
-		for start := 0; start < len(sorted); start += hiddenInsertBatch {
-			chunk := sorted[start:min(start+hiddenInsertBatch, len(sorted))]
+		for i < len(sorted) && int64(sorted[i]) < cur {
+			added = append(added, sorted[i])
+			i++
+		}
+		if i < len(sorted) && int64(sorted[i]) == cur {
+			i++
+		} else {
+			removed = append(removed, core.RatingKey(cur))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return HiddenPublish{}, err
+	}
+	rows.Close()
+	added = append(added, sorted[i:]...)
+	now := s.now().Unix()
+	setChanged := !published || len(added) > 0 || len(removed) > 0
+	changed := setChanged || prevPolicy != policy
+	s.log.Debug("availability hidden publish", "kind", kind, "added", len(added), "removed", len(removed), "set", len(sorted), "published", published)
+	if !changed {
+		return HiddenPublish{Seq: prevSeq, Hold: time.Since(started)}, nil
+	}
+	newSeq := prevSeq
+	if setChanged {
+		newSeq = prevSeq + 1
+		for start := 0; start < len(added); start += hiddenInsertBatch {
+			chunk := added[start:min(start+hiddenInsertBatch, len(added))]
 			var sb strings.Builder
 			sb.Grow(96 + len(chunk)*10)
-			sb.WriteString(`INSERT INTO availability_hidden(kind,generation,rating_key,created_at) VALUES`)
+			sb.WriteString(`INSERT INTO availability_hidden(kind,rating_key,from_seq,to_seq) VALUES`)
 			args := make([]any, 0, len(chunk)*4)
-			for i, key := range chunk {
-				if i > 0 {
+			for j, key := range chunk {
+				if j > 0 {
 					sb.WriteByte(',')
 				}
 				sb.WriteString(`(?,?,?,?)`)
-				args = append(args, kind, gen, int64(key), now)
+				args = append(args, kind, int64(key), newSeq, int64(hiddenOpenSeq))
 			}
-			sb.WriteString(` ON CONFLICT(kind,generation,rating_key) DO UPDATE SET created_at=excluded.created_at`)
+			sb.WriteString(` ON CONFLICT(kind,rating_key,from_seq) DO UPDATE SET to_seq=excluded.to_seq`)
 			if _, err = tx.ExecContext(ctx, sb.String(), args...); err != nil {
-				return err
+				return HiddenPublish{}, err
+			}
+		}
+		for start := 0; start < len(removed); start += hiddenInsertBatch {
+			chunk := removed[start:min(start+hiddenInsertBatch, len(removed))]
+			marks := make([]string, len(chunk))
+			args := make([]any, 0, len(chunk)+3)
+			args = append(args, newSeq, kind, int64(hiddenOpenSeq))
+			for j, key := range chunk {
+				marks[j] = "?"
+				args = append(args, int64(key))
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE availability_hidden SET to_seq=? WHERE kind=? AND to_seq=? AND rating_key IN (`+strings.Join(marks, ",")+`)`, args...); err != nil {
+				return HiddenPublish{}, err
+			}
+		}
+		if published && prevSeq > 0 {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO availability_hidden_retired(kind,seq,retired_at) VALUES(?,?,?) ON CONFLICT(kind,seq) DO NOTHING`, kind, prevSeq, now); err != nil {
+				return HiddenPublish{}, err
 			}
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO availability_hidden_current(kind,generation,policy) VALUES(?,?,?) ON CONFLICT(kind) DO UPDATE SET generation=excluded.generation,policy=excluded.policy`, kind, gen, policy); err != nil {
-		return err
+	if _, err = tx.ExecContext(ctx, `INSERT INTO availability_hidden_current(kind,seq,policy) VALUES(?,?,?) ON CONFLICT(kind) DO UPDATE SET seq=excluded.seq,policy=excluded.policy`, kind, newSeq, policy); err != nil {
+		return HiddenPublish{}, err
 	}
-	// Two primary-key ranges around the current generation: the prune never
-	// walks the current set's rows.
-	if _, err = tx.ExecContext(ctx, `DELETE FROM availability_hidden WHERE kind=? AND (generation<? OR generation>?) AND created_at<?`, kind, gen, gen, now-hiddenRetentionSeconds); err != nil {
-		return err
-	}
-	if !published || prevGen != gen {
-		rows, err := tx.QueryContext(ctx, `SELECT generation, MAX(created_at) AS retired_at FROM availability_hidden WHERE kind=? AND (generation<? OR generation>?) GROUP BY generation ORDER BY retired_at DESC, generation DESC`, kind, gen, gen)
-		if err != nil {
-			return err
-		}
-		var excess []string
-		seen := 0
-		for rows.Next() {
-			var g string
-			var at int64
-			if err := rows.Scan(&g, &at); err != nil {
-				rows.Close()
-				return err
-			}
-			seen++
-			if seen > maxRetiredHiddenGenerations {
-				excess = append(excess, g)
-			}
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		for _, g := range excess {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM availability_hidden WHERE kind=? AND generation=?`, kind, g); err != nil {
-				return err
-			}
-		}
+	if _, err = pruneHiddenRetention(ctx, tx, kind, newSeq, now); err != nil {
+		return HiddenPublish{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return HiddenPublish{}, err
 	}
-	if c, ok := s.d.Catalog.(interface{ ConsoleGateChanged() }); ok && changed {
+	stats := HiddenPublish{Added: len(added), Removed: len(removed), Seq: newSeq, Hold: time.Since(started)}
+	if c, ok := s.d.Catalog.(interface{ ConsoleGateChanged() }); ok {
 		c.ConsoleGateChanged()
 	}
-	return nil
+	return stats, nil
 }
 
-type pagingCut struct {
-	at                   time.Time
-	movie, show, episode string
-}
-
-// PagingFilter captures the current immutable SQL generations once. On a new
-// installation the first set is computed before it can be used for a page.
+// PagingFilter attaches the sticky availability_gate policy and request-clock
+// evidence window bounds to f with zero SQL round trips in steady state. On
+// legacy read-only databases without availability_gate, it falls back to any
+// published availability_hidden_current seqs without issuing writes.
 func (s *Service) PagingFilter(ctx context.Context, f core.Filter) (core.Filter, error) {
 	if f.IncludeKeys != nil {
 		return f, nil
 	}
 	input := s.snapshotFor(ctx)
-	f.DigitalDiscovery = input.availability.EffectiveMode() == config.ModeDigital
+	movieMode := input.availability.ModeFor(hiddenMovies)
+	showMode := input.availability.ModeFor(hiddenShows)
+	f.DigitalDiscovery = movieMode == config.ModeDigital
 	f.DigitalDateEvidence = input.availability.DigitalDateEvidence
 	if f.DigitalDateEvidence {
 		f.HomeReleaseOffsetDays = input.availability.HomeReleaseOffsetDays
 	}
-	// A tokenless client shares this cut with all requests for the same filter.
-	// Adapters supply a client/section/sort scope; callers without one share
-	// a cut by filter. Policy changes select a new cut immediately.
-	cutKey := core.BrowseScope(ctx) + ":" + hiddenKey("paging", input) + ":" + pagingFilterKey(f)
-	s.visibilityMu.Lock()
-	cut, pinned := s.pagingCuts[cutKey]
-	s.visibilityMu.Unlock()
-	if pinned && input.now.Sub(cut.at) < 5*time.Minute && !input.now.Before(cut.at) {
-		f.HiddenMovieGeneration, f.HiddenShowGeneration, f.HiddenEpisodeGeneration = cut.movie, cut.show, cut.episode
-		for kind, gen := range map[string]string{hiddenMovies: cut.movie, hiddenShows: cut.show, hiddenEpisodes: cut.episode} {
-			if gen != "" {
-				s.currentHidden(kind, input)
-			}
+	if s.hasGateTable {
+		s.ensureGatePolicySeeded(ctx, input)
+		f.GatePolicy = input.gatePolicy
+		f.GateNow = input.now.Unix()
+		f.GateUpcomingMovies = input.showUpcomingMovies
+		f.GateRev = s.gateRev.Load()
+		if movieMode == config.ModePlayable && !input.availability.DisableMovieEvidenceGate {
+			f.MovieGateCutoff = input.now.Add(-time.Duration(input.availability.EffectiveMovieEvidenceDays()) * 24 * time.Hour).Unix()
+		}
+		if showMode == config.ModePlayable {
+			f.EpisodeGateCutoff = input.now.Add(-episodeEvidence).Unix()
+			f.ShowGateCutoff = f.EpisodeGateCutoff
 		}
 		return f, nil
 	}
-	var kinds []string
-	if f.Type != core.TypeMovie {
-		kinds = append(kinds, hiddenShows)
-	}
-	if (f.Type == "" || f.Type == core.TypeMovie) && (f.DigitalDiscovery || !input.availability.DisableMovieEvidenceGate) {
-		kinds = append(kinds, hiddenMovies)
-	}
-	if f.Type == core.TypeEpisode {
-		kinds = append(kinds, hiddenEpisodes)
-	}
-	for _, kind := range kinds {
-		var gen, policy string
-		err := s.db.QueryRowContext(ctx, `SELECT generation,policy FROM availability_hidden_current WHERE kind=?`, kind).Scan(&gen, &policy)
-		want := hiddenPolicy(kind, input)
-		if err == nil && policy != want {
-			if _, e := s.waitHidden(ctx, kind, input, true); e != nil {
-				return f, e
-			}
-			err = s.db.QueryRowContext(ctx, `SELECT generation,policy FROM availability_hidden_current WHERE kind=?`, kind).Scan(&gen, &policy)
-			if err == nil && policy != want {
-				return f, fmt.Errorf("availability: %s policy changed during refresh", kind)
-			}
-		}
-		if err != nil {
-			if err != sql.ErrNoRows {
-				return f, err
-			}
-			// waitHidden starts (or joins) a bounded refresh and propagates failures.
-			if _, e := s.waitHidden(ctx, kind, input, true); e != nil {
-				return f, fmt.Errorf("availability: initialize %s: %w", kind, e)
-			}
-			if e := s.db.QueryRowContext(ctx, `SELECT generation FROM availability_hidden_current WHERE kind=?`, kind).Scan(&gen); e != nil {
-				return f, e
-			}
-		} else {
-			s.currentHidden(kind, input)
-		}
-		switch kind {
-		case hiddenMovies:
-			f.HiddenMovieGeneration = gen
-		case hiddenShows:
-			f.HiddenShowGeneration = gen
-		case hiddenEpisodes:
-			f.HiddenEpisodeGeneration = gen
-		}
-	}
 
-	s.visibilityMu.Lock()
-	if s.pagingCuts == nil {
-		s.pagingCuts = map[string]pagingCut{}
-	}
-	for key, old := range s.pagingCuts {
-		if input.now.Sub(old.at) >= 5*time.Minute {
-			delete(s.pagingCuts, key)
+	// Legacy read-only database fallback.
+	for _, kind := range []string{hiddenMovies, hiddenShows, hiddenEpisodes} {
+		if kind == hiddenMovies && (!f.DigitalDiscovery && (movieMode == config.ModeImmediate || input.availability.DisableMovieEvidenceGate)) {
+			continue
+		}
+		if kind != hiddenMovies && showMode != config.ModePlayable {
+			continue
+		}
+		var seq int64
+		if err := s.db.QueryRowContext(ctx, `SELECT seq FROM availability_hidden_current WHERE kind=?`, kind).Scan(&seq); err == nil {
+			switch kind {
+			case hiddenMovies:
+				f.HiddenMovieSeq = seq
+			case hiddenShows:
+				f.HiddenShowSeq = seq
+			case hiddenEpisodes:
+				f.HiddenEpisodeSeq = seq
+			}
 		}
 	}
-	// Concurrent first pages must converge on the same cut.
-	if old, ok := s.pagingCuts[cutKey]; ok && input.now.Sub(old.at) < 5*time.Minute {
-		f.HiddenMovieGeneration, f.HiddenShowGeneration, f.HiddenEpisodeGeneration = old.movie, old.show, old.episode
-	} else {
-		s.pagingCuts[cutKey] = pagingCut{input.now, f.HiddenMovieGeneration, f.HiddenShowGeneration, f.HiddenEpisodeGeneration}
-	}
-	s.visibilityMu.Unlock()
 	return f, nil
 }
 
 func hiddenPolicy(kind string, input discoverySnapshot) string {
 	sum := sha256.Sum256([]byte(hiddenKey(kind, input)))
 	return hex.EncodeToString(sum[:])
-}
-
-// Runtime pointer addresses and previously attached generations are not filter
-// identity. Nested groups are serialized by value, including their SQL filters.
-func pagingFilterKey(f core.Filter) string {
-	group, child := f.Group, f.ChildVisibility
-	f.Group, f.ChildVisibility = nil, nil
-	f.HiddenMovieGeneration, f.HiddenShowGeneration, f.HiddenEpisodeGeneration = "", "", ""
-	raw, _ := json.Marshal(group)
-	childKey := ""
-	if child != nil {
-		childKey = pagingFilterKey(*child)
-	}
-	return fmt.Sprintf("%+v|%s|%s", f, raw, childKey)
 }

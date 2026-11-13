@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/braedonsaunders/ether/internal/plex/model"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
 // Playlists importées servies aux clients Subsonic, Jellyfin et Plex, en

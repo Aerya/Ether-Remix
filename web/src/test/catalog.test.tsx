@@ -14,7 +14,7 @@ const title = {
 
 describe("Catalog workspace", () => {
   it("distinguishes catalog size from the rules result", async () => {
-    const { fake } = renderAppWith("/catalog/settings", (_method, path) => {
+    const { fake } = renderAppWith("/libraries/1/settings", (_method, path) => {
       if (path === "/catalog/visibility/preview") return { total: 1000, visible: 700, hidden: 300 };
     });
     expect(
@@ -57,7 +57,7 @@ describe("Catalog workspace", () => {
       { name: "Inspect Seven" },
       { timeout: 15000 },
     );
-    expect(screen.getByRole("heading", { name: "Catalog", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Movies", level: 1 })).toBeInTheDocument();
     fireEvent.click(inspect);
     const detail = await screen.findByRole("dialog", { name: "Seven" });
     expect(await within(detail).findByText("A detailed overview")).toBeInTheDocument();
@@ -238,8 +238,12 @@ describe("Catalog workspace", () => {
   });
 
   it("keeps all catalog settings and saves changes from the new page", async () => {
-    const { fake } = renderAppWith("/catalog/settings", () => undefined);
+    const { fake } = renderAppWith("/libraries/1/settings", () => undefined);
     const language = await screen.findByLabelText("Language");
+    expect(screen.getByText("Source: TMDB")).toBeInTheDocument();
+    expect(
+      screen.getByText("These settings apply to every library that uses TMDB."),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Catalog healthy")).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Your catalog" })).toBeInTheDocument();
     expect(screen.queryByText(/Your saved release-date requirement/)).not.toBeInTheDocument();
@@ -314,7 +318,11 @@ describe("Catalog workspace", () => {
     fail = false;
     fireEvent.click(retry);
     await waitFor(() => expect(screen.getByText("No matching titles")).toBeInTheDocument());
-    fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
+    // A pending catalogue refresh can briefly replace the empty state with
+    // skeletons. Wait for the action itself before trying to click it.
+    await waitFor(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
+    });
     await waitFor(() => expect(screen.getByLabelText("Find a title")).toHaveValue(""));
   });
 });

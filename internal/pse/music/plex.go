@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/plex/model"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
 // Bibliothèque « Musique » de PSE pour les clients Plex (Plexamp, Plex Web,

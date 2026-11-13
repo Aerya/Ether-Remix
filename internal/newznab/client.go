@@ -2,7 +2,6 @@ package newznab
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -394,11 +393,39 @@ func (c *Client) Name() string {
 	return cfg.URL
 }
 
+// zileanTorznabBase turns an owner-entered Zilean base URL into the base
+// of its Torznab API. Zilean serves Torznab anonymously at
+// {base}/torznab/api, so the owner only pastes the instance address
+// (e.g. http://zilean:8181). An address that already names the endpoint
+// (…/torznab or …/torznab/api) is left as the endpoint so editing an
+// existing entry never doubles the path.
+func zileanTorznabBase(base string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	for {
+		lower := strings.ToLower(base)
+		switch {
+		case strings.HasSuffix(lower, "/torznab/api"):
+			base = base[:len(base)-len("/torznab/api")]
+		case strings.HasSuffix(lower, "/api"):
+			base = base[:len(base)-len("/api")]
+		case strings.HasSuffix(lower, "/torznab"):
+			base = base[:len(base)-len("/torznab")]
+		default:
+			return base + "/torznab"
+		}
+	}
+}
+
 func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
 	cfg := c.Config()
 	raw := strings.TrimSpace(cfg.URL)
 	if raw == "" {
 		return "", fmt.Errorf("newznab: indexer %q has no URL", c.Name())
+	}
+	if cfg.IsZilean() {
+		// Zilean's Torznab API is appended to the owner's base URL; the
+		// rest of the Torznab client (search, caps, grab) is unchanged.
+		raw = zileanTorznabBase(raw)
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {
@@ -1643,29 +1670,18 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 	if err != nil {
 		return nil, true, err
 	}
-	// Gzipped NZB payload (magic bytes) — Go's transport only undoes
-	// Content-Encoding, not a stored .nzb.gz body.
-	if len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b {
-		gz, err := gzip.NewReader(bytes.NewReader(body))
-		if err != nil {
-			return nil, true, fmt.Errorf("newznab: gunzip NZB: %w", err)
-		}
-		body, err = io.ReadAll(io.LimitReader(gz, c.maxNZB+1))
-		gz.Close()
-		if err != nil {
-			return nil, true, err
-		}
-		if int64(len(body)) > c.maxNZB {
-			return nil, true, fmt.Errorf("newznab: NZB exceeds %d bytes", c.maxNZB)
-		}
+	nzb, kind, ok, err := unwrapNZB(body, c.maxNZB)
+	if err != nil {
+		return nil, true, err
 	}
-	trimmed := bytes.TrimSpace(body)
-	if !bytes.Contains(bytes.ToLower(trimmed[:min(len(trimmed), 2048)]), []byte("<nzb")) {
+	if !ok {
+		// A Newznab error document (bad API key, grab limit) says why.
 		if _, perr := parseFeed(body, c.Name()); perr != nil {
 			return nil, true, perr
 		}
-		return nil, true, fmt.Errorf("newznab: response for %q is not an NZB", r.Name)
+		return nil, true, fmt.Errorf("newznab: response for %q is not an NZB: the indexer sent %s", r.Name, kind)
 	}
+	body = nzb
 	c.saveNZB(r.ID, body)
 	return body, true, nil
 }

@@ -402,7 +402,9 @@ export function IBroadcastSource({ portalToken }: { portalToken?: string }) {
   };
   async function refresh() {
     try {
-      setAccounts(await request<IBAccount[]>(base + "accounts"));
+      const list = await request<IBAccount[]>(base + "accounts");
+      // Une réponse inattendue ne doit pas casser la page « Moi ».
+      setAccounts(Array.isArray(list) ? list : []);
       setError("");
     } catch (e) {
       setError(String(e));

@@ -46,6 +46,21 @@ export {
   type TunnelFrame,
 } from "./serve.ts";
 export {
+  clearSavedCredential,
+  CredentialError,
+  noCredentialMessage,
+  pairUrlFromBase,
+  readSavedCredential,
+  resolveCredential,
+  resolveStateDir,
+  serverBase,
+  tunnelUrlFromBase,
+  writeSavedCredential,
+  PAIR_EXCHANGE_PATH,
+  TUNNEL_PATH,
+  type PairingInputs,
+} from "./pairing.ts";
+export {
   createMockHostClient,
   createTestHarness,
   assertValidViewPage,
@@ -56,6 +71,17 @@ export {
   type RecordedLog,
   type TestHarness,
 } from "./testing.ts";
+export {
+  candidateRef,
+  streamUrl,
+  type CatalogProvider,
+  type FrontendAdapter,
+  type KindMatcher,
+  type KindResolver,
+  type Matcher,
+  type SetupTester,
+} from "./kinds.ts";
+export { archiveList, parseFeed, scrapeLinks, scrapeText, type ArchiveMember, type ParsedFeed } from "./kit.ts";
 export {
   createCatalogTemplate,
   createSubtitlesTemplate,

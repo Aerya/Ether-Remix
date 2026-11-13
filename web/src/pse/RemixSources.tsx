@@ -12,7 +12,7 @@ import { UsenetProviders } from "../pages/sources/Usenet";
 import { IPTVProviders } from "../pages/sources/IPTV";
 import { ProwlarrImport } from "../components/ProwlarrImport";
 import { Drawer } from "../components/Drawer";
-import { NewReleaseBudgetSection } from "../pages/catalog/NewReleasesSettings";
+import { NewReleaseBudgetSection } from "../pages/libraries/browser/NewReleasesSettings";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const CATEGORIES = [
   ["stremio", "Stremio", "Stremio"],

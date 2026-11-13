@@ -24,16 +24,19 @@ import (
 // delivered blocks is a spare route for a file whose own edge died. The
 // evidence belongs to the account that saw it: one provider's edge says
 // nothing about another's, and a signed link's token must not leave its
-// account. Freshness is the only other admission test: an edge not seen
-// recently is not worth a probe.
+// account. Recent successes are preferred. Older provider-issued
+// authorities are retained separately as unproven candidates and require
+// the same strict probe before adoption.
 type recentEdges struct {
 	mu sync.Mutex
 	at map[string]map[string]time.Time // provider account -> edge host -> block completion
 }
 
 const (
-	recentEdgeTTL   = 10 * time.Minute
-	recentEdgeTries = 3 // remembered edges one reroute wave probes, freshest first
+	recentEdgeTTL     = 10 * time.Minute
+	edgeProbeBudget   = 2 * time.Second // one stalled edge must not consume the whole wave
+	edgeProbeCooldown = 30 * time.Second
+	recentEdgeTries   = 3 // remembered edges one reroute wave probes, freshest first
 )
 
 // record notes that host delivered a complete block for this provider
@@ -54,12 +57,7 @@ func (r *recentEdges) record(provider, host string, now time.Time) {
 		edges = map[string]time.Time{}
 		r.at[provider] = edges
 	}
-	for k, t := range edges {
-		if now.Sub(t) > recentEdgeTTL {
-			delete(edges, k)
-		}
-	}
-	edges[host] = now
+	edges[host] = now // pruning waits for freshest, which walks the map anyway
 }
 
 // freshest lists the hosts recorded for provider, freshest first, dropping
@@ -74,7 +72,11 @@ func (r *recentEdges) freshest(provider, exclude string, down func(string) bool,
 	}
 	fresh := make([]seen, 0, len(r.at[provider]))
 	for k, t := range r.at[provider] {
-		if k == exclude || now.Sub(t) > recentEdgeTTL {
+		if now.Sub(t) > recentEdgeTTL {
+			delete(r.at[provider], k) // this walk is the ledger's one prune
+			continue
+		}
+		if k == exclude {
 			continue
 		}
 		if down != nil && down(k) {
@@ -82,7 +84,12 @@ func (r *recentEdges) freshest(provider, exclude string, down func(string) bool,
 		}
 		fresh = append(fresh, seen{k, t})
 	}
-	sort.Slice(fresh, func(i, j int) bool { return fresh[i].at.After(fresh[j].at) })
+	sort.Slice(fresh, func(i, j int) bool {
+		if fresh[i].at.Equal(fresh[j].at) {
+			return fresh[i].host < fresh[j].host
+		}
+		return fresh[i].at.After(fresh[j].at)
+	})
 	out := make([]string, 0, len(fresh))
 	for _, s := range fresh {
 		out = append(out, s.host)
@@ -97,6 +104,30 @@ func (r *recentEdges) freshest(provider, exclude string, down func(string) bool,
 type servedBy struct {
 	provider string
 	host     string // req URL host of the response (its final hop)
+}
+
+// replayKey marks a media read whose link rides a remembered CDN edge
+// (Payload.OnReplayEdge). send answers the mark with the engine's
+// redirect-refusing clients.
+type replayKey struct{}
+
+func withReplay(ctx context.Context) context.Context {
+	return context.WithValue(ctx, replayKey{}, true)
+}
+
+func onReplayEdge(ctx context.Context) bool {
+	v, _ := ctx.Value(replayKey{}).(bool)
+	return v
+}
+
+// noRedirect clones a client to answer redirects instead of following
+// them. Go's client sends the outgoing URL as a Referer when it follows a
+// hop, and a replayed link's URL carries its signed token: refusing the
+// hop keeps the token inside the approved CDN.
+func noRedirect(hc *http.Client) *http.Client {
+	c := *hc
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
 }
 
 // withHost replays raw's path and query (where a link's token lives) on
@@ -129,9 +160,7 @@ func (e *Engine) probeLink(ctx context.Context, raw string, off, size int64) boo
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, end))
 	req.Header.Set("User-Agent", httpclient.UserAgent)
-	hc := *e.hc // shares the transport; a redirect stays unanswered
-	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := hc.Do(req)
+	resp, err := e.hcReplay.Do(req) // the probe, like the read, answers no redirects
 	if err != nil {
 		return false
 	}
@@ -194,9 +223,10 @@ func cdnReplayApproval(impl Provider) (cdnEdgeApprover, bool) {
 	return approver, true
 }
 
-// resumeOnAnotherEdge replays the file's current link on an edge the
-// engine has served completed blocks from for the same provider account
-// (recentEdges). While the provider pins the failed host into every
+// resumeOnAnotherEdge replays the file's current link onto a candidate
+// edge: recent completed-block hosts (recentEdges) are preferred,
+// followed by persisted provider-issued authorities from the same account
+// (knownCDNHosts). While the provider pins the failed host into every
 // regenerated link, no API answer moves the file — but the link's path and
 // token stand on another edge, which is a new route the file can take
 // without the provider's help. Only providers that opt in
@@ -208,9 +238,13 @@ func cdnReplayApproval(impl Provider) (cdnEdgeApprover, bool) {
 // host while a probe ran wins: that route is checked with the same usable
 // predicate the rest of the wave uses, and the win is reported without
 // claiming the replay. A refresh that left the file on the failed host
-// discards the stale probe and runs the fresh link through the same edge
-// list, within the wave's budget. On adoption the generation bumps the way
-// a refresh bumps it, so concurrent readers pick up the new route.
+// discards the stale probe and re-runs the wave from that snapshot — a
+// fresh link from another account carries another provider's opt-in,
+// approver and ledger, so nothing from the old snapshot may mint the next
+// request. Within the wave's budget. On adoption the generation bumps the
+// way a refresh bumps it and the payload records that it now rides a
+// remembered edge (Payload.OnReplayEdge): the media read that follows will
+// refuse redirects, keeping the token inside the approved CDN.
 func (f *remoteFile) resumeOnAnotherEdge(ctx context.Context, failed string, usable func(string) bool, start int64) (moved, replayed bool) {
 	p, gen := f.payload()
 	off := min(max(start, 0), f.size-1)
@@ -222,28 +256,103 @@ func (f *remoteFile) resumeOnAnotherEdge(ctx context.Context, failed string, usa
 			return false, false
 		}
 		hosts := f.e.recent.freshest(p.Provider, urlHost(failed), f.e.backoff.down, f.e.now())
-		if len(hosts) > recentEdgeTries {
-			hosts = hosts[:recentEdgeTries] // probe the freshest few, not the whole map
-		}
+		hosts = append(hosts, f.e.svc.knownCDNHosts(ctx, p.Provider)...)
+		seen := make(map[string]bool)
+		unique := make([]string, 0, len(hosts))
 		for _, host := range hosts {
+			if !seen[host] {
+				seen[host] = true
+				unique = append(unique, host)
+			}
+		}
+		hosts = unique
+		cursorKey := p.Provider
+		f.mu.Lock()
+		cursor := ""
+		if f.edgeCursorKey == cursorKey {
+			cursor = f.edgeCursorHost
+		}
+		f.mu.Unlock()
+		// A fast refusal consumes a probe too. Continue beyond the last
+		// attempted host, even after a token refresh, so early failures cannot hide a
+		// healthy candidate later in the list on every recovery wave.
+		for i, host := range hosts {
+			if host == cursor {
+				hosts = append(append([]string(nil), hosts[i+1:]...), hosts[:i+1]...)
+				break
+			}
+		}
+		tries := 0
+		for _, host := range hosts {
+			if ctx.Err() != nil {
+				return false, false
+			}
+			if host == urlHost(failed) || f.e.backoff.down(host) {
+				continue
+			}
 			if !approver.approvesCDNEdge(p.URL, host) {
 				continue // never hand the token to a host outside this provider's CDN
 			}
 			u := withHost(p.URL, host)
-			if u == "" || u == p.URL || !f.e.probeLink(ctx, u, off, f.size) {
+			if u == "" || u == p.URL {
 				continue
 			}
+			key := p.Provider + "|" + u
 			f.mu.Lock()
+			now := f.e.now()
+			for k, until := range f.edgeProbeAfter {
+				if !now.Before(until) {
+					delete(f.edgeProbeAfter, k)
+				}
+			}
+			wait := now.Before(f.edgeProbeAfter[key])
+			f.mu.Unlock()
+			if wait {
+				continue
+			}
+			if tries >= recentEdgeTries {
+				break
+			}
+			tries++
+			f.mu.Lock()
+			f.edgeCursorKey, f.edgeCursorHost = cursorKey, host
+			f.mu.Unlock()
+			pctx, cancel := context.WithTimeout(ctx, edgeProbeBudget)
+			probed := f.e.probeLink(pctx, u, off, f.size)
+			timedOut := pctx.Err() != nil && ctx.Err() == nil
+			cancel()
+			f.mu.Lock()
+			if ctx.Err() != nil {
+				f.mu.Unlock()
+				return false, false
+			}
 			if f.gen != gen { // a refresh or adopt moved the link while the probe ran
 				p, gen = f.pl, f.gen
 				f.mu.Unlock()
 				if usable(p.URL) { // whoever moved the file took it to a live route: they won
 					return true, false
 				}
-				changed = true // the fresh link may still ride an edge; re-run the wave with it
-				continue
+				// The next request must be vetted and minted by the NEW
+				// snapshot's provider: an old account's edge may not
+				// accept the new account's token, and only the new
+				// account's ledger may be probed with it at all. A probe
+				// that never answered bytes must notice the move too:
+				// the next candidate would be minted from the old token.
+				changed = true
+				break // rebuild approver and candidate list, then re-run the wave
+			}
+			if !probed {
+				if f.edgeProbeAfter == nil {
+					f.edgeProbeAfter = make(map[string]time.Time)
+				}
+				if timedOut && len(f.edgeProbeAfter) < knownEdgeLimit {
+					f.edgeProbeAfter[key] = f.e.now().Add(edgeProbeCooldown)
+				}
+				f.mu.Unlock()
+				continue // same snapshot, unresponsive candidate: try the next
 			}
 			f.pl.URL = u
+			f.pl.OnReplayEdge = true // the read that follows must not hop off this edge
 			f.gen++
 			f.mu.Unlock()
 			return true, true

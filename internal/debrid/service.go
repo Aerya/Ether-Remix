@@ -85,6 +85,8 @@ type Service struct {
 	entries []*entry          // configured providers in priority order
 	plugins map[string]*entry // native plugin providers, not serialized into config
 
+	cdnEdges knownCDNEdges
+
 	knownMu sync.Mutex
 	known   map[string]knownState // providerID|hash
 
@@ -722,6 +724,7 @@ func (s *Service) storedPayload(ctx context.Context, key string) (Payload, bool)
 }
 
 func (s *Service) savePayload(ctx context.Context, p Payload) {
+	s.rememberCDNEdge(ctx, p)
 	if s.db == nil || p.Key == "" {
 		return
 	}
@@ -1380,7 +1383,11 @@ func (s *Service) relink(ctx context.Context, e *entry, p Payload) (Payload, err
 	e.release()
 	if err == nil {
 		s.noteLatency(e.cfg.ID, func(l *Latency) { l.LinkMs = ewma(l.LinkMs, ms(s.now().Sub(start)), l.Samples == 0) })
-		p.URL, p.Expires = dl.URL, dl.Expires
+		// The provider re-signed the link: it stands on the host the
+		// provider names, so any replay provenance the payload carried ends
+		// right here — and ends before the save, because a stored link is
+		// reused verbatim and must not come back wearing the old marker.
+		p.URL, p.Expires, p.OnReplayEdge = dl.URL, dl.Expires, false
 		e.count(func(st *ProviderStats) { st.LinksRefreshed++ })
 		s.savePayload(ctx, p)
 		return p, nil

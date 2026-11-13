@@ -25,6 +25,7 @@ package admin
 import (
 	"context"
 	"embed"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -39,6 +40,9 @@ import (
 
 //go:embed all:dist
 var distFS embed.FS
+
+//go:embed placeholder.html
+var placeholderHTML []byte
 
 // RedactedSecret is the placeholder shown in place of a stored secret.
 // A PUT that sends it back unchanged preserves the stored value.
@@ -105,7 +109,7 @@ type StatusFuncE func(ctx context.Context) (any, error)
 // dependencies (Plex sign-in, testers, traces, users, personalization,
 // collections, catalogue helper, image proxy) are required. Only the
 // tuning knobs, Logger/Logs, the dashboard status providers, Extensions,
-// ValidateExtra and DiskUsage have defaults or may be left empty.
+// ValidateExtra, DiskUsage and UI have defaults or may be left empty.
 type Deps struct {
 	ViewerCatalogRules ViewerCatalogRules
 	Frontends          FrontendAdmin
@@ -158,6 +162,9 @@ type Deps struct {
 	Support *diagnostics.Recorder
 	// Version is reported by /ether/api/bootstrap ("dev" when empty).
 	Version string
+	// UI overrides the embedded console bundle (tests). Nil serves the
+	// embedded internal/admin/dist directory.
+	UI fs.FS
 
 	// PlexAuth drives wizard step 1 (plex.tv PIN sign-in and claim).
 	PlexAuth PlexAuth
@@ -178,6 +185,7 @@ type Deps struct {
 	TestDebrid        func(ctx context.Context, p config.DebridProvider) error
 	TestTMDB          func(ctx context.Context, key string) error
 	TestOpenSubtitles func(ctx context.Context, cfg config.OpenSubtitles) error
+	TestSubDL         func(ctx context.Context, cfg config.SubDL) error
 	TestLLM           func(ctx context.Context, cfg config.LLM) error
 	// LLMModels lists the models the provider in cfg offers.
 	LLMModels func(ctx context.Context, cfg config.LLM) ([]LLMModel, error)
@@ -185,6 +193,10 @@ type Deps struct {
 	// TestIntroDB probes TheIntroDB with the posted key, or the stored key
 	// when the post is empty or still redacted.
 	TestIntroDB func(ctx context.Context, apiKey string) error
+	// TestSkipDB probes SkipDB with the posted key, or the stored key when
+	// the post is empty or still redacted. Reading is open, so an empty key
+	// probes the public API.
+	TestSkipDB func(ctx context.Context, apiKey string) error
 
 	// Dashboard status providers. Each non-nil provider appears on the
 	// dashboard and at /ether/api/status/{name}.
@@ -250,8 +262,9 @@ type Deps struct {
 	CatalogHelper CatalogHelper
 	// TitleSchedules backs the catalogue drawer's episode and release tabs;
 	// nil disables them.
-	TitleSchedules    TitleSchedules
-	CatalogVisibility func(context.Context, []core.LibraryExclusion, string) (any, error)
+	TitleSchedules      TitleSchedules
+	CatalogVisibility   func(context.Context, []core.LibraryExclusion, string, core.LibraryID) (any, error)
+	LibraryBrowseFilter func(context.Context, core.LibraryID, core.Filter) (core.Filter, error)
 	// WaitingReleaseKeys are in-window movies still hidden from viewers.
 	// Nil leaves the waiting catalog filter empty.
 	WaitingReleaseKeys func(context.Context) []core.RatingKey
@@ -267,12 +280,20 @@ type Deps struct {
 	// Nil hides the routes.
 	PlexWatch PlexWatch
 
+	// Trakt is the per-viewer Trakt OAuth device-code integration.
+	// Nil answers 503.
+	Trakt Trakt
+
 	// Prerolls backs /api/admin/prerolls*. Nil hides the routes.
 	Prerolls Prerolls
 
 	// PlexServers is watch sync with owner-run Plex Media Servers. Nil
 	// hides the routes.
 	PlexServers PlexServers
+
+	// SharePlexViewer grants library access on plex.tv to the given username,
+	// email or user ID for this server. Nil ignores cloud library sharing.
+	SharePlexViewer func(ctx context.Context, usernameOrEmail string, userID int64) error
 }
 
 // Handler is the admin HTTP handler. Use NewHandler when you need access
@@ -283,6 +304,8 @@ type Handler struct {
 	logs           *LogBuffer
 	mux            *http.ServeMux
 	version        string
+	ui             fs.FS
+	scriptCSP      string
 	pins           *pinHandles
 	portalPins     *pinHandles
 	linkPins       *pinHandles
@@ -311,7 +334,12 @@ func NewHandler(deps Deps) *Handler {
 	if version == "" {
 		version = "dev"
 	}
-	h := &Handler{deps: deps, log: deps.Logger, logs: deps.Logs, version: version, pins: newPINHandles(), portalPins: newPINHandles(), linkPins: newPINHandles(), authLimit: newAuthLimiter(), loginBodySlots: make(chan struct{}, 32)}
+	scriptCSP := consoleScriptPolicy()
+	if deps.UI != nil {
+		index, _ := fs.ReadFile(deps.UI, "index.html")
+		scriptCSP = scriptPolicy(index)
+	}
+	h := &Handler{deps: deps, log: deps.Logger, logs: deps.Logs, version: version, ui: deps.UI, scriptCSP: scriptCSP, pins: newPINHandles(), portalPins: newPINHandles(), linkPins: newPINHandles(), authLimit: newAuthLimiter(), loginBodySlots: make(chan struct{}, 32)}
 	h.mux = h.routes()
 	return h
 }
@@ -366,6 +394,10 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/me/apps", h.portalConnectApps)
 	mux.HandleFunc("/api/me/media/", h.portalOwnedMedia)
 	mux.HandleFunc("POST /api/me/apps/{surface}", h.portalConnectApps)
+	mux.HandleFunc("GET /api/me/trakt", h.portalTraktStatus)
+	mux.HandleFunc("POST /api/me/trakt/device", h.portalTraktStart)
+	mux.HandleFunc("POST /api/me/trakt/poll", h.portalTraktPoll)
+	mux.HandleFunc("POST /api/me/trakt/disconnect", h.portalTraktDisconnect)
 	mux.HandleFunc("POST /api/me/link/plex", h.limitIdentityAuth(h.handlePlexLinkStart))
 	mux.HandleFunc("GET /api/me/link/plex/{handle}", h.limitIdentityPoll(h.handlePlexLinkPoll))
 	mux.HandleFunc("POST /api/me/invite", h.handleInviteCreate)
@@ -422,11 +454,13 @@ func (h *Handler) routes() *http.ServeMux {
 	api("POST /api/debrid/providers/{id}/key", h.handlePseDebridKey) // PSE-HOOK: affichage ponctuel réservé au propriétaire.
 	api("POST /api/test/tmdb", h.handleTestTMDB)
 	api("POST /api/test/opensubtitles", h.handleTestOpenSubtitles)
+	api("POST /api/test/subdl", h.handleTestSubDL)
 	api("POST /api/test/llm", h.handleTestLLM)
 	api("GET /api/llm/providers", h.handleLLMProviders)
 	api("POST /api/llm/models", h.handleLLMModels)
 	api("POST /api/test/trakt", h.handleTestTrakt)
 	api("POST /api/test/introdb", h.handleTestIntroDB)
+	api("POST /api/test/skipdb", h.handleTestSkipDB)
 	api("POST /api/outbound/check", h.handleOutboundCheck)
 
 	api("GET /api/dashboard", h.handleDashboard)
@@ -490,6 +524,7 @@ func (h *Handler) routes() *http.ServeMux {
 	h.collectionRoutes(mux, api)
 	h.prerollRoutes(api)
 	h.plexServerRoutes(api)
+	h.viewersPlexImportRoutes(api)
 
 	mux.HandleFunc("/api/", h.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")

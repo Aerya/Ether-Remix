@@ -20,7 +20,8 @@ import { TestButton, type TestState } from "../../components/fields";
 import { IntegrationAppCard } from "../../components/IntegrationAppCard";
 import { PseScrobCard } from "../../pse/ScrobCard"; // PSE-HOOK: voir docs/pse/FORK.fr.md
 import { secretConfigured } from "../../components/IntegrationAccount";
-import { SimklMark, TraktMark, TmdbMark } from "../../components/integration-brands";
+import { MDBListMark, SimklMark, TraktMark, TmdbMark } from "../../components/integration-brands";
+import { useOwnerViewerPath } from "../../components/pickers";
 import { SaveBar } from "../../components/SaveBar";
 import { LevelBadge } from "../../components/status";
 import { localized, t, tx } from "../../i18n";
@@ -30,6 +31,7 @@ import type { EtherConfig } from "../../lib/types";
 import { PosterAccounts } from "./PosterAccounts";
 import { RatingSources, type RatingSettings } from "../metadata/Ratings";
 import { SimklSettings } from "./SimklIntegration";
+import { MDBListSettings } from "./MDBListIntegration";
 import { PlexServers, PlexServersCard } from "./PlexServers";
 import { LanguageFeatures } from "./LanguageFeatures";
 import { LanguageModelSettings } from "./LanguageModel";
@@ -48,9 +50,11 @@ export type ServiceTab =
   | "tmdb"
   | "trakt"
   | "simkl"
+  | "mdblist"
   | "plexservers"
   | "llm"
   | "opensubtitles"
+  | "subdl"
   | "ratings"
   | "introdb";
 
@@ -64,8 +68,10 @@ const TAB_ORDER: ServiceTab[] = [
   "tmdb",
   "trakt",
   "simkl",
+  "mdblist",
   "llm",
   "opensubtitles",
+  "subdl",
   "ratings",
   "introdb",
 ];
@@ -84,9 +90,11 @@ export function integrationTabs(
     tmdb: "TMDB",
     trakt: "Trakt",
     simkl: "Simkl",
-    plexservers: t("Plex watch sync"),
+    mdblist: "MDBList",
+    plexservers: t("Plex Media Server Sync"),
     llm: t("Language model"),
     opensubtitles: "OpenSubtitles",
+    subdl: "SubDL",
     ratings: t("Ratings"),
     introdb: "TheIntroDB",
   };
@@ -100,7 +108,8 @@ export function integrationTabs(
 
 interface Service {
   tab: Exclude<ServiceTab, "overview" | "ratings">;
-  configKey: "plexServers" | "trakt" | "simkl" | "llm" | "openSubtitles" | "markers";
+  configKey:
+    "plexServers" | "trakt" | "simkl" | "mdblist" | "llm" | "openSubtitles" | "subdl" | "markers";
   endpoint: string;
   /** Boolean this card's switch writes. Omitted fields stay stored. */
   flag: "enabled" | "theIntroDb";
@@ -127,7 +136,7 @@ const SERVICES: Service[] = localized(() => [
     configKey: "plexServers",
     endpoint: "plexservers",
     flag: "enabled",
-    label: t("Plex watch sync"),
+    label: t("Plex Media Server Sync"),
     groups: [],
   },
   {
@@ -154,6 +163,15 @@ const SERVICES: Service[] = localized(() => [
     ),
     blockEnable: (v) => (String(v.clientId ?? "").trim() ? null : t("Needs a client ID")),
     requiredField: "clientId",
+  },
+  {
+    tab: "mdblist",
+    configKey: "mdblist",
+    endpoint: "mdblist",
+    flag: "enabled",
+    label: "MDBList",
+    groups: [],
+    form: ({ footer }) => <MDBListSettings footer={footer} />,
   },
   {
     tab: "llm",
@@ -185,6 +203,16 @@ const SERVICES: Service[] = localized(() => [
     groups: S.OPENSUBTITLES,
     testLabel: t("Test OpenSubtitles"),
     test: (v) => api.testOpenSubtitles(v as EtherConfig["openSubtitles"]),
+  },
+  {
+    tab: "subdl",
+    configKey: "subdl",
+    endpoint: "subdl",
+    flag: "enabled",
+    label: "SubDL",
+    groups: S.SUBDL,
+    testLabel: t("Test SubDL"),
+    test: (v) => api.testSubDL(v as EtherConfig["subdl"]),
   },
   {
     tab: "introdb",
@@ -331,6 +359,11 @@ function mergeSection(
         },
       };
     }
+    case "mdblist":
+      return {
+        ...base,
+        mdblist: { enabled: boolField(section, "enabled", base.mdblist?.enabled ?? false) },
+      };
     case "llm":
       return {
         ...base,
@@ -353,6 +386,19 @@ function mergeSection(
           apiKey: textField(section, "apiKey", base.openSubtitles.apiKey),
           username: textField(section, "username", base.openSubtitles.username),
           password: textField(section, "password", base.openSubtitles.password),
+          automaticPreferred: boolField(
+            section,
+            "automaticPreferred",
+            base.openSubtitles.automaticPreferred ?? false,
+          ),
+        },
+      };
+    case "subdl":
+      return {
+        ...base,
+        subdl: {
+          enabled: boolField(section, "enabled", base.subdl?.enabled ?? false),
+          apiKey: textField(section, "apiKey", base.subdl?.apiKey ?? ""),
         },
       };
     case "markers": {
@@ -403,6 +449,7 @@ export function ConnectedServices({
 }) {
   const { refreshDashboard } = useApp();
   const navigate = useNavigate();
+  const ownerPath = useOwnerViewerPath();
   const { tab: requested } = useParams();
   const config = useAsync(() => api.getConfig(), []);
   const ratings = useAsync(() => apiFetch<RatingSettings>("/discovery/ratings/settings"), []);
@@ -880,7 +927,7 @@ export function ConnectedServices({
             name="TMDB"
             enabled
             ready={secretConfigured(stored?.catalog?.tmdbKey)}
-            href="/catalog"
+            href="/libraries"
             usage={t("Names titles and supplies artwork throughout the catalog.")}
           >
             {tmdbForm}
@@ -927,20 +974,28 @@ export function ConnectedServices({
               disabled={locked}
               test={testButton}
               href={
-                s.tab === "introdb" || s.tab === "opensubtitles"
+                s.tab === "introdb" || s.tab === "opensubtitles" || s.tab === "subdl"
                   ? "/playback/extras"
                   : s.tab === "llm"
                     ? "/home"
-                    : "/viewers"
+                    : s.tab === "trakt"
+                      ? ownerPath === "/viewers"
+                        ? "/viewers"
+                        : `${ownerPath}/limits`
+                      : "/viewers"
               }
               usage={
                 s.tab === "introdb"
                   ? t("Choose intro lookups in Playback › Extras.")
-                  : s.tab === "opensubtitles"
+                  : s.tab === "opensubtitles" || s.tab === "subdl"
                     ? t("Supplies subtitles during playback.")
                     : s.tab === "llm"
                       ? t("Powers search, collections and Home recommendations.")
-                      : t("Connect viewer accounts to sync watch history.")
+                      : s.tab === "trakt"
+                        ? t(
+                            "Connect Trakt under each viewer's Limits tab, or let viewers connect at /ether/me.",
+                          )
+                        : t("Connect viewer accounts to sync watch history.")
               }
             >
               {s.form ? (
@@ -1157,6 +1212,18 @@ function ServiceOverview({
           configureHref="/services/simkl"
           configureLabel={on("simkl") ? t("Manage Simkl") : t("Set up Simkl")}
         />
+        <IntegrationAppCard
+          identity={{ id: "mdblist", name: "MDBList" }}
+          logo={<MDBListMark />}
+          description={t("Sync watch history with MDBList. Each viewer pastes their own API key.")}
+          status={switchStatus(on("mdblist"), true, "")}
+          enabled={on("mdblist")}
+          busy={locked || busyId === "mdblist"}
+          disabled={switchesHeld}
+          onToggle={(next) => onToggle(service("mdblist"), next)}
+          configureHref="/services/mdblist"
+          configureLabel={on("mdblist") ? t("Manage MDBList") : t("Set up MDBList")}
+        />
         <PseScrobCard identity={{ id: "pse-scrob", name: "Scrob" }} />
         {/* PSE-HOOK: carte Scrob (suivi du visionnage) — voir docs/pse/FORK.fr.md */}
         <PlexServersCard
@@ -1199,6 +1266,17 @@ function ServiceOverview({
           configureLabel={
             on("opensubtitles") ? t("Manage OpenSubtitles") : t("Set up OpenSubtitles")
           }
+        />
+        <IntegrationAppCard
+          identity={{ id: "subdl", name: "SubDL" }}
+          description={t("Fetch subtitles from SubDL when a release doesn't include them.")}
+          status={switchStatus(on("subdl"), Boolean(saved("subdl").apiKey), t("Needs an API key"))}
+          enabled={on("subdl")}
+          busy={locked || busyId === "subdl"}
+          disabled={switchesHeld}
+          onToggle={(next) => onToggle(service("subdl"), next)}
+          configureHref="/services/subdl"
+          configureLabel={on("subdl") ? t("Manage SubDL") : t("Set up SubDL")}
         />
         <IntegrationAppCard
           identity={{ id: "introdb", name: "TheIntroDB" }}

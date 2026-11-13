@@ -50,7 +50,7 @@ export const pseStremioText = {
   add: () => L("Ajouter un addon", "Add an addon"),
   indexersEmpty: () =>
     L(
-      "Ajoutez un site ou un indexeur Newznab ou Torznab pour qu'Ether trouve des releases. Les addons Stremio ont leur propre onglet.",
-      "Add a site or a Newznab or Torznab indexer so Ether can find releases. Stremio addons have their own tab.",
+      "Ajoutez un site, un indexeur Newznab ou Torznab ou une instance Zilean pour qu'Ether trouve des releases. Les addons Stremio ont leur propre onglet.",
+      "Add a site, a Newznab or Torznab indexer or a Zilean instance so Ether can find releases. Stremio addons have their own tab.",
     ),
 };

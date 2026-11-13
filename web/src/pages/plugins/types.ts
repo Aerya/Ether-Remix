@@ -23,6 +23,8 @@ export interface PluginSummary {
   health: string;
   /** The plain-language reason behind a non-ok health. */
   healthReason?: string;
+  /** "waiting" while a plugin that runs as its own program has no sidecar connected. */
+  healthSidecar?: string;
   capabilities?: string[];
   sourceKind?: string;
   stremioOnly?: boolean;
@@ -45,6 +47,8 @@ export interface PluginHealth {
   egressBytes: number;
   /** Resolves since its last complete ranking that left its ranking step out for running out of time. */
   rankingSkipped?: number;
+  /** "waiting" while a plugin that runs as its own program has no sidecar connected. */
+  sidecar?: string;
   rankingSkippedAt?: string;
 }
 
@@ -87,8 +91,17 @@ export interface PluginManifest {
     repo?: string;
     icon?: string;
     runtime?: { kind?: string; entry?: string; module?: string };
+    /** How to run a remote plugin's program (sidecars). */
+    sidecar?: {
+      docker?: string;
+      download?: string;
+      command?: string;
+      docs?: string;
+    };
     permissions?: DeclaredPermissions;
     contributes?: {
+      mediaKinds?: { key: string; label: string; library: { name: string } }[];
+      setup?: { steps: { key: string; label: string; required: boolean }[] };
       events?: { subscribe?: string[] };
       pages?: { key: string; label: string; route: string }[];
       slots?: { slot: string; key: string; label: string; route: string }[];
@@ -128,6 +141,8 @@ export interface PluginDetail extends PluginSummary {
 
 export interface InstallPreview {
   manifest: PluginManifest;
+  /** Manifest summary with any "$t:" reference resolved by the server. */
+  summary?: string;
   permissions: string[];
   needsViewers: boolean;
   needsFolders: boolean;
@@ -434,7 +449,8 @@ export function buildPlacements(descriptors: Descriptor[], pluginId: string): Pl
         const meta = (isPlainObject(d.meta) ? d.meta : {}) as { slot?: string };
         area = t("Console slot");
         if (meta.slot === "dashboard.panel") href = "/";
-        else if (meta.slot === "title.panel" || meta.slot === "actionMenu.title") href = "/catalog";
+        else if (meta.slot === "title.panel" || meta.slot === "actionMenu.title")
+          href = "/libraries";
         else if (meta.slot === "viewer.tab" || meta.slot === "actionMenu.viewer") href = "/viewers";
         else if (meta.slot === "actionMenu.collection") href = "/collections";
         else if (meta.slot === "actionMenu.release") href = "/releases";

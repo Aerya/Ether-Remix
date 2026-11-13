@@ -101,6 +101,11 @@ type Engine struct {
 	gate    *hostGate
 	backoff *hostBackoff
 
+	// hcReplay and hedgeReplay refuse redirects: media reads whose link
+	// rides a remembered edge run through them, so a signed URL (and its
+	// token, as Go's Referer) never hops to an unvetted host.
+	hcReplay, hedgeReplay *http.Client
+
 	// recent records edges that served completed media blocks, per provider
 	// account, so a file whose provider-pinned edge died can replay its
 	// link on another edge of the same account (see reroute).
@@ -226,6 +231,8 @@ func NewEngine(svc *Service, opts EngineOptions) *Engine {
 		owned = append(owned, t)
 		e.hedge = client(t)
 	}
+	e.hcReplay = noRedirect(e.hc)
+	e.hedgeReplay = noRedirect(e.hedge)
 	limit.closeIdle = func() {
 		for _, t := range owned {
 			t.CloseIdleConnections()
@@ -545,11 +552,16 @@ type remoteFile struct {
 	mu              sync.Mutex
 	pl              Payload
 	gen             int
-	linkFails       int           // link generations that failed in a row
-	failedGen       int           // last generation counted in linkFails (-1 = none)
-	rerouteAt       time.Time     // next link-regeneration wave allowed after a host failure
-	rerouteSem      chan struct{} // one reroute wave at a time; waiters reuse its result
-	mediaHealthyKey string        // a shared cooldown must not interrupt another healthy file
+	linkFails       int                  // link generations that failed in a row
+	failedGen       int                  // last generation counted in linkFails (-1 = none)
+	replayAt        time.Time            // replay probes have their own pacing, independent of API backoff
+	edgeProbeAfter  map[string]time.Time // failed probes are specific to this file and signed URL
+	replayURL       string               // a newly signed link may be probed immediately
+	edgeCursorKey   string               // provider whose candidates were last probed for this file
+	edgeCursorHost  string               // last actual probe; next wave starts after this host
+	rerouteAt       time.Time            // next link-regeneration wave allowed after a host failure
+	rerouteSem      chan struct{}        // one reroute wave at a time; waiters reuse its result
+	mediaHealthyKey string               // a shared cooldown must not interrupt another healthy file
 	mediaPauseKey   string
 	mediaPause      mediaPause
 
@@ -631,6 +643,7 @@ func (f *remoteFile) adopt(p Payload) {
 		// to the right place.
 		f.pl.URL, f.pl.Expires = p.URL, p.Expires
 		f.pl.Provider, f.pl.Kind, f.pl.TorrentID, f.pl.FileID, f.pl.Link = p.Provider, p.Kind, p.TorrentID, p.FileID, p.Link
+		f.pl.OnReplayEdge = p.OnReplayEdge // a provider link arrives unmarked; a resumed replay stays marked
 		f.gen++
 	}
 }
@@ -643,32 +656,33 @@ func (f *remoteFile) payload() (Payload, int) {
 	return f.pl, f.gen
 }
 
-// link returns a usable URL, refreshing when the current one is stale or
-// (force) failed at generation gen.
-func (f *remoteFile) link(ctx context.Context, force bool, gen ...int) (string, int, error) {
+// link returns the file's current link as one snapshot (its URL, provider
+// account and replay marker travel together), refreshing when the current
+// one is stale or (force) failed at generation gen.
+func (f *remoteFile) link(ctx context.Context, force bool, gen ...int) (Payload, int, error) {
 	p, g := f.payload()
 	if !force && f.e.svc.fresh(p) {
-		return p.URL, g, nil
+		return p, g, nil
 	}
 	f.linkMu.Lock()
 	defer f.linkMu.Unlock()
 	p, g = f.payload()
 	if force && len(gen) > 0 && g != gen[0] {
-		return p.URL, g, nil // someone else already refreshed
+		return p, g, nil // someone else already refreshed
 	}
 	if !force && f.e.svc.fresh(p) {
-		return p.URL, g, nil
+		return p, g, nil
 	}
 	out, err := f.e.svc.Refresh(ctx, p, force)
 	if err != nil {
 		f.e.stats.errors.Add(1)
-		return "", g, err
+		return Payload{}, g, err
 	}
 	f.e.stats.refreshes.Add(1)
 	f.mu.Lock()
 	if out.Size != f.size {
 		f.mu.Unlock()
-		return "", g, fmt.Errorf("debrid: %s changed size: %w", p.Name(), core.ErrArticleCorrupt)
+		return Payload{}, g, fmt.Errorf("debrid: %s changed size: %w", p.Name(), core.ErrArticleCorrupt)
 	}
 	moved := out.TorrentID != p.TorrentID || out.Provider != p.Provider
 	f.pl = out
@@ -678,7 +692,7 @@ func (f *remoteFile) link(ctx context.Context, force bool, gen ...int) (string, 
 	if moved {
 		f.e.kickLeases() // lease the torrent the file now streams from
 	}
-	return out.URL, g, nil
+	return out, g, nil
 }
 
 // moveFromHost changes provider without regenerating links on the blocked host.
@@ -712,19 +726,11 @@ const (
 	rerouteCooldown = 20 * time.Second // after a wave that found none
 )
 
-// reroute replaces the link of a file whose CDN node failed a request. The
-// providers balance fresh links across edge nodes (TorBox requestdl, Real-
-// Debrid and AllDebrid unrestrict, Premiumize directdl), so a new link for
-// the same file usually lands on a live node and the byte range resumes
-// there: same file, same offsets. A link on the failed node, or on another
-// node that keeps failing, is not a new route, so one wave asks for up to
-// rerouteLinks links and then for the same file on another provider.
-// Readers that failed together share one wave, and waves are spaced per
-// file, so an outage cannot loop on the provider API. When the provider
-// pins the failed node into every regenerated link, the wave's last move
-// is replaying the file's link on a CDN edge the engine has seen live
-// (resumeOnAnotherEdge). It reports whether the file now streams from
-// another node.
+// reroute first tries the existing signed link on another approved edge.
+// Replay and provider API refresh have independent budgets and pacing:
+// an unresponsive API or a sticky routing answer must not suppress replay.
+// Readers share one wave. A changed URL can be probed immediately, while
+// identical failed probes and API waves remain bounded separately.
 func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start int64) bool {
 	if f.e.svc == nil || f.e.backoff == nil {
 		return false
@@ -739,27 +745,61 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 		return false
 	}
 	defer func() { <-f.rerouteSem }()
-	if p, g := f.payload(); g != gen && usable(p.URL) {
-		return true // a reader that failed alongside this one already moved the file
-	}
-	f.mu.Lock()
-	if f.e.now().Before(f.rerouteAt) {
-		f.mu.Unlock()
+	if ctx.Err() != nil {
 		return false
 	}
+	if p, g := f.payload(); g != gen && usable(p.URL) {
+		return true
+	}
+	replay := func() bool {
+		p, _ := f.payload()
+		f.mu.Lock()
+		replayKey := p.Provider + "|" + p.URL
+		due := replayKey != f.replayURL || !f.e.now().Before(f.replayAt)
+		if due {
+			f.replayURL = replayKey
+			f.replayAt = f.e.now().Add(rerouteSpacing)
+		}
+		f.mu.Unlock()
+		if !due || ctx.Err() != nil {
+			return false
+		}
+		rctx, cancel := context.WithTimeout(ctx, rerouteBudget)
+		moved, replayed := f.resumeOnAnotherEdge(rctx, failed, usable, start)
+		cancel()
+		if replayed {
+			f.mu.Lock()
+			f.replayURL = ""
+			f.replayAt = time.Time{}
+			f.mu.Unlock()
+			np, _ := f.payload()
+			f.e.log.Info("debrid media link replayed on an approved edge", "release", f.id,
+				"failedHost", urlHost(failed), "host", urlHost(np.URL))
+		}
+		return moved
+	}
+	// This is deliberately above the API cooldown, with its own context.
+	if replay() {
+		return true
+	}
+	f.mu.Lock()
+	apiDue := !f.e.now().Before(f.rerouteAt)
 	f.mu.Unlock()
+	if !apiDue || ctx.Err() != nil {
+		return false
+	}
 	wctx, cancel := context.WithTimeout(ctx, rerouteBudget)
-	defer cancel()
 	p, _ := f.payload()
 	moved := false
 	for i := 1; i <= rerouteLinks && !moved; i++ {
-		u, g, err := f.link(wctx, true, gen)
+		lp, g, err := f.link(wctx, true, gen)
 		if err != nil {
 			f.e.log.Warn("debrid link refresh after media host failure failed", "release", f.id,
 				"provider", p.Provider, "failedHost", urlHost(failed), "err", sanitize(err))
 			break
 		}
 		gen = g
+		u := lp.URL
 		moved = usable(u)
 		f.e.log.Info("debrid link refreshed after media host failure", "release", f.id, "provider", p.Provider,
 			"failedHost", urlHost(failed), "host", urlHost(u), "attempt", i, "newHost", moved)
@@ -771,14 +811,11 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 				"failedHost", urlHost(failed), "provider", np.Provider, "host", urlHost(np.URL))
 		}
 	}
-	if !moved && wctx.Err() == nil {
-		var replayed bool
-		moved, replayed = f.resumeOnAnotherEdge(wctx, failed, usable, start)
-		if replayed { // moved without replayed: a refresh won the move, not this wave
-			np, _ := f.payload()
-			f.e.log.Info("debrid media link replayed on an edge seen live", "release", f.id,
-				"failedHost", urlHost(failed), "host", urlHost(np.URL))
-		}
+	cancel()
+	// A refresh may have supplied a new token on the same pinned host.
+	// Probe it with the replay budget, never with the exhausted API budget.
+	if !moved {
+		moved = replay()
 	}
 	wait := rerouteSpacing
 	if !moved {
@@ -867,6 +904,34 @@ func (f *remoteFile) diskGet(idx int64) ([]byte, bool) {
 		return nil, false
 	}
 	return raw[8:], true
+}
+
+// segmentPeeker is the segment cache's cheap presence check
+// (segcache.Cache.Peek): header and payload prefix only.
+type segmentPeeker interface {
+	Peek(releaseID string, segment, n int) ([]byte, int64, bool)
+}
+
+// diskHas reports whether this file's block idx is on disk, checking its
+// size and file tag without reading the block. Preload verification uses
+// it; diskGet read and checksummed every shelved block on each pass.
+func (f *remoteFile) diskHas(idx int64) bool {
+	if f.e.cache == nil {
+		return false
+	}
+	p, ok := f.e.cache.(segmentPeeker)
+	if !ok {
+		_, ok = f.diskGet(idx)
+		return ok
+	}
+	prefix, size, ok := p.Peek(f.id, int(idx), 8)
+	if !ok || size != 8+f.blockLen(idx) || !bytes.Equal(prefix, f.tag[:]) {
+		f.bmu.Lock()
+		delete(f.stored, idx)
+		f.bmu.Unlock()
+		return false
+	}
+	return true
 }
 
 func (f *remoteFile) diskPut(idx int64, data []byte) {
@@ -1094,8 +1159,15 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			}
 			f.e.log.Warn("debrid body interrupted; retrying same file", "release", f.id,
 				"offset", idx*f.e.block, "attempt", bodyRetries, "err", sanitize(err))
-			if bodyRetries == 1 {
-				_, gen := f.payload()
+			p, gen := f.payload()
+			if errors.Is(err, errBodyStalled) && served.host != "" &&
+				!p.IsDirect() && !p.IsPluginProvider() &&
+				served.provider == p.Provider && served.host == urlHost(p.URL) {
+				// Valid headers do not prove that this host can deliver a block.
+				// Route a stalled body through the same bounded recovery as a
+				// failed connection, preserving the first incomplete offset.
+				f.reroute(reqCtx, p.URL, gen, idx*f.e.block)
+			} else if bodyRetries == 1 {
 				f.moveFromHost(reqCtx, gen)
 			}
 			body, tm, served, err = f.rangeGet(httpCtx, idx*f.e.block, end, mode == fetchUrgent || mode == fetchDurable)
@@ -1315,17 +1387,21 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 				return nil, timing{}, servedBy{}, err
 			}
 		}
-		u, gen, err := f.link(ctx, false)
+		// One snapshot for the whole request: its URL, provider account
+		// and replay marker cannot straddle an adopt between two reads.
+		snap, gen, err := f.link(ctx, false)
 		if err != nil {
 			return nil, timing{}, servedBy{}, err
 		}
+		u := snap.URL
 		if attempt == 0 && f.e.backoff != nil && f.e.backoff.down(urlHost(u)) && f.reroute(ctx, u, gen, start) {
 			// The link points at a node other requests just found dead.
-			if u, gen, err = f.link(ctx, false); err != nil {
+			if snap, gen, err = f.link(ctx, false); err != nil {
 				return nil, timing{}, servedBy{}, err
 			}
+			u = snap.URL
 		}
-		payload, _ := f.payload()
+		payload := snap
 		if isAnalysisRead(ctx) {
 			if err := f.e.svc.checkAnalysisAccount(payload.Provider); err != nil {
 				return nil, timing{}, servedBy{}, err
@@ -1341,8 +1417,13 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 		}
 		rerouted = false
 		rctx := ctx
+		// One flag for both lanes: the mark that mints the request with a
+		// redirect-refusing client also decides who answers its 3xx below.
+		replayRead := !payload.IsDirect() && !payload.IsPluginProvider() && payload.OnReplayEdge
 		if payload.IsDirect() || payload.IsPluginProvider() {
 			rctx = withDirect(ctx, payload)
+		} else if replayRead {
+			rctx = withReplay(ctx)
 		}
 		if isAnalysisRead(ctx) {
 			f.analysis.requests.Add(1)
@@ -1473,6 +1554,34 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 				return nil, tm, servedBy{}, pauseErr
 			}
 			drain(resp)
+		case resp.StatusCode/100 == 3 && replayRead:
+			// A replayed read's client refuses hops: a link that answers
+			// with a redirect instead of our bytes does not stand where
+			// it is, and the hop it refused would have received the
+			// signed URL as Go's Referer header, token included. Count
+			// it with the dead links and take a fresh one (which clears
+			// the marker): the just-succeeded wave's spacing bars a
+			// reroute, but not the need for another link. An unmarked
+			// read's 3xx — a 304, a 300, or a hop without its Location,
+			// which Go hands back even to a client that follows — stays
+			// on the ordinary lane below: retrying there keeps the
+			// transient class instead of escalating a CDN oddity into
+			// a missing article.
+			drain(resp)
+			f.mu.Lock()
+			if gen != f.failedGen {
+				f.failedGen = gen
+				f.linkFails++
+			}
+			fails := f.linkFails
+			f.mu.Unlock()
+			if fails > maxLinkFailures {
+				return nil, tm, servedBy{}, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrArticleMissing)
+			}
+			if _, _, err := f.link(ctx, true, gen); err != nil {
+				return nil, tm, servedBy{}, err
+			}
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 		default:
 			drain(resp)
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -1854,6 +1963,13 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 			hc = e.svc.direct.primary
 		}
 		req = prepareDirect(req, p)
+	}
+	if onReplayEdge(ctx) { // the link rides a remembered edge: no hops
+		if hc == e.hc {
+			hc = e.hcReplay
+		} else if hc == e.hedge { // hedged attempts refuse the redirect too
+			hc = e.hedgeReplay
+		}
 	}
 	host := req.URL.Host
 	if err := e.backoff.wait(ctx, host); err != nil {

@@ -3,31 +3,10 @@ package sessions
 import (
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
-// PlexActivity is one Plex client's playback as the session list shows it.
-// The broker is the only store. Cluster rows for these activities use
-// protocol plex.
-type PlexActivity struct {
-	ID                                                     string
-	DecisionSeen                                           bool
-	PlayingSeen                                            bool
-	SessionKey                                             int
-	User                                                   core.User
-	ClientID, Product, Version, Platform, PlatformVersion  string
-	Device, DeviceName, Model, Vendor, SessionID, RemoteIP string
-	ProfileName                                            string
-	Remote                                                 bool
-	Key                                                    core.RatingKey
-	State                                                  string
-	Offset, Duration                                       time.Duration
-	PlayQueueItemID                                        int64
-	TranscodeID                                            string
-	StartedAt, UpdatedAt                                   time.Time
-}
-
-func (b *Broker) HasPlexActivity(id string) bool {
+func (b *Broker) HasActivity(id string) bool {
 	if b == nil || id == "" {
 		return false
 	}
@@ -37,7 +16,7 @@ func (b *Broker) HasPlexActivity(id string) bool {
 	return ok
 }
 
-func (b *Broker) EnsurePlexActivity(id string, key int) {
+func (b *Broker) EnsureActivity(id string, key int) {
 	if b == nil || id == "" || key <= 0 {
 		return
 	}
@@ -46,16 +25,16 @@ func (b *Broker) EnsurePlexActivity(id string, key int) {
 	if _, ok := b.plexActivities[id]; ok {
 		return
 	}
-	b.plexActivities[id] = &PlexActivity{ID: id, SessionKey: key}
+	b.plexActivities[id] = &PlaybackActivity{ID: id, SessionKey: key}
 }
 
-func (b *Broker) UpsertPlexActivity(id string, fn func(*PlexActivity)) PlexActivity {
+func (b *Broker) UpsertActivity(id string, fn func(*PlaybackActivity)) PlaybackActivity {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	e, ok := b.plexActivities[id]
 	if !ok {
 		b.plexActivityNext++
-		e = &PlexActivity{ID: id, SessionKey: b.plexActivityNext}
+		e = &PlaybackActivity{ID: id, SessionKey: b.plexActivityNext}
 		b.plexActivities[id] = e
 	}
 	if fn != nil {
@@ -66,40 +45,40 @@ func (b *Broker) UpsertPlexActivity(id string, fn func(*PlexActivity)) PlexActiv
 	return out
 }
 
-func (b *Broker) RemovePlexActivity(id string) (PlexActivity, bool) {
+func (b *Broker) RemoveActivity(id string) (PlaybackActivity, bool) {
 	if b == nil {
-		return PlexActivity{}, false
+		return PlaybackActivity{}, false
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	e, ok := b.plexActivities[id]
 	if !ok {
-		return PlexActivity{}, false
+		return PlaybackActivity{}, false
 	}
 	delete(b.plexActivities, id)
 	return *e, true
 }
 
-func (b *Broker) ListPlexActivities() []PlexActivity {
+func (b *Broker) ListActivities() []PlaybackActivity {
 	if b == nil {
 		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	out := make([]PlexActivity, 0, len(b.plexActivities))
+	out := make([]PlaybackActivity, 0, len(b.plexActivities))
 	for _, e := range b.plexActivities {
 		out = append(out, *e)
 	}
 	return out
 }
 
-func (b *Broker) ExpirePlexActivities(now time.Time, ttl time.Duration) []PlexActivity {
+func (b *Broker) ExpireActivities(now time.Time, ttl time.Duration) []PlaybackActivity {
 	if b == nil {
 		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	var out []PlexActivity
+	var out []PlaybackActivity
 	for id, e := range b.plexActivities {
 		if now.Sub(e.UpdatedAt) > ttl {
 			out = append(out, *e)
@@ -108,3 +87,5 @@ func (b *Broker) ExpirePlexActivities(now time.Time, ttl time.Duration) []PlexAc
 	}
 	return out
 }
+
+type PlaybackActivity = frontend.PlaybackActivity

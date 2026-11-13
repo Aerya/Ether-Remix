@@ -139,6 +139,41 @@ class UpstreamTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual((self.root / ".github/pse/upstream-base").read_text().strip(), self.base)
 
+    def test_moved_directory_carries_fork_changes_and_files(self):
+        self.put("pkg/server.go", "package pkg\n\n" + "// line\n" * 20 + "func hook() bool { return false }\n")
+        self.base = self.commit()
+        (self.root / "frontends").mkdir()
+        self.git("mv", "pkg", "frontends/pkg")
+        self.put("frontends/pkg/other.go", "package pkg\n")
+        target = self.commit()
+        self.fork()
+        self.put("pkg/server.go", "package pkg\n\n" + "// line\n" * 20 + "func hook() bool { return remix() }\n")
+        self.put("pkg/pse_remix.go", "package pkg\n\nfunc remix() bool { return true }\n")
+        self.git("checkout", "-b", "sync")
+        branch_head = self.commit()
+        result = self.apply(target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("remix()", (self.root / "frontends/pkg/server.go").read_text())
+        self.assertTrue((self.root / "frontends/pkg/pse_remix.go").exists())
+        self.assertFalse((self.root / "pkg").exists())
+        self.assertEqual(self.git("symbolic-ref", "HEAD"), "refs/heads/sync")
+        self.assertEqual(self.git("rev-parse", "HEAD"), branch_head)
+        self.assertIn("frontends/pkg/pse_remix.go", self.git("diff", "--cached", "--name-only"))
+
+    def test_deleted_upstream_file_modified_by_fork_is_listed(self):
+        self.put("gone.go", "package gone\n")
+        self.base = self.commit()
+        (self.root / "gone.go").unlink()
+        self.put("code.txt", "upstream first\n" + "middle\n" * 15 + "last\n")
+        target = self.commit()
+        self.fork()
+        self.put("gone.go", "package gone // Remix\n")
+        self.commit()
+        result = self.apply(target)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.git("diff", "--name-only", "--diff-filter=U"), "gone.go")
+        self.assertEqual((self.root / ".github/pse/upstream-base").read_text().strip(), self.base)
+
 
 if __name__ == "__main__":
     unittest.main()

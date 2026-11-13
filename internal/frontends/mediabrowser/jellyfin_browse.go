@@ -303,7 +303,7 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 	if fields["overview"] {
 		setMissing(item, "Overview", frontend.PSEMarkSummary(title.Key, title.Summary)) // PSE-HOOK: titres risqués — voir docs/pse/FORK.fr.md
 	}
-	if fields["genres"] {
+	if fields["genres"] || !jellyfinListFile(r) {
 		if len(title.Genres) > 0 {
 			setMissing(item, "Genres", title.Genres)
 		} else {
@@ -1188,13 +1188,8 @@ func (i *instance) virtualFolders(w http.ResponseWriter, r *http.Request) {
 		if i.protocol == "jellyfin" && view.Virtual {
 			entry["Locations"] = []string{}
 		}
-		switch view.Type {
-		case "movie", "movies":
-			entry["CollectionType"] = "movies"
-		case "show", "tvshows":
-			entry["CollectionType"] = "tvshows"
-		case "music", "musicvideos", "homevideos", "boxsets", "books", "mixed":
-			entry["CollectionType"] = view.Type
+		if ct := mediaBrowserCollectionType(view); ct != "" {
+			entry["CollectionType"] = ct
 		}
 		result = append(result, entry)
 	}
@@ -1229,11 +1224,12 @@ func mediaHasSubtitles(media frontend.MediaInfo) bool {
 
 type editionPageKey struct{}
 
-// pageEditions loads probed files only when the Jellyfin response will keep
-// MediaSources. Emby lists never embed them, and a Jellyfin list without
-// that field deletes the objects after they are built.
+// pageEditions loads probed files when the response will keep MediaSources.
+// Both Jellyfin and Emby list rows carry probed MediaSources when the request
+// names the field; a list without it deletes the objects after they are built,
+// so the probe is skipped then.
 func (i *instance) pageEditions(r *http.Request, viewer *frontend.Viewer, keys []frontend.RatingKey) *http.Request {
-	if i == nil || i.protocol != "jellyfin" {
+	if i == nil {
 		return r
 	}
 	return i.withPageEditions(r, viewer, keys)
@@ -1242,6 +1238,11 @@ func (i *instance) pageEditions(r *http.Request, viewer *frontend.Viewer, keys [
 func (i *instance) withPageEditions(r *http.Request, viewer *frontend.Viewer, keys []frontend.RatingKey) *http.Request {
 	batch, ok := i.host.Editions.(frontend.EditionBatch)
 	if !ok || viewer == nil || r == nil || len(keys) == 0 {
+		return r
+	}
+	// Editions only ever feed MediaSources, so skip the batch when the
+	// response will not keep it.
+	if !fieldSet(r)["mediasources"] {
 		return r
 	}
 	versions, err := batch.EditionsMany(r.Context(), viewer, device(r), keys)
@@ -1258,10 +1259,11 @@ type jellyfinEdition struct {
 }
 
 // jellyfinEditions returns one probed local copy per file. A single copy keeps
-// the title id. Several copies become separate Jellyfin items, matching a
-// library that stores each file as its own item.
+// the title id. Several copies become separate items, matching a library that
+// stores each file as its own item. Emby and Jellyfin both embed these on a
+// list row when the request asks for MediaSources.
 func (i *instance) jellyfinEditions(r *http.Request, viewer *frontend.Viewer, title frontend.Title) []jellyfinEdition {
-	if i == nil || i.protocol != "jellyfin" || i.host.Editions == nil || viewer == nil || r == nil {
+	if i == nil || i.host.Editions == nil || viewer == nil || r == nil {
 		return nil
 	}
 	if !fieldSet(r)["mediasources"] {
@@ -1304,6 +1306,14 @@ func (i *instance) jellyfinEditions(r *http.Request, viewer *frontend.Viewer, ti
 			id = handle
 		}
 		source := i.detailMediaSourceDTO(id, version.Media)
+		if i.protocol == "emby" {
+			i.versionSourceFacts(source, version)
+			i.embyMediaSourceDTO(source, ids.RatingKeyGUID(title.Key), version.Media)
+			// Emby list rows omit chapter arrays too. Detail keeps them.
+			delete(source, "Chapters")
+			out = append(out, jellyfinEdition{handle: id, source: source, media: version.Media})
+			continue
+		}
 		jellyfinMediaSourceShape(source, title.Title)
 		i.jellyfinMediaSourceDTO(source, version.Media, false)
 		// Jellyfin list rows omit chapter arrays. Detail keeps them.

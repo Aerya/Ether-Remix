@@ -14,29 +14,56 @@ import (
 // owner runs (*plexwatch.Servers). Tokens go in and never come back out.
 type PlexServers interface {
 	List(ctx context.Context) ([]plexwatch.PMSServer, error)
+	ViewerServers(ctx context.Context, userID int64) ([]plexwatch.PMSViewerMapping, error)
 	Add(ctx context.Context, name, baseURL, token string) (plexwatch.PMSServer, error)
 	Update(ctx context.Context, id int64, name, baseURL, token string) (plexwatch.PMSServer, error)
+	SetStepAside(ctx context.Context, id int64, stepAside bool) (plexwatch.PMSServer, error)
 	Remove(ctx context.Context, id int64) error
 	Accounts(ctx context.Context, id int64) ([]plexwatch.PMSAccount, error)
 	MapAccount(ctx context.Context, id, accountID int64, in plexwatch.PMSMappingInput) (plexwatch.PMSServer, error)
 	SyncNow(ctx context.Context, id int64) (plexwatch.PMSServer, error)
+	BackfillPreview(ctx context.Context, id, accountID int64) (plexwatch.PMSBackfillPreview, error)
+	BackfillIn(ctx context.Context, id, accountID int64) (plexwatch.PMSServer, error)
+	BackfillOut(ctx context.Context, id, accountID int64) (plexwatch.PMSServer, error)
 	Unmatched(ctx context.Context, id, userID int64, after string) ([]plexwatch.PMSUnmatched, error)
 }
 
 var _ PlexServers = (*plexwatch.Servers)(nil)
 
 func (h *Handler) plexServerRoutes(api func(string, http.HandlerFunc)) {
+	api("GET /api/viewers/{id}/plex-servers", h.handleViewerPlexServers)
 	if h.deps.PlexServers == nil {
 		return
 	}
 	api("GET /api/plex-servers", h.handlePlexServers)
 	api("POST /api/plex-servers", h.handlePlexServerAdd)
 	api("PUT /api/plex-servers/{id}", h.handlePlexServerUpdate)
+	api("PUT /api/plex-servers/{id}/step-aside", h.handlePlexServerStepAside)
 	api("DELETE /api/plex-servers/{id}", h.handlePlexServerRemove)
 	api("GET /api/plex-servers/{id}/accounts", h.handlePlexServerAccounts)
 	api("PUT /api/plex-servers/{id}/accounts/{account}", h.handlePlexServerMap)
+	api("GET /api/plex-servers/{id}/accounts/{account}/backfill", h.handlePlexServerBackfillPreview)
+	api("POST /api/plex-servers/{id}/accounts/{account}/backfill-in", h.handlePlexServerBackfillIn)
+	api("POST /api/plex-servers/{id}/accounts/{account}/backfill-out", h.handlePlexServerBackfillOut)
 	api("POST /api/plex-servers/{id}/sync", h.handlePlexServerSync)
 	api("GET /api/plex-servers/{id}/unmatched", h.handlePlexServerUnmatched)
+}
+
+func (h *Handler) handleViewerPlexServers(w http.ResponseWriter, r *http.Request) {
+	u, ok := h.viewerByID(w, r)
+	if !ok {
+		return
+	}
+	if h.deps.PlexServers == nil {
+		writeJSON(w, http.StatusOK, []plexwatch.PMSViewerMapping{})
+		return
+	}
+	list, err := h.deps.PlexServers.ViewerServers(r.Context(), u.ID)
+	if err != nil {
+		h.plexServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (h *Handler) plexServerError(w http.ResponseWriter, err error) {
@@ -55,6 +82,10 @@ func (h *Handler) plexServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "limit", "limit reached")
 	case errors.Is(err, plexwatch.ErrPMSNeedsToken):
 		writeError(w, http.StatusBadRequest, "needs_token", "sending to Plex for this person needs their own token for this server")
+	case errors.Is(err, plexwatch.ErrReceivingOff):
+		writeError(w, http.StatusBadRequest, "receiving_off", "reading from Plex is off for this person")
+	case errors.Is(err, plexwatch.ErrSendingOff):
+		writeError(w, http.StatusBadRequest, "sending_off", "sending to Plex is off for this person")
 	case errors.Is(err, core.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	case errors.Is(err, plexwatch.ErrPMSInvalid), errors.Is(err, errBadJSON):
@@ -120,6 +151,27 @@ func (h *Handler) handlePlexServerUpdate(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, srv)
 }
 
+func (h *Handler) handlePlexServerStepAside(w http.ResponseWriter, r *http.Request) {
+	id, ok := pmsPathID(r, "id")
+	if !ok {
+		h.plexServerError(w, core.ErrNotFound)
+		return
+	}
+	var body struct {
+		StepAside bool `json:"stepAside"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		h.plexServerError(w, err)
+		return
+	}
+	srv, err := h.deps.PlexServers.SetStepAside(r.Context(), id, body.StepAside)
+	if err != nil {
+		h.plexServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, srv)
+}
+
 func (h *Handler) handlePlexServerRemove(w http.ResponseWriter, r *http.Request) {
 	id, ok := pmsPathID(r, "id")
 	if !ok {
@@ -167,6 +219,51 @@ func (h *Handler) handlePlexServerMap(w http.ResponseWriter, r *http.Request) {
 	srv, err := h.deps.PlexServers.MapAccount(r.Context(), id, account, plexwatch.PMSMappingInput{
 		UserID: body.UserID, Direction: body.Direction, Interval: body.Interval, Token: body.Token,
 	})
+	if err != nil {
+		h.plexServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, srv)
+}
+
+func (h *Handler) handlePlexServerBackfillPreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := pmsPathID(r, "id")
+	account, ok2 := pmsPathID(r, "account")
+	if !ok || !ok2 {
+		h.plexServerError(w, core.ErrNotFound)
+		return
+	}
+	preview, err := h.deps.PlexServers.BackfillPreview(r.Context(), id, account)
+	if err != nil {
+		h.plexServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+func (h *Handler) handlePlexServerBackfillIn(w http.ResponseWriter, r *http.Request) {
+	id, ok := pmsPathID(r, "id")
+	account, ok2 := pmsPathID(r, "account")
+	if !ok || !ok2 {
+		h.plexServerError(w, core.ErrNotFound)
+		return
+	}
+	srv, err := h.deps.PlexServers.BackfillIn(r.Context(), id, account)
+	if err != nil {
+		h.plexServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, srv)
+}
+
+func (h *Handler) handlePlexServerBackfillOut(w http.ResponseWriter, r *http.Request) {
+	id, ok := pmsPathID(r, "id")
+	account, ok2 := pmsPathID(r, "account")
+	if !ok || !ok2 {
+		h.plexServerError(w, core.ErrNotFound)
+		return
+	}
+	srv, err := h.deps.PlexServers.BackfillOut(r.Context(), id, account)
 	if err != nil {
 		h.plexServerError(w, err)
 		return

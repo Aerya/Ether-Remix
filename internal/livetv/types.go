@@ -118,6 +118,9 @@ type Block struct {
 }
 type ChannelLook struct {
 	MomentAssets         map[string]string `json:"momentAssets,omitempty"`
+	BeforeBreak          []string          `json:"beforeBreak,omitempty"`
+	AfterBreak           []string          `json:"afterBreak,omitempty"`
+	BetweenProgrammes    []string          `json:"betweenProgrammes,omitempty"`
 	BreakPlacement       string            `json:"breakPlacement,omitempty"`
 	Tonight              *bool             `json:"tonight,omitempty"`
 	Bug                  *core.BugSettings `json:"bug,omitempty"`
@@ -411,10 +414,14 @@ type Options struct {
 	Reels         func(context.Context, string) (ReelSnapshot, error)
 	InputUser     func(context.Context) (*core.User, error)
 	StyleScreens  func(string) *config.LiveTVScreens
-	Watchlist     interface{ Generation() uint64 }
-	Picker        core.PersonalPicker
-	State         core.State
-	Users         interface {
+	// AudioTrack applies a user's stream preferences to a programme and
+	// returns the chosen position in info.Streams, or -1 for no preference.
+	// original is the title's original language.
+	AudioTrack func(ctx context.Context, user *core.User, key core.RatingKey, info core.MediaInfo, original string) int
+	Watchlist  interface{ Generation() uint64 }
+	Picker     core.PersonalPicker
+	State      core.State
+	Users      interface {
 		Users(context.Context) ([]core.User, error)
 	}
 	PersonalChanged func(int64)
