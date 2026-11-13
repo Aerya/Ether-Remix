@@ -22,6 +22,7 @@ func (a *App) buildPSEIndexer() {
 	a.buildPSEScrob()
 	a.startPSEScrobPush()
 	a.startSeerrCatalog()
+	a.startPSETorrent()
 	rt.restartIndexer(a)
 	a.closers = append(a.closers, rt.stopIndexer)
 }

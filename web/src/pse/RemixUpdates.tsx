@@ -26,8 +26,32 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-13-upstream-sync",
+    id: "2026-11-13-torrent-client",
     version: "current",
+    date: "2026-11-13",
+    title: ["Client torrent en option", "Optional torrent client"],
+    items: [
+      [
+        "Nouvelle source, désactivée par défaut : Remix envoie les releases torrent de Prowlarr ou Jackett à qBittorrent ou rTorrent / ruTorrent, puis les lit une fois téléchargées. Films, séries, animés et musique.",
+        "New source, off by default: Remix sends torrent releases from Prowlarr or Jackett to qBittorrent or rTorrent / ruTorrent, then plays them once downloaded. Movies, shows, anime and music.",
+      ],
+      [
+        "Jusqu'à trois clients, accès par identifiants ou clé d'API qBittorrent (5.2 et suivants). Ratio et durée de partage par client et par tracker, plafond d'ajouts par jour, cross-seed. Remix ne supprime jamais rien.",
+        "Up to three clients, with credentials or a qBittorrent API key (5.2 and later). Ratio and seeding time per client and per tracker, a daily cap on additions, cross-seed. Remix never deletes anything.",
+      ],
+      [
+        "Pendant le téléchargement, Plex, Jellyfin et Emby affichent l'avancement ; la console liste les téléchargements. Sous le seuil de place libre, plus aucun ajout et une alerte part par les notifications d'Ether.",
+        "While downloading, Plex, Jellyfin and Emby show the progress; the console lists the downloads. Below the free-space threshold, no more additions and an alert goes out through Ether notifications.",
+      ],
+      [
+        "Le client peut être distant, mais Remix doit voir son dossier de téléchargement (même machine ou partage NFS/SMB). Vos comptes debrid restent en « cache uniquement ». Réglages : Sources → Client torrent.",
+        "The client can be remote, but Remix must see its download folder (same machine or NFS/SMB share). Your debrid accounts stay cached-only. Settings: Sources → Torrent client.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-13-upstream-sync",
+    version: "0.2.37-remix.56.1",
     date: "2026-11-13",
     title: ["Synchronisation Ether réparée", "Ether synchronization repaired"],
     items: [

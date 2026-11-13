@@ -23,6 +23,7 @@ import { MusicSourceSettings } from "./MusicSourceSettings";
 import { SourceOrder } from "./SourceOrder";
 import { SfrHelp } from "./SfrHelp";
 import { SeerrCatalogHelp } from "./SeerrCatalogHelp";
+import { TorrentStatus } from "./TorrentStatus";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
@@ -247,6 +248,9 @@ function PseSettings() {
           {tab === "sources" ? (
             <RemixSources
               music={musicPart("source")}
+              torrent={current.features
+                .filter((f) => ["torrent", "torrent2", "torrent3"].includes(f.id))
+                .map((f) => renderFeature(f))}
               stremio={
                 <>
                   {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
@@ -274,7 +278,17 @@ function PseSettings() {
               indexing={
                 <>
                   {featuresOfTab(tab, current.features)
-                    .filter((f) => !["sfr", "seerrcatalog", "seerrcatalog_search"].includes(f.id))
+                    .filter(
+                      (f) =>
+                        ![
+                          "sfr",
+                          "seerrcatalog",
+                          "seerrcatalog_search",
+                          "torrent",
+                          "torrent2",
+                          "torrent3",
+                        ].includes(f.id),
+                    )
                     .map((f) => renderFeature(f))}
                   <SearchPriority />
                 </>
@@ -519,6 +533,7 @@ function FeatureSection({
         ) : null}
         {basic.map(row)}
         {feature.id === "seerrcatalog" ? <SeerrCatalogHelp status={feature.status} /> : null}
+        {feature.id === "torrent" ? <TorrentStatus status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
         {feature.id === "music" && placement === "content" ? (
           <>

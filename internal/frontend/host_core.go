@@ -125,3 +125,6 @@ func WithSearchCandidates(ctx context.Context, c *SearchCandidates) context.Cont
 func WithSearchListFacts(ctx context.Context) context.Context {
 	return core.WithSearchListFacts(ctx)
 }
+
+// LocalDownloadMessage describes a pending local torrent through the frontend boundary.
+func LocalDownloadMessage(err error, lang string) string { return core.LocalDownloadMessage(err, lang) }

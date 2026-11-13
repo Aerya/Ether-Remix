@@ -385,7 +385,7 @@ func publicMedia(info core.MediaInfo) core.MediaInfo {
 	info.Keyframes = slices.Clone(info.Keyframes)
 	return info
 }
-func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
 	requested := b.deps.Now()
 	req = copyRequest(req)
 	v, err := b.viewer(ctx, req.Viewer)
@@ -717,7 +717,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (frontend.P
 	hls, hlsContainer := b.hlsPlanOutput(ps, req, dec)
 	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
 }
-func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
+func (b *Broker) open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()
 	v, err := b.viewer(ctx, req.Viewer)
 	if err != nil {

@@ -128,6 +128,15 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID:    "torrent",
+		Title: tx("Client torrent (qBittorrent, rTorrent / ruTorrent)", "Torrent client (qBittorrent, rTorrent / ruTorrent)"),
+		Description: tx("Envoie les releases torrent de vos indexeurs (Prowlarr, Jackett) à votre client, puis les lit une fois téléchargées : films, séries, animés et musique. Les fichiers restent sur le disque du client, qui les partage selon vos limites ; Remix ne supprime jamais rien. Vos comptes debrid restent en « cache uniquement ». Le client peut être distant, mais Remix doit voir son dossier de téléchargement (même machine, ou partage NFS/SMB monté) : sinon l'ajout marche, la lecture non.",
+			"Sends torrent releases from your indexers (Prowlarr, Jackett) to your client, then plays them once downloaded: movies, shows, anime and music. Files stay on the client's disk, which seeds them within your limits; Remix never deletes anything. Your debrid accounts stay cached-only. The client can be remote, but Remix must see its download folder (same machine, or a mounted NFS/SMB share): otherwise adding works, playback does not."),
+		Fields: torrentMainFields(),
+	},
+	torrentExtraClient(2),
+	torrentExtraClient(3),
+	{
 		ID:          "playable",
 		Title:       tx("Catalogue « lisible uniquement »", "“Playable only” catalogue"),
 		Description: tx("Ne liste que les titres ayant assez de releases indexées correspondant à vos critères. Nécessite l'indexation.", "Only lists titles with enough indexed releases matching your criteria. Needs indexing."),

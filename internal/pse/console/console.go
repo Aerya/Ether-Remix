@@ -24,6 +24,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/pse/music"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
+	"github.com/braedonsaunders/ether/internal/pse/torrentclient"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -220,6 +221,21 @@ func (h *handler) put(w http.ResponseWriter, r *http.Request) {
 		v, _ := pseenv.Env(key)
 		return v
 	}
+	switch strings.ToLower(effective("PSE_TORRENT")) {
+	case "on", "1", "true", "yes", "oui":
+		if effective("PSE_TORRENT_URL") == "" {
+			errs["PSE_TORRENT_URL"] = "Adresse du client torrent requise"
+		}
+		for n := 2; n <= torrentclient.MaxClients; n++ {
+			p := "PSE_TORRENT" + strconv.Itoa(n)
+			switch strings.ToLower(effective(p)) {
+			case "on", "1", "true", "yes", "oui":
+				if effective(p+"_URL") == "" {
+					errs[p+"_URL"] = "Adresse du client torrent requise"
+				}
+			}
+		}
+	}
 	switch strings.ToLower(effective("PSE_SEERRCATALOG")) {
 	case "on", "1", "true", "yes", "oui":
 		if effective("PSE_SEERRCATALOG_URL") == "" {
@@ -349,6 +365,50 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 	}
 	if (fd.Key == "PSE_SEERRCATALOG_TOKEN" || fd.Key == "PSE_SEERRCATALOG_SEARCH_TOKEN") && v != "" && len(v) < 32 {
 		return "", errors.New("clé de 32 caractères minimum")
+	}
+	key := fd.Key
+	if strings.HasPrefix(key, "PSE_TORRENT2_") || strings.HasPrefix(key, "PSE_TORRENT3_") {
+		key = "PSE_TORRENT_" + key[len("PSE_TORRENT2_"):] // mêmes règles que le client principal
+	}
+	switch key {
+	case "PSE_TORRENT_TRACKERS":
+		if _, err := torrentclient.ParseTrackerRules(v); err != nil {
+			return "", err
+		}
+		return v, nil
+	case "PSE_TORRENT_RATIO":
+		r, err := torrentclient.ParseRatio(v)
+		if err != nil {
+			return "", err
+		}
+		if r == 0 {
+			return "", nil
+		}
+		return strconv.FormatFloat(r, 'f', -1, 64), nil
+	case "PSE_TORRENT_SEED_TIME":
+		if v == "" {
+			return "", nil
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Minute {
+			return "", errors.New("durée attendue, ex. 72h (minimum 1m)")
+		}
+		return d.String(), nil
+	case "PSE_TORRENT_PATH_MAP":
+		if _, err := torrentclient.ParsePathMap(v); err != nil {
+			return "", err
+		}
+		return v, nil
+	case "PSE_TORRENT_SAVE_PATH":
+		if v != "" && !strings.HasPrefix(v, "/") && !(len(v) > 2 && v[1] == ':') {
+			return "", errors.New("chemin absolu attendu")
+		}
+		return v, nil
+	case "PSE_TORRENT_CATEGORY":
+		if v == "" || len(v) > 64 || strings.ContainsAny(v, "/\\\n\r\t") {
+			return "", errors.New("nom de catégorie simple attendu")
+		}
+		return v, nil
 	}
 	switch fd.Kind {
 	case KindToggle:

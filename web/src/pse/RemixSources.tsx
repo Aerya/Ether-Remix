@@ -19,6 +19,7 @@ const CATEGORIES = [
   ["indexeurs", "Indexeurs", "Indexers"],
   ["usenet", "Usenet", "Usenet"],
   ["debrid", "Debrid", "Debrid"],
+  ["torrent", "Client torrent", "Torrent client"],
   ["musique", "Streaming musical", "Music streaming"],
   ["local", "Fichiers locaux", "Local files"],
   ["iptv", "IPTV", "IPTV"],
@@ -28,10 +29,12 @@ export function RemixSources({
   music,
   indexing,
   stremio,
+  torrent,
 }: {
   music: ReactNode;
   indexing: ReactNode;
   stremio?: ReactNode;
+  torrent?: ReactNode;
 }) {
   const [params, setParams] = useSearchParams();
   const raw = params.get("source");
@@ -126,7 +129,9 @@ export function RemixSources({
                   L("Animes", "Anime"),
                   ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
                     ? [L("Musique via debrid", "Music via debrid")]
-                    : []),
+                    : category === "torrent"
+                      ? [L("Musique", "Music")]
+                      : []),
                 ]
         ).map((label) => (
           <Badge key={label} variant="outline">
@@ -206,6 +211,7 @@ export function RemixSources({
             <IPTVProviders sourceParam="iptvSource" />
           </CollapsibleBlock>
         ) : null}
+        {category === "torrent" ? torrent : null}
         {category === "musique" ? <>{music}</> : null}
         {category === "local" ? (
           <CollapsibleBlock title={L("Fichiers locaux", "Local files")}>

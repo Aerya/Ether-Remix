@@ -366,6 +366,9 @@ type Stream struct {
 	URL       string
 	Mime      string
 	Quality   string
+	// File : chemin d'un fichier du client torrent de Remix, lu sur le
+	// disque sans requête HTTP ; URL n'est alors qu'un identifiant.
+	File string
 }
 
 // qualityChain renvoie les qualités à essayer, de la demandée à la plus basse.

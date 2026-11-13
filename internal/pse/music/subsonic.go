@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -995,6 +996,15 @@ func (s *Server) relayAudio(w http.ResponseWriter, r *http.Request, id int64) er
 			}
 			return last
 		}
+		if st.File != "" {
+			if err := s.serveFile(w, r, st); err != nil {
+				s.o.Logger.Warn("fichier musical illisible, source suivante", "track", id, "err", redactErr(err))
+				last = err
+				ctx = WithSkippedStreams(ctx, st.URL)
+				continue
+			}
+			return nil
+		}
 		if st.Open != nil {
 			f, modified, err := st.Open()
 			if err != nil {
@@ -1021,6 +1031,33 @@ func (s *Server) relayAudio(w http.ResponseWriter, r *http.Request, id int64) er
 		return nil
 	}
 	return last
+}
+
+// serveFile sert un fichier du client torrent (Range compris).
+func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, st Stream) error {
+	f, err := os.Open(st.File)
+	if err != nil {
+		return errors.New("music: fichier du client torrent introuvable")
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("music: fichier du client torrent illisible")
+	}
+	h := w.Header()
+	if st.Provider != "" {
+		h.Set("X-Accent-Audio-Source", st.Provider)
+	}
+	mime := st.Mime
+	if mime == "" {
+		mime = guessMime("", "", st.File)
+	}
+	if mime == "" {
+		mime, _ = s.contentType()
+	}
+	h.Set("Content-Type", mime)
+	http.ServeContent(w, r, "", info.ModTime(), f)
+	return nil
 }
 
 // openAudio ouvre un lien audio ; un statut inattendu est une erreur.

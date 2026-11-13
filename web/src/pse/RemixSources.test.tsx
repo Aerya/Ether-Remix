@@ -122,3 +122,20 @@ it("retains the native Ether IPTV source query outside Remix", async () => {
   fireEvent.click(screen.getByText("Close fixture"));
   expect(screen.getByTestId("location").textContent).toBe("");
 });
+
+it("renders torrent clients in their own source category", () => {
+  render(
+    <MemoryRouter initialEntries={["/remix/sources?source=torrent"]}>
+      <RemixSources
+        music={null}
+        indexing={<p>Indexing fixture</p>}
+        torrent={<p>Torrent clients fixture</p>}
+      />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("Torrent clients fixture")).toBeTruthy();
+  expect(screen.queryByText("Indexing fixture")).toBeNull();
+  expect(screen.getByRole("tab", { name: "Torrent client" }).getAttribute("aria-selected")).toBe(
+    "true",
+  );
+});
