@@ -60,7 +60,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	}
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
-	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%#v:%s", q.Filter.RuleVisibility, q.Filter.PreviewRules, q.Filter.PreviewFallback)
+	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback)
 	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal)
 	cacheable := !groupHasState(q.Filter.Group)
 	// An export page holds partial titles (ListRows) and is read once per
@@ -173,7 +173,30 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		c.kickMovieYears(items)
 		return core.Page{Items: items, Total: total}, nil
 	}
+	if q.Filter.CollectionMembers != 0 {
+		// A collection library reads its page straight from the semi-join:
+		// the cached page keys cannot promise to follow a rebuild, and the
+		// count always comes from the predicates above.
+		items, err := c.queryPagedTitles(ctx, `SELECT `+prefixedCols("t")+` FROM catalog_titles t WHERE `+where+` ORDER BY `+browseOrder(q)+`, t.key ASC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+		if err != nil {
+			return core.Page{}, err
+		}
+		if q.Sort == core.SortAdded {
+			if err := applyAirAddedTimes(ctx, c.db, items, c.now()); err != nil {
+				return core.Page{}, err
+			}
+		}
+		if items == nil {
+			items = []core.Title{}
+		}
+		c.kickMovieYears(items)
+		return core.Page{Items: items, Total: total}, nil
+	}
 	pageWhere, pageArgs := where, args
+	// A title-sorted page probes a positive studio filter per row instead of
+	// enumerating every matching title; the total (above) keeps the
+	// studio-index-driven IN-list form.
+	pageWhere = c.studioProbe(ctx, pageWhere, q.Filter)
 	keysetHint := ""
 	if q.Sort == core.SortKey && q.AfterKey > 0 {
 		pageWhere += " AND t.key>?"
@@ -478,6 +501,7 @@ func (c *Catalog) policyKeyFilter(f core.Filter) core.Filter {
 // browseFilterKey distinguishes a nil IncludeKeys (no restriction) from an
 // empty list (match nothing). fmt %+v prints both as [].
 func browseFilterKey(f core.Filter) string {
+	f = normalizeGateCacheFilter(f)
 	group := f.Group
 	f.Group = nil
 	childVisibility := f.ChildVisibility
@@ -554,6 +578,40 @@ func flagInt(b bool) int {
 	return 0
 }
 
+// TitleInFilter reports whether the title key is a member of the saved
+// filter f (a filter library's predicate), using the same indexed SQL the
+// library browse runs: one indexed read of catalog_titles by key, never a
+// walk. The saved filter is used verbatim (type, genres, keywords, year,
+// tags and any advanced group), with the runtime fields browse injects
+// (viewer, date windows, rule preview, availability keys) left zero so
+// membership is a property of the saved filter alone, not of who is asking.
+func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.RatingKey) (bool, error) {
+	f.LocalOnly = true
+	f.IncludeKeys = []core.RatingKey{key}
+	f.CollectionMembers = 0
+	f.ExcludeKeys = nil
+	f.CatalogViewerID = 0
+	f.RuleVisibility = ""
+	f.PreviewRules = nil
+	f.PreviewFallback = ""
+	f.ApplyCanonicalInPreview = false
+	f.CatalogCandidates = false
+	f.HiddenMovieSeq, f.HiddenShowSeq, f.HiddenEpisodeSeq = 0, 0, 0
+	f.AvailabilityKeepKeys = nil
+	f.UpdatedAfter, f.UpdatedBefore, f.AddedAfter, f.AddedBefore = 0, 0, 0, 0
+	f.DigitalDiscovery = false
+	f.DigitalDateEvidence = false
+	where, args, err := c.browseWhere(f)
+	if err != nil {
+		return false, err
+	}
+	var n int
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles AS t WHERE `+where, args...).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 	// Positive metadata flags retain their source meaning; absence is unknown.
 	if f.Anime {
@@ -591,12 +649,19 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 	// the int. Compare the flag numerically with an int argument instead.
 	conds = append(conds, "t.release_known=1 AND (t.released_ts<=? OR (t.type='movie' AND ?<>0))")
 	args = append(args, nowTS, flagInt(c.config().ShowUpcomingMovies))
-	for _, hidden := range []struct{ kind, generation string }{
-		{"movie", f.HiddenMovieGeneration}, {"show", f.HiddenShowGeneration},
+	if gc, ga := browseGateConds(f, nowTS); len(gc) > 0 {
+		conds = append(conds, gc...)
+		args = append(args, ga...)
+	}
+	for _, hidden := range []struct {
+		kind string
+		seq  int64
+	}{
+		{"movie", f.HiddenMovieSeq}, {"show", f.HiddenShowSeq},
 	} {
-		if hidden.generation != "" {
-			conds = append(conds, "NOT EXISTS (SELECT 1 FROM availability_hidden ah WHERE ah.kind=? AND ah.generation=? AND ah.rating_key=t.key)")
-			args = append(args, hidden.kind, hidden.generation)
+		if hidden.seq != 0 {
+			conds = append(conds, "NOT EXISTS (SELECT 1 FROM availability_hidden ah WHERE ah.kind=? AND ah.from_seq<=? AND ah.to_seq>? AND ah.rating_key=t.key)")
+			args = append(args, hidden.kind, hidden.seq, hidden.seq)
 		}
 	}
 	// PSE-HOOK: catalogue lisible uniquement et en français — voir docs/pse/FORK.fr.md
@@ -606,13 +671,13 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 	}
 	// Facets query children directly rather than through storedEpisodesWhere.
 	// They inherit their show's decision and episodes apply their own too.
-	if (f.Type == core.TypeEpisode || f.Type == core.TypeSeason) && f.HiddenShowGeneration != "" {
-		conds = append(conds, "NOT EXISTS (SELECT 1 FROM availability_hidden ah WHERE ah.kind='show' AND ah.generation=? AND ah.rating_key=t.show_key)")
-		args = append(args, f.HiddenShowGeneration)
+	if (f.Type == core.TypeEpisode || f.Type == core.TypeSeason) && f.HiddenShowSeq != 0 {
+		conds = append(conds, "NOT EXISTS (SELECT 1 FROM availability_hidden ah WHERE ah.kind='show' AND ah.from_seq<=? AND ah.to_seq>? AND ah.rating_key=t.show_key)")
+		args = append(args, f.HiddenShowSeq, f.HiddenShowSeq)
 	}
-	if f.Type == core.TypeEpisode && f.HiddenEpisodeGeneration != "" {
-		clause := "NOT EXISTS (SELECT 1 FROM availability_hidden ah WHERE ah.kind='episode' AND ah.generation=? AND ah.rating_key=t.key)"
-		args = append(args, f.HiddenEpisodeGeneration)
+	if f.Type == core.TypeEpisode && f.HiddenEpisodeSeq != 0 {
+		clause := "NOT EXISTS (SELECT 1 FROM availability_hidden ah WHERE ah.kind='episode' AND ah.from_seq<=? AND ah.to_seq>? AND ah.rating_key=t.key)"
+		args = append(args, f.HiddenEpisodeSeq, f.HiddenEpisodeSeq)
 		if len(f.AvailabilityKeepKeys) > 0 {
 			clause = "(" + clause + " OR t.key IN (" + placeholders(len(f.AvailabilityKeepKeys)) + "))"
 			for _, key := range f.AvailabilityKeepKeys {
@@ -631,16 +696,25 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 		args = append(args, nowTS)
 	}
 	if f.RuleVisibility != "" {
-		policy, err := libraryfilter.CompilePolicy(f.PreviewRules, f.PreviewFallback)
-		if err != nil {
-			return "", nil, err
+		if f.ApplyCanonicalInPreview {
+			if policy := c.viewerFilter(f.CatalogViewerID, false); policy != nil {
+				clause, a := c.policySQLHidden(f.CatalogViewerID, policy)
+				conds = append(conds, clause)
+				args = append(args, a...)
+			}
 		}
-		clause, values := policy.SQLHidden()
-		if f.RuleVisibility == "shown" {
-			clause = "NOT (" + clause + ")"
+		if f.RuleVisibility != "all" {
+			policy, err := libraryfilter.CompilePolicy(f.PreviewRules, f.PreviewFallback)
+			if err != nil {
+				return "", nil, err
+			}
+			clause, values := policy.SQLHidden()
+			if f.RuleVisibility == "shown" {
+				clause = "NOT (" + clause + ")"
+			}
+			conds = append(conds, "("+clause+")")
+			args = append(args, values...)
 		}
-		conds = append(conds, "("+clause+")")
-		args = append(args, values...)
 	} else if policy := c.viewerFilter(f.CatalogViewerID, false); !f.CatalogCandidates && policy != nil {
 		clause, a := c.policySQLHidden(f.CatalogViewerID, policy)
 		conds = append(conds, clause)
@@ -653,9 +727,20 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 			}
 		}
 	}
+	if len(f.ExtraRules) > 0 || f.ExtraFallback != "" {
+		extra, err := libraryfilter.CompilePolicy(f.ExtraRules, f.ExtraFallback)
+		if err != nil {
+			return "", nil, err
+		}
+		if !extra.Passive() {
+			clause, values := extra.SQLHidden()
+			conds = append(conds, "NOT ("+clause+")")
+			args = append(args, values...)
+		}
+	}
 	// Rule browsing gates like everything else: its totals must match the
 	// titles queryTitles hands back, which never include ungated movies.
-	if cfg := c.config(); cfg.ReleaseMode == config.ModeDigital && !(f.DigitalDiscovery && f.HiddenMovieGeneration != "") {
+	if cfg := c.config(); cfg.ReleaseMode == config.ModeDigital && !(f.DigitalDiscovery && f.HiddenMovieSeq != 0) {
 		gateSQL := homeReleaseSQL("t")
 		if cfg.ShowUpcomingMovies {
 			gateSQL = "(t.type='movie' AND t.release_known=1 AND t.released_ts>? OR (" + gateSQL + "))"
@@ -664,7 +749,7 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 		conds = append(conds, gateSQL)
 		args = append(args, homeReleaseCutoff(c.now()), homeReleaseDeadline(c.now(), cfg.HomeReleaseOffsetDays))
 	}
-	if f.DigitalDiscovery && f.HiddenMovieGeneration == "" {
+	if f.DigitalDiscovery && f.HiddenMovieSeq == 0 {
 		// FilterDiscovery admits digital-mode movies only when a passed
 		// home date is known. Local and explicitly upcoming movies bypass
 		// that evidence window, as they do in the availability service.
@@ -683,6 +768,14 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 		for _, key := range f.AvailabilityKeepKeys {
 			args = append(args, key)
 		}
+	}
+	if f.CollectionMembers != 0 {
+		// A collection library is a semi-join on the collection's
+		// materialised members, never a list of keys in memory. Only a
+		// shared member is shown to everyone; per-viewer rules are the
+		// collection engine's business, not this page's.
+		conds = append(conds, "EXISTS (SELECT 1 FROM collections_members cm WHERE cm.spec_id=? AND cm.key=t.key AND cm.shared=1)")
+		args = append(args, f.CollectionMembers)
 	}
 	if f.IncludeKeys != nil {
 		if len(f.IncludeKeys) == 0 {
@@ -974,14 +1067,16 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 	}
 	// Positive studio filters name their studios from the vocabulary
 	// (studio_names.go) and find the titles from catalog_studios' (studio,
-	// key) index, never asking every title for its studios.
+	// key) index, never asking every title for its studios. The count and
+	// the seek drive from the studio index; a title-sorted page probes each
+	// title it walks instead (studioProbe), so a dense studio does not
+	// enumerate its whole matching set per request.
 	byStudio := func(names string, nameArgs []any) {
-		conds = append(conds, `t.key IN (SELECT s.key FROM catalog_studios s WHERE s.studio IN (`+names+`))`)
+		conds = append(conds, studioINListSQL(names))
 		args = append(args, nameArgs...)
 	}
 	if f.Studio != "" && len(f.StudioFilters) == 0 {
-		conds = append(conds, `t.key IN (SELECT bs.key FROM catalog_studios bs WHERE bs.studio=?)`)
-		args = append(args, f.Studio)
+		byStudio(`SELECT ?`, []any{f.Studio})
 	}
 	for _, sf := range f.StudioFilters {
 		val := strings.ToLower(sf.Value)
@@ -1147,7 +1242,7 @@ func (c *Catalog) FacetFilter(ctx context.Context, f core.Filter, facet string) 
 	}
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
-	fkey := fmt.Sprintf("%+v|%s", f, facet) + c.consoleGateKey(f)
+	fkey := fmt.Sprintf("%+v|%s", normalizeGateCacheFilter(f), facet) + c.consoleGateKey(f)
 	c.cacheMu.RLock()
 	ent, cached := c.facetCache[fkey]
 	c.cacheMu.RUnlock()
@@ -1194,7 +1289,8 @@ func (c *Catalog) FacetFilter(ctx context.Context, f core.Filter, facet string) 
 // availability evidence rather than with the filter: hidden-set
 // generations and the viewer's playing titles.
 func facetFamilyKey(f core.Filter, facet string) string {
-	f.HiddenMovieGeneration, f.HiddenShowGeneration, f.HiddenEpisodeGeneration = "", "", ""
+	clearGateFields(&f)
+	f.HiddenMovieSeq, f.HiddenShowSeq, f.HiddenEpisodeSeq = 0, 0, 0
 	f.AvailabilityKeepKeys = nil
 	return "family|" + fmt.Sprintf("%+v|%s", f, facet)
 }
@@ -1253,7 +1349,7 @@ func (c *Catalog) countFacet(ctx context.Context, f core.Filter, facet string) (
 	}
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
-	fkey := fmt.Sprintf("%+v|%s", f, facet)
+	fkey := fmt.Sprintf("%+v|%s", normalizeGateCacheFilter(f), facet) + c.consoleGateKey(f)
 	base, args, err := c.browseWhere(f)
 	if err != nil {
 		return nil, err

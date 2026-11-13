@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
 	"github.com/braedonsaunders/ether/internal/remote"
 )
@@ -70,45 +70,20 @@ func (v *validator) clock(field, s string) {
 // fix in the UI. It is intentionally permissive about empty optional
 // sections (an unconfigured install must remain saveable mid-wizard) and
 // strict about structurally broken values.
-// qualityOrder sources: the release types plus "unknown" (a release that
-// names a resolution but no source).
-var qualitySources = map[string]bool{"remux": true, "bluray": true, "webdl": true, "webrip": true, "hdtv": true, "dvd": true, "unknown": true, "cam": true, "screener": true}
-
-// qualityOrderError checks a profile's quality order: at most 64 items of 1
-// to 64 "<source>-<height>" qualities, each quality in one item only. An
-// empty order ranks every quality alike.
-func qualityOrderError(order []core.QualityItem) string {
-	if len(order) > 64 {
-		return "at most 64 quality entries"
+func sortedFrontendIDs(cfg config.Config) []string {
+	ids := make([]string, 0, len(cfg.Frontends))
+	for id := range cfg.Frontends {
+		ids = append(ids, id)
 	}
-	seen := map[string]bool{}
-	for i, item := range order {
-		if len(item.Qualities) == 0 || len(item.Qualities) > 64 {
-			return fmt.Sprintf("entry %d must list 1 to 64 qualities", i+1)
-		}
-		for _, q := range item.Qualities {
-			src, h, ok := strings.Cut(q, "-")
-			height := 0
-			if ok {
-				_, err := fmt.Sscanf(h, "%d", &height)
-				ok = err == nil && fmt.Sprint(height) == h && height > 0 && height <= 4320
-			}
-			if !ok || !qualitySources[src] {
-				return fmt.Sprintf("%q is not a quality", q)
-			}
-			if seen[q] {
-				return fmt.Sprintf("%q is listed twice", q)
-			}
-			seen[q] = true
-		}
-	}
-	return ""
+	sort.Strings(ids)
+	return ids
 }
 
 func ValidateConfig(cfg config.Config) []FieldError {
 	v := &validator{}
 	ids := map[string]bool{}
 	openSubtitles := false
+	subdl := false
 	for i, provider := range cfg.Subtitles.Providers {
 		field := fmt.Sprintf("subtitles.providers[%d]", i)
 		if strings.TrimSpace(provider.ID) == "" || ids[provider.ID] {
@@ -121,6 +96,11 @@ func ValidateConfig(cfg config.Config) []FieldError {
 				v.add(field+".kind", "OpenSubtitles can only appear once")
 			}
 			openSubtitles = true
+		case config.SubtitleProviderSubDL:
+			if subdl {
+				v.add(field+".kind", "SubDL can only appear once")
+			}
+			subdl = true
 		default:
 			if !strings.HasPrefix(provider.Kind, "plugin:") || !strings.HasSuffix(provider.Kind, "/subtitles") || provider.ID != provider.Kind {
 				v.add(field+".kind", "unknown subtitle provider")
@@ -166,10 +146,16 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	default:
 		v.add("availability.effort", "must be gentle, normal, unlimited, or custom")
 	}
-	switch a.Mode {
-	case "", config.ModePlayable, config.ModeDigital, config.ModeImmediate:
-	default:
-		v.add("availability.mode", "must be playable, digital, or immediate")
+	for _, m := range []struct{ field, val string }{
+		{"availability.mode", a.Mode},
+		{"availability.movieMode", a.MovieMode},
+		{"availability.showMode", a.ShowMode},
+	} {
+		switch m.val {
+		case "", config.ModePlayable, config.ModeDigital, config.ModeImmediate:
+		default:
+			v.add(m.field, "must be playable, digital, or immediate")
+		}
 	}
 
 	if cfg.SharedCache != nil {
@@ -196,12 +182,6 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	}
 	if strings.TrimSpace(cfg.Server.FriendlyName) == "" {
 		v.add("server.friendlyName", "is required")
-	}
-	if strings.TrimSpace(cfg.Server.MoviesLibraryName) == "" {
-		v.add("server.moviesLibraryName", "is required")
-	}
-	if strings.TrimSpace(cfg.Server.TVShowsLibraryName) == "" {
-		v.add("server.tvShowsLibraryName", "is required")
 	}
 	if cfg.Server.LogLevel != "" {
 		v.oneOf("server.logLevel", cfg.Server.LogLevel, "debug", "info", "warn", "error")
@@ -230,6 +210,15 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		if _, err := remote.ParseCustomURL(raw); err != nil {
 			v.add("plex.customUrls", "Enter full http:// or https:// server URLs, separated by commas.")
 			break
+		}
+	}
+	for _, id := range sortedFrontendIDs(cfg) {
+		raw := cfg.Frontends[id].PublicURL
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if _, err := remote.ParseCustomURL(raw); err != nil {
+			v.add("frontends."+id+".publicUrl", "Enter a full http:// or https:// address, or leave it blank.")
 		}
 	}
 
@@ -263,10 +252,13 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			v.add(f+".clientIdentity", "must be a client that searches or empty to inherit")
 		}
 		if ix.Kind != "" {
-			v.oneOf(f+".kind", ix.Kind, config.IndexerKindNewznab, config.IndexerKindCardigann, config.IndexerKindStremio)
+			v.oneOf(f+".kind", ix.Kind, config.IndexerKindNewznab, config.IndexerKindCardigann, config.IndexerKindStremio, config.IndexerKindZilean)
 		}
 		if ix.IsStremio() && ix.Protocol != "" && ix.Protocol != "torrent" {
 			v.add(f+".protocol", "must be torrent for a Stremio addon")
+		}
+		if ix.IsZilean() && ix.Protocol != "" && ix.Protocol != "torrent" {
+			v.add(f+".protocol", "must be torrent for a Zilean instance")
 		}
 		if ix.IsBuiltin() && strings.TrimSpace(ix.Definition) == "" {
 			v.add(f+".definition", "is required for a built-in site")
@@ -390,9 +382,6 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if cfg.Catalog.MinPopularity < 0 {
 		v.add("catalog.minPopularity", "must be >= 0")
 	}
-	if _, err := libraryfilter.CompilePolicy(cfg.Catalog.Exclusions, cfg.Catalog.VisibilityDefault); err != nil {
-		v.add("catalog.exclusions", "%s", err.Error())
-	}
 	if cfg.Catalog.MinVotes < 0 {
 		v.add("catalog.minVotes", "must be >= 0")
 	}
@@ -453,7 +442,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		} else if msg := releasepolicy.Conflict(p.ReleaseRules); msg != "" {
 			v.add(f+".releaseRules", "%s", msg)
 		}
-		if msg := qualityOrderError(p.QualityOrder); msg != "" {
+		if msg := core.QualityOrderError(p.QualityOrder); msg != "" {
 			v.add(f+".qualityOrder", "%s", msg)
 		}
 		prefer := map[string]bool{}

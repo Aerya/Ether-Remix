@@ -73,6 +73,19 @@ type Host interface {
 	FoldersStat(ctx context.Context, root, path string) (FolderEntry, error)
 	NotifyOwner(ctx context.Context, text string) error
 	Log(ctx context.Context, level, message string, attrs map[string]any) error
+	// Content-kind host services. KindUpsert/KindDelete need a push-mode
+	// kind; ResolveSources needs permissions.sources.
+	KindUpsert(ctx context.Context, kindKey string, items []KindItem) (accepted int, err error)
+	KindDelete(ctx context.Context, kindKey string, externalIDs []string) error
+	KindItems(ctx context.Context, kindKey, cursor string, limit int) (KindPage, error)
+	ResolveSources(ctx context.Context, q SourceQuery) ([]SourceCandidate, error)
+	CachePut(ctx context.Context, libraryKey, name string, data []byte) (blobRef string, err error)
+	CacheOpen(ctx context.Context, blobRef string) ([]byte, error)
+	// StreamURL mints a short-lived, scoped ticket for one of this plugin's
+	// own kind items and returns the Ether stream URL to embed in a
+	// frontend adapter response (spec §6.5). viewerID is the viewer the
+	// adapter authenticated.
+	StreamURL(ctx context.Context, viewerID int64, itemRef string) (string, error)
 }
 
 // RemoteHostOptions configures a RemoteHostClient for sidecar plugins.
@@ -387,4 +400,108 @@ func (c *RemoteHostClient) Log(ctx context.Context, level, message string, attrs
 	}
 	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/log", payload, nil, false)
 	return err
+}
+
+// KindUpsert pushes items into a push-mode kind library.
+func (c *RemoteHostClient) KindUpsert(ctx context.Context, kindKey string, items []KindItem) (int, error) {
+	var out struct {
+		Accepted int `json:"accepted"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/upsert",
+		map[string]any{"items": items}, &out, false)
+	return out.Accepted, err
+}
+
+// KindDelete removes items from a push-mode kind library.
+func (c *RemoteHostClient) KindDelete(ctx context.Context, kindKey string, externalIDs []string) error {
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/delete",
+		map[string]any{"externalIds": externalIDs}, nil, false)
+	return err
+}
+
+// KindItems reads the plugin's own kind library back, keyset-paged.
+func (c *RemoteHostClient) KindItems(ctx context.Context, kindKey, cursor string, limit int) (KindPage, error) {
+	path := "/ether/plugin-host/kinds/" + url.PathEscape(kindKey) + "/items?cursor=" + url.QueryEscape(cursor)
+	if limit > 0 {
+		path += "&limit=" + strconv.Itoa(limit)
+	}
+	var page KindPage
+	_, err := c.callJSON(ctx, http.MethodGet, path, nil, &page, false)
+	return page, err
+}
+
+// ResolveSources asks Ether to find sources through its indexers/debrid.
+func (c *RemoteHostClient) ResolveSources(ctx context.Context, q SourceQuery) ([]SourceCandidate, error) {
+	var out struct {
+		Candidates []SourceCandidate `json:"candidates"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/sources/resolve", q, &out, false)
+	return out.Candidates, err
+}
+
+// CachePut stores one blob in a kind library's cache; the ref is content-addressed.
+func (c *RemoteHostClient) CachePut(ctx context.Context, libraryKey, name string, data []byte) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/ether/plugin-host/cache/"+url.PathEscape(libraryKey)+"?name="+url.QueryEscape(name),
+		bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	if c.credential != "" {
+		req.Header.Set("X-Ether-Plugin-Credential", c.credential)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("plugin-host cache put: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		Blob string `json:"blob"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", err
+	}
+	return out.Blob, nil
+}
+
+// CacheOpen reads one cached blob back.
+func (c *RemoteHostClient) CacheOpen(ctx context.Context, blobRef string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/ether/plugin-host/cache/"+strings.TrimPrefix(blobRef, "/"), nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.credential != "" {
+		req.Header.Set("X-Ether-Plugin-Credential", c.credential)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("plugin-host cache open: status %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// StreamURL mints a scoped stream ticket and returns the Ether stream URL
+// for one of this plugin's own kind items (spec §6.5).
+func (c *RemoteHostClient) StreamURL(ctx context.Context, viewerID int64, itemRef string) (string, error) {
+	var out struct {
+		URL string `json:"url"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
+		map[string]any{"viewerId": viewerID, "itemRef": itemRef}, &out, false)
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
 }

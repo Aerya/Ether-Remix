@@ -60,13 +60,16 @@ func consolePages() []consolePage {
 		}},
 		{id: "viewers", label: T("Viewers"), icon: "Users", order: 30, meta: extend.PageMeta{
 			Route: "/viewers", InNav: true, Mobile: true,
-			Keywords: T("users friends accounts people"),
+			Keywords: T("users friends accounts people watchlist monitoring"),
 		}},
-		{id: "catalog", label: T("Catalog"), icon: "Library", order: 10, meta: extend.PageMeta{
-			Route: "/catalog", NavGroup: extend.NavGroupLibrary, InNav: true,
-			Keywords: T("catalogue movies shows browse search library"),
+		{id: "libraries", label: T("Libraries"), icon: "Library", order: 10, meta: extend.PageMeta{
+			Route: "/libraries", NavGroup: extend.NavGroupLibrary, InNav: true,
+			Keywords: T("catalogue catalog movies shows browse search library libraries"),
 			Sections: []extend.PageSection{
-				section("settings", T("Catalog settings"), T("tmdb language region popularity new releases playable digital")),
+				section("1/rules", T("Movies · Rules"), T("hide show rules movie exclusions visibility")),
+				section("1/settings", T("Movies · Settings"), T("tmdb language region popularity new releases playable digital")),
+				section("2/rules", T("TV Shows · Rules"), T("hide show rules tv exclusions visibility")),
+				section("2/settings", T("TV Shows · Settings"), T("tmdb language region popularity new releases episodes")),
 			},
 		}},
 		{id: "collections", label: T("Collections"), icon: "Layers", order: 20, meta: extend.PageMeta{
@@ -166,8 +169,10 @@ func consolePages() []consolePage {
 				section("overview", T("Integrations"), T("status tmdb debrid prowlarr ratings")),
 				section("trakt", T("Trakt"), T("sync history")),
 				section("simkl", T("Simkl"), T("simkl sync history")),
+				section("mdblist", T("MDBList"), T("mdblist sync history")),
 				section("llm", T("Language model"), T("llm ollama openai recaps search")),
 				section("opensubtitles", T("OpenSubtitles"), T("subtitles")),
+				section("subdl", T("SubDL"), T("subtitles")),
 			},
 		}},
 		{id: "plugins", label: T("Plugins"), icon: "Puzzle", order: 40, meta: extend.PageMeta{
@@ -288,6 +293,14 @@ func consoleIntegrations() []extend.Descriptor {
 				Flag: "enabled", RequiredField: "clientId",
 				Adds: []extend.Text{T("Watch history")},
 			}},
+		{id: "mdblist", label: T("MDBList"), order: 21,
+			hint: T("Sync watch history with MDBList. Each viewer pastes their own API key."),
+			meta: extend.IntegrationMeta{
+				Category: "watch-tracking", Logo: "mdblist", Connect: "custom", Form: "mdblist",
+				Tab: "mdblist", ConfigKey: "mdblist", Endpoint: "mdblist",
+				Flag: "enabled",
+				Adds: []extend.Text{T("Watch history")},
+			}},
 		{id: "ratings", label: T("OMDb and MDBList"), order: 90,
 			hint: T("IMDb, Rotten Tomatoes and other rating badges."),
 			meta: extend.IntegrationMeta{
@@ -300,6 +313,14 @@ func consoleIntegrations() []extend.Descriptor {
 			meta: extend.IntegrationMeta{
 				Category: "playback-extras", Logo: "opensubtitles", Connect: "fields",
 				Tab: "opensubtitles", ConfigKey: "openSubtitles", Endpoint: "opensubtitles", Test: "opensubtitles",
+				Flag: "enabled", ReadyField: "apiKey",
+				Adds: []extend.Text{T("Subtitles")},
+			}},
+		{id: "subdl", label: T("SubDL"), order: 11,
+			hint: T("Fetch subtitles from SubDL when a release doesn't include them."),
+			meta: extend.IntegrationMeta{
+				Category: "playback-extras", Logo: "subdl", Connect: "fields",
+				Tab: "subdl", ConfigKey: "subdl", Endpoint: "subdl", Test: "subdl",
 				Flag: "enabled", ReadyField: "apiKey",
 				Adds: []extend.Text{T("Subtitles")},
 			}},

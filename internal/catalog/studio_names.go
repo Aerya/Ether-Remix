@@ -1,11 +1,42 @@
 package catalog
 
 import (
+	"context"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 )
+
+// studioProbeMinTitles is the studio size past which a title-sorted page
+// probes each title it walks instead of driving from the studio index. A
+// studio index page must sort its every matching title to answer a
+// title-sorted page, so its cost follows the studio's size (and so the
+// library's); below this many titles that is a bounded, cheap sort, while
+// at or above it a probe in title order stops at the page. Measured on a
+// 540k-title library: a studio of 200 titles sorts in ~2 ms from its index
+// but a probe walks the whole library (~100 ms+); a studio of 12k titles
+// probes in ~1.5 ms but sorting reads them all (~18 ms, and ten times that
+// on a ten-times library).
+const studioProbeMinTitles = 256
+
+// studioFilterTitles is how many titles the filter's positive studio
+// predicate could match, from the studio vocabulary (catalog_studio_names),
+// or -1 when it cannot be told cheaply (no positive studio predicate, or a
+// subquery the vocabulary cannot sum). It decides studioProbe: a small
+// studio is sorted from its own index, a large one probed in title order.
+func (c *Catalog) studioFilterTitles(ctx context.Context, f core.Filter) int64 {
+	names, args, ok := c.positiveStudioNames(f)
+	if !ok {
+		return -1
+	}
+	var n int64
+	if err := c.db.QueryRowContext(ctx, `SELECT CAST(COALESCE(SUM(n.titles),0) AS BIGINT) FROM catalog_studio_names n WHERE n.studio IN (`+names+`)`, args...).Scan(&n); err != nil {
+		return -1
+	}
+	return n
+}
 
 // A Plex studio filter ("studio=Universal") matches every title with a
 // studio containing the value, case-insensitively, as PMS does. Asked of
@@ -65,4 +96,39 @@ func (c *Catalog) studioNamesLike(like, value string) (string, []any) {
 		return exact + ` AND n.rowid IN (SELECT rowid FROM catalog_studio_names_fts WHERE studio LIKE ?)`, []any{like, "%" + value + "%"}
 	}
 	return exact, []any{like}
+}
+
+// positiveStudioNames returns the studio-name vocabulary subquery and its
+// args for a filter whose studio predicate is exactly one positive clause
+// (the shape Plex's studio= sends), so the total can be summed from
+// catalog_facet_tally's studio rows instead of counting every matching
+// title. ok is false for a filter with no studio predicate, a negative one,
+// or more than one (which the tally cannot express). It mirrors browseWhere's
+// studio block so the tally membership equals the listing's predicate.
+func (c *Catalog) positiveStudioNames(f core.Filter) (string, []any, bool) {
+	if len(f.StudioFilters) == 0 {
+		if f.Studio == "" {
+			return "", nil, false
+		}
+		return `SELECT ?`, []any{f.Studio}, true
+	}
+	if len(f.StudioFilters) != 1 {
+		return "", nil, false
+	}
+	sf := f.StudioFilters[0]
+	val := strings.ToLower(sf.Value)
+	switch sf.Op {
+	case "==":
+		return `SELECT n.studio FROM catalog_studio_names n WHERE n.titles>0 AND LOWER(n.studio)=?`, []any{val}, true
+	case "<=":
+		names, args := c.studioNamesLike(escapeLike(val)+"%", val)
+		return names, args, true
+	case ">=":
+		names, args := c.studioNamesLike("%"+escapeLike(val), val)
+		return names, args, true
+	case "=":
+		names, args := c.studioNamesLike("%"+escapeLike(val)+"%", val)
+		return names, args, true
+	}
+	return "", nil, false
 }

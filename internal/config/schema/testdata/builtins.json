@@ -9,7 +9,7 @@
       "groups": [
         {
           "description": {
-            "source": "The names apps show for this server and its libraries."
+            "source": "The name apps show for this server."
           },
           "fields": [
             {
@@ -20,26 +20,6 @@
               "kind": "text",
               "label": {
                 "source": "Server name"
-              }
-            },
-            {
-              "help": {
-                "source": "Name shown in Plex. A rename inside Plex does not stick."
-              },
-              "key": "moviesLibraryName",
-              "kind": "text",
-              "label": {
-                "source": "Movies library name"
-              }
-            },
-            {
-              "help": {
-                "source": "Name shown in Plex. A rename inside Plex does not stick."
-              },
-              "key": "tvShowsLibraryName",
-              "kind": "text",
-              "label": {
-                "source": "TV Shows library name"
               }
             }
           ],
@@ -615,6 +595,16 @@
             },
             {
               "help": {
+                "source": "Keep one WEB-DL, Blu-ray and Remux choice at each resolution in Play Version when available. Auto still follows your profile."
+              },
+              "key": "alternativesPerSource",
+              "kind": "bool",
+              "label": {
+                "source": "Offer each source at every resolution"
+              }
+            },
+            {
+              "help": {
                 "source": "Version menus can list releases taller than the profile. Off keeps the ceiling you set. HDR and file-size limits still apply."
               },
               "key": "offerHigherVersions",
@@ -1159,6 +1149,16 @@
               "label": {
                 "source": "Password"
               }
+            },
+            {
+              "help": {
+                "source": "When a viewer's subtitle setting asks for subtitles and none in their language is available, Ether downloads one once the video starts playing. Uses one OpenSubtitles download per title per viewer, so standard accounts may run out sooner."
+              },
+              "key": "automaticPreferred",
+              "kind": "bool",
+              "label": {
+                "source": "Download a subtitle automatically when playback starts"
+              }
             }
           ],
           "title": {
@@ -1336,6 +1336,26 @@
               "kind": "secret",
               "label": {
                 "source": "Optional TheIntroDB key"
+              }
+            },
+            {
+              "help": {
+                "source": "Add the open SkipDB lookup as a second source, cached per episode and runtime."
+              },
+              "key": "skipDb",
+              "kind": "bool",
+              "label": {
+                "source": "Also look up SkipDB"
+              }
+            },
+            {
+              "help": {
+                "source": "Reading SkipDB is open; a key only raises its rate limit."
+              },
+              "key": "skipDbApiKey",
+              "kind": "secret",
+              "label": {
+                "source": "Optional SkipDB key"
               }
             }
           ],
@@ -1714,7 +1734,7 @@
       "groups": [
         {
           "description": {
-            "source": "The names apps show for this server and its libraries."
+            "source": "The name apps show for this server."
           },
           "fields": [
             {
@@ -1725,26 +1745,6 @@
               "kind": "text",
               "label": {
                 "source": "Server name"
-              }
-            },
-            {
-              "help": {
-                "source": "Name shown in Plex. A rename inside Plex does not stick."
-              },
-              "key": "moviesLibraryName",
-              "kind": "text",
-              "label": {
-                "source": "Movies library name"
-              }
-            },
-            {
-              "help": {
-                "source": "Name shown in Plex. A rename inside Plex does not stick."
-              },
-              "key": "tvShowsLibraryName",
-              "kind": "text",
-              "label": {
-                "source": "TV Shows library name"
               }
             }
           ],

@@ -20,6 +20,37 @@ func init() {
 CREATE INDEX catalog_titles_type_browse_sort ON catalog_titles(type, browsable, adult, sort_title ASC, key ASC, release_known, released_ts);`)
 }
 
+// studioNamesExpr builds a positive studio predicate's SQL: titles whose
+// studio is one of the vocabulary names the subquery names returns.
+func studioINListSQL(names string) string {
+	return `t.key IN (SELECT s.key FROM catalog_studios s WHERE s.studio IN (` + names + `))`
+}
+
+// studioExistsSQL is the same predicate as a correlated probe, so a walk in
+// title order checks each title's studio against the (studio, key) index and
+// stops at the page rather than enumerating the whole matching set.
+func studioExistsSQL(names string) string {
+	return `EXISTS (SELECT 1 FROM catalog_studios s WHERE s.key=t.key AND s.studio IN (` + names + `))`
+}
+
+// studioProbe rewrites f's positive studio predicate in where, if there is
+// exactly one and its studio is large enough, from the IN-list form to the
+// correlated probe, for a page query that reads only the page's rows. A
+// small studio keeps the IN-list form: sorting its few matching titles from
+// the studio index is cheaper than walking the library in title order
+// (studioProbeMinTitles). The count and seek keep the IN-list form, which
+// drives from the studio index. genres are handled the same way (genreProbe).
+func (c *Catalog) studioProbe(ctx context.Context, where string, f core.Filter) string {
+	names, _, ok := c.positiveStudioNames(f)
+	if !ok {
+		return where
+	}
+	if n := c.studioFilterTitles(ctx, f); n < studioProbeMinTitles {
+		return where
+	}
+	return strings.Replace(where, studioINListSQL(names), studioExistsSQL(names), 1)
+}
+
 // genreExistsSQL is browseWhere's genre predicate for n genres.
 func genreExistsSQL(n int) string {
 	return `EXISTS (SELECT 1 FROM catalog_genres g WHERE g.key=t.key AND g.genre IN (` + placeholders(n) + `))`
@@ -62,7 +93,8 @@ func walkableFilter(f core.Filter) bool {
 	f.YearFrom, f.YearTo, f.Years, f.ExcludeYears = 0, 0, nil, nil
 	f.CatalogViewerID, f.CatalogRuleRevision = 0, 0
 	f.DigitalDiscovery, f.DigitalDateEvidence, f.HomeReleaseOffsetDays, f.AvailabilityKeepKeys = false, false, 0, nil
-	f.HiddenMovieGeneration, f.HiddenShowGeneration, f.HiddenEpisodeGeneration = "", "", ""
+	clearGateFields(&f)
+	f.HiddenMovieSeq, f.HiddenShowSeq, f.HiddenEpisodeSeq = 0, 0, 0
 	f.ExcludeKeys, f.ExcludeGenres, f.ExcludeKeywords = nil, nil, nil
 	f.MaxContentRating, f.MinContentRating, f.SaferPlexRating, f.ContentRatings, f.ExcludeContentRatings = "", "", false, nil, nil
 	f.IncludeCollectionNames, f.ExcludeCollectionNames = nil, nil

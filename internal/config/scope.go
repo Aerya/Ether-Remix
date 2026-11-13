@@ -39,8 +39,10 @@ var sectionScopes = map[string]Scope{
 	"quality":        Shared,
 	"trakt":          Shared,
 	"simkl":          Shared,
+	"mdblist":        Shared,
 	"plexServers":    Shared,
 	"openSubtitles":  Shared,
+	"subdl":          Shared,
 	"llm":            Shared,
 	"updates":        Shared, // incl. maxDrain: every node drains the same way
 	"markers":        Shared,
@@ -67,8 +69,6 @@ var mixedSections = map[string]map[string]Scope{
 		"bindAddress":        Local,
 		"logLevel":           Local,
 		"friendlyName":       Shared,
-		"moviesLibraryName":  Shared,
-		"tvShowsLibraryName": Shared,
 		"webFrameOrigins":    Shared,
 		"allowRemoteConsole": Shared,
 		"startupAnimation":   Shared, // console preference, the same on every node
@@ -287,7 +287,7 @@ func toDoc(c Config) map[string]any {
 }
 
 func syncDerived(c *Config) {
-	c.Catalog.ReleaseMode = c.Availability.EffectiveMode()
+	c.Catalog.ReleaseMode = c.Availability.ModeFor("movie")
 	c.Catalog.HomeReleaseOffsetDays = c.Availability.HomeReleaseOffsetDays
 }
 

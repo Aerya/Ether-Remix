@@ -34,10 +34,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/hoststat"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/langfeat"
+	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/markers"
+	"github.com/braedonsaunders/ether/internal/mdblist"
 	"github.com/braedonsaunders/ether/internal/migrate"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/notify"
@@ -46,7 +48,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/overlays"
 	"github.com/braedonsaunders/ether/internal/personalize"
 	"github.com/braedonsaunders/ether/internal/playback"
-	"github.com/braedonsaunders/ether/internal/plex"
 	"github.com/braedonsaunders/ether/internal/plexguid"
 	"github.com/braedonsaunders/ether/internal/plexmeta"
 	"github.com/braedonsaunders/ether/internal/plextv"
@@ -183,6 +184,7 @@ type App struct {
 	draining atomic.Bool
 
 	tmdb        *tmdb.Client
+	libraries   *libraries.Service
 	catalog     *catalog.Catalog
 	collections *collections.Service
 	images      *artwork.Images
@@ -195,6 +197,7 @@ type App struct {
 	state               *state.State
 	trakt               *trakt.Client
 	simklDevice         *simkl.DeviceManager
+	mdblistTokens       *mdblist.TokenStore
 	llm                 *llm.Service
 	recommend           *recommend.Recommender
 	personalize         *personalize.Engine
@@ -261,11 +264,10 @@ type App struct {
 	updates           *updateState
 	frontends         *frontendRuntime
 	frontendClients   *frontendClients
-	plexServer        *plex.Server
 	artwork           *artworkservice.Source
 	downloadRemuxer   core.DownloadRemuxer
-	plexBuildMu       sync.Mutex
-	plexClose         func()
+	plexMetaMu        sync.Mutex
+	plexMetaClose     func()
 	spikeLibrary      *spike.Library
 	handler           http.Handler
 	instanceLock      *instanceLock
@@ -478,6 +480,18 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.Close()
 		return nil, err
 	}
+	// Libraries (v0.3.8 §1): seed Movies/TV Shows and move the retired
+	// config library names onto libraries 1/2 exactly once.
+	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log}); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("libraries: %w", err)
+	}
+	if moviesName, showsName := a.cfg.LegacyLibraryNames(); moviesName != "" || showsName != "" {
+		if err := a.libraries.MigrateConfigNames(ctx, moviesName, showsName); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("libraries: migrate config names: %w", err)
+		}
+	}
 	if err := a.checkCredentialKey(ctx); err != nil {
 		a.Close()
 		return nil, startFail(startup.FailCredentialKey, err)
@@ -498,6 +512,10 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		return nil, fmt.Errorf("migrate app overrides: %w", err)
 	}
 	cfg = a.cfg.Get()
+	if err := a.libraries.MigrateConfigRules(ctx, cfg.Catalog.Exclusions, cfg.Catalog.VisibilityDefault); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("libraries: migrate config rules: %w", err)
+	}
 	// Recheck after the shared settings overlay and override migration, before
 	// constructing services. Role/address settings remain node-local.
 	if err := a.validateRuntimeSettings(cfg.Server, dbCfg); err != nil {
@@ -649,6 +667,7 @@ func (a *App) applyConfig(c config.Config) {
 	}
 	a.trakt.UpdateConfig(c.Trakt)
 	a.subtitles.UpdateConfig(c.OpenSubtitles)
+	a.subtitles.UpdateSubDL(c.SubDL)
 	a.subtitles.UpdateProviders(c.Subtitles.Providers)
 	// Re-publish section titles when Movies / TV Shows library names change.
 	a.publishLibrarySections()
@@ -770,6 +789,11 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() {
 		a.cluster.RunAsLeader(ctx, "simkl delivery", func(ctx context.Context) {
 			simkl.RunDelivery(ctx, a.simklService, func() bool { return a.cfg.Get().Simkl.Enabled }, a.log.With("component", "simkl"))
+		})
+	})
+	background.start(func() {
+		a.cluster.RunAsLeader(ctx, "mdblist delivery", func(ctx context.Context) {
+			mdblist.RunDelivery(ctx, a.mdblistService, func() bool { return a.cfg.Get().MDBList.Enabled }, a.log.With("component", "mdblist"))
 		})
 	})
 	background.start(func() { a.load.Run(ctx) })

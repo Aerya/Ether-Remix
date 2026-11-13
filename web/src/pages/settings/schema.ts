@@ -7,25 +7,13 @@ export const SERVER: FieldGroup[] = localized(() => [
   {
     id: "identity",
     title: t("What viewers see"),
-    description: t("The names apps show for this server and its libraries."),
+    description: t("The name apps show for this server."),
     fields: [
       {
         key: "friendlyName",
         label: t("Server name"),
         kind: "text",
         help: t("How the server appears in apps."),
-      },
-      {
-        key: "moviesLibraryName",
-        label: t("Movies library name"),
-        kind: "text",
-        help: t("Name shown in Plex. A rename inside Plex does not stick."),
-      },
-      {
-        key: "tvShowsLibraryName",
-        label: t("TV Shows library name"),
-        kind: "text",
-        help: t("Name shown in Plex. A rename inside Plex does not stick."),
       },
     ],
   },
@@ -650,7 +638,23 @@ export const OPENSUBTITLES: FieldGroup[] = localized(() => [
       { key: "apiKey", label: t("API key"), kind: "secret" },
       { key: "username", label: t("Username"), kind: "text" },
       { key: "password", label: t("Password"), kind: "secret" },
+      {
+        key: "automaticPreferred",
+        label: t("Download a subtitle automatically when playback starts"),
+        kind: "bool",
+        help: t(
+          "When a viewer's subtitle setting asks for subtitles and none in their language is available, Ether downloads one once the video starts playing. Uses one OpenSubtitles download per title per viewer, so standard accounts may run out sooner.",
+        ),
+      },
     ],
+  },
+]);
+
+export const SUBDL: FieldGroup[] = localized(() => [
+  {
+    title: "SubDL",
+    description: t("Fetch subtitles from SubDL when a release doesn't include them."),
+    fields: [{ key: "apiKey", label: t("API key"), kind: "secret" }],
   },
 ]);
 

@@ -49,6 +49,15 @@ type View struct {
 	// Virtual is true only when the host asserts this library has no physical
 	// locations. False means the host did not assert virtual origin.
 	Virtual bool
+	// LibraryID is the stable integer identity in the libraries store.
+	LibraryID core.LibraryID
+	// KindKey and PluginID are set for plugin-provided libraries (empty for
+	// built-in and filter libraries).
+	KindKey  string
+	PluginID string
+	// Native is the protocol-native presentation string on the bound protocol
+	// (for example, MediaBrowser CollectionType or Plex base type).
+	Native string
 }
 
 // RowEntryKind identifies a neutral entry independently of wire formats.
@@ -198,6 +207,14 @@ type ItemQuery struct {
 	Sort          core.SortOrder
 	Desc          bool
 	Types         []core.MediaType
+	// UnservedTypes names the client's requested item kinds (Jellyfin/Emby
+	// IncludeItemTypes, lowercased) that do not map to a core.MediaType. Empty
+	// Types with a non-empty UnservedTypes means the client named only kinds
+	// the catalogue cannot hold: the request must answer empty, not list every
+	// type (Moonfin's Favorites screen asks for Person and the music kinds,
+	// #405). A plugin library whose presentation declares the kind still
+	// serves it; callers consult configured libraries before answering empty.
+	UnservedTypes []string
 	Recursive     bool
 	Season        *int // Optional presented season number.
 	Filter        core.Filter
@@ -299,6 +316,50 @@ type SessionMarkers struct {
 type ExtraStreams interface {
 	Lookup(core.RatingKey) (Extra, bool)
 	Open(context.Context, core.RatingKey) (container, rawURL string, headers map[string]string, err error)
+	Enabled() bool
+	List(ctx context.Context, parent *core.Title, lang string) ([]ExtraClip, error)
+	Clip(key core.RatingKey) (ExtraClip, bool)
+	Resolve(ctx context.Context, e ExtraClip) (ResolvedExtra, error)
+	PrewarmBytes() int64
+}
+
+// KindMedia is an opened byte-addressable stream for a plugin kind item.
+type KindMedia struct {
+	io.ReaderAt
+	io.Closer
+	Size     int64
+	MIME     string
+	Duration time.Duration
+	Name     string
+}
+
+// KindLeaf is one playable leaf entry within a plugin kind container item.
+type KindLeaf struct {
+	Index    int
+	Title    string
+	Key      core.RatingKey
+	Duration time.Duration
+	Size     int64
+	MIME     string
+}
+
+// KindStreams opens byte-addressable media and lists playable leaves for
+// plugin-provided content kinds (spec §6.1). Callers authorize viewer access
+// through viewer policy; nil on Host means plugin kind media is unavailable.
+type KindStreams interface {
+	OpenKind(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept []string) (*KindMedia, error)
+	KindLeaves(ctx context.Context, viewer *core.Viewer, parent core.RatingKey) ([]KindLeaf, error)
+}
+
+// KindRefKeys maps between plugin RatingKeys and their ItemRefs for a viewer
+// who may see them. Protocols that address plugin items by their ItemRef
+// verbatim (the Stremio "pk:" identity, spec §2.2) use it to build catalog
+// ids and to dispatch meta/stream requests back to the stored item. It is
+// optional: frontends type-assert for it and 404 when the host does not
+// implement it.
+type KindRefKeys interface {
+	KeyForRef(ctx context.Context, viewer *core.Viewer, ref core.ItemRef) (core.RatingKey, error)
+	RefsForKeys(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) (map[core.RatingKey]core.ItemRef, error)
 }
 
 // CinemaIntros returns playable trailers of other visible, unwatched movies
@@ -331,6 +392,11 @@ type Prerolls interface {
 	Lookup(ctx context.Context, key RatingKey) (Extra, bool)
 	Open(ctx context.Context, key RatingKey) (io.ReadSeekCloser, time.Time, error)
 	Started(ctx context.Context, viewer *Viewer, device Device, key RatingKey)
+	Active(ctx context.Context) bool
+	Pick(ctx context.Context, req PrerollRequest) (PrerollClip, bool)
+	Clip(ctx context.Context, key RatingKey) (PrerollClip, bool)
+	Thumb(ctx context.Context, key RatingKey) (string, bool)
+	RecordPlay(ctx context.Context, play PrerollPlay)
 }
 
 // SubtitleOffer is one subtitle search result. ID is the only value a later
@@ -348,6 +414,52 @@ type SubtitleCatalog interface {
 	Enabled() bool
 	Search(context.Context, *core.Viewer, core.Device, core.RatingKey, string) ([]SubtitleOffer, error)
 	Download(context.Context, *core.Viewer, core.Device, core.RatingKey, string) (int, error)
+	OpenFormat(id, format string) (io.ReadCloser, string, error)
+	OpenFormatFrom(id, format, source string) (io.ReadCloser, string, error)
+	CachedSidecars(ctx context.Context, t *Title, u *User, embedded []StreamInfo) []StreamInfo
+	SearchSubtitles(ctx context.Context, t *Title, u *User, lang, release string) ([]SubtitleSearchOffer, error)
+	DownloadSubtitle(ctx context.Context, t *Title, u *User, id int64) (StreamInfo, error)
+	UploadSubtitle(ctx context.Context, t *Title, u *User, filename, format, language string, body []byte) (StreamInfo, error)
+	DeleteSubtitle(ctx context.Context, key RatingKey, u *User, stream StreamInfo) error
+}
+
+// SubtitleSidecarSource resolves cached OpenSubtitles and synchronized sidecars.
+type SubtitleSidecarSource interface {
+	OpenFormat(string, string) (io.ReadCloser, string, error)
+}
+
+// SubtitleSidecarCatalog is optionally implemented by Host.Subtitles: the sidecars
+// already cached for a title and viewer, without network access, skipping
+// streams embedded already lists (by ExternalURL) or covers (by language).
+type SubtitleSidecarCatalog interface {
+	CachedSidecars(ctx context.Context, t *Title, u *User, embedded []StreamInfo) []StreamInfo
+}
+
+// SubtitleSearchOffer is one subtitle search result.
+type SubtitleSearchOffer struct {
+	ID              int64  // provider file id, passed back to DownloadSubtitle
+	Language        string // ISO 639-1
+	Title           string // release or file name
+	Provider        string // "OpenSubtitles"
+	Score           int
+	HearingImpaired bool
+	Forced          bool
+	PerfectMatch    bool // matched the playing file's hash or release
+}
+
+// SubtitleSidecarSearch is optionally implemented by Host.Subtitles: on-demand
+// subtitle search and pick returning a sidecar stream.
+type SubtitleSidecarSearch interface {
+	SearchSubtitles(ctx context.Context, t *Title, u *User, lang, release string) ([]SubtitleSearchOffer, error)
+	// DownloadSubtitle fetches an offer returned by SearchSubtitles for t
+	// and returns its sidecar stream; ErrNotFound for unknown offers.
+	DownloadSubtitle(ctx context.Context, t *Title, u *User, id int64) (StreamInfo, error)
+}
+
+// SubtitleSidecarUpload is optionally implemented by Host.Subtitles:
+// viewer-uploaded sidecar subtitles.
+type SubtitleSidecarUpload interface {
+	UploadSubtitle(ctx context.Context, t *Title, u *User, filename, format, language string, body []byte) (StreamInfo, error)
 }
 
 // Extra describes a playable trailer or clip. Key is the broker-facing item
@@ -474,6 +586,10 @@ type NotInterestedPage struct {
 // Experience applies viewer policy before returning any data. Browse operations
 // must not resolve or open a release. Policy is applied before pagination and limits.
 type Experience interface {
+	ExperienceServices
+	LibraryGUIDs() LibraryGUIDs
+	LibraryMetadata() LibraryMetadata
+	MarkerRanges
 	Views(context.Context, *core.Viewer) ([]View, error)
 	Collections(context.Context, *core.Viewer, core.Device, CollectionQuery) (CollectionPage, error)
 	NotInterested(context.Context, *core.Viewer, core.Device, PageQuery) (NotInterestedPage, error)
@@ -541,12 +657,12 @@ type PlayIntent struct {
 	// a later detail page can warm the title with exactly what Play sends
 	// (DetailWarmer); generic caps are never remembered.
 	DeclaredCaps bool
-	Plex         *PlexHints
+	Hints        *PlayHints
 }
 
-// PlexHints carries Plex-specific selections that cannot be represented by
+// PlayHints carries Plex-specific selections that cannot be represented by
 // neutral stream indexes. Only the Plex adapter should populate it.
-type PlexHints struct {
+type PlayHints struct {
 	ManualSubtitle    bool // explicit request or stored manual choice, before preferences
 	Collection        string
 	MediaIndex        int
@@ -618,7 +734,7 @@ type PlayPlan struct {
 	Media     core.MediaInfo
 	Decision  core.Decision
 	// Alternatives are evaluated against this same source and client policy.
-	// DirectStream denotes copy-only remux, without encoding either stream.
+	// DirectPlay, DirectStream, Transcoding are evaluated against this same source.
 	DirectPlay, DirectStream, Transcoding bool
 	// HLS reports whether this resolved source can be delivered as HLS under
 	// the declared client profile. Encoder capacity is checked at stream start.
@@ -665,6 +781,10 @@ type Session struct {
 	Media           *core.MediaInfo
 	StartedAt       time.Time
 	Capabilities    *SessionCapabilities
+	// PlayMethod is the broker's live delivery decision for this session:
+	// "DirectPlay", "DirectStream" (remux) or "Transcode". Empty when the
+	// session is idle, live, or restored on another cluster node.
+	PlayMethod string
 }
 
 // SessionCapabilities are declared by an authenticated device on one surface.
@@ -813,6 +933,10 @@ type Sessions interface {
 	Sessions(context.Context, SessionAccess) ([]Session, error)
 	Recover(context.Context, string, string, time.Duration) error
 	TranscodeFor(context.Context, string) (core.HLSSession, bool)
+	TrickplayAvailable(string) bool
+	TrickplayBIF(string) ([]byte, bool)
+	TrickplayFrame(string, time.Duration) ([]byte, bool)
+	CancelTrickplay(string)
 	// Events includes events from all cluster nodes, filters by viewer unless owner access is authorized, and ends on cancellation.
 	Events(context.Context, EventScope) (<-chan Event, error)
 }
@@ -822,4 +946,14 @@ type Sessions interface {
 // still reports the item and its file-shaped MediaSourceId.
 type ItemProgress interface {
 	ReportItemProgress(context.Context, SessionAccess, core.RatingKey, Timeline) error
+}
+
+// PlaybackSourceKeyer reports the resolved source identity for a playback session.
+type PlaybackSourceKeyer interface {
+	SourceKey(playID string) string
+}
+
+// SoftSubtitleServer serves soft ASS subtitles directly from an active HLS remux session.
+type SoftSubtitleServer interface {
+	ServeSoftSubtitle(http.ResponseWriter, *http.Request, int) bool
 }

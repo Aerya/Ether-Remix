@@ -2,6 +2,7 @@ package transcode
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"os"
@@ -232,26 +233,115 @@ func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int)
 	}
 }
 
+// emptyAliasSize reports whether an in-GOP placeholder segment is written
+// for HLS containers whose players join fragments into a single stream: a
+// positive size when placeholders exist, 0 when aliases duplicate the
+// covering segment directly (MPEG-TS, DASH). The fMP4 placeholder's exact
+// size varies with the track, so it is matched structurally (isEmptyFMP4),
+// not by size.
+func (s *Session) emptyAliasSize() int64 {
+	if s.isDASH() {
+		return 0
+	}
+	switch s.container {
+	case ContainerMatroska:
+		return emptyClusterSize
+	case ContainerFMP4:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// emptyFragmentLocked is the placeholder bytes for in-GOP segment n of the
+// primary track: an empty fMP4 fragment (with a valid traf/tfdt at n's start)
+// or an empty Matroska Cluster. Callers write it in place of repeating the
+// covering GOP.
+func (s *Session) emptyFragmentLocked(n int) []byte {
+	if s.container == ContainerMatroska {
+		return emptyCluster(s.segStart(n) + matroskaOrigin)
+	}
+	track := s.fmp4VideoTrack
+	base := emptyFMP4DecodeTime(s.segStart(n), track.Timescale)
+	return emptyFMP4(uint32(n+1), track, base)
+}
+
+func isEmptyFMP4(b []byte) bool {
+	top, err := readBoxes(b, 0, len(b))
+	if err != nil || len(top) != 3 || top[0].typ != "styp" || top[1].typ != "moof" || top[2].typ != "mdat" {
+		return false
+	}
+	if top[2].end-top[2].start > 8 {
+		return false // mdat with samples is not an empty placeholder
+	}
+	kids, err := readBoxes(b, top[1].start+top[1].hdr, top[1].end)
+	if err != nil {
+		return false
+	}
+	sawTfdt := false
+	for _, k := range kids {
+		if k.typ != "traf" {
+			continue
+		}
+		grandkids, err := readBoxes(b, k.start+k.hdr, k.end)
+		if err != nil {
+			return false
+		}
+		samples := 0
+		for _, g := range grandkids {
+			switch g.typ {
+			case "tfdt":
+				sawTfdt = true
+			case "trun":
+				p := g.payload(b)
+				if len(p) >= 8 {
+					samples += int(binary.BigEndian.Uint32(p[4:]))
+				}
+			}
+		}
+		if samples != 0 {
+			return false
+		}
+	}
+	return sawTfdt
+}
+
 // coveringSegLocked is the latest segment at or before n that holds a
-// real Matroska GOP, or -1 if none is still on disk.
+// real GOP (not an empty alias placeholder), or -1 if none is still on disk.
 func (s *Session) coveringSegLocked(t, n int) int {
 	if t < 0 || t >= len(s.done) {
 		return -1
 	}
 	for k := n; k >= 0 && s.done[t][k]; k-- {
-		st, err := os.Stat(s.trackSegPath(t, k))
+		path := s.trackSegPath(t, k)
+		st, err := os.Stat(path)
 		if err != nil {
 			return -1
 		}
-		if st.Size() > emptyClusterSize {
-			return k
+		switch s.container {
+		case ContainerMatroska:
+			if st.Size() > emptyClusterSize {
+				return k
+			}
+		case ContainerFMP4:
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return -1
+			}
+			if !isEmptyFMP4(b) {
+				return k
+			}
+		default:
+			if st.Size() > 0 {
+				return k
+			}
 		}
 	}
 	return -1
 }
 
-// decodableMKVLocked is the file to serve for Matroska segment n of track
-// t to a fresh decoder: n itself, or for an empty Cluster (a segment
+// decodableMKVLocked is the file to serve for segment n of track t to a
+// fresh decoder: n itself, or for an empty alias placeholder (a segment
 // inside a GOP longer than a segment, chunks.go) the earlier segment
 // holding that GOP; false when it is no longer on disk.
 func (s *Session) decodableMKVLocked(t, n int) (string, bool) {
@@ -499,7 +589,7 @@ func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
 			// delete) this one as soon as the lock is released, and the
 			// open handle keeps serving the bytes the lookup chose.
 			f, err := os.Open(filepath.Join(s.dir, name))
-			if err == nil && s.container == ContainerMatroska && r.Method != http.MethodHead {
+			if err == nil && s.emptyAliasSize() > 0 && r.Method != http.MethodHead {
 				// An init GET starts a decoder. Its first media GET needs
 				// a GOP even when it follows the previous decoder's last
 				// segment; metadata-only HEAD probes do not reset it.

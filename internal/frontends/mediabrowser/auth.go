@@ -92,6 +92,20 @@ func (i *instance) authenticate(r *http.Request) (*frontend.Viewer, string, erro
 		if grants, ok := i.host.Identity.(frontend.GrantDeviceIdentity); ok {
 			claim := device(r)
 			boundViewer, stored, _, bindingErr := grants.ResolveGrantDevice(r.Context(), token, claim.ID)
+			// Device ids are form-decoded ("+" is a space, as Jellyfin does).
+			// A grant issued before that stored the literal "+" form.
+			if legacy := strings.ReplaceAll(claim.ID, " ", "+"); bindingErr != nil && legacy != claim.ID {
+				if bv, st, _, e := grants.ResolveGrantDevice(r.Context(), token, legacy); e == nil {
+					boundViewer, stored, bindingErr, claim.ID = bv, st, nil, legacy
+				}
+			}
+			// Jellyfin for Android's native player signs requests with the
+			// web layer's device id followed by the user's id as a dashed UUID.
+			if base, ok := userScopedDeviceID(claim.ID, v.ID); bindingErr != nil && ok {
+				if bv, st, _, e := grants.ResolveGrantDevice(r.Context(), token, base); e == nil {
+					boundViewer, stored, bindingErr, claim.ID = bv, st, nil, base
+				}
+			}
 			if bindingErr != nil || boundViewer == nil || boundViewer.ID != v.ID || stored.ID == "" || (claim.ID != "" && claim.ID != stored.ID) {
 				return nil, "", errors.New("invalid device grant")
 			}
@@ -110,6 +124,21 @@ func (i *instance) authenticate(r *http.Request) (*frontend.Viewer, string, erro
 	}
 	return v, token, err
 }
+
+// userScopedDeviceID strips a trailing user id from a device id when it is
+// exactly this viewer's id as a dashed UUID ("<device><uuid>").
+func userScopedDeviceID(claim string, viewerID int64) (string, bool) {
+	guid, err := ids.GUID(ids.User, viewerID)
+	if err != nil || len(guid) != 32 {
+		return "", false
+	}
+	dashed := guid[:8] + "-" + guid[8:12] + "-" + guid[12:16] + "-" + guid[16:20] + "-" + guid[20:]
+	if len(claim) <= len(dashed) || !strings.EqualFold(claim[len(claim)-len(dashed):], dashed) {
+		return "", false
+	}
+	return claim[:len(claim)-len(dashed)], true
+}
+
 func (i *instance) viewer(r *http.Request) (*frontend.Viewer, string, error) {
 	p, ok := r.Context().Value(principalKey{}).(principal)
 	if !ok || p.viewer == nil {
@@ -388,7 +417,7 @@ func (i *instance) baseUserDTO(v *frontend.Viewer) (user, policy, configuration 
 		"ForceRemoteSourceTranscoding": false, "EnableContentDeletion": false, "EnableContentDownloading": false,
 		"EnableSyncTranscoding": false, "EnableMediaConversion": false, "EnableAllDevices": true, "EnableAllChannels": true,
 		"EnabledDevices": []string{}, "EnabledChannels": []string{}, "EnableContentDeletionFromFolders": []string{}, "AllowedTags": []string{}, "BlockedTags": []string{},
-		"EnableAllFolders": len(v.AllowedSections) == 0, "InvalidLoginAttemptCount": 0, "LoginAttemptsBeforeLockout": -1,
+		"EnableAllFolders": len(v.AllowedLibraries) == 0, "InvalidLoginAttemptCount": 0, "LoginAttemptsBeforeLockout": -1,
 		"MaxActiveSessions": v.StreamLimit, "EnablePublicSharing": false, "RemoteClientBitrateLimit": 0,
 		"AuthenticationProviderId": "Ether", "PasswordResetProviderId": "Ether", "SyncPlayAccess": i.syncPlayAccess(),
 	}
@@ -475,7 +504,7 @@ func (i *instance) routes() error {
 				http.Error(w, "Unauthorized", 401)
 				return
 			}
-			jsonReply(w, map[string]any{"Id": i.info.ID, "ServerName": i.info.ServerName, "Version": i.info.Version, "ProductName": i.info.ProductName, "StartupWizardCompleted": true, "WebSocketPortNumber": i.listenerPort()})
+			jsonReply(w, i.systemInfoDTO(r))
 		}},
 		{"POST", "/Sessions/Capabilities", i.capabilitiesQuery},
 		{"POST", "/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {

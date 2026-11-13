@@ -141,6 +141,22 @@ func (h *host) SecretGet(ctx context.Context, name string) (string, error) {
 	return h.m.store.openSecret(h.plugin, name, stored)
 }
 
+// AllowNetworkHost reports whether pluginID is enabled, still holds its
+// network grant, and declared hostName in permissions.network.
+func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName string) bool {
+	h := &host{m: m, plugin: pluginID}
+	r, g, err := h.record(ctx)
+	if err != nil || r.Manifest.Ether == nil {
+		return false
+	}
+	if err := h.deny(r, g, "network", "", func(string) bool {
+		return hostAllowed(r.Manifest.Ether.Permissions.Network, hostName)
+	}); err != nil {
+		return false
+	}
+	return true
+}
+
 // hostAllowed matches a host against the manifest network list.
 func hostAllowed(patterns []string, host string) bool {
 	host = strings.ToLower(host)
@@ -452,6 +468,43 @@ func (m *Manager) applyInverse(ctx context.Context, e JournalEntry) error {
 			return ErrUnavailable
 		}
 		return m.deps.Backends.CollectionsDelete(collectionContext(ctx, e.Plugin), inv.Doc)
+	case "kinds.upsert":
+		var inv kindInverse
+		if err := json.Unmarshal(e.Inverse, &inv); err != nil {
+			return err
+		}
+		b := m.kindBackends()
+		if len(inv.Previous) > 0 {
+			if b.KindUpsert == nil {
+				return ErrUnavailable
+			}
+			if _, err := b.KindUpsert(ctx, e.Plugin, inv.Kind, inv.Previous); err != nil {
+				return err
+			}
+		}
+		if len(inv.Items) > 0 {
+			if b.KindDelete == nil {
+				return ErrUnavailable
+			}
+			if err := b.KindDelete(ctx, e.Plugin, inv.Kind, inv.Items); err != nil {
+				return err
+			}
+		}
+		return nil
+	case "kinds.delete":
+		var inv kindInverse
+		if err := json.Unmarshal(e.Inverse, &inv); err != nil {
+			return err
+		}
+		b := m.kindBackends()
+		if b.KindUpsert == nil {
+			return ErrUnavailable
+		}
+		if len(inv.Previous) > 0 {
+			_, err := b.KindUpsert(ctx, e.Plugin, inv.Kind, inv.Previous)
+			return err
+		}
+		return nil
 	default:
 		return fmt.Errorf("plugins: no inverse for journal op %q", e.Op)
 	}

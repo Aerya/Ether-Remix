@@ -76,7 +76,7 @@ describe("Settings", () => {
     expect(screen.queryByText("Jellyfin TV")).toBeNull();
   });
   it("saves automatic franchise visibility without changing other catalog settings", async () => {
-    const { fake } = renderApp("/catalog/settings");
+    const { fake } = renderApp("/libraries/1/settings");
     const toggle = await screen.findByLabelText("Hide automatic franchise collections", {}, WAIT);
     expect(toggle).not.toBeChecked();
     const before = { ...fake.state.config.catalog };
@@ -112,6 +112,11 @@ describe("Settings", () => {
     fireEvent.change(await screen.findByLabelText("Username", {}, WAIT), {
       target: { value: "sam.rivera" },
     });
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: "Download a subtitle automatically when playback starts",
+      }),
+    );
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/opensubtitles")).toHaveLength(1), WAIT);
     expect(calls(fake, "PUT", "/config/opensubtitles")[0]!.body).toEqual({
@@ -119,6 +124,7 @@ describe("Settings", () => {
       apiKey: "••••",
       username: "sam.rivera",
       password: "••••",
+      automaticPreferred: true,
     });
     expect(calls(fake, "PUT", "/config/trakt")).toHaveLength(0);
     expect(calls(fake, "PUT", "/config/llm")).toHaveLength(0);

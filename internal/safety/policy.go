@@ -274,6 +274,12 @@ func (s *Service) Allowed(u *core.User, t *core.Title) bool {
 	return s.PolicyAllowed(u, t)
 }
 
+// SetMaxRating is a no-op denial on a standalone safety service; host-side
+// rating mutation is authorized and persisted through the app's ViewerPolicy.
+func (s *Service) SetMaxRating(context.Context, *core.User, string) error {
+	return core.ErrUnauthorized
+}
+
 // PolicyAllowed evaluates mandatory safety and share restrictions for u without
 // consulting catalogue visibility rules.
 func (s *Service) PolicyAllowed(u *core.User, t *core.Title) bool {
@@ -472,7 +478,7 @@ func (s *Service) UserPolicy(u *core.User) *core.User {
 		return nil
 	}
 	out := *u
-	out.AllowedSections = append([]int(nil), u.AllowedSections...)
+	out.AllowedLibraries = append([]core.LibraryID(nil), u.AllowedLibraries...)
 	return &out
 }
 func (s *Service) BitrateLimit(u *core.User) int { return s.ForUser(u).MaxBitrateKbps }
@@ -483,7 +489,7 @@ func (s *Service) Restricted(u *core.User) bool {
 	}
 	p := s.ForUser(u)
 	share := s.shareFor(u)
-	return u.MaxContentRating != "" || len(u.AllowedSections) > 0 || len(p.BlockedGenres) > 0 || len(p.BlockedKeywords) > 0 ||
+	return u.MaxContentRating != "" || len(u.AllowedLibraries) > 0 || len(p.BlockedGenres) > 0 || len(p.BlockedKeywords) > 0 ||
 		share.FilterMovies != "" || share.FilterTelevision != ""
 }
 

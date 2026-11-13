@@ -336,8 +336,8 @@ func (c *Catalog) evaluateBrowsability(ctx context.Context, st *storedTitle, t c
 			switch {
 			case byFallback:
 				add(BrowsabilityReason{Code: "catalog_default_hide", Message: "Hidden by your default catalogue visibility"})
-			case idx >= 0 && idx < len(cfg.Exclusions) && strings.TrimSpace(cfg.Exclusions[idx].Name) != "":
-				name := strings.TrimSpace(cfg.Exclusions[idx].Name)
+			case strings.TrimSpace(vis.RuleName(idx)) != "":
+				name := strings.TrimSpace(vis.RuleName(idx))
 				add(BrowsabilityReason{
 					Code:    "catalog_rule_named",
 					Rule:    name,
@@ -470,8 +470,7 @@ func (c *Catalog) IncludeTitle(ctx context.Context, key core.RatingKey) (Browsab
 		if uerr := c.upsert(ctx, summary, upsertOpts{browsable: true}); uerr != nil {
 			return BrowsabilityStatus{}, uerr
 		}
-		st, err = c.loadByKey(ctx, key)
-		if err != nil {
+		if _, err = c.loadByKey(ctx, key); err != nil {
 			return BrowsabilityStatus{}, err
 		}
 	} else {

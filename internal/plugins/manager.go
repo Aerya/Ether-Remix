@@ -17,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/agent/tools"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/logredact"
@@ -43,6 +44,17 @@ type Backends struct {
 	CollectionsDelete func(ctx context.Context, doc json.RawMessage) error
 	// Notice posts a console notice ("console notice" in SPEC §5.2).
 	Notice func(text string)
+	// Kind host services (spec §3.6, §4.5, §5.4): plugin-item store,
+	// source resolver and per-library blob cache.
+	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
+	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
+	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
+	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	// StreamURL mints a scoped stream ticket for one of a plugin's own kind
+	// items for one viewer and returns the Ether stream URL (spec §6.5).
+	StreamURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
 }
 
 // Deps are the plugin host's explicit dependencies.
@@ -71,22 +83,23 @@ type Deps struct {
 // Manager is the plugin host. It is safe for concurrent use.
 type Manager struct {
 	// relay holds the add-on settings pages open in the console.
-	relay       *addonRelay
-	relayOnce   sync.Once
-	store       *storage
-	deps        Deps
-	log         *slog.Logger
-	now         func() time.Time
-	client      *http.Client
-	mu          sync.Mutex
-	catalogue   Catalogue
-	fatories    map[string]RuntimeFactory
-	runtimes    map[string]Runtime
-	removeHooks []func(context.Context, string)
-	syncHooks   []func(ctx context.Context, r Record)
-	eventSubs   map[string]map[string]Record
-	feedLogs    sync.Map // feed key -> *faillog.Tracker
-	notifyLocks sync.Map // plugin id -> *sync.Mutex
+	relay        *addonRelay
+	relayOnce    sync.Once
+	store        *storage
+	deps         Deps
+	log          *slog.Logger
+	now          func() time.Time
+	client       *http.Client
+	mu           sync.Mutex
+	sidecarState SidecarState
+	catalogue    Catalogue
+	fatories     map[string]RuntimeFactory
+	runtimes     map[string]Runtime
+	removeHooks  []func(context.Context, string)
+	syncHooks    []func(ctx context.Context, r Record)
+	eventSubs    map[string]map[string]Record
+	feedLogs     sync.Map // feed key -> *faillog.Tracker
+	notifyLocks  sync.Map // plugin id -> *sync.Mutex
 	// schedule bookkeeping: "plugin|call" -> next run
 	nextRun map[string]time.Time
 	// rate-limit bookkeeping for host log and notify
@@ -427,7 +440,7 @@ func (m *Manager) CallStream(ctx context.Context, pluginID string, req Request) 
 	}
 	req.PluginID = pluginID
 
-	ctx, cancel := context.WithTimeout(ctx, DeadlineFor(req.Path))
+	ctx, cancel := context.WithTimeout(withViewerHeader(ctx, req.Headers), DeadlineFor(req.Path))
 	resp, body, err := s.CallStream(ctx, req)
 	if err != nil {
 		cancel()
@@ -488,6 +501,13 @@ func DeadlineFor(path string) time.Duration {
 		return 10 * time.Second
 	case strings.HasPrefix(path, "/subtitles/"), strings.HasPrefix(path, "/ether/subtitles/"):
 		return 5 * time.Second
+	case strings.HasPrefix(path, "/ether/v1/setup/"):
+		return 20 * time.Second
+	case strings.HasPrefix(path, "/ether/v1/kinds/"):
+		if strings.HasSuffix(path, "/resolve") || strings.HasSuffix(path, "/match") {
+			return 5 * time.Second
+		}
+		return 10 * time.Second
 	default:
 		return 30 * time.Second
 	}
@@ -526,7 +546,7 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	if r.Manifest.SpeaksStremio() {
 		deadline = stremioDeadline(req.Path)
 	}
-	cctx, cancel := context.WithTimeout(ctx, deadline)
+	cctx, cancel := context.WithTimeout(withViewerHeader(ctx, req.Headers), deadline)
 	defer cancel()
 	if req.Headers == nil {
 		req.Headers = map[string]string{}
@@ -757,6 +777,38 @@ type RankingReport struct {
 // is being left out. It says "slow" so the console's headline reads Slow;
 // the drawer explains it from Health.RankingSkipped.
 const rankingSkippedReason = "Its ranking step was too slow, so releases were ranked without it."
+
+// sidecarWaitingReason is the health reason while a plugin that runs as its
+// own program has no sidecar connected.
+const sidecarWaitingReason = "It runs as its own program, and that program is not connected."
+
+// SidecarState reports whether an installed plugin is served by a sidecar
+// and whether one is connected now. The app wires it from the remote
+// runtime; nil means no plugin needs a sidecar.
+type SidecarState func(Record) (needsSidecar, connected bool)
+
+// SetSidecarState installs the live sidecar check used for console health.
+func (m *Manager) SetSidecarState(f SidecarState) {
+	m.mu.Lock()
+	m.sidecarState = f
+	m.mu.Unlock()
+}
+
+// liveHealth overlays the live sidecar state on a stored health record: an
+// enabled plugin whose sidecar is not connected needs attention however its
+// last check went, so the console never calls it healthy.
+func (m *Manager) liveHealth(r Record, h Health) Health {
+	m.mu.Lock()
+	f := m.sidecarState
+	m.mu.Unlock()
+	if f == nil || !r.Enabled {
+		return h
+	}
+	if needs, connected := f(r); needs && !connected {
+		h.Status, h.Reason, h.Sidecar = "attention", sidecarWaitingReason, "waiting"
+	}
+	return h
+}
 
 // RecordRanking records a resolve's hot-path outcome for one plugin. A
 // ranking step left out for running past its budget flags the plugin for
