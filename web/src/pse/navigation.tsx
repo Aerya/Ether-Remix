@@ -19,7 +19,7 @@ export const REMIX_TABS = [
     key: "contenus",
     fr: "Contenus et bibliothèques",
     en: "Content & libraries",
-    features: ["music"],
+    features: ["music", "posters"],
   },
   { key: "statistiques", fr: "Statistiques", en: "Statistics", features: [] },
   {

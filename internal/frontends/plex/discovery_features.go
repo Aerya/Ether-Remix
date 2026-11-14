@@ -221,6 +221,7 @@ func (s *Server) serveDiscoveryPoster(w http.ResponseWriter, r *http.Request, k 
 	}
 	var data []byte
 	var ct string
+	var origin *frontend.PosterOrigin
 	if highBackdrop {
 		_, path := d.Overlays.Paths(ctx, pr.User, t, lang)
 		svc := s.svc()
@@ -230,6 +231,7 @@ func (s *Server) serveDiscoveryPoster(w http.ResponseWriter, r *http.Request, k 
 			data, ct = image.Data, image.ContentType
 		}
 	} else {
+		ctx, origin = frontend.WithPosterOrigin(ctx) // PSE-HOOK: cache des affiches côté application — voir docs/pse/FORK.fr.md
 		data, ct, e = d.RenderArtwork(ctx, pr.User, t, kind, lang)
 	}
 	if e != nil {
@@ -238,7 +240,7 @@ func (s *Server) serveDiscoveryPoster(w http.ResponseWriter, r *http.Request, k 
 	}
 	if d.Overlays.CustomPostersEnabled() {
 		if width, _ := strconv.Atoi(r.URL.Query().Get("width")); width > 0 && (kind == "" || kind == "poster") {
-			if resized, err := frontend.ResizePoster(data, width); err == nil {
+			if resized, err := frontend.ResizePosterCached(data, width); err == nil { // PSE-HOOK: redimensionnement gardé en mémoire
 				data = resized
 				ct = "image/jpeg"
 			}
@@ -255,7 +257,7 @@ func (s *Server) serveDiscoveryPoster(w http.ResponseWriter, r *http.Request, k 
 	if d.Overlays.CustomPostersEnabled() {
 		etag = fmt.Sprintf("\"%x\"", sha256.Sum256(data))
 		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+		w.Header().Set("Cache-Control", psePosterCacheControl(origin)) // PSE-HOOK: cache des affiches côté application
 		if r.Header.Get("If-None-Match") == etag {
 			w.WriteHeader(http.StatusNotModified)
 			return

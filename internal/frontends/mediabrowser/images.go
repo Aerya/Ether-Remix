@@ -324,6 +324,7 @@ func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	r = pseImageSize(r) // PSE-HOOK: taille demandée par l'application — voir docs/pse/FORK.fr.md
 	tags := route.Query(r.URL.Query(), "tag")
 	if len(tags) == 1 && tags[0] != "" {
 		i.host.ImageGrants.Serve(w, r, tags[0])

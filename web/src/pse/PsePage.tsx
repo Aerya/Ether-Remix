@@ -325,6 +325,7 @@ function PseSettings() {
                   </Button>
                 ))}
               </nav>
+              {current.features.filter((f) => f.id === "posters").map((f) => renderFeature(f))}
               {content === "animes" ? (
                 <p className="text-sm text-fg-muted">
                   {L(

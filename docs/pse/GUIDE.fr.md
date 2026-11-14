@@ -47,6 +47,7 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 | `PSE_PLAYABLE` | `off` | `on` active le catalogue « lisible uniquement », avec la même portée que `PSE_FRENCH`. |
 | `PSE_PLAYABLE_MIN` | `2` | Releases distinctes (même nom = une seule) nécessaires pour lister un titre. |
 | `PSE_PLAYABLE_FILTER` | *(aucun)* | Releases prises en compte, ex. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Langues : `fr` (toute VF : FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (sous-titres français annoncés), `vo` (aucun doublage annoncé)… Changer de filtre recalcule le catalogue au démarrage, sans réindexer. |
+| `PSE_POSTER_REFRESH_HOURS` | `24` | Avec un fournisseur d'affiches (PostersPlus, XRDB, RPDB…), délai en heures (1 à 168) au bout duquel les applications reprennent ses affiches. Ether utilisait 6 heures. |
 | `PSE_FRENCH` | `off` | `on` active le catalogue en français : pages Films et Séries, rangées de l'accueil (dont Tendances), collections et titres similaires. Les collections de sorties à venir, la watchlist et la reprise de lecture restent intactes. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Pays dont une sortie numérique ou physique compte (codes ISO). `FR,CA` ajoute le Canada, pas toujours doublé en français. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Langues de release indexée qui comptent (`vfq` pour le québécois seul, `vff`…). |
@@ -205,6 +206,8 @@ Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent ve
 ### Navigation et badges des affiches
 
 Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épisodes et les rotations de collections respectent l’état de chaque spectateur. Le catalogue « lisible uniquement » conserve des compteurs exacts, y compris les exceptions de langue.
+
+**Affiches plus rapides** : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche pendant un jour au lieu de la redemander au serveur à chaque affichage. Une affiche de repli TMDB, servie quand le fournisseur ne répond pas, reste revérifiée à chaque fois pour ne pas rester affichée après la panne. Les applications reprennent les affiches du fournisseur toutes les 24 heures ; ce délai se règle dans **Console → Ether-Remix → Contenus et bibliothèques → Affiches dans les applications** (`PSE_POSTER_REFRESH_HOURS`, de 1 à 168). Jellyfin et Emby reçoivent l’affiche à la taille demandée par l’application, et Jellyfin n’attend plus avant d’envoyer une image. Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.
 
 
 ## Playlists et apparence

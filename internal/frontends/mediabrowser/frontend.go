@@ -166,6 +166,10 @@ func (i *instance) Handler() http.Handler {
 		// budget only covers hashing already in flight, and the page cache
 		// clears it before a fill so the cache is never held open for it.
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if pseImageRoute(r) { // PSE-HOOK: pas d'attente d'empreinte pour envoyer une image — voir docs/pse/FORK.fr.md
+				next.ServeHTTP(w, r)
+				return
+			}
 			ctx := frontend.WithSynchronousArtworkMetadata(r.Context(), 100*time.Millisecond)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

@@ -158,6 +158,15 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID:          "posters",
+		Title:       tx("Affiches dans les applications", "Posters in apps"),
+		Description: tx("Avec un fournisseur d'affiches (PostersPlus, XRDB, RPDB…), les applications gardent chaque affiche au lieu de la redemander à chaque affichage.", "With a poster provider (PostersPlus, XRDB, RPDB…), apps keep each poster instead of asking for it again on every screen."),
+		Fields: []Field{
+			{Key: "PSE_POSTER_REFRESH_HOURS", Kind: KindNumber, Default: "24", Min: ptr(1), Max: ptr(168), Label: tx("Renouvellement des affiches (heures)", "Poster refresh (hours)"),
+				Help: tx("Délai au bout duquel les applications reprennent les affiches du fournisseur, pour suivre ses changements (notes, style). Ether utilisait 6 heures.", "Delay after which apps fetch provider posters again, to follow its changes (ratings, style). Ether used 6 hours.")},
+		},
+	},
+	{
 		ID:          "scrob",
 		Title:       tx("Scrob", "Scrob"),
 		Description: tx("Connectez Ether-Remix dans Scrob comme un serveur Jellyfin. Choisissez les sens de synchronisation et leur fréquence dans Scrob : Remix → Scrob pour importer l’historique ; Scrob → Remix pour les statuts vus et les notes.", "Connect Ether-Remix in Scrob as a Jellyfin server. Choose sync directions and schedules in Scrob: Remix → Scrob imports history; Scrob → Remix sends watched status and ratings."),

@@ -26,8 +26,32 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-14-dmm-instance",
+    id: "2026-11-14-posters-speed",
     version: "current",
+    date: "2026-11-14",
+    title: ["Affiches plus rapides", "Faster posters"],
+    items: [
+      [
+        "Avec un fournisseur d'affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche pendant un jour au lieu de la redemander au serveur à chaque affichage. L'affiche de repli TMDB, servie quand le fournisseur ne répond pas, reste revérifiée.",
+        "With a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. The TMDB fallback poster, served when the provider does not answer, is still rechecked.",
+      ],
+      [
+        "Les applications reprennent les affiches du fournisseur toutes les 24 heures au lieu de 6. Le délai se règle dans Ether-Remix → Contenus et bibliothèques → Affiches dans les applications.",
+        "Apps fetch provider posters again every 24 hours instead of 6. Set the delay in Ether-Remix → Content & libraries → Posters in apps.",
+      ],
+      [
+        "Jellyfin et Emby reçoivent l'affiche à la taille demandée par l'application : plus légère sur téléphone. Jellyfin n'attend plus avant d'envoyer une image.",
+        "Jellyfin and Emby receive the poster at the size the app asked for: lighter on phones. Jellyfin no longer waits before sending an image.",
+      ],
+      [
+        "Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.",
+        "Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-dmm-instance",
+    version: "0.2.37-remix.58.1",
     date: "2026-11-14",
     title: ["Choix de l’instance DMM", "DMM instance selection"],
     items: [

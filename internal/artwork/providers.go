@@ -37,7 +37,8 @@ func posterVersion(p config.Posters) string {
 	}
 	b, _ := json.Marshal(p)
 	// Periodic refresh permits provider-side style and rating changes.
-	b = append(b, []byte(strconv.FormatInt(time.Now().Unix()/21600, 10))...)
+	// PSE-HOOK: renouvellement réglable (Ether : 6 heures) — voir docs/pse/FORK.fr.md
+	b = append(b, []byte(strconv.FormatInt(time.Now().Unix()/psePosterRefreshSeconds(), 10))...)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
@@ -67,6 +68,7 @@ func (im *Images) GetPoster(ctx context.Context, t *core.Title, fallback string,
 					data, ct, err = im.get(ctx, key, load)
 				}
 				if err == nil {
+					markProviderPoster(ctx) // PSE-HOOK: cache des affiches côté application — voir docs/pse/FORK.fr.md
 					return data, ct, nil
 				}
 			}

@@ -101,6 +101,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 - Réglez la fréquence d’actualisation de chaque collection, de **1 à 168 heures**, indépendamment de la recherche de releases.
 - Ajustez l’apparition des films avant ou après leur sortie numérique/physique avec un **décalage en jours**.
 - Profitez d’une préparation groupée des badges d’affiches dans Plex et Jellyfin, avec l’état de lecture propre à chaque spectateur et des compteurs exacts.
+- Affichez les affiches plus vite : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche au lieu de la redemander à chaque affichage, et vous réglez le délai de renouvellement. Jellyfin et Emby reçoivent l’affiche à la taille demandée, sans attente. Les grandes résolutions demandées pour les vues détaillées sont conservées.
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) La musique dans vos applications
 

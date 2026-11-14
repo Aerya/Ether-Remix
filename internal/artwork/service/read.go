@@ -171,7 +171,7 @@ func (a Source) readEntry(ctx context.Context, req frontend.ArtworkRequest, entr
 		}
 		data, ct, err := a.Discovery.RenderArtwork(ctx, req.Viewer, t, entry.discoveryKind, req.Device.Language)
 		if err == nil && a.Discovery.Overlays.CustomPostersEnabled() && width > 0 && (entry.discoveryKind == "" || entry.discoveryKind == "poster") {
-			if resized, e := artwork.ResizePoster(data, width); e == nil {
+			if resized, e := artwork.ResizePosterCached(data, width); e == nil { // PSE-HOOK: redimensionnement gardé en mémoire — voir docs/pse/FORK.fr.md
 				data = resized
 				ct = "image/jpeg"
 			}
