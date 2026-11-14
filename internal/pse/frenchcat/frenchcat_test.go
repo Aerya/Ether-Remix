@@ -19,7 +19,7 @@ func TestLoad(t *testing.T) {
 	if !s.Enabled || s.Countries[1] != "CA" || s.Releases[0] != "vfq" || s.Releases[1] != "french" || s.Types[core.TypeShow] || !s.NeedsHomeReleases() {
 		t.Fatalf("réglages = %+v", s)
 	}
-	if q, _ := s.SQL("t.show_key", "", core.TypeEpisode, 0); q != "" {
+	if q, _ := s.SQL("t.show_key", "", core.TypeEpisode, 0, true); q != "" {
 		t.Fatalf("épisodes filtrés alors que les séries ne le sont pas : %s", q)
 	}
 }

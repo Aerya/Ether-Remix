@@ -26,7 +26,7 @@ func TestPlayableSetMatchesCorrelatedPredicate(t *testing.T) {
 	}
 	for _, pending := range []bool{false, true} {
 		p := NewPlayable(2, "", pending)
-		fast, args := p.PlayableSQL("t.key")
+		fast, args := p.PlayableSQL("t.key", true)
 		old := "(EXISTS (SELECT 1 FROM pse_playable pp WHERE pp.title_key=t.key AND (pp.releases>=? OR (pp.any_lang>=? AND " + LangExemptSQL("t.key") + ")))"
 		if pending {
 			old += " OR NOT EXISTS (SELECT 1 FROM pse_index_titles pi WHERE pi.title_key=t.key)"

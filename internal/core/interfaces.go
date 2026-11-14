@@ -206,6 +206,7 @@ type Filter struct {
 	// Remix-only catalogue filters, kept apart from upstream filter fields.
 	PSEUnplayable bool `json:"-"` // Ignore le catalogue « lisible uniquement » pour l’indexeur.
 	PSEThemed     bool `json:"-"` // Appliquer aussi le filtre VF aux bibliothèques à thème.
+	PSELangFree   bool `json:"-"` // Bibliothèque « toutes langues » : les exceptions de langue comptent.
 }
 
 // BrowseSeekable reports whether Browse continues a page after AfterKey in

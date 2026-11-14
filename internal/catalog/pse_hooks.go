@@ -16,7 +16,10 @@ import (
 //
 // Les listes demandées par clé (IncludeKeys : watchlist, reprise de lecture)
 // et l'explorateur de règles du propriétaire ne sont pas filtrés, sauf les
-// bibliothèques à thème (PSEThemed). Les rangées de l'accueil, les
+// bibliothèques à thème (PSEThemed). Les exceptions de langue (VOSTFR,
+// concerts, versions de secours de SeerrCatalog) ne comptent que dans une
+// bibliothèque ou une collection « toutes langues » (PSELangFree), jamais
+// dans Films, Séries ou l'accueil. Les rangées de l'accueil, les
 // collections et les titres similaires appliquent ces mêmes conditions dans
 // pse_discovery.go.
 func pseCatalogWhere(conds []string, args []any, f core.Filter, nowTS int64) ([]string, []any) {
@@ -34,10 +37,10 @@ func pseCatalogWhere(conds []string, args []any, f core.Filter, nowTS int64) ([]
 	if f.PSEUnplayable {
 		return conds, args
 	}
-	if clause, values := releasedb.Playable().PlayableSQL(col); clause != "" {
+	if clause, values := releasedb.Playable().PlayableSQL(col, f.PSELangFree); clause != "" {
 		conds, args = append(conds, "("+clause+" OR "+localmedia.KnownSQL(col, f.CatalogViewerID)+")"), append(args, values...)
 	}
-	if clause, values := frenchcat.Current().SQL(col, typeCol, f.Type, nowTS); clause != "" {
+	if clause, values := frenchcat.Current().SQL(col, typeCol, f.Type, nowTS, f.PSELangFree); clause != "" {
 		conds, args = append(conds, "("+clause+" OR "+localmedia.KnownSQL(col, f.CatalogViewerID)+")"), append(args, values...)
 	}
 	return conds, args

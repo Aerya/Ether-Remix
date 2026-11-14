@@ -43,7 +43,7 @@ func TestRiskyTitles(t *testing.T) {
 	}
 
 	// Le catalogue affiche désormais les titres à 1 release.
-	clause, args := p.PlayableSQL("t.title_key")
+	clause, args := p.PlayableSQL("t.title_key", true)
 	var n int
 	if err := s.st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pse_playable t WHERE `+clause, args...).Scan(&n); err != nil {
 		t.Fatal(err)

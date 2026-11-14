@@ -27,6 +27,9 @@ type PSEThemeRow struct {
 	ID    string // identifiant de la collection (Collection Studio)
 	Title string
 	Key   core.RatingKey // clé Plex de la collection (0 si inconnue)
+	// LangFree : collection d'exception de langue (VOSTFR, concerts,
+	// SeerrCatalog), ses titres sans VF restent visibles dans cette rangée.
+	LangFree bool
 }
 
 // PSETheme est une bibliothèque à thème.
@@ -36,6 +39,9 @@ type PSETheme struct {
 	Title     string
 	Type      core.MediaType // movie ou show
 	Rows      []PSEThemeRow
+	// AllLanguages : bibliothèque « toutes langues » (VOSTFR, concerts…).
+	// Ses titres sans VF n'apparaissent que là, jamais dans Films et Séries.
+	AllLanguages bool
 }
 
 // PSEThemes est implémenté par le service des bibliothèques à thème.

@@ -173,19 +173,32 @@ func OverridePlayable(p PlayableSettings) (restore func()) {
 // PlayableSQL renvoie la condition SQL qui garde les titres lisibles,
 // keyCol désignant la colonne de clé du titre (ex. "t.key"). Vide si la
 // fonction est désactivée.
-func (p PlayableSettings) PlayableSQL(keyCol string) (string, []any) {
+//
+// langFree vaut vrai seulement dans une bibliothèque ou une collection
+// « toutes langues » (VOSTFR, concerts…) : les exceptions de langue et les
+// versions de secours trouvées par SeerrCatalog n'y comptent que là, jamais
+// dans Films, Séries ou l'accueil.
+func (p PlayableSettings) PlayableSQL(keyCol string, langFree bool) (string, []any) {
 	if !p.Enabled {
 		return "", nil
 	}
 	// The eligible set is independent of the outer catalogue row. SQLite can
 	// drive a title-key lookup from this set instead of probing it once for
-	// every title in a large catalogue. Keep the exact same language exceptions.
-	clause := keyCol + " IN (SELECT pp.title_key FROM pse_playable pp WHERE pp.releases>=? OR (pp.any_lang>=? AND " + LangExemptSQL("pp.title_key") + "))"
+	// every title in a large catalogue.
+	clause := keyCol + " IN (SELECT pp.title_key FROM pse_playable pp WHERE pp.releases>=?)"
+	args := []any{p.ShowMin()}
+	if langFree {
+		clause = keyCol + " IN (SELECT pp.title_key FROM pse_playable pp WHERE pp.releases>=? OR (pp.any_lang>=? AND " + LangExemptSQL("pp.title_key") + "))"
+		args = append(args, p.ShowMin())
+	}
 	if p.Pending {
 		clause += " OR NOT EXISTS (SELECT 1 FROM pse_index_titles pi WHERE pi.title_key=" + keyCol + ")"
 	}
-	trusted, args := seerrcatalog.TrustedSQL(keyCol)
-	return "(" + clause + " OR " + trusted + ")", append([]any{p.ShowMin(), p.ShowMin()}, args...)
+	trusted, targs := seerrcatalog.TrustedSQL(keyCol)
+	if langFree {
+		trusted, targs = seerrcatalog.TrustedAnySQL(keyCol)
+	}
+	return "(" + clause + " OR " + trusted + ")", append(args, targs...)
 }
 
 // LangExemptSQL renvoie la condition SQL « le titre échappe au filtre de

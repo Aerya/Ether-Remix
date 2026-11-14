@@ -991,6 +991,7 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		i.writePersonalItems(w, r, v, id)
 		return
 	} else if id, e := ids.ParseGUID(ids.View, parent[0]); e == nil {
+		pseLibrarySort(r, &q) // PSE-HOOK: tri par date de sortie — voir docs/pse/FORK.fr.md
 		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), q)
 	} else if key, e := ids.ParseRatingKeyGUID(parent[0]); e == nil {
 		page, err = i.host.Experience.Children(r.Context(), v, device(r), key, q)

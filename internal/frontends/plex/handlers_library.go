@@ -326,15 +326,16 @@ func (s *Server) metaType(sec Section, t frontend.MediaType, activeSort string) 
 		mt.Filter = append(mt.Filter, model.Filter{Filter: f.filter, FilterType: f.filterType, Key: key, Title: f.title, Type: "filter"})
 	}
 	activeKey, activeDir := parseSortParam(activeSort)
+	def := pseDefaultSortIndex(t) // PSE-HOOK: tri par date de sortie — voir docs/pse/FORK.fr.md
 	for i, sd := range sortDefs {
 		so := model.Sort{DefaultDirection: sd.defDir, DescKey: sd.key + ":desc", Key: sd.key, Title: sd.title}
 		if sd.key == "titleSort" {
 			so.FirstCharacterKey = "/library/sections/" + id + "/firstCharacter"
 		}
-		if i == 0 {
+		if i == def {
 			so.Default = sd.defDir
 		}
-		if (activeKey == "" && i == 0) || activeKey == sd.key {
+		if (activeKey == "" && i == def) || activeKey == sd.key {
 			so.Active = model.Ptr(true)
 			dir := activeDir
 			if dir == "" {
@@ -992,6 +993,8 @@ func (br *browseRequest) applySortParam(raw string, t frontend.MediaType) {
 	if strings.TrimSpace(raw) == "" {
 		if t == frontend.TypeEpisode || t == frontend.TypeSeason {
 			br.q.Sort, br.q.Desc = "", false
+		} else if pseReleaseSort(t) { // PSE-HOOK: tri par date de sortie — voir docs/pse/FORK.fr.md
+			br.q.Sort, br.q.Desc = frontend.SortReleased, true
 		} else {
 			br.q.Sort, br.q.Desc = frontend.SortTitle, false
 		}

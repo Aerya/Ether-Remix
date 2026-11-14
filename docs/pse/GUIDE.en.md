@@ -48,6 +48,7 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 | `PSE_PLAYABLE_MIN` | `2` | Distinct releases (same name counts once) needed to list a title. |
 | `PSE_PLAYABLE_FILTER` | *(none)* | Releases that count, e.g. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Languages: `fr` (any French dub: FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (French subtitles announced), `vo` (no dub announced)… Changing the filter recomputes the catalogue at startup, without reindexing. |
 | `PSE_POSTER_REFRESH_HOURS` | `24` | With a poster provider (PostersPlus, XRDB, RPDB…), delay in hours (1 to 168) after which apps fetch its posters again. Ether used 6 hours. |
+| `PSE_LIBRARY_SORT` | `release` | Movies and Shows library order when opened: `release` (release date, newest first) or `title` (A → Z). A sort chosen in the app still wins. |
 | `PSE_FRENCH` | `off` | `on` enables the French-language catalogue: Movies and Shows pages, Home rows (including Trending), collections and similar titles. Upcoming collections, the watchlist and Continue Watching are left alone. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Countries whose digital or physical release counts (ISO codes). `FR,CA` adds Canada, not always dubbed in French. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Indexed release languages that count (`vfq` for Québec French only, `vff`…). |
@@ -104,7 +105,7 @@ TorBox enforces cached-only additions. Real-Debrid no longer provides a cache pr
 
 **New releases and source test**: the automatic playlist **New releases from your artists** gathers albums released in the last 4 months by the viewer's favourite and most played artists (computed in the background, refreshed every 6 h). In the console, Music tab, **Test audio sources** tries each configured source on its own on the same track and shows the format the source really sends (FLAC, MP3…), not the advertised one, or why it failed. It shows the real playback order, why each inactive source is inactive and, for each source, the steps reached: track found in the catalogue, source result, link obtained, first bytes checked. Full playback is not tested. **Retry this source** reruns a single source, without caches. Addon links are shown by host only; no key or audio link is shown.
 
-**On-demand subtitled titles (VOSTFR)**: in **Ether-Remix → On-demand subtitles**, search a movie or show and add it. It appears in Movies and Shows even without a French version, and in the **“VOSTFR”** library in Plex and Jellyfin (created on the first addition).
+**On-demand subtitled titles (VOSTFR)**: in **Ether-Remix → On-demand subtitles**, search a movie or show and add it. It appears in the **“VOSTFR”** library in Plex (created on the first addition), but not in Movies or Shows until a French version is found.
 
 **Discovering music**: every viewer gets **Top France**, **Top Worldwide**… playlists (countries chosen in Console → Ether-Remix → Sources → Music streaming) and **Discoveries**, renewed every 12 hours. **Genres** (Pop, Rap/Hip Hop, Rock, Electro, Jazz…) can be browsed in Plex (Music › By genre), Jellyfin (Genres) and Feishin (Genres), with the current albums, artists and tracks. On an artist page: **similar artists** and a “Same vibe” radio (Plex), **Instant Mix** (Jellyfin), top and similar songs (Feishin).
 
@@ -208,6 +209,10 @@ Existing `/sources/...` addresses and old Remix tabs redirect to their new locat
 Plex and Jellyfin prepare a page’s badges together. New episodes and collection rotations respect each viewer’s state. The playable-only catalogue keeps exact counts, including language exceptions.
 
 **Faster posters**: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. A TMDB fallback poster, served when the provider does not answer, is still rechecked every time so it does not stay on screen after the outage. Apps fetch provider posters again every 24 hours; set that delay in **Console → Ether-Remix → Content & libraries → Posters in apps** (`PSE_POSTER_REFRESH_HOURS`, 1 to 168). Jellyfin and Emby receive the poster at the size the app asked for, and Jellyfin no longer waits before sending an image. Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.
+
+**Release-date sorting**: Movies and Shows open newest first. Plex uses this sort until you pick another in the app. Jellyfin and Emby use it when the app does not ask for a sort; Jellyfin Web and Infuse keep their own: change it once in the app, which remembers it.
+
+**Movies and Shows always in French**: a title without a French version (chosen as VOSTFR, placed in an “Any language” library or an exception collection, or found only with French subtitles by SeerrCatalog) stays visible in its library or collection, but never in Movies, Shows or the home screen.
 
 
 ## Playlists and appearance

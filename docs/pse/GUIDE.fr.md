@@ -48,6 +48,7 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 | `PSE_PLAYABLE_MIN` | `2` | Releases distinctes (même nom = une seule) nécessaires pour lister un titre. |
 | `PSE_PLAYABLE_FILTER` | *(aucun)* | Releases prises en compte, ex. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Langues : `fr` (toute VF : FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (sous-titres français annoncés), `vo` (aucun doublage annoncé)… Changer de filtre recalcule le catalogue au démarrage, sans réindexer. |
 | `PSE_POSTER_REFRESH_HOURS` | `24` | Avec un fournisseur d'affiches (PostersPlus, XRDB, RPDB…), délai en heures (1 à 168) au bout duquel les applications reprennent ses affiches. Ether utilisait 6 heures. |
+| `PSE_LIBRARY_SORT` | `release` | Tri des bibliothèques Films et Séries à l'ouverture : `release` (date de sortie, du plus récent au plus ancien) ou `title` (titre, A → Z). Un tri choisi dans l'application reste prioritaire. |
 | `PSE_FRENCH` | `off` | `on` active le catalogue en français : pages Films et Séries, rangées de l'accueil (dont Tendances), collections et titres similaires. Les collections de sorties à venir, la watchlist et la reprise de lecture restent intactes. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Pays dont une sortie numérique ou physique compte (codes ISO). `FR,CA` ajoute le Canada, pas toujours doublé en français. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Langues de release indexée qui comptent (`vfq` pour le québécois seul, `vff`…). |
@@ -104,7 +105,7 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Nouveautés et test des sources** : la playlist automatique **Nouveautés de vos artistes** réunit les albums sortis ces 4 derniers mois par les artistes favoris et les plus écoutés du spectateur (calculée en arrière-plan, mise à jour toutes les 6 h). Dans la console, Sources → Streaming musical, **Tester les sources audio** essaie chaque source réglée, seule, sur le même titre et affiche le format réellement envoyé (FLAC, MP3…), pas celui annoncé, ou la raison de l'échec. Il montre l'ordre réel de lecture, la raison de chaque source inactive et, pour chaque source, les étapes franchies : titre trouvé au catalogue, résultat de la source, lien obtenu, premiers octets vérifiés. La lecture complète n'est pas testée. **Réessayer cette source** relance une seule source, sans cache. Les liens d'addons ne sont affichés que par leur hôte ; aucune clé ni lien audio n'est affiché.
 
-**Titres en VOSTFR à la demande** : dans **Ether-Remix → VOSTFR à la demande**, cherchez un film ou une série et ajoutez-le. Il apparaît dans Films et Séries même sans VF, et dans la bibliothèque **« VOSTFR »** de Plex et Jellyfin (créée au premier ajout).
+**Titres en VOSTFR à la demande** : dans **Ether-Remix → VOSTFR à la demande**, cherchez un film ou une série et ajoutez-le. Il apparaît dans la bibliothèque **« VOSTFR »** de Plex (créée au premier ajout), mais pas dans Films ni Séries tant qu’aucune VF n’est trouvée.
 
 **Découvrir de la musique** : chaque spectateur reçoit les playlists **Top France**, **Top Monde**… (pays au choix dans Console → Ether-Remix → Sources → Streaming musical) et **Découvertes**, renouvelées toutes les 12 heures. Les **styles** (Pop, Rap/Hip Hop, Rock, Électro, Jazz…) se parcourent dans Plex (Musique › Par style), Jellyfin (Genres) et Feishin (Genres), avec les albums, artistes et titres du moment. Sur la page d'un artiste : **artistes similaires** et radio « Dans le même esprit » (Plex), **Mix instantané** (Jellyfin), titres populaires et similaires (Feishin).
 
@@ -208,6 +209,10 @@ Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent ve
 Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épisodes et les rotations de collections respectent l’état de chaque spectateur. Le catalogue « lisible uniquement » conserve des compteurs exacts, y compris les exceptions de langue.
 
 **Affiches plus rapides** : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche pendant un jour au lieu de la redemander au serveur à chaque affichage. Une affiche de repli TMDB, servie quand le fournisseur ne répond pas, reste revérifiée à chaque fois pour ne pas rester affichée après la panne. Les applications reprennent les affiches du fournisseur toutes les 24 heures ; ce délai se règle dans **Console → Ether-Remix → Contenus et bibliothèques → Affiches dans les applications** (`PSE_POSTER_REFRESH_HOURS`, de 1 à 168). Jellyfin et Emby reçoivent l’affiche à la taille demandée par l’application, et Jellyfin n’attend plus avant d’envoyer une image. Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.
+
+**Tri par date de sortie** : Films et Séries s’ouvrent du plus récent au plus ancien. Plex applique ce tri tant que vous n’en avez pas choisi un autre dans l’application. Jellyfin et Emby l’appliquent quand l’application ne demande pas de tri ; Jellyfin Web et Infuse gardent le leur : changez-le une fois dans l’application, elle s’en souvient.
+
+**Films et Séries toujours en VF** : un titre sans VF (choisi en VOSTFR, rangé dans une bibliothèque « Toutes langues », dans une collection d’exception ou trouvé seulement en VOSTFR par SeerrCatalog) reste visible dans sa bibliothèque ou sa collection, mais jamais dans Films, Séries ou l’accueil.
 
 
 ## Playlists et apparence

@@ -129,3 +129,39 @@ func (s *Service) ExemptKeys(ctx context.Context) []core.RatingKey {
 	}
 	return out
 }
+
+// isFree indique si la collection est une exception de langue (s.mu tenu).
+func (s *Service) isFree(id string) bool {
+	for _, c := range s.free {
+		if c == id {
+			return true
+		}
+	}
+	return false
+}
+
+// LangFreeCollection indique si les titres sans VF d'une collection restent
+// visibles quand on l'ouvre : collection d'exception, ou rangée d'une
+// bibliothèque « toutes langues ». Partout ailleurs (Films, Séries,
+// accueil), le filtre VF s'applique entièrement.
+func (s *Service) LangFreeCollection(id string) bool {
+	if s == nil || id == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.isFree(id) {
+		return true
+	}
+	for _, l := range s.libs {
+		if !l.AllLanguages {
+			continue
+		}
+		for _, c := range l.Collections {
+			if c == id {
+				return true
+			}
+		}
+	}
+	return false
+}
