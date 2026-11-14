@@ -25,6 +25,7 @@ func (a *App) buildPSEIndexer() {
 	a.startSeerrCatalog()
 	a.startPSETorrent()
 	a.startPSEXdcc()
+	a.startPSEFTP()
 	rt.restartIndexer(a)
 	a.closers = append(a.closers, rt.stopIndexer)
 }
@@ -32,9 +33,9 @@ func (a *App) buildPSEIndexer() {
 func (a *App) newPSEIndexer() *releasedb.Service {
 	return releasedb.New(releasedb.Deps{
 		DB: a.db,
-		Config: func() config.Config { // source XDCC comprise, si active
+		Config: func() config.Config { // sources XDCC et FTP comprises, si actives
 			c := a.cfg.Read()
-			c.Indexers = xdccIndexers(c.Indexers)
+			c.Indexers = ftpIndexers(xdccIndexers(c.Indexers))
 			return c
 		},
 		Browse: func(ctx context.Context, q core.BrowseQuery) (core.Page, error) {

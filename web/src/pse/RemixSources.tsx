@@ -21,6 +21,7 @@ const CATEGORIES = [
   ["debrid", "Debrid", "Debrid"],
   ["torrent", "Client torrent", "Torrent client"],
   ["xdcc", "XDCC", "XDCC"],
+  ["ftp", "FTP / SFTP", "FTP / SFTP"],
   ["musique", "Streaming musical", "Music streaming"],
   ["local", "Fichiers locaux", "Local files"],
   ["iptv", "IPTV", "IPTV"],
@@ -32,12 +33,14 @@ export function RemixSources({
   stremio,
   torrent,
   xdcc,
+  ftp,
 }: {
   music: ReactNode;
   indexing: ReactNode;
   stremio?: ReactNode;
   torrent?: ReactNode;
   xdcc?: ReactNode;
+  ftp?: ReactNode;
 }) {
   const [params, setParams] = useSearchParams();
   const raw = params.get("source");
@@ -126,7 +129,7 @@ export function RemixSources({
             ? [L("Musique", "Music")]
             : category === "iptv"
               ? [L("Télévision en direct", "Live TV")]
-              : category === "xdcc"
+              : category === "xdcc" || category === "ftp"
                 ? [L("Films", "Movies"), L("Séries (épisodes SxxEyy)", "Shows (SxxEyy episodes)")]
                 : [
                     L("Films", "Movies"),
@@ -218,6 +221,7 @@ export function RemixSources({
         ) : null}
         {category === "torrent" ? torrent : null}
         {category === "xdcc" ? xdcc : null}
+        {category === "ftp" ? ftp : null}
         {category === "musique" ? <>{music}</> : null}
         {category === "local" ? (
           <CollapsibleBlock title={L("Fichiers locaux", "Local files")}>

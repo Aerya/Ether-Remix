@@ -20,7 +20,8 @@ const (
 	KindCountries = "countries"
 	KindFilter    = "filter"
 	KindURL       = "url"
-	KindKey       = "key" // clé d'API, masquée à l'affichage
+	KindKey       = "key"    // clé d'API, masquée à l'affichage
+	KindSecret    = "secret" // mot de passe : jamais renvoyé, même en partie
 )
 
 // Field décrit un réglage, nommé comme sa variable d'environnement.
@@ -137,6 +138,7 @@ var Features = communityFields([]Feature{
 	torrentExtraClient(2),
 	torrentExtraClient(3),
 	xdccFeature(),
+	ftpFeature(),
 	{
 		ID:          "playable",
 		Title:       tx("Catalogue « lisible uniquement »", "“Playable only” catalogue"),

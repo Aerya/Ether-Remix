@@ -1,0 +1,28 @@
+# Laboratoire local de la source FTP / SFTP d'Ether-Remix : un vrai serveur
+# OpenSSH (SFTP) et un vrai vsftpd (FTPS explicite, certificat auto-signé),
+# publiés sur 127.0.0.1 seulement. Compte de test jetable, jamais un serveur
+# public. Mode d'emploi : README.md à côté.
+name: remix-ftp-lab
+services:
+  sftp:
+    image: atmoz/sftp:alpine
+    command: "${FTP_LAB_USER:-remix}:${FTP_LAB_PASS:?FTP_LAB_PASS}:1001"
+    ports:
+      - "127.0.0.1:2222:22"
+    volumes:
+      - "${FTP_LAB_DIR:?FTP_LAB_DIR}:/home/${FTP_LAB_USER:-remix}/upload:ro"
+  ftps:
+    image: delfer/alpine-ftp-server:latest
+    environment:
+      USERS: "${FTP_LAB_USER:-remix}|${FTP_LAB_PASS:?FTP_LAB_PASS}|/srv/media|1001"
+      ADDRESS: "127.0.0.1"
+      MIN_PORT: "21100"
+      MAX_PORT: "21110"
+      TLS_CERT: "/certs/lab.crt"
+      TLS_KEY: "/certs/lab.key"
+    ports:
+      - "127.0.0.1:2121:21"
+      - "127.0.0.1:21100-21110:21100-21110"
+    volumes:
+      - "${FTP_LAB_DIR:?FTP_LAB_DIR}:/srv/media:ro"
+      - "${FTP_LAB_CERTS:?FTP_LAB_CERTS}:/certs:ro"
