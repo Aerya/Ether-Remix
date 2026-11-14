@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/plexguid"
+	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/schedule"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -37,6 +39,9 @@ CREATE INDEX watchlist_viewer ON watchlist_items(user_id,available,added);
 	// Cluster-wide record of the last scheduled pass, so a new leader
 	// continues the schedule rather than re-running at once.
 	store.Register("watchlist", 2, `CREATE TABLE watchlist_meta(k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '');`)
+	store.Register("watchlist", 4, `CREATE TABLE watchlist_community_jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL,started_at INTEGER NOT NULL DEFAULT 0,finished_at INTEGER NOT NULL DEFAULT 0,count INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '',plex TEXT NOT NULL DEFAULT ''); CREATE UNIQUE INDEX watchlist_community_active ON watchlist_community_jobs(user_id) WHERE state IN ('queued','running'); CREATE INDEX watchlist_community_history ON watchlist_community_jobs(user_id,id);`)
+	store.Register("watchlist", 5, `CREATE TABLE watchlist_community_locks(user_id TEXT PRIMARY KEY,touched INTEGER NOT NULL);`)
+
 }
 
 type Source interface {
@@ -45,24 +50,30 @@ type Source interface {
 type Notifier interface {
 	TitleAvailable(context.Context, string) error
 }
+
+// Account-source names in settings and feed encryption contexts are persisted identities.
 type Settings struct {
-	Enabled              bool           `json:"enabled"`
-	Plex                 bool           `json:"plex"`
-	PlexFriendsRSSURL    string         `json:"plexFriendsRssUrl"`
-	PlexOwnerRSSURL      string         `json:"plexOwnerRssUrl"`
-	PlexFriendsRSSStatus *RSSFeedStatus `json:"plexFriendsRssStatus,omitempty"`
-	PlexOwnerRSSStatus   *RSSFeedStatus `json:"plexOwnerRssStatus,omitempty"`
-	Trakt                bool           `json:"trakt"`
-	Notify               bool           `json:"notify"`
-	Prewarm              bool           `json:"prewarm"`
-	CheckHours           int            `json:"checkHours"`
-	NaturalSearch        bool           `json:"naturalSearch"`
-	Recaps               bool           `json:"recaps"`
-	SubtitleTranslate    bool           `json:"subtitleTranslate"`
-	SpeechToText         bool           `json:"speechToText"`
-	OverviewTranslate    bool           `json:"overviewTranslate"`
+	PlexFriendsStatus    []FriendFeedStatus `json:"plexFriendsStatus,omitempty"`
+	Enabled              bool               `json:"enabled"`
+	Plex                 bool               `json:"plex"`
+	PlexFriendsRSSURL    string             `json:"plexFriendsRssUrl"`
+	PlexOwnerRSSURL      string             `json:"plexOwnerRssUrl"`
+	PlexFriendsRSSStatus *RSSFeedStatus     `json:"plexFriendsRssStatus,omitempty"`
+	PlexOwnerRSSStatus   *RSSFeedStatus     `json:"plexOwnerRssStatus,omitempty"`
+	Trakt                bool               `json:"trakt"`
+	Notify               bool               `json:"notify"`
+	Prewarm              bool               `json:"prewarm"`
+	CheckHours           int                `json:"checkHours"`
+	NaturalSearch        bool               `json:"naturalSearch"`
+	Recaps               bool               `json:"recaps"`
+	SubtitleTranslate    bool               `json:"subtitleTranslate"`
+	SpeechToText         bool               `json:"speechToText"`
+	OverviewTranslate    bool               `json:"overviewTranslate"`
 }
 type Options struct {
+	Community        *plextv.CommunityClient
+	OwnerToken       func(context.Context) (string, error)
+	PlexLookup       func(context.Context, string) (core.RatingKey, error)
 	Logger           *slog.Logger
 	Sealer           config.FieldSealer
 	Catalog          core.Catalog
@@ -94,10 +105,12 @@ type Options struct {
 	OnFriendsRSSChanged func(context.Context)
 }
 type Service struct {
-	db  *sql.DB
-	o   Options
-	mu  sync.Mutex
-	gen atomic.Uint64
+	db          *sql.DB
+	o           Options
+	mu          sync.Mutex
+	communityMu sync.Mutex
+	nextCheck   time.Time
+	gen         atomic.Uint64
 }
 
 // Generation changes when watchlist membership changes.
@@ -126,6 +139,9 @@ func New(db *sql.DB, o Options) *Service {
 	if o.Client == nil {
 		o.Client = egress.Client(egress.CapMetadata, 20*time.Second)
 		o.Client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	if o.Community == nil {
+		o.Community = &plextv.CommunityClient{Client: o.Client}
 	}
 	if o.PlexBaseURL == "" {
 		o.PlexBaseURL = "https://discover.provider.plex.tv"
@@ -173,6 +189,7 @@ func (s *Service) settings(ctx context.Context) (Settings, error) {
 	if v.PlexOwnerRSSURL, _, err = config.OpenWith(s.o.Sealer, v.PlexOwnerRSSURL, ownerRSSContext()...); err != nil {
 		return v, fmt.Errorf("watchlist: stored owner RSS URL: %w", err)
 	}
+	v.PlexFriendsStatus = nil
 	v.PlexFriendsRSSStatus = nil
 	v.PlexOwnerRSSStatus = nil
 	return v, nil
@@ -180,6 +197,7 @@ func (s *Service) settings(ctx context.Context) (Settings, error) {
 
 func (s *Service) encodeSettings(v Settings) (string, error) {
 	var err error
+	v.PlexFriendsStatus = nil
 	v.PlexFriendsRSSStatus = nil
 	v.PlexOwnerRSSStatus = nil
 	if v.PlexFriendsRSSURL, err = config.SealWith(s.o.Sealer, v.PlexFriendsRSSURL, friendsRSSContext()...); err != nil {
@@ -241,6 +259,7 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	if err != nil {
 		return v, err
 	}
+	v.PlexFriendsStatus = s.friendStatuses(ctx)
 	v.PlexFriendsRSSStatus = s.feedStatus(ctx, v.PlexFriendsRSSURL, metaKeyFriendsRSS)
 	v.PlexOwnerRSSStatus = s.feedStatus(ctx, v.PlexOwnerRSSURL, metaKeyOwnerRSS)
 	if v.PlexFriendsRSSURL != "" {
@@ -483,8 +502,18 @@ func (s *Service) replace(ctx context.Context, u *core.User, source string, ts [
 	return nil
 }
 
+// SyncResult describes the Plex outcome of an explicit viewer sync.
+// SyncResult names external account sources, independent of the requesting frontend.
+type SyncResult struct {
+	Plex  string `json:"plex"`
+	Count int    `json:"count"`
+}
+
 // Sync preserves the last successful snapshot when an upstream fails.
 func (s *Service) Sync(ctx context.Context, u *core.User) error {
+	return s.syncViewer(ctx, u, &SyncResult{})
+}
+func (s *Service) syncViewer(ctx context.Context, u *core.User, result *SyncResult) error {
 	cfg, err := s.settings(ctx)
 	if err != nil {
 		return err
@@ -493,6 +522,7 @@ func (s *Service) Sync(ctx context.Context, u *core.User) error {
 		return core.ErrUnauthorized
 	}
 	var errs []error
+	result.Plex = "disabled"
 	if !cfg.Enabled {
 		return nil
 	}
@@ -500,17 +530,44 @@ func (s *Service) Sync(ctx context.Context, u *core.User) error {
 		token, e := s.o.Tokens(ctx, u.ID)
 		switch {
 		case errors.Is(e, core.ErrUnauthorized):
-			// plex.tv issues the server no token for an account shared from
-			// outside Plex Home (#337): its watchlist can't be read, which is
-			// expected, not a failed sync. Trakt below still syncs.
+			result.Plex = "synced"
+			count, syncErr := 0, error(nil)
+			if ctx.Value(communityScheduledKey{}) != true {
+				count, syncErr = s.syncCommunityViewer(ctx, u)
+			}
+			result.Count = count
+			if syncErr != nil {
+				result.Plex = "refused"
+				errs = append(errs, syncErr)
+			}
+		case errors.Is(e, plextv.ErrHomePINRequired):
+			result.Plex = "pin"
+			errs = append(errs, e)
 		case e != nil:
-			errs = append(errs, errors.New("Plex watchlist requires this viewer's account token"))
+			result.Plex = "refused"
+			errs = append(errs, e)
 		case token != "":
+			result.Plex = "synced"
 			ts, e := s.plex(ctx, token)
 			if e == nil {
+				// External account source identity, independent of the requesting frontend.
 				e = s.replace(ctx, u, "plex", ts)
+				if e == nil {
+					keys := map[core.RatingKey]bool{}
+					for _, title := range ts {
+						if s.allowed(u, &title) {
+							keys[title.Key] = true
+						}
+					}
+					result.Count = len(keys)
+				}
+			}
+			if e != nil {
+				result.Plex = "refused"
 			}
 			errs = append(errs, e)
+		default:
+			result.Plex = "refused"
 		}
 	}
 	if cfg.Trakt && s.o.Trakt != nil {
@@ -617,7 +674,12 @@ func (s *Service) CheckHousehold(ctx context.Context) error {
 	return s.checkSet(ctx, cfg, householdUserID, nil, s.ownerOrNil(ctx), items)
 }
 
+func orderChecks(items []Item) {
+	sort.SliceStable(items, func(i, j int) bool { return items[i].CheckedAt.Before(items[j].CheckedAt) })
+}
+
 func (s *Service) checkSet(ctx context.Context, cfg Settings, userID int64, policyUser, resolveUser *core.User, items []Item) error {
+	orderChecks(items)
 	if cfg.Notify {
 		if err := s.retryAlerts(ctx); err != nil {
 			return err
@@ -657,9 +719,21 @@ func (s *Service) checkSet(ctx context.Context, cfg Settings, userID int64, poli
 		if pending && s.o.Now().Sub(newest.Released) < freshAiring {
 			interval = min(interval, freshAiringCheck)
 		}
-		if !it.CheckedAt.IsZero() && s.o.Now().Sub(it.CheckedAt) < interval {
+		// A check before this episode aired says nothing about its release.
+		newlyAired := pending && it.CheckedAt.Before(newest.Released)
+		if !newlyAired && !it.CheckedAt.IsZero() && s.o.Now().Sub(it.CheckedAt) < interval {
 			continue
 		}
+		// Share the scheduled pass budget with owner jobs; concurrency stays one.
+		timer := time.NewTimer(max(time.Until(s.nextCheck), 0))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		timer.Stop()
+		s.nextCheck = time.Now().Add(3 * time.Second)
 		checked++
 		if pending {
 			if err := s.newEpisodeForSet(ctx, cfg, userID, resolveUser, &t, newest); err != nil {
@@ -670,10 +744,17 @@ func (s *Service) checkSet(ctx context.Context, cfg Settings, userID int64, poli
 		wasAvailable := !it.AvailableAt.IsZero()
 		res, e := s.resolve(ctx, resolveUser, resolveTitle)
 		now := s.o.Now().Unix()
+		// Transient resolver failures do not establish that a stream is absent.
+		if e != nil && !errors.Is(e, core.ErrNotAvailable) {
+			if cfg.CheckHours == 0 {
+				return e
+			}
+			continue
+		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE watchlist_items SET checked=? WHERE user_id=? AND item_key=?`, now, userID, t.Key); err != nil {
 			return err
 		}
-		if errors.Is(e, core.ErrNotAvailable) {
+		if errors.Is(e, core.ErrNotAvailable) || (e == nil && res == nil) {
 			if _, err := s.db.ExecContext(ctx, `UPDATE watchlist_items SET available=0,notified=0,warmed=0 WHERE user_id=? AND item_key=?`, userID, t.Key); err != nil {
 				return err
 			}
@@ -804,12 +885,17 @@ func (s *Service) Run(ctx context.Context) {
 			s.o.Logger.Warn("watchlist rss sync failed", "err", err)
 		}
 		feedCancel()
+		communityJob, communityCancel := context.WithTimeout(ctx, 15*time.Minute)
+		if err := s.syncCommunityFriends(communityJob, us, nil); err != nil {
+			s.o.Logger.Warn("watchlist friends sync failed", "err", err)
+		}
+		communityCancel()
 		for i := range us {
 			if ctx.Err() != nil {
 				return
 			}
 			job, cancel := context.WithTimeout(ctx, 3*time.Minute)
-			if err := s.Sync(job, &us[i]); err != nil {
+			if err := s.syncViewer(context.WithValue(job, communityScheduledKey{}, true), &us[i], &SyncResult{}); err != nil {
 				s.o.Logger.Warn("watchlist sync failed", "user", us[i].ID, "err", err)
 			}
 			if err := s.Check(job, &us[i]); err != nil {

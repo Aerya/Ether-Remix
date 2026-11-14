@@ -36,20 +36,20 @@ func TestPSELibrarySortDefaultsToNewestRelease(t *testing.T) {
 			t.Fatalf("%s : défaut %q, actif %q", typ, def, active)
 		}
 		var br browseRequest
-		br.applySortParam("", typ)
+		br.applySortParam("", typ, false)
 		if br.q.Sort != frontend.SortReleased || !br.q.Desc {
 			t.Fatalf("%s : tri sans paramètre = %v desc=%v", typ, br.q.Sort, br.q.Desc)
 		}
 		// Un tri choisi dans l'application reste prioritaire.
 		br = browseRequest{}
-		br.applySortParam("titleSort", typ)
+		br.applySortParam("titleSort", typ, false)
 		if br.q.Sort != frontend.SortTitle || br.q.Desc {
 			t.Fatalf("%s : tri demandé ignoré : %v desc=%v", typ, br.q.Sort, br.q.Desc)
 		}
 	}
 	// Épisodes : ordre d'Ether inchangé.
 	var br browseRequest
-	br.applySortParam("", frontend.TypeEpisode)
+	br.applySortParam("", frontend.TypeEpisode, false)
 	if br.q.Sort != "" {
 		t.Fatalf("épisodes : %v", br.q.Sort)
 	}
@@ -62,7 +62,7 @@ func TestPSELibrarySortTitleOption(t *testing.T) {
 		t.Fatal("le réglage « title » doit garder le tri alphabétique")
 	}
 	var br browseRequest
-	br.applySortParam("", frontend.TypeMovie)
+	br.applySortParam("", frontend.TypeMovie, false)
 	if br.q.Sort != frontend.SortTitle || br.q.Desc {
 		t.Fatalf("tri = %v desc=%v", br.q.Sort, br.q.Desc)
 	}

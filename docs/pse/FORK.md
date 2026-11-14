@@ -122,3 +122,7 @@ The Concerts preset requires the TMDB Music genre (10402) and at least one recor
 At startup, the three original standard queries in preset-created collections are upgraded and their members rebuilt in the background. IDs, names and other settings are retained, including renamed collections. Custom queries and personal collections are not migrated. Titles leave Concerts after rebuilding; no media is deleted.
 
 Owned media: `internal/pse/localmedia` confines file access to configured roots; `pse_owned_media.go` publishes collections/libraries and schedules scans. Catalogue hooks preserve local keys without remote searches; resolver/playback delegate to local files. `music/owned.go` shares metadata without merging viewer history; `music/ibroadcast.go` handles OAuth and temporary playback URLs. Upstream synchronization workflows and footer versioning are unchanged.
+
+Ether revision `16053c6572ff7c53d4ad5452458e4ec9af6573a4` is integrated: local media membership checks, Scrob views alongside Jellyfin/Emby collections, and SubMaker and quality profiles alongside episode identity checks are preserved. Jellyfin/Emby credential generation retains the `userId` needed by Scrob.
+
+Jellyfin/Emby collections use bit 60 for their virtual view in Remix. Bit 61 + 1 and + 2 remain reserved for existing Scrob views; check collisions before adopting an upstream constant. `TestPSEScrobViewIDsDoNotCollideWithEther` protects this separation.

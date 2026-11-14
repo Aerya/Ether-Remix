@@ -69,13 +69,40 @@ func RenderUltraBlur(colors Palette, transform frontend.ArtworkTransform) ([]byt
 }
 
 func Transform(data []byte, contentType string, transform frontend.ArtworkTransform) ([]byte, string, error) {
+	// Preserve the source encoding on format fallback, including PNG alpha.
+	// Sources without an encoder stay untouched rather than becoming JPEG.
+	if transform.Fit && transform.Format == "" {
+		switch contentType {
+		case "image/png", "image/jpeg":
+		default:
+			return data, contentType, nil
+		}
+	}
 	// Width alone is handled by the existing image sources, including TMDB's
 	// width buckets and the poster provider's resize path.
-	if transform.Height == 0 && transform.Format == "" && !transform.Blur {
+	if !transform.Fit && transform.Height == 0 && transform.Format == "" && !transform.Blur {
 		return data, contentType, nil
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > 4000 || cfg.Height > 4000 || int64(cfg.Width)*int64(cfg.Height) > 16_000_000 {
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, "", core.ErrNotAvailable
+	}
+	if transform.Fit {
+		width, height := cfg.Width, cfg.Height
+		if transform.Width > 0 && width > transform.Width {
+			height = max(1, height*transform.Width/width)
+			width = transform.Width
+		}
+		if transform.Height > 0 && height > transform.Height {
+			width = max(1, width*transform.Height/height)
+			height = transform.Height
+		}
+		if width == cfg.Width && height == cfg.Height && transform.Format == "" && !transform.Blur {
+			return data, contentType, nil
+		}
+		transform.Width, transform.Height = width, height
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > 40_000_000 {
 		return nil, "", core.ErrNotAvailable
 	}
 	src, _, err := image.Decode(bytes.NewReader(data))
@@ -104,13 +131,20 @@ func Transform(data []byte, contentType string, transform frontend.ArtworkTransf
 			return nil, "", err
 		}
 	}
+	if transform.Fit && transform.Format == "" && contentType == "image/png" {
+		transform.Format = "png"
+	}
 	var out bytes.Buffer
 	switch transform.Format {
 	case "png":
 		err = png.Encode(&out, src)
 		contentType = "image/png"
 	default:
-		err = jpeg.Encode(&out, src, &jpeg.Options{Quality: 90})
+		quality := transform.Quality
+		if quality <= 0 || quality > 100 {
+			quality = 90
+		}
+		err = jpeg.Encode(&out, src, &jpeg.Options{Quality: quality})
 		contentType = "image/jpeg"
 	}
 	if err != nil {

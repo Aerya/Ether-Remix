@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -70,43 +71,95 @@ type liveOutFrame struct {
 // cached base master, or rendering live while simultaneously saving the reusable
 // master to the durable content-addressed cache.
 type MomentStream struct {
-	mode       string
-	loop       bool
-	fpsNum     int
-	fpsDen     int
-	width      int
-	height     int
-	tick       int64
-	baseReader FrameReader
-	overlayDoc *scene.Document
-	overlayBnd raster.Bindings
-	renderFn   func(scene.Document, raster.Bindings, float64, int, int) *image.RGBA
+	mode            string
+	loop            bool
+	fpsNum          int
+	fpsDen          int
+	width           int
+	height          int
+	tick            int64
+	baseReader      FrameReader
+	overlayDoc      *scene.Document
+	overlaySequence *raster.Sequence
+	overlayBnd      raster.Bindings
+	renderFn        func(scene.Document, raster.Bindings, float64, int, int) *image.RGBA
 
-	outCh      <-chan liveOutFrame
-	videoPool  *sync.Pool
-	stopLive   func(aborted bool)
-	parentCtx  context.Context
-	closeOnce  sync.Once
-	service    *Service
-	lookID     string
-	moment     string
-	ovFrames   int64
-	ovWallDur  time.Duration
-	lastSpeedX float64
-	saved      bool
+	outCh                      <-chan liveOutFrame
+	videoPool                  *sync.Pool
+	stopLive                   func(aborted bool)
+	parentCtx                  context.Context
+	closeOnce                  sync.Once
+	service                    *Service
+	lookID                     string
+	moment                     string
+	ovFrames                   int64
+	ovWallDur                  time.Duration
+	lastSpeedX                 float64
+	saved                      bool
+	promote                    func() FrameReader
+	animationReady             atomic.Bool
+	externalSegmentClock       bool
+	settledTitle               bool
+	skipOpening                int
+	scenePoster, sceneDuration float64
+	completeRemaining          int
+	completeLast               []byte
 }
+
+// UseExternalSegmentClock lets broadcast align the primed frame to its own
+// segment clock, which may have repeated title frames during decoder startup.
+func (m *MomentStream) UseExternalSegmentClock() { m.externalSegmentClock = true }
+
+// StartCompleteTitle keeps live title text at its authored complete layout
+// while the cached base continues animating. Unsplit masters skip their intro.
+// Call before the first ReadFrame.
+func (m *MomentStream) StartCompleteTitle() {
+	m.settledTitle = true
+	if m.overlayDoc == nil && m.baseReader != nil && m.promote == nil {
+		m.skipOpening = max(1, int(max(1, m.scenePoster)*float64(m.fpsNum)/float64(m.fpsDen)))
+		m.completeRemaining = max(1, int(max(0, m.sceneDuration-max(1, m.scenePoster)-0.5)*float64(m.fpsNum)/float64(m.fpsDen)))
+	}
+}
+
+// AnimationReady reports that the cold reader can splice its primed master.
+func (m *MomentStream) AnimationReady() bool { return m.animationReady.Load() }
 
 func (m *MomentStream) Mode() string    { return m.mode }
 func (m *MomentStream) Saved() bool     { return m.saved }
 func (m *MomentStream) SpeedX() float64 { return m.lastSpeedX }
 
 func (m *MomentStream) ReadFrame(video []byte) ([]byte, error) {
+	if m.promote != nil && (m.externalSegmentClock || (m.tick*int64(m.fpsDen))%int64(4*m.fpsNum) == 0) {
+		if reader := m.promote(); reader != nil {
+			m.baseReader.Close()
+			m.baseReader = reader
+			m.promote = nil
+			m.mode = "cached"
+			if m.overlayDoc != nil {
+				m.mode = "split-cached"
+			}
+			if m.settledTitle {
+				m.StartCompleteTitle()
+			}
+			m.service.noteTransition(m.mode, 0)
+		}
+	}
 	if m.baseReader != nil {
+		if m.settledTitle && m.overlayDoc == nil && m.completeRemaining == 0 && m.completeLast != nil {
+			copy(video, m.completeLast)
+			return nil, nil
+		}
+		for m.skipOpening > 0 {
+			if _, err := m.baseReader.ReadFrame(video); err != nil {
+				return nil, err
+			}
+			m.skipOpening--
+		}
 		audio, err := m.baseReader.ReadFrame(video)
 		if err != nil {
 			return nil, err
 		}
-		if m.overlayDoc != nil {
+		if m.overlayDoc != nil && m.promote == nil {
 			dur := m.overlayDoc.Duration
 			if dur <= 0 {
 				dur = 8
@@ -117,8 +170,14 @@ func (m *MomentStream) ReadFrame(video []byte) ([]byte, error) {
 			} else if t >= dur {
 				t = dur - 1.0/120.0
 			}
+			if m.settledTitle {
+				t = max(1, m.overlayDoc.Poster)
+			}
 			started := time.Now()
-			ov := m.renderFn(*m.overlayDoc, m.overlayBnd, max(0, t), m.width, m.height)
+			if m.overlaySequence == nil {
+				m.overlaySequence = raster.NewSequence(*m.overlayDoc, m.overlayBnd, m.width, m.height)
+			}
+			ov := m.overlaySequence.Frame(max(0, t))
 			blendPremulRGBAOverI420(ov, video, m.width, m.height)
 			m.ovWallDur += time.Since(started)
 			m.ovFrames++
@@ -126,6 +185,13 @@ func (m *MomentStream) ReadFrame(video []byte) ([]byte, error) {
 				genSec := float64(m.ovFrames) * float64(m.fpsDen) / float64(m.fpsNum)
 				m.lastSpeedX = genSec / m.ovWallDur.Seconds()
 			}
+		}
+		if m.settledTitle && m.overlayDoc == nil && m.promote == nil {
+			if m.completeLast == nil {
+				m.completeLast = make([]byte, len(video))
+			}
+			copy(m.completeLast, video)
+			m.completeRemaining--
 		}
 		m.tick++
 		return audio, nil
@@ -166,6 +232,9 @@ func (m *MomentStream) Close() error {
 // LiveRenderAllowed reports whether live real-time rendering is permitted for r
 // based on measured render speed (>= 1.0x realtime required).
 func (s *Service) LiveRenderAllowed(r core.ClipRequest) (bool, float64, string) {
+	if s != nil && s.o.Enabled != nil && !s.o.Enabled() {
+		return false, 0, "Live TV disabled"
+	}
 	if s == nil {
 		return false, 0, "graphics unavailable"
 	}
@@ -294,6 +363,9 @@ func (s *Service) OpenMoment(
 	if !ok {
 		return nil, "scene not configured", fmt.Errorf("onair: moment %s unavailable", r.Moment)
 	}
+	if assetLoop(r.Moment) {
+		loop = true
+	}
 	cacheJob, cacheable := s.plan(r)
 
 	hasLive := !strings.HasPrefix(r.Moment, "plugin:") && !strings.HasPrefix(r.Moment, "screen.") && rawJob.AssetDigest == "" && scene.HasLiveSlots(rawJob.Doc)
@@ -324,13 +396,14 @@ func (s *Service) OpenMoment(
 				}
 				s.noteTransition(mode, 0)
 				return &MomentStream{
-					mode:       mode,
-					loop:       loop,
-					fpsNum:     fpsNum,
-					fpsDen:     fpsDen,
-					width:      width,
-					height:     height,
-					baseReader: dec,
+					mode:        mode,
+					loop:        loop,
+					fpsNum:      fpsNum,
+					fpsDen:      fpsDen,
+					width:       width,
+					height:      height,
+					baseReader:  dec,
+					scenePoster: rawJob.Doc.Poster, sceneDuration: rawJob.Doc.Duration,
 					overlayDoc: overlayDoc,
 					overlayBnd: overlayBind,
 					renderFn:   renderFn,
@@ -342,11 +415,93 @@ func (s *Service) OpenMoment(
 		}
 	}
 
+	// A cold scene airs immediately. The queued master becomes eligible at the
+	// next segment boundary; the reader never blocks on the render slot.
+	if cacheable && rawJob.AssetDigest == "" {
+		// Keep the master requested by this airing through budget eviction.
+		s.mu.Lock()
+		s.pins[cacheJob.Hash] = time.Now().Add(3 * time.Hour)
+		s.mu.Unlock()
+		s.enqueue(cacheJob)
+		stillJob := rawJob
+		if err := s.loadAssets(ctx, &stillJob); err != nil {
+			return nil, "plate assets failed", err
+		}
+		seq := raster.NewSequence(stillJob.Doc, stillJob.Bind, 1280, 720)
+		plate := seq.Frame(max(1, stillJob.Doc.Poster))
+		pixels := make([]byte, width*height*3/2)
+		rgbaScaleToI420(plate, pixels, width, height)
+		reader := &plateReader{remaining: plateFrames(rawJob.Doc.Duration, fpsNum, fpsDen, loop), pixels: pixels, audio: make([]byte, (48000*fpsDen/fpsNum)*4)}
+		// Prepare and prime the cached decoder off the frame clock. Only exchange
+		// readers at a segment boundary; the plate remains available throughout.
+		promoteCtx, cancel := context.WithCancel(ctx)
+		ready := make(chan FrameReader)
+		promoteDone := make(chan struct{})
+		stream := &MomentStream{scenePoster: rawJob.Doc.Poster, sceneDuration: rawJob.Doc.Duration, mode: "static-plate", loop: loop, fpsNum: fpsNum, fpsDen: fpsDen, width: width, height: height, baseReader: reader, renderFn: renderFn, service: s, lookID: rawJob.Look, moment: r.Moment,
+			overlayDoc: overlayDoc, overlayBnd: overlayBind,
+			stopLive: func(bool) {
+				cancel()
+				<-promoteDone
+			},
+			promote: func() FrameReader {
+				select {
+				case dec := <-ready:
+					return dec
+				default:
+					return nil
+				}
+			},
+		}
+		go func() {
+			defer close(promoteDone)
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				if ref, hit := s.Clip(promoteCtx, r); hit && openClip != nil {
+					dec, err := openClip(promoteCtx, ref.Path, loop)
+					if err == nil {
+						pixels := make([]byte, width*height*3/2)
+						audio, err := dec.ReadFrame(pixels)
+						if err == nil {
+							primed := &primedReader{FrameReader: dec, video: pixels, audio: audio}
+							stream.animationReady.Store(true)
+							select {
+							case ready <- primed:
+								return
+							case <-promoteCtx.Done():
+							}
+						}
+						dec.Close()
+					}
+				}
+				select {
+				case <-promoteCtx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+		return stream, "static-plate", nil
+	}
+
 	// 2. Cold cache miss or unsplittable slot scene: check >= 1.0x speed gate.
 	allowed, speedX, reason := s.LiveRenderAllowed(r)
 	if !allowed {
 		s.noteTransition("fallback", speedX)
 		s.o.Logger.Info("onair live moment fallback", "look", rawJob.Look, "moment", r.Moment, "speed_x", round2(speedX), "reason", reason)
+		// Even an unsplittable custom scene must remain visible when its
+		// animation cannot sustain real time. It is rendered per airing and
+		// never persisted with programme bindings.
+		if rawJob.AssetDigest == "" {
+			if err := s.loadAssets(ctx, &rawJob); err != nil {
+				return nil, "plate assets failed", err
+			}
+			plate := renderFn(rawJob.Doc, rawJob.Bind, max(1, rawJob.Doc.Poster), 1280, 720)
+			pixels := make([]byte, width*height*3/2)
+			rgbaScaleToI420(plate, pixels, width, height)
+			reader := &plateReader{remaining: plateFrames(rawJob.Doc.Duration, fpsNum, fpsDen, loop), pixels: pixels, audio: make([]byte, (48000*fpsDen/fpsNum)*4)}
+			return &MomentStream{mode: "static-plate", loop: loop, fpsNum: fpsNum, fpsDen: fpsDen, width: width, height: height, baseReader: reader, service: s, lookID: rawJob.Look, moment: r.Moment}, "static-plate", nil
+		}
 		return nil, reason, fmt.Errorf("%w: %s", ErrLiveBelowRealtime, reason)
 	}
 
@@ -1048,4 +1203,45 @@ func blendPremulRGBAOverI420(img *image.RGBA, dst []byte, w, h int) {
 			vPlane[uvi] = byte(max(16, min(240, vVal)))
 		}
 	}
+}
+
+// plateReader holds a single decoded image, equivalent to a looped image input.
+// Audio remains silent while the reusable master is being prepared.
+type plateReader struct {
+	pixels, audio []byte
+	remaining     int64 // -1 for looping moments
+}
+
+func plateFrames(duration float64, num, den int, loop bool) int64 {
+	if loop {
+		return -1
+	}
+	return max(1, int64(math.Ceil(duration*float64(num)/float64(den))))
+}
+
+func (p *plateReader) ReadFrame(video []byte) ([]byte, error) {
+	if p.remaining == 0 {
+		return nil, io.EOF
+	}
+	if p.remaining > 0 {
+		p.remaining--
+	}
+	copy(video, p.pixels)
+	return p.audio, nil
+}
+func (p *plateReader) Close() error { return nil }
+
+// primedReader transfers the first decoded frame without blocking the splice.
+type primedReader struct {
+	FrameReader
+	video, audio []byte
+}
+
+func (p *primedReader) ReadFrame(video []byte) ([]byte, error) {
+	if p.video != nil {
+		copy(video, p.video)
+		p.video = nil
+		return p.audio, nil
+	}
+	return p.FrameReader.ReadFrame(video)
 }

@@ -70,12 +70,13 @@ func (s *Service) openReelClipPath(c Channel, reelID, clipID string) string {
 // cached clip from the same reel, channel/block filler, or an animated break bumper.
 func (s *Service) broadcastSchedule(ctx context.Context, c Channel, from, until time.Time, check bool) []Programme {
 	c = s.graphicsChannel(c)
-	ps := Schedule(c, from, until)
+	ps := s.readyProgrammes(c, Schedule(c, from, until))
 	if s.o.Graphics == nil {
 		return ps
 	}
 	out := make([]Programme, 0, len(ps))
 	usedPodClips := map[string]bool{}
+	masterRequested := false
 	for i := range ps {
 		orig := ps[i]
 		orig.graphicsID = orig.ID
@@ -146,9 +147,10 @@ func (s *Service) broadcastSchedule(ctx context.Context, c Channel, from, until 
 			if lm, ok := s.o.Graphics.(liveMomentSource); ok {
 				allowed, speedX, reason := lm.LiveRenderAllowed(request)
 				if allowed {
-					// Pre-render distant moments via the bounded queue; imminent or
-					// active moments render live and save directly in OpenMoment.
-					if orig.Start.After(from.Add(broadcastPrewarm)) {
+					// Pre-render one upcoming moment for this watched output.
+					// Active moments enqueue their own master in OpenMoment.
+					if !masterRequested && orig.Start.After(from) {
+						masterRequested = true
 						req := request
 						req.Boundary = orig.Start
 						s.o.Graphics.Ensure(ctx, req)
@@ -328,7 +330,7 @@ func (s *Service) latchReelSubstitution(key string, end time.Time, subs []Progra
 }
 
 func (s *Service) broadcastGuide(c Channel, from, until time.Time) []Programme {
-	return guideSchedule(c, from, until)
+	return s.readyProgrammes(c, guideSchedule(c, from, until))
 }
 
 // recordGraphicsSkip latches a fallback decision for the original airing. A

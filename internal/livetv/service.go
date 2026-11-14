@@ -25,6 +25,7 @@ import (
 )
 
 func init() {
+	store.Register("livetv", 18, `CREATE TABLE livetv_readiness(channel_id TEXT PRIMARY KEY, active_until INTEGER NOT NULL);`)
 	store.Register("livetv", 1, `CREATE TABLE livetv_channels(id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE livetv_sources(id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE livetv_programmes(source_id TEXT NOT NULL, channel_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(source_id,channel_id,start_ms));
@@ -33,6 +34,13 @@ CREATE TABLE livetv_policies(user_id INTEGER PRIMARY KEY, data TEXT NOT NULL);`)
 }
 
 type Service struct {
+	lifecycleMu sync.Mutex
+	running     bool
+
+	readinessWake         chan struct{}
+	readiness             map[string]channelReadiness
+	readyTitles           map[core.RatingKey]bool
+	programmeSubs         map[string]Programme
 	activityWake          chan struct{}
 	noActivitySources     atomic.Bool
 	sourceWake            chan struct{}
@@ -61,9 +69,8 @@ type Service struct {
 	broadcasts            broadcastRegistry
 	broadcastProviders    map[string]map[string]string
 	chanSnap              channelSnapshot // decoded lineup shared by request paths (channel_cache.go)
-	plexGate              plexGuideGate
-	plexPreviewMu         sync.Mutex
-	plexPreview           map[string]plexPreviewEntry
+	guidePreviewMu        sync.Mutex
+	guidePreview          map[string]guidePreviewEntry
 	authCache             authCache  // provider credentials for the stream path (auth.go)
 	inputRelay            inputRelay // loopback ffmpeg input relay (input_relay.go)
 	probeMu               sync.Mutex
@@ -128,6 +135,12 @@ func New(o Options) (*Service, error) {
 	if o.Logger == nil {
 		o.Logger = slog.Default().With("component", "livetv")
 	}
+	if o.NewTimer == nil {
+		o.NewTimer = time.NewTimer
+	}
+	if o.NewTicker == nil {
+		o.NewTicker = time.NewTicker
+	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
@@ -144,6 +157,8 @@ func New(o Options) (*Service, error) {
 		kinds = NewKindRegistry()
 	}
 	s := &Service{breakObserved: make(chan breakObservation, 64), observedBreaks: map[core.RatingKey]breakObservation{}, graphicsWake: make(chan struct{}, 1), o: o, kinds: kinds, sessions: map[string]*session{}, ctx: ctx, cancel: cancel, lineupUnix: o.Now().Unix()}
+	s.readinessWake = make(chan struct{}, 1)
+	s.readiness = map[string]channelReadiness{}
 	s.activityWake = make(chan struct{}, 1)
 	s.sourceWake = make(chan struct{}, 1)
 	s.vodWake = make(chan struct{}, 1)
@@ -152,18 +167,63 @@ func New(o Options) (*Service, error) {
 	s.personalWake = make(chan struct{}, 1)
 	s.sweepWake = make(chan struct{}, 1)
 	s.broadcasts.onAcquire = s.wakeMaintenance
-	if o.Picker != nil && o.Users != nil {
+	s.virtualGuide.wake = make(chan struct{}, 1)
+	s.ReconcileEnabled()
+	return s, nil
+}
+
+// Enabled is shared by protocol surfaces and all background work admission.
+func (s *Service) Enabled() bool { return s.o.Enabled == nil || s.o.Enabled() }
+
+// ReconcileEnabled drains workers before changing their lifetime context.
+func (s *Service) ReconcileEnabled() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	enabled := s.Enabled()
+	if enabled == s.running {
+		return
+	}
+	if !enabled {
+		s.cancel()
+		s.broadcasts.close()
+		s.wg.Wait()
+		s.waitVirtualGuideInflight()
+		s.mu.Lock()
+		all := s.sessions
+		s.sessions = map[string]*session{}
+		s.watched = nil
+		s.activeWatched = nil
+		s.mu.Unlock()
+		for _, ss := range all {
+			ss.close(s)
+		}
+		s.virtualGuide.mu.Lock()
+		s.virtualGuide.entries = nil
+		s.virtualGuide.mu.Unlock()
+		s.running = false
+		return
+	}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.broadcasts.mu.Lock()
+	s.broadcasts.closed = false
+	s.broadcasts.mu.Unlock()
+	s.running = true
+	if s.o.Picker != nil && s.o.Users != nil {
 		s.wg.Add(1)
 		go s.personalLoop()
 	}
 	s.virtualGuide.wake = make(chan struct{}, 1)
 	s.wg.Add(1)
 	go s.virtualGuideLoop()
-	if o.BreakInput != nil && o.BreakAnalyzer != nil {
+	// Channel readiness belongs to the Live TV lifetime: it stops when Live
+	// TV is turned off and restarts with it.
+	s.wg.Add(1)
+	go s.readinessLoop()
+	if s.o.BreakInput != nil && s.o.BreakAnalyzer != nil {
 		s.wg.Add(1)
 		go s.breakLoop()
 	}
-	if o.Showcase && o.Catalog != nil {
+	if s.o.Showcase && s.o.Catalog != nil {
 		s.wg.Add(1)
 		go s.showcaseLoop()
 	}
@@ -173,7 +233,6 @@ func New(o Options) (*Service, error) {
 	go s.refreshLoop()
 	go s.healthSweepLoop()
 	s.history.start(s)
-	return s, nil
 }
 
 // A neutral playback identity is shared by source requests. Explicit source
@@ -299,7 +358,7 @@ func (s *Service) maintainActive() bool {
 func (s *Service) maintain() {
 	defer s.wg.Done()
 	steps := s.maintenanceSteps()
-	timer := time.NewTimer(15 * time.Second)
+	timer := s.newTimer(15 * time.Second)
 	if !timer.Stop() {
 		select {
 		case <-timer.C:
@@ -395,6 +454,11 @@ func (s *Service) warmProgrammes() {
 		ps := Schedule(s.graphicsChannel(c), now, now.Add(defaultProgrammeWarmLead+time.Minute))
 		targets, breakReturn := selectChannelWarmTargets(ps, now, defaultProgrammeWarmLead)
 		for idx, p := range targets {
+			// Continuous outputs already acquire their on-air decoder alongside
+			// the title. A second detail warm competes for the same cold bytes.
+			if !p.Start.After(now) && s.hasBroadcastOutput(c.ID) {
+				continue
+			}
 			offset := p.Offset(maxTime(now, p.Start))
 			wk := warmTarget{channelID: c.ID, key: p.Item.Key, offsetSec: int64(offset / time.Second)}
 			s.warmMu.Lock()
@@ -938,6 +1002,16 @@ func validateChannel(c *Channel) error {
 	}
 	return nil
 }
+
+// DraftChannel uses the normal channel expansion and validation without saving.
+// It is demand-driven by an owner's explicit channel proposal.
+func (s *Service) DraftChannel(ctx context.Context, c Channel) (Channel, error) {
+	if err := s.expand(ctx, &c); err != nil {
+		return c, err
+	}
+	return c, validateChannel(&c)
+}
+
 func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 	if c.ID == "" {
 		c.ID = randomID()
@@ -1073,6 +1147,9 @@ func (s *Service) SavePolicy(ctx context.Context, p Policy) error {
 	return err
 }
 func (s *Service) allowed(ctx context.Context, u *core.User, c Channel, p *Programme) bool {
+	if !s.Enabled() {
+		return false
+	}
 	var lookup func(context.Context, core.RatingKey) (*core.Title, error)
 	if s.o.Catalog != nil {
 		lookup = s.o.Catalog.Get
@@ -1216,6 +1293,9 @@ func (s *Service) AllowedChannelsForIDs(ctx context.Context, u *core.User, ids [
 }
 
 func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []string) ([]Channel, error) {
+	if !s.Enabled() {
+		return nil, nil
+	}
 	ctx, pol, err := s.withPolicy(ctx, u)
 	if err != nil {
 		return nil, err
@@ -1291,6 +1371,9 @@ func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []strin
 // policy check as AllowedChannels without loading the lineup. Plex tune used
 // the whole list only to find the requested channel.
 func (s *Service) AllowedChannel(ctx context.Context, u *core.User, key string) (Channel, error) {
+	if !s.Enabled() {
+		return Channel{}, core.ErrNotAvailable
+	}
 	ctx, _, err := s.withPolicy(ctx, u)
 	if err != nil {
 		return Channel{}, err
@@ -1348,6 +1431,9 @@ func (s *Service) allowedChannelRecord(ctx context.Context, u *core.User, c Chan
 // repeat checks for the same channel without another guide read. Callers that
 // are not looking at a live channel must not call this.
 func (s *Service) ChannelPermitted(ctx context.Context, u *core.User, id string) (bool, error) {
+	if !s.Enabled() {
+		return false, nil
+	}
 	if u == nil || id == "" {
 		return false, nil
 	}
@@ -1578,6 +1664,9 @@ func channelFromSummary(c ChannelSummary) Channel {
 }
 
 func (s *Service) guide(ctx context.Context, u *core.User, from, until time.Time, ids []string) ([]Programme, error) {
+	if !s.Enabled() {
+		return nil, nil
+	}
 	if !until.After(from) || until.Sub(from) > 7*24*time.Hour {
 		return nil, fmt.Errorf("guide window must be positive and at most 7 days")
 	}
@@ -1901,7 +1990,7 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 			return nil, err
 		}
 		v.HasPlaylist = v.Playlist != "" || v.PlaylistURL != ""
-		v.HasGuide = v.Kind == "plex" || v.Guide != "" || v.GuideURL != ""
+		v.HasGuide = s.sourceGuideFeatures(v).Remote || v.Guide != "" || v.GuideURL != ""
 		v.Playlist = ""
 		v.Guide = ""
 		redactSourceAuth(&v)
@@ -1924,6 +2013,9 @@ func (s *Service) readURL(ctx context.Context, raw string, max int64) (string, e
 // Owner changes to mapping, enabled state, channel numbering, favourites and
 // restrictions survive refresh.
 func (s *Service) ImportSource(ctx context.Context, src Source) (Source, error) {
+	if !s.Enabled() {
+		return Source{}, core.ErrNotAvailable
+	}
 	ctx, cancel := context.WithTimeout(ctx, refreshBudget)
 	defer cancel()
 	if src.ID == "" {
@@ -1953,6 +2045,24 @@ func (s *Service) importSourceLogged(ctx context.Context, src Source) (Source, e
 
 // importSource is ImportSource without the outcome log.
 func (s *Service) importSource(ctx context.Context, src Source) (Source, error) {
+	if old, err := s.storedSourceByID(ctx, src.ID); err == nil && (src.Disabled || old.Disabled != src.Disabled) {
+		old.Disabled = src.Disabled
+		b, err := s.encodeSource(old)
+		if err != nil {
+			return old, err
+		}
+		_, err = s.o.DB.ExecContext(ctx, `UPDATE livetv_sources SET data=? WHERE id=?`, b, old.ID)
+		s.forgetSourceAuth(old.ID)
+		s.wakeSourceRefresh()
+		s.notifySourcesChanged()
+		old.Playlist, old.Guide = "", ""
+		redactSourceAuth(&old)
+		return old, err
+	}
+	if src.Disabled {
+		return src, core.ErrNotAvailable
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, refreshBudget)
 	defer cancel()
 	if src.ID == "" {
@@ -2165,7 +2275,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	}
 	src = storedSource(src)
 	src.HasPlaylist = src.Playlist != "" || src.PlaylistURL != ""
-	src.HasGuide = src.Kind == "plex" || src.Guide != "" || src.GuideURL != ""
+	src.HasGuide = s.sourceGuideFeatures(src).Remote || src.Guide != "" || src.GuideURL != ""
 	src.Playlist = ""
 	src.Guide = ""
 	redactSourceAuth(&src)
@@ -2316,6 +2426,9 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 // ImportUpload streams a raw playlist or guide body (gzip is decompressed
 // while reading) into an existing source.
 func (s *Service) ImportUpload(ctx context.Context, id, part string, body io.Reader) (Source, error) {
+	if !s.Enabled() {
+		return Source{}, core.ErrNotAvailable
+	}
 	src, err := s.storedSourceByID(ctx, id)
 	if err != nil {
 		return src, err
@@ -2422,4 +2535,28 @@ func (s *Service) DeleteSource(ctx context.Context, id string) error {
 		s.bumpLineup()
 	}
 	return err
+}
+
+func (s *Service) newTimer(d time.Duration) *time.Timer {
+	if s.o.NewTimer != nil {
+		return s.o.NewTimer(d)
+	}
+	return time.NewTimer(d)
+}
+func (s *Service) newTicker(d time.Duration) *time.Ticker {
+	if s.o.NewTicker != nil {
+		return s.o.NewTicker(d)
+	}
+	return time.NewTicker(d)
+}
+
+func (s *Service) hasBroadcastOutput(channel string) bool {
+	s.broadcasts.mu.Lock()
+	defer s.broadcasts.mu.Unlock()
+	for key := range s.broadcasts.outputs {
+		if key.channelID == channel {
+			return true
+		}
+	}
+	return false
 }

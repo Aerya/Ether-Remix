@@ -17,6 +17,7 @@ require (
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/kardianos/service v1.3.0
 	github.com/mnightingale/rapidyenc v0.0.0-20261008131718-6657b7ca854e
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c

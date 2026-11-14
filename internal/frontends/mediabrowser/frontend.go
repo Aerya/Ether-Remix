@@ -62,6 +62,7 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		inst.pages = newBrowseCache()
 	}
 	r.SetMiddleware(inst.routeMiddleware)
+	r.SetFallback(mediaBrowserError)
 	unmatched := &unmatchedLogger{}
 	r.SetUnmatched(func(req *http.Request, status int) { unmatched.log(inst, req, status) })
 	mounted := false
@@ -77,6 +78,14 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		}
 		return current
 	}, inst.publicViewers, host.ClientIP, inst.webClient); err != nil {
+		return nil, err
+	}
+
+	if err := r.Handle("GET", "/Items/{itemId}/Images", http.HandlerFunc(inst.itemImages)); err != nil {
+		return nil, err
+	}
+
+	if err := r.Handle("POST", "/Items/{itemId}/Images/{imageType}", http.HandlerFunc(inst.uploadImage)); err != nil {
 		return nil, err
 	}
 
@@ -115,8 +124,13 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		return nil, err
 	}
 	for _, method := range []string{"GET", "HEAD"} {
-		if err := r.Handle(method, "/Videos/{id}/{source}/Subtitles/{index}/{name}", http.HandlerFunc(inst.subtitle)); err != nil {
-			return nil, err
+		for _, path := range []string{
+			"/Videos/{id}/{source}/Subtitles/{index}/{name}",
+			"/Videos/{id}/{source}/Subtitles/{index}/{start}/{name}",
+		} {
+			if err := r.Handle(method, path, http.HandlerFunc(inst.subtitle)); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := inst.playbackRoutes(); err != nil {
@@ -129,6 +143,9 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		return nil, err
 	}
 	if err := inst.browseRoutes(); err != nil {
+		return nil, err
+	}
+	if err := inst.webSigninRoutes(); err != nil {
 		return nil, err
 	}
 	if err := inst.routes(); err != nil {
@@ -210,6 +227,11 @@ func (i *instance) Listeners() []frontend.ListenerSpec {
 // UDP discovery is multiplexed by the host via DiscoveryResponder.
 func (i *instance) Discovery() []frontend.Announcer { return nil }
 func (i *instance) Status(context.Context) frontend.Status {
-	return frontend.Status{TargetVersion: i.info.Version, Conformance: conformance.Status(string(i.protocol), i.info.Version)}
+	ready := false
+	if i.webClient != nil {
+		st, _ := i.webClient.State()
+		ready = st == webclient.StatusReady
+	}
+	return frontend.Status{WebPlayerReady: ready, TargetVersion: i.info.Version, Conformance: conformance.Status(string(i.protocol), i.info.Version)}
 }
 func (i *instance) Close(context.Context) error { i.cancel(); return nil }

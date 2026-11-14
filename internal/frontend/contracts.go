@@ -121,6 +121,8 @@ type RowPaint struct {
 }
 
 type Row struct {
+	// Situation is the server-owned ranking context retained for deferred receipts.
+	Situation    core.HomeSituation
 	ID, Title    string
 	Purpose      RowPurpose
 	Kind         string // Stable semantic producer kind, independent of protocol.
@@ -215,6 +217,8 @@ type ItemQuery struct {
 	// #405). A plugin library whose presentation declares the kind still
 	// serves it; callers consult configured libraries before answering empty.
 	UnservedTypes []string
+	// ExcludedTypes contains core media type names excluded by the client.
+	ExcludedTypes []core.MediaType
 	Recursive     bool
 	Season        *int // Optional presented season number.
 	Filter        core.Filter
@@ -478,6 +482,8 @@ type ItemDetail struct {
 	Playlist   *core.Playlist
 	Title      core.Title
 	UserData   core.WatchStatus
+	// Unavailable is the plugin-declared reason playback is blocked.
+	Unavailable *core.ItemUnavailable
 	// CanPlay reflects current playback authorization when known. Nil means the
 	// verified peer or policy result is unavailable. It does not guarantee a
 	// source, codec, stream slot or transcode capacity will be available.
@@ -516,6 +522,9 @@ type ExternalRequest struct {
 // CollectionQuery requests viewer-scoped collection pagination. A nonpositive
 // Limit defaults to 50; larger requests are capped at 500.
 type CollectionQuery struct {
+	// ExistsOnly stops after the first visible collection; Total is then 0 or 1.
+	ExistsOnly    bool
+	Query         string
 	Types         []core.MediaType
 	Offset, Limit int
 }
@@ -590,6 +599,9 @@ type Experience interface {
 	LibraryGUIDs() LibraryGUIDs
 	LibraryMetadata() LibraryMetadata
 	MarkerRanges
+	// PublishedViews lists protocol-published libraries without viewer policy.
+	// Callers must apply the real viewer's restrictions before serving them.
+	PublishedViews(context.Context) ([]View, error)
 	Views(context.Context, *core.Viewer) ([]View, error)
 	Collections(context.Context, *core.Viewer, core.Device, CollectionQuery) (CollectionPage, error)
 	NotInterested(context.Context, *core.Viewer, core.Device, PageQuery) (NotInterestedPage, error)
@@ -956,4 +968,15 @@ type PlaybackSourceKeyer interface {
 // SoftSubtitleServer serves soft ASS subtitles directly from an active HLS remux session.
 type SoftSubtitleServer interface {
 	ServeSoftSubtitle(http.ResponseWriter, *http.Request, int) bool
+}
+
+// RowReceiptIssuer issues row-only receipts for server-owned, delivered snapshots.
+// It rechecks current policy without composing Home again.
+type RowReceiptIssuer interface {
+	IssueRowReceipts(context.Context, RowRequest, []Row) ([]Row, error)
+}
+
+// FilterFacetReader supplies bounded indexed filter values without a title walk.
+type FilterFacetReader interface {
+	FilterFacets(context.Context, *Viewer, Device, string, string) ([]FacetValue, error)
 }

@@ -61,7 +61,7 @@ func (s *Service) hasSweepableIPTV(ctx context.Context) bool {
 		return false
 	}
 	for _, c := range cs {
-		if c.Kind != "iptv" || !c.Enabled {
+		if c.Kind != "iptv" || !c.Enabled || !s.channelSourceEnabled(ctx, c.SourceID) {
 			continue
 		}
 		if c.SourceID != "" && s.sourceConnectionLimit(c.SourceID) > 0 {
@@ -93,7 +93,7 @@ func (s *Service) healthSweepLoop() {
 		if minutes > 24*60 {
 			minutes = 24 * 60
 		}
-		timer := time.NewTimer(time.Duration(minutes) * time.Minute)
+		timer := s.newTimer(time.Duration(minutes) * time.Minute)
 		select {
 		case <-s.ctx.Done():
 			timer.Stop()
@@ -168,7 +168,7 @@ func (s *Service) sweepChannels(ctx context.Context) {
 	}
 feed:
 	for _, c := range cs {
-		if c.Kind != "iptv" || !c.Enabled {
+		if c.Kind != "iptv" || !c.Enabled || !s.channelSourceEnabled(ctx, c.SourceID) {
 			continue
 		}
 		// A provider that sells connections sees a sweep as a channel scan

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -58,7 +59,20 @@ type StepAside struct {
 
 	mu     sync.RWMutex
 	cached *compiledStepAside
+	// refreshing is set while a background recompile runs; lastRefresh
+	// spaces recompiles caused only by catalogue writes.
+	refreshing  atomic.Bool
+	lastRefresh atomic.Int64
+	inflight    chan struct{} // closed when the running compile finishes; guarded by mu
 }
+
+// stepAsideBucket is how often show completeness is re-judged against the
+// clock (episodes that have since aired), and stepAsideRefreshGap the least
+// time between recompiles caused only by catalogue writes.
+const (
+	stepAsideBucket     = 10 * 60
+	stepAsideRefreshGap = 15 * time.Second
+)
 
 type stepAsideCacheKey struct {
 	heldRev  uint64
@@ -377,16 +391,89 @@ func (s *StepAside) compiled(ctx context.Context) *compiledStepAside {
 	ck := stepAsideCacheKey{
 		heldRev:  h.Rev,
 		writeGen: writeGen,
-		minute:   s.opts.Now().Unix() / 60,
+		minute:   s.opts.Now().Unix() / stepAsideBucket,
 	}
 	s.mu.RLock()
-	if s.cached != nil && s.cached.key == ck {
-		got := s.cached
-		s.mu.RUnlock()
-		return got
-	}
+	cur := s.cached
 	s.mu.RUnlock()
+	if cur != nil && cur.key == ck {
+		return cur
+	}
+	if cur != nil {
+		// Never recompile on a request: completeness reads every matched
+		// show's aired episodes. Serve the last answer and refresh it in the
+		// background (one at a time, spaced unless the held set changed).
+		_ = s.refreshAsync(h, ck, cur.key.heldRev != ck.heldRev)
+		return cur
+	}
+	// The first compile also runs in the background: until it lands, step
+	// aside can judge direct membership immediately. Container completeness
+	// stays conservative until the catalogue read finishes.
+	done := s.refreshAsync(h, ck, true)
+	if core.LocalResponse(ctx) {
+		// Movie and episode membership is already known in this immutable
+		// snapshot; only container completeness needs the catalogue read.
+		return &compiledStepAside{key: ck, movies: h.Movies, episodes: h.Episodes}
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(stepAsideFirstWait):
+		case <-ctx.Done():
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cached
+}
 
+// stepAsideFirstWait preserves the bounded completeness contract for callers
+// that explicitly allow a wait. Local responses use membership immediately.
+const stepAsideFirstWait = 250 * time.Millisecond
+
+// Prime starts the first compile in the background so a held set is judged
+// before the first request needs it.
+func (s *StepAside) Prime() {
+	if s == nil || s.opts.Held == nil {
+		return
+	}
+	h := s.opts.Held()
+	if h.Rev == 0 || (len(h.Movies) == 0 && len(h.Episodes) == 0) {
+		return
+	}
+	var writeGen uint64
+	if s.opts.WriteGeneration != nil {
+		writeGen = s.opts.WriteGeneration()
+	}
+	_ = s.refreshAsync(h, stepAsideCacheKey{heldRev: h.Rev, writeGen: writeGen, minute: s.opts.Now().Unix() / stepAsideBucket}, true)
+}
+
+func (s *StepAside) refreshAsync(h StepAsideHeld, ck stepAsideCacheKey, heldChanged bool) <-chan struct{} {
+	if !heldChanged && time.Since(time.Unix(0, s.lastRefresh.Load())) < stepAsideRefreshGap {
+		return nil
+	}
+	if !s.refreshing.CompareAndSwap(false, true) {
+		s.mu.RLock()
+		done := s.inflight
+		s.mu.RUnlock()
+		return done
+	}
+	done := make(chan struct{})
+	s.mu.Lock()
+	s.inflight = done
+	s.mu.Unlock()
+	go func() {
+		defer close(done)
+		defer s.refreshing.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		s.compile(ctx, h, ck)
+		s.lastRefresh.Store(time.Now().UnixNano())
+	}()
+	return done
+}
+
+func (s *StepAside) compile(ctx context.Context, h StepAsideHeld, ck stepAsideCacheKey) *compiledStepAside {
 	showHasEps := make(map[core.RatingKey]struct{}, len(h.Shows))
 	heldByShow := make(map[core.RatingKey][]core.RatingKey, len(h.Shows))
 	showSet := make(map[core.RatingKey]struct{}, len(h.Shows))

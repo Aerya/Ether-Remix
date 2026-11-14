@@ -224,6 +224,7 @@ type tmdbRef struct{ client TMDB }
 // Catalog implements core.Catalog.
 type Catalog struct {
 	localMedia            atomic.Bool // PSE: persisted local-video rows require source membership checks
+	catalogueSourceLoader func(context.Context, []string) error
 	consoleEvidencePolicy atomic.Pointer[func() string]
 	consoleGatePolicies   atomic.Pointer[func() (string, string)]
 	consoleGateFilter     atomic.Pointer[func() core.Filter]
@@ -555,7 +556,6 @@ func New(db *sql.DB, client TMDB, cfg config.Catalog, log *slog.Logger, opts ...
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	c.ensureSortTitlesFolded(ctx)
 	c.loadRankReady(ctx)
 	c.loadTitleIndexState(ctx)
 	c.ftsFold = ftsFoldAvailable(ctx, db)
@@ -642,3 +642,6 @@ func (c *Catalog) WriteGeneration() uint64 {
 	}
 	return c.writeGen.Load()
 }
+
+// FinishStartup completes optional bulk maintenance after the listener is ready.
+func (c *Catalog) FinishStartup(ctx context.Context) { c.ensureSortTitlesFolded(ctx) }

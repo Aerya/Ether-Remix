@@ -61,9 +61,9 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		contentType:           s.contentType,
 		deferStatusOnZeroRead: true,
 	}
-	plexPart := core.IsPlexPart(r.Context())
-	if plexPart {
-		rep.contentType = plexPartMIME(s.name)
+	policy, customResponse := core.RangeResponseFrom(r.Context())
+	if customResponse && policy.MIME != nil {
+		rep.contentType = policy.MIME(s.name)
 	}
 	s.mu.Unlock()
 	rep.body = func(w io.Writer, start, length int64) error {
@@ -76,8 +76,12 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		return err
 	}
 	serve := serveRepresentation
-	if plexPart {
-		serve = servePlexPart
+	if customResponse && policy.Serve != nil {
+		serve = func(w http.ResponseWriter, r *http.Request, rep representation) error {
+			return policy.Serve(w, r, core.RangeRepresentation{Size: rep.size, ETag: rep.etag, ContentType: rep.contentType, ModTime: rep.modTime, ServeBody: func(status int, start, length int64) error {
+				return serveSingleRangeBody(w, r, status, start, length, rep.deferStatusOnZeroRead, rep.body)
+			}})
+		}
 	}
 	if err := serve(w, r, rep); err != nil && r.Context().Err() == nil {
 		m.log.Debug("direct play response ended early", "session", s.id, "err", err)
@@ -244,6 +248,12 @@ func (m *Manager) limitDirectRetryAfter(s *session, g *generation, at, delay tim
 	epoch := g.retryEpoch
 	g.mu.Unlock()
 	pending := func() bool {
+		s.mu.Lock()
+		inactive := s.closed || s.viewerState == "paused" || s.viewerState == "stopped" || !s.stopAt.IsZero() || s.stoppedBySurface
+		s.mu.Unlock()
+		if inactive {
+			return false
+		}
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		return g.retryPending && g.retryEpoch == epoch && !g.retired
@@ -620,6 +630,12 @@ func (m *Manager) serveLoopback(w http.ResponseWriter, r *http.Request) {
 // backgroundFailover fails a session over outside any request, for errors
 // seen by ffmpeg on the loopback server.
 func (m *Manager) backgroundFailover(s *session, g *generation, at time.Duration) {
+	// A channel clock owns decoder recovery and its programme offset. ffmpeg
+	// also reads the file tail for metadata: mapping that byte to time seeks
+	// to EOF, not to the airing position. It has no HLS session to swap here.
+	if s.caps.BroadcastBitrateKbps > 0 {
+		return
+	}
 	if s.isClosed() || !g.backgroundFailover.CompareAndSwap(false, true) {
 		return
 	}

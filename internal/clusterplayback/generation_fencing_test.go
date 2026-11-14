@@ -58,7 +58,12 @@ func TestPartitionedGenerationCannotPublishRenewOrReleaseReplacement(t *testing.
 		t.Fatal(err)
 	}
 	encoder := &partitionEncoder{entered: make(chan struct{}), release: make(chan struct{})}
-	manager, err := playback.New(playback.Deps{Catalog: fixtureCatalog{}, Resolver: fixtureResolver{}, Engine: fixtureEngine{}, Transcoder: encoder, SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return core.QualityProfile{} }}, config.Defaults(t.TempDir()), playback.Options{})
+	manager, err := playback.New(playback.Deps{Catalog: fixtureCatalog{}, Resolver: fixtureResolver{}, Engine: fixtureEngine{}, Transcoder: encoder, SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return core.QualityProfile{} }}, config.Defaults(t.TempDir()), playback.Options{SessionSurface: func(surface string) string {
+		if surface == "plex" {
+			return ""
+		}
+		return surface
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +81,7 @@ func TestPartitionedGenerationCannotPublishRenewOrReleaseReplacement(t *testing.
 	guards := fixtureGuards(t, sourceID, workerID)
 	endpoints := map[nodewire.Identity]string{}
 	eligible := func(context.Context, nodewire.Identity, config.NodeRole) error { return nil }
-	base := Options{DB: db, Placement: ledger, Endpoint: func(_ context.Context, id nodewire.Identity) (string, error) { return endpoints[id], nil }, Eligible: eligible, MemberRole: eligible, Capacity: 16, ClockBoundKnown: true}
+	base := Options{SurfacePolicy: testSessionPolicy, Delivery: testDeliveryPolicy(), DB: db, Placement: ledger, Endpoint: func(_ context.Context, id nodewire.Identity) (string, error) { return endpoints[id], nil }, Eligible: eligible, MemberRole: eligible, Capacity: 16, ClockBoundKnown: true}
 	opts := base
 	opts.Self = sourceID
 	opts.Guard = guards[0]

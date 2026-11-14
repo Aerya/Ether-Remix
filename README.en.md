@@ -54,7 +54,7 @@ Custom libraries and collections, subtitles translated with SubMaker, detailed s
 
 Turn access on under **Console → Apps**. Each viewer finds their links and app passwords on their **Your account** page.
 
-**November 13, 2026 update:** integrated Ether through `5b8ef628` and repaired automatic synchronization: file moves are tracked and conflicts reported in detail to preserve Remix additions.
+**November 14, 2026 update:** integrated Ether through `16053c65`: improvements to collections, episode identification and playback. Automatic synchronization preserves Remix additions.
 
 ## Remix Features
 

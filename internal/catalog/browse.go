@@ -21,6 +21,9 @@ import (
 // in-memory count and page caching so repeated library/recommendation reads
 // return without hitting disk.
 func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, error) {
+	if err := c.ensureCatalogueSources(ctx, q.Filter); err != nil {
+		return core.Page{}, err
+	}
 	if q.PlaylistSource != nil {
 		return c.browsePlaylist(ctx, q)
 	}
@@ -506,7 +509,15 @@ func browseFilterKey(f core.Filter) string {
 	f.Group = nil
 	childVisibility := f.ChildVisibility
 	f.ChildVisibility = nil
-	key := fmt.Sprintf("%+v", f)
+	// A large exclusion set (step aside holds tens of thousands of titles)
+	// keys by digest: formatting every key on each request would cost more
+	// than the page it caches.
+	excluded := ""
+	if len(f.ExcludeKeys) > inlineKeyLimit {
+		excluded = "|excluded:" + keySetDigest(f.ExcludeKeys)
+		f.ExcludeKeys = nil
+	}
+	key := fmt.Sprintf("%+v", f) + excluded
 	if childVisibility != nil {
 		key += "|child:" + browseFilterKey(*childVisibility)
 	}
@@ -769,6 +780,22 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 			args = append(args, key)
 		}
 	}
+	if len(f.CatalogueSources) > 0 {
+		all := false
+		for _, id := range f.CatalogueSources {
+			if id == "tmdb-movies" || id == "tmdb-tv" {
+				all = true
+			}
+		}
+		if !all {
+			marks := make([]string, len(f.CatalogueSources))
+			for i, id := range f.CatalogueSources {
+				marks[i] = "?"
+				args = append(args, id)
+			}
+			conds = append(conds, "t.key IN (SELECT lcm.key FROM libraries_catalogue_members lcm WHERE lcm.source_id IN ("+strings.Join(marks, ",")+"))")
+		}
+	}
 	if f.CollectionMembers != 0 {
 		// A collection library is a semi-join on the collection's
 		// materialised members, never a list of keys in memory. Only a
@@ -788,10 +815,9 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 		}
 	}
 	if len(f.ExcludeKeys) > 0 {
-		conds = append(conds, "t.key NOT IN ("+placeholders(len(f.ExcludeKeys))+")")
-		for _, k := range f.ExcludeKeys {
-			args = append(args, k)
-		}
+		cond, a := c.keyMembership("t.key", true, f.ExcludeKeys)
+		conds = append(conds, cond)
+		args = append(args, a...)
 	}
 	switch f.Type {
 	case core.TypeMovie, core.TypeShow:
@@ -1242,7 +1268,7 @@ func (c *Catalog) FacetFilter(ctx context.Context, f core.Filter, facet string) 
 	}
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
-	fkey := fmt.Sprintf("%+v|%s", normalizeGateCacheFilter(f), facet) + c.consoleGateKey(f)
+	fkey := fmt.Sprintf("%+v|%s", digestExcluded(normalizeGateCacheFilter(f)), facet) + excludedKey(f) + c.consoleGateKey(f)
 	c.cacheMu.RLock()
 	ent, cached := c.facetCache[fkey]
 	c.cacheMu.RUnlock()
@@ -1292,7 +1318,7 @@ func facetFamilyKey(f core.Filter, facet string) string {
 	clearGateFields(&f)
 	f.HiddenMovieSeq, f.HiddenShowSeq, f.HiddenEpisodeSeq = 0, 0, 0
 	f.AvailabilityKeepKeys = nil
-	return "family|" + fmt.Sprintf("%+v|%s", f, facet)
+	return "family|" + fmt.Sprintf("%+v|%s", digestExcluded(f), facet) + excludedKey(f)
 }
 
 // jumpBarRecountEvery is the most a jump bar's counts lag the catalogue.
@@ -1349,7 +1375,7 @@ func (c *Catalog) countFacet(ctx context.Context, f core.Filter, facet string) (
 	}
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
-	fkey := fmt.Sprintf("%+v|%s", normalizeGateCacheFilter(f), facet) + c.consoleGateKey(f)
+	fkey := fmt.Sprintf("%+v|%s", digestExcluded(normalizeGateCacheFilter(f)), facet) + excludedKey(f) + c.consoleGateKey(f)
 	base, args, err := c.browseWhere(f)
 	if err != nil {
 		return nil, err

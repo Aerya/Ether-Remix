@@ -88,10 +88,11 @@ function LibraryRulesTab({
   return (
     <div className="catalog-scroll app-scroll">
       <div className="mx-auto max-w-6xl space-y-4 px-5 pb-5 pt-4 lg:px-7">
-        <p className="text-sm text-fg-muted">{intro}</p>
+        {library.source !== "plugin" ? <p className="text-sm text-fg-muted">{intro}</p> : null}
         <RulesPanel
+          pluginLibrary={library.source === "plugin" ? library : undefined}
           libraryId={library.id}
-          mediaType={mediaType}
+          mediaType={library.source === "plugin" ? undefined : mediaType}
           libraryFilter={scopeFilter}
           rules={rules}
           fallback={fallback}
@@ -146,10 +147,9 @@ export function LibraryPage() {
       </Workspace>
     );
 
-  const canRules = lib.source !== "plugin";
   const tabs = [
     { key: "browse", label: t("Browse") },
-    ...(canRules ? [{ key: "rules", label: t("Rules") }] : []),
+    { key: "rules", label: t("Rules") },
     { key: "settings", label: t("Settings") },
   ];
   const tab = tabs.some((x) => x.key === rawTab) ? rawTab! : "browse";
@@ -184,14 +184,16 @@ export function LibraryPage() {
           </>
         }
       >
-        <SubtabNav
-          ariaLabel={t("Library sections")}
-          active={tab}
-          onSelect={(key) =>
-            navigate(key === "browse" ? `/libraries/${id}` : `/libraries/${id}/${key}`)
-          }
-          tabs={tabs}
-        />
+        <div className={tab === "settings" ? "[&>div]:!mb-0" : undefined}>
+          <SubtabNav
+            ariaLabel={t("Library sections")}
+            active={tab}
+            onSelect={(key) =>
+              navigate(key === "browse" ? `/libraries/${id}` : `/libraries/${id}/${key}`)
+            }
+            tabs={tabs}
+          />
+        </div>
         {tab === "browse" ? (
           lib.source === "plugin" ? (
             <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
@@ -223,7 +225,7 @@ export function LibraryPage() {
           />
         ) : (
           <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-5xl space-y-5 px-5 py-5 lg:px-7">
+            <div className="space-y-5 px-3 py-4">
               <LibrarySettings library={lib} onSaved={() => void library.reload()} />
             </div>
           </div>

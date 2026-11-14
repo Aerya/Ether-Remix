@@ -41,6 +41,10 @@ type HLSRequest struct {
 	// SoftSubtitleStream, when set, asks the encoder to expose this embedded
 	// text stream as ASS alongside its ordinary media output.
 	SoftSubtitleStream *int
+	// TextSubtitleStreams tees embedded text tracks from the HLS video input.
+	TextSubtitleStreams []int `json:",omitempty"`
+	// TextSubtitleSource is the host-verified file revision for durable cue windows.
+	TextSubtitleSource string `json:",omitempty"`
 	// RequireIndependentProof emits HLS independence tags only when the
 	// session can guarantee every advertised segment is independently decodable.
 	// Zero preserves the legacy playlist contract for existing callers.
@@ -69,6 +73,8 @@ type HLSRequest struct {
 	Info        MediaInfo
 	Decision    Decision
 	StartOffset time.Duration
+	// ResumeHint warms one speculative Matroska copy seek without moving the playlist origin.
+	ResumeHint time.Duration `json:",omitempty"`
 	// SegmentDuration defaults to 4s when zero (5s for DASH).
 	SegmentDuration time.Duration
 	// Protocol is ProtocolHLS (default when empty), ProtocolDASH, or

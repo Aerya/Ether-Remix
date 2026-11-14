@@ -30,6 +30,7 @@ func (s *Session) watch(r *run) {
 	playlist := filepath.Join(r.spec.Dir, r.spec.Playlist)
 	var watchdog runWatchdog
 	collect := func(exited bool) {
+		s.collectTextSubtitles(r)
 		switch {
 		case r.dash != nil:
 			s.collectDASH(r, exited)
@@ -47,6 +48,11 @@ func (s *Session) watch(r *run) {
 			s.mu.Lock()
 			obsolete := s.cur != r
 			s.mu.Unlock()
+			if obsolete {
+				for _, path := range r.spec.TextSubtitlePaths {
+					s.removals.remove(path)
+				}
+			}
 			if obsolete && r.spec.SoftSubtitlePath != "" {
 				s.removals.remove(r.spec.SoftSubtitlePath)
 			}
@@ -485,6 +491,18 @@ func (s *Session) finish(r *run) {
 	if r.rtx {
 		s.decision.Enhancement.State = "fallback"
 		s.decision.Enhancement.Reason = "native VSR input/process failed"
+	}
+	// A DASH hardware graph can fail before writing its first fragment with
+	// driver-specific text, or a missing hardware filter. Try software once
+	// before filter classification can terminate the session. Preserve the
+	// segment number; forceCPU also keeps seeks and later runs on software.
+	if s.isDASH() && r.hw && r.produced == 0 && !s.forceCPU && !r.stalled && !s.inputFailed {
+		s.forceCPU = true
+		log.Warn("hardware encoder failed; falling back to CPU", "hwaccel", r.spec.Accel.Name, "segment", r.startSeg)
+		if retryErr := s.startRunForLocked(r.startSeg, r.spec.BigProbe, "hardware startup fallback"); retryErr != nil {
+			s.failErr = retryErr
+		}
+		return
 	}
 	if r.produced == 0 {
 		if name := missingFilter(stderr); name != "" {

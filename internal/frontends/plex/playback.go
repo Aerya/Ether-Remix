@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plexparts"
 	"io"
 	"net/http"
 	"net/url"
@@ -306,13 +307,10 @@ func androidImageSubtitle(pr *Request, info frontend.MediaInfo, opts frontend.De
 	return false
 }
 
-// matroskaCarriesText reports whether a conversion for this client is
-// Matroska, whose segments carry the selected embedded text track. Plex for
-// Android and Android TV send subtitles=none ("the player draws it") with
-// the same request that ends in a Direct Stream: the player then reads the
-// track from the Matroska segments as it would from the file, so the run
-// has to mux it. Dropping it left the remux with no subtitle (#191).
-func matroskaCarriesText(p *playRequest, info frontend.MediaInfo) bool {
+// keepsSelectedSubtitle retains tracks rendered by the client from Matroska,
+// including native bitmap tracks. subtitles=none disables server rendering,
+// not the selected track the client reads from the segments.
+func keepsSelectedSubtitle(p *playRequest, info frontend.MediaInfo) bool {
 	if p.protocol == frontend.ProtocolDASH {
 		return false
 	}
@@ -321,7 +319,8 @@ func matroskaCarriesText(p *playRequest, info frontend.MediaInfo) bool {
 	}
 	for _, st := range info.Streams {
 		if st.Type == "subtitle" && st.Index == p.opts.SubtitleStream {
-			return !st.External && frontend.IsTextSubtitle(st.Codec)
+			return !st.External && (frontend.IsTextSubtitle(st.Codec) ||
+				(frontend.IsImageSubtitle(st.Codec) && !frontend.BurnsSubtitle(st, p.caps, p.opts)))
 		}
 	}
 	return false
@@ -608,7 +607,7 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		applySelections(p, ps.Info, s.audioLanguages(pr.User))
 		s.selectLegacyDecoderAudio(pr, p, ps.Info)
 		switch {
-		case p.subtitles == "none" && !matroskaCarriesText(p, ps.Info) && !androidImageSubtitle(pr, ps.Info, p.opts):
+		case p.subtitles == "none" && !keepsSelectedSubtitle(p, ps.Info) && !androidImageSubtitle(pr, ps.Info, p.opts):
 			// The track stays selected; nothing delivers it.
 			p.opts.SubtitleStream = -1
 		case p.opts.BurnSubtitles && (browserClient(pr) || plexAndroidClient(pr)):
@@ -762,19 +761,38 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		s.write(w, r, s.decisionError(ctx, pr, t, err, p))
 		return
 	}
-	s.write(w, r, s.decisionContainer(ctx, pr, t, ps, dec, p))
+	mc := s.decisionContainer(ctx, pr, t, ps, dec, p)
+	audio, subtitles, selectedSubtitle := 0, 0, int64(0)
+	for _, st := range mc.Metadata[0].Media[0].Part[0].Stream {
+		switch st.StreamType {
+		case 2:
+			audio++
+		case 3:
+			subtitles++
+			if st.Selected != nil && *st.Selected {
+				selectedSubtitle = st.ID
+			}
+		}
+	}
+	s.log.Debug("playback decision tracks", "key", p.key, "client", pr.ClientID,
+		"session", p.sessionID, "mediaIndex", p.mediaIndex, "mediaID", p.mediaID,
+		"directPlay", p.opts.DirectPlay, "directStream", p.opts.DirectStream,
+		"maxBitrate", p.opts.MaxBitrateKbps, "maxHeight", p.opts.MaxHeight,
+		"subtitles", p.subtitles, "subtitleStream", p.subSel,
+		"audioTracks", audio, "subtitleTracks", subtitles, "selectedSubtitle", selectedSubtitle)
+	s.write(w, r, mc)
 }
 
-// decisionSourceWait bounds how long a decision waits for a source search
-// before answering; Plex apps give up on a decision after about 30 s.
-const decisionSourceWait = 12 * time.Second
+// decisionSourceWait delegates the deadline to the shared playback service
+// (PrepareTimeout) and the HTTP request context. A short adapter timer turned
+// an in-flight source into a terminal decision error, which native clients do
+// not automatically retry. No recorded PMS pending-decision response or exact
+// native client timeout is established by our conformance fixtures.
+const decisionSourceWait time.Duration = 0
 
-// awaitSource waits, outside the owner gates, for the source an automatic
-// decision will use. The search is the playback manager's shared flight:
-// the gated admission that follows finds the prepared session at once.
-// When the search outlasts decisionSourceWait it keeps running for the
-// client's retry and the decision answers frontend.ErrPrepareSlow. Explicit
-// version picks and requests this cannot pre-check go straight on.
+// awaitSource joins the shared source flight outside the owner gates. Explicit
+// version picks and requests this cannot pre-check go straight on. A dropped
+// request stops waiting; the manager owns cancellation and continuation grace.
 func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) (*frontend.Title, error) {
 	pw, ok := s.playback().(frontend.PlaybackPrepareWithin)
 	if !ok || pr == nil || pr.User == nil || s.catalog() == nil {
@@ -802,9 +820,8 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	if p.caps.ClientID == "" {
 		p.caps.ClientID = pr.ClientID
 	}
-	// A slow search answers "still finding a source" and keeps running; any
-	// other failure is answered now, so the gated path does not repeat the
-	// whole search (the flight does not remember failures).
+	// Wait for the result instead of converting slow preparation to an error.
+	// A genuine failure is answered now so admission does not repeat the search.
 	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.caps, "", false); err != nil {
 		return t, err
 	}
@@ -1031,7 +1048,9 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		playableStreams = append(playableStreams, st)
 	}
 	streams = playableStreams
-	selectedOnly := info.Estimated || !p.listAllTracks
+	// Android builds its picker from this response even while some source
+	// facts remain estimated. Preserve every known track across quality changes.
+	selectedOnly := !p.listAllTracks
 	if dec.Kind == frontend.DecisionDirectPlay {
 		return directPlayMedia(m, streams, selectedOnly, p.subtitles)
 	}
@@ -1252,11 +1271,9 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 			return st, true
 		}
 		text := textSidecarCodec(st.Codec)
-		// Under subtitles=none a Matroska run still muxes the selected
-		// text track (matroskaCarriesText); its row is the segments copy
-		// below, as PMS answers a text track it copies into Plex for
-		// Android's Matroska segments.
-		inSegments := text && dec.Container == frontend.ContainerMatroska && !dec.BurnSubtitles && dec.SubtitleStream >= 0 && dec.SubtitleStream == src.Index
+		// Matroska clients read native text and bitmap tracks from the
+		// segments even when they request subtitles=none.
+		inSegments := (text || (!src.External && frontend.IsImageSubtitle(src.Codec))) && dec.Container == frontend.ContainerMatroska && !dec.BurnSubtitles && dec.SubtitleStream >= 0 && dec.SubtitleStream == src.Index
 		switch {
 		case subtitles == "none" && !inSegments && !dec.BurnSubtitles:
 			// subtitles=none means "the player draws the track itself"
@@ -1297,11 +1314,11 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 				st.Format = st.Codec
 			}
 		}
-		// Plex tvOS reads the text track from the Matroska segments and does
+		// Plex tvOS reads the selected track from the Matroska segments and does
 		// not request a sidecar. The transcoder muxes that track on the
 		// same clock as the video; a sidecar key would describe a file
 		// this player never opens.
-		if st.Location == "sidecar" && dec.Container == frontend.ContainerMatroska && textSidecarCodec(st.Codec) && !dec.BurnSubtitles {
+		if st.Location == "sidecar" && inSegments {
 			st.Decision = "copy"
 			st.Location = "segments-av"
 			st.Key = ""
@@ -1339,6 +1356,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		writePlaybackStatus(w, http.StatusBadRequest)
 		return
 	}
+	s.logPlaybackStart(r, p)
 	if !s.decisionArmed(pr, p.key) {
 		writePlaybackStatus(w, http.StatusBadRequest)
 		return
@@ -1430,6 +1448,12 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		}
 		s.stopPlexHLS(p.sessionID)
 	}
+	var resumeHint time.Duration
+	if !r.URL.Query().Has("offset") && p.offset == 0 && dec.VideoCopy {
+		if st, err := s.state().Get(ctx, pr.User.ID, p.key); err == nil {
+			resumeHint = st.ViewOffset
+		}
+	}
 	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SoftSubtitleStream: sessionSoftSubtitle(entry, pr, dec),
 		SessionID:          p.sessionID,
@@ -1438,6 +1462,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		Info:               ps.Info,
 		Decision:           dec,
 		StartOffset:        p.offset,
+		ResumeHint:         resumeHint,
 	})
 	if err != nil {
 		s.writeStartErr(w, r, pr, err)
@@ -2157,7 +2182,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 	}
 	unlockOwner()
 	cw := s.newCountWriter(w, r)
-	s.plexSources().ServePart(cw, r, ps.ID)
+	s.plexSources().ServePart(cw, parts.Request(r), ps.ID)
 	cw.finish()
 }
 
@@ -2405,4 +2430,30 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ct)
 	_, _ = io.Copy(w, io.LimitReader(reader, 32<<20))
+}
+
+// logPlaybackStart records only parsed playback controls, never URL queries,
+// headers, paths, or capabilities that may carry credentials.
+func (s *Server) logPlaybackStart(r *http.Request, p playRequest) {
+	endpoint := "start.m3u8"
+	if strings.HasSuffix(r.URL.Path, "/start.mpd") {
+		endpoint = "start.mpd"
+	}
+	part, _ := strconv.Atoi(r.URL.Query().Get("partIndex"))
+	protocol := p.protocol
+	switch protocol {
+	case "hls", "dash", "http":
+	default:
+		protocol = "unknown"
+	}
+	subtitles := r.URL.Query().Get("subtitles")
+	switch subtitles {
+	case "auto", "burn", "none":
+	default:
+		subtitles = ""
+	}
+	s.log.Debug("playback start controls", "endpoint", endpoint,
+		"offset", p.offset, "offsetPresent", r.URL.Query().Has("offset"), "directPlay", p.opts.DirectPlay, "directStream", p.opts.DirectStream,
+		"mediaIndex", p.mediaIndex, "partIndex", part, "protocol", protocol,
+		"subtitles", subtitles, "subtitleStream", p.subSel, "session", p.sessionID)
 }

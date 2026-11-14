@@ -105,6 +105,8 @@ results stay findable locally.
 `resolve` returns ordered `PlayableSource`s; Ether tries them in
 order. Patterns:
 
+- **file** — a hosted resolver path inside an owner-picked folder; requires
+  `folders: read` and live containment checks when resolving and opening.
 - **range** — a URL Ether reads with HTTP Range (demoted to download
   when the host cannot range and the size fits the cache).
 - **download** — fetched whole into the per-library blob cache
@@ -223,3 +225,59 @@ the Studio template are hosted. In hosted JS, read settings with
 - Start from the Studio "A new library" template or copy
   `sdk/examples/kind-library`; its test is the executable version of
   this page.
+
+
+### Granted local files (hosted runtime)
+
+A resolver can return a source such as
+`{"id":"local","pattern":"file","path":"/picked/library/Game.nds","mime":"application/octet-stream"}`.
+This requires `folders: read` and an owner-picked, non-revoked folder grant.
+Ether uses the same `validateLocalFile` and `openGrantedLocalFile` path as
+Stremio `ether.file`: it rejects `..`, resolves symlinks, checks containment at
+resolve time and again at open time, and opens through `os.OpenRoot`.
+Remote/sidecar resolvers cannot serve host files with this pattern.
+
+### File identification without file contents
+
+Hosted plugins can call `ether.folders.hash(root, path)` (TypeScript SDK:
+`host.folders.hash`; Go SDK: `FoldersHash`). `path` is relative to the picked
+root. The service requires `folders: read` and the same live folder grant as
+`folders.stat`. It refuses traversal, symlink escapes and non-regular files.
+It returns `{size, modTime, crc32, md5, sha1}`: Unix seconds for `modTime`,
+lowercase hexadecimal digests (CRC32 IEEE, 8 digits; MD5, 32; SHA1, 40).
+No file contents cross the plugin boundary. All three hashes are computed in
+one streaming pass with fixed memory. `hash` stays synchronous for files up to
+256 MiB; larger files must use `hashStart(root, path)` (Go: `FoldersHashStart`).
+This explicitly starts a background job and returns `{id, state, bytes}`.
+Poll `hashPoll(id)` (`FoldersHashPoll`) for bytes processed and state: `running`,
+`done`, `canceled`, or `error`. A done job includes `result` with the hash object;
+an error includes `error`. `hashCancel(id)` (`FoldersHashCancel`) requests cancellation;
+poll until terminal to observe completion. Start and poll do not return file bytes.
+
+There is no file-size ceiling for jobs. At most one runs per plugin and two
+across the process; a busy start returns an error to retry later. Starting the
+same active root/path returns its existing job ID. Readers yield for 2 ms after
+each 1 MiB chunk. Jobs survive the initiating call, have a 24-hour deadline,
+and recheck grants and cancellation every chunk. Files changing during hashing
+abort without caching. Revocation or plugin disable stops ongoing reads.
+
+Successful digests persist in a host-owned database cache indexed by plugin,
+resolved path, size and nanosecond modification time. Unchanged files reuse the
+cached digest after permission and containment checks. Cache rows are removed
+when the plugin is uninstalled. Only explicitly requested files are hashed.
+Job status is process-local, and each plugin's terminal status is retained until
+its next start; after a restart, start again to reuse any completed cached result.
+SDK sidecars cannot use these hosted folder services.
+
+### Item availability
+
+An upsert can carry
+`"unavailable":{"code":"no_verified_source","detail":"No source matched the DAT record"}`.
+The code must be nonempty and at most 128 bytes; detail is optional and at most
+2000 bytes. The item remains visible in browse/counts so owners can inspect the
+coverage gap. Ether exposes the reason in the item drawer, marks the item
+nonplayable, and never calls its resolver or opens a cached resolution while
+this declaration is present. The declaration also travels in frontend item
+details. The next upsert without `unavailable` clears it, even with the same
+etag. This is independent of the level's `playable` capability; clearing the
+reason does not grant playback to a nonplayable level.

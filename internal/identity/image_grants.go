@@ -35,16 +35,24 @@ func init() {
 type ImageSource interface {
 	Get(context.Context, string, int) ([]byte, string, error)
 }
+
+// ImageGrantOptions supplies adapter-owned credential parsing and public URL policy.
+type ImageGrantOptions struct {
+	Token             func(*http.Request) string
+	PublicContentTags bool
+}
+
 type ImageGrantService struct {
-	db         *sql.DB
-	surface    frontend.Protocol
-	grants     *Grants
-	experience func() frontend.Experience
-	images     ImageSource
-	artwork    frontend.Artwork
-	now        func() time.Time
-	ttl        time.Duration
-	admission  imageAdmission
+	requestOptions ImageGrantOptions
+	db             *sql.DB
+	surface        frontend.Protocol
+	grants         *Grants
+	experience     func() frontend.Experience
+	images         ImageSource
+	artwork        frontend.Artwork
+	now            func() time.Time
+	ttl            time.Duration
+	admission      imageAdmission
 	// beforeImageCleanup is test-only. It runs after the shard lock and the
 	// source recheck, and before expired-row deletion.
 	beforeImageCleanup func(*sql.Tx)
@@ -79,11 +87,11 @@ func (s *ImageGrantService) Generation() uint64 {
 // NewArtworkImageGrantService serves descriptors through the authorized
 // artwork source. The source is consulted again for every fetch, after the
 // session, viewer and Experience policy checks performed by Serve.
-func NewArtworkImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants, experience func() frontend.Experience, artwork frontend.Artwork, ttl time.Duration, now func() time.Time) (*ImageGrantService, error) {
+func NewArtworkImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants, experience func() frontend.Experience, artwork frontend.Artwork, ttl time.Duration, now func() time.Time, options ...ImageGrantOptions) (*ImageGrantService, error) {
 	if artwork == nil {
 		return nil, errors.New("identity: missing artwork source")
 	}
-	s, err := NewImageGrantService(db, surface, grants, experience, unavailableImageSource{}, ttl, now)
+	s, err := NewImageGrantService(db, surface, grants, experience, unavailableImageSource{}, ttl, now, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -97,14 +105,18 @@ func (unavailableImageSource) Get(context.Context, string, int) ([]byte, string,
 	return nil, "", core.ErrNotAvailable
 }
 
-func NewImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants, experience func() frontend.Experience, images ImageSource, ttl time.Duration, now func() time.Time) (*ImageGrantService, error) {
-	if db == nil || surface == "" || surface == "plex" || grants == nil || experience == nil || images == nil || ttl < time.Second {
+func NewImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants, experience func() frontend.Experience, images ImageSource, ttl time.Duration, now func() time.Time, options ...ImageGrantOptions) (*ImageGrantService, error) {
+	if db == nil || surface == "" || grants == nil || experience == nil || images == nil || ttl < time.Second {
 		return nil, errors.New("identity: invalid image grant dependencies")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &ImageGrantService{db: db, surface: surface, grants: grants, experience: experience, images: images, now: now, ttl: ttl, admission: defaultImageAdmission()}, nil
+	var requestOptions ImageGrantOptions
+	if len(options) > 0 {
+		requestOptions = options[0]
+	}
+	return &ImageGrantService{requestOptions: requestOptions, db: db, surface: surface, grants: grants, experience: experience, images: images, now: now, ttl: ttl, admission: defaultImageAdmission()}, nil
 }
 func validImageSecret(secret string) (string, bool) {
 	b, e := base64.RawURLEncoding.Strict().DecodeString(secret)
@@ -368,8 +380,39 @@ func imageETag(img frontend.Image, width, height int, format string, blur bool) 
 
 func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Request, viewer *core.Viewer, device core.Device, item core.RatingKey, channel string, img frontend.Image, hash, sourceHash, deviceJSON string) {
 	width := grantedImageWidth(r, s.surface)
+	mediaBrowser := s.surface == "jellyfin" || s.surface == "emby"
+	quality := 0
+	if mediaBrowser {
+		quality, _ = strconv.Atoi(r.URL.Query().Get("quality"))
+		if quality < 0 || quality > 100 {
+			quality = 0
+		}
+	}
 	height, _ := strconv.Atoi(r.URL.Query().Get("h"))
+	if mediaBrowser && height == 0 {
+		for _, name := range []string{"fillHeight", "maxHeight"} {
+			if n, _ := strconv.Atoi(r.URL.Query().Get(name)); n > 0 {
+				height = n
+				break
+			}
+		}
+	}
+	if mediaBrowser && width == 0 && height == 0 && img.Kind != frontend.ImageBackdrop && img.Kind != frontend.ImageThumb && img.Kind != frontend.ImageLogo {
+		width = 500
+	}
 	format := r.URL.Query().Get("format")
+	if mediaBrowser {
+		// The shared renderer encodes JPEG and PNG. Other Jellyfin formats
+		// (Webp, Gif, Bmp, Svg), and unknown values, use the source format.
+		switch strings.ToLower(format) {
+		case "jpg", "jpeg":
+			format = "jpeg"
+		case "png":
+			format = "png"
+		default:
+			format = ""
+		}
+	}
 	blur := r.URL.Query().Get("blur") == "1"
 	if s.artwork != nil {
 		if height < 0 || height > 4000 {
@@ -385,7 +428,7 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if etag := imageETag(img, width, height, format, blur); etag != "" {
+	if etag := imageETag(img, width, height, format+strconv.Itoa(quality), blur); etag != "" {
 		w.Header().Set("ETag", etag)
 		w.Header().Set("Cache-Control", "private, max-age=86400")
 		if r.Header.Get("If-None-Match") == etag {
@@ -397,7 +440,7 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 	var contentType string
 	var err error
 	if s.artwork != nil {
-		data, contentType, err = s.artwork.Read(r.Context(), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: item, Channel: channel}, img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur})
+		data, contentType, err = s.artwork.Read(r.Context(), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: item, Channel: channel}, img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur, Quality: quality, Fit: mediaBrowser})
 	} else {
 		data, contentType, err = s.images.Get(r.Context(), img.Path, width)
 	}
@@ -431,12 +474,14 @@ var _ frontend.PublicImageServer = (*ImageGrantService)(nil)
 
 func grantedImageWidth(r *http.Request, surface frontend.Protocol) int {
 	width, _ := strconv.Atoi(r.URL.Query().Get("w"))
-	// Accept Silo image sizing parameters within its advertised budget.
-	// Other protocols retain their existing parameter and default behavior.
-	if surface == "silo" && width == 0 {
+	// MediaBrowser and Silo name their width constraints maxWidth/fillWidth.
+	if (surface == "silo" || surface == "jellyfin" || surface == "emby") && width == 0 {
 		for _, name := range []string{"maxWidth", "fillWidth"} {
 			if n, err := strconv.Atoi(r.URL.Query().Get(name)); err == nil && n > 0 {
-				width = min(n, 3840)
+				width = min(n, 4000)
+				if surface == "silo" {
+					width = min(width, 3840)
+				}
 				break
 			}
 		}
@@ -444,7 +489,7 @@ func grantedImageWidth(r *http.Request, surface frontend.Protocol) int {
 	if width < 0 || width > 4000 {
 		width = 500
 	}
-	if width == 0 && r.URL.Query().Get("h") == "" {
+	if width == 0 && r.URL.Query().Get("h") == "" && surface != "jellyfin" && surface != "emby" {
 		width = 500
 	}
 	return width

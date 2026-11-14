@@ -24,6 +24,7 @@ type runSpec struct {
 	SilenceAudio     bool
 	// Only a retry of an initial run whose muxer wrote a wrapped tfdt.
 	NormalizeNegativeDTS bool
+	TextSubtitlePaths    map[int]string
 	SoftSubtitlePath     string
 	SoftSubtitleIndex    int
 	LoopInput            bool
@@ -226,6 +227,11 @@ func buildArgs(s runSpec) []string {
 }
 
 func appendSoftSubtitleOutput(args []string, s runSpec) []string {
+	for _, track := range s.Info.Streams {
+		if path := s.TextSubtitlePaths[track.Index]; path != "" {
+			args = append(args, "-map", fmt.Sprintf("0:%d", track.Index), "-c:s", "ass", "-f", "ass", "-ignore_readorder", "1", "-flush_packets", "1", path)
+		}
+	}
 	if s.SoftSubtitlePath == "" {
 		return args
 	}
@@ -339,9 +345,21 @@ func buildCodecArgs(s runSpec) []string {
 	if !pceBounded {
 		args = appendInputHeaders(args, s.commandHeaders())
 	}
-	if s.BigProbe {
+	sub := matroskaSubtitle(s)
+	bitmap := sub != nil && IsImageSubtitle(sub.Codec)
+	if bitmap && sub.Width > 0 && sub.Height > 0 {
+		// PGS packets may be minutes apart. The persisted canvas avoids
+		// scanning for a subtitle packet at every seek.
+		args = append(args, fmt.Sprintf("-canvas_size:%d", sub.Index), fmt.Sprintf("%dx%d", sub.Width, sub.Height))
+	}
+	if s.BigProbe || (bitmap && (sub.Width <= 0 || sub.Height <= 0)) {
 		args = append(args, "-probesize", "50000000", "-analyzeduration", "10000000")
 	} else {
+		// Persisted probe metadata is not passed to the demuxer. Even a known
+		// video size/format does not prove ffmpeg can recover every mapped
+		// stream parameter within 100 ms (audio can precede the first picture).
+		// Keep normal analysis for copies too; otherwise a successful remux
+		// can publish unknown pixel formats and broken DTS without a retry.
 		args = append(args, "-probesize", "5000000", "-analyzeduration", "2000000")
 	}
 	if !transcodeVideo && !s.LiveInput {
@@ -382,7 +400,7 @@ func buildCodecArgs(s runSpec) []string {
 	if s.LoopInput {
 		args = append(args, "-t", secs(s.Info.Duration-loopStart))
 	}
-	textSub := matroskaTextSubtitle(s)
+	textSub := matroskaSubtitle(s)
 	if textSub != nil && textSub.External && textSub.ExternalURL != "" {
 		// A sidecar file is a second input. Without the same -ss, its cues
 		// stay on the title's zero while output_ts_offset places the video
@@ -447,10 +465,22 @@ func buildCodecArgs(s runSpec) []string {
 		args = append(args, "-sn")
 	}
 
+	if bitmap {
+		// Sparse bitmap cues must not hold video/audio in the interleaver
+		// for FFmpeg's default ten seconds while waiting for another cue.
+		args = append(args, "-max_interleave_delta", "1000000")
+	}
+
 	// ---- video
 	if v != nil {
 		if d.VideoCopy {
 			args = append(args, "-c:v", "copy")
+			// A copied stream can carry a coarse demuxer time base. Explicitly
+			// retain its rate in Matroska DefaultDuration instead of the muxer's
+			// guessed 30fps. This does not duplicate or drop copied packets.
+			if d.AndroidMatroskaHLS && container == ContainerMatroska && v.FrameRate > 0 && !v.VariableFrameRate {
+				args = append(args, "-r:v", strconv.FormatFloat(v.FrameRate, 'f', 6, 64))
+			}
 			if d.StripDolbyVision {
 				filter := "dovi_rpu=strip=1"
 				if v.DolbyVisionProfile == 7 {
@@ -1060,24 +1090,24 @@ func escapeFilterValue(v string) string {
 	return g.Replace(v)
 }
 
-// matroskaTextSubtitle is the selected text track Plex tvOS reads from
+// matroskaSubtitle is the selected track Plex tvOS reads from
 // inside segmented Matroska. Burned and non-Matroska decisions keep the
 // sidecar path. A nil return means the run stays subtitle-free (-sn).
-func matroskaTextSubtitle(s runSpec) *core.StreamInfo {
+func matroskaSubtitle(s runSpec) *core.StreamInfo {
 	if s.Decision.Container != ContainerMatroska || s.Decision.BurnSubtitles {
 		return nil
 	}
 	sub := findStream(s.Info, s.Decision.SubtitleStream, "subtitle")
-	if sub == nil || !IsTextSubtitle(sub.Codec) {
+	if sub == nil || (!IsTextSubtitle(sub.Codec) && !IsImageSubtitle(sub.Codec)) {
 		return nil
 	}
-	if sub.External && sub.ExternalURL == "" {
+	if sub.External && (sub.ExternalURL == "" || IsImageSubtitle(sub.Codec)) {
 		return nil
 	}
 	return sub
 }
 
-// matroskaSubtitleTrackArgs describes the one text track the segments
+// matroskaSubtitleTrackArgs describes the one subtitle track the segments
 // carry. It is the track the viewer picked, so it is flagged default:
 // ExoPlayer (Plex for Android and Android TV) picks a text track by its
 // default flag or its language, and the source's flags are the release's,
@@ -1104,11 +1134,11 @@ func (s runSpec) titleClock() bool {
 	return len(inputTimestampArgs(s)) > 0 || s.httpCopyTimestamps()
 }
 
-// matroskaSubtitleCodec copies a codec Matroska already stores as text and
+// matroskaSubtitleCodec copies native Matroska subtitle codecs and
 // rewrites the others to SubRip, which the segment muxer can header.
 func matroskaSubtitleCodec(codec string) string {
 	switch strings.ToLower(codec) {
-	case "subrip", "srt", "ass", "ssa", "webvtt":
+	case "subrip", "srt", "ass", "ssa", "webvtt", "pgs", "hdmv_pgs_subtitle", "vobsub", "dvd_subtitle", "dvbsub", "dvb_subtitle":
 		return "copy"
 	default:
 		return "srt"
@@ -1370,6 +1400,8 @@ func planEncodeArgs(s runSpec, pic picturePlan, enc, codec string, hwFrames bool
 		}
 		e = append(e, "-preset", xPreset, "-crf", "23", "-maxrate", peak, "-bufsize", buf, "-x265-params", params)
 	case "h264_videotoolbox", "hevc_videotoolbox":
+		// Disable open GOPs so forced keyframes are independent HLS cuts.
+		e = append(e, "-flags", "+cgop")
 		if s.Rate.Quality {
 			e = append(e, "-q:v", "65", "-maxrate", maxr, "-bufsize", buf, "-allow_sw", "0")
 		} else {
@@ -1404,6 +1436,10 @@ func planEncodeArgs(s runSpec, pic picturePlan, enc, codec string, hwFrames bool
 			e = append(e, "-profile:v", "main10")
 		}
 	case "h264_qsv", "hevc_qsv", "av1_qsv":
+		// HLS cuts require IDR pictures, rather than ordinary forced I frames.
+		if enc != "av1_qsv" {
+			e = append(e, "-forced_idr", "1")
+		}
 		e = append(e, qsvRateArgs(qsvMode(s, enc), b, maxr, buf)...)
 		if enc == "h264_qsv" {
 			e = append(e, "-profile:v", "high")

@@ -3,7 +3,6 @@ package playback
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -47,7 +46,7 @@ func (m *Manager) CheckFileAvailability(ctx context.Context, user *core.User, ke
 	} else {
 		ctx = core.WithoutOnDemandStreams(ctx)
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, m.config().Plex.FileCheckTimeoutOrDefault())
 	defer cancel()
 	if release != "" {
 		if checker, ok := m.deps.Resolver.(core.ReleaseBlockChecker); ok {
@@ -55,6 +54,14 @@ func (m *Manager) CheckFileAvailability(ctx context.Context, user *core.User, ke
 				return false, nil
 			}
 		}
+	}
+	if _, remembered, ok := m.ResumedTracks(ctx, user, key, caps); ok && (release == "" || release == remembered) {
+		return true, nil
+	}
+	if core.LocalResponse(ctx) {
+		// Other offered versions have no current local verdict. Keep them
+		// accessible rather than reopening every source to paint one page.
+		return false, errFileCheckInconclusive
 	}
 	select {
 	case fileCheckSlots <- struct{}{}:
@@ -87,7 +94,7 @@ func (m *Manager) CheckFileAvailability(ctx context.Context, user *core.User, ke
 			}
 			sctx, _ := core.WithSpeculative(ctx)
 			wctx := core.WithIndexerPurpose(sctx, core.IndexerPurposeWarmup)
-			res, err := m.deps.Resolver.Resolve(wctx, core.ResolveRequest{Title: title, Client: caps, User: &u, Prefer: release})
+			res, err := m.deps.Resolver.Resolve(wctx, core.ResolveRequest{Title: title, Client: caps, User: &u, Prefer: release, PreferredOnly: release != ""})
 			// An on-demand release is inconclusive when the owner has not let
 			// this check open it: without that permission the resolver stops
 			// at the link without opening it. With permission it opened and

@@ -270,8 +270,12 @@ type Deps struct {
 	WaitingReleaseKeys func(context.Context) []core.RatingKey
 	// Images backs the TMDB image proxy at /api/image.
 	Images ImageProxy
-	// TitlePosters draws Ether's poster for a title with no artwork, at
-	// /api/image/generated. Nil leaves such cards without a poster.
+	// OwnerArtwork manages uploads independently of the catalog.
+	OwnerArtwork interface {
+		OwnerStatus() (int, time.Time, bool, error)
+		ClearOwner() (bool, error)
+	}
+	// TitlePosters draws a poster for a title with no artwork.
 	TitlePosters interface {
 		Title(context.Context, artwork.TitlePoster) ([]byte, string, error)
 	}
@@ -377,6 +381,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) routes() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/web-player", h.webPlayer)
+	mux.HandleFunc("POST /api/web-player", h.webPlayer)
 	api := func(pattern string, fn http.HandlerFunc) {
 		mux.HandleFunc(pattern, h.requireAuth(fn))
 	}
@@ -432,6 +438,9 @@ func (h *Handler) routes() *http.ServeMux {
 	api("GET /api/frontends/{id}/settings", h.frontendSettings)
 	api("PUT /api/frontends/{id}/settings", h.frontendSettings)
 	api("PUT /api/frontends/{id}/enabled", h.frontendToggle)
+	api("GET /api/poster-folders", h.posterFolders)
+	api("GET /api/posters/status", h.posterStatus)
+	api("POST /api/posters/clear", h.clearPosters)
 	api("GET /api/config", h.handleGetConfig)
 	api("PUT /api/config", h.handlePutConfig)
 	api("GET /api/config/{section}", h.handleGetSection)
@@ -491,6 +500,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("PATCH /api/users/{id}", h.handleUpdateUser)
 
 	api("GET /api/logs", h.handleLogs)
+	api("GET /api/logs/stream", h.handleLogsStream)
 	api("GET /api/logs/download", h.handleLogsDownload)
 	api("DELETE /api/logs", h.handleClearLogs)
 

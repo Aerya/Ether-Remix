@@ -39,8 +39,11 @@ func (m *Manager) PlaybackProgress(userID int64, clientID string, key core.Ratin
 		s.viewerPosition = max(0, position)
 		s.viewerAt = time.Now()
 		s.viewerState = state
-		if measuredProtocol(s.caps.Protocol) {
-			s.exp.observe(now, reportsBuffering(s.caps.Protocol), max(0, position), state)
+		if state == "paused" || state == "stopped" {
+			s.invalidateDirectRetryLocked()
+		}
+		if !s.caps.NoPlaybackTelemetry {
+			s.exp.observe(now, !s.caps.InferBuffering, max(0, position), state)
 		}
 		if state == "playing" || state == "paused" {
 			s.lastActive = now

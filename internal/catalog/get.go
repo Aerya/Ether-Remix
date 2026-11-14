@@ -271,6 +271,9 @@ func (c *Catalog) storeShowDetails(ctx context.Context, t core.Title, d *tmdb.TV
 		}
 		seasons = append(seasons, seasonToTitle(t, s))
 	}
+	if err := c.dateSeasonSummaries(ctx, t, d, seasons); err != nil {
+		return err
+	}
 	// Upsert show as detail; seasons as non-detail summaries in same call would
 	// mark them detail too, so split.
 	if err := c.writeDetail(ctx, t, upsertOpts{browsable: c.meetsThreshold(t), detail: true}, extra...); err != nil {
@@ -439,6 +442,7 @@ func (c *Catalog) fetchSeasonOpts(ctx context.Context, showID int64, season int,
 			}
 			eps = append(eps, episodeToTitle(*show, seasonName, e))
 		}
+		dateSeasonFromAiredEpisodes(&seasonT, eps, c.now())
 		seasonT.ChildCount = len(eps)
 		if err := c.upsert(ctx, seasonT, upsertOpts{detail: true}); err != nil {
 			return err
@@ -632,9 +636,9 @@ func (c *Catalog) seasonEpisodeQuery(ctx context.Context, showID int64, season, 
 // seasonMirrored reports whether any of a season's episodes, aired or not,
 // are in the mirror.
 func (c *Catalog) seasonMirrored(ctx context.Context, showID int64, season int) (bool, error) {
-	var n int
-	err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles WHERE type='episode' AND show_key=? AND season=?`, int64(core.ShowKey(showID)), season).Scan(&n)
-	return n > 0, err
+	var exists bool
+	err := c.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND season=?)`, int64(core.ShowKey(showID)), season).Scan(&exists)
+	return exists, err
 }
 
 // Children: seasons of a show, episodes of a season.
@@ -753,6 +757,13 @@ const seasonLoads = 6
 // long-running show does not refetch every past season once its details go
 // stale. Fetches run concurrently.
 func (c *Catalog) loadSeasons(ctx context.Context, showID int64, seasons []core.Title) error {
+	// Apply the same active-season TTL as direct season reads. Using fresh
+	// alone here kept watchlist Grandchildren reads stale for the general TTL.
+	var show *core.Title
+	if st, err := c.loadByKey(ctx, core.ShowKey(showID)); err == nil {
+		show = &st.t
+	}
+
 	type mirrored struct{ episodes, pending int }
 	have := map[int]mirrored{}
 	rows, err := c.db.QueryContext(ctx, `SELECT season,COUNT(*),COUNT(CASE WHEN release_known=0 OR released_ts>? THEN 1 END)
@@ -790,10 +801,11 @@ func (c *Catalog) loadSeasons(ctx context.Context, showID int64, seasons []core.
 			return err
 		}
 		st := storedTitle{detail: detail != 0}
+		st.t.Season = season
 		if detailAt != 0 {
 			st.detailAt = time.Unix(detailAt, 0).UTC()
 		}
-		records[season] = record{detailed: st.detail && detailAt != 0, fresh: c.fresh(&st), episodes: child}
+		records[season] = record{detailed: st.detail && detailAt != 0, fresh: c.seasonFresh(&st, show), episodes: child}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {

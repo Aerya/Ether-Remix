@@ -169,6 +169,8 @@ var tierUntouchedTables = []string{
 	"remix_quality_config",  // Release policy configuration, no viewer title references.
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
+	// Startup upgrade markers (credential conversion progress).
+	"credentials_upgrades",
 	// Tier C: caches and derived state, rebuilt on demand.
 	"markers_cache", "markers_plugin_cache", "markers_breaks_", "ratings_cache", "ratings_settings",
 	"plexmeta_titles", "plexguid_", "resolver_availability", "resolver_hardsub", "resolver_reputation",
@@ -194,19 +196,19 @@ var tierUntouchedTables = []string{
 	"plexwatch_account", "plexwatch_fence", "plexwatch_pin", "plexwatch_pms", "plexwatch_pms_held", "plexwatch_pms_unmatched",
 	"plexwatch_pms_viewer", "plex_counters", "personalize_overrides", "personalize_ranker",
 	"personalize_row_impressions", "personalize_serves", "personalize_home_layout", "trackprefs_rules",
-	"episodeorder_groups", "watchlist_meta", "watchlist_settings", "migrate_plans",
+	"episodeorder_groups", "watchlist_meta", "watchlist_settings", "watchlist_community_jobs", "watchlist_community_locks", "watchlist_availability_jobs", "migrate_plans",
 	// Cluster, placement, playback plumbing (titles only through the
 	// scanned sources above).
 	"cluster_", "clusterconfig_", "clusterplayback_coordinators", "clusterplayback_neutral_stops",
 	"placement_claims", "placement_displaced", "placement_displaced_claims", "placement_history_", "placement_policy", "placement_pools",
 	"placement_removed_targets", "placement_targets", "placement_ledger", "playback_payload_",
-	"livetv_refresh_leases", "livetv_source_refresh", "livetv_showcase",
+	"livetv_readiness", "livetv_refresh_leases", "livetv_source_refresh", "livetv_showcase",
 	// Settings, logs and plugins' own plumbing.
 	"backup_", "notify_channels", "notify_once", "notify_push_keys", "notify_settings", "overlays_settings",
 	"prerolls", "prerolls_settings", "stats_costs", "stats_device_registry", "stats_device_registry_counter", "stats_indexer_days",
 	"stats_debrid_days", "stats_stream_days",
 	"stats_newsletter_", "stats_provider_days", "plugins_artifacts", "plugins_calls", "plugins_catalogue_",
-	"plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
+	"plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
 	"plugins_proposals", "plugins_settings", "agent_approvals", "agent_audit", "agent_secret_requests",
 	"agent_threads", "schema_migrations", "sqlite_",
 }

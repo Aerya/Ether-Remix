@@ -49,7 +49,7 @@ type VODStatus struct {
 // A lease lasts until the response body closes, including cancelled seeks.
 func (s *Service) AcquireProvider(ctx context.Context, id string) (func(), error) {
 	src, err := s.storedSourceByID(ctx, id)
-	if err != nil || !src.VOD || src.Auth == nil || src.Auth.Type != "xtream" {
+	if err != nil || src.Disabled || !src.VOD || src.Auth == nil || src.Auth.Type != "xtream" {
 		return nil, core.ErrSourceUnavailable
 	}
 	e, err := s.sourceEntry(ctx, id)
@@ -118,7 +118,7 @@ func (s *Service) xtreamVODSources(ctx context.Context) ([]Source, error) {
 		if err != nil {
 			continue
 		}
-		if v.VOD && v.Auth != nil && v.Auth.Type == "xtream" {
+		if !v.Disabled && v.VOD && v.Auth != nil && v.Auth.Type == "xtream" {
 			out = append(out, v)
 		}
 	}
@@ -157,7 +157,7 @@ func (s *Service) waitVOD(timer *time.Timer, d time.Duration) bool {
 
 func (s *Service) vodLoop() {
 	defer s.wg.Done()
-	timer := time.NewTimer(time.Second)
+	timer := s.newTimer(time.Second)
 	defer timer.Stop()
 	select {
 	case <-s.ctx.Done():
@@ -220,6 +220,9 @@ func (s *Service) vodLoop() {
 // RefreshVOD streams large lists into a transaction. Unchanged revisions keep
 // cached details; a failed refresh never removes the previous index.
 func (s *Service) RefreshVOD(ctx context.Context, id string) (err error) {
+	if !s.Enabled() {
+		return core.ErrNotAvailable
+	}
 	if !s.vodRefreshMu.TryLock() {
 		return ErrProviderBusy
 	}
@@ -414,7 +417,7 @@ func (s *Service) VODSearch(ctx context.Context, req core.SearchRequest) ([]core
 	var out []core.Release
 	for _, m := range matches {
 		src, e := s.storedSourceByID(ctx, m.provider)
-		if e != nil || !src.VOD || src.Auth == nil {
+		if e != nil || src.Disabled || !src.VOD || src.Auth == nil {
 			continue
 		}
 		c := s.vodClient(src, core.SpeculativeIndexerWork(ctx))
@@ -730,7 +733,7 @@ func (s *Service) recordVODFailure(ctx context.Context, id string, attemptedSour
 		return
 	}
 	src, _, err := s.decodeSource(data)
-	if err != nil || !src.VOD || src.Auth == nil || src.Auth.Type != "xtream" {
+	if err != nil || src.Disabled || !src.VOD || src.Auth == nil || src.Auth.Type != "xtream" {
 		return
 	}
 	var failures int

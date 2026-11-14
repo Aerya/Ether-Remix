@@ -70,6 +70,7 @@ import { t, tn } from "./i18n";
 import { I18nProvider, LanguagePicker } from "./i18n/react";
 import { Brand, BrandSplash, EtherMark } from "./components/brand";
 import { CommandSearch } from "./components/CommandSearch";
+import { WatchButton } from "./components/WatchButton";
 import { AskEther } from "./components/agent/AskEther";
 import { Drawer } from "./components/Drawer";
 import { ErrorPanel } from "./components/feedback";
@@ -117,6 +118,7 @@ const Metadata = lazy(() => import("./pages/metadata/Metadata"));
 const Quality = lazy(() => import("./pages/releases/Releases"));
 const Cache = lazy(() => import("./pages/cache/Cache"));
 const Playback = lazy(() => import("./pages/playback/Playback"));
+const DeveloperReference = lazy(() => import("./pages/plugins/DeveloperReference"));
 const Plugins = lazy(() => import("./pages/plugins/Plugins"));
 const Studio = lazy(() => import("./pages/plugins/Studio"));
 const PluginPage = lazy(() => import("./viewspec/PluginPage"));
@@ -485,6 +487,7 @@ function Shell() {
               <span className="hidden truncate sm:inline">{serverName}</span>
             </span>
             <HealthIndicator />
+            <WatchButton />
             <AskEther />
             <RemixAppearance />
             <Link
@@ -555,6 +558,7 @@ function Shell() {
               <Route path="/accent/:tab?" element={<PsePage />} />
               <Route path="/setup" element={<Setup />} />
               <Route path="/mcp/authorize" element={<McpAuthorize />} />
+              <Route path="/plugins/reference/:topic?" element={<DeveloperReference />} />
               <Route path="/plugins/studio" element={<Studio />} />
               <Route path="/plugins/:tab?/*" element={<Plugins />} />
               <Route path="/p/:plugin/:page/*" element={<PluginPage />} />

@@ -12,7 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/onair"
-	"github.com/braedonsaunders/ether/internal/plexmeta"
+	plexmeta "github.com/braedonsaunders/ether/internal/plexmeta"
 	"github.com/braedonsaunders/ether/internal/transcode"
 	"image"
 	"net/url"
@@ -22,7 +22,7 @@ import (
 )
 
 func (a *App) buildOnAir() error {
-	o := onair.Options{Showcase: parityShowcase(), Changed: func(ctx context.Context) error {
+	o := onair.Options{Enabled: func() bool { v := a.cfg.Read().LiveTV.Enabled; return v != nil && *v }, Showcase: parityShowcase(), Changed: func(ctx context.Context) error {
 		if a.livetv != nil {
 			return a.livetv.RefreshGuide(ctx)
 		}
@@ -63,21 +63,12 @@ func (a *App) buildOnAir() error {
 	}
 	if a.transcoder != nil {
 		o.Acquire = func(ctx context.Context) (context.Context, func(), error) {
-			priority := transcode.SlotBackground
-			if deadline, imminent := onair.BoundaryDeadline(ctx); imminent && deadline.After(time.Now()) {
-				priority = transcode.SlotLivePrep
-			}
-			return a.transcoder.AcquireTranscodeSlot(ctx, priority)
+			return a.transcoder.AcquireTranscodeSlot(ctx, transcode.SlotBackground)
 		}
 		o.FFmpeg = a.transcoder.FFmpegPath
 		o.Probe = a.transcoder.Probe
-		o.WorkingSize = func() (int, int) {
-			hw := a.transcoder.HWAccel()
-			if hw.Name == "" || hw.Name == "none" {
-				return 1280, 720
-			}
-			return 1920, 1080
-		}
+		o.EncoderOptions = a.transcoder.OnAirEncoderOptions
+		o.WorkingSize = func() (int, int) { return 1280, 720 }
 	}
 	o.Downloader = extras.NewDownloader(extras.DownloaderOptions{
 		ToolsDir: filepath.Join(a.opts.DataDir, "tools"),

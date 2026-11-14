@@ -55,13 +55,6 @@ func (a *App) experienceSearch(vis experience.Visibility, stepAside *experience.
 	return experience.SearchFor(a.searchSourcesFor(stepAside), vis, unrestricted)
 }
 
-// searchSources is the one search every frontend uses (Plex included):
-// the catalogue with the owner's availability rules, natural-language
-// search, viewer affinity and collection readings.
-func (a *App) searchSources() experience.SearchSources {
-	return a.searchSourcesFor(nil)
-}
-
 func (a *App) searchSourcesFor(stepAside *experience.StepAside) experience.SearchSources {
 	src := experience.SearchSources{Catalog: a.catalog.Search, Details: a.catalog.SearchDetails}
 	if a.availability != nil && !a.cfg.Read().Spike.Enabled {
@@ -95,6 +88,9 @@ func (a *App) searchSourcesFor(stepAside *experience.StepAside) experience.Searc
 	}
 	if a.collections != nil {
 		src.Vibe = a.collections
+		if stepAside != nil {
+			src.Vibe = stepAsideVibe{VibeSearcher: a.collections, stepAside: stepAside}
+		}
 	}
 	return a.pseSearchQueued(src)
 }
@@ -141,7 +137,8 @@ func (a *App) configuredLibraries() []experience.Library {
 // newSurfaceExperience builds an explicitly surface-bound service. A shared
 // situation is inserted by surfaceExperience.Rows before ranking and receipt issuance.
 func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.Artwork) (frontend.Experience, error) {
-	if a.spikeLibrary != nil && protocol == "plex" {
+	policy := frontendHostPolicy(protocol)
+	if a.spikeLibrary != nil && policy.SpikeExperience {
 		return a.spikeLibrary.Experience(), nil
 	}
 	if a.users == nil || a.catalog == nil || a.safety == nil || a.state == nil || a.personalize == nil || a.favorites == nil || a.playlists == nil || a.db == nil {
@@ -193,7 +190,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	}, Allowed: func(ctx context.Context, u *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject) bool {
 		return interactions.Allowed(ctx, u, subject)
 	}, AllowedAction: func(_ context.Context, _ *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject, kind frontend.RowInteractionKind) bool {
-		return (kind == frontend.RowImpression && subject.Kind == "row" && subject.Impression != nil) || (kind == frontend.RowClick && subject.Kind == string(frontend.RowEntryTitle))
+		return ((kind == frontend.RowImpression || kind == frontend.RowPlay) && subject.Kind == "row" && subject.Impression != nil) || (kind == frontend.RowClick && subject.Kind == string(frontend.RowEntryTitle))
 	}, Record: func(ctx context.Context, u *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject, kind frontend.RowInteractionKind) error {
 		return interactions.Record(ctx, u, subject, kind)
 	}})
@@ -201,6 +198,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		return nil, err
 	}
 	rows, err := experience.NewRowsService(experience.RowServiceDeps{Source: source, Visibility: rowVis, Receipts: receipts, RankedSource: true, HomeFallback: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
+		if protocol == "plex" {
+			return nil, nil
+		}
 		return a.experienceHomeFallback(ctx, req, libs, rowVis)
 	}, Active: func(ctx context.Context, u *core.User) bool {
 		v, e := a.users.ActiveUser(ctx, u.ID)
@@ -273,7 +273,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			return stepAside.AdjustUnplayedCounts(ctx, userID, keys, counts)
 		}
 	}
-	deps := experience.ServiceDeps{BeginPeopleRead: a.beginPeopleRead, NotInterestedSource: func(ctx context.Context, u *core.User) ([]frontend.NotInterestedEntry, error) {
+	deps := experience.ServiceDeps{BuiltinNative: func(mt core.MediaType) string { return builtinNative(mt, protocol) }, LibraryPresentation: func(p core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+		return presentLibraryForProtocol(p, protocol, mt)
+	}, BeginPeopleRead: a.beginPeopleRead, NotInterestedSource: func(ctx context.Context, u *core.User) ([]frontend.NotInterestedEntry, error) {
 		entries, _, err := a.notInterested.Snapshot(ctx, u)
 		if err != nil {
 			return nil, err
@@ -363,8 +365,8 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			hasResumed     bool
 		)
 		if a.playback != nil {
-			caps := core.ClientCaps{Protocol: protocol, Product: device.Product, Platform: device.Platform, DeviceName: device.DeviceName, ClientID: device.ID, Version: device.Version}
-			if protocol != "plex" {
+			caps := core.ClientCaps{PreserveEmptyVideoCodecs: policy.NativePlaybackCapabilities, Protocol: protocol, Product: device.Product, Platform: device.Platform, DeviceName: device.DeviceName, ClientID: device.ID, Version: device.Version}
+			if !policy.NativePlaybackCapabilities {
 				caps = playbackFloor(caps, overrides)
 			}
 			if a.cfg != nil {
@@ -388,8 +390,8 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			result.TracksEstimated = info.Estimated
 		}
 		if a.resolver != nil {
-			caps := core.ClientCaps{Protocol: protocol, Product: device.Product, Platform: device.Platform, DeviceName: device.DeviceName, ClientID: device.ID, Version: device.Version}
-			if protocol != "plex" {
+			caps := core.ClientCaps{PreserveEmptyVideoCodecs: policy.NativePlaybackCapabilities, Protocol: protocol, Product: device.Product, Platform: device.Platform, DeviceName: device.DeviceName, ClientID: device.ID, Version: device.Version}
+			if !policy.NativePlaybackCapabilities {
 				caps = playbackFloor(caps, overrides)
 			}
 			if a.cfg != nil {
@@ -496,10 +498,16 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		deps.Related = a.recommend
 	}
 	cat := core.Catalog(a.catalog)
+	// The surface's availability filter and search sources carry step aside:
+	// Plex paths read FilterAvailableFunc and SearchSources directly, so the
+	// bare availability filter here let held titles through every list and
+	// search on Plex apps.
 	if a.availability != nil {
-		cat = &availabilityCatalog{Catalog: a.catalog, availability: a.availability}
-		deps.FilterAvailable = a.availability.FilterDiscovery
+		cat = &availabilityCatalog{Catalog: a.catalog, availability: a.availability, stepAside: stepAside}
+		deps.FilterAvailable = filter
 		deps.JudgedOnFacts = a.availability.JudgedOnFacts
+	} else if stepAside != nil {
+		deps.FilterAvailable = filter
 	}
 	deps.Catalog = cat
 	if a.discoveryPersonal != nil {
@@ -507,7 +515,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	}
 	deps.Recommender = a.personalize
 	deps.VibeSearch = a.collections
-	deps.SearchSources = a.searchSources()
+	deps.SearchSources = a.searchSourcesFor(stepAside)
 	deps.FavoriteShows = a.favoriteShows
 	deps.PrioritizeAvailable = func(ctx context.Context, items []core.Title) []core.Title {
 		if a.availability == nil {
@@ -525,6 +533,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if a.hostResources != nil {
 		deps.Resources = a.hostResources
 	}
+	// Wire the account metadata provider through the shared library interfaces.
 	deps.LibraryGUIDsFunc = func() frontend.LibraryGUIDs {
 		a.plexMetaMu.Lock()
 		defer a.plexMetaMu.Unlock()
@@ -558,7 +567,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			return experience.ReadHomeRevision(ctx, db, u)
 		}
 		deps.NoProviderWait = func(ctx context.Context) context.Context {
-			return catalog.WithReadWaitBudget(ctx, 0)
+			return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
 		}
 	}
 	service, err := experience.NewService(deps)
@@ -1207,4 +1216,19 @@ func (s *surfaceExperience) ReportRowInteraction(ctx context.Context, i frontend
 		return experience.ErrReceipt
 	}
 	return s.receipts.Report(ctx, i)
+}
+
+// stepAsideVibe drops titles a step-aside Plex Media Server holds from a
+// collection search, which an unrestricted viewer otherwise sees unfiltered.
+type stepAsideVibe struct {
+	core.VibeSearcher
+	stepAside *experience.StepAside
+}
+
+func (v stepAsideVibe) VibeCollection(ctx context.Context, user *core.User, query string) (*core.Collection, []core.Title, bool, error) {
+	c, items, ok, err := v.VibeSearcher.VibeCollection(ctx, user, query)
+	if err != nil || !ok {
+		return c, items, ok, err
+	}
+	return c, v.stepAside.FilterAvailable(core.WithCatalogViewer(ctx, user), items), ok, nil
 }

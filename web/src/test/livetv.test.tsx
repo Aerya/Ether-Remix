@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import { invalidateRegistry } from "../lib/extend";
 import LiveTV from "../pages/livetv/LiveTV";
 import { IPTVProviders } from "../pages/sources/IPTV";
+import { ProgrammingEditor } from "../pages/livetv/ProgrammingEditor";
+import type { Channel } from "../pages/livetv/model";
 import { ScheduleTimeline } from "../pages/livetv/ScheduleTimeline";
 import { calls as fakeCalls } from "./harness";
 import { renderAppWith } from "./routes";
@@ -116,7 +118,8 @@ function backend(
       if (data instanceof Response) return data;
       if (data !== undefined) return new Response(JSON.stringify(data), { status: 200 });
       data = [];
-      if (/\/livetv\/channels\/[^/]+\/timeline\?/.test(url))
+      if (url.endsWith("/config")) data = { config: { liveTV: { enabled: true } } };
+      else if (/\/livetv\/channels\/[^/]+\/timeline\?/.test(url))
         data = {
           channelId: url.split("/channels/")[1]?.split("/")[0],
           timezone: "UTC",
@@ -389,6 +392,65 @@ describe("Live TV studio", () => {
     ).toBe(1);
   });
 
+  it("keeps a running strip's startDate when only its start season or episode is corrected", async () => {
+    const channel: Channel = {
+      id: "c1",
+      number: "1",
+      name: "Reruns",
+      kind: "virtual",
+      enabled: true,
+      favorite: false,
+      epoch: "2026-01-01",
+      seed: 1,
+      shuffle: false,
+      items: [],
+      blocks: [
+        {
+          id: "b1",
+          start: 0,
+          end: 1440,
+          items: [],
+          shuffle: false,
+          name: "Reruns",
+          sources: [
+            {
+              kind: "show",
+              showKey: 123,
+              name: "Some Show",
+              strip: true,
+              startSeason: 3,
+              startEpisode: 2,
+              // Already airing - started a month ago, now mid-season 3.
+              startDate: "2026-10-01",
+            },
+          ],
+        },
+      ],
+    };
+    const onChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <ProgrammingEditor
+          channel={channel}
+          onChange={onChange}
+          collections={[]}
+          editRequest={{ blockId: "b1" }}
+        />
+      </MemoryRouter>,
+    );
+    const episodeInput = await screen.findByRole("spinbutton", { name: "Start episode" });
+    // Correcting a typo (meant episode 5, not 2) must not restart the strip's clock.
+    fireEvent.change(episodeInput, { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onChange).toHaveBeenCalledWith({
+      blocks: [
+        expect.objectContaining({
+          sources: [expect.objectContaining({ startDate: "2026-10-01", startEpisode: 5 })],
+        }),
+      ],
+    });
+  });
+
   it("edits a schedule block in a drawer and previews its applied programming", async () => {
     const calls = backend();
     renderLiveTV("/livetv?channel=new");
@@ -482,7 +544,9 @@ describe("Live TV studio", () => {
       },
     );
     renderLiveTV("/livetv/guide-data");
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-match/ }, WAIT));
+    const autoMatch = await screen.findByRole("button", { name: /Auto-match/ }, WAIT);
+    await waitFor(() => expect(autoMatch).toBeEnabled());
+    fireEvent.click(autoMatch);
     const uncertain = await screen.findByLabelText("Accept match for News 24", {}, WAIT);
     expect(uncertain).not.toBeChecked();
     expect(screen.getByText("Check region")).toBeVisible();
@@ -651,6 +715,80 @@ describe("Live TV source sign-in", () => {
       password: "••••",
       userAgent: "VLC/3.0",
     });
+  });
+
+  it("saves an uploaded-playlist source without re-uploading its file", async () => {
+    const calls = backend([], (url, init) => {
+      if (url.endsWith("/livetv/sources") && (init?.method ?? "GET") === "GET")
+        return [
+          {
+            id: "u1",
+            name: "Uploaded list",
+            updatedAt: "2026-10-19T00:00:00Z",
+            hasPlaylist: true,
+            hasGuide: true,
+            channelCount: 98,
+          },
+        ];
+      return undefined;
+    });
+    renderLiveTV("/livetv?source=u1");
+    expect(await screen.findByDisplayValue("Uploaded list", {}, WAIT)).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save and re-import" });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/sources\/u1(\?|$)/)).toHaveLength(1));
+    // GET never returns inline uploads; the server keeps the stored ones when the body has none.
+    expect(body(sent(calls, "PUT", /\/livetv\/sources\/u1(\?|$)/)[0])).toMatchObject({
+      playlist: "",
+      playlistUrl: "",
+      guide: "",
+      guideUrl: "",
+    });
+  });
+
+  it("still needs a playlist when a linked source's URL is cleared", async () => {
+    backend([], (url, init) => {
+      if (url.endsWith("/livetv/sources") && (init?.method ?? "GET") === "GET")
+        return [
+          {
+            id: "l1",
+            name: "Linked list",
+            playlistUrl: "https://iptv.example/list.m3u",
+            updatedAt: "2026-10-19T00:00:00Z",
+            hasPlaylist: true,
+          },
+        ];
+      return undefined;
+    });
+    renderLiveTV("/livetv?source=l1");
+    expect(await screen.findByDisplayValue("Linked list", {}, WAIT)).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save and re-import" });
+    expect(save).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("M3U playlist"), { target: { value: "" } });
+    expect(save).toBeDisabled();
+  });
+
+  it("saves an uploaded-XMLTV guide-only source without re-uploading its file", async () => {
+    const calls = backend([], (url, init) => {
+      if (url.endsWith("/livetv/sources") && (init?.method ?? "GET") === "GET")
+        return [
+          {
+            id: "g1",
+            name: "Uploaded guide",
+            updatedAt: "2026-10-19T00:00:00Z",
+            hasPlaylist: false,
+            hasGuide: true,
+          },
+        ];
+      return undefined;
+    });
+    renderLiveTV("/livetv?source=g1");
+    expect(await screen.findByDisplayValue("Uploaded guide", {}, WAIT)).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save and re-import" });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/sources\/g1(\?|$)/)).toHaveLength(1));
   });
 
   it.each([true, false])(
@@ -1049,7 +1187,9 @@ it("estimates AI cost before running and applies only reviewed proposals", async
     },
   );
   renderLiveTV("/livetv/guide-data");
-  fireEvent.click(await screen.findByRole("button", { name: "Match with AI" }, WAIT));
+  const matchWithAI = await screen.findByRole("button", { name: "Match with AI" }, WAIT);
+  await waitFor(() => expect(matchWithAI).toBeEnabled());
+  fireEvent.click(matchWithAI);
   expect(await screen.findByText(/Estimated calls: 1/)).toBeVisible();
   expect(calls.filter((c) => c.url.endsWith("/guide/match"))).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Find suggestions" }));

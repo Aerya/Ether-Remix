@@ -31,15 +31,17 @@ func (s *Service) NaturalSearch(ctx context.Context, u *core.User, query string,
 	key := fmt.Sprintf("search:%d:%x:%d", userID(u), sha256.Sum256([]byte(query)), limit)
 	compute := func(ctx context.Context) ([]core.Hub, []core.Title, error) {
 		ctx = core.WithExplicitSearch(ctx) // runs detached from the search request
-		content, e := s.client.Chat(ctx, []Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: fmt.Sprintf(`Find real titles matching this request: %q. Suggest at most %d. Reply JSON {"titles":[{"title":"...","year":2000,"type":"movie"}]}.`, query, limit)}}, true)
+		content, e := s.client.Chat(ctx, []Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: fmt.Sprintf(`Find real titles matching this request: %q. Aim for %d distinct matching titles, spanning well-known picks and deeper cuts. Return fewer only when there are no more confident matches; never invent titles. Reply JSON {"titles":[{"title":"...","year":2000,"type":"movie"}]}.`, query, limit)}}, true)
 		if e != nil {
 			return nil, nil, e
 		}
 		return nil, s.resolve(ctx, ParseTitles(content), nil, limit), nil
 	}
-	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	titles, e := s.wait(bounded, key, "", compute, func(v *cacheEntry) []core.Title { return v.titles })
+	// Use cached suggestions immediately; a miss starts the existing bounded,
+	// deduplicated refresh and this request falls back to local search.
+	ready, cancel := context.WithCancel(ctx)
+	cancel()
+	titles, e := s.wait(ready, key, "", compute, func(v *cacheEntry) []core.Title { return v.titles })
 	if e != nil || len(titles) == 0 {
 		return s.catalog.Search(ctx, query, nil, limit)
 	}

@@ -921,6 +921,7 @@ func (p *fakePlayback) Touch(id string) {
 // Transcoder
 
 type fakeHLS struct {
+	lastAccess    time.Time
 	playbackState string
 	id            string
 	req           core.HLSRequest
@@ -959,8 +960,13 @@ func (h *fakeHLS) ServeRungSegment(w http.ResponseWriter, r *http.Request, rung 
 	fmt.Fprintf(w, "segment-%s-%d", rung, n)
 }
 func (h *fakeHLS) SwapInput(context.Context, string, core.MediaInfo, time.Duration) error { return nil }
-func (h *fakeHLS) LastAccess() time.Time                                                  { return fixedNow }
-func (h *fakeHLS) Close() error                                                           { return nil }
+func (h *fakeHLS) LastAccess() time.Time {
+	if !h.lastAccess.IsZero() {
+		return h.lastAccess
+	}
+	return fixedNow
+}
+func (h *fakeHLS) Close() error { return nil }
 func (h *fakeHLS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/x-matroska")
 	w.Header().Set("Accept-Ranges", "none")
@@ -1509,7 +1515,12 @@ func (f *fixture) attachPlaybackBroker(d testServerDeps) {
 		return &core.Viewer{ID: id}, nil
 	}
 	events := sessions.NewEventBus(nil, active)
-	broker, err := sessions.NewBroker(sessions.BrokerDeps{
+	broker, err := sessions.NewBroker(sessions.BrokerDeps{SurfacePolicy: func(protocol core.Protocol) core.SessionPolicy {
+		if protocol == "plex" {
+			return SessionPolicy()
+		}
+		return core.SessionPolicy{}
+	},
 		DB: d.DB, Cluster: lrDeps.Cluster, SessionHeartbeat: lrDeps.SessionHeartbeat,
 		Coordination: lrDeps.Coordination, Downloads: lrDeps.Downloads, DecisionTraces: lrDeps.DecisionTraces,
 		Lookup: func(ctx context.Context, _ *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
@@ -1590,7 +1601,12 @@ func mountTestBroker(s *Server, now func() time.Time) {
 	if now == nil {
 		now = time.Now
 	}
-	broker, err := sessions.NewBroker(sessions.BrokerDeps{
+	broker, err := sessions.NewBroker(sessions.BrokerDeps{SurfacePolicy: func(protocol core.Protocol) core.SessionPolicy {
+		if protocol == "plex" {
+			return SessionPolicy()
+		}
+		return core.SessionPolicy{}
+	},
 		Lookup: func(ctx context.Context, _ *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
 			if s.catalog() == nil {
 				return nil, core.ErrNotFound
@@ -1914,6 +1930,6 @@ func storeVerifiedGUID(db *sql.DB, key core.RatingKey, guid string, tmdb int64, 
 			return err
 		}
 	}
-	_, err := db.Exec(`INSERT INTO plexguid_identity(rating_key,guid,tmdb,title,year) VALUES(?,?,?,?,?)`, int64(key), guid, tmdb, title, year)
+	_, err := db.Exec(`INSERT INTO plexguid_identity(rating_key,guid,tmdb,title,year,credits_rule) VALUES(?,?,?,?,?,2)`, int64(key), guid, tmdb, title, year)
 	return err
 }

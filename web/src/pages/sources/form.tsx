@@ -309,6 +309,9 @@ export function HealthStrip({
  * draft lives in the caller; closing without saving discards it.
  */
 export function RecordDrawer({
+  summary,
+  enabled,
+  onEnabledChange,
   open,
   title,
   description,
@@ -324,6 +327,9 @@ export function RecordDrawer({
   error,
   children,
 }: {
+  summary?: ReactNode;
+  enabled?: boolean;
+  onEnabledChange?: (enabled: boolean) => void;
   open: boolean;
   title: ReactNode;
   description?: ReactNode;
@@ -374,7 +380,18 @@ export function RecordDrawer({
       }
     >
       <div className="space-y-4">
+        {summary}
         {error ? <MutationError error={error} /> : null}
+        {onEnabledChange ? (
+          <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
+            <span className="font-medium">{t("Enabled")}</span>
+            <Switch
+              aria-label={t("Enabled")}
+              checked={enabled ?? true}
+              onChange={(e) => onEnabledChange(e.currentTarget.checked)}
+            />
+          </label>
+        ) : null}
         {children}
       </div>
     </Drawer>
