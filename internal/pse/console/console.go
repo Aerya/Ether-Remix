@@ -199,7 +199,10 @@ func (h *handler) put(w http.ResponseWriter, r *http.Request) {
 			delete(values, key)
 			continue
 		}
-		v := strings.TrimSpace(*raw)
+		v := *raw
+		if fd.Kind != KindSecret {
+			v = strings.TrimSpace(v)
+		}
 		if prev, ok := pseenv.Lookup(key); ok {
 			v = restore(fd, v, prev)
 		}
@@ -369,6 +372,9 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 	if out, ok, err := validateXDCC(fd.Key, v); ok {
 		return out, err
 	}
+	if out, ok, err := validateFTP(fd.Key, v); ok {
+		return out, err
+	}
 	key := fd.Key
 	if strings.HasPrefix(key, "PSE_TORRENT2_") || strings.HasPrefix(key, "PSE_TORRENT3_") {
 		key = "PSE_TORRENT_" + key[len("PSE_TORRENT2_"):] // mêmes règles que le client principal
@@ -488,6 +494,14 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 			return "", errors.New("filtre trop long")
 		}
 		return v, nil
+	case KindSecret:
+		if strings.Contains(v, mask) {
+			return "", errors.New("ressaisissez le mot de passe complet")
+		}
+		if len(v) > 512 || strings.ContainsAny(v, "\r\n\x00") {
+			return "", errors.New("mot de passe invalide (512 caractères au plus, sur une ligne)")
+		}
+		return v, nil
 	case KindKey:
 		if v == "" {
 			return "", nil
@@ -558,6 +572,12 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 // page : le mot de passe d'une adresse, ou tout le chemin d'un lien dont le
 // jeton fait partie (Secret).
 func display(fd Field, v string) string {
+	if fd.Kind == KindSecret {
+		if v == "" {
+			return ""
+		}
+		return mask
+	}
 	if fd.Kind == KindKey {
 		if len(v) <= 4 {
 			return v
@@ -579,6 +599,12 @@ func display(fd Field, v string) string {
 
 // restore remet les parties masquées à partir de la valeur enregistrée.
 func restore(fd Field, v, prev string) string {
+	if fd.Kind == KindSecret {
+		if v == mask {
+			return prev
+		}
+		return v
+	}
 	if fd.Kind == KindKey {
 		if v != "" && v == display(fd, prev) {
 			return prev

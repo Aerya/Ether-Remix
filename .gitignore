@@ -48,3 +48,7 @@ __pycache__/
 !/docs/pse/XDCC.fr.md
 !/docs/pse/XDCC.en.md
 !/internal/pse/xdcc/testdata/lab/README.md
+
+!/docs/pse/FTP.fr.md
+!/docs/pse/FTP.en.md
+!/internal/pse/ftp/testdata/lab/README.md

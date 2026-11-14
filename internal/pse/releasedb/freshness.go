@@ -58,6 +58,14 @@ const XDCCSourceID = "remix-xdcc"
 // paquets du compte au bout de ce délai.
 const XDCCMaxAge = 48 * time.Hour
 
+// FTPSourceID est la source FTP / SFTP d'Ether-Remix (internal/pse/ftp).
+const FTPSourceID = "remix-ftp"
+
+// FTPCopyFirst indique que la source FTP est en mode « téléchargement
+// seulement » : ses fichiers se copient avant de se lire, ils ne sont donc
+// jamais « en cache ». En lecture directe, ils se lisent tout de suite.
+var FTPCopyFirst atomic.Bool
+
 // counts indique si une release compte pour le catalogue lisible.
 func counts(r Release, now time.Time) bool {
 	if r.SourceID == XDCCSourceID && now.Sub(r.LastSeen) > XDCCMaxAge {

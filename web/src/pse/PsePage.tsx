@@ -26,6 +26,7 @@ import { SfrHelp } from "./SfrHelp";
 import { SeerrCatalogHelp } from "./SeerrCatalogHelp";
 import { TorrentStatus } from "./TorrentStatus";
 import { XdccStatus } from "./XdccStatus";
+import { FtpStatus } from "./FtpStatus";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
@@ -56,7 +57,16 @@ interface Option {
 
 interface Field {
   key: string;
-  kind: "toggle" | "number" | "duration" | "select" | "multi" | "countries" | "filter" | "url";
+  kind:
+    | "toggle"
+    | "number"
+    | "duration"
+    | "select"
+    | "multi"
+    | "countries"
+    | "filter"
+    | "url"
+    | "secret";
   label: Text;
   help: Text;
   default: string;
@@ -254,6 +264,7 @@ function PseSettings() {
                 .filter((f) => ["torrent", "torrent2", "torrent3"].includes(f.id))
                 .map((f) => renderFeature(f))}
               xdcc={current.features.filter((f) => f.id === "xdcc").map((f) => renderFeature(f))}
+              ftp={current.features.filter((f) => f.id === "ftp").map((f) => renderFeature(f))}
               stremio={
                 <>
                   {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
@@ -291,6 +302,7 @@ function PseSettings() {
                           "torrent2",
                           "torrent3",
                           "xdcc",
+                          "ftp",
                         ].includes(f.id),
                     )
                     .map((f) => renderFeature(f))}
@@ -542,6 +554,7 @@ function FeatureSection({
         {feature.id === "seerrcatalog" ? <SeerrCatalogHelp status={feature.status} /> : null}
         {feature.id === "torrent" ? <TorrentStatus status={feature.status} /> : null}
         {feature.id === "xdcc" ? <XdccStatus status={feature.status} /> : null}
+        {feature.id === "ftp" ? <FtpStatus status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
         {feature.id === "music" && placement === "content" ? (
           <>
@@ -623,6 +636,19 @@ function Control({
       );
     case "filter":
       return <FilterControl value={value} onChange={onChange} />;
+    case "secret":
+      // Mot de passe : le serveur ne renvoie qu'un masque, jamais la valeur.
+      return (
+        <Input
+          aria-label={label}
+          type="password"
+          className="h-9 w-48"
+          value={value}
+          autoComplete="new-password"
+          spellCheck={false}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      );
     default:
       return (
         <Input

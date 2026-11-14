@@ -26,8 +26,32 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-14-jukebox-quick-setup",
+    id: "2026-11-14-ftp-source",
     version: "current",
+    date: "2026-11-14",
+    title: ["Source FTP / SFTP en option", "Optional FTP / SFTP source"],
+    items: [
+      [
+        "Nouvelle source FTP / SFTP dans Sources → FTP / SFTP : Remix parcourt les dossiers choisis de votre serveur (seedbox, NAS distant), reconnaît films et épisodes, puis les propose comme les autres sources. Désactivée par défaut.",
+        "New FTP / SFTP source under Sources → FTP / SFTP: Remix scans the chosen folders of your server (seedbox, remote NAS), recognises movies and episodes, then offers them like the other sources. Off by default.",
+      ],
+      [
+        "Lecture directe depuis le serveur, sans copie complète (le cache habituel d’Ether reste applicable), avec avance et retour rapides partout dans la vidéo (y compris les MP4 dont l'index est à la fin). En SFTP, un saut se fait sur la même connexion ; en FTP, il en ouvre une nouvelle.",
+        "Plays straight from the server without a complete copy (Ether’s usual cache still applies), with fast seeking anywhere in the video (including MP4 files whose index sits at the end). With SFTP a seek reuses the same connection; with FTP it opens a new one.",
+      ],
+      [
+        "Modes avec téléchargement en option : copie complète avant lecture, ou lecture directe avec copie gardée. Remix n'efface que ses propres copies temporaires, jamais un fichier gardé ni une bibliothèque.",
+        "Optional download modes: full copy before playback, or direct playback with a kept copy. Remix only deletes its own temporary copies, never a kept file or a library.",
+      ],
+      [
+        "Mot de passe et phrase de passe jamais réaffichés ; clé SSH lue depuis un fichier monté. En SFTP, l'empreinte du serveur est obligatoire : « Tester la connexion » l'affiche pour que vous la vérifiiez. FTPS disponible pour le FTP chiffré.",
+        "Password and passphrase are never shown again; the SSH key is read from a mounted file. With SFTP the server fingerprint is required: “Test connection” shows it so you can check it. FTPS is available for encrypted FTP.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-jukebox-quick-setup",
+    version: "0.2.37-remix.63.1",
     date: "2026-11-14",
     title: ["Configuration rapide JukeBox", "JukeBox quick setup"],
     items: [

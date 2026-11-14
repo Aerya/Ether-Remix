@@ -12,5 +12,7 @@ func init() {
 		"pse_music_accounts", "pse_music_addon_registry", "pse_music_items", "pse_music_matches", "pse_music_playlists", "pse_music_plays", "pse_music_scrobble", "pse_music_spotify",
 		"pse_playable", "pse_releases", "pse_scrob_links", "pse_settings", "pse_sfr_checked", "pse_state", "pse_theme_langfree", "pse_theme_libraries", "pse_theme_priority", "pse_tmdb_totals",
 		"pse_xdcc_tasks", // tâches XDCC : paquets Grabscher, sans clé de titre
+		// source FTP / SFTP : fichiers du serveur et copies, sans clé de titre
+		"pse_ftp_files", "pse_ftp_downloads",
 	)
 }
