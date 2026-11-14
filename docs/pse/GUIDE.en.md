@@ -290,3 +290,13 @@ This does not hide credential errors, exhausted quotas, cancellation or valid em
 ### Navigation and configuration
 
 The console uses `/ether/remix`. Old bookmarks redirect with their parameters preserved. Configuration sections start collapsed; opening or closing them preserves drafts. Sources → Music streaming groups Eclipse, DMM / Real-Debrid, iBroadcast and other providers. Subsonic address and library counts are under Content & libraries → Music. For Spotify, use `/ether/remix/contenus?content=musique` as the allowed callback path; callbacks already started with the old path remain accepted.
+
+## JukeBox quick setup
+
+In **Libraries** or **Ether-Remix → Content and libraries**, open **Set up with JukeBox**. Movies, Shows and Anime are preselected; **Create my selection** creates their collections and libraries for Plex, Jellyfin, Emby, Stremio, Xtream and Silo. Choose **Collections / automatic selections only** for automatic rows without new libraries. Collections target the Collections tab, home and compatible section rows.
+
+**Browse all JukeBox lists** loads the public lists from [their MDBList profile](https://mdblist.com/lists/jukebox8786/). Search for “Documentaire”, for example, select lists and adjust their Movies / Shows / Movies and shows type. The three suggestions remain usable if the remote directory is unavailable. Mixed lists create separate movie and show collections and libraries; the Movies suggestion keeps only movies from the “Les plus piratés” list.
+
+Collections refresh daily, keep released titles only and sort by release date descending. Keep the general library sort on **Release date** (the default); explicit client sorting takes precedence. Initial population runs in the background. Lists add no playback sources, download no videos and do not guarantee French audio: sources, language filters, viewer permissions and availability rules still apply.
+
+Retrying reuses entries already created, including after a partial error, without overwriting your edits. You can rename or hide libraries and change collection sources, refresh frequency, sorting and targets afterwards. A deleted library can be recreated by running the selection again; deleting a library does not delete its collection.

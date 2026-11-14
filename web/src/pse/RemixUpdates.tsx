@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-14-xdcc-source",
+    id: "2026-11-14-jukebox-quick-setup",
     version: "current",
+    date: "2026-11-14",
+    title: ["Configuration rapide JukeBox", "JukeBox quick setup"],
+    items: [
+      [
+        "Créez vos bibliothèques Films, Séries et Animes depuis trois listes précochées, ou choisissez parmi les listes publiques JukeBox, dont les documentaires.",
+        "Create Movies, Shows and Anime libraries from three preselected lists, or browse JukeBox’s public lists, including documentaries.",
+      ],
+      [
+        "Bibliothèques pour Plex, Jellyfin et Emby, ou collections seules : actualisation quotidienne, titres sortis et tri par date de sortie décroissante. Vos critères de langue restent appliqués.",
+        "Libraries for Plex, Jellyfin and Emby, or collections only: daily refresh, released titles and newest-release-first sorting. Your language settings still apply.",
+      ],
+      [
+        "Un nouvel essai réutilise les éléments déjà créés sans écraser vos modifications. Merci à JukeBox pour ses listes MDBList !",
+        "Retrying reuses existing entries without overwriting your edits. Thanks to JukeBox for the MDBList lists!",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-xdcc-source",
+    version: "0.2.37-remix.61.1",
     date: "2026-11-14",
     title: ["Source XDCC en option", "Optional XDCC source"],
     items: [

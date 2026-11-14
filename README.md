@@ -98,6 +98,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Des bibliothèques et collections personnalisées
 
+- **Configuration rapide française** : créez en une action vos bibliothèques Films, Séries et Animes depuis les trois listes JukeBox proposées, ou choisissez ses autres listes (documentaires, studios…). Collections seules possibles, mise à jour quotidienne et tri par date de sortie décroissante. Bibliothèques publiées dans Plex, Jellyfin et Emby ; vos sources et critères de langue restent appliqués. [Mode d’emploi](docs/pse/GUIDE.fr.md#configuration-rapide-jukebox).
 - Organisez vos bibliothèques Plex par **service, studio, animés, documentaires, concerts ou spectacles**. Les concerts combinent des mots-clés de captation et le genre Musique pour limiter les fictions.
 - Composez leurs rangées avec des collections TMDB, des catalogues Stremio importés et des modèles prêts à l’emploi.
 - Réglez la fréquence d’actualisation de chaque collection, de **1 à 168 heures**, indépendamment de la recherche de releases.
@@ -169,6 +170,8 @@ Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/c
 ## Origine et licence
 
 Ether-Remix est un fork d’[Ether](https://github.com/braedonsaunders/ether) de Braedon Saunders, sous **GPL-3.0**.
+
+Merci à **[JukeBox](https://mdblist.com/lists/jukebox8786/)** pour ses listes MDBList, utilisées dans la configuration rapide et les sélections automatiques.
 
 Inspirations : [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclipsemusic.app/), [Monochrome](https://monochrome.st/), [Polyfin](https://github.com/moodiness/polyfin) et [Silo Server](https://github.com/Silo-Server/silo-server). Intégration de suivi : [Scrob](https://github.com/Aerya/scrob). Source XDCC : [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) de CaptainEpix. Les métadonnées vidéo utilisent [TMDB](https://www.themoviedb.org/), sans approbation ni certification de TMDB.
 

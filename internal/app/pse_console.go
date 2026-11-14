@@ -20,6 +20,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/pse/console"
 	"github.com/braedonsaunders/ether/internal/pse/frenchcat"
+	"github.com/braedonsaunders/ether/internal/pse/jukebox"
 	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 	"github.com/braedonsaunders/ether/internal/pse/notifyfr"
@@ -298,7 +299,15 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		submakerAPI = s.Handler()
 	}
 	ownedAPI := a.ownedMediaAPI()
+	var jukeboxAPI http.Handler = http.NotFoundHandler()
+	if a.collections != nil && a.libraries != nil {
+		jukeboxAPI = jukebox.New(a.collections, a.libraries).Handler()
+	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/jukebox/") {
+			http.StripPrefix("/jukebox", jukeboxAPI).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/xdcc/") {
 			a.pseXdccAPI(w, r)
 			return
