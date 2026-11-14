@@ -219,7 +219,7 @@ func (s *Server) extraMetadata(e frontend.ExtraClip, parent *frontend.Title, wit
 	}
 	thumb := s.thumbURL(parent)
 	if parent.BackdropPath != "" {
-		thumb = artURL(parent) // 16:9 backdrop suits trailer thumbs
+		thumb = s.artURL(parent) // 16:9 backdrop suits trailer thumbs
 	}
 	md := model.Metadata{
 		RatingKey:       e.Key.String(),
@@ -232,7 +232,7 @@ func (s *Server) extraMetadata(e frontend.ExtraClip, parent *frontend.Title, wit
 		ParentKey:       "/library/metadata/" + parent.Key.String(),
 		ParentTitle:     parent.Title,
 		Thumb:           thumb,
-		Art:             artURL(parent),
+		Art:             s.artURL(parent),
 		ContentRating:   parent.ContentRating,
 		Duration:        ms(e.Duration),
 		Extra:           []model.Attr{model.A("extraType", e.ExtraType)},
@@ -396,7 +396,13 @@ func (s *Server) serveExtraPlayback(w http.ResponseWriter, r *http.Request, pr *
 		}
 	}
 	// The trailer masks the feature's startup cost: warm it now.
-	s.prewarmFeature(ctx, pr, s.featureForExtra(pr, e), p.caps)
+	feature := s.featureForExtra(pr, e)
+	// iOS can transition directly from a pre-roll decision to the feature's
+	// start URL without requesting another decision.
+	if feature != 0 {
+		s.armDecision(pr, feature)
+	}
+	s.prewarmFeature(ctx, pr, feature, p.caps)
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/decision"):
 		s.extraDecision(w, r, pr, p, e, parent)

@@ -13,22 +13,24 @@ import (
 )
 
 type candidate struct {
-	fallback    bool
-	pluginKeys  map[string]int64
-	policy      releasepolicy.Result
-	rel         core.Release
-	trace       int
-	verified    bool
-	langOK      bool            // declares no audio, or an accepted audio language (acceptedAudio)
-	langWanted  bool            // explicitly declares the viewer's wanted audio or MULTI on a foreign title
-	starved     bool            // below its resolution's bitrate floor (bitrateScore) or a presumed upscale
-	bandwidth   int             // fits client cap (+1), unknown (0), or exceeds it (-1)
-	yearGuessed bool            // accepted despite a series year that differs from the show's
-	cf          int             // custom format score: every matching format, plugin points included
-	subtitled   bool            // Remix: SubMaker already prepared its subtitles (pse_subtitled.go)
-	keys        rankKeys        // the Radarr/Sonarr comparer keys (ranking.go)
-	prepared    *candidateCheck // validation overlapped with descriptor discovery
-	graceStart  time.Time       // discovery start, set only when preparation overran the grace
+	identityWeak     bool // shared title without evidence identifying this show
+	fallback         bool
+	pluginKeys       map[string]int64
+	policy           releasepolicy.Result
+	rel              core.Release
+	trace            int
+	verified         bool
+	langOK           bool            // declares no audio, or an accepted audio language (acceptedAudio)
+	langWanted       bool            // explicitly declares the viewer's wanted audio or MULTI on a foreign title
+	starved          bool            // below its resolution's bitrate floor (bitrateScore) or a presumed upscale
+	bandwidth        int             // fits client cap (+1), unknown (0), or exceeds it (-1)
+	identityConflict bool            // region evidence contradicts the original language
+	yearGuessed      bool            // accepted despite a series year that differs from the show's
+	cf               int             // custom format score: every matching format, plugin points included
+	keys             rankKeys        // the Radarr/Sonarr comparer keys (ranking.go)
+	prepared         *candidateCheck // validation overlapped with descriptor discovery
+	graceStart       time.Time       // discovery start, set only when preparation overran the grace
+	subtitled        bool            // Remix: SubMaker already prepared its subtitles (pse_subtitled.go)
 }
 type validation struct {
 	index                         int
@@ -88,6 +90,8 @@ func (s *Service) optimisticCheck(r core.Release, nzb []byte) {
 
 func (s *Service) resolution(key core.RatingKey, cands []candidate, winner int, nzb []byte, tr *Trace) *core.Resolution {
 	res := s.resolutionSkipping(key, cands, winner, nzb, func(c candidate) bool { return tr.Candidates[c.trace].Rejected })
+	ct := tr.Candidates[cands[winner].trace]
+	res.HealthVerified = ct.HealthChecked && ct.Healthy && !tr.Unverified
 	if cands[winner].fallback {
 		res.QualityFallback = qualityFallbackReason(cands[winner].rel, tr)
 		tr.Downgrade = res.QualityFallback

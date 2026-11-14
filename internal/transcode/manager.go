@@ -144,6 +144,7 @@ func WithOnChange(f func()) Option { return func(o *options) { o.onChange = f } 
 
 // Manager runs ffmpeg for Ether. It implements core.Transcoder.
 type Manager struct {
+	textCueMu    sync.Mutex
 	slotChanged  chan struct{}
 	slotViewers  int
 	slotHolders  []*transcodeSlot
@@ -232,6 +233,7 @@ func New(cfg config.Transcode, logger *slog.Logger, opts ...Option) (*Manager, e
 	if m.feat, err = probeFeatures(ctx, m.runner, m.ffmpeg); err != nil {
 		return nil, err
 	}
+	// FFmpeg build identity: detects the patched segment-clock encoder, independent of client frontend.
 	m.feat.jellyfinSegmentClock = strings.Contains(strings.ToLower(m.version), "jellyfin")
 	if !m.feat.hasEncoder("libx264") {
 		m.log.Warn("ffmpeg has no libx264; CPU transcoding unavailable", "ffmpeg", m.ffmpeg)
@@ -593,7 +595,7 @@ func (m *Manager) StartHLS(ctx context.Context, req core.HLSRequest) (core.HLSSe
 	return m.startHLS(ctx, req, life)
 }
 
-func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encoderLifetime) (result core.HLSSession, resultErr error) {
+func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encoderLifetime, warmAt ...int) (result core.HLSSession, resultErr error) {
 	defer life.finishWork()
 	defer func() {
 		if result == nil {
@@ -849,13 +851,14 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		// copy plan from its first segment instead, like fMP4 and Matroska.
 		fastStart := !req.LiveInput && adapt.FastStart && v != nil && (!d.VideoCopy || (d.Container == ContainerMPEGTS && len(req.Info.Keyframes) > 0))
 		plan = buildTimeline(span, segDur, timelineOptions{
-			steadyMode: steadyMode,
-			fastStart:  fastStart,
-			rampSegs:   adapt.RampSegs,
-			rampDur:    adapt.RampDur,
-			keyframes:  req.Info.Keyframes,
-			base:       base,
-			snap:       d.VideoCopy && len(req.Info.Keyframes) > 0,
+			steadyMode:      steadyMode,
+			fastStart:       fastStart,
+			rampSegs:        adapt.RampSegs,
+			rampDur:         adapt.RampDur,
+			keyframes:       req.Info.Keyframes,
+			base:            base,
+			snap:            d.VideoCopy && len(req.Info.Keyframes) > 0,
+			strictKeyframes: d.AndroidMatroskaHLS && d.Container == ContainerMatroska,
 		})
 		total = plan.Total()
 		tracks = len(rungs) // one segment track per rung
@@ -881,7 +884,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			req.Info.Keyframes = points
 			plan = buildTimeline(plan.span, segDur, timelineOptions{steadyMode: ModeCopy,
 				fastStart: rampBoundary, rampSegs: adapt.RampSegs, rampDur: adapt.RampDur,
-				keyframes: points, base: base, snap: true})
+				keyframes: points, base: base, snap: true, strictKeyframes: d.AndroidMatroskaHLS && d.Container == ContainerMatroska && sample.complete})
 			total = plan.Total()
 		}
 		if len(rungs) > 0 {
@@ -933,6 +936,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		softSubtitleStream = &index
 	}
 	s := &Session{
+		androidMatroskaHLS:      d.AndroidMatroskaHLS,
 		healTimestamps:          healTimestamps,
 		encoder:                 life,
 		id:                      id,
@@ -980,6 +984,11 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			governorOn:  adapt.Governor && proto == core.ProtocolHLS && d.VideoCopy && v != nil,
 		},
 	}
+	s.textSubtitleStreams = append([]int(nil), req.TextSubtitleStreams...)
+	s.textSubtitleSource = req.TextSubtitleSource
+	if s.textSubtitleSource == "" {
+		s.textSubtitleSource = req.ReleaseID
+	}
 	if softSubtitleStream != nil {
 		s.softSubtitleInputIndex = *softSubtitleStream
 	}
@@ -1016,6 +1025,11 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	s.log.Info("transcode session starting", "protocol", proto, "kind", d.Kind, "container", d.Container,
 		"offset", offset, "segment", startSeg, "segments", s.total, "reason", d.Reason)
 
+	if len(warmAt) > 0 {
+		startSeg = warmAt[0]
+		s.lastReq = startSeg
+		s.speculative = true
+	}
 	s.mu.Lock()
 	err := s.startRunForLocked(startSeg, false, "session start")
 	s.mu.Unlock()
@@ -1033,6 +1047,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	m.sessions[id] = s
 	m.mu.Unlock()
 	life.mu.Unlock()
+	s.startResumeWarm(ctx, req)
 	return s, nil
 }
 

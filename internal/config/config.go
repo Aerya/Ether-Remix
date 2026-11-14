@@ -101,6 +101,8 @@ type Server struct {
 	// outside the home network (through a domain or reverse proxy). Off by
 	// default; sign-in still admits only the owner's Plex account.
 	AllowRemoteConsole bool `json:"allowRemoteConsole,omitempty"`
+	// PortExplicit preserves an owner-selected 32400 when PMS is installed.
+	PortExplicit bool `json:"portExplicit,omitempty"`
 	// Port for the Plex API and web UI. PMS uses 32400.
 	Port         int    `json:"port"`
 	BindAddress  string `json:"bindAddress"`
@@ -125,8 +127,11 @@ type Server struct {
 }
 
 type Plex struct {
-	CompatibilityVersion       string `json:"compatibilityVersion,omitempty"`
-	LatestCompatibilityVersion string `json:"latestCompatibilityVersion,omitempty"`
+	// FileCheckTimeout bounds background availability checks requested by Plex.
+	// Zero uses 2s. This does not change playback preparation deadlines.
+	FileCheckTimeout           Duration `json:"fileCheckTimeout,omitempty"`
+	CompatibilityVersion       string   `json:"compatibilityVersion,omitempty"`
+	LatestCompatibilityVersion string   `json:"latestCompatibilityVersion,omitempty"`
 	// TrackLatestVersion advertises the newest public PMS release instead of
 	// the version Ether's responses were verified against. Plex apps enable
 	// features by server version, so tracking can reach endpoints Ether lacks.
@@ -624,6 +629,8 @@ type LiveTVScreens struct {
 }
 
 type LiveTV struct {
+	// Nil preserves pre-choice installations until their saved lineup is inspected.
+	Enabled *bool `json:"enabled,omitempty"`
 	// Extra act-break scan bandwidth. Zero selects defaults (1 GiB/day,
 	// 256 MiB/release including conservative read overhead, 1 GiB large-file
 	// threshold). Negative daily/release limits disable pre-air full scans.

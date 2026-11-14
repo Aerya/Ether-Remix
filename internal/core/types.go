@@ -211,6 +211,30 @@ type User struct {
 // ClientCaps is what a Plex client can play, derived from X-Plex-* headers,
 // the client profile and its declared limits.
 type ClientCaps struct {
+	// Broadcast inputs are selected for the channel rendition, independently
+	// of viewer quality preferences. Exclusions last only for this airing.
+	BroadcastBitrateKbps  int      `json:"-"`
+	BroadcastExclude      []string `json:"-"`
+	BroadcastReadyRelease string   `json:"-"`
+
+	// Playback telemetry is supplied by the adapter.
+	InferBuffering      bool `json:"inferBuffering,omitempty"`
+	NoPlaybackTelemetry bool `json:"noPlaybackTelemetry,omitempty"`
+
+	// BestEffortLiveStart bounds startup waits; playlist requests finish admission.
+	BestEffortLiveStart bool `json:"bestEffortLiveStart,omitempty"`
+	// ProbeLiveWithoutCodecs requires codec analysis even without declared codecs.
+	ProbeLiveWithoutCodecs bool `json:"probeLiveWithoutCodecs,omitempty"`
+	// ProbeLiveInput requests source facts before live delivery selection.
+	ProbeLiveInput bool `json:"probeLiveInput,omitempty"`
+
+	// PreserveEmptyVideoCodecs prevents registry inference when the adapter owns codec defaults.
+	PreserveEmptyVideoCodecs bool `json:"preserveEmptyVideoCodecs,omitempty"`
+	// DeferSourceCodecValidation lets delivery selection handle a source codec mismatch.
+	DeferSourceCodecValidation bool `json:"deferSourceCodecValidation,omitempty"`
+	// AwaitAdmissionIndex briefly joins the generation-owned index before delivery selection.
+	AwaitAdmissionIndex bool `json:"awaitAdmissionIndex,omitempty"`
+
 	ClientIP string `json:"clientIp,omitempty"` // trusted-proxy-resolved address, when known
 
 	Profiles        *ClientCapabilityProfiles `json:"profiles,omitempty"`

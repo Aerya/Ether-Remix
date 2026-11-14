@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -111,17 +112,21 @@ type hostServices struct {
 // Server is the PMS API handler. It is an http.Handler; call Close on
 // shutdown to stop background work and notification streams.
 type Server struct {
-	bindMu      sync.Mutex
-	rtState     atomic.Pointer[runtimeState]
-	hostPtr     atomic.Pointer[frontend.Host]
-	svcPtr      atomic.Pointer[hostServices]
-	expState    atomic.Pointer[expHolder]
-	sectionsPtr atomic.Pointer[[]Section]
-	titlesPtr   atomic.Pointer[titleCache]
-	homePtr     atomic.Pointer[homeCache]
+	timelineStore timeline.Store
+	bindMu        sync.Mutex
+	rtState       atomic.Pointer[runtimeState]
+	hostPtr       atomic.Pointer[frontend.Host]
+	svcPtr        atomic.Pointer[hostServices]
+	expState      atomic.Pointer[expHolder]
+	sectionsPtr   atomic.Pointer[[]Section]
+	titlesPtr     atomic.Pointer[titleCache]
+	homePtr       atomic.Pointer[homeCache]
 
 	activityMu       sync.Mutex
 	activities       map[string]model.Activity
+	emittedHubMu     sync.Mutex
+	emittedHubs      map[string]emittedHub
+	emittedHubBytes  int
 	shelfMu          sync.Mutex
 	shelfCuts        map[string]shelfCut
 	shelfGenerations map[string]shelfGeneration
@@ -986,9 +991,15 @@ func (s *Server) withLibraryTitles(secs []Section) []Section {
 	movies, shows := s.libraryTitles()
 	out := append([]Section(nil), secs...)
 	for i := range out {
-		switch out[i].Type {
-		case frontend.TypeMovie, frontend.TypeShow:
-			out[i].Title = librarySectionTitle(out[i].Type, movies, shows)
+		id := out[i].LibraryID
+		if id == 0 && (out[i].ID == int(frontend.LibraryMovies) || out[i].ID == int(frontend.LibraryShows)) {
+			id = frontend.LibraryID(out[i].ID)
+		}
+		switch id {
+		case frontend.LibraryMovies:
+			out[i].Title = librarySectionTitle(frontend.TypeMovie, movies, shows)
+		case frontend.LibraryShows:
+			out[i].Title = librarySectionTitle(frontend.TypeShow, movies, shows)
 		}
 	}
 	return out
@@ -1081,11 +1092,10 @@ func (s *Server) janitor() {
 			s.expireTerminations(now, terminationTTL)
 			s.refreshDecisionArms(now)
 			s.starts.Expire(now)
-			expired := s.sessions.expire(now, 3*time.Minute)
+			expired := s.expirePlaybackActivities(now, 3*time.Minute)
 			for _, e := range expired {
 				s.notifyPlaying(e, "stopped")
-				// Timeline silence is a stop, not just a display expiry:
-				// end the playback and encoder sessions too (#410).
+				// No timelines or media fetches remain: release playback.
 				s.endExpiredEntry(e)
 			}
 			if len(expired) > 0 {

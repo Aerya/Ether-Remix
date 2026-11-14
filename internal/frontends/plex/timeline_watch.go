@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,16 +11,15 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
-type plexTimelineWriter = frontend.TimelineWriter
-
 func (s *Server) timelineWatch(ctx context.Context, pr *Request, key frontend.RatingKey, offset, duration time.Duration, status string, r *http.Request) (context.Context, *frontend.TimelinePersistenceResult, error) {
 	if suppressTimelineWatch(ctx) {
 		return frontend.WithTimelineStored(ctx), nil, nil
 	}
-	writer, ok := s.state().(plexTimelineWriter)
-	if !ok {
+	state := s.state()
+	if _, supported := state.(frontend.WatchMutationWriter); !supported {
 		return ctx, nil, nil
 	}
+	writer := timeline.Writer{State: state, Store: &s.timelineStore, Now: s.now}
 	var offline *int
 	if r.URL.Query().Get("offline") == "1" {
 		n, err := strconv.Atoi(r.URL.Query().Get("viewCount"))

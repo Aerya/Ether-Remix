@@ -233,6 +233,8 @@ export interface DebridProviderStatus {
 }
 
 export interface PosterProviderConfig {
+  assetFolder?: string;
+  ownerEnabled?: boolean;
   version?: number;
   accounts?: Record<string, PosterProviderConfig>;
   enabled: boolean;
@@ -417,6 +419,7 @@ export interface EtherConfig {
     sourceOrder?: string[];
   };
   liveTV?: {
+    enabled?: boolean;
     logoIndexUrl?: string;
     healthSweepMinutes?: number;
     stability?: "fastest" | "balanced" | "rocksolid" | "";
@@ -606,6 +609,7 @@ export interface TestResult {
   durationMs: number;
 }
 export interface LogEntry {
+  id: number;
   time: string;
   level: string;
   message: string;

@@ -11,7 +11,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 )
 
-// configSections maps URL section names to JSON field names on Config.
+// configSections maps URL section identities to JSON field names on Config.
+// Account section names below select persisted fields, not frontend behavior.
 var configSections = map[string]string{
 	"posters":      "posters",
 	"plexservers":  "plexServers",
@@ -21,7 +22,7 @@ var configSections = map[string]string{
 	"transcode": "transcode", "trakt": "trakt", "simkl": "simkl", "opensubtitles": "openSubtitles",
 	"openSubtitles": "openSubtitles", "subdl": "subdl", "llm": "llm", "updates": "updates", "spike": "spike",
 	"debrid": "debrid", "indexerSites": "indexerSites", "outbound": "outbound", "clients": "clients",
-	"clientIdentity": "clientIdentity", "livetv": "liveTV",
+	"clientIdentity": "clientIdentity", "livetv": "liveTV", "mdblist": "mdblist",
 }
 
 func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +66,7 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 		// The database is node-local and chosen at startup (config file or
 		// ETHER_DATABASE_URL); the admin API shows it redacted, never edits it.
 		keepDatabase := c.Database
+		next.Server.PortExplicit = c.Server.PortExplicit || next.Server.Port != c.Server.Port
 		// Setup completion gates tokenless local-network access
 		// (requireAuth) and changes only through /api/setup/complete: a
 		// config document loaded before setup finished must not clear it.

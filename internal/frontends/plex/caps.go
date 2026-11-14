@@ -40,21 +40,24 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 	// override sits under the headers this request actually sent.
 	b := playbackCaps(pr, overrides)
 	c := frontend.ClientCaps{
-		Protocol:        "plex",
-		Product:         pr.Product,
-		Platform:        pr.Platform,
-		PlatformVersion: pr.PlatformVersion,
-		Device:          pr.Device,
-		DeviceName:      pr.DeviceName,
-		ClientID:        pr.ClientID,
-		Version:         pr.Version,
-		MaxHeight:       b.maxHeight,
-		HDR10:           b.hdr10,
-		DolbyVision:     b.dv,
-		VideoCodecs:     slices.Clone(b.video),
-		AudioCodecs:     slices.Clone(b.audio),
-		Containers:      slices.Clone(b.containers),
-		Remote:          pr.Remote,
+		Protocol:                   "plex",
+		PreserveEmptyVideoCodecs:   true,
+		AwaitAdmissionIndex:        true,
+		DeferSourceCodecValidation: true,
+		Product:                    pr.Product,
+		Platform:                   pr.Platform,
+		PlatformVersion:            pr.PlatformVersion,
+		Device:                     pr.Device,
+		DeviceName:                 pr.DeviceName,
+		ClientID:                   pr.ClientID,
+		Version:                    pr.Version,
+		MaxHeight:                  b.maxHeight,
+		HDR10:                      b.hdr10,
+		DolbyVision:                b.dv,
+		VideoCodecs:                slices.Clone(b.video),
+		AudioCodecs:                slices.Clone(b.audio),
+		Containers:                 slices.Clone(b.containers),
+		Remote:                     pr.Remote,
 	}
 	if pr.RemoteIP.IsValid() {
 		c.ClientIP = pr.RemoteIP.String()
@@ -316,6 +319,20 @@ func applyProfileExtra(c *frontend.ClientCaps, extra string) profileExtraEvidenc
 			}
 			c.VideoCodecs = addUnique(c.VideoCodecs, codecs...)
 			c.AudioCodecs = addUnique(c.AudioCodecs, splitList(a["audioCodec"])...)
+			// The enhanced tvOS player declares bitmap decoding for its
+			// Matroska HLS target; the general Apple TV policy is text-only.
+			if strings.EqualFold(c.Product, "Plex for Apple TV") && a["protocol"] == frontend.ProtocolHLS && slices.Contains(splitList(a["container"]), frontend.ContainerMatroska) {
+				for _, codec := range splitList(a["subtitleCodec"]) {
+					c.SubtitleCodecs = addUnique(c.SubtitleCodecs, codec)
+					switch codec {
+					case "pgs":
+						c.SubtitleCodecs = addUnique(c.SubtitleCodecs, "hdmv_pgs_subtitle")
+					case "vobsub":
+						c.SubtitleCodecs = addUnique(c.SubtitleCodecs, "dvd_subtitle")
+					}
+				}
+			}
+
 			if ct := a["container"]; ct != "" {
 				c.Containers = addUnique(c.Containers, splitList(ct)...)
 				if a["protocol"] == frontend.ProtocolHLS {

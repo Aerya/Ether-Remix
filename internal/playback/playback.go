@@ -81,6 +81,8 @@ type Deps struct {
 
 // Options tune the manager. Zero values take the defaults noted.
 type Options struct {
+	// SessionSurface maps adapter identities to their session namespace.
+	SessionSurface func(string) string
 	// DataDir is where NZBs of resumable releases are kept (DataDir/playback/nzb).
 	DataDir string
 	// IdleTimeout ends sessions without viewer activity (default 2m).
@@ -220,6 +222,7 @@ func (o *Options) defaults() {
 
 // Manager implements core.Playback.
 type Manager struct {
+	openFailures      map[core.RatingKey]map[string]bool
 	subtitleScheduled map[string]bool
 	subtitleRunning   bool
 	channelWarmActive int
@@ -834,20 +837,22 @@ func (m *Manager) prepareEntry(ctx context.Context, user *core.User, key core.Ra
 }
 
 func (m *Manager) prepareOwnedEntry(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession bool) (*core.PlaySession, core.SourceRetirement, error) {
-	return m.prepareOwnedWithin(ctx, 0, user, key, caps, prefer, exact, deferSupersession)
+	return m.prepareOwnedWithin(ctx, 0, user, key, caps, prefer, exact, deferSupersession, false)
 }
 
 // PrepareWithin leaves a timed-out flight running for a subsequent retry.
+// A non-positive wait joins until completion or client cancellation; the shared
+// flight remains bounded by PrepareTimeout. This is still an explicit Play.
 // The prepared source does not supersede the client's current session.
 func (m *Manager) PrepareWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, release string, exact bool) (*core.PlaySession, error) {
 	if exact && release == "" {
 		return nil, core.ErrNotAvailable
 	}
-	ps, _, err := m.prepareOwnedWithin(ctx, wait, user, key, caps, release, exact, true)
+	ps, _, err := m.prepareOwnedWithin(ctx, wait, user, key, caps, release, exact, true, true)
 	return ps, err
 }
 
-func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession bool) (*core.PlaySession, core.SourceRetirement, error) {
+func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession, playRequested bool) (*core.PlaySession, core.SourceRetirement, error) {
 	prepareStarted := time.Now()
 	if user == nil {
 		return nil, nil, core.ErrUnauthorized
@@ -857,12 +862,15 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			return nil, nil, fmt.Errorf("playback: title releases on %s: %w", title.Released.Format("2006-01-02"), core.ErrUnreleased)
 		}
 	}
-	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: playbackSurface(string(caps.Protocol))}
+	if prefer != "" && !exact && m.titleReleaseRejected(ctx, key, core.Release{ID: prefer}) {
+		prefer = ""
+	}
+	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
 	if deferSupersession {
 		id.variant, id.exact = prefer, exact
 	}
 	picked := prefer
-	arrived, play := m.now(), !deferSupersession || wait > 0
+	arrived, play := m.now(), !deferSupersession || playRequested
 	for {
 		m.mu.Lock()
 		if m.closed {
@@ -894,6 +902,22 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 						m.mu.Unlock()
 						return nil, nil, fmt.Errorf("%w: server is at its limit of %d streams", core.ErrStreamLimit, serverLimit)
 					}
+				}
+				if play {
+					s.mu.Lock()
+					if s.viewerState == "paused" || s.viewerState == "stopped" || !s.stopAt.IsZero() || s.stoppedBySurface {
+						// This is a new play, not another step in the old
+						// recovery chain. Proven permanent failures remain
+						// in openFailures and the resolver's bad-source store.
+						s.invalidateDirectRetryLocked()
+						s.tried = nil
+						s.viewerState = ""
+						s.failovers, s.downFailovers, s.stallContinues = 0, 0, 0
+						if s.cur != nil {
+							s.alternates = s.cur.res.Alternates
+						}
+					}
+					s.mu.Unlock()
 				}
 				s.claimed = true
 				m.mu.Unlock()
@@ -940,7 +964,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 	}
 	if f == nil {
 		parent := context.WithoutCancel(ctx)
-		if core.IsBackgroundAnalysis(ctx) {
+		if core.IsBackgroundAnalysis(ctx) || caps.BroadcastBitrateKbps > 0 {
 			parent = ctx
 		}
 		wctx, cancel := context.WithTimeout(parent, m.opts.PrepareTimeout)
@@ -976,7 +1000,11 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 	case <-ctx.Done():
 		m.mu.Lock()
 		if f.waiters--; f.waiters == 0 && !f.detached {
-			m.abandonFlightLocked(fk, f)
+			if caps.BroadcastBitrateKbps > 0 {
+				m.cancelFlightLocked(fk, f)
+			} else {
+				m.abandonFlightLocked(fk, f)
+			}
 		}
 		m.mu.Unlock()
 		return nil, f.sources, ctx.Err()
@@ -1352,7 +1380,7 @@ func (m *Manager) PlexSessionForPart(userID int64, key core.RatingKey, release s
 }
 
 func (m *Manager) SessionForSurface(surface string, userID int64, clientID string, key core.RatingKey, release string, exact bool) (*core.PlaySession, bool) {
-	surf := playbackSurface(surface)
+	surf := m.playbackSurface(surface)
 	m.mu.Lock()
 	s := m.byIdent[identity{userID: userID, clientID: clientID, key: key, surface: surf, variant: release, exact: exact}]
 	if s == nil && release != "" {
@@ -1385,7 +1413,7 @@ func (m *Manager) SessionForSurface(surface string, userID int64, clientID strin
 func (m *Manager) SessionForSurfaceClient(surface string, userID int64, clientID string, key core.RatingKey) (*core.PlaySession, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	surf := playbackSurface(surface)
+	surf := m.playbackSurface(surface)
 	for _, s := range m.byIdent {
 		if s != nil && s.ident.userID == userID && s.ident.clientID == clientID && s.ident.key == key && s.ident.surface == surf {
 			return s.snapshot(m.now()), true
@@ -1691,9 +1719,16 @@ func (m *Manager) Timeline(userID int64, key core.RatingKey, state string) {
 			s.mu.Lock()
 			s.stopAt = now.Add(m.opts.StoppedGrace)
 			s.viewerState = "stopped"
+			s.invalidateDirectRetryLocked()
 			s.mu.Unlock()
 		} else if state == "playing" || state == "paused" {
 			s.touchTimeline(now)
+			s.mu.Lock()
+			s.viewerState = state
+			if state == "paused" {
+				s.invalidateDirectRetryLocked()
+			}
+			s.mu.Unlock()
 		}
 	}
 	if state == "stopped" {

@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-14-xdcc-source",
+    id: "2026-11-14-upstream-72",
     version: "current",
+    date: "2026-11-14",
+    title: ["Nouveautés Ether intégrées", "Ether updates integrated"],
+    items: [
+      [
+        "Améliorations des collections, de l’identification des épisodes et de la lecture. Les fonctions Remix restent disponibles : Scrob, médias locaux, SubMaker et profils de qualité.",
+        "Improvements to collections, episode identification and playback. Remix features remain available: Scrob, local media, SubMaker and quality profiles.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-xdcc-source",
+    version: "0.2.37-remix.61.1",
     date: "2026-11-14",
     title: ["Source XDCC en option", "Optional XDCC source"],
     items: [

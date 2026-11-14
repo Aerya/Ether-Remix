@@ -163,6 +163,7 @@ function defaultConfig(): EtherConfig {
   return {
     posters: {
       version: 1,
+      assetFolder: "/media/posters",
       enabled: false,
       source: "tmdb",
       baseUrl: "",
@@ -858,6 +859,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
   for (let i = 0; i < 80; i++) {
     const lvl = levels[i % levels.length] as string;
     state.logs.push({
+      id: i + 1,
       time: new Date(Date.now() - (80 - i) * 45000).toISOString(),
       level: lvl.toUpperCase(),
       message:
@@ -2582,8 +2584,53 @@ export function createFakeServer(opts: FakeOptions = {}) {
       sync: { pluginId: "demo", kindKey: "book", generation: 1, items: 2 },
     },
   ];
+  mockLibs.push({
+    id: 4,
+    key: "weekend",
+    name: "Weekend movies",
+    source: "filter",
+    sources: ["stremio:cinemeta:popular", "stremio:cinemeta:classics"],
+    filter: { type: "movie" },
+    sort: 4,
+    hidden: true,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  });
+  mockLibs.push({
+    id: 5,
+    key: "weekend-collection",
+    name: "Weekend collection",
+    source: "collection",
+    sources: ["tmdb-movies"],
+    collectionId: 31,
+    mediaType: "movie",
+    sort: 5,
+    hidden: true,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  });
+  mockLibs.push({
+    id: 6,
+    key: "family-films",
+    name: "Family films",
+    source: "filter",
+    sources: ["tmdb-movies"],
+    filter: { type: "movie", genres: ["Family"] },
+    sort: 6,
+    hidden: true,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  });
   const mockMatches: Record<string, unknown>[] = [];
   function hydrateLib(lib: Record<string, unknown>) {
+    if (!lib.sources)
+      lib.sources = [
+        lib.source === "plugin"
+          ? `plugin:${lib.pluginId}:${lib.kindKey}`
+          : lib.mediaType === "show"
+            ? "tmdb-tv"
+            : "tmdb-movies",
+      ];
     if (lib.source !== "plugin" && lib.rules === undefined) {
       const cat = state.config.catalog as { exclusions?: unknown[]; visibilityDefault?: string };
       lib.rules = structuredClone(cat.exclusions ?? []);
@@ -2641,6 +2688,104 @@ export function createFakeServer(opts: FakeOptions = {}) {
           })),
       });
     }
+    if (seg[1] === "catalogue-sources")
+      return json({
+        sources: [
+          {
+            id: "tmdb-movies",
+            name: "TMDB Movies",
+            owner: "Built in",
+            group: "builtin",
+            mediaTypes: ["movie"],
+            health: "ok",
+            itemCount: 48260,
+            libraries: [{ id: 1, name: "Movies" }],
+          },
+          {
+            id: "tmdb-tv",
+            name: "TMDB TV shows",
+            owner: "Built in",
+            group: "builtin",
+            mediaTypes: ["show"],
+            health: "ok",
+            itemCount: 12480,
+            libraries: [{ id: 2, name: "TV Shows" }],
+          },
+          {
+            id: "plugin:demo:book",
+            name: "Books",
+            owner: "Open Library",
+            group: "plugin",
+            mediaTypes: ["book"],
+            health: "ok",
+            pluginId: "demo",
+            kindKey: "book",
+            libraries: [],
+          },
+          {
+            id: "stremio:cinemeta:popular",
+            name: "Popular",
+            owner: "Cinemeta",
+            group: "stremio",
+            mediaTypes: ["movie"],
+            health: "unknown",
+            pluginId: "cinemeta",
+            libraries: [],
+          },
+          {
+            id: "stremio:cinemeta:classics",
+            name: "Classics",
+            owner: "Cinemeta",
+            group: "stremio",
+            mediaTypes: ["movie"],
+            health: "error",
+            itemCount: 0,
+            pluginId: "cinemeta",
+            libraries: [{ id: 4, name: "Weekend movies" }],
+          },
+          ...[
+            {
+              id: "popular-series",
+              name: "Popular",
+              type: "series",
+              extraRequired: [] as string[],
+              extra: [] as { isRequired: boolean }[],
+            },
+            {
+              id: "last-videos",
+              name: "Last videos",
+              type: "movie",
+              extraRequired: ["ids"],
+              extra: [],
+            },
+            {
+              id: "calendar-videos",
+              name: "Calendar videos",
+              type: "series",
+              extraRequired: [],
+              extra: [{ isRequired: true }],
+            },
+          ]
+            .filter(
+              (cat) => !cat.extraRequired.length && !cat.extra.some((extra) => extra.isRequired),
+            )
+            .map((cat) => ({
+              id: `stremio:cinemeta:${cat.id}`,
+              name: cat.name,
+              owner: "Cinemeta",
+              group: "stremio",
+              pluginId: "cinemeta",
+              mediaTypes: [cat.type === "series" ? "show" : "movie"],
+              health: "unknown",
+              libraries: [],
+            })),
+        ].map((source) => ({
+          ...source,
+          libraries: mockLibs
+            .filter((lib) => ((hydrateLib(lib).sources ?? []) as string[]).includes(source.id))
+            .map((lib) => ({ id: lib.id, name: lib.name })),
+        })),
+      });
     if (!seg[1]) {
       if (method === "POST") {
         const id = Math.max(0, ...mockLibs.map((l) => Number(l.id))) + 1;
@@ -2648,6 +2793,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           id,
           key: `lib-${id}`,
           name: String(b.name ?? "Library"),
+          sources: b.sources,
           source: b.collectionId ? "collection" : "filter",
           collectionId: b.collectionId,
           mediaType: b.mediaType,
@@ -2765,6 +2911,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     return err(404, "not_found", "not found");
   }
 
+  let uploadedPosters = 24;
   async function handle(method: string, url: URL, body: unknown): Promise<Response> {
     const p = url.pathname.replace(/^\/ether\/api/, "");
     if (method === "GET" && p.startsWith("/viewer-plex-defaults/")) {
@@ -2797,6 +2944,39 @@ export function createFakeServer(opts: FakeOptions = {}) {
     }
     const q = url.searchParams;
     const seg = p.split("/").filter(Boolean);
+    if (seg[0] === "posters" && seg[1] === "status")
+      return json({
+        uploaded: uploadedPosters,
+        lastUpload: uploadedPosters ? "2026-11-12T20:00:00Z" : null,
+        limited: false,
+        folder: state.config.posters?.assetFolder ?? "",
+        found: state.config.posters?.assetFolder ? 12 : 0,
+        folderLimited: false,
+      });
+    if (seg[0] === "posters" && seg[1] === "clear" && method === "POST") {
+      uploadedPosters = 0;
+      return json({ ok: true });
+    }
+    if (seg[0] === "poster-folders") {
+      const path = url.searchParams.get("path") || "/media/posters";
+      return json({
+        path,
+        parent: path === "/" ? "/" : path.slice(0, path.lastIndexOf("/")) || "/",
+        breadcrumbs: [
+          { name: "/", path: "/" },
+          ...path
+            .split("/")
+            .filter(Boolean)
+            .map((name, i, parts) => ({ name, path: "/" + parts.slice(0, i + 1).join("/") })),
+        ],
+        directoryPosters: { "Dune (2021)": 1, "Arrival (2016)": 1, Movies: 0, TV: 0 },
+        directories:
+          path === "/media/posters" ? ["Dune (2021)", "Arrival (2016)", "Movies", "TV"] : [],
+        posters: 12,
+        limited: false,
+      });
+    }
+
     const route = `${method} /${seg.join("/")}`;
     if (seg[0] === "libraries" || seg[0] === "plugins-setup") {
       return mockLibraries(method, seg, url, body);
@@ -3002,6 +3182,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
     if (p === "/discovery/settings") return json({ enabled: true });
     if (seg[0] === "discovery" && seg[1] === "users") {
       const viewer = Number(seg[2]);
+      if (seg[3] === "sync" && seg[4] === "jobs") {
+        return json({ id: 1, state: "completed", plex: "synced", count: 0 });
+      }
+      if (seg[3] === "check") {
+        return json({
+          state: "completed",
+          done: 0,
+          total: 0,
+          enabled: true,
+          nextCheck: new Date(Date.now() + 30 * 60_000).toISOString(),
+        });
+      }
       if (seg[3] === "membership" && method === "POST") {
         const keys = (body as { keys?: string[] }).keys || [];
         return json(Object.fromEntries(keys.map((key) => [key, savedForViewer(viewer, key)])));
@@ -3169,8 +3361,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
             surface,
             url: "http://ether.local/webdav/",
             username: id,
-            password: "mock-app-password",
-            qr,
+            password: "mock-app-password-7f3a9c2e8b1d6f4a0c9e2b7d5a1f8c3e",
+            // Scannable fixture for the modal preview; encodes the mock WebDAV URL.
+            qr: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAADAAQMAAABoEv5EAAAABlBMVEX///8AAABVwtN+AAABJklEQVR42uzWMa6rMBCF4R+5oPQSvBR2BsnOvJRZAiWFlfPkASV5UaorBbvgNAh9zQgP4+HKlR9FNUGSLTJ/uXUABUgwSbfR/OVMSNoSUBhkJar0A0GZdO8PFGzpCYAUVoAvZ94K9m5fp2Dz+OU3+C0AEJQd+EwrKAxbUgVIkt4+YkOAQUaUdPdnMDqAIEkFqF1fmAo9gPTwLpfN3vWyHgDmUVoJNni5b7/B70E2bJS4X2zE/DzBpgBeJn7XhvV1gm3BLxSmYMtGWCdZDyBbtkTMskE6Gr89AHiZteuJ+VQ4VrVcUt2WougCCpD2Lh/3oXnrAY69BBglvT5ieyCqpEedW9P/5TaGLJvBpyk9wHG0viLso/Q8OHa4ZzWfy10buHLlj/k3ACp8cxu0+Cr1AAAAAElFTkSuQmCC",
           });
         if (surface === "jellyfin" || surface === "emby" || surface === "silo") {
           const viewer = state.users.find((u) => String(u.id) === id) ?? state.users[0];
@@ -3510,7 +3703,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json({
           setupComplete: state.config.setupComplete,
           requiredComplete: true,
-          steps: [],
+          steps: [
+            {
+              id: "catalog",
+              title: "TMDB API key",
+              complete: !new URL(window.location.href).searchParams.has("catalogKey"),
+              required: true,
+            },
+          ],
         });
       case "POST /setup/complete":
         state.config.setupComplete = true;

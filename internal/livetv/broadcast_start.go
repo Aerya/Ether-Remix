@@ -60,9 +60,14 @@ type momentStreamDecoder struct {
 	channelID  string
 	moment     string
 	mode       string
+	coldPlate  bool
 	stream     *onair.MomentStream
 	baseReader *decoderFrameReader
 	format     transcode.RawFormat
+}
+
+func (d *momentStreamDecoder) startupBurstReady() bool {
+	return !d.coldPlate || d.stream.AnimationReady()
 }
 
 func (d *momentStreamDecoder) Next(ctx context.Context) (transcode.RawFrame, error) {
@@ -80,7 +85,15 @@ func (d *momentStreamDecoder) Next(ctx context.Context) (transcode.RawFrame, err
 		}
 		return transcode.RawFrame{}, err
 	}
-	return transcode.RawFrame{Video: video, PCM: audio}, nil
+	transition := false
+	if mode := d.stream.Mode(); mode != d.mode {
+		transition = mode == "cached" || mode == "split-cached"
+		d.mode = mode
+		if d.s != nil {
+			d.s.noteMomentPlayout(d.channelID, d.moment, mode, d.stream.SpeedX(), "")
+		}
+	}
+	return transcode.RawFrame{Video: video, PCM: audio, GraphicsTransition: transition}, nil
 }
 
 func (d *momentStreamDecoder) Close() error {
@@ -190,7 +203,6 @@ func (s *Service) openGraphicsDecoder(ctx context.Context, runner transcode.Cont
 		}
 	}
 	if lm, ok := s.o.Graphics.(liveMomentSource); ok {
-		var attached *decoderFrameReader
 		stream, mode, err := lm.OpenMoment(ctx, request, format.Width, format.Height, format.FPSNum, format.FPSDen, loop, func(cctx context.Context, path string, clipLoop bool) (onair.FrameReader, error) {
 			dec, dErr := runner.StartDecoder(cctx, transcode.DecoderRequest{
 				SessionID: "graphics-" + filepath.Base(path),
@@ -201,8 +213,7 @@ func (s *Service) openGraphicsDecoder(ctx context.Context, runner transcode.Cont
 			if dErr != nil {
 				return nil, dErr
 			}
-			attached = &decoderFrameReader{callCtx: cctx, dec: dec}
-			return attached, nil
+			return &decoderFrameReader{callCtx: cctx, dec: dec}, nil
 		})
 		if err != nil {
 			if errors.Is(err, onair.ErrLiveBelowRealtime) {
@@ -212,13 +223,13 @@ func (s *Service) openGraphicsDecoder(ctx context.Context, runner transcode.Cont
 		}
 		s.noteMomentPlayout(request.ChannelID, request.Moment, mode, stream.SpeedX(), "")
 		return &momentStreamDecoder{
-			s:          s,
-			channelID:  request.ChannelID,
-			moment:     request.Moment,
-			mode:       mode,
-			stream:     stream,
-			baseReader: attached,
-			format:     format,
+			s:         s,
+			channelID: request.ChannelID,
+			moment:    request.Moment,
+			mode:      mode,
+			coldPlate: mode == "static-plate",
+			stream:    stream,
+			format:    format,
 		}, nil, nil
 	}
 	clip, ok := s.o.Graphics.Clip(ctx, request)
@@ -291,19 +302,54 @@ func (p *scheduleBroadcastPlanner) screen(time.Time) broadcastPlan {
 	return p.s.screenPlan(p.channel, p.runner, p.format)
 }
 
-// Keep a style plate ready independently of provider outage screens. Once the
-// look's animated standby/break/ident master exists in cache, loop it directly
-// so holds never freeze on a still.
-func (p *scheduleBroadcastPlanner) momentScreen() broadcastPlan {
-	if standby, ok := p.standbyPlan(); ok {
-		standby.id = "moment-" + standby.id
-		return standby
+// Keep the current title ready independently of provider outage screens.
+// Standby masters contain background only; they cannot air as opening cards.
+func (p *scheduleBroadcastPlanner) momentRequestAt(now time.Time) (core.ClipRequest, string) {
+	c := p.s.graphicsChannel(p.channel)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	selected := Programme{Item: Item{Slate: "ident"}}
+	for _, programme := range p.window {
+		if now.Before(programme.Start) || !now.Before(programme.End) {
+			continue
+		}
+		selected = programme
+		if programme.Item.Key != 0 {
+			// Joining mid-programme needs a title for that programme, rather than
+			// a station ident or the title of an unrelated future airing.
+			selected.Item = Item{Slate: "ident"}
+			if tonightEnabledAt(c, now) {
+				selected.Item.Slate = "tonight"
+			} else if c.Look != nil && c.Look.UpNext {
+				selected.Item.Slate = "upnext"
+			}
+			selected.Start = now
+			selected.End = programme.Start // include the current title in clip bindings
+		}
+		break
+	}
+	return p.s.clipRequest(c, selected, p.window), selected.ID
+}
+
+func (p *scheduleBroadcastPlanner) momentScreenAt(now time.Time) broadcastPlan {
+	// Without a graphics source there is no opening title to hold. Use the
+	// configured, prewarmed signal screen while the programme opens.
+	if p.s.o.Graphics == nil {
+		return broadcastPlan{}
 	}
 	c := p.channel
-	request := p.s.clipRequest(c, Programme{Item: Item{Slate: "ident"}})
-	request.Bind["screen.reason"] = "moment"
-	return broadcastPlan{id: "moment-card-" + c.ID, element: "card", open: func(ctx context.Context) (transcode.Decoder, func(), error) {
-		return p.s.openSignalDecoder(ctx, request, p.format)
+	request, id := p.momentRequestAt(now)
+	return broadcastPlan{id: "moment-card-" + c.ID + "-" + id + "-" + request.Moment, element: request.Moment, open: func(ctx context.Context) (transcode.Decoder, func(), error) {
+		if p.s.o.Graphics == nil || c.Look == nil {
+			request.Bind["screen.reason"] = "moment"
+			return p.s.openSignalDecoder(ctx, request, p.format)
+		}
+		decoder, release, err := p.s.openGraphicsDecoder(ctx, p.runner, request, p.format, true)
+		if title, ok := decoder.(*momentStreamDecoder); ok {
+			title.stream.UseExternalSegmentClock()
+			title.stream.StartCompleteTitle()
+		}
+		return decoder, release, err
 	}}
 }
 func (p *providerBroadcastPlanner) screen(time.Time) broadcastPlan {
@@ -525,10 +571,35 @@ func steadyRendition(f transcode.RawFormat, full int, caps core.ClientCaps) (int
 }
 
 func (p *scheduleBroadcastPlanner) introPlan(now time.Time) (broadcastPlan, time.Duration) {
+	titleDuration := segmentDuration
+	p.mu.Lock()
+	for _, programme := range p.window {
+		if now.Before(programme.Start) || !now.Before(programme.End) {
+			continue
+		}
+		if interstitial(programme.Item) {
+			p.mu.Unlock()
+			return broadcastPlan{}, 0
+		}
+		titleDuration = min(titleDuration, programme.End.Sub(now))
+		break
+	}
+	p.mu.Unlock()
 	c := p.s.personalChannel(p.s.ctx, p.channel, &p.user)
 	if welcome, ok := p.s.personalWelcome(c, now); ok {
 		p.joinAt = welcome.End
 		return p.programme(welcome), welcome.End.Sub(now)
+	}
+	if p.s.o.Graphics != nil {
+		request, _ := p.momentRequestAt(now)
+		if request.Moment == "tonight" || request.Moment == "upnext" {
+			title := p.momentScreenAt(now)
+			title.id = "intro-" + title.id
+			// Cold and cached titles own the same bounded media interval. Decoder
+			// preparation can delay publication, but cannot lengthen the card.
+			p.joinAt = now.Add(titleDuration)
+			return title, titleDuration
+		}
 	}
 	if c.Look == nil || !c.Look.Ident || p.s.o.Graphics == nil {
 		return broadcastPlan{}, 0

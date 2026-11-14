@@ -36,7 +36,7 @@ var tmdbSizeRe = regexp.MustCompile(`/t/p/(w\d+|h\d+|original)/`)
 
 // resizeTMDBURL rewrites the size segment of a TMDB image URL.
 func resizeTMDBURL(u string, width int) string {
-	if width <= 0 || !tmdbSizeRe.MatchString(u) {
+	if !tmdbSizeRe.MatchString(u) {
 		return u
 	}
 	return tmdbSizeRe.ReplaceAllString(u, "/t/p/"+tmdbSize(width)+"/")
@@ -140,6 +140,24 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, element string, width int) {
+	if reader, ok := s.getHost().Artwork.(frontend.OwnerArtworkReader); ok {
+		kind := ""
+		switch element {
+		case "poster", "thumb":
+			kind = frontend.ImagePoster
+		case "art", "background":
+			kind = frontend.ImageBackdrop
+		}
+		if kind != "" {
+			if data, ct, err := reader.OwnerArtwork(r.Context(), frontend.ArtworkRequest{Viewer: FromContext(r.Context()).User, Item: key}, kind); err == nil {
+				setArtworkHeaders(w.Header(), ct)
+				w.Header().Set("Cache-Control", "private, no-cache")
+				w.Write(data)
+				return
+			}
+		}
+	}
+
 	if key.IsPreroll() && s.prerollThumb(w, r, key) {
 		return
 	}
@@ -182,7 +200,7 @@ func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key fron
 		}
 		if width <= 0 {
 			if element == "art" || element == "background" {
-				width = 1280
+				width = 0
 			} else {
 				width = 500
 			}
@@ -190,7 +208,7 @@ func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key fron
 		s.serveRemoteImage(w, r, s.svc().imageURL(path, psePosterSize(element, width))) // PSE-HOOK: taille des affiches TMDB — voir docs/pse/FORK.fr.md
 		return
 	}
-	if width <= 0 {
+	if width <= 0 && element != "art" && element != "background" {
 		width = defWidth
 	}
 	s.serveRemoteImage(w, r, s.svc().imageURL(path, psePosterSize(element, width))) // PSE-HOOK: taille des affiches TMDB
@@ -452,6 +470,11 @@ var liveChannelLogoRe = regexp.MustCompile(`^/livetv/channels/([^/]+)/logo\.(?:s
 
 // isSelfHost reports whether host refers to this server.
 func (s *Server) isSelfHost(r *http.Request, host string) bool {
+	if origin := s.getHost().PublicOrigin; origin != nil {
+		if u, err := url.Parse(origin()); err == nil && u.Host != "" && strings.EqualFold(u.Host, host) {
+			return true
+		}
+	}
 	h := strings.ToLower(host)
 	if h == "" || strings.EqualFold(h, r.Host) {
 		return true

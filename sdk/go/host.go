@@ -28,6 +28,25 @@ type HostFetchResponse struct {
 	Body    string            `json:"body"`
 }
 
+// FolderHashJob is a pollable background hash. Bytes is the progress so far.
+// Terminal states are done, canceled and error. Only done carries Result.
+type FolderHashJob struct {
+	ID     string      `json:"id"`
+	State  string      `json:"state"`
+	Bytes  int64       `json:"bytes"`
+	Result *FolderHash `json:"result,omitempty"`
+	Error  string      `json:"error,omitempty"`
+}
+
+// FolderHash contains digests, never file contents. ModTime is Unix seconds.
+type FolderHash struct {
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"modTime"`
+	CRC32   string `json:"crc32"`
+	MD5     string `json:"md5"`
+	SHA1    string `json:"sha1"`
+}
+
 // FolderEntry describes one entry returned by Host.FoldersList or Host.FoldersStat.
 type FolderEntry struct {
 	Name  string `json:"name"`
@@ -71,6 +90,10 @@ type Host interface {
 	UpsertCollection(ctx context.Context, collection map[string]any) error
 	FoldersList(ctx context.Context, root, path string) ([]FolderEntry, error)
 	FoldersStat(ctx context.Context, root, path string) (FolderEntry, error)
+	FoldersHash(ctx context.Context, root, path string) (FolderHash, error)
+	FoldersHashStart(ctx context.Context, root, path string) (FolderHashJob, error)
+	FoldersHashPoll(ctx context.Context, id string) (FolderHashJob, error)
+	FoldersHashCancel(ctx context.Context, id string) (FolderHashJob, error)
 	NotifyOwner(ctx context.Context, text string) error
 	Log(ctx context.Context, level, message string, attrs map[string]any) error
 	// Content-kind host services. KindUpsert/KindDelete need a push-mode
@@ -504,4 +527,20 @@ func (c *RemoteHostClient) StreamURL(ctx context.Context, viewerID int64, itemRe
 		return "", err
 	}
 	return out.URL, nil
+}
+
+func (*RemoteHostClient) FoldersHash(context.Context, string, string) (FolderHash, error) {
+	return FolderHash{}, fmt.Errorf("folders.hash requires the hosted runtime")
+}
+
+func (*RemoteHostClient) FoldersHashStart(context.Context, string, string) (FolderHashJob, error) {
+	return FolderHashJob{}, fmt.Errorf("folders.hash requires the hosted runtime")
+}
+
+func (*RemoteHostClient) FoldersHashPoll(context.Context, string) (FolderHashJob, error) {
+	return FolderHashJob{}, fmt.Errorf("folders.hash requires the hosted runtime")
+}
+
+func (*RemoteHostClient) FoldersHashCancel(context.Context, string) (FolderHashJob, error) {
+	return FolderHashJob{}, fmt.Errorf("folders.hash requires the hosted runtime")
 }

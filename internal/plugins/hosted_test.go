@@ -215,3 +215,19 @@ func TestHostedPublicSettingsAccessor(t *testing.T) {
 		t.Fatalf("settings response: %s", response.Body)
 	}
 }
+
+func (memHost) FoldersHash(context.Context, string, string) (FolderHash, error) {
+	return FolderHash{}, nil
+}
+
+func (memHost) FoldersHashStart(context.Context, string, string) (FolderHashJob, error) {
+	return FolderHashJob{}, nil
+}
+
+func (memHost) FoldersHashPoll(context.Context, string) (FolderHashJob, error) {
+	return FolderHashJob{}, nil
+}
+
+func (memHost) FoldersHashCancel(context.Context, string) (FolderHashJob, error) {
+	return FolderHashJob{}, nil
+}

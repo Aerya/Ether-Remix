@@ -152,6 +152,9 @@ func (s *Server) thumbURL(t *frontend.Title) string {
 }
 
 func (s *Server) stampedThumbURL(t *frontend.Title, stamp string) string {
+	if version := s.ownerArtworkVersion(t, frontend.ImagePoster); version != "" {
+		return "/library/metadata/" + t.Key.String() + "/thumb/" + version
+	}
 	if t.PosterPath == "" && t.StillPath == "" {
 		// A movie or show with no artwork gets Ether's generated poster.
 		// Its stamp names the drawn image, so the URL changes (and client
@@ -166,11 +169,14 @@ func (s *Server) stampedThumbURL(t *frontend.Title, stamp string) string {
 	return "/library/metadata/" + t.Key.String() + "/thumb/" + stamp
 }
 
-func artURL(t *frontend.Title) string {
-	return stampedArtURL(t, imageStamp(t))
+func (s *Server) artURL(t *frontend.Title) string {
+	return s.stampedArtURL(t, imageStamp(t))
 }
 
-func stampedArtURL(t *frontend.Title, stamp string) string {
+func (s *Server) stampedArtURL(t *frontend.Title, stamp string) string {
+	if version := s.ownerArtworkVersion(t, frontend.ImageBackdrop); version != "" {
+		return "/library/metadata/" + t.Key.String() + "/art/" + version
+	}
 	if t.BackdropPath == "" {
 		return ""
 	}
@@ -212,7 +218,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		Year:          t.Year,
 		ContentRating: t.ContentRating,
 		Thumb:         s.stampedThumbURL(t, thumbStamp),
-		Art:           stampedArtURL(t, artStamp),
+		Art:           s.stampedArtURL(t, artStamp),
 		AddedAt:       unixOrZero(added),
 		UpdatedAt:     unixOrZero(t.UpdatedAt),
 	}
@@ -253,9 +259,9 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 
 	switch t.Type {
 	case frontend.TypeMovie:
-		m.Slug = slugify(t.Title)
+		m.Slug = ov.Slug
 	case frontend.TypeShow:
-		m.Slug = slugify(t.Title)
+		m.Slug = ov.Slug
 		m.Index = model.Ptr(1)
 		if t.ChildCount > 0 {
 			m.ChildCount = model.Ptr(t.ChildCount)
@@ -277,7 +283,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		m.ParentGUID = showGUID(showKey)
 		m.ParentKey = "/library/metadata/" + showKey.String()
 		m.ParentTitle = t.ShowTitle
-		m.ParentSlug = slugify(t.ShowTitle)
+		m.ParentSlug = s.verifiedPlexSlug(ctx, showKey)
 		m.ParentIndex = model.Ptr(1)
 		m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + imageStamp(t)
 		if m.Art == "" {
@@ -293,7 +299,6 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			m.ParentYear = show.Year
 			if m.ParentTitle == "" {
 				m.ParentTitle = show.Title
-				m.ParentSlug = slugify(show.Title)
 			}
 		}
 		if m.ParentYear == 0 && t.ShowYear > 0 {
@@ -336,7 +341,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 				m.ContentRating = show.ContentRating
 			}
 		}
-		m.GrandparentSlug = slugify(m.GrandparentTitle)
+		m.GrandparentSlug = s.verifiedPlexSlug(ctx, showKey)
 		m.Year, m.TitleSort, m.Studio = 0, "", ""
 	}
 	if hasPlex {
@@ -496,7 +501,7 @@ func (s *Server) imageTags(t *frontend.Title, show *frontend.Title, thumbStamp, 
 				out = append(out, img("snapshot", th))
 			}
 		}
-		if a := stampedArtURL(t, artStamp); a != "" {
+		if a := s.stampedArtURL(t, artStamp); a != "" {
 			out = append(out, img("background", a))
 		} else {
 			out = append(out, img("background", showPath+"/art/"+artStamp))
@@ -508,7 +513,7 @@ func (s *Server) imageTags(t *frontend.Title, show *frontend.Title, thumbStamp, 
 		if th := s.stampedThumbURL(t, thumbStamp); th != "" {
 			out = append(out, img("coverPoster", th))
 		}
-		if a := stampedArtURL(t, artStamp); a != "" {
+		if a := s.stampedArtURL(t, artStamp); a != "" {
 			out = append(out, img("background", a))
 		}
 		if t.LogoPath != "" {

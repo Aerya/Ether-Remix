@@ -120,7 +120,7 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 		fetch = min(fetch*2, 1000)
 	}
 	if req.Purpose == "" {
-		out, err = s.appendHomeFallback(ctx, req, protocol, out, limit)
+		out, err = s.appendHomeFallback(ctx, req, out, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -174,6 +174,7 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 	var handles []*string
 	for i := range out {
 		row := &out[i]
+		row.Situation = situation
 		if !s.d.AllowRow(ctx, req.Viewer, *row) {
 			return nil, errors.New("experience: layout returned unauthorized row")
 		}
@@ -226,10 +227,9 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 const rowsFenceRetries = 4
 
 // appendHomeFallback adds policy-checked library shelves when Home is only
-// Continue Watching and Next Up. Plex Home is assembled by its own adapter
-// and stays byte-identical, so this never runs for that protocol.
-func (s *RowsService) appendHomeFallback(ctx context.Context, req frontend.RowRequest, protocol core.Protocol, out []frontend.Row, limit int) ([]frontend.Row, error) {
-	if req.Placement != frontend.PlacementHome || protocol == "plex" || s.d.HomeFallback == nil {
+// Continue Watching and Next Up. The host supplies the fallback for each surface.
+func (s *RowsService) appendHomeFallback(ctx context.Context, req frontend.RowRequest, out []frontend.Row, limit int) ([]frontend.Row, error) {
+	if req.Placement != frontend.PlacementHome || s.d.HomeFallback == nil {
 		return out, nil
 	}
 	for _, row := range out {
@@ -322,3 +322,38 @@ func entryIdentity(e frontend.RowEntry) string {
 
 // RowEntryIdentity returns the stable neutral identity of a well-formed entry.
 func RowEntryIdentity(e frontend.RowEntry) string { return entryIdentity(e) }
+
+// IssueRowReceipts authorizes only the rows delivered by a server surface. It
+// writes one receipt per row, instead of rebuilding and issuing all of Home.
+func (s *RowsService) IssueRowReceipts(ctx context.Context, req frontend.RowRequest, protocol core.Protocol, rows []frontend.Row) ([]frontend.Row, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	if len(rows) > 12 || req.Placement != frontend.PlacementHome {
+		return nil, ErrReceipt
+	}
+	out := append([]frontend.Row(nil), rows...)
+	subjects := make([]ReceiptSubject, 0, len(out))
+	for n := range out {
+		row := &out[n]
+		if len(row.Entries) == 0 || len(row.Entries) > 50 {
+			return nil, ErrReceipt
+		}
+		imp := &core.NeutralImpression{RowID: row.ID, Kind: row.Kind, Title: row.Title, Purpose: row.Purpose, Rank: row.Rank, Collection: row.Collection, Placement: string(req.Placement), Situation: row.Situation}
+		for _, entry := range row.Entries {
+			imp.Entries = append(imp.Entries, core.NeutralEntryRef{Kind: string(entry.Kind), ID: entryIdentity(entry)})
+			if entry.Kind == frontend.RowEntryTitle && entry.Title != nil {
+				imp.Items = append(imp.Items, entry.Title.Key)
+			}
+		}
+		subjects = append(subjects, ReceiptSubject{Kind: "row", ID: row.ID, Purpose: row.Purpose, Rank: row.Rank, Impression: imp})
+	}
+	tokens, err := s.d.Receipts.IssueBatch(ctx, req.Viewer, req.Device, protocol, subjects)
+	if err != nil {
+		return nil, err
+	}
+	for n := range out {
+		out[n].Handle = tokens[n]
+	}
+	return out, nil
+}

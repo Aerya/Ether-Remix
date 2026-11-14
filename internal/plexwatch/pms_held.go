@@ -4,19 +4,25 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+// Step aside reads whole Plex Media Server libraries: owners hold tens of
+// thousands of movies and hundreds of thousands of episodes. The caps bound
+// memory against a runaway server, never a real library; only lookups that
+// may leave the machine (a title missing from the local catalogue) are
+// rationed per pass.
 const (
-	pmsHeldPage            = 200
-	pmsHeldCap             = 50_000
-	pmsHeldItemCacheCap    = 100_000
+	pmsHeldPage            = 500
+	pmsHeldCap             = 2_000_000
+	pmsHeldItemCacheCap    = 2_000_000
 	pmsHeldUncachedLookups = 500
-	pmsHeldWarmShows       = 25
 )
 
 // HeldShow summarizes the seasons and episodes held across step-aside PMS
@@ -205,10 +211,6 @@ func (s *Servers) serverSyncInterval(ctx context.Context, serverID int64) int {
 	return interval
 }
 
-type grandchildrenCatalog interface {
-	Grandchildren(ctx context.Context, key core.RatingKey) ([]core.Title, error)
-}
-
 func (s *Servers) runHeldPass(ctx context.Context, serverID int64) (bool, error) {
 	srv, err := s.loadServer(ctx, serverID)
 	if err != nil {
@@ -285,8 +287,19 @@ func (s *Servers) runHeldPass(ctx context.Context, serverID int64) (bool, error)
 					if _, ok := held[showKey]; !ok && len(held) < pmsHeldCap {
 						held[showKey] = pmsHeldRow{ratingKey: showKey, showKey: showKey}
 					}
+					// A combined file (S05E22-23, S04E08E09) is one PMS item
+					// for several episodes: hold every episode it spans.
+					for _, ep := range spannedEpisodes(md, key.Season(), key.Episode()) {
+						extra := core.EpisodeKey(key.TMDB(), key.Season(), ep)
+						if _, ok := held[extra]; !ok && len(held) < pmsHeldCap {
+							held[extra] = pmsHeldRow{ratingKey: extra, showKey: showKey, season: key.Season(), episode: ep}
+						}
+					}
 					matchedShows[showKey] = struct{}{}
 				}
+			}
+			if err := s.flushHeldItems(ctx, p); err != nil {
+				return err
 			}
 			if len(items) < pmsHeldPage {
 				break
@@ -355,42 +368,10 @@ func (s *Servers) runHeldPass(ctx context.Context, serverID int64) (bool, error)
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	if gc, ok := s.catalog.(grandchildrenCatalog); ok && len(matchedShows) > 0 {
-		s.warmMatchedShows(ctx, gc, matchedShows)
-	}
 	if err := s.reloadHeldSnapshot(ctx); err != nil {
 		return false, err
 	}
 	return capped, nil
-}
-
-func (s *Servers) warmMatchedShows(ctx context.Context, gc grandchildrenCatalog, shows map[core.RatingKey]struct{}) {
-	keys := make([]core.RatingKey, 0, len(shows))
-	s.warmedMu.Lock()
-	for k := range shows {
-		if _, done := s.warmedShows[k]; !done {
-			keys = append(keys, k)
-		}
-	}
-	s.warmedMu.Unlock()
-	if len(keys) == 0 {
-		return
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	warmed := 0
-	for _, k := range keys {
-		if ctx.Err() != nil || warmed >= pmsHeldWarmShows {
-			break
-		}
-		if _, err := gc.Grandchildren(ctx, k); err == nil {
-			s.warmedMu.Lock()
-			if len(s.warmedShows) < pmsHeldCap {
-				s.warmedShows[k] = struct{}{}
-			}
-			s.warmedMu.Unlock()
-			warmed++
-		}
-	}
 }
 
 func (s *Servers) loadCachedItems(ctx context.Context, serverID int64) (map[int64]pmsCachedItem, error) {
@@ -419,10 +400,10 @@ func (s *Servers) matchHeldMetadata(ctx context.Context, p *pmsPair, md pmsMetad
 		return 0, false, nil
 	}
 	if item, ok := p.items[pmsKey]; ok {
-		if item.ratingKey > 0 {
+		if item.ratingKey > 0 && md.Type == "episode" {
 			return item.ratingKey, false, nil
 		}
-		if s.now().Sub(time.Unix(item.checkedAt, 0)) < pmsNoMatchRetry {
+		if item.ratingKey == 0 && s.now().Sub(time.Unix(item.checkedAt, 0)) < pmsNoMatchRetry {
 			return 0, false, nil
 		}
 	}
@@ -434,15 +415,23 @@ func (s *Servers) matchHeldMetadata(ctx context.Context, p *pmsPair, md pmsMetad
 		if show := md.showKey(); show > 0 && episodeNumbersFit(season, episode) {
 			if item, ok := p.items[show]; ok && item.ratingKey > 0 {
 				epKey := core.EpisodeKey(item.ratingKey.TMDB(), season, episode)
-				checked := s.now().Unix()
-				if _, err := s.db.ExecContext(ctx, `INSERT INTO plexwatch_pms_item(server_id,pms_key,rating_key,checked_at) VALUES(?,?,?,?)
-					ON CONFLICT(server_id,pms_key) DO UPDATE SET rating_key=excluded.rating_key,checked_at=excluded.checked_at`,
-					p.serverID, pmsKey, int64(epKey), checked); err != nil {
-					return 0, false, err
-				}
-				p.items[pmsKey] = pmsCachedItem{ratingKey: epKey, checkedAt: checked}
+				s.cacheHeldItem(p, pmsKey, epKey)
 				return epKey, false, nil
 			}
+		}
+	}
+	// A movie or show the local catalogue already stores by its TMDB id
+	// matches without leaving the machine, so it is never rationed.
+	if key := s.localHeldKey(ctx, md); key != 0 {
+		s.cacheHeldItem(p, pmsKey, key)
+		return key, false, nil
+	}
+	// A PMS item may expose only its primary Plex GUID. Use the same
+	// verified identity as mobile metadata, with the PMS year as a guard.
+	if s.guid != nil && (md.Type == "movie" || md.Type == "show") {
+		if key, err := s.guid.ExactKey(ctx, md.GUID); err == nil && ((md.Type == "movie" && key.Kind() == core.KindMovie) || (md.Type == "show" && key.Kind() == core.KindShow)) && s.heldYearAgrees(ctx, md, key) {
+			s.cacheHeldItem(p, pmsKey, key)
+			return key, false, nil
 		}
 	}
 	if skipUncached {
@@ -452,14 +441,81 @@ func (s *Servers) matchHeldMetadata(ctx context.Context, p *pmsPair, md pmsMetad
 	if err != nil {
 		return 0, true, err
 	}
-	checked := s.now().Unix()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO plexwatch_pms_item(server_id,pms_key,rating_key,checked_at) VALUES(?,?,?,?)
-		ON CONFLICT(server_id,pms_key) DO UPDATE SET rating_key=excluded.rating_key,checked_at=excluded.checked_at`,
-		p.serverID, pmsKey, int64(key), checked); err != nil {
-		return 0, true, err
+	if key != 0 && !s.heldYearAgrees(ctx, md, key) {
+		key = 0
 	}
-	p.items[pmsKey] = pmsCachedItem{ratingKey: key, checkedAt: checked}
+	s.cacheHeldItem(p, pmsKey, key)
 	return key, true, nil
+}
+
+// localHeldKey matches a movie or show by a TMDB id the catalogue stores,
+// reading only the local database.
+func (s *Servers) localHeldKey(ctx context.Context, md pmsMetadata) core.RatingKey {
+	stored, ok := s.catalog.(storedTitleCatalog)
+	if !ok || (md.Type != "movie" && md.Type != "show") {
+		return 0
+	}
+	for _, id := range pmsIDs(md) {
+		if id.source != "tmdb" {
+			continue
+		}
+		n, err := strconv.ParseInt(id.value, 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		key, typ := core.MovieKey(n), core.TypeMovie
+		if md.Type == "show" {
+			key, typ = core.ShowKey(n), core.TypeShow
+		}
+		if st, err := stored.StoredTitle(ctx, key); err == nil && st != nil && !st.Adult && st.Type == typ && md.Year > 0 && st.Year > 0 && int(md.Year) >= st.Year-1 && int(md.Year) <= st.Year+1 {
+			return key
+		}
+	}
+	return 0
+}
+
+// cacheHeldItem records a match in memory and queues its plexwatch_pms_item
+// row; flushHeldItems writes queued rows in one transaction per page.
+func (s *Servers) cacheHeldItem(p *pmsPair, pmsKey int64, key core.RatingKey) {
+	checked := s.now().Unix()
+	p.items[pmsKey] = pmsCachedItem{ratingKey: key, checkedAt: checked}
+	p.heldPending = append(p.heldPending, pmsHeldItemRow{pmsKey: pmsKey, ratingKey: int64(key), checkedAt: checked})
+}
+
+type pmsHeldItemRow struct{ pmsKey, ratingKey, checkedAt int64 }
+
+func (s *Servers) flushHeldItems(ctx context.Context, p *pmsPair) error {
+	if len(p.heldPending) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	const chunk = 200
+	for start := 0; start < len(p.heldPending); start += chunk {
+		part := p.heldPending[start:min(start+chunk, len(p.heldPending))]
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO plexwatch_pms_item(server_id,pms_key,rating_key,checked_at) VALUES `)
+		args := make([]any, 0, len(part)*4)
+		for i, r := range part {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(`(?,?,?,?)`)
+			args = append(args, p.serverID, r.pmsKey, r.ratingKey, r.checkedAt)
+		}
+		sb.WriteString(` ON CONFLICT(server_id,pms_key) DO UPDATE SET rating_key=excluded.rating_key,checked_at=excluded.checked_at`)
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	p.heldPending = p.heldPending[:0]
+	return nil
 }
 
 func (s *Servers) finishHeld(ctx context.Context, serverID, lease int64, interval, prevFailures int, capped bool, err error) error {
@@ -603,4 +659,62 @@ func (s *Servers) reloadHeldSnapshot(ctx context.Context) error {
 		Shows:    shows,
 	})
 	return nil
+}
+
+// multiEpisodeRe finds an SxxEyy episode tag followed by more episode numbers:
+// "S05E22-23", "S05E22-E23", "S04E08E09", "s01e01e02e03".
+var episodeNumberRe = regexp.MustCompile(`\d{1,4}`)
+
+var multiEpisodeRe = regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,4})((?:[-_ ]?e\d{1,4}|-\d{1,4})+)`)
+
+// spannedEpisodes lists the episodes after first that a PMS episode item's file
+// name declares for season (a range "E22-23" fills the gap; a list "E08E09"
+// names each). Bounded to 10 extra episodes; nothing when the file names a
+// single episode or a different season.
+func spannedEpisodes(md pmsMetadata, season, first int) []int {
+	for _, media := range md.Media {
+		for _, part := range media.Part {
+			name := part.File
+			if i := strings.LastIndexAny(name, `/\\`); i >= 0 {
+				name = name[i+1:]
+			}
+			m := multiEpisodeRe.FindStringSubmatch(name)
+			if m == nil {
+				continue
+			}
+			s, _ := strconv.Atoi(m[1])
+			start, _ := strconv.Atoi(m[2])
+			if s != season || start != first {
+				continue
+			}
+			nums := episodeNumberRe.FindAllString(m[3], -1)
+			last := start
+			var out []int
+			for _, n := range nums {
+				v, _ := strconv.Atoi(n)
+				if v <= last || v > first+10 {
+					break
+				}
+				for e := last + 1; e <= v; e++ {
+					out = append(out, e)
+				}
+				last = v
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// heldYearAgrees prevents cached or external-ID matches from hiding a namesake.
+func (s *Servers) heldYearAgrees(ctx context.Context, md pmsMetadata, key core.RatingKey) bool {
+	if md.Type != "movie" && md.Type != "show" {
+		return true
+	}
+	stored, ok := s.catalog.(storedTitleCatalog)
+	if !ok || md.Year <= 0 {
+		return false
+	}
+	t, err := stored.StoredTitle(ctx, key)
+	return err == nil && t != nil && t.Year > 0 && int(md.Year) >= t.Year-1 && int(md.Year) <= t.Year+1
 }

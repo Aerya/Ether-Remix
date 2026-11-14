@@ -677,7 +677,7 @@ func (s *Service) MatchGuides(ctx context.Context, req GuideMatchRequest) (Guide
 	byFold := map[string][]*guideCandidate{}
 	byName := map[string][]*guideCandidate{}
 	byAlias := map[string][]*guideCandidate{}
-	plexSources := map[string]bool{}
+	remoteSources := map[string]bool{}
 	sourceRows, err := s.o.DB.QueryContext(ctx, `SELECT id, data FROM livetv_sources`)
 	if err != nil {
 		return res, err
@@ -689,8 +689,8 @@ func (s *Service) MatchGuides(ctx context.Context, req GuideMatchRequest) (Guide
 		if err = sourceRows.Scan(&id, &data); err != nil {
 			break
 		}
-		if json.Unmarshal(data, &source) == nil && source.Kind == "plex" {
-			plexSources[id] = true
+		if json.Unmarshal(data, &source) == nil && s.sourceGuideFeatures(source).ReviewedAliases {
+			remoteSources[id] = true
 		}
 	}
 	if err == nil {
@@ -714,7 +714,7 @@ func (s *Service) MatchGuides(ctx context.Context, req GuideMatchRequest) (Guide
 			continue
 		}
 		st, ok := stats[guideKey{src, id}]
-		if !ok && !plexSources[src] {
+		if !ok && !remoteSources[src] {
 			continue
 		}
 		cand := &guideCandidate{source: src, guide: id, name: name, window: st.window, until: st.until}
@@ -727,7 +727,7 @@ func (s *Service) MatchGuides(ctx context.Context, req GuideMatchRequest) (Guide
 		cand.region = guideCandidateRegion(id, name, all)
 		seen := map[string]bool{}
 		for _, n := range append(all, name) {
-			if plexSources[src] {
+			if remoteSources[src] {
 				if k := normalizeGuideName(n); k != "" {
 					byAlias[k] = append(byAlias[k], cand)
 				}
@@ -1055,7 +1055,10 @@ func bestCandidate(c Channel, cands []*guideCandidate) *guideCandidate {
 // refreshInterval reports the longest time between automatic refreshes. Only
 // URL-backed sources refresh; inline uploads have nothing new to fetch.
 func refreshInterval(src Source) (time.Duration, bool) {
-	if src.Kind != "plex" && src.PlaylistURL == "" && src.GuideURL == "" || src.RefreshHours < 0 {
+	if src.Disabled {
+		return 0, false
+	}
+	if !defaultGuideFeatures(src).Remote && src.PlaylistURL == "" && src.GuideURL == "" || src.RefreshHours < 0 {
 		return 0, false
 	}
 	if src.RefreshHours == 0 {
@@ -1081,7 +1084,7 @@ func nextRefresh(src Source, horizon *time.Time) (time.Time, bool) {
 		return src.LastErrorAt.Add(backoff).UTC(), true
 	}
 	next := src.UpdatedAt.Add(iv)
-	if horizon != nil && (src.GuideURL != "" || src.Kind == "plex") {
+	if horizon != nil && (src.GuideURL != "" || defaultGuideFeatures(src).Remote) {
 		if h := horizon.Add(-guideHorizonMargin); h.Before(next) {
 			next = h
 		}
@@ -1151,7 +1154,7 @@ func (s *Service) planRefresh(ctx context.Context, srcs []Source) error {
 		}
 		srcs[i].NextRefresh = nil
 		if next, ok := nextRefresh(srcs[i], horizon); ok {
-			if srcs[i].Kind == "plex" && (srcs[i].LastErrorAt == nil || !srcs[i].LastErrorAt.After(srcs[i].UpdatedAt)) {
+			if s.sourceGuideFeatures(srcs[i]).Remote && (srcs[i].LastErrorAt == nil || !srcs[i].LastErrorAt.After(srcs[i].UpdatedAt)) {
 				for key := range used {
 					if key.source == srcs[i].ID && !covered[key] {
 						if earlier := srcs[i].UpdatedAt.Add(minRefreshInterval); earlier.Before(next) {
@@ -1174,6 +1177,9 @@ func (s *Service) RefreshSource(ctx context.Context, id string) (Source, error) 
 }
 
 func (s *Service) refreshSource(ctx context.Context, id, reason string) (Source, error) {
+	if !s.Enabled() {
+		return Source{}, core.ErrNotAvailable
+	}
 	ctx, cancel := context.WithTimeout(ctx, refreshBudget)
 	defer cancel()
 	release, err := s.acquireRefresh(ctx, id)
@@ -1184,6 +1190,9 @@ func (s *Service) refreshSource(ctx context.Context, id, reason string) (Source,
 	src, err := s.storedSourceByID(ctx, id)
 	if err != nil {
 		return src, err
+	}
+	if src.Disabled {
+		return src, core.ErrNotAvailable
 	}
 	// Recheck after admission: another node may have completed the refresh
 	// since this worker selected the source.
@@ -1243,7 +1252,7 @@ func (s *Service) wakeSourceRefresh() {
 func (s *Service) loadScheduledSources(ctx context.Context) ([]Source, error) {
 	// Only scheduling fields are read; inline uploads can be large.
 	d := store.DialectOf(s.o.DB)
-	rows, err := s.o.DB.QueryContext(ctx, `SELECT id, `+store.JSONText(d, "data", "kind")+`, `+store.JSONText(d, "data", "playlistUrl")+`, `+store.JSONText(d, "data", "guideUrl")+`, `+store.JSONInt(d, "data", "refreshHours")+`, `+store.JSONText(d, "data", "updatedAt")+`, `+store.JSONText(d, "data", "lastErrorAt")+`, `+store.JSONInt(d, "data", "refreshFailures")+`, `+store.JSONInt(d, "data", "activityRefreshMinutes")+` FROM livetv_sources ORDER BY id`)
+	rows, err := s.o.DB.QueryContext(ctx, `SELECT id, `+store.JSONText(d, "data", "kind")+`, `+store.JSONText(d, "data", "playlistUrl")+`, `+store.JSONText(d, "data", "guideUrl")+`, `+store.JSONInt(d, "data", "refreshHours")+`, `+store.JSONText(d, "data", "updatedAt")+`, `+store.JSONText(d, "data", "lastErrorAt")+`, `+store.JSONInt(d, "data", "refreshFailures")+`, `+store.JSONInt(d, "data", "activityRefreshMinutes")+` FROM livetv_sources WHERE COALESCE(CAST(`+store.JSONText(d, "data", "disabled")+` AS TEXT), 'false') NOT IN ('true', '1') ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1342,7 +1351,7 @@ func (s *Service) nextSourceRefreshWait(ctx context.Context) (time.Duration, boo
 
 func (s *Service) refreshLoop() {
 	defer s.wg.Done()
-	timer := time.NewTimer(refreshCheckInterval)
+	timer := s.newTimer(refreshCheckInterval)
 	if !timer.Stop() {
 		select {
 		case <-timer.C:

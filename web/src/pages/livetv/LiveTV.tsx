@@ -1,3 +1,4 @@
+import { ChannelAIBuilder } from "./ChannelAIBuilder";
 import Library, { LibraryAside } from "./library/Library";
 import { styleCopy } from "./onair/naming";
 import { stylesName } from "./onair/naming";
@@ -7,6 +8,7 @@ import {
   Badge,
   Button,
   Input,
+  Switch,
   Popover,
   cn,
   confirmDialog,
@@ -119,6 +121,66 @@ function selectionFrom(params: URLSearchParams): Selection {
  * workbench, all edited in place.
  */
 export default function LiveTV() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => {
+    api
+      .getConfig()
+      .then((c) => setEnabled(c.liveTV?.enabled ?? false))
+      .catch((e) => toast.error(errorMessage(e)));
+  }, []);
+  const toggleLiveTV = async (value: boolean) => {
+    try {
+      const c = await api.getConfig();
+      await api.putConfig({ ...c, liveTV: { ...c.liveTV, enabled: value } });
+      setEnabled(value);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
+  };
+  if (enabled === null) return null;
+  if (!enabled)
+    return (
+      <div className="mx-auto max-w-3xl p-6 sm:py-12">
+        <section className="space-y-5 rounded-xl border border-border bg-surface p-6 sm:p-8">
+          <h1 className="text-2xl font-semibold">{t("Live TV is off")}</h1>
+          <p className="text-fg-muted">
+            {t("A familiar channel guide for your library and IPTV, ready to watch in your apps.")}
+          </p>
+          <ul className="list-disc space-y-2 pl-5">
+            <li>{t("Four decade channels, ready to watch, plus any IPTV you add later")}</li>
+            <li>{t("Build your own channels with AI.")}</li>
+          </ul>
+          <Button onClick={() => toggleLiveTV(true)}>{t("Turn on Live TV")}</Button>
+          <p className="text-sm text-fg-muted">{t("No background work while nobody watches.")}</p>
+        </section>
+      </div>
+    );
+  return (
+    <>
+      <div className="px-6 pt-4">
+        <Button onClick={() => setSettingsOpen(true)}>{t("Settings")}</Button>
+      </div>
+      <Drawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        title={t("Live TV settings")}
+      >
+        <label className="flex items-center justify-between gap-4">
+          {t("Live TV")}
+          <Switch
+            aria-label={t("Turn off Live TV")}
+            checked={enabled}
+            onChange={(e) => toggleLiveTV(e.target.checked)}
+          />
+        </label>
+      </Drawer>
+      <LiveTVWorkspace />
+    </>
+  );
+}
+
+function LiveTVWorkspace() {
   const { tab } = useParams();
   const { looks, reels, reload: reloadLooks } = useLooks();
   const navigate = useNavigate();
@@ -547,6 +609,14 @@ export default function LiveTV() {
     }
   }, [selection.kind]);
 
+  useEffect(() => {
+    const changed = () => {
+      void reloadAll();
+    };
+    window.addEventListener("ether:channels-changed", changed);
+    return () => window.removeEventListener("ether:channels-changed", changed);
+  }, [reloadAll]);
+
   const go = useCallback(
     async (next: Selection, opts?: { force?: boolean }) => {
       if (dirty && !opts?.force) {
@@ -725,28 +795,31 @@ export default function LiveTV() {
   };
 
   const actions = (
-    <AddMenu
-      onChannel={() => void go({ kind: "new" })}
-      onPersonal={() =>
-        void (async () => {
-          if (await go({ kind: "new" })) await startNew("personal");
-        })()
-      }
-      onSource={(k) => {
-        if (k === "guide") {
-          addGuideSource();
-          return;
+    <div className="flex items-center gap-2">
+      <ChannelAIBuilder />
+      <AddMenu
+        onChannel={() => void go({ kind: "new" })}
+        onPersonal={() =>
+          void (async () => {
+            if (await go({ kind: "new" })) await startNew("personal");
+          })()
         }
-        void (async () => {
-          if (await go({ kind: "guide" })) navigate("/sources/iptv?new=playlist");
-        })();
-      }}
-      onAddon={() => {
-        void (async () => {
-          if (await go({ kind: "guide" })) navigate("/sources/iptv?new=addon");
-        })();
-      }}
-    />
+        onSource={(k) => {
+          if (k === "guide") {
+            addGuideSource();
+            return;
+          }
+          void (async () => {
+            if (await go({ kind: "guide" })) navigate("/sources/iptv?new=playlist");
+          })();
+        }}
+        onAddon={() => {
+          void (async () => {
+            if (await go({ kind: "guide" })) navigate("/sources/iptv?new=addon");
+          })();
+        }}
+      />
+    </div>
   );
 
   // ---- render -----------------------------------------------------------------------------

@@ -33,17 +33,24 @@ func (a *App) buildDiscovery() {
 		sourceCache = a.cache
 	}
 	a.watchlist = watchlist.New(a.db, watchlist.Options{
-		Logger:           a.log.With("component", "watchlist"),
-		Sealer:           a.cfg,
-		Catalog:          a.catalog,
-		Resolver:         sourceResolver,
-		Engine:           sourceEngine,
-		Cache:            sourceCache,
-		Trakt:            a.trakt,
-		Users:            a.users.Users,
-		Allowed:          a.safety.Allowed,
-		Notifier:         a.notifications,
-		Tokens:           a.discoveryToken,
+		Logger:     a.log.With("component", "watchlist"),
+		Sealer:     a.cfg,
+		Catalog:    a.catalog,
+		Resolver:   sourceResolver,
+		Engine:     sourceEngine,
+		Cache:      sourceCache,
+		Trakt:      a.trakt,
+		Users:      a.users.Users,
+		Allowed:    a.safety.Allowed,
+		Notifier:   a.notifications,
+		Tokens:     a.discoveryToken,
+		OwnerToken: func(context.Context) (string, error) { return a.cfg.Read().Plex.Token, nil },
+		PlexLookup: func(ctx context.Context, guid string) (core.RatingKey, error) {
+			if a.plexGUID == nil {
+				return 0, core.ErrNotFound
+			}
+			return a.plexGUID.Lookup(ctx, guid)
+		},
 		ClientIdentifier: plexguid.ClientIdentifier(a.cfg.Get().Plex.ClientIdentifier, a.cfg.Get().Server.MachineIdentifier),
 		PrewarmBytes:     a.cfg.Get().Cache.PrefetchBytes,
 		ResumeSchedule:   a.clustered(), // a new leader continues the schedule
@@ -184,20 +191,19 @@ func (a *App) discoveryToken(ctx context.Context, id int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return discoveryViewerToken(ctx, u, a.users.HomeMember(id), a.cfg.Read().Plex.Token, a.plextv.HomeUserToken)
+}
+
+func discoveryViewerToken(ctx context.Context, u *core.User, home bool, ownerToken string, switchHome func(context.Context, string, int64, string) (string, error)) (string, error) {
 	if u.IsOwner {
-		return a.cfg.Read().Plex.Token, nil
+		return ownerToken, nil
 	}
-	users, err := a.users.AllUsers(ctx)
-	if err != nil {
-		return "", err
-	}
-	for _, record := range users {
-		if record.ID == id && record.Active && record.Home && record.Restricted {
-			return a.plextv.HomeUserToken(ctx, a.cfg.Read().Plex.Token, u.PlexID, "")
-		}
+	if home {
+		return switchHome(ctx, ownerToken, u.PlexID, "")
 	}
 	return "", core.ErrUnauthorized
 }
+
 func (a *App) artworkVariants(ctx context.Context, t *core.Title, lang string) (overlays.Artwork, error) {
 	images, err := a.tmdb.ArtworkVariants(ctx, t, lang)
 	if err != nil {

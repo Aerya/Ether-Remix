@@ -3,17 +3,32 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/markers"
 	"github.com/braedonsaunders/ether/internal/playback"
+	"github.com/braedonsaunders/ether/internal/plexguide"
 )
 
 func (a *App) buildLiveTV() error {
+	// Resolve the additive switch once from existing owner state, before workers start.
+	if a.cfg.Read().LiveTV.Enabled == nil {
+		// Existing setup is an opt-in, even when every saved channel is disabled.
+		// Probe only for existence and never persist OFF after a database error.
+		var enabled bool
+		if err := a.db.QueryRowContext(context.Background(), `SELECT EXISTS(SELECT 1 FROM livetv_sources) OR EXISTS(SELECT 1 FROM livetv_channels)`).Scan(&enabled); err != nil {
+			return err
+		}
+		if err := a.cfg.Update(func(c *config.Config) error { c.LiveTV.Enabled = &enabled; return nil }); err != nil {
+			return err
+		}
+	}
 	if err := a.buildOnAir(); err != nil {
 		return err
 	}
@@ -29,7 +44,7 @@ func (a *App) buildLiveTV() error {
 	if a.transcoder != nil {
 		ffmpeg = a.transcoder.FFmpegPath()
 	}
-	svc, err := livetv.New(livetv.Options{SessionsChanged: a.notifySessionsChanged, SourcesChanged: a.publishDashboard, VODChanged: func() {
+	svc, err := livetv.New(livetv.Options{Enabled: func() bool { v := a.cfg.Read().LiveTV.Enabled; return v != nil && *v }, SessionsChanged: a.notifySessionsChanged, SourcesChanged: a.publishDashboard, VODChanged: func() {
 		if a.resolver != nil {
 			a.resolver.SourcesChanged(context.Background())
 		}
@@ -43,7 +58,19 @@ func (a *App) buildLiveTV() error {
 		return markers.BreakScanPolicy{DailyBytes: c.BreakScanDailyBytes, ReleaseBytes: c.BreakScanReleaseBytes, LargeReleaseBytes: c.BreakScanLargeReleaseBytes, AllowLarge: c.BreakScanAllowLarge}
 	}}, GuideAI: a.llm, Reels: a.onairReelSnapshot, Graphics: a.onair, InputUser: a.liveTVInputUser, StyleScreens: a.onair.StyleScreens, AudioTrack: a.liveTVAudioTrack, PersonalChanged: func(viewer int64) {
 		a.frontends.notifyLiveLineup(viewer)
-	}, Picker: a.personalize, Watchlist: a.watchlist, State: a.state, Users: a.users, Logger: a.log.With("component", "livetv"), PlexGuideToken: func() string { return a.cfg.Read().Plex.Token }, Now: parityClock(), Showcase: parityShowcase(), DB: a.db, Sealer: a.cfg, Catalog: a.catalog, Collections: a.collections, Playback: a.playback, Transcoder: tc, Availability: avail, Allowed: a.safety.Allowed, CanPlay: a.safety.CanPlay, LogoIndexURL: func() string { return a.cfg.Read().LiveTV.LogoIndexURL }, HealthSweepMinutes: func() int { return a.cfg.Read().LiveTV.HealthSweepMinutes }, Stability: func() string { return a.cfg.Read().LiveTV.Stability }, StreamLimit: func(u *core.User) int { return playback.UserStreamLimit(a.cfg.Read(), a.safety.UserPolicy(u)) }, Warm: func(ctx context.Context, key core.RatingKey, at time.Duration) error {
+	}, Picker: a.personalize, Watchlist: a.watchlist, State: a.state, Users: a.users, Logger: a.log.With("component", "livetv"), GuideProvider: &guide.Client{DB: a.db, HTTPClient: egress.Client(egress.CapDirect, 20*time.Second), Token: func() string { return a.cfg.Read().Plex.Token }}, Now: parityClock(), Showcase: parityShowcase(), DB: a.db, Sealer: a.cfg, Catalog: a.catalog, Collections: a.collections, Playback: a.playback, Transcoder: tc, Availability: avail, CheckAvailability: func(ctx context.Context, key core.RatingKey) (bool, bool) {
+		if a.resolver == nil {
+			return false, false
+		}
+		title, err := a.catalog.Get(ctx, key)
+		if err != nil {
+			return false, false
+		}
+		if a.availability != nil {
+			ctx = a.availability.ChannelCheckContext(ctx)
+		}
+		return a.resolver.CheckChannelAvailability(ctx, title)
+	}, Allowed: a.safety.Allowed, CanPlay: a.safety.CanPlay, LogoIndexURL: func() string { return a.cfg.Read().LiveTV.LogoIndexURL }, HealthSweepMinutes: func() int { return a.cfg.Read().LiveTV.HealthSweepMinutes }, Stability: func() string { return a.cfg.Read().LiveTV.Stability }, StreamLimit: func(u *core.User) int { return playback.UserStreamLimit(a.cfg.Read(), a.safety.UserPolicy(u)) }, Warm: func(ctx context.Context, key core.RatingKey, at time.Duration) error {
 		if !a.registrar.Status().PlexPass {
 			return core.ErrUnauthorized
 		}
@@ -51,7 +78,7 @@ func (a *App) buildLiveTV() error {
 		if err != nil {
 			return err
 		}
-		a.playback.Prewarm(ctx, u, key, core.ClientCaps{Product: "Ether Live TV", ClientID: "ether-channel-prewarm", MaxHeight: 1080, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3"}, Containers: []string{"mp4", "mkv"}}, core.PrewarmOptions{Reason: core.PrewarmDetail, StartOffset: at, DuringPlayback: true, PrefetchBytes: 32 << 20})
+		a.playback.Prewarm(ctx, u, key, core.ClientCaps{Product: "Ether Live TV", ClientID: "ether-channel-prewarm", MaxHeight: 1080, MaxBitrateKbps: 6000, BroadcastBitrateKbps: 6000, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3"}, Containers: []string{"mp4", "mkv"}}, core.PrewarmOptions{Reason: core.PrewarmDetail, StartOffset: at, DuringPlayback: true, PrefetchBytes: 32 << 20})
 		return nil
 	}})
 	if err != nil {
@@ -61,12 +88,28 @@ func (a *App) buildLiveTV() error {
 	svc.SetOnChange(func() {
 		a.frontends.notifyLiveLineup(0)
 	})
+	var enabledMu sync.Mutex
+	wasEnabled := svc.Enabled()
 	a.cfg.Subscribe(func(config.Config) {
+		enabledMu.Lock()
+		defer enabledMu.Unlock()
+		enabled := svc.Enabled()
+		if enabled {
+			a.onair.SetEnabled(true)
+		}
+		if enabled && !wasEnabled {
+			if err := svc.EnableShowcaseDefaults(context.Background()); err != nil {
+				a.log.Warn("live showcase enable failed", "error", err)
+			}
+		}
+		wasEnabled = enabled
+		svc.ReconcileEnabled()
+		a.onair.SetEnabled(svc.Enabled())
 		if err := svc.RefreshGuide(context.Background()); err != nil {
 			a.log.Warn("live guide configuration refresh failed", "error", err)
 		}
 	})
-	a.onair.Start()
+	a.onair.SetEnabled(svc.Enabled())
 	a.closers = append(a.closers, func() { svc.Close() })
 	return nil
 }

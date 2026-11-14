@@ -125,7 +125,8 @@ type Filter struct {
 	// counting and pagination. It is a SQL semi-join on collections_members,
 	// so a collection library pages in one statement whatever its size. A
 	// deleted collection (no members) matches nothing.
-	CollectionMembers int64 `json:"-"`
+	CollectionMembers int64    `json:"-"`
+	CatalogueSources  []string `json:"catalogueSources,omitempty"`
 	// ExcludeGenres and ExcludeKeywords remove viewer-blocked facts before
 	// counting and pagination. Matching is case-insensitive.
 	ExcludeGenres         []string        `json:"-"`
@@ -547,7 +548,8 @@ type SearchRequest struct {
 	Year          int
 	Season        int
 	Episode       int
-	EpisodeTitle  string // optional title used to distinguish same-numbered episodes
+	EpisodeTitle  string   // optional title used to distinguish same-numbered episodes
+	SpecialTitles []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
 	// AbsoluteEpisode is the episode's number counted from the series
 	// start (0 = unknown), and Anime marks a series whose releases are
 	// commonly numbered that way (additive).
@@ -575,9 +577,11 @@ type Indexer interface {
 }
 
 type ResolveRequest struct {
-	Title  *Title
-	Client ClientCaps
-	User   *User
+	// PreferVideoCodec softly preserves the representation family during background replacement.
+	PreferVideoCodec string
+	Title            *Title
+	Client           ClientCaps
+	User             *User
 	// PlayedRelease is the release this viewer last played of the title
 	// (the one a resume opens); Variants names Auto after it (additive).
 	PlayedRelease string
@@ -587,6 +591,10 @@ type ResolveRequest struct {
 	// Plex's "Play Version" picker). It is health-checked like any other
 	// candidate; when it is unavailable, normal ranking applies (additive).
 	Prefer string
+	// PreferredOnly asks whether this explicit pick can open, without
+	// validating an automatic fallback. Playback uses it when it already
+	// holds a policy-checked remembered source to fall back to.
+	PreferredOnly bool
 	// ExactHEVCTranscode permits the explicitly preferred HEVC source to reach
 	// playback admission for an H.264 encode. The broker must still validate
 	// the probed source and the client's complete output profile.
@@ -858,6 +866,9 @@ const (
 )
 
 type Decision struct {
+	// AndroidMatroskaHLS selects the measured Plex Android HLS transport.
+	AndroidMatroskaHLS bool `json:"androidMatroskaHLS,omitempty"`
+
 	Enhancement VideoEnhancement `json:"enhancement,omitempty"`
 
 	Kind       DecisionKind `json:"kind"`

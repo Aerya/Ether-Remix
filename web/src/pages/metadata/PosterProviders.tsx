@@ -18,6 +18,7 @@ export function PosterProviders({ onSaved }: { onSaved: () => void }) {
         ariaLabel={t("Poster source")}
         options={[
           { value: "tmdb", label: "TMDB" },
+          { value: "owner", label: t("Your posters (PosterFlow/folder), then TMDB") },
           ...POSTER_SERVICES.filter((s) => config.data?.accounts?.[s.id]?.enabled).map((s) => ({
             value: s.id,
             label: s.name,

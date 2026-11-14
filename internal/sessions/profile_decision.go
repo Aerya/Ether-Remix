@@ -717,7 +717,17 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 	}
 	output := info
 	output.Container = d.Container
-	output.Streams = slices.Clone(info.Streams)
+	// Segmented output maps one video and the selected audio, not every
+	// track in the input file. Retain their input indices for the encoder,
+	// but evaluate output predicates (notably IsSecondaryAudio) against
+	// this actual stream set. A second language becomes the only audio.
+	output.Streams = nil
+	if video := info.Video(); video != nil {
+		output.Streams = append(output.Streams, *video)
+	}
+	if audio := profileStream(info, "audio", d.AudioStream); audio != nil {
+		output.Streams = append(output.Streams, *audio)
+	}
 	for i := range output.Streams {
 		s := &output.Streams[i]
 		if s.Type == "video" {
@@ -843,9 +853,30 @@ func (b *Broker) h264EncoderVerified() bool {
 }
 
 func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (core.Decision, error) {
+	// The progressive client renders text outside the video. Keep the user's
+	// selection in the plan, but never ask the video decision to burn it in.
+	if ps != nil {
+		tracks := progressiveTextTracks(string(req.Protocol), req.Caps, ps.Info)
+		if len(tracks) > 0 {
+			// Progressive cues need the playback demuxer. Negotiate its
+			// real output now, including the streaming audio constraints.
+			req.Intent.Options.DirectPlay = false
+		}
+		for _, index := range tracks {
+			if req.Intent.Options.SubtitleStream == index {
+				req.Intent.Options.SubtitleStream = -1
+				req.Intent.Options.BurnSubtitles = false
+				break
+			}
+		}
+	}
+
 	req.Caps = applyProfileRangeCaps(req.Caps)
 	r := DecisionRequest{Session: ps, Caps: req.Caps, Options: req.Intent.Options, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true}
 	d, err := Decide(b.deps.Playback, b.deps.Transcoder, r)
+	if err == nil && d.Reason == "remux for failover safety: health unverified" && b.deps.Logger != nil {
+		b.deps.Logger.Debug(d.Reason, "session", ps.ID)
+	}
 	// A profile that lists no direct-play and no transcoding formats declares
 	// nothing about playback (Findroid's "Direct play all"); the ordinary
 	// capability decision stands.
@@ -879,6 +910,16 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			caps.VideoCodecs = videoCodecs
 			caps.AudioCodecs = candidate.AudioCodecs
 			caps.HLSContainers = candidate.Containers
+			// MaxAudioChannels constrains this delivery, not direct-file
+			// decoding. Feed it into the audio planner so supported surround
+			// codecs are downmixed instead of repeatedly proposing copy.
+			if candidate.MaxAudioChannels != "" {
+				limit, err := strconv.Atoi(candidate.MaxAudioChannels)
+				if err != nil || limit <= 0 {
+					return core.Decision{}, false
+				}
+				caps.AudioLimits = append(slices.Clone(caps.AudioLimits), core.AudioLimit{Codec: "*", Name: "audio.channels", Type: "upperBound", Value: limit})
+			}
 			opts := req.Intent.Options
 			opts.DirectPlay = false
 			// Retry only bounded output heights; never raise a client or request

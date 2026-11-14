@@ -45,6 +45,8 @@ import { ProwlarrImport } from "../components/ProwlarrImport";
 import { DEBRID_KINDS } from "./sources/Debrid";
 import { DEBRID_TOKEN_URL } from "./sources/cards";
 import { addonUrlHasDebridKey, isStremio, normalizeAddonUrl } from "./sources/Indexers";
+import { Drawer } from "../components/Drawer";
+import { SourceEditor } from "./livetv/SourceEditor";
 import { LanguageStep } from "./setup/LanguageStep";
 import { StarterBundlesCard } from "./setup/StarterBundlesCard";
 import { SetupReady, connectDevicePath } from "./setup/SetupReady";
@@ -59,7 +61,7 @@ import { normalizeRules, type StreamRules } from "./viewers/shared";
 import { MIN_LOCAL_PASSWORD } from "./me/SignInMethods";
 
 export type WizardStepId =
-  "language" | "apps" | "account" | "sources" | "indexers" | "cache" | "catalog";
+  "livetv" | "language" | "apps" | "account" | "sources" | "indexers" | "cache" | "catalog";
 
 /** Survives a remount after the owner account is created so the visit does not start over. */
 export const SETUP_STEP_KEY = "ether.setup.step";
@@ -112,6 +114,7 @@ export function wizardSteps(
     { id: "sources", title: STEP_COPY.sourcesTitle, heading: STEP_COPY.sourcesHeading },
     { id: "indexers", title: STEP_COPY.indexersTitle, heading: STEP_COPY.indexersHeading },
     { id: "cache", title: STEP_COPY.cacheTitle, heading: STEP_COPY.cacheHeading },
+    { id: "livetv", title: t("Live TV"), heading: t("Do you want Live TV?") },
     { id: "catalog", title: STEP_COPY.catalogTitle, heading: STEP_COPY.catalogHeading },
   ];
 }
@@ -362,6 +365,7 @@ export function canAdvance(
   },
 ): boolean {
   switch (step) {
+    case "livetv":
     case "language":
     case "apps":
     case "cache":
@@ -404,6 +408,7 @@ export function canAdvance(
 export default function Setup() {
   const navigate = useNavigate();
   const app = useAppOptional();
+  const [liveSourceOpen, setLiveSourceOpen] = useState(false);
   const [cfg, setCfg] = useState<EtherConfig | null>(null);
   const [languageChoice, setLanguageChoice] = useState<HouseholdLanguage | null>(null);
   const languageBaseline = useRef<HouseholdLanguage | null>(null);
@@ -775,7 +780,7 @@ export default function Setup() {
             size="md"
             context={t("Restarting puts your new cache folder to work.")}
           />
-          <Button variant="outline" onClick={() => navigate("/cache")}>
+          <Button className="px-4 py-2" variant="outline" onClick={() => navigate("/cache")}>
             {t("Open cache settings")}
           </Button>
         </div>
@@ -823,7 +828,10 @@ export default function Setup() {
         const status = await api.setupStatus();
         setServerSteps(Object.fromEntries(status.steps.map((item) => [item.id, item.complete])));
       }
-      let draft = cfg;
+      let draft =
+        stepId === "livetv"
+          ? { ...cfg, liveTV: { ...cfg.liveTV, enabled: cfg.liveTV?.enabled ?? false } }
+          : cfg;
       if (stepId === "language" && languageChoice) {
         const baseline = languageBaseline.current;
         const edited = !baseline || !sameHouseholdLanguage(languageChoice, baseline);
@@ -973,6 +981,7 @@ export default function Setup() {
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-3">
             <Button
+              className="px-4 py-2"
               variant="ghost"
               disabled={step === 0 || saving}
               onClick={() => setStep(step - 1)}
@@ -990,7 +999,7 @@ export default function Setup() {
             ) : null}
             <span className="flex-1" />
             <Button
-              className="shrink-0"
+              className="px-4 py-2 shrink-0"
               disabled={!advanceOk || saving}
               onClick={() => void next()}
             >
@@ -1004,6 +1013,7 @@ export default function Setup() {
           {(stepId === "sources" || stepId === "indexers" || stepId === "catalog") && !advanceOk ? (
             <div className="text-right">
               <Button
+                className="px-4 py-2"
                 variant="link"
                 disabled={saving || (!localDone && !plexSigned)}
                 onClick={() => void next({ force: true })}
@@ -1027,6 +1037,66 @@ export default function Setup() {
       {stepId === "language" && languageChoice ? (
         <LanguageStep choice={languageChoice} onChange={setLanguageChoice} />
       ) : null}
+      {stepId === "livetv" ? (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {[true, false].map((enabled) => (
+              <button
+                key={String(enabled)}
+                type="button"
+                aria-label={enabled ? t("Yes") : t("Not now")}
+                aria-pressed={cfg.liveTV?.enabled === enabled}
+                onClick={() => setCfg({ ...cfg, liveTV: { ...cfg.liveTV, enabled } })}
+                className={`rounded-xl border-2 p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 ${cfg.liveTV?.enabled === enabled ? "border-primary bg-primary/10" : "border-border bg-surface hover:bg-surface-hover"}`}
+              >
+                <span className="flex items-center justify-between gap-3 font-semibold">
+                  {enabled ? t("Yes") : t("Not now")}
+                  <span aria-hidden="true">{cfg.liveTV?.enabled === enabled ? "●" : "○"}</span>
+                </span>
+                <span className="mt-2 block text-sm text-fg-muted">
+                  {enabled
+                    ? t("Four decade channels, ready to watch, plus any IPTV you add later")
+                    : t("Live TV stays off and costs nothing; turn it on any time in Live TV")}
+                </span>
+              </button>
+            ))}
+          </div>
+          {cfg.liveTV?.enabled ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                className="px-4 py-2"
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    await api.putConfig(cfg);
+                    setLiveSourceOpen(true);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                {t("Add a source now")}
+              </Button>
+              <Button className="px-4 py-2" variant="ghost" onClick={() => next()}>
+                {t("Later")}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <Drawer
+        open={liveSourceOpen}
+        onClose={() => setLiveSourceOpen(false)}
+        title={t("Add a source now")}
+        size="lg"
+      >
+        <SourceEditor
+          source={null}
+          kind="playlist"
+          onSaved={() => setLiveSourceOpen(false)}
+          onDeleted={() => setLiveSourceOpen(false)}
+        />
+      </Drawer>
       {stepId === "apps" ? (
         <div className="space-y-4">
           <p className="text-sm text-fg-muted">
@@ -1166,6 +1236,7 @@ export default function Setup() {
               </p>
               <div className="flex flex-wrap items-center gap-3 text-sm text-fg-muted">
                 <Button
+                  className="px-4 py-2"
                   variant="outline"
                   size="sm"
                   onClick={() => window.open(pin.authUrl, "_blank", "noopener,noreferrer")}
@@ -1186,7 +1257,7 @@ export default function Setup() {
               ) : null}
             </div>
           ) : (
-            <Button disabled={saving} onClick={() => void startPin()}>
+            <Button className="px-4 py-2" disabled={saving} onClick={() => void startPin()}>
               {plexSigned ? t("Reconnect") : t("Sign in to plex.tv")}
             </Button>
           )}
@@ -1194,12 +1265,22 @@ export default function Setup() {
             <p className="text-sm text-fg-muted">{claimMsg}</p>
           ) : null}
           {plexSigned && (!cfg.plex.claimed || claimFailed) && !pin ? (
-            <Button variant="outline" disabled={saving} onClick={() => void claimServer()}>
+            <Button
+              className="px-4 py-2"
+              variant="outline"
+              disabled={saving}
+              onClick={() => void claimServer()}
+            >
               {t("Claim server")}
             </Button>
           ) : null}
           <div className="flex flex-wrap gap-3">
-            <Button variant="outline" disabled={saving} onClick={() => setPlexLater(true)}>
+            <Button
+              className="px-4 py-2"
+              variant="outline"
+              disabled={saving}
+              onClick={() => setPlexLater(true)}
+            >
               {t("Connect Plex later")}
             </Button>
           </div>
@@ -1281,6 +1362,7 @@ export default function Setup() {
                         onTest={() => void runTest("debrid", d.id, () => api.testDebrid(d))}
                       />
                       <Button
+                        className="px-4 py-2"
                         variant="ghost"
                         size="sm"
                         onClick={() => setDebrid(debrid.filter((_, j) => j !== i))}
@@ -1291,7 +1373,11 @@ export default function Setup() {
                   </div>
                 </fieldset>
               ))}
-              <Button variant="outline" onClick={() => setDebrid([...debrid, blankDebrid()])}>
+              <Button
+                className="px-4 py-2"
+                variant="outline"
+                onClick={() => setDebrid([...debrid, blankDebrid()])}
+              >
                 <Plus size={15} /> {t("Add debrid account")}
               </Button>
             </SourceChoice>
@@ -1397,6 +1483,7 @@ export default function Setup() {
                     onTest={() => void runTest("provider", p.id, () => api.testUsenet(p))}
                   />
                   <Button
+                    className="px-4 py-2"
                     variant="ghost"
                     size="sm"
                     onClick={() => setProviders(providers.filter((_, j) => j !== i))}
@@ -1406,7 +1493,11 @@ export default function Setup() {
                 </div>
               </fieldset>
             ))}
-            <Button variant="outline" onClick={() => setProviders([...providers, blankProvider()])}>
+            <Button
+              className="px-4 py-2"
+              variant="outline"
+              onClick={() => setProviders([...providers, blankProvider()])}
+            >
               <Plus size={15} /> {t("Add provider")}
             </Button>
           </SourceChoice>
@@ -1483,6 +1574,7 @@ export default function Setup() {
                     <Check size={14} className="text-primary" />
                     {t("Done")}
                     <Button
+                      className="px-4 py-2"
                       variant="link"
                       size="sm"
                       onClick={() => setEditingIndexers((open) => ({ ...open, [ix.id]: true }))}
@@ -1594,6 +1686,7 @@ export default function Setup() {
                       }
                     />
                     <Button
+                      className="px-4 py-2"
                       variant="ghost"
                       size="sm"
                       onClick={() => setIndexers(indexers.filter((_, j) => j !== i))}
@@ -1606,6 +1699,7 @@ export default function Setup() {
             );
           })}
           <Button
+            className="px-4 py-2"
             variant="outline"
             onClick={() => setIndexers([...indexers, blankIndexer(newIndexerType)])}
           >
@@ -1641,11 +1735,16 @@ export default function Setup() {
                   setCfg({ ...cfg, cache: { ...cfg.cache, dir: e.currentTarget.value } })
                 }
               />
-              <Button variant="outline" onClick={() => refreshDisk(cfg.cache.dir)}>
+              <Button
+                className="px-4 py-2"
+                variant="outline"
+                onClick={() => refreshDisk(cfg.cache.dir)}
+              >
                 {t("Check space")}
               </Button>
               {cacheVolume && cfg.cache.dir !== cacheVolume ? (
                 <Button
+                  className="px-4 py-2"
                   variant="outline"
                   onClick={() => {
                     setCfg({ ...cfg, cache: { ...cfg.cache, dir: cacheVolume } });
@@ -1761,7 +1860,7 @@ export default function Setup() {
       ) : null}
       {stepId === "language" ? (
         <p className="pt-2 text-center text-xs text-fg-muted">
-          <Button variant="link" onClick={() => navigate("/cluster")}>
+          <Button className="px-4 py-2" variant="link" onClick={() => navigate("/cluster")}>
             {t("Join a cluster instead")}
           </Button>
         </p>

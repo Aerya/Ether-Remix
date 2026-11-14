@@ -215,12 +215,13 @@ type ProviderStats struct {
 // API resolution (add/select/poll), link generation, CDN connect (TCP+TLS)
 // and time to first byte of a range request, plus read throughput.
 type Latency struct {
-	ResolveMs     float64 `json:"resolveMs"`
-	LinkMs        float64 `json:"linkMs"`
-	ConnectMs     float64 `json:"connectMs"`
-	TTFBMs        float64 `json:"ttfbMs"`
-	ThroughputBps float64 `json:"throughputBps"`
-	Samples       int64   `json:"samples"`
+	ResolveMs     float64   `json:"resolveMs"`
+	LinkMs        float64   `json:"linkMs"`
+	ConnectMs     float64   `json:"connectMs"`
+	TTFBMs        float64   `json:"ttfbMs"`
+	ThroughputBps float64   `json:"throughputBps"`
+	ThroughputAt  time.Time `json:"-"`
+	Samples       int64     `json:"samples"`
 }
 
 const ewmaAlpha = 0.3
@@ -290,7 +291,7 @@ func (s *Service) UpdateConfig(cfg config.Debrid) {
 		if pc.ID == "" {
 			pc.ID = fmt.Sprintf("%s-%d", pc.Kind, i)
 		}
-		if e, ok := old[pc.ID+"|"+pc.Kind+"|"+pc.APIKey]; ok {
+		if e, ok := old[pc.ID+"|"+pc.Kind+"|"+pc.APIKey]; ok && (!pc.Enabled || e.p != nil) {
 			e.mu.Lock()
 			e.cfg = pc
 			e.mu.Unlock()
@@ -298,7 +299,9 @@ func (s *Service) UpdateConfig(cfg config.Debrid) {
 			continue
 		}
 		e := &entry{cfg: pc, sem: newLimiter(s.slotsFor(providerParallel))}
-		e.p, e.err = s.opts.NewProvider(pc, s.opts.ProviderOptions)
+		if pc.Enabled {
+			e.p, e.err = s.opts.NewProvider(pc, s.opts.ProviderOptions)
+		}
 		next = append(next, e)
 	}
 	pluginIDs := make([]string, 0, len(s.plugins))
@@ -375,7 +378,7 @@ func (e *entry) observe(now time.Time, err error) *backoffEvent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.stats.Requests++
-	if err == nil || errors.Is(err, core.ErrNotCached) || errors.Is(err, ErrGone) || errors.Is(err, core.ErrReleaseRejected) || errors.Is(err, core.ErrSourceUnavailable) {
+	if err == nil || errors.Is(err, core.ErrNotCached) || errors.Is(err, core.ErrWrongContent) || errors.Is(err, ErrGone) || errors.Is(err, core.ErrReleaseRejected) || errors.Is(err, core.ErrSourceUnavailable) {
 		// The provider answered; release-level outcomes and explicitly
 		// transient ones (a link still being generated, a torrent's
 		// server under maintenance) are not outages.
@@ -504,6 +507,7 @@ func (s *Service) RecordStream(providerID string, connect, ttfb time.Duration, b
 		}
 		if bytes >= 256<<10 && elapsed > 0 {
 			l.ThroughputBps = ewma(l.ThroughputBps, float64(bytes)/elapsed.Seconds(), first)
+			l.ThroughputAt = s.now()
 		}
 		l.Samples++
 	})
@@ -807,8 +811,8 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			}
 		case errors.Is(err, core.ErrNotCached):
 			notCached++
-		case errors.Is(err, core.ErrReleaseRejected):
-			return nil, err // the torrent itself has no playable file
+		case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
+			return nil, err // release-level outcome; another account cannot fix it
 		default:
 			errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
 		}
