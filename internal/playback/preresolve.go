@@ -142,11 +142,16 @@ func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.R
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
+		return nil
+	}
 	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
 		return nil
 	}
-	m.prewarm(ctx, user, key, caps, core.PrewarmOptions{Reason: core.PrewarmDetail}, true)
-	if _, ok := m.WaitWarmProbe(ctx, user, caps, key, 4*time.Second); ok {
+	// Viewing the detail page admits one bounded on-demand open, just as
+	// playback intent does, while metadata mode still forbids video prefetch.
+	m.prewarm(ctx, user, key, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}, true)
+	if _, ok := m.WaitWarmProbe(ctx, user, caps, key, 1500*time.Millisecond); ok {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -191,7 +196,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		prefetchBytes = maxWarmPrefetchBytes
 	}
 	timeout := 45 * time.Second
-	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: playbackSurface(string(caps.Protocol))}
+	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
 	now := m.now()
 	m.mu.Lock()
 	if m.closed || m.byIdent[id] != nil || m.hasFlightLocked(id) {
@@ -327,7 +332,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 			e.originalAudio = true
 			e.originalLanguage = strings.TrimSpace(title.Language)
 		}
-		if res == nil || !releaseMatchesTitle(res.Release, title) || !payloadMatchesTitle(res.NZB, title) {
+		if res == nil || !m.rememberedReleaseMatchesTitle(ctx, res.Release, title) || !payloadMatchesTitle(res.NZB, title) {
 			res, err = m.deps.Resolver.Resolve(ctx, core.ResolveRequest{Title: title, Client: caps, User: &u})
 		} else if reason == core.PrewarmDetail {
 			// Reusing the remembered source skips Resolve/search. Recover only
@@ -343,6 +348,9 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		defer session.sources.seal()
 		src, finish, err := m.openSource(ctx, session.sources, res)
 		if err != nil {
+			if reason == core.PrewarmNextEpisode {
+				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
+			}
 			return
 		}
 		m.noteWarmCause(res, src, reason, cacheTitle(*title))
@@ -352,19 +360,33 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 			return info
 		}, m.persistedProbe(ctx, u.ID, key, res.Release.ID, res.NZB))
 		if err != nil {
+			if reason == core.PrewarmNextEpisode {
+				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
+			}
 			return
 		}
 		defer m.dropGeneration(generation)
+		if caps.BroadcastBitrateKbps > 0 {
+			file := res.Release
+			file.Size, file.Info.FullSeason = src.Size(), false
+			if video := generation.infoSnapshot().Video(); video != nil && video.Height > file.Info.Height {
+				file.Info.Height = video.Height
+			}
+			if !m.channelSourceAllowed(session, file) {
+				return
+			}
+		}
 		facts := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), points: generation.timeMapSnapshot().Points}
 		if facts.info.Estimated {
 			facts = nil
 		}
-		if automaticReserve && !metadata {
+		if !metadata && (automaticReserve || reason == core.PrewarmDetail || reason == core.PrewarmNextEpisode) {
 			info := generation.infoSnapshot()
 			if info.Duration > 0 {
-				prefetchBytes = min(int64(256<<20), max(int64(8<<20), int64(float64(src.Size())*(40*time.Second).Seconds()/info.Duration.Seconds())))
+				prefetchBytes = min(int64(256<<20), max(int64(8<<20), int64(float64(src.Size())*25/info.Duration.Seconds())))
 			}
 		}
+
 		// Publish before prefetch so a play request need not wait for
 		// background IO on debrid/HTTP. Usenet still has to prove the
 		// opening articles exist; takeWarm will not consume it until then.
@@ -380,12 +402,21 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 			e.markOpeningReady()
 			return
 		}
+		resumeOffset := opts.StartOffset
+		if reason == core.PrewarmDetail && resumeOffset <= 0 && m.deps.State != nil {
+			if status, err := m.deps.State.Get(ctx, u.ID, key); err == nil {
+				resumeOffset = status.ViewOffset
+			}
+		}
 		warmOffset := int64(0)
-		if opts.StartOffset > 0 && facts != nil {
+		if resumeOffset > 0 && facts != nil {
 			tm := TimeMap{Size: src.Size(), Duration: facts.info.Duration, Points: facts.points}
-			lo, hi := warmSpanFor(tm, opts.StartOffset, opts.StartOffset+45*time.Second)
+			lo, hi := warmSpanFor(tm, resumeOffset, resumeOffset+25*time.Second)
 			warmOffset = lo
-			prefetchBytes = min(hi-lo, int64(32<<20))
+			prefetchBytes = min(hi-lo, int64(256<<20))
+		}
+		if cfg.BudgetBytes > 0 {
+			prefetchBytes = min(prefetchBytes, cfg.BudgetBytes/10)
 		}
 		if err := m.deps.Engine.Prefetch(ctx, res.Release.ID, res.NZB, warmOffset, prefetchBytes); err != nil {
 			if permanentSourceFailure(err) {
@@ -396,7 +427,12 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 					delete(m.warm, id)
 				}
 				m.mu.Unlock()
-				m.markBad(res.Release.ID, "opening prefetch: "+err.Error())
+				m.rememberOpenFailure(session, res.Release, err)
+				if reason == core.PrewarmNextEpisode {
+					_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, resumeOffset, title.Runtime, err)
+				} else {
+					m.markBad(res.Release.ID, "opening prefetch: "+err.Error())
+				}
 				m.log.Warn("prepared opening rejected", "key", key, "release", res.Release.ID, "err", err)
 			} else if ctx.Err() == nil {
 				m.log.Debug("opening prefetch incomplete", "key", key, "err", err)
@@ -612,7 +648,7 @@ func (m *Manager) DiscardWarm(user *core.User, caps core.ClientCaps, key core.Ra
 	if user == nil || caps.ClientID == "" {
 		return
 	}
-	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: playbackSurface(string(caps.Protocol))}
+	id := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: m.playbackSurface(string(caps.Protocol))}
 	m.mu.Lock()
 	e := m.warm[id]
 	if e != nil {

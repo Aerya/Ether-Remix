@@ -1,3 +1,4 @@
+import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import {
   Badge,
   Switch,
@@ -185,6 +186,7 @@ export function SourceEditor({
         ? {
             ...emptySource(),
             id: source.id,
+            disabled: source.disabled,
             kind: source.kind,
             name: source.kind === "plex" ? plexLineupName(source.name) : source.name,
             lineupId: source.lineupId,
@@ -249,15 +251,21 @@ export function SourceEditor({
   const xtream = kind === "playlist" && auth.type === "xtream";
   const setAuth = (patch: SourceAuth) => setDraft((d) => ({ ...d, auth: { ...d.auth, ...patch } }));
   const plex = kind === "guide" && guideKind === "plex";
+  // GET never returns inline uploads, but the server keeps a stored upload
+  // when a save sends none (keepStoredUploads), so it still counts here.
+  const storedPlaylist = Boolean(
+    source?.hasPlaylist && !source.playlistUrl && source.auth?.type !== "xtream",
+  );
+  const storedGuide = Boolean(source?.hasGuide && !source.guideUrl && source.kind !== "plex");
   const canSave =
     draft.name.trim() !== "" &&
     (xtream
       ? Boolean(auth.server?.trim() && auth.username?.trim() && auth.password)
       : kind === "playlist"
-        ? Boolean(files.playlist || draft.playlist || draft.playlistUrl)
+        ? Boolean(files.playlist || draft.playlist || draft.playlistUrl || storedPlaylist)
         : plex
           ? Boolean(draft.lineupId && (draft.country || region) && draft.postalCode)
-          : Boolean(files.guide || draft.guide || draft.guideUrl));
+          : Boolean(files.guide || draft.guide || draft.guideUrl || storedGuide));
 
   const save = async () => {
     setBusy("save");
@@ -400,59 +408,52 @@ export function SourceEditor({
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-3 sm:p-6">
-      <div className="flex items-start gap-4">
-        <span
-          className={
-            kind === "guide"
-              ? "grid size-12 shrink-0 place-items-center rounded-xl bg-info/15 text-info"
-              : "grid size-12 shrink-0 place-items-center rounded-xl bg-primary-subtle text-primary"
-          }
-        >
-          {kind === "guide" ? <CalendarRange size={22} /> : <ListVideo size={22} />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-xl font-semibold tracking-tight text-fg">
-            {source
-              ? source.kind === "plex"
-                ? plexLineupName(source.name)
-                : source.name
-              : kind === "guide"
-                ? t("New guide source")
-                : t("New IPTV source")}
-          </h2>
-          <p className="text-sm text-fg-muted">
-            {plex
-              ? t("Plex's TV listings for your provider, by postal code.")
-              : textOf(
-                  (
-                    selectedPlugin ??
-                    byEditor(kind === "guide" ? "guide" : xtream ? "xtream" : "playlist")
-                  )?.hint,
-                ) ||
-                (kind === "guide"
-                  ? t("An XMLTV guide on its own. Map any channel to it for listings.")
-                  : t("An M3U playlist of live streams, with an optional XMLTV guide."))}
-          </p>
-        </div>
-        {source ? (
-          <div className="flex shrink-0 gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={Boolean(busy) || !urlBacked}
-              onClick={() => void refresh()}
-              title={urlBacked ? undefined : t("Uploaded files can't be refreshed; upload again")}
-            >
-              <RefreshCw size={13} className={busy === "refresh" ? "animate-spin" : ""} />{" "}
-              {t("Refresh now")}
-            </Button>
-          </div>
-        ) : null}
-      </div>
+      <SourceEditorHeader
+        icon={kind === "guide" ? <CalendarRange size={22} /> : <ListVideo size={22} />}
+        tone={kind === "guide" ? "info" : "primary"}
+        title={
+          source
+            ? source.kind === "plex"
+              ? plexLineupName(source.name)
+              : source.name
+            : kind === "guide"
+              ? t("New guide source")
+              : t("New IPTV source")
+        }
+        description={
+          plex
+            ? t("Plex's TV listings for your provider, by postal code.")
+            : textOf(
+                (
+                  selectedPlugin ??
+                  byEditor(kind === "guide" ? "guide" : xtream ? "xtream" : "playlist")
+                )?.hint,
+              ) ||
+              (kind === "guide"
+                ? t("An XMLTV guide on its own. Map any channel to it for listings.")
+                : t("An M3U playlist of live streams, with an optional XMLTV guide."))
+        }
+        actions={
+          source ? (
+            <div className="flex shrink-0 gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={Boolean(busy) || !urlBacked || Boolean(draft.disabled)}
+                onClick={() => void refresh()}
+                title={urlBacked ? undefined : t("Uploaded files can't be refreshed; upload again")}
+              >
+                <RefreshCw size={13} className={busy === "refresh" ? "animate-spin" : ""} />{" "}
+                {t("Refresh now")}
+              </Button>
+            </div>
+          ) : null
+        }
+      />
 
       {source ? (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {[
+        <SourceEditorMetrics
+          items={[
             kind === "guide"
               ? {
                   key: "coverage",
@@ -481,16 +482,21 @@ export function SourceEditor({
               label: t("Guide runs to"),
               value: source.guideUntil ? dayClock(source.guideUntil) : "—",
             },
-          ].map(({ key, label, value: v }) => (
-            <div key={key} className="rounded-xl border border-border bg-surface px-3 py-2.5">
-              <p className="text-[11px] font-medium uppercase tracking-wider text-fg-subtle">
-                {label}
-              </p>
-              <p className="mt-0.5 truncate text-lg font-semibold tabular-nums text-fg">{v}</p>
-            </div>
-          ))}
-        </div>
+          ]}
+        />
       ) : null}
+
+      <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-surface px-4 py-3">
+        <span className="text-sm font-medium">{t("Enabled")}</span>
+        <Switch
+          aria-label={t("Enabled")}
+          checked={!draft.disabled}
+          onChange={(e) => {
+            const disabled = !e.currentTarget.checked;
+            setDraft((d) => ({ ...d, disabled }));
+          }}
+        />
+      </div>
 
       {source?.lastError ? (
         <div className="flex items-start gap-2 rounded-xl border border-danger/40 bg-danger/10 p-3 text-sm">

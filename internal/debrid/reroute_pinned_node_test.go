@@ -206,34 +206,34 @@ func TestProbeLinkRejectsFalsePositiveAnswers(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		handler http.HandlerFunc
-		want    bool
+		want    probeVerdict
 	}{
 		{"204 no content", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
-		}, false},
+		}, probeRejected},
 		{"200 HTML error page", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte("<html>gone</html>"))
-		}, false},
+		}, probeRejected},
 		{"206 for another offset", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", probeSample-1, size))
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write(make([]byte, probeSample))
-		}, false},
+		}, probeRejected},
 		{"206 for another file size", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, off+probeSample-1, size/4))
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write(make([]byte, probeSample))
-		}, false},
+		}, probeRejected},
 		{"206 truncated short", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Range", exact)
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write([]byte("five"))
-		}, false},
+		}, probeRejected},
 		{"302 to an unapproved host", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Location", "http://127.0.0.1:1/hop")
 			w.WriteHeader(http.StatusFound)
-		}, false},
+		}, probeRejected},
 		{"a whole 206 wins", func(w http.ResponseWriter, r *http.Request) {
 			if got := r.Header.Get("Range"); got != fmt.Sprintf("bytes=%d-%d", off, off+probeSample-1) {
 				t.Errorf("probe asked for %s, want the failed read's offset", got)
@@ -241,13 +241,126 @@ func TestProbeLinkRejectsFalsePositiveAnswers(t *testing.T) {
 			w.Header().Set("Content-Range", exact)
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write(make([]byte, probeSample))
-		}, true},
+		}, probeApproved},
 	} {
 		srv := httptest.NewServer(c.handler)
 		if got := e.probeLink(context.Background(), srv.URL+"/dl/link?auth=xyz", off, size); got != c.want {
 			t.Errorf("%s: probeLink=%v, want %v", c.name, got, c.want)
 		}
 		srv.Close()
+	}
+}
+
+// A drained edge answers headers promptly and then delivers the body in a
+// dribble (observed on TorBox 2026-11-12/13: edges that had been taken out
+// of service served ~0.1-0.6 MB/s until they refused connections). The
+// probe's sample must be big enough that one probe budget measures flow,
+// not just a willingness to answer headers: a sample delivered slower than
+// probeSample/edgeProbeBudget is evidence to route away from.
+func TestProbeLinkRejectsDribblingEdge(t *testing.T) {
+	h := newHarness(t, 4<<20, "torbox")
+	e := NewEngine(h.svc, EngineOptions{BlockSize: testBlock, HedgeDelay: -1, Logger: h.svc.log})
+	defer e.Close()
+	const off, size = int64(1 << 20), int64(4 << 20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, off+probeSample-1, size))
+		w.WriteHeader(http.StatusPartialContent)
+		flusher, _ := w.(http.Flusher)
+		chunk := make([]byte, min(64, probeSample))
+		for written := int64(0); written < probeSample; written += int64(len(chunk)) {
+			if _, err := w.Write(chunk); err != nil {
+				return // the probe gave up; the client hung up
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(10 * time.Millisecond): // ~6 KB/s: headers fast, flow dead
+			}
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), edgeProbeBudget)
+	defer cancel()
+	if got := e.probeLink(ctx, srv.URL+"/dl/link?auth=xyz", off, size); got != probeDegraded {
+		t.Fatalf("verdict=%v, want probeDegraded: a 6 KB/s edge earned old main's evidence, "+
+			"but the probe must never approve a body that never completed in budget", got)
+	}
+}
+
+// TestProbeLinkFlowGate pins the bounded-completion contract of the
+// probe: setup and body share edgeProbeBudget, so a slow start is
+// accepted while it leaves the budget for a fast body; the observed
+// drained-edge band (~0.1-0.6 MB/s, TorBox 2026-11-12/13) is rejected
+// outright; and at the end of the file the floor scales with the
+// remaining bytes, so a valid tiny tail is not rejected for dribbling.
+// Fixture rates sit clear of the probeSample/edgeProbeBudget boundary:
+// an assertion right at ~1 MB/s would be a timing fight, not a contract.
+func TestProbeLinkFlowGate(t *testing.T) {
+	const size = 8 << 20
+	tests := []struct {
+		name       string
+		off        int64
+		startDelay time.Duration // silence before headers: cold setup's share of the budget
+		chunk      int
+		pause      time.Duration // between chunks; 0 streams at loopback speed
+		want       bool
+	}{
+		{name: "healthy edge streams the sample", off: 1 << 20, chunk: 64 << 10, want: true},
+		{name: "slow setup then a fast body completes", off: 1 << 20, startDelay: 750 * time.Millisecond, chunk: 64 << 10, want: true},
+		{name: "observed band top rejects", off: 1 << 20, chunk: 6 << 10, pause: 10 * time.Millisecond, want: false},        // ~0.6 MB/s
+		{name: "observed band floor rejects", off: 1 << 20, chunk: 6 << 10, pause: 24 * time.Millisecond, want: false},      // ~0.25 MB/s
+		{name: "tiny tail dribbles and is accepted", off: size - 4096, chunk: 64, pause: 10 * time.Millisecond, want: true}, // ~6 KB/s over 4 KiB
+	}
+	h := newHarness(t, size, "torbox")
+	e := NewEngine(h.svc, EngineOptions{BlockSize: testBlock, HedgeDelay: -1, Logger: h.svc.log})
+	defer e.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var lo, hi int64
+				if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &lo, &hi); err != nil {
+					t.Errorf("probe sent an unparsable range: %q", r.Header.Get("Range"))
+					return
+				}
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(tt.startDelay):
+				}
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", lo, hi, size))
+				w.WriteHeader(http.StatusPartialContent)
+				flusher, _ := w.(http.Flusher)
+				chunk := make([]byte, tt.chunk)
+				for written := int64(0); written < hi-lo+1; written += int64(len(chunk)) {
+					if want := hi - lo + 1 - written; want < int64(len(chunk)) {
+						chunk = chunk[:want] // the last partial chunk: deliver exactly the range
+					}
+					if _, err := w.Write(chunk); err != nil {
+						return // the probe gave up; the client hung up
+					}
+					if flusher != nil {
+						flusher.Flush()
+					}
+					if tt.pause == 0 {
+						continue
+					}
+					select {
+					case <-r.Context().Done():
+						return
+					case <-time.After(tt.pause):
+					}
+				}
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), edgeProbeBudget)
+			defer cancel()
+			if got := e.probeLink(ctx, srv.URL+"/dl/link?auth=xyz", tt.off, size) == probeApproved; got != tt.want {
+				t.Fatalf("probeLink approved=%v, want approved=%v", got, tt.want)
+			}
+		})
 	}
 }
 

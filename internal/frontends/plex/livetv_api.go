@@ -368,7 +368,7 @@ func liveProgrammeArt(key frontend.RatingKey, path string) string {
 	if path == "" || key == 0 || strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 		return path
 	}
-	return artURL(&frontend.Title{Key: key, BackdropPath: path})
+	return "/library/metadata/" + key.String() + "/art/" + imageStamp(&frontend.Title{Key: key, BackdropPath: path})
 }
 
 func (s *Server) liveProgrammeMetadata(c frontend.LiveTVChannel, p frontend.LiveTVProgramme) model.Metadata {
@@ -439,7 +439,7 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 		}
 		until = from.Add(24 * time.Hour)
 	}
-	if raw := q.Get("beginsAt"); raw != "" {
+	if raw := firstLiveQuery(q, "beginsAt", "beginsAt>"); raw != "" {
 		n, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("%w: beginsAt", errLiveBadRequest)
@@ -447,14 +447,14 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 		from = time.Unix(n, 0)
 		until = from.Add(24 * time.Hour)
 	}
-	if raw := q.Get("endsAt"); raw != "" {
+	if raw := firstLiveQuery(q, "endsAt", "endsAt<"); raw != "" {
 		n, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("%w: endsAt", errLiveBadRequest)
 		}
 		until = time.Unix(n, 0)
 	}
-	gridKey := q.Get("channelGridKey")
+	gridKey := strings.Join(q["channelGridKey"], ",")
 	if id := chi.URLParam(r, "programme"); id != "" {
 		dash := strings.LastIndexByte(id, '-')
 		if dash <= 0 {
@@ -473,12 +473,12 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 	if !until.After(from) || until.Sub(from) > 7*24*time.Hour {
 		return nil, fmt.Errorf("%w: window", errLiveBadRequest)
 	}
-	// Plex asks for one grid channel at a time. Converting the whole lineup's
-	// window (179k rows) to keep one channel made the guide CPU-bound.
+	// Read only the requested channels. Plex can send comma-separated or
+	// repeated grid keys; treating the list as one ID produces an empty guide.
 	var ps []frontend.LiveTVProgramme
 	var err error
 	if gridKey != "" {
-		ps, err = s.svc().liveTV.GuideForChannels(r.Context(), FromContext(r.Context()).User, from, until, []string{gridKey})
+		ps, err = s.svc().liveTV.GuideForChannels(r.Context(), FromContext(r.Context()).User, from, until, strings.Split(gridKey, ","))
 	} else {
 		ps, err = s.svc().liveTV.GuideWindow(r.Context(), FromContext(r.Context()).User, from, until)
 	}
@@ -487,14 +487,16 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 	}
 	byID := map[string]frontend.LiveTVChannel{}
 	if gridKey != "" {
-		c, err := s.svc().liveTV.ChannelForViewer(r.Context(), FromContext(r.Context()).User, gridKey)
-		if errors.Is(err, frontend.ErrNotFound) {
-			return []model.Metadata{}, nil
+		for _, id := range strings.Split(gridKey, ",") {
+			c, err := s.svc().liveTV.ChannelForViewer(r.Context(), FromContext(r.Context()).User, id)
+			if errors.Is(err, frontend.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			byID[c.ID] = c
 		}
-		if err != nil {
-			return nil, err
-		}
-		byID[c.ID] = c
 	} else {
 		cs, err := s.svc().liveTV.AllChannels(r.Context())
 		if err != nil {
@@ -537,13 +539,22 @@ func (s *Server) handleLiveGuide(w http.ResponseWriter, r *http.Request) {
 	md, err := s.liveGuideMetadata(r)
 	pr := FromContext(r.Context())
 	attrs := []any{"client", pr.ClientID, "product", pr.Product, "detail", chi.URLParam(r, "programme") != "", "items", len(md), "elapsed", time.Since(started)}
-	for _, name := range []string{"beginsAt", "endsAt", "type", "includeDetails"} {
+	for _, name := range []string{"beginsAt", "beginsAt>", "endsAt", "endsAt<", "type", "includeDetails"} {
 		if raw := r.URL.Query().Get(name); raw != "" {
 			if n, e := strconv.ParseInt(raw, 10, 64); e == nil {
 				attrs = append(attrs, name, n)
 			} else {
 				attrs = append(attrs, name, "invalid")
 			}
+		}
+	}
+	// Only allowlisted, bounded query values: never log tokens or arbitrary URLs.
+	for _, name := range []string{"date", "channelGridKey"} {
+		if raw := strings.Join(r.URL.Query()[name], ","); raw != "" {
+			if len(raw) > 512 {
+				raw = raw[:512]
+			}
+			attrs = append(attrs, name, raw)
 		}
 	}
 	summaries, clips, episodes, movies := 0, 0, 0, 0
@@ -736,7 +747,7 @@ func (s *Server) handleLiveTune(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := c.ID
-	info, err := s.svc().liveTV.TuneWithSession(r.Context(), pr.User, id, s.clientCaps(pr), pr.SessionID)
+	info, err := s.svc().liveTV.TuneWithSession(r.Context(), pr.User, id, liveTuneCaps(s.clientCaps(pr)), pr.SessionID)
 	if err != nil {
 		s.log.Warn("live tune response failed", append([]any{"channel", id, "client", pr.ClientID, "product", pr.Product}, frontend.DiagnoseLiveTV("tune", err).LogAttrs...)...)
 		s.writeLiveTuneError(w, r, err)
@@ -1050,4 +1061,19 @@ func (s *Server) handleLiveOperationStop(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.writeEmpty(w, r)
+}
+
+func liveTuneCaps(caps frontend.ClientCaps) frontend.ClientCaps {
+	caps.ProbeLiveWithoutCodecs = caps.ProbeLiveWithoutCodecs || frontend.HasQuirk(caps.Product, caps.Platform, caps.Device, "", caps.Version, "probe-hls-without-codecs")
+	return caps
+}
+
+// Plex comparison filters encode >= and <= as query keys ending in > and <.
+func firstLiveQuery(q url.Values, names ...string) string {
+	for _, name := range names {
+		if v := q.Get(name); v != "" {
+			return v
+		}
+	}
+	return ""
 }

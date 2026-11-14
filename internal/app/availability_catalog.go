@@ -6,6 +6,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/availability"
 	"github.com/braedonsaunders/ether/internal/catalog"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/experience"
 )
 
 // Keep optional catalogue contracts by embedding the concrete catalogue. The
@@ -13,6 +14,9 @@ import (
 type availabilityCatalog struct {
 	*catalog.Catalog
 	availability *availability.Service
+	// stepAside is set on the Plex surface only: its section pages read this
+	// catalogue directly, so held titles are excluded here in SQL.
+	stepAside *experience.StepAside
 }
 
 func (c *availabilityCatalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, error) {
@@ -29,7 +33,23 @@ func (c *availabilityCatalog) Browse(ctx context.Context, q core.BrowseQuery) (c
 	if err != nil {
 		return core.Page{}, err
 	}
+	q.Filter = c.withStepAside(ctx, q.Filter)
 	return c.Catalog.Browse(ctx, q)
+}
+
+// withStepAside excludes the titles a step-aside Plex Media Server holds
+// (Plex surface only), keeping what the viewer has in progress on Ether.
+func (c *availabilityCatalog) withStepAside(ctx context.Context, f core.Filter) core.Filter {
+	if c.stepAside == nil {
+		return f
+	}
+	switch f.Type {
+	case core.TypeMovie, core.TypeShow, core.TypeSeason, core.TypeEpisode:
+		if keys, active := c.stepAside.ExcludedKeys(ctx, nil, f.Type); active && len(keys) > 0 {
+			f.ExcludeKeys = append(append([]core.RatingKey(nil), f.ExcludeKeys...), keys...)
+		}
+	}
+	return f
 }
 
 // BrowseAvailabilityInSQL marks pages whose availability decision was applied
@@ -43,6 +63,9 @@ func (c *availabilityCatalog) FacetFilter(ctx context.Context, f core.Filter, fa
 	if err != nil {
 		return nil, err
 	}
+	// Facet counts (the first-letter jump bar above all) must count the same
+	// titles the page lists, or Plex apps jump to the wrong offset.
+	f = c.withStepAside(ctx, f)
 	return c.Catalog.FacetFilter(ctx, f, facet)
 }
 func (c *availabilityCatalog) Children(ctx context.Context, k core.RatingKey) ([]core.Title, error) {

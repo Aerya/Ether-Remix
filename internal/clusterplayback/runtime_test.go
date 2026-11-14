@@ -40,7 +40,9 @@ func (fixtureCatalog) Get(_ context.Context, k core.RatingKey) (*core.Title, err
 type fixtureResolver struct{ core.Resolver }
 
 func (fixtureResolver) Resolve(_ context.Context, q core.ResolveRequest) (*core.Resolution, error) {
-	return &core.Resolution{Title: q.Title.Key, Release: core.Release{ID: "fixture", Name: "fixture.mkv"}, NZB: []byte("offline")}, nil
+	// This fixture tests direct delivery of a known healthy source. Unknown
+	// health intentionally selects failover-safe remux in the shared policy.
+	return &core.Resolution{HealthVerified: true, Title: q.Title.Key, Release: core.Release{ID: "fixture", Name: "fixture.mkv"}, NZB: []byte("offline")}, nil
 }
 
 type fixtureEngine struct {
@@ -198,7 +200,12 @@ func TestSourceWorkerDeliveryAndExactRetirement(t *testing.T) {
 		t.Fatal(e)
 	}
 	encoder := &fixtureEncoder{}
-	manager, e := playback.New(playback.Deps{Catalog: fixtureCatalog{}, Resolver: fixtureResolver{}, Engine: fixtureEngine{}, Transcoder: encoder, SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return core.QualityProfile{} }}, config.Defaults(t.TempDir()), playback.Options{})
+	manager, e := playback.New(playback.Deps{Catalog: fixtureCatalog{}, Resolver: fixtureResolver{}, Engine: fixtureEngine{}, Transcoder: encoder, SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return core.QualityProfile{} }}, config.Defaults(t.TempDir()), playback.Options{SessionSurface: func(surface string) string {
+		if surface == "plex" {
+			return ""
+		}
+		return surface
+	}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -227,7 +234,7 @@ func TestSourceWorkerDeliveryAndExactRetirement(t *testing.T) {
 		return s, nil
 	}
 	eligible := func(context.Context, nodewire.Identity, config.NodeRole) error { return nil }
-	base := Options{DB: db, Placement: p, Endpoint: endpoint, Eligible: eligible, MemberRole: eligible, Capacity: 16, ClockBoundKnown: true, ClockSkew: time.Millisecond, Decide: func(core.MediaInfo, core.ClientCaps, core.DecideOptions) core.Decision { return core.Decision{} }}
+	base := Options{SurfacePolicy: testSessionPolicy, Delivery: testDeliveryPolicy(), DB: db, Placement: p, Endpoint: endpoint, Eligible: eligible, MemberRole: eligible, Capacity: 16, ClockBoundKnown: true, ClockSkew: time.Millisecond, Decide: func(core.MediaInfo, core.ClientCaps, core.DecideOptions) core.Decision { return core.Decision{} }}
 	o := base
 	o.Self = sourceID
 	o.Guard = guards[0]
@@ -403,16 +410,16 @@ func TestSourceWorkerDeliveryAndExactRetirement(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	plexRequest := httptest.NewRequest("GET", "https://public/video/:/transcode/universal/session/public-session/base/0.ts", nil)
-	plexResponse := httptest.NewRecorder()
-	if !worker.ForwardEncodedMedia(plexResponse, plexRequest, request.SessionID) || plexResponse.Code != 401 {
+	adapterRequest := httptest.NewRequest("GET", "https://public/video/:/transcode/universal/session/public-session/base/0.ts", nil)
+	adapterResponse := httptest.NewRecorder()
+	if !worker.ForwardEncodedMedia(adapterResponse, adapterRequest, request.SessionID) || adapterResponse.Code != 401 {
 		t.Fatal("Plex forwarding bypassed original authorization")
 	}
-	plexRequest.Header.Set("X-Plex-Token", "offline-plex-token")
-	plexRequest.Header.Set("Range", "bytes=1-3")
-	plexResponse = httptest.NewRecorder()
-	if !worker.ForwardEncodedMedia(plexResponse, plexRequest, request.SessionID) || plexResponse.Code != 206 || plexResponse.Body.String() != "egm" {
-		t.Fatalf("Plex range proxy %d %q", plexResponse.Code, plexResponse.Body.String())
+	adapterRequest.Header.Set("X-Plex-Token", "offline-plex-token")
+	adapterRequest.Header.Set("Range", "bytes=1-3")
+	adapterResponse = httptest.NewRecorder()
+	if !worker.ForwardEncodedMedia(adapterResponse, adapterRequest, request.SessionID) || adapterResponse.Code != 206 || adapterResponse.Body.String() != "egm" {
+		t.Fatalf("Plex range proxy %d %q", adapterResponse.Code, adapterResponse.Body.String())
 	}
 	if worker.ForwardEncodedMedia(httptest.NewRecorder(), httptest.NewRequest("GET", "https://public/video/:/transcode/universal/start.m3u8?session=public-session", nil), request.SessionID) {
 		t.Fatal("control URI admitted to media scope")
@@ -810,7 +817,7 @@ func testRemoteNeutralBroker(t *testing.T, ctx context.Context, base Options, gu
 	active := func(_ context.Context, id int64) (*core.Viewer, error) { return &core.Viewer{ID: id}, nil }
 	events := sessions.NewEventBus(nil, active)
 	defer events.Close()
-	broker, err := sessions.NewBroker(sessions.BrokerDeps{Playback: remote, Transcoder: decision, DistributedHLS: runtime, Events: events, ActiveViewer: active, CanPlay: func(*core.Viewer, bool, time.Time) bool { return true }, BitrateLimit: func(*core.Viewer) int { return 0 }, Progress: fixtureProgress{}, OnTimeline: func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string) {}, Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
+	broker, err := sessions.NewBroker(sessions.BrokerDeps{SurfacePolicy: testSessionPolicy, Playback: remote, Transcoder: decision, DistributedHLS: runtime, Events: events, ActiveViewer: active, CanPlay: func(*core.Viewer, bool, time.Time) bool { return true }, BitrateLimit: func(*core.Viewer) int { return 0 }, Progress: fixtureProgress{}, OnTimeline: func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string) {}, Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
 		return &core.Title{Key: k, Type: core.TypeMovie}, nil
 	}})
 	if err != nil {

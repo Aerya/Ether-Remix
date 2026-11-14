@@ -120,6 +120,8 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 		}
 	}
 	if s.input != inputURL {
+		s.textSubtitleStreams = nil // The durable source identity belongs to the original input.
+		s.textSubtitleSource = ""
 		s.healTimestamps = false // clock evidence belongs to the sampled input
 		// SwapInput has no replacement-credential parameter. Never carry an
 		// old provider's credentials onto an independently resolved URL.
@@ -134,6 +136,10 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 		}
 	}
 	s.inputCrop = crop
+	if s.resumeWarm != nil {
+		s.resumeWarm.encoder.seal()
+		s.resumeWarm = nil
+	}
 	s.input = inputURL
 	s.info = info
 	s.decision = next

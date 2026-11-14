@@ -632,7 +632,7 @@ export function IndexerList({
                       ) : (
                         <Badge variant="outline">{protocolLabel(ix)}</Badge>
                       )}
-                      {!ix.enabled ? <Badge variant="secondary">{t("Off")}</Badge> : null}
+                      {!ix.enabled ? <Badge variant="secondary">{t("Disabled")}</Badge> : null}
                       {s && Number(s.retryAt ?? 0) > Date.now() / 1000 ? (
                         <Badge variant="warning">
                           {t("Waiting for service · retries automatically")}
@@ -724,6 +724,8 @@ export function IndexerList({
       </Drawer>
 
       <RecordDrawer
+        enabled={draft?.enabled}
+        onEnabledChange={(enabled) => set({ enabled })}
         open={editing !== null}
         onClose={close}
         title={
@@ -839,11 +841,6 @@ export function IndexerList({
                   }
                   control={<Badge variant="outline">{siteProtocolLabel(draft.protocol)}</Badge>}
                 />
-                <BoolRow
-                  label={t("Enabled")}
-                  value={draft.enabled}
-                  onChange={(v) => set({ enabled: v })}
-                />
               </SettingsSection>
             ) : stremio ? (
               <SettingsSection title={t("Addon")}>
@@ -877,11 +874,6 @@ export function IndexerList({
                     </AlertDescription>
                   </Alert>
                 ) : null}
-                <BoolRow
-                  label={t("Enabled")}
-                  value={draft.enabled}
-                  onChange={(v) => set({ enabled: v })}
-                />
               </SettingsSection>
             ) : zilean ? (
               <SettingsSection title={t("Instance")}>
@@ -896,11 +888,6 @@ export function IndexerList({
                   )}
                   error={errors.url}
                   onChange={(v) => set({ url: v })}
-                />
-                <BoolRow
-                  label={t("Enabled")}
-                  value={draft.enabled}
-                  onChange={(v) => set({ enabled: v })}
                 />
               </SettingsSection>
             ) : (
@@ -944,11 +931,6 @@ export function IndexerList({
                       onChange={(v) => set({ apiKey: v })}
                     />
                   </SettingsRow>
-                  <BoolRow
-                    label={t("Enabled")}
-                    value={draft.enabled}
-                    onChange={(v) => set({ enabled: v })}
-                  />
                 </SettingsSection>
                 <SettingsSection
                   title={t("Client identity")}

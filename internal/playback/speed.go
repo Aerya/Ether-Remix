@@ -237,6 +237,11 @@ func (m *Manager) checkSpeeds() {
 }
 
 func (m *Manager) checkSpeed(s *session, now time.Time) {
+	// Continuous channel decoders have no per-session HLS swap target. Their
+	// clock handles stalled sources and preserves the actual scheduled offset.
+	if s.caps.BroadcastBitrateKbps > 0 {
+		return
+	}
 	g := s.current()
 	if g == nil || s.isClosed() {
 		return
@@ -318,6 +323,14 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	// rescuing inside grace only when a previously built cushion (>= 12s) has
 	// genuinely drained almost dry after sustained observation.
 	drainingBuiltBuffer := hasHLS && bufferKnown && s.gracePeakBuffer >= 12*time.Second && buffer <= 4*time.Second && age >= 6*time.Second
+	if netOK {
+		if observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver); yes {
+			observer.ObserveSourceDelivery(g.res.Release, netBps)
+		}
+	}
+	if hasHLS && ok && fetch < media {
+		m.prepareSpeedAlternate(g)
+	}
 	if grace && !drainingBuiltBuffer {
 		s.slowChecks = 0
 		s.speedMu.Unlock()

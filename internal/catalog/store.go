@@ -848,7 +848,8 @@ type upsertOpts struct {
 }
 
 // UpsertCollectionTitles mirrors one source refresh in a single transaction.
-// Call only from the collection build worker, never a serving path.
+// Call for bounded source refreshes (collection workers or an opened
+// catalogue-source library), never a library-wide sweep on a serving path.
 func (c *Catalog) UpsertCollectionTitles(ctx context.Context, titles []core.Title) error {
 	if len(titles) == 0 {
 		return nil
@@ -1279,6 +1280,11 @@ ON CONFLICT(key) DO UPDATE SET
 			return err
 		}
 	}
+	if t.Type == core.TypeEpisode || t.Type == core.TypeSeason {
+		if err := applyEpisodeRelease(ctx, tx, t.Key); err != nil {
+			return err
+		}
+	}
 	// Replace join rows only when the incoming title carries that facet, so
 	// summary upserts don't wipe detail-fetched genres/credits. A batch
 	// writes them together after its titles (join_batch.go).
@@ -1525,10 +1531,10 @@ func (c *Catalog) queryTitlesRows(ctx context.Context, sqlGated, rowsOnly bool, 
 		if err != nil {
 			return nil, err
 		}
-		// Let hydration establish an undated Specials container's premiere
-		// from its aired children; all other unknown dates remain excluded.
-		undatedSpecials := st.t.Type == core.TypeSeason && st.t.Key.Season() == 0 && st.t.Released.IsZero()
-		if sqlGated || (!st.t.Adult && (st.t.IsReleased(c.now()) || c.upcomingMovie(&st.t) || undatedSpecials)) {
+		// Let hydration establish an undated season premiere from aired
+		// children; the final release gate still excludes unknown dates.
+		undatedSeason := st.t.Type == core.TypeSeason && st.t.Released.IsZero()
+		if sqlGated || (!st.t.Adult && (st.t.IsReleased(c.now()) || c.upcomingMovie(&st.t) || undatedSeason)) {
 			out = append(out, st.t)
 		}
 	}

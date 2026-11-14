@@ -126,6 +126,8 @@ func (s *Server) handleMetadataGUIDPath(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
+	// Serve stored catalogue details while bounded enrichment fills the mirror.
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	startDetailPageWait(pr)
@@ -383,7 +385,7 @@ func (s *Server) showOnDeck(ctx context.Context, pr *Request, show frontend.Rati
 	return s.exp().ShowOnDeck(eps, st, func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) }), st
 }
 
-const detailWarmWaitBudget = 4 * time.Second
+const detailWarmWaitBudget = 1500 * time.Millisecond
 
 // Apple TV can refresh detail metadata and obtains the admitted source's
 // tracks again on Play. Keep speculative preparation behind its browse
@@ -392,7 +394,10 @@ const detailWarmWaitBudget = 4 * time.Second
 // pre-play detail/queue item and do not re-fetch metadata once playback starts.
 func startDetailPageWait(pr *Request) {
 	if plexMobileOrTVBedrockClient(pr) {
-		pr.detailWaitUntil = time.Now().Add(detailWarmWaitBudget)
+		// Android builds its subtitle picker from this response; a cold
+		// probe needs the measured four-second allowance. Persisted probes
+		// return before any wait in warmDetail.
+		pr.detailWaitUntil = time.Now().Add(4 * time.Second)
 	} else if pr != nil && (strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Product, "Plex for Apple TV")) {
 		pr.detailWaitUntil = time.Now().Add(250 * time.Millisecond)
 	}
@@ -406,9 +411,14 @@ func (s *Server) warmDetail(ctx context.Context, pr *Request, t *frontend.Title)
 	if t == nil || !isPlayable(t.Type) || s.playback() == nil {
 		return
 	}
+	// A persisted probe describes the exact resume release already selected
+	// for this viewer and profile. Rendering it needs no source admission.
+	if _, _, ok := s.resumedTracks(ctx, pr, t); ok {
+		return
+	}
 	if plexMobileOrTVBedrockClient(pr) {
 		if _, ok := s.playback().(frontend.MetadataProber); ok {
-			// A single wait: do not add speculative warmDetail's four seconds
+			// A single wait: do not add speculative warmDetail's allowance
 			// after the metadata probe's own bounded wait. Errors/timeouts
 			// preserve the normal detail response and background preparation.
 			_ = s.probeDetailTracks(ctx, pr, t)
@@ -434,6 +444,11 @@ func (s *Server) warmDetail(ctx context.Context, pr *Request, t *frontend.Title)
 		if _, warm := wp.WarmProbeInfo(pr.User, caps, t.Key); warm {
 			return
 		}
+	}
+	// Samsung refreshes detail repeatedly while browsing. Preparation already
+	// runs in the shared flight; use cached tracks until playback admits a source.
+	if pr.detailWaitUntil.IsZero() {
+		return
 	}
 	if waiter, ok := s.playback().(frontend.WarmProbeWaiter); ok {
 		budget := detailWarmWaitBudget
@@ -498,7 +513,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 	mc.Key = parent.Key.String()
 	mc.Nocache = model.Ptr(true)
 	mc.Thumb = s.thumbURL(parent)
-	mc.Art = artURL(parent)
+	mc.Art = s.artURL(parent)
 	var allLeaves *model.Directory
 	switch parent.Type {
 	case frontend.TypeShow:
@@ -1209,7 +1224,7 @@ func (s *Server) placeholderMetadata(ctx context.Context, pr *Request, t *fronte
 	// Future placeholders use base TMDB artwork through the collection-scoped
 	// image handler; overlays and custom poster providers require released titles.
 	md.Thumb = s.thumbURL(t)
-	md.Art = artURL(t)
+	md.Art = s.artURL(t)
 	if md.Thumb != "" {
 		md.Thumb += "?collection=" + collection.String()
 	}

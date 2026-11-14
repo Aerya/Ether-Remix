@@ -25,6 +25,11 @@ import (
 // track per representation (video, audio); ffmpeg's dash muxer writes short
 // chunks that the session regroups into numbered segments by timestamp.
 type Session struct {
+	resumeWarm              *Session
+	resumeWarmAt            int
+	resumeWarmUsed          bool
+	speculative             bool
+	androidMatroskaHLS      bool // immutable client HLS contract, retained across source swaps
 	healTimestamps          bool // positively sampled MPEG-TS clock discontinuity
 	qsvCodec                string
 	qsvQuality              bool
@@ -67,6 +72,8 @@ func (s *Session) IndependentSegments() bool { return s.segmentsIndependent }
 // sessionInput owns one aspect of the session. Fields are guarded by Session.mu.
 type sessionInput struct {
 	silenceAudio           bool // one replacement run only; later live reconnects retry source audio
+	textSubtitleStreams    []int
+	textSubtitleSource     string
 	softSubtitleStream     *int
 	softSubtitleInputIndex int
 	rtxConfig              config.RTXVideo
@@ -201,6 +208,8 @@ type mkvDelivery struct {
 
 // run is one ffmpeg process producing segments from startSeg on.
 type run struct {
+	textSubtitles map[int]*textSubtitleRead
+
 	rtx          bool
 	rtxConfirmed atomic.Bool
 
@@ -376,7 +385,15 @@ func (s *Session) Protocol() string { return s.proto }
 
 func (s *Session) isDASH() bool { return s.proto == core.ProtocolDASH }
 
-func (s *Session) segName(n int) string { return s.m.opts.segmentURI(n, s.container) }
+func (s *Session) segName(n int) string {
+	container := s.container
+	// PMS Android Matroska HLS still uses .ts URLs. The enhanced player
+	// chooses its HLS extractor from the transport declaration.
+	if s.androidMatroskaHLS && container == ContainerMatroska {
+		container = ContainerMPEGTS
+	}
+	return s.m.opts.segmentURI(n, container)
+}
 
 // runDirLocked is where the wanted track's ffmpeg run writes segments:
 // the session dir for the primary rung, a rung subdir for other rungs

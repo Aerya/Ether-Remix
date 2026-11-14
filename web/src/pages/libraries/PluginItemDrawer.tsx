@@ -83,8 +83,21 @@ export function PluginItemDrawer({
               <p className="text-sm text-fg-muted">
                 {kind?.levels.find((l) => l.key === item.level)?.label ?? item.level}
                 {item.year ? ` · ${item.year}` : ""}
-                {item.playable ? ` · ${t("Playable")}` : ""}
+                {item.playable && !item.unavailable ? ` · ${t("Playable")}` : ""}
               </p>
+              {item.unavailable ? (
+                <section
+                  aria-label={t("Not playable yet")}
+                  className="mt-4 space-y-3 rounded-xl border border-warning/40 bg-warning/10 p-4"
+                >
+                  <h3 className="inline-flex rounded-full border border-warning/40 px-3 py-1 text-sm font-semibold">
+                    {t("Not playable yet")}
+                  </h3>
+                  <p className="text-base leading-relaxed text-fg">
+                    {item.unavailable.detail || t("This item is currently unavailable.")}
+                  </p>
+                </section>
+              ) : null}
               {item.summary ? <p className="mt-1 text-sm">{item.summary}</p> : null}
             </div>
           </div>

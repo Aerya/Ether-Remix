@@ -1,3 +1,4 @@
+import { sourceLabel } from "./CatalogueSources";
 import { Button, EmptyState, Switch, toast } from "@braedonsaunders/appkit-ui";
 import {
   ArrowDown,
@@ -71,6 +72,7 @@ function LibrariesList() {
   const navigate = useNavigate();
   const { health } = useApp();
   const list = useAsync((signal) => librariesApi.list(signal), []);
+  const registry = useAsync((signal) => librariesApi.catalogueSources(signal), []);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<Library | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -123,6 +125,14 @@ function LibrariesList() {
         <div className="libraries-grid">
           {libs.map((lib, i) => {
             const shown = publishedTo(lib);
+            const sources = registry.data
+              ?.filter(
+                (source) =>
+                  lib.sources?.includes(source.id) ||
+                  source.libraries.some((item) => item.id === lib.id),
+              )
+              .map(sourceLabel)
+              .join(", ");
             const syncBad = lib.sync?.lastError;
             return (
               <section key={lib.id} className="library-card" aria-label={lib.name}>
@@ -135,7 +145,12 @@ function LibrariesList() {
                       {lib.name}
                     </Link>
                     <p className="library-card-meta">
-                      {sourceBadge(lib)}
+                      {sources || sourceBadge(lib)}
+                      {sources &&
+                      lib.source === "filter" &&
+                      Object.keys(lib.filter ?? {}).some((key) => key !== "type")
+                        ? ` · ${t("Saved filter")}`
+                        : ""}
                       {typeof lib.itemCount === "number"
                         ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
                             count: formatNumber(lib.itemCount, 0),
@@ -154,6 +169,19 @@ function LibrariesList() {
                     <LevelBadge level="ok" label={t("Healthy")} />
                   ) : null}
                 </div>
+                <p className="text-sm text-fg-muted">
+                  {t("Titles from: {sources}", {
+                    sources:
+                      registry.data
+                        ?.filter(
+                          (source) =>
+                            lib.sources?.includes(source.id) ||
+                            source.libraries.some((item) => item.id === lib.id),
+                        )
+                        .map(sourceLabel)
+                        .join(", ") || sourceBadge(lib),
+                  })}
+                </p>
                 <p className="library-card-apps">
                   {lib.hidden ? (
                     <>

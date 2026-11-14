@@ -24,6 +24,10 @@ func (s *Session) ServeSegment(w http.ResponseWriter, r *http.Request, n int) {
 // restarting it when n is behind or far ahead of the encoder.
 func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int) {
 	s.Touch()
+	if warm := s.resumeSession(n); warm != nil {
+		warm.serveSegment(w, r, t, n)
+		return
+	}
 	if t < 0 || t >= len(s.done) || n < 0 || (s.total > 0 && n >= s.total) {
 		http.NotFound(w, r)
 		return
@@ -87,6 +91,7 @@ func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int)
 			continue
 		}
 		if availability == segmentReady {
+			s.log.Debug("segment ready to send", "segment", n, "track", t, "ready_after", time.Since(waitStart), "restarts", restarts)
 			// The segment is already on disk. A throttle stop still resumes
 			// here so the encoder continues ahead of this playhead.
 			s.throttleLocked()
@@ -720,7 +725,8 @@ func (s *Session) serveFiles(w http.ResponseWriter, r *http.Request, paths []str
 	}
 	s.setSegmentHeaders(w)
 	armSegmentDeadline(w)
-	s.serveCounted(w, r, filepath.Base(paths[0]), mod, bytes.NewReader(buf.Bytes()), t, n)
+	content := io.ReadSeeker(bytes.NewReader(buf.Bytes()))
+	s.serveCounted(w, r, filepath.Base(paths[0]), mod, content, t, n)
 	return true
 }
 
@@ -820,6 +826,9 @@ func (s *Session) setSegmentHeaders(w http.ResponseWriter) {
 		ct = "video/mp4"
 	case s.container == ContainerMatroska:
 		ct = "video/x-matroska"
+		if s.androidMatroskaHLS {
+			ct = "video/MP2T"
+		}
 	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "no-cache")
@@ -845,9 +854,13 @@ func (s *Session) serveOpened(w http.ResponseWriter, r *http.Request, f *os.File
 	name := filepath.Base(f.Name())
 	if n == InitSegment {
 		name = initSegmentName(s.container)
+		if s.androidMatroskaHLS && s.container == ContainerMatroska {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 	}
 	armSegmentDeadline(w)
-	s.serveCounted(w, r, name, st.ModTime(), f, t, n)
+	var content io.ReadSeeker = f
+	s.serveCounted(w, r, name, st.ModTime(), content, t, n)
 	return true
 }
 

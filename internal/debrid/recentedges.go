@@ -36,7 +36,15 @@ const (
 	recentEdgeTTL     = 10 * time.Minute
 	edgeProbeBudget   = 2 * time.Second // one stalled edge must not consume the whole wave
 	edgeProbeCooldown = 30 * time.Second
-	recentEdgeTries   = 3 // remembered edges one reroute wave probes, freshest first
+	recentEdgeTries   = 4 // probes one generation-snapshot spends, freshest first; every
+	// probe counts toward the cap whatever its verdict, so the cap bounds
+	// requests where the wall clock cannot (fast answers of every class).
+	// Four reaches a healthy candidate behind three dribbled ones, and an
+	// all-degraded fleet ends under the wave's 10 s budget (4×2 s) with
+	// the parent context still live to adopt under. A generation change
+	// mid-wave starts the tries counter afresh in ordinary replay (the
+	// rebuild loop predates this cap); a discovery wave instead ends at the
+	// change, so for the hunt the bound holds for one degraded generation.
 )
 
 // record notes that host delivered a complete block for this provider
@@ -141,37 +149,94 @@ func withHost(raw, host string) string {
 	return u.String()
 }
 
-// probeSample is what one probe asks an edge for: enough to try the route,
-// leaving sustained delivery to the real read.
-const probeSample = 64
+// probeSample is what one probe asks an edge for: big enough that one
+// probe budget measures flow, not just a willingness to answer headers.
+// A drained edge delivers a 64-byte sample instantly and then dribbles
+// the real read (observed on TorBox 2026-11-12/13 at ~0.1-0.6 MB/s), so
+// against edgeProbeBudget this sets an acceptance floor near 1 MB/s.
+// The floor is coarse on purpose and bounds one completion, not a
+// measured body rate: setup (DNS, TCP, TLS, first byte) shares the
+// budget with the body, so an edge that starts too slowly to leave the
+// budget for its sample is rejected alongside the stalled ones — and an
+// edge that passes has completed a sample, never proven remux
+// capacity. A healthy edge answers the same sample in milliseconds.
+const probeSample = 2 << 20
 
-// probeLink spends one small range read asking an edge whether it serves
+// probeVerdict is what one probe says about one edge, in the evidence it
+// actually produced: what the sample proved, not how the request ended.
+type probeVerdict uint8
+
+const (
+	// probeRejected proved nothing usable: no valid 206, a Content-Range
+	// that is not exactly the promised range, or fewer than the eligible
+	// first bytes delivered.
+	probeRejected probeVerdict = iota
+	// probeDegraded is old main's evidence and no more: valid headers
+	// and the eligible bytes, but the sample never completed — the budget
+	// expired while the body was arriving (a dribble, or mere silence
+	// after the first bytes: this verdict never claims flow was proven),
+	// or EOF truncated the promised range. A degraded edge is a route
+	// last — adopted only when the wave's candidates proved no flow.
+	probeDegraded
+	// probeApproved completed the whole sample inside the budget: the
+	// route flowed.
+	probeApproved
+)
+
+// probeEligible is the body evidence main's 64-byte probe always demanded
+// before approving: a degraded verdict may not rest on less, so even a
+// candidate that dies mid-sample must have delivered at least this much
+// of exactly the promised range. Capped by the sample itself for a
+// valid short tail.
+const probeEligible int64 = 64
+
+// probeLink spends one bounded range read asking an edge whether it serves
 // this link, at the offset the file just failed on. The edge must answer
 // with a 206 whose Content-Range is exactly bytes off-end of a file of
-// size and deliver the whole sample: a 204, a 200 HTML error page, a 206
-// truncated short or a 206 for another offset prove nothing. The probe
-// follows no redirects, so the answer comes from the approved edge itself
-// and the link's token never hops to a host the provider never approved.
-func (e *Engine) probeLink(ctx context.Context, raw string, off, size int64) bool {
+// size: a 204, a 200 HTML error page, a 206 truncated short or a 206 for
+// another offset prove nothing. On top of that verdict the sample size
+// separates a route that flowed (probeApproved) from one that merely
+// answered: eligible bytes that never completed (budget expired mid-
+// arrival, or EOF truncation) are probeDegraded — main's old evidence,
+// good enough to replay on when nothing better was found, never good
+// enough to prefer. At the end
+// of the file the sample is capped at the remaining bytes, and the floor
+// scales with them: a few-KiB tail may dribble in below the nominal rate
+// and must not be rejected for it, because the sample there is the last
+// thing left to read. The probe follows no redirects, so the answer comes
+// from the approved edge itself and the link's token never hops to a host
+// the provider never approved.
+func (e *Engine) probeLink(ctx context.Context, raw string, off, size int64) probeVerdict {
 	end := min(off+probeSample-1, size-1)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return false
+		return probeRejected
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, end))
 	req.Header.Set("User-Agent", httpclient.UserAgent)
 	resp, err := e.hcReplay.Do(req) // the probe, like the read, answers no redirects
 	if err != nil {
-		return false
+		return probeRejected
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusPartialContent ||
 		!probeRangeAnswers(resp.Header.Get("Content-Range"), off, end, size) {
-		return false
+		return probeRejected
 	}
 	want := end - off + 1
 	n, err := io.CopyN(io.Discard, resp.Body, want)
-	return err == nil && n == want
+	switch {
+	case err == nil && n == want:
+		return probeApproved
+	case n >= min(want, probeEligible) && (ctx.Err() != nil || err == io.EOF):
+		// The budget expired with the body arriving, or EOF cut the
+		// promised range short after eligible bytes: compatible route,
+		// unproven flow. A non-EOF read error (protocol reset) after
+		// eligibility is rejected — a broken pipe is not a dribble.
+		return probeDegraded
+	default:
+		return probeRejected
+	}
 }
 
 // probeRangeAnswers reports whether header v promises exactly bytes
@@ -246,11 +311,21 @@ func cdnReplayApproval(impl Provider) (cdnEdgeApprover, bool) {
 // remembered edge (Payload.OnReplayEdge): the media read that follows will
 // refuse redirects, keeping the token inside the approved CDN.
 func (f *remoteFile) resumeOnAnotherEdge(ctx context.Context, failed string, usable func(string) bool, start int64) (moved, replayed bool) {
+	return f.rerouteWave(ctx, failed, usable, start, nil)
+}
+
+// rerouteWave is the replay wave; a non-nil visit map selects DISCOVERY
+// mode: candidates already visited in this exploration are skipped
+// without spending attempts, every probe records its candidate, and only
+// a flowing (approved) route is adopted — a discovery wave that merely
+// dribbles ends empty-handed, leaving the degraded route in place.
+func (f *remoteFile) rerouteWave(ctx context.Context, failed string, usable func(string) bool, start int64, visit map[string]bool) (moved, replayed bool) {
 	p, gen := f.payload()
 	off := min(max(start, 0), f.size-1)
 	changed := true // the first pass always runs; later ones only once the link moved under us
 	for round := 0; round < rerouteLinks && changed; round++ {
 		changed = false
+		fallback := "" // first candidate whose probe earned old main's evidence, kept for last resort
 		approver, ok := cdnReplayApproval(f.e.providerImpl(p.Provider))
 		if p.URL == "" || p.IsDirect() || p.IsPluginProvider() || !ok {
 			return false, false
@@ -310,6 +385,9 @@ func (f *remoteFile) resumeOnAnotherEdge(ctx context.Context, failed string, usa
 			if wait {
 				continue
 			}
+			if visit != nil && visit[key] {
+				continue // already probed in this exploration: discovery must progress, not re-kiss
+			}
 			if tries >= recentEdgeTries {
 				break
 			}
@@ -318,7 +396,7 @@ func (f *remoteFile) resumeOnAnotherEdge(ctx context.Context, failed string, usa
 			f.edgeCursorKey, f.edgeCursorHost = cursorKey, host
 			f.mu.Unlock()
 			pctx, cancel := context.WithTimeout(ctx, edgeProbeBudget)
-			probed := f.e.probeLink(pctx, u, off, f.size)
+			verdict := f.e.probeLink(pctx, u, off, f.size)
 			timedOut := pctx.Err() != nil && ctx.Err() == nil
 			cancel()
 			f.mu.Lock()
@@ -327,6 +405,10 @@ func (f *remoteFile) resumeOnAnotherEdge(ctx context.Context, failed string, usa
 				return false, false
 			}
 			if f.gen != gen { // a refresh or adopt moved the link while the probe ran
+				if visit != nil {
+					f.mu.Unlock()
+					return false, false // a generation change ends the old exploration: the hunt does not re-probe on someone else's payload
+				}
 				p, gen = f.pl, f.gen
 				f.mu.Unlock()
 				if usable(p.URL) { // whoever moved the file took it to a live route: they won
@@ -341,21 +423,61 @@ func (f *remoteFile) resumeOnAnotherEdge(ctx context.Context, failed string, usa
 				changed = true
 				break // rebuild approver and candidate list, then re-run the wave
 			}
-			if !probed {
+			if verdict != probeApproved {
+				if visit != nil {
+					visit[key] = true
+				}
 				if f.edgeProbeAfter == nil {
 					f.edgeProbeAfter = make(map[string]time.Time)
 				}
-				if timedOut && len(f.edgeProbeAfter) < knownEdgeLimit {
+				if verdict == probeDegraded {
+					// Old main's evidence: remembered as the wave's last
+					// resort, and cooled down like a timeout so the next
+					// wave advances instead of re-kissing the dribbler.
+					if fallback == "" {
+						fallback = u
+					}
+					if len(f.edgeProbeAfter) < knownEdgeLimit {
+						f.edgeProbeAfter[key] = f.e.now().Add(edgeProbeCooldown)
+					}
+				} else if timedOut && len(f.edgeProbeAfter) < knownEdgeLimit {
 					f.edgeProbeAfter[key] = f.e.now().Add(edgeProbeCooldown)
 				}
 				f.mu.Unlock()
-				continue // same snapshot, unresponsive candidate: try the next
+				continue // same snapshot, no flowing candidate yet: try the next
+			}
+			if visit != nil && f.closed {
+				f.mu.Unlock()
+				return false, false // a hunt does not move a closed file: drop the verdict
 			}
 			f.pl.URL = u
 			f.pl.OnReplayEdge = true // the read that follows must not hop off this edge
+			f.routeDegraded = false  // a flowed route outvotes any degraded one, from a replay or a hunt
 			f.gen++
 			f.mu.Unlock()
 			return true, true
+		}
+		// Out of candidates or attempts without one flowing answer: an
+		// edge that earned old main's evidence is still a route — but
+		// only while this wave is still valid to hand it to. An expired
+		// parent adopts nothing, exactly as a strict verdict would not,
+		// and a snapshot that moved under the wave owns the file now.
+		if visit == nil && fallback != "" && ctx.Err() == nil {
+			f.mu.Lock()
+			adopt := f.gen == gen
+			if adopt {
+				f.pl.URL = fallback
+				f.pl.OnReplayEdge = true
+				f.routeDegraded = true // flow unproven: block deliveries will drive a bounded hunt
+				f.discoverLeft = routeDiscoveryWaves
+				f.discovered = make(map[string]bool)
+				f.degradedFrom = failed // the hunt excludes the host that failed the file, as this wave did
+				f.gen++
+			}
+			f.mu.Unlock()
+			if adopt {
+				return true, true
+			}
 		}
 	}
 	return false, false

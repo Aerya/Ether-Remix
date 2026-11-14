@@ -338,6 +338,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			detailSource, expectedETag, version = version, tag, ""
 		} else {
 			intent.ExactVersion = true
+			// Selecting a version is foreground playback preparation, even
+			// when a client omits IsPlayback on its PlaybackInfo request.
+			// Probe this release so its own embedded tracks reach the picker.
+			intent.Estimate = false
 			resolvedRelease = tag
 		}
 	}
@@ -382,11 +386,13 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		plan, err = i.host.Sessions.Plan(r.Context(), planBase)
 	}
 	if err != nil {
-		if playback && noCompatibleStream(err) {
+		if i.protocol == "jellyfin" {
+			i.playbackInfoError(w, "plan", err)
+		} else if playback && noCompatibleStream(err) {
 			i.writeNoCompatibleStream(w)
-			return
+		} else {
+			http.Error(w, "Playback unavailable", 503)
 		}
-		http.Error(w, "Playback unavailable", 503)
 		return
 	}
 	if playback && (plan.Estimated || (channel == "" && plan.Media.Estimated)) {
@@ -404,7 +410,11 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !allowed && plan.Decision.Kind == "transcode" {
-		http.Error(w, "Playback unavailable", 422)
+		if i.protocol == "jellyfin" {
+			i.playbackInfoError(w, "transcoding disabled", frontend.ErrNotAvailable)
+		} else {
+			http.Error(w, "Playback unavailable", 422)
+		}
 		return
 	}
 	sourceID = ids.RatingKeyGUID(key)
@@ -420,6 +430,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	} else if detailSource != "" {
 		sourceID = detailSource
 	}
+	// A declared device profile is authoritative. Static-file clients without
+	// one can use the generic static endpoint; Roku must follow the broker
+	// decision instead of being told to direct-play an incompatible source.
+	staticPlayable := jellyfinStaticPlayable(i.protocol, channel, opts) && !intent.DeclaredCaps
 	media := plan.Media
 	media.Estimated = media.Estimated || plan.Estimated
 	source := i.detailMediaSourceDTO(sourceID, media)
@@ -427,7 +441,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		// These streams are produced by Ether, even when their input is remote.
 		source["IsRemote"] = false
 	}
-	if i.protocol == "jellyfin" && channel == "" && (!media.Estimated || jellyfinStaticPlayable(i.protocol, channel, opts)) {
+	if i.protocol == "jellyfin" && channel == "" && (!media.Estimated || staticPlayable) {
 		// Infuse and Swiftfin direct-play a Jellyfin file with
 		// GET /Videos/{id}/stream?Static=true. They do not open Path.
 		// IsRemote true would tell Infuse that Path is an upstream URL to
@@ -439,7 +453,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		source["ETag"] = plan.ETag
 	}
 	source["SupportsDirectPlay"], source["SupportsDirectStream"], source["SupportsTranscoding"] = plan.DirectPlay, plan.DirectStream, plan.Transcoding
-	if jellyfinStaticPlayable(i.protocol, channel, opts) {
+	if staticPlayable {
 		offerJellyfinStatic(source, opts)
 	}
 	source["IsInfiniteStream"] = channel != ""
@@ -465,8 +479,12 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	if playback {
 		session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: i.protocol, PlanID: plan.ID, Viewer: v, Device: dev})
 		if err != nil {
-			if !jellyfinStaticFallback(err) || !jellyfinStaticPlayable(i.protocol, channel, opts) {
-				http.Error(w, "Playback unavailable", 503)
+			if !jellyfinStaticFallback(err) || !staticPlayable {
+				if i.protocol == "jellyfin" {
+					i.playbackInfoError(w, "open", err)
+				} else {
+					http.Error(w, "Playback unavailable", 503)
+				}
 				return
 			}
 			if i.host.Log != nil {
@@ -475,11 +493,30 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		} else {
 			i.rememberAnonymousSession(r, v, session.ID, key, channel, dev, version, detailSource, sourceID)
 			format := frontend.StreamDirect
-			if channel != "" || (plan.Decision.Kind != "directplay" && (plan.Decision.Kind != "copy" || !plan.Decision.AudioCopy)) {
+			if channel != "" || (plan.Decision.Kind != "directplay" && ((i.protocol == "jellyfin" && intent.DeclaredCaps) || plan.Decision.Kind != "copy" || !plan.Decision.AudioCopy)) {
 				format = frontend.StreamHLS
 			}
+			// The progressive client requires an active playback demuxer. A
+			// direct-file plan becomes HLS (copy remux where codecs allow it),
+			// so all embedded text rides the same input read as the picture.
+			if i.protocol == "jellyfin" && channel == "" && format == frontend.StreamDirect && (plan.Media.Size == 0 || plan.Media.Size > 32<<20) {
+				progressive := false
+				for _, p := range body.DeviceProfile.SubtitleProfiles {
+					if p.Format == "ether-progressive-vtt" {
+						progressive = true
+					}
+				}
+				if progressive {
+					for _, track := range plan.Media.Streams {
+						if track.Type == "subtitle" && !track.External && (track.Codec == "subrip" || track.Codec == "srt" || track.Codec == "webvtt") {
+							format = frontend.StreamHLS
+							break
+						}
+					}
+				}
+			}
 			url, err := i.host.Sessions.StartStream(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, frontend.StreamRequest{Format: format, Position: intent.Position})
-			if err != nil && format == frontend.StreamHLS && jellyfinStaticPlayable(i.protocol, channel, opts) {
+			if err != nil && format == frontend.StreamHLS && staticPlayable {
 				url, err = i.host.Sessions.StartStream(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, frontend.StreamRequest{Format: frontend.StreamDirect, Position: intent.Position})
 				if err == nil {
 					format = frontend.StreamDirect
@@ -487,8 +524,8 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil {
 				_ = i.host.Sessions.Stop(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID)
-				if !jellyfinStaticFallback(err) || !jellyfinStaticPlayable(i.protocol, channel, opts) {
-					streamError(i.protocol, w, err)
+				if !jellyfinStaticFallback(err) || !staticPlayable {
+					i.playbackInfoError(w, "start stream", err)
 					return
 				}
 				if i.host.Log != nil {
@@ -540,6 +577,12 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 					if !plan.Decision.AudioCopy {
 						source["SupportsDirectPlay"] = plan.DirectPlay
 						source["SupportsDirectStream"] = plan.DirectStream
+						delete(source, "Path")
+					}
+					if i.protocol == "jellyfin" && intent.DeclaredCaps {
+						source["SupportsDirectPlay"] = false
+						source["SupportsDirectStream"] = false
+						source["Protocol"] = "Http"
 						delete(source, "Path")
 					}
 					source["TranscodingUrl"] = url
@@ -1069,6 +1112,27 @@ func timelineItem(body timelineRequest) (frontend.RatingKey, bool) {
 
 func noCompatibleStream(err error) bool {
 	return errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone)
+}
+
+// PlaybackInfo errors must be successful protocol responses: jellyfin-web
+// reads ErrorCode only on a resolved request, and otherwise shows its generic
+// network error. Admission failures retain 503 and Retry-After so clients
+// can retry once capacity returns. Keep failure stages in server diagnostics.
+func (i *instance) playbackInfoError(w http.ResponseWriter, stage string, err error) {
+	if i.host.Log != nil {
+		i.host.Log.Warn("PlaybackInfo failed", "protocol", i.protocol, "stage", stage, "err", err)
+	}
+	if i.protocol != "jellyfin" || errors.Is(err, frontend.ErrSessionBusy) || errors.Is(err, frontend.ErrTranscodeCapacity) {
+		streamError(i.protocol, w, err)
+		return
+	}
+	code := "NoCompatibleStream"
+	if errors.Is(err, frontend.ErrUnauthorized) {
+		code = "NotAllowed"
+	} else if errors.Is(err, frontend.ErrStreamLimit) {
+		code = "RateLimitExceeded"
+	}
+	jsonReply(w, map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": code})
 }
 
 func (i *instance) writeNoCompatibleStream(w http.ResponseWriter) {

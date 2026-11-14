@@ -649,7 +649,7 @@ var (
 )
 
 func defaultCaps(client string) core.ClientCaps {
-	return core.ClientCaps{Product: "Plex Web", ClientID: client, MaxHeight: 1080,
+	return core.ClientCaps{DeferSourceCodecValidation: true, Product: "Plex Web", ClientID: client, MaxHeight: 1080,
 		VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac", "eac3"}, Containers: []string{"mkv", "mp4"}}
 }
 
@@ -672,10 +672,24 @@ func newHarness(t *testing.T, rels []*fakeRelease, ids []string, opts ...harness
 		clock:   &fakeClock{t: time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)},
 		dataDir: payloadTempDir(t),
 	}
+	// Synthetic titles describe the supplied fixture, whose duration can be
+	// deliberately short. Identity tests override the catalogue runtime below.
+	fixtureRuntime := time.Minute
+	if len(rels) > 0 && rels[0].Duration > 0 {
+		fixtureRuntime = rels[0].Duration
+	}
+	for _, title := range h.catalog.titles {
+		title.Runtime = fixtureRuntime
+	}
 	h.tr = newFakeTranscoder(h.engine)
 	h.cfg = config.Defaults(h.dataDir)
 	h.cfg.Server.DefaultStreamLimit = 0
-	o := Options{DataDir: h.dataDir, Now: h.clock.Now, ChunkSize: 4096, ReadAhead: 3, PinInterval: time.Hour}
+	o := Options{SessionSurface: func(surface string) string {
+		if surface == "plex" {
+			return ""
+		}
+		return surface
+	}, DataDir: h.dataDir, Now: h.clock.Now, ChunkSize: 4096, ReadAhead: 3, PinInterval: time.Hour}
 	for _, f := range opts {
 		f(h, &o)
 	}

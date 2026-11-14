@@ -2,7 +2,7 @@ package app
 
 import (
 	"github.com/braedonsaunders/ether/internal/catalog"
-	"github.com/braedonsaunders/ether/internal/plexmeta"
+	plexmeta "github.com/braedonsaunders/ether/internal/plexmeta"
 )
 
 // Leader-only schedules in a cluster restart on every leadership handoff.

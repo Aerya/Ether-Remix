@@ -56,8 +56,8 @@ func (i *instance) userDataDTO(id string, st frontend.WatchStatus) map[string]an
 	return data
 }
 func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[string]any {
-	kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode"}[t.Type]
-	m := map[string]any{"Id": ids.RatingKeyGUID(t.Key), "Name": t.Title, "Type": kind, "LocationType": "FileSystem", "IsFolder": t.Type == "show" || t.Type == "season", "Overview": frontend.PSEMarkSummary(t.Key, t.Summary), "ProductionYear": t.Year, "RunTimeTicks": t.Runtime.Nanoseconds() / 100, "UserData": i.userDataDTO(ids.RatingKeyGUID(t.Key), state)}
+	kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode", "boxset": "BoxSet"}[t.Type]
+	m := map[string]any{"Id": ids.RatingKeyGUID(t.Key), "Name": t.Title, "Type": kind, "LocationType": "FileSystem", "IsFolder": t.Type == "show" || t.Type == "season" || t.Type == "boxset", "Overview": frontend.PSEMarkSummary(t.Key, t.Summary), "ProductionYear": t.Year, "RunTimeTicks": t.Runtime.Nanoseconds() / 100, "UserData": i.userDataDTO(ids.RatingKeyGUID(t.Key), state)}
 	if added := t.DateAdded(time.Now()); !added.IsZero() {
 		m["DateCreated"] = wireTime(added)
 	}
@@ -219,6 +219,14 @@ func (i *instance) writeCollectionFolder(w http.ResponseWriter, r *http.Request,
 	if i.pseWriteFolder(w, r, v, viewNum) {
 		return
 	}
+	if viewNum == collectionsViewNumber {
+		if folder, ok := i.collectionsFolder(r, v); ok {
+			i.replyItems(w, r, folder)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 	if ids.PersonalView(viewNum) {
 		i.writePersonalFolder(w, r, v, viewNum)
 		return
@@ -291,6 +299,9 @@ func (i *instance) browseRoutes() error {
 		}
 		// PSE-HOOK: bibliothèques Vus et notés (Scrob) — voir docs/pse/FORK.fr.md
 		items = i.pseViews(r, v, items)
+		if folder, ok := i.collectionsFolder(r, v); ok {
+			items = append(items, folder)
+		}
 		items = i.prependPersonalViews(r, v, items)
 		i.replyItems(w, r, i.queryResult(items, len(items), 0))
 	}
@@ -597,7 +608,7 @@ func (i *instance) browseRoutes() error {
 	endpoints := []struct {
 		path    string
 		handler http.HandlerFunc
-	}{{"/UserViews", views}, {"/Users/{userId}/Views", views}, {"/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/Users/{userId}/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/UserItems/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Users/{userId}/Items/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Shows/NextUp", rowHandler(frontend.RowNextUp, false)}, {"/Items", i.items}, {"/Users/{userId}/Items", i.items}, {"/Items/{id}/Similar", i.similar}, {"/Items/{id}/Collections", i.itemCollections}, {"/Items/{id}/Ancestors", i.ancestors}, {"/Items/{id}/LocalTrailers", i.localTrailers}, {"/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Users/{userId}/Items/{id}/LocalTrailers", i.localTrailers}, {"/Users/{userId}/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Items/{id}/Intros", i.intros}, {"/Users/{userId}/Items/{id}/Intros", i.intros}, {"/Search/Hints", i.search}, {"/Genres", i.facets("genre")}, {"/Studios", i.facets("studio")}, {"/Persons", i.facets("person")}, {"/Shows/{id}/Seasons", i.children}, {"/Shows/{id}/Episodes", i.episodes}, {"/Items/{id}", detail}, {"/Users/{userId}/Items/{id}", detail}}
+	}{{"/UserViews", views}, {"/Users/{userId}/Views", views}, {"/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/Users/{userId}/Items/Latest", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, true) }}, {"/UserItems/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Users/{userId}/Items/Resume", func(w http.ResponseWriter, r *http.Request) { i.libraryActivity(w, r, false) }}, {"/Shows/NextUp", rowHandler(frontend.RowNextUp, false)}, {"/Items", i.items}, {"/Users/{userId}/Items", i.items}, {"/Items/{id}/Similar", i.similar}, {"/Items/{id}/Collections", i.itemCollections}, {"/Items/{id}/Ancestors", i.ancestors}, {"/Items/{id}/LocalTrailers", i.localTrailers}, {"/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Users/{userId}/Items/{id}/LocalTrailers", i.localTrailers}, {"/Users/{userId}/Items/{id}/SpecialFeatures", i.specialFeatures}, {"/Items/{id}/Intros", i.intros}, {"/Users/{userId}/Items/{id}/Intros", i.intros}, {"/Search/Hints", i.search}, {"/Genres", i.facets("genre")}, {"/Studios", i.facets("studio")}, {"/Persons", i.facets("person")}, {"/Shows/{id}/Seasons", i.children}, {"/Shows/{id}/Episodes", i.episodes}, {"/Shows//Episodes", i.episodes}, {"/Items/{id}", detail}, {"/Users/{userId}/Items/{id}", detail}}
 	for _, e := range endpoints {
 		if err := add("GET", e.path, e.handler); err != nil {
 			return err
@@ -674,6 +685,16 @@ func itemQuery(r *http.Request) frontend.ItemQuery {
 			}
 		}
 	}
+	for _, value := range route.Query(r.URL.Query(), "ExcludeItemTypes") {
+		for _, typ := range splitCSV(value) {
+			name := strings.ToLower(typ)
+			if name == "series" {
+				name = "show"
+			}
+			q.ExcludedTypes = append(q.ExcludedTypes, frontend.MediaType(name))
+		}
+	}
+
 	if values := route.Query(r.URL.Query(), "Genres"); len(values) == 1 && values[0] != "" {
 		q.Filter.Genres = splitCSV(values[0])
 	}
@@ -878,7 +899,7 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := itemQuery(r)
-	result, err := i.host.Experience.Search(r.Context(), v, device(r), terms[0], q)
+	result, err := i.searchPage(r, v, terms[0], q)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
@@ -889,8 +910,8 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	images := i.gridListImages(r, result.Page.Items)
 	for _, t := range result.Page.Items {
 		id := ids.RatingKeyGUID(t.Key)
-		kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode"}[t.Type]
-		hint := map[string]any{"Id": id, "ItemId": id, "Name": t.Title, "Type": kind, "ProductionYear": t.Year, "IsFolder": t.Type == "show" || t.Type == "season"}
+		kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode", "boxset": "BoxSet"}[t.Type]
+		hint := map[string]any{"Id": id, "ItemId": id, "Name": t.Title, "Type": kind, "ProductionYear": t.Year, "IsFolder": t.Type == "show" || t.Type == "season" || t.Type == "boxset"}
 		if tags, ok := images[t.Key]["ImageTags"].(map[string]string); ok && tags["Primary"] != "" {
 			hint["PrimaryImageTag"] = tags["Primary"]
 		}
@@ -951,6 +972,12 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := itemQuery(r)
+	if len(parent) == 1 {
+		if n, e := ids.ParseGUID(ids.View, parent[0]); e == nil && n == collectionsViewNumber {
+			i.writeBoxSets(w, r, v, q)
+			return
+		}
+	}
 	switch requestedSpecialItems(r) {
 	case specialBoxSets:
 		i.writeBoxSets(w, r, v, q)
@@ -977,7 +1004,7 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		// from the title index with a bounded window, not a library walk
 		// filtered by name.
 		q.Filter.Query = ""
-		result, e := i.host.Experience.Search(r.Context(), v, device(r), search, q)
+		result, e := i.searchPage(r, v, search, q)
 		if e != nil {
 			http.Error(w, "Unavailable", 503)
 			return
@@ -1170,7 +1197,22 @@ func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	key, err := ids.ParseRatingKeyGUID(r.PathValue("id"))
+	// Roku's typed screen node can supply an empty showID. Use only its
+	// explicit episode anchor, never a library search, to recover the parent.
+	showID := r.PathValue("id")
+	if showID == "" {
+		anchors := route.Query(r.URL.Query(), "StartItemId")
+		if len(anchors) == 1 {
+			if anchor, e := ids.ParseRatingKeyGUID(anchors[0]); e == nil && anchor.Kind() == frontend.KindEpisode {
+				showID = ids.RatingKeyGUID(frontend.ShowKey(anchor.TMDB()))
+			}
+		}
+		if showID == "" {
+			i.page(w, r, v, frontend.Page{}, 0)
+			return
+		}
+	}
+	key, err := ids.ParseRatingKeyGUID(showID)
 	if err != nil {
 		http.NotFound(w, r)
 		return

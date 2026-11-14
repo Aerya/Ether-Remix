@@ -8,10 +8,12 @@ import (
 // WatchOrigin identifies the authenticated surface and client responsible for
 // a watch update. HistoryTitle retains display identity after catalogue removal.
 type WatchOrigin struct {
-	HistoryTitle        *Title
-	Surface             Protocol
-	SessionID, ClientID string
-	DeviceID            int64
+	// SuppressMetadataRefresh marks explicit writes that already update client state.
+	SuppressMetadataRefresh bool
+	HistoryTitle            *Title
+	Surface                 Protocol
+	SessionID, ClientID     string
+	DeviceID                int64
 }
 type watchOriginKey struct{}
 
@@ -100,4 +102,26 @@ func WithTimelineStored(ctx context.Context) context.Context {
 func TimelineStored(ctx context.Context) bool {
 	stored, _ := ctx.Value(timelineStoredKey{}).(bool)
 	return stored
+}
+
+type timelineStatusKey struct{}
+
+// WithTimelineStatus carries the reported status alongside an explicit watch mutation.
+func WithTimelineStatus(ctx context.Context, status string) context.Context {
+	return context.WithValue(ctx, timelineStatusKey{}, status)
+}
+func TimelineStatus(ctx context.Context) string {
+	status, _ := ctx.Value(timelineStatusKey{}).(string)
+	return status
+}
+
+// WatchMutation is a frontend's explicit persistence decision. Shared state
+// applies it without reinterpreting the client's timeline policy.
+type WatchMutation struct {
+	Kind             string
+	Offset, Duration time.Duration
+	ReportedState    string
+}
+type WatchMutationWriter interface {
+	ApplyWatchMutation(context.Context, int64, RatingKey, WatchMutation) error
 }

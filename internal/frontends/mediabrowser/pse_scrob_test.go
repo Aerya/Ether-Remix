@@ -239,3 +239,14 @@ func TestPSEScrobLibraries(t *testing.T) {
 		t.Fatalf("note hors échelle : %d", code)
 	}
 }
+
+func TestPSEScrobViewIDsDoNotCollideWithEther(t *testing.T) {
+	ids := []int64{scrobview.MoviesView, scrobview.ShowsView, collectionsViewNumber, liveTVViewNumber}
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("view ID collision: %d", id)
+		}
+		seen[id] = true
+	}
+}

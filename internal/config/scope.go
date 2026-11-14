@@ -66,6 +66,7 @@ var mixedSections = map[string]map[string]Scope{
 	"server": {
 		"trustedProxyCIDRs":  Local,
 		"port":               Local,
+		"portExplicit":       Local,
 		"bindAddress":        Local,
 		"logLevel":           Local,
 		"friendlyName":       Shared,
@@ -81,6 +82,7 @@ var mixedSections = map[string]map[string]Scope{
 		"internalAddress": Local,
 	},
 	"plex": {
+		"fileCheckTimeout":           Shared,
 		"compatibilityVersion":       Shared,
 		"latestCompatibilityVersion": Shared,
 		"trackLatestVersion":         Shared,

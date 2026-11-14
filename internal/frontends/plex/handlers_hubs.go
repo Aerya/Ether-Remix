@@ -3,6 +3,7 @@ package plex
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
@@ -48,6 +50,49 @@ type hubSpec struct {
 	state map[frontend.RatingKey]frontend.WatchStatus
 }
 
+// Retain the bounded candidate row that was actually advertised. Clients can
+// open a remembered identifier after the recommendation model changes, and
+// some omit metadataID from related-row continuations.
+type emittedHub struct {
+	spec    hubSpec
+	related frontend.RatingKey
+	expires time.Time
+	bytes   int
+}
+
+func (s *Server) emittedHubKey(ctx context.Context, pr *Request, id string, section int) string {
+	scope, _, ok := s.shelfScope(ctx, pr)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%s|%d|%s", scope, section, id)
+}
+
+func (s *Server) rememberHub(ctx context.Context, pr *Request, hs hubSpec, hc hubCtx) {
+	if hc.section == 0 && hc.related == 0 {
+		return
+	}
+	key := s.emittedHubKey(ctx, pr, hs.ID, hc.section)
+	if key == "" {
+		return
+	}
+	hs.Items = append([]frontend.Title(nil), hs.Items[:min(len(hs.Items), 200)]...)
+	data, _ := json.Marshal(hs.Items)
+	if len(data) > 4<<20 {
+		return
+	}
+	s.emittedHubMu.Lock()
+	defer s.emittedHubMu.Unlock()
+	previous := s.emittedHubs[key]
+	if s.emittedHubs == nil || (len(s.emittedHubs) >= 512 && previous.bytes == 0) || s.emittedHubBytes-previous.bytes+len(data) > 4<<20 {
+		s.emittedHubs = map[string]emittedHub{}
+		s.emittedHubBytes = 0
+		previous.bytes = 0
+	}
+	s.emittedHubs[key] = emittedHub{hs, hc.related, s.now().Add(shelfRetention), len(data)}
+	s.emittedHubBytes += len(data) - previous.bytes
+}
+
 func hubItemsKey(h frontend.Hub, hc hubCtx) string {
 	if h.Key != 0 {
 		return "/library/collections/" + h.Key.String() + "/children"
@@ -68,6 +113,7 @@ func hubItemsKey(h frontend.Hub, hc hubCtx) string {
 }
 
 func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubCtx) model.Hub {
+	s.rememberHub(ctx, pr, hs, hc)
 	h := hs.Hub
 	if strings.HasPrefix(h.ID, "movie.recentlyviewed.") || strings.HasPrefix(h.ID, "tv.recentlyviewed.") {
 		if sec, ok := s.sectionFromHubID(h.ID); ok {
@@ -383,6 +429,7 @@ func (s *Server) hubInSections(h frontend.Hub, ids []int) bool {
 }
 
 func (s *Server) homeHubs(w http.ResponseWriter, r *http.Request, promotedOnly bool) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	route := "hubs"
 	if promotedOnly {
 		route = "hubs/promoted"
@@ -1043,6 +1090,18 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 			}
 		}
 		return hubSpec{}, false
+	}
+	section := 0
+	if len(sections) == 1 {
+		section = sections[0]
+	}
+	cacheKey := s.emittedHubKey(ctx, pr, id, section)
+	s.emittedHubMu.Lock()
+	remembered, found := s.emittedHubs[cacheKey]
+	s.emittedHubMu.Unlock()
+	if found && (remembered.related == 0 || metadataID == "") && s.now().Before(remembered.expires) && s.hubInSections(remembered.spec.Hub, sections) &&
+		(remembered.related == 0 || (metadataID == "" || metadataID == remembered.related.String()) && s.relatedSourceVisible(ctx, pr, remembered.related)) {
+		return remembered.spec, true
 	}
 	for _, h := range s.discoveryHubs(ctx, pr, count) {
 		if h.ID != id || !s.hubInSections(h.Hub, sections) {
@@ -1862,6 +1921,7 @@ func searchLimit(w http.ResponseWriter, r *http.Request, fallback, ceiling int) 
 }
 
 func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()
@@ -2068,6 +2128,7 @@ func searchScore(i, n int) float64 {
 
 // handleSearch is the legacy flat /search?query=.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()
@@ -2089,6 +2150,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 // handleLibrarySearch is /library/search, used by the newer apps: results
 // wrapped in SearchResult with a score.
 func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()

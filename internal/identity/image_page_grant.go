@@ -22,7 +22,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
@@ -592,6 +591,36 @@ func (s *ImageGrantService) serveShortTag(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
+	// Viewer grants retain their policy and revocation checks even without a
+	// token on the image request. Public content tags are an additional path.
+	if claims, ok := s.loadShort(secret); ok && claims.Expires > s.now().UnixMilli() {
+		if !shortClaimMatches(claims, r) {
+			http.NotFound(w, r)
+			return
+		}
+		s.serveClaims(w, r, secret, claims, s.now().UnixMilli())
+		return
+	}
+	// Tokenless cached URLs are content identities, not expiring viewer grants.
+	if s.requestOptions.PublicContentTags && s.requestToken(r) == "" {
+		key, ok := imageItemKey(r.URL.Path)
+		public, supported := s.experience().(frontend.PublicArtwork)
+		if ok && supported {
+			images, _, visible, err := public.PublicArtwork(r.Context(), core.Device{}, key)
+			if err == nil && visible {
+				master := s.pageKey()
+				for _, image := range images {
+					img := pageImage{Kind: image.Kind, Path: image.Path, Tag: image.Tag, Subject: image.Subject}
+					if shortClaimMatches(pageClaims{Kind: img.Kind, Path: img.Path}, r) && (contentImageTag(master, int64(key), img, 0) == secret || contentImageTag(master, int64(key), img, s.Generation()) == secret) {
+						s.ServePublic(w, r, core.Device{}, key, image)
+						return
+					}
+				}
+			}
+		}
+		http.NotFound(w, r)
+		return
+	}
 	now := s.now().UnixMilli()
 	claims, ok := s.loadShort(secret)
 	if ok && claims.Expires <= now {
@@ -627,7 +656,7 @@ func (s *ImageGrantService) resolveShortTag(r *http.Request, secret string) (pag
 	if r == nil || r.URL == nil {
 		return pageClaims{}, false
 	}
-	token := authhdr.MediaBrowserToken(r)
+	token := s.requestToken(r)
 	key, ok := imageItemKey(r.URL.Path)
 	if token == "" || !ok {
 		return pageClaims{}, false
@@ -817,4 +846,11 @@ func deviceID(raw json.RawMessage) string {
 		return ""
 	}
 	return device.ID
+}
+
+func (s *ImageGrantService) requestToken(r *http.Request) string {
+	if s.requestOptions.Token == nil {
+		return ""
+	}
+	return s.requestOptions.Token(r)
 }

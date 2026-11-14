@@ -24,10 +24,11 @@ const (
 // Library is the one library model for builtins, plugin kinds and
 // owner filter-libraries alike (spec §1.1).
 type Library struct {
-	ID     LibraryID     `json:"id"`
-	Key    string        `json:"key"`  // slug, unique, immutable: "movies", "shows", "pk-<plugin>-<kind>", owner slug
-	Name   string        `json:"name"` // owner-editable display name
-	Source LibrarySource `json:"source"`
+	ID      LibraryID     `json:"id"`
+	Key     string        `json:"key"`  // slug, unique, immutable: "movies", "shows", "pk-<plugin>-<kind>", owner slug
+	Name    string        `json:"name"` // owner-editable display name
+	Source  LibrarySource `json:"source"`
+	Sources []string      `json:"sources"`
 	// Builtin only: TypeMovie or TypeShow.
 	MediaType MediaType `json:"mediaType,omitempty"`
 	// Plugin only.
@@ -41,7 +42,7 @@ type Library struct {
 	// list…). MediaType pins movie|show like a filter library. A deleted
 	// collection leaves the library empty, never an error.
 	CollectionID int64 `json:"collectionId,omitempty"`
-	// Visibility rules for TMDB-sourced libraries. Built-in libraries 1 and 2
+	// Visibility rules for this library. Built-in libraries 1 and 2
 	// govern canonical movie/show visibility across every protocol; filter
 	// libraries may carry additional rules on top of their canonical library.
 	Rules             []LibraryExclusion `json:"rules,omitempty"`

@@ -27,6 +27,9 @@ type PreparedSource struct {
 	Owner                       nodewire.Identity
 	PlayID, Revision, ReleaseID string
 	Info                        core.MediaInfo
+	HealthVerified              bool
+	ReleaseProtocol             string
+	RequiresRemux               bool
 }
 type preparation struct {
 	operations       int
@@ -126,13 +129,13 @@ func (r *Runtime) prepare(ctx context.Context, peer nodewire.Identity, q *Prepar
 	// The native Manager can deduplicate this source identity across controllers.
 	// Operations alias that lifetime; retirement waits for every alias to seal.
 	for _, other := range r.preparations {
-		if !other.receipt && !other.retiring && samePreparationIdentity(other.request, *q) {
+		if !other.receipt && !other.retiring && r.samePreparationIdentity(other.request, *q) {
 			r.mu.Unlock()
 			return r.sharePreparation(ctx, peer, *q, key, hash, other)
 		}
 	}
 	for _, other := range r.preparations {
-		if !other.receipt && samePreparationIdentity(other.request, *q) {
+		if !other.receipt && r.samePreparationIdentity(other.request, *q) {
 			r.mu.Unlock()
 			return sourceResponse{}, ErrPending
 		}
@@ -158,6 +161,7 @@ func (r *Runtime) prepare(ctx context.Context, peer nodewire.Identity, q *Prepar
 	var capturedSize int64
 	if ps != nil {
 		captured = PreparedSource{Owner: r.o.Self, PlayID: ps.ID, Revision: core.SourceRevision(ps), ReleaseID: ps.SourceReleaseID(), Info: core.CloneMediaInfo(ps.Info)}
+		captured.captureDecisionInputs(ps)
 		if ps.Source != nil {
 			capturedSize = ps.Source.Size()
 		}
@@ -199,6 +203,7 @@ func (r *Runtime) prepare(ctx context.Context, peer nodewire.Identity, q *Prepar
 		return sourceResponse{}, e
 	}
 	result := PreparedSource{Owner: r.o.Self, PlayID: ps.ID, Revision: revision, ReleaseID: ps.SourceReleaseID(), Info: core.CloneMediaInfo(ps.Info)}
+	result.captureDecisionInputs(ps)
 	encoded, e := json.Marshal(sourceResponse{Prepared: result})
 	if e != nil || len(encoded) > remotetranscode.MaxMessage {
 		return sourceResponse{}, ErrDenied
@@ -214,9 +219,9 @@ func (r *Runtime) prepare(ctx context.Context, peer nodewire.Identity, q *Prepar
 	return sourceResponse{Prepared: result}, nil
 }
 
-func samePreparationIdentity(a, b PrepareRequest) bool {
+func (r *Runtime) samePreparationIdentity(a, b PrepareRequest) bool {
 	surface := func(value string) string {
-		if value == "plex" {
+		if r.policy(core.Protocol(value)).ExternalAdmission {
 			return ""
 		}
 		return value
@@ -360,4 +365,13 @@ func (r *Runtime) preparationStatus(ctx context.Context, peer nodewire.Identity,
 		return sourceResponse{Phase: "owned-error"}, nil
 	}
 	return sourceResponse{Phase: "ready", Prepared: result}, nil
+}
+
+// Preserve the source facts used by the shared playback decision policy.
+func (p *PreparedSource) captureDecisionInputs(ps *core.PlaySession) {
+	p.RequiresRemux = ps.RequiresRemux
+	if ps.Resolution != nil {
+		p.HealthVerified = ps.Resolution.HealthVerified
+		p.ReleaseProtocol = ps.Resolution.Release.Protocol
+	}
 }
