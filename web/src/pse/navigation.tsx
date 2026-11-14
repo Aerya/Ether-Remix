@@ -21,6 +21,7 @@ export const REMIX_TABS = [
     en: "Content & libraries",
     features: ["music", "posters"],
   },
+  { key: "medias-locaux", fr: "Médias locaux", en: "Local media", features: [] },
   { key: "statistiques", fr: "Statistiques", en: "Statistics", features: [] },
   {
     key: "suivi",

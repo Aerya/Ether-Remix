@@ -76,6 +76,18 @@ func TestLocalMusicLibraryStateAndRange(t *testing.T) {
 	if w.Body.String() == "fLaC0123456789" {
 		t.Fatal("unauthenticated file exposure")
 	}
+	if err := os.Remove(filepath.Join(dir, "track.flac")); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Scan(withMusicViewer(t.Context(), 7)); err != nil {
+		t.Fatal(err)
+	}
+	if tracks, err := s.SearchTracks(withMusicViewer(t.Context(), 7), "Track", 1, 0); err != nil || len(tracks) != 1 {
+		t.Fatal("empty mount lost music", tracks, err)
+	}
+	if items, err := h.srv.o.Library.List(withMusicViewer(t.Context(), 7), 7, KindTrack, ListOptions{Starred: true}); err != nil || len(items) != 1 {
+		t.Fatal("empty mount lost favourite", items, err)
+	}
 	roots, _ = l.Roots(withMusicViewer(t.Context(), 7))
 	if err := l.Remove(withMusicViewer(t.Context(), 7), roots[0].ID); err != nil {
 		t.Fatal(err)

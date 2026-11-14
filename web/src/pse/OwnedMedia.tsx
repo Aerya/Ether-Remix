@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useEffect, useId, useState } from "react";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { apiFetch } from "../lib/api";
@@ -79,6 +80,9 @@ export function LocalMedia() {
   return (
     <section className="rounded-xl border border-border bg-surface p-5 space-y-4">
       <h3 className="font-semibold">{L("Fichiers locaux", "Local files")}</h3>
+      <Link className="underline" to="/remix/medias-locaux">
+        {L("Santé des médias locaux et occupation", "Local media health and storage")}
+      </Link>
       <p className="text-sm text-fg-muted">
         {L(
           "Ajoutez les dossiers visibles depuis le conteneur. Les fichiers sont lus sur place, sans déplacement ni suppression. Chaque dossier vidéo crée une bibliothèque dédiée ; les dossiers audio rejoignent Musique.",

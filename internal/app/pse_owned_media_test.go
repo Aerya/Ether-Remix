@@ -121,6 +121,20 @@ func TestLocalVideoNativeCatalogueResolverAndPlaybackSource(t *testing.T) {
 	if err != nil || ps == nil {
 		t.Fatalf("native local playback session: %v", err)
 	}
+	// A readable but empty mount must preserve both the catalogue and collection.
+	if err := os.Remove(filepath.Join(dir, "Mes vacances.mp4")); err != nil {
+		t.Fatal(err)
+	}
+	ownerCtx := core.WithCatalogViewer(t.Context(), &core.User{ID: 1})
+	if err := l.Scan(ownerCtx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.Get(ownerCtx, key); err != nil {
+		t.Fatal("empty mount removed catalogue entry", err)
+	}
+	if keys := rt.themes.AllKeys(ownerCtx, core.TypeMovie); len(keys) != 1 || keys[0] != key {
+		t.Fatal("empty mount removed collection", keys)
+	}
 	roots, _ := l.Roots(core.WithCatalogViewer(t.Context(), &core.User{ID: 1}))
 	if err = l.Remove(core.WithCatalogViewer(t.Context(), &core.User{ID: 1}), roots[0].ID); err != nil {
 		t.Fatal(err)
