@@ -43,6 +43,10 @@ export const REMIX_UPDATES = [
         "La console affiche les bots et les transferts (disponible, bot hors ligne, en attente, en cours, prêt à lire, échec), permet une recherche manuelle et garde ou arrête un fichier. Le cache est plafonné ; un fichier gardé ou rangé dans une bibliothèque n'est jamais effacé.",
         "The console shows bots and transfers (available, bot offline, waiting, downloading, ready to play, failed), offers a manual search and keeps or stops a file. The cache is capped; a kept file or one inside a library is never deleted.",
       ],
+      [
+        "Les limites de téléchargement restent respectées lors des lectures simultanées. Le cache libère la place nécessaire au prochain fichier et protège les actions Garder et les lectures pendant le nettoyage.",
+        "Download limits remain enforced for simultaneous playback starts. The cache makes room for the next file and protects Keep actions and playback during cleanup.",
+      ],
     ],
   },
   {

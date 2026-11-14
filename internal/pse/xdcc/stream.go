@@ -179,15 +179,14 @@ func (s *Service) open(ctx context.Context, packet string) (*growing, string, er
 //     coupée, le moteur réessaie depuis l'octet manquant.
 func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, packet string) {
 	ctx := r.Context()
+	s.reading(packet, +1)
+	defer s.reading(packet, -1)
 	g, name, err := s.open(ctx, packet)
 	if err != nil {
 		http.Error(w, "not available yet", http.StatusServiceUnavailable)
 		return
 	}
 	defer g.f.Close()
-	s.reading(packet, +1)
-	defer s.reading(packet, -1)
-
 	start, end, partial, ok := parseRange(r.Header.Get("Range"), g.size)
 	if !ok {
 		w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(g.size, 10))
@@ -252,6 +251,8 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, packet strin
 // reading compte les lectures en cours d'un paquet (aucun effacement pendant
 // une lecture) et retient la dernière.
 func (s *Service) reading(packet string, d int) {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	s.mu.Lock()
 	s.readers[packet] += d
 	if s.readers[packet] <= 0 {

@@ -79,6 +79,13 @@ type Service struct {
 	// Usage mesure la place libre (datafs.Usage par défaut).
 	Usage func(path string) (total, free int64, err error)
 
+	// startMu sérialise admission, réservation du cache et lancement.
+	startMu sync.Mutex
+	// Les sauvegardes différées écrivent le dernier état de conservation.
+	saveMu sync.Mutex
+	// fileMu rend atomiques suppression, conservation et début de lecture.
+	// Toujours acquis avant mu ; aucun appelant ne le garde pendant clean.
+	fileMu   sync.Mutex
 	mu       sync.Mutex
 	tasks    map[string]*Task
 	lives    map[string]*live
@@ -243,6 +250,13 @@ func (s *Service) save(ctx context.Context, t Task) {
 	if s.DB == nil {
 		return
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	if current := s.tasks[t.Packet]; current != nil {
+		t = *current
+	}
+	s.mu.Unlock()
 	raw, _ := json.Marshal(t)
 	if _, err := s.DB.ExecContext(ctx, "INSERT INTO pse_xdcc_tasks(packet,data) VALUES(?,?) ON CONFLICT(packet) DO UPDATE SET data=excluded.data", t.Packet, string(raw)); err != nil {
 		s.log().Warn("tâche XDCC non enregistrée", "err", err)
@@ -465,25 +479,34 @@ type startOptions struct {
 
 // ensure renvoie la tâche du paquet, en la créant si allow le permet.
 func (s *Service) ensure(ctx context.Context, packet string, allow bool, o startOptions) (*Task, error) {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
 	s.mu.Lock()
 	s.init()
 	t := s.tasks[packet]
 	if t != nil {
 		switch {
 		case t.active():
-			if o.keep && !t.Keep {
-				t.Keep = true
-				cp := *t
-				s.mu.Unlock()
-				s.save(ctx, cp)
-				return t, nil
-			}
+			cp := *t
 			s.mu.Unlock()
-			return t, nil
+			if o.keep {
+				if err := s.Keep(ctx, packet); err != nil {
+					return nil, err
+				}
+				cp.Keep = true
+			}
+			return &cp, nil
 		case t.State == StateCompleted:
 			if p, ok := s.Settings.Local(t.Storage); ok && localSize(p) == t.Size {
+				cp := *t
 				s.mu.Unlock()
-				return t, nil
+				if o.keep {
+					if err := s.Keep(ctx, packet); err != nil {
+						return nil, err
+					}
+					cp.Keep = true
+				}
+				return &cp, nil
 			}
 		case t.State == StateFailed && !o.manual && s.now().Sub(t.Done) < retryAfter:
 			cp := *t
@@ -606,7 +629,9 @@ func (s *Service) checkSpace(ctx context.Context, size int64, keep bool) error {
 		return nil
 	}
 	if s.cacheUsed()+size > s.Settings.CacheBytes {
-		s.clean(ctx, true) // libère d'abord les fichiers expirés ou les plus anciens
+		if size <= s.Settings.CacheBytes {
+			s.cleanFor(ctx, true, size) // libère les anciens sans effacer pour un fichier trop grand
+		}
 		if s.cacheUsed()+size > s.Settings.CacheBytes {
 			return notice(fmt.Errorf("%w : %w", errCache, core.ErrDownloadLimit),
 				"Le cache XDCC est plein (fichiers en cours de lecture) : réessayez plus tard.", "The XDCC cache is full (files being read): try again later.")
@@ -637,6 +662,8 @@ func (s *Service) Grab(ctx context.Context, packet string, keep bool) (*Task, er
 
 // Cancel arrête une tâche en cours ; Grabscher efface le fichier partiel.
 func (s *Service) Cancel(ctx context.Context, packet string) error {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	s.mu.Lock()
 	t := s.tasks[packet]
 	if t == nil || !t.active() {
@@ -663,11 +690,13 @@ func (s *Service) Cancel(ctx context.Context, packet string) error {
 
 // Keep garde un fichier du cache : il n'est plus jamais effacé par Remix.
 func (s *Service) Keep(ctx context.Context, packet string) error {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	s.mu.Lock()
 	t := s.tasks[packet]
-	if t == nil {
+	if t == nil || t.State == StateRemoved || t.State == StateCancelled {
 		s.mu.Unlock()
-		return errors.New("xdcc: paquet inconnu")
+		return errors.New("xdcc: paquet inconnu ou déjà supprimé")
 	}
 	t.Keep = true
 	cp := *t
@@ -684,61 +713,79 @@ func (s *Service) Keep(ctx context.Context, packet string) error {
 // complètes, hors lecture, hors bibliothèque ; l'effacement passe par
 // Grabscher, qui n'efface que le fichier de la tâche dans son dossier.
 func (s *Service) clean(ctx context.Context, force bool) {
+	s.cleanFor(ctx, force, 0)
+}
+
+// reserve inclut le prochain téléchargement dans la cible du nettoyage.
+func (s *Service) cleanFor(ctx context.Context, force bool, reserve int64) {
 	s.mu.Lock()
 	every := cleanEvery
 	if force {
 		every = time.Second
 	}
-	if s.now().Sub(s.cleanAt) < every {
+	if reserve == 0 && s.now().Sub(s.cleanAt) < every {
 		s.mu.Unlock()
 		return
 	}
 	s.cleanAt = s.now()
-	now := s.now()
-	var cands []*Task
-	var used int64
+	var cands []Task
 	for _, t := range s.tasks {
-		if t.Keep || (t.State != StateCompleted && !t.active()) {
-			continue
+		if !t.Keep && t.State == StateCompleted {
+			cands = append(cands, *t)
 		}
-		used += t.Size
-		if t.State != StateCompleted || s.readers[t.Packet] > 0 || now.Sub(t.LastRead) < readingWindow {
-			continue
-		}
-		cands = append(cands, t)
 	}
-	sort.Slice(cands, func(i, j int) bool { return lastUse(cands[i]).Before(lastUse(cands[j])) })
-	var drop []Task
+	sort.Slice(cands, func(i, j int) bool { return lastUse(&cands[i]).Before(lastUse(&cands[j])) })
+	s.mu.Unlock()
 	for _, t := range cands {
-		expired := now.Sub(lastUse(t)) > s.Settings.Retention
-		over := s.Settings.CacheBytes > 0 && used > s.Settings.CacheBytes
-		if !expired && !over {
-			continue
+		s.cleanOne(ctx, t, reserve)
+	}
+}
+
+func (s *Service) cleanOne(ctx context.Context, candidate Task, reserve int64) {
+	local, ok := s.Settings.Local(candidate.Storage)
+	if !ok || (s.Protected != nil && s.Protected(local)) {
+		s.markKept(ctx, candidate.Packet)
+		return
+	}
+	// Une action Garder ou une lecture peut avoir commencé pendant la
+	// vérification de bibliothèque. Revalider, puis bloquer ces actions
+	// jusqu'à la réponse de Grabscher, sans bloquer le suivi des transferts.
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+	s.mu.Lock()
+	t := s.tasks[candidate.Packet]
+	now := s.now()
+	if t == nil || t.NZO != candidate.NZO || t.State != StateCompleted || t.Keep ||
+		s.readers[t.Packet] > 0 || now.Sub(t.LastRead) < readingWindow {
+		s.mu.Unlock()
+		return
+	}
+	var used int64
+	for _, task := range s.tasks {
+		if !task.Keep && (task.active() || task.State == StateCompleted) {
+			used += task.Size
 		}
-		used -= t.Size
-		drop = append(drop, *t)
+	}
+	expired := now.Sub(lastUse(t)) > s.Settings.Retention
+	over := s.Settings.CacheBytes > 0 && used+reserve > s.Settings.CacheBytes
+	if !expired && !over {
+		s.mu.Unlock()
+		return
+	}
+	cp := *t
+	s.mu.Unlock()
+	if err := s.Client.Forget(ctx, cp.NZO, true); err != nil {
+		s.log().Warn("fichier XDCC du cache non effacé", "name", cp.Name, "err", err)
+		return
+	}
+	s.mu.Lock()
+	if cur := s.tasks[cp.Packet]; cur != nil && cur.NZO == cp.NZO {
+		cur.State = StateRemoved
+		cp = *cur
 	}
 	s.mu.Unlock()
-	for _, t := range drop {
-		local, ok := s.Settings.Local(t.Storage)
-		if !ok || (s.Protected != nil && s.Protected(local)) {
-			s.log().Info("fichier XDCC gardé : il appartient à une bibliothèque ou est hors des dossiers partagés", "name", t.Name)
-			s.markKept(ctx, t.Packet)
-			continue
-		}
-		if err := s.Client.Forget(ctx, t.NZO, true); err != nil {
-			s.log().Warn("fichier XDCC du cache non effacé", "name", t.Name, "err", err)
-			continue
-		}
-		s.mu.Lock()
-		if cur := s.tasks[t.Packet]; cur != nil && cur.NZO == t.NZO {
-			cur.State = StateRemoved
-			t = *cur
-		}
-		s.mu.Unlock()
-		s.save(ctx, t)
-		s.log().Info("fichier XDCC du cache effacé", "name", t.Name)
-	}
+	s.save(ctx, cp)
+	s.log().Info("fichier XDCC du cache effacé", "name", cp.Name)
 }
 
 func (s *Service) markKept(ctx context.Context, packet string) {
