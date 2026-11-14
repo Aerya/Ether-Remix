@@ -10,7 +10,7 @@ Dans **Ether-Remix → Sources → FTP / SFTP**, renseignez le protocole, le ser
 - **FTPS explicite** (port 21) ou **implicite** (990) : certificat TLS vérifié. Pour un certificat auto-signé, vérifiez puis enregistrez son empreinte SHA-256 affichée par le test.
 - **FTP** (port 21) : connexion non chiffrée, y compris le mot de passe. Utilisez-la seulement sur un réseau de confiance.
 
-Activez ensuite la source et lancez **Parcourir maintenant**. Le parcours périodique a lieu toutes les six heures par défaut. Les recherches consultent l'index local, sans parcourir le serveur à chaque lecture. Un dossier momentanément illisible conserve ses anciennes entrées.
+Activez ensuite la source et lancez **Parcourir le serveur**. Le parcours périodique a lieu toutes les six heures par défaut. Les recherches consultent l'index local, sans parcourir le serveur à chaque lecture. Un dossier momentanément illisible conserve ses anciennes entrées.
 
 ## Lecture et stockage
 
