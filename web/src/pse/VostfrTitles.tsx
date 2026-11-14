@@ -14,8 +14,8 @@ import { useTitle } from "../lib/titles";
 
 /**
  * Titres en VOSTFR (internal/pse/themes, vostfr.go) : on cherche un film ou
- * une série, on l'ajoute, et Ether-Remix le montre dans Films et Séries même sans
- * VF, ainsi que dans la bibliothèque « VOSTFR » de Plex et Jellyfin.
+ * une série, on l'ajoute, et Ether-Remix le montre dans la bibliothèque
+ * « VOSTFR » de Plex ; sans VF, il n'apparaît pas dans Films et Séries.
  */
 
 const ENDPOINT = "/pse/themes/vostfr";
@@ -170,8 +170,8 @@ export function VostfrTitles() {
     <SettingsSection
       title={L("Titres en VOSTFR à la demande", "On-demand subtitled titles")}
       description={L(
-        "Une exception volontaire à vos critères FR/MULTi. Ajoutez un film, une série ou un animé précis : il apparaît dans Films et Séries même sans VF, et dans la bibliothèque « VOSTFR » de Plex et Jellyfin. Chaque ajout priorise une recherche de releases, si l’indexation est active, dans les limites des budgets et des pauses de lecture.",
-        "An explicit exception to your French/MULTi criteria. Add a specific movie, show or anime: it appears in Movies and Shows even without a French version, and in the “VOSTFR” library in Plex and Jellyfin. Each addition queues a priority release search when indexing is enabled, subject to budgets and playback pauses.",
+        "Une exception volontaire à vos critères FR/MULTi. Ajoutez un film, une série ou un animé précis : il apparaît dans la bibliothèque « VOSTFR » de Plex, mais pas dans Films et Séries tant qu'aucune VF n'est trouvée. Chaque ajout priorise une recherche de releases, si l’indexation est active, dans les limites des budgets et des pauses de lecture.",
+        "An explicit exception to your French/MULTi criteria. Add a specific movie, show or anime: it appears in the “VOSTFR” library in Plex, but not in Movies and Shows until a French version is found. Each addition queues a priority release search when indexing is enabled, subject to budgets and playback pauses.",
       )}
     >
       <div className="space-y-3 px-4 py-3">

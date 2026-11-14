@@ -1,6 +1,6 @@
 # Catalogue and indexing
 
-With the **playable-only** catalogue, Remix only shows a title from its local catalogue with enough indexed releases (2 by default) matching the chosen filter, for example French or MULTi, cached on debrid. **VOSTFR** titles and language exceptions count releases in any language.
+With the **playable-only** catalogue, Remix only shows a title from its local catalogue with enough indexed releases (2 by default) matching the chosen filter, for example French or MULTi, cached on debrid. **VOSTFR** titles and language exceptions count releases in any language, but only in their library or collection: without a French version they show neither in Movies, Shows nor the home screen.
 
 - **Filtered lists**: home (Trending, Top 10…), Movies, TV shows, recommendations, similar titles, collections and franchises. Search, watchlist, continue watching and upcoming collections are not filtered: a chosen title stays reachable, and playback queries sources live.
 - **Search order**: TMDB popularity, highest first, alternating movies and shows. VOSTFR titles and language exceptions go first, then prioritized collections and libraries.

@@ -77,6 +77,7 @@ func (i *instance) writeDisplayPreferences(w http.ResponseWriter, r *http.Reques
 		}
 		if body == nil {
 			object = map[string]any{"Id": id, "Client": client, "CustomPrefs": map[string]any{}, "ScrollDirection": "Horizontal", "SortOrder": "Ascending"}
+			pseDisplaySort(id, object) // PSE-HOOK: tri par date de sortie — voir docs/pse/FORK.fr.md
 		}
 		if _, ok := object["CustomPrefs"]; !ok {
 			object["CustomPrefs"] = map[string]any{}
@@ -91,7 +92,9 @@ func (i *instance) writeDisplayPreferences(w http.ResponseWriter, r *http.Reques
 		_, _ = w.Write(body)
 		return
 	}
-	for key, value := range jellyfinDisplayDefaults(id, client) {
+	defaults := jellyfinDisplayDefaults(id, client)
+	pseDisplaySort(id, defaults) // PSE-HOOK: tri par date de sortie — voir docs/pse/FORK.fr.md
+	for key, value := range defaults {
 		if _, ok := object[key]; !ok {
 			object[key] = value
 		}

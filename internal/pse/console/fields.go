@@ -158,6 +158,16 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID:          "librarysort",
+		Title:       tx("Tri des bibliothèques", "Library sorting"),
+		Description: tx("Ordre des bibliothèques Films et Séries à leur ouverture dans Plex, Jellyfin et Emby. Un tri choisi dans l'application reste prioritaire.", "Order of the Movies and Shows libraries when opened in Plex, Jellyfin and Emby. A sort chosen in the app still wins."),
+		Fields: []Field{
+			{Key: "PSE_LIBRARY_SORT", Kind: KindSelect, Default: "release", Label: tx("Tri par défaut", "Default sort"),
+				Help:    tx("Plex applique ce tri tant que vous n'en avez pas choisi un autre. Jellyfin Web et Infuse gardent leur propre tri : changez-le une fois dans l'application.", "Plex uses this sort until you pick another. Jellyfin Web and Infuse keep their own: change it once in the app."),
+				Options: []Option{{"release", tx("Date de sortie, du plus récent au plus ancien", "Release date, newest first")}, {"title", tx("Titre (A → Z)", "Title (A → Z)")}}},
+		},
+	},
+	{
 		ID:          "posters",
 		Title:       tx("Affiches dans les applications", "Posters in apps"),
 		Description: tx("Avec un fournisseur d'affiches (PostersPlus, XRDB, RPDB…), les applications gardent chaque affiche au lieu de la redemander à chaque affichage.", "With a poster provider (PostersPlus, XRDB, RPDB…), apps keep each poster instead of asking for it again on every screen."),

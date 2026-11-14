@@ -32,6 +32,11 @@ func (a *App) collectionOptions(cfg config.Config) []collections.Option {
 		collections.WithCatalogConfig(func() config.Catalog { return a.cfg.Read().Catalog }),
 		// PSE-HOOK: filtre français et lisible — voir docs/pse/FORK.fr.md
 		collections.WithPSEDiscovery(func(ctx context.Context, keys []core.RatingKey) ([]core.RatingKey, error) {
+			if id := core.PSECollection(ctx); id != "" {
+				if t := a.pseThemesIfReady(); t != nil && t.LangFreeCollection(id) {
+					ctx = core.WithPSELangFree(ctx)
+				}
+			}
 			return a.catalog.PSEDiscoveryKeys(ctx, keys)
 		}),
 		collections.WithTraktConfig(func() config.Trakt { return a.cfg.Read().Trakt }),

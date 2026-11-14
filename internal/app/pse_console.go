@@ -60,9 +60,11 @@ type pseRuntime struct {
 	themes            *themes.Service
 	// exemptKick relance la mise à jour des exceptions de langue.
 	exemptKick chan struct{}
-	lfmOnce    sync.Once
-	lastfm     *music.Scrobbler
-	torrent    pseTorrentState // client BitTorrent (PSE_TORRENT)
+	// seerrSig résume les derniers titres SeerrCatalog rangés.
+	seerrSig atomic.Value
+	lfmOnce  sync.Once
+	lastfm   *music.Scrobbler
+	torrent  pseTorrentState // client BitTorrent (PSE_TORRENT)
 }
 
 // scrobbler prépare l'envoi des écoutes à Last.fm.

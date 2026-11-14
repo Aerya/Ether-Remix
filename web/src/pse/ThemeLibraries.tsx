@@ -136,8 +136,8 @@ function Editor({
           <span className="font-medium text-fg">{L("Toutes langues", "Any language")}</span>
           {" — "}
           {L(
-            "ses titres ignorent le filtre de langue du catalogue (VO, VOSTFR…) et apparaissent aussi dans Films et Séries. Adapté aux animés, concerts et spectacles.",
-            "its titles skip the catalogue's language filter (original, subtitled…) and also show in Movies and Shows. Suitable for anime, concerts and shows.",
+            "ses titres ignorent le filtre de langue du catalogue (VO, VOSTFR…), dans cette bibliothèque seulement : sans VF, ils n'apparaissent pas dans Films et Séries. Adapté aux animés, concerts et spectacles.",
+            "its titles skip the catalogue's language filter (original, subtitled…) in this library only: without a French version they do not show in Movies and Shows. Suitable for anime, concerts and shows.",
           )}
         </span>
       </label>

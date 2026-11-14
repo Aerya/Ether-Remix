@@ -35,6 +35,10 @@ func init() {
  expires INTEGER NOT NULL, signature TEXT NOT NULL);
  CREATE INDEX pse_seerrcatalog_title ON pse_seerrcatalog(title_key,expires);`)
 	store.Register("pse_seerrcatalog", 2, `ALTER TABLE pse_seerrcatalog ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0;`)
+	// fallback : SeerrCatalog n'a trouvé qu'une version de secours (VOSTFR,
+	// VO + sous-titres externes), pas la langue principale. Remix range ces
+	// titres dans la bibliothèque VOSTFR, jamais dans Films et Séries.
+	store.Register("pse_seerrcatalog", 3, `ALTER TABLE pse_seerrcatalog ADD COLUMN fallback INTEGER NOT NULL DEFAULT 0;`)
 }
 
 type Settings struct {
@@ -57,13 +61,63 @@ func (c Settings) valid() bool {
 
 // TrustedSQL is independent of stream lifetimes and uses the source's own
 // availability rules. The settings fingerprint immediately revokes old data.
-func TrustedSQL(key string) (string, []any) {
+// Remix : seules les disponibilités dans la langue principale comptent ; une
+// version de secours (VOSTFR) ne fait pas entrer un titre dans Films et
+// Séries. TrustedAnySQL les accepte aussi, pour la bibliothèque VOSTFR.
+func TrustedSQL(key string) (string, []any) { return trustedSQL(key, false) }
+
+// TrustedAnySQL accepte aussi les versions de secours (VOSTFR).
+func TrustedAnySQL(key string) (string, []any) { return trustedSQL(key, true) }
+
+func trustedSQL(key string, fallback bool) (string, []any) {
 	c := Load()
 	if !c.valid() {
 		return "0", nil
 	}
-	return key + " IN (SELECT title_key FROM pse_seerrcatalog WHERE available=1 AND (confirmed=1 OR expires>unixepoch()) AND signature=?)", []any{c.signature()}
+	q := " AND fallback=0"
+	if fallback {
+		q = ""
+	}
+	return key + " IN (SELECT title_key FROM pse_seerrcatalog WHERE available=1 AND (confirmed=1 OR expires>unixepoch()) AND signature=?" + q + ")", []any{c.signature()}
 }
+
+// Fallback indique si SeerrCatalog n'a trouvé qu'une version de secours :
+// VOSTFR choisie à défaut de la langue principale, ou VO avec sous-titres
+// externes.
+func (v Snapshot) Fallback() bool {
+	return v.Applied != nil && (v.Applied.SubtitleFallbackUsed || v.Applied.ExternalSubtitleLanguage != "")
+}
+
+// Keys renvoie les titres disponibles d'après SeerrCatalog : vf (langue
+// principale) et fallback (seulement une version de secours). Un titre
+// demandé par plusieurs comptes compte en VF dès qu'un des contrôles l'a
+// trouvé dans la langue principale.
+func Keys(ctx context.Context, db *sql.DB) (vf, fallback []core.RatingKey, err error) {
+	c := Load()
+	if !c.valid() || db == nil {
+		return nil, nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT title_key, MIN(fallback) FROM pse_seerrcatalog
+WHERE available=1 AND (confirmed=1 OR expires>unixepoch()) AND signature=? GROUP BY title_key ORDER BY MAX(media_id) DESC`, c.signature())
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k int64
+		var fb int
+		if err := rows.Scan(&k, &fb); err != nil {
+			return nil, nil, err
+		}
+		if fb != 0 {
+			fallback = append(fallback, core.RatingKey(k))
+		} else {
+			vf = append(vf, core.RatingKey(k))
+		}
+	}
+	return vf, fallback, rows.Err()
+}
+
 func Trusted(ctx context.Context, db *sql.DB, key core.RatingKey) bool {
 	q, args := TrustedSQL("?")
 	args = append([]any{int64(key)}, args...)
@@ -109,6 +163,13 @@ type Snapshot struct {
 	Expires        time.Time `json:"expiresAt"`
 	ReleasesExpire time.Time `json:"releasesExpireAt"`
 	Releases       []Release `json:"releases"`
+	Applied        *Applied  `json:"appliedFilters"`
+}
+
+// Applied reprend les filtres appliqués par SeerrCatalog lors du contrôle.
+type Applied struct {
+	SubtitleFallbackUsed     bool   `json:"subtitleFallbackUsed"`
+	ExternalSubtitleLanguage string `json:"externalSubtitleLanguage"`
 }
 type page struct {
 	Schema   string     `json:"schema"`
@@ -291,7 +352,7 @@ func (s *Service) Sync(ctx context.Context) error {
 		return e
 	}
 	for _, v := range all {
-		if _, e = tx.ExecContext(ctx, "INSERT INTO pse_seerrcatalog(media_id,title_key,available,expires,signature,confirmed) VALUES(?,?,?,?,?,?)", v.Media.ID, int64(v.Media.key()), v.Available, v.Expires.Unix(), c.signature(), v.Confirmed); e != nil {
+		if _, e = tx.ExecContext(ctx, "INSERT INTO pse_seerrcatalog(media_id,title_key,available,expires,signature,confirmed,fallback) VALUES(?,?,?,?,?,?,?)", v.Media.ID, int64(v.Media.key()), v.Available, v.Expires.Unix(), c.signature(), v.Confirmed, v.Fallback()); e != nil {
 			return e
 		}
 	}

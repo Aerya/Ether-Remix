@@ -109,13 +109,20 @@ func TestPSEPlayableOnlyCatalogue(t *testing.T) {
 		t.Fatalf("FR, N=2 : %v", got)
 	}
 	// Exception de langue (concert, sélection en VOSTFR) : toutes ses
-	// releases comptent, quelle que soit leur langue.
+	// releases comptent, quelle que soit leur langue, mais seulement dans
+	// sa bibliothèque « toutes langues ». Films et Séries restent en VF.
 	if err := st.SetLangExempt(ctx, []core.RatingKey{fjord}); err != nil {
 		t.Fatal(err)
 	}
 	fresh()
-	if got := movies(core.Filter{}); len(got) != 1 || got[0] != fjord {
-		t.Fatalf("exception de langue : %v", got)
+	if got := movies(core.Filter{}); len(got) != 0 {
+		t.Fatalf("exception de langue visible dans Films : %v", got)
+	}
+	if got := movies(core.Filter{IncludeKeys: []core.RatingKey{fjord, family}, PSEThemed: true}); len(got) != 0 {
+		t.Fatalf("exception de langue dans une bibliothèque à thème en VF : %v", got)
+	}
+	if got := movies(core.Filter{IncludeKeys: []core.RatingKey{fjord, family}, PSEThemed: true, PSELangFree: true}); len(got) != 1 || got[0] != fjord {
+		t.Fatalf("exception de langue dans sa bibliothèque : %v", got)
 	}
 	if err := st.SetLangExempt(ctx, nil); err != nil {
 		t.Fatal(err)

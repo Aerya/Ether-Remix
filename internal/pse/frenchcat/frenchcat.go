@@ -132,8 +132,9 @@ func (s Settings) NeedsHomeReleases() bool {
 // keyCol est la colonne de clé du titre ("t.key", ou "t.show_key" pour les
 // saisons et épisodes) ; typeCol la colonne de type quand keyCol désigne
 // directement le titre ("t.type"), vide sinon. nowTS borne les dates de
-// sortie. Vide si rien n'est à filtrer.
-func (s Settings) SQL(keyCol, typeCol string, kind core.MediaType, nowTS int64) (string, []any) {
+// sortie. langFree (bibliothèque ou collection « toutes langues ») ajoute
+// les exceptions de langue. Vide si rien n'est à filtrer.
+func (s Settings) SQL(keyCol, typeCol string, kind core.MediaType, nowTS int64, langFree bool) (string, []any) {
 	if !s.Enabled || len(s.Types) == 0 {
 		return "", nil
 	}
@@ -162,8 +163,11 @@ func (s Settings) SQL(keyCol, typeCol string, kind core.MediaType, nowTS int64) 
 		}
 		ors = append(ors, "EXISTS (SELECT 1 FROM pse_releases fr WHERE fr.title_key="+keyCol+" AND ("+strings.Join(likes, " OR ")+"))")
 	}
-	// Exceptions de langue (concerts, sélection en VOSTFR…).
-	ors = append(ors, releasedb.LangExemptSQL(keyCol))
+	// Exceptions de langue (concerts, sélection en VOSTFR…), seulement dans
+	// leur bibliothèque ou leur collection.
+	if langFree {
+		ors = append(ors, releasedb.LangExemptSQL(keyCol))
+	}
 	clause := "(" + strings.Join(ors, " OR ") + ")"
 	if typeCol != "" && kind == "" {
 		// Liste mélangée : seuls les types choisis sont filtrés.

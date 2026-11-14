@@ -66,6 +66,9 @@ func (a *App) runPSELangExempt(ctx context.Context, svc *themes.Service, kick <-
 	defer t.Stop()
 	for {
 		run, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		if err := a.syncPSESeerrCollections(run, svc); err != nil && ctx.Err() == nil {
+			a.log.Warn("collections SeerrCatalog Ether-Remix non mises à jour", "err", err)
+		}
 		if err := st.SetLangExempt(run, svc.ExemptKeys(run)); err != nil && ctx.Err() == nil {
 			a.log.Warn("exceptions de langue Ether-Remix non enregistrées", "err", err)
 		}
@@ -135,4 +138,11 @@ func (a *App) psePriorityHooks(rt *pseRuntime) themes.PriorityHooks {
 			return n, err
 		},
 	}
+}
+
+// pseThemesIfReady renvoie les bibliothèques à thème déjà publiées, sans
+// les préparer (appelé pendant le service d'une collection).
+func (a *App) pseThemesIfReady() *themes.Service {
+	t, _ := frontend.CurrentPSEThemes().(*themes.Service)
+	return t
 }

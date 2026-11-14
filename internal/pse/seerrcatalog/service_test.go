@@ -220,3 +220,21 @@ func TestConfirmedAvailabilitySurvivesAgeButDoesNotReviveSignedURLs(t *testing.T
 		t.Fatal("deleted title retained")
 	}
 }
+
+func TestSnapshotFallbackReadsAppliedFilters(t *testing.T) {
+	for raw, want := range map[string]bool{
+		`{"appliedFilters":{"languageTags":["FRENCH","MULTI"],"subtitleFallbackUsed":false}}`: false,
+		`{"appliedFilters":{"languageTags":["VOSTFR"],"subtitleFallbackUsed":true}}`:          true,
+		`{"appliedFilters":{"languageTags":["VO + STFR"],"externalSubtitleLanguage":"fr"}}`:   true,
+		`{"appliedFilters":null}`: false,
+		`{}`:                      false,
+	} {
+		var v Snapshot
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			t.Fatal(err)
+		}
+		if v.Fallback() != want {
+			t.Fatalf("%s : secours = %v", raw, v.Fallback())
+		}
+	}
+}

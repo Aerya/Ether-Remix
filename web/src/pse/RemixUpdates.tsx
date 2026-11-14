@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-14-posters-speed",
+    id: "2026-11-14-vf-libraries",
     version: "current",
+    date: "2026-11-14",
+    title: ["Films et Séries toujours en VF", "Movies and Shows always in French"],
+    items: [
+      [
+        "Un titre sans VF n'apparaît plus dans Films, Séries ni sur l'accueil, même s'il est choisi en VOSTFR, rangé dans une bibliothèque « Toutes langues » ou dans une collection d'exception. Il reste visible dans sa bibliothèque ou sa collection.",
+        "A title without a French version no longer shows in Movies, Shows or the home screen, even when chosen as VOSTFR, placed in an “Any language” library or in an exception collection. It stays visible in its library or collection.",
+      ],
+      [
+        "SeerrCatalog : un titre trouvé seulement en VOSTFR (ou en VO avec sous-titres) va dans la bibliothèque VOSTFR et la collection « SeerrCatalog · VOSTFR ». La collection « SeerrCatalog » regroupe tous ses titres disponibles. L'indexeur de Remix continue de leur chercher une VF.",
+        "SeerrCatalog: a title found only with French subtitles (or original audio with subtitles) goes to the VOSTFR library and the “SeerrCatalog · VOSTFR” collection. The “SeerrCatalog” collection gathers all its available titles. The Remix indexer keeps looking for a French version.",
+      ],
+      [
+        "Films et Séries s'ouvrent triés par date de sortie, du plus récent au plus ancien. Réglage dans Ether-Remix → Tri des bibliothèques. Un tri choisi dans l'application reste prioritaire.",
+        "Movies and Shows open sorted by release date, newest first. Set it in Ether-Remix → Library sorting. A sort chosen in the app still wins.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-posters-speed",
+    version: "0.2.37-remix.59.1",
     date: "2026-11-14",
     title: ["Affiches plus rapides", "Faster posters"],
     items: [

@@ -18,7 +18,7 @@ const pseDiscoveryBatch = 400
 // pseDiscoveryAllowed renvoie les clés qui respectent pseCatalogWhere.
 // active est faux quand aucune règle Remix n'est activée.
 func (c *Catalog) pseDiscoveryAllowed(ctx context.Context, keys []core.RatingKey) (allowed map[core.RatingKey]bool, active bool, err error) {
-	conds, condArgs := pseCatalogWhere(nil, nil, core.Filter{CatalogViewerID: core.CatalogViewerID(ctx)}, c.now().Unix())
+	conds, condArgs := pseCatalogWhere(nil, nil, core.Filter{CatalogViewerID: core.CatalogViewerID(ctx), PSELangFree: core.PSELangFree(ctx)}, c.now().Unix())
 	if c.localMedia.Load() {
 		conds = append(conds, localMediaWhere(core.CatalogViewerID(ctx)))
 	}

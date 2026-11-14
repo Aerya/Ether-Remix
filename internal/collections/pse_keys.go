@@ -2,6 +2,7 @@ package collections
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -63,7 +64,18 @@ func (s *Service) serve(ctx context.Context, row *specRow, user *core.User, wait
 	if err != nil || s.pseDiscovery == nil || row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed" {
 		return keys, err
 	}
-	return s.pseDiscovery(ctx, keys)
+	// Le filtre sait ainsi si la collection est une exception de langue
+	// (VOSTFR, concerts, SeerrCatalog), dont les titres restent visibles.
+	return s.pseDiscovery(core.WithPSECollection(ctx, pseRowID(row)), keys)
+}
+
+// pseRowID renvoie l'identifiant public d'une collection (celui des
+// bibliothèques à thème et des exceptions de langue).
+func pseRowID(row *specRow) string {
+	if row.builtin {
+		return row.slug
+	}
+	return strconv.FormatInt(row.id, 10)
 }
 
 // pseFilterTitles applique le même filtre aux films d'une franchise.

@@ -99,10 +99,12 @@ func (s *Server) pseThemeFilter(ctx context.Context, sec Section, u *frontend.Us
 		return
 	}
 	var keys []frontend.RatingKey
+	langFree := th.AllLanguages
 	if row := q.Get(pseRowParam); row != "" {
 		for _, r := range th.Rows {
 			if r.ID == row {
 				keys = t.RowKeys(ctx, row, u)
+				langFree = langFree || r.LangFree
 			}
 		}
 	} else {
@@ -113,6 +115,9 @@ func (s *Server) pseThemeFilter(ctx context.Context, sec Section, u *frontend.Us
 	}
 	f.IncludeKeys = keys
 	f.PSEThemed = true // même filtre VF que Films et Séries
+	// PSE : les titres sans VF (VOSTFR, concerts, SeerrCatalog) ne restent
+	// visibles que dans une bibliothèque ou une rangée « toutes langues ».
+	f.PSELangFree = langFree
 }
 
 // pseThemeSort : les rangées montrent d'abord les sorties les plus récentes.

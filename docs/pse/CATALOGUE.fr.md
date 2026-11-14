@@ -1,6 +1,6 @@
 # Catalogue et indexation
 
-Avec le catalogue **« lisible uniquement »**, Remix n’affiche un titre de son catalogue local que s’il a assez de releases indexées (2 par défaut) qui respectent le filtre choisi, par exemple VF ou MULTi en cache debrid. Les titres **VOSTFR** et les exceptions de langue comptent leurs releases dans toutes les langues.
+Avec le catalogue **« lisible uniquement »**, Remix n’affiche un titre de son catalogue local que s’il a assez de releases indexées (2 par défaut) qui respectent le filtre choisi, par exemple VF ou MULTi en cache debrid. Les titres **VOSTFR** et les exceptions de langue comptent leurs releases dans toutes les langues, mais seulement dans leur bibliothèque ou leur collection : sans VF, ils n’apparaissent ni dans Films, ni dans Séries, ni sur l’accueil.
 
 - **Listes filtrées** : accueil (Tendances, Top 10…), Films, Séries, recommandations, titres similaires, collections et franchises. La recherche, la watchlist, la reprise de lecture et les collections de sorties à venir ne le sont pas : un titre choisi reste accessible, et sa lecture interroge les sources en direct.
 - **Ordre de recherche** : popularité TMDB décroissante, en alternant films et séries. Passent avant : les titres VOSTFR et exceptions de langue, puis les collections et bibliothèques mises en priorité.

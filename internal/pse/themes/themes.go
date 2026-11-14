@@ -68,7 +68,8 @@ type Library struct {
 	Collections []string `json:"collections"` // collections d'Ether, dans l'ordre des rangées
 	Position    int      `json:"position"`
 	// AllLanguages : ses titres échappent au filtre de langue du catalogue
-	// (concerts, spectacles…) et apparaissent aussi dans Films et Séries.
+	// (concerts, spectacles…), dans cette bibliothèque seulement : sans VF,
+	// ils n'apparaissent ni dans Films, ni dans Séries, ni sur l'accueil.
 	AllLanguages bool `json:"allLanguages"`
 }
 
@@ -211,7 +212,7 @@ func (s *Service) Themes() []frontend.PSETheme {
 // theme décrit une bibliothèque Plex ; filter ne garde que les collections
 // du type (ou mixtes).
 func (s *Service) theme(l Library, section int, title string, typ core.MediaType, filter bool) frontend.PSETheme {
-	th := frontend.PSETheme{Section: section, Title: title, Type: typ}
+	th := frontend.PSETheme{Section: section, Title: title, Type: typ, AllLanguages: l.AllLanguages}
 	sources := []string{}
 	for _, id := range l.Collections {
 		if p := s.private[id]; p != "" {
@@ -239,7 +240,7 @@ func (s *Service) theme(l Library, section int, title string, typ core.MediaType
 		if name == "" {
 			name = l.Name
 		}
-		th.Rows = append(th.Rows, frontend.PSEThemeRow{ID: c, Title: name, Key: s.keys[c]})
+		th.Rows = append(th.Rows, frontend.PSEThemeRow{ID: c, Title: name, Key: s.keys[c], LangFree: l.AllLanguages || s.isFree(c)})
 	}
 	return th
 }
