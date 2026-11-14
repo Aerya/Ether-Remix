@@ -1,3 +1,4 @@
+import { MemoryRouter } from "react-router-dom";
 import { act, cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { IBroadcastSource, LocalMedia } from "./OwnedMedia";
@@ -64,7 +65,11 @@ it("retains configured folders while showing scan errors", async () => {
       finished: 0,
     },
   });
-  render(<LocalMedia />);
+  render(
+    <MemoryRouter>
+      <LocalMedia />
+    </MemoryRouter>,
+  );
   expect(await screen.findByText("Family")).toBeTruthy();
   expect(screen.getByText("Mount unavailable")).toBeTruthy();
   expect(screen.getByText(/\/media\/family/)).toBeTruthy();

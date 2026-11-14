@@ -259,7 +259,7 @@ volumes:
 
 In **Sources → Local files**, enter a unique name, the **container path** (for example `/media/videos`) and video or audio type. Mount network folders on the host before starting the stack. The container user needs read access.
 
-Scans run after adding a folder, at startup, hourly and with **Scan now**. The panel shows progress and errors. Unchanged metadata is reused. Unavailable folders retain their previous index; successful scans remove missing files from the library. Removing a source never deletes files. Symbolic links are skipped.
+Scans run after adding a folder, at startup, hourly and with **Scan now**. The panel shows progress and errors. Unchanged metadata is reused. Unavailable folders retain their previous index. Missing files also remain after successful scans, so empty or partially disconnected mounts never empty a library. Returning files are refreshed on the next scan. Removing a source never deletes files. Symbolic links are skipped.
 
 Videos are matched **against the Remix catalogue first, then TMDB**. Movie names with a year (`Title.2020.mkv`) and explicit episodes (`Show.S01E02.mkv`) allow conservative identification: exact normalized title, matching year and a unique result. Identified files reuse existing entries, including the corresponding seasons and episodes, and provide local playback. Without a reliable match, a video keeps its filename title and needs no TMDB entry. Each folder feeds a library and collection; personal videos do not inflate TMDB counters.
 
@@ -300,3 +300,11 @@ In **Libraries** or **Ether-Remix → Content and libraries**, open **Set up wit
 Collections refresh daily, keep released titles only and sort by release date descending. Keep the general library sort on **Release date** (the default); explicit client sorting takes precedence. Initial population runs in the background. Lists add no playback sources, download no videos and do not guarantee French audio: sources, language filters, viewer permissions and availability rules still apply.
 
 Retrying reuses entries already created, including after a partial error, without overwriting your edits. You can rename or hide libraries and change collection sources, refresh frequency, sorting and targets afterwards. A deleted library can be recreated by running the selection again; deleting a library does not delete its collection.
+
+### Local media health
+
+In **Remix → Local media**, refresh diagnostics for previously indexed files without running `ffprobe`. Missing paths, permission failures and other access failures are distinguished. Files in an unavailable folder cannot be checked; missing files in a readable folder are marked missing. Size/date changes require another scan.
+
+Filter by folder, state, name or relative path. Unidentified videos remain valid local videos. Potential duplicates share a matched title or filename within a source folder; different editions may be flagged, and content equality is not verified. Files are sorted largest first, in pages of 50.
+
+Logical sizes are grouped by source folder (one video library per folder; audio folders join Music). Accessible sizes are checked now; known sizes are from the index and include missing files. Hardlinks may be counted more than once: these figures are neither allocated disk blocks nor free disk space. No files are modified or deleted. Missing entries remain until the source is explicitly removed; removing and adding the source rebuilds its index and requires sharing to be configured again.

@@ -308,6 +308,37 @@ func (l *Library) scanRoot(ctx context.Context, r Root) error {
 	if exists == 0 {
 		return nil
 	}
+	// Retain absent entries: an empty or partially disconnected mount must never
+	// remove a library. Missing files remain diagnosable and recover on the next scan.
+	seen := make(map[int64]bool, len(files))
+	for _, f := range files {
+		seen[f.ID] = true
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT data,path FROM pse_local_files WHERE root_id=?", r.ID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var raw, path string
+		if err := rows.Scan(&raw, &path); err != nil {
+			rows.Close()
+			return err
+		}
+		var f File
+		if err := json.Unmarshal([]byte(raw), &f); err != nil {
+			rows.Close()
+			return err
+		}
+		if !seen[f.ID] {
+			f.Path = path
+			files = append(files, f)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_local_files WHERE root_id=?", r.ID); err != nil {
 		return err
 	}
@@ -328,7 +359,7 @@ func (l *Library) scanRoot(ctx context.Context, r Root) error {
 		return err
 	}
 	l.mu.Lock()
-	l.status.Imported += len(files)
+	l.status.Imported += len(seen)
 	l.mu.Unlock()
 	if l.Publish != nil {
 		return l.Publish(ctx, r, files)

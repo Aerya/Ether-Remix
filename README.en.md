@@ -70,6 +70,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Your local movies and personal videos
 
+- **Local media health**: dedicated tab for folder diagnostics, missing/unidentified files, potential duplicates and sizes per folder. Entries remain in the catalogue when a mount becomes empty or inaccessible; no files are deleted.
 - **Host folders or network mounts**: expose them through read-only Docker volumes. Scan on demand and hourly, without moving or deleting files.
 - **Catalogue matching**: search existing Remix entries first, then TMDB; identified movies and episodes reuse their entries. Without a reliable match, personal videos retain their local presentation.
 - **Libraries and collections per folder**, private by default; optionally share with selected viewers or everyone. [Setup and formats](docs/pse/GUIDE.en.md#local-media-and-ibroadcast).

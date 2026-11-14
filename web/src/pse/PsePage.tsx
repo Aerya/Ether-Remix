@@ -1,3 +1,4 @@
+import { LocalMediaHealth } from "./LocalMediaHealth";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
 import { QualityProfiles } from "./QualityProfiles";
@@ -374,6 +375,7 @@ function PseSettings() {
             </>
           ) : null}
           {tab === "demande" ? <VostfrTitles /> : null}
+          {tab === "medias-locaux" && <LocalMediaHealth />}
           {tab === "statistiques" ? (
             <>
               <nav
