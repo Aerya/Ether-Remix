@@ -24,7 +24,7 @@ func TestPSEPosterSize(t *testing.T) {
 		want    string
 	}{
 		{"thumb", 600, "w500"}, {"poster", 600, "w500"}, {"thumb", 300, "w300"}, {"thumb", 400, "w342"},
-		{"thumb", 1000, "w780"}, {"thumb", 0, "original"},
+		{"thumb", 1000, "w1280"}, {"poster", 1920, "original"}, {"thumb", 0, "original"},
 		{"art", 600, "w780"}, {"art", 1280, "w1280"}, {"background", 1920, "original"}, {"clearLogo", 600, "w780"},
 	} {
 		if got := psePosterSize(c.element, c.width); got != c.want {

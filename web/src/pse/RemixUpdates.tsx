@@ -36,8 +36,8 @@ export const REMIX_UPDATES = [
         "With a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. The TMDB fallback poster, served when the provider does not answer, is still rechecked.",
       ],
       [
-        "Les applications reprennent les affiches du fournisseur toutes les 24 heures au lieu de 6. Le délai se règle dans Ether-Remix → Affiches dans les applications.",
-        "Apps fetch provider posters again every 24 hours instead of 6. Set the delay in Ether-Remix → Posters in apps.",
+        "Les applications reprennent les affiches du fournisseur toutes les 24 heures au lieu de 6. Le délai se règle dans Ether-Remix → Contenus et bibliothèques → Affiches dans les applications.",
+        "Apps fetch provider posters again every 24 hours instead of 6. Set the delay in Ether-Remix → Content & libraries → Posters in apps.",
       ],
       [
         "Jellyfin et Emby reçoivent l'affiche à la taille demandée par l'application : plus légère sur téléphone. Jellyfin n'attend plus avant d'envoyer une image.",
@@ -46,6 +46,18 @@ export const REMIX_UPDATES = [
       [
         "Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.",
         "Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-dmm-instance",
+    version: "0.2.37-remix.58.1",
+    date: "2026-11-14",
+    title: ["Choix de l’instance DMM", "DMM instance selection"],
+    items: [
+      [
+        "La source musicale DMM affiche les liens vers le catalogue public et l’auto-hébergement. Son adresse peut être remplacée par celle de votre instance compatible.",
+        "The DMM music source links to the public catalogue and self-hosting instructions. Its address can be replaced with your compatible instance.",
       ],
     ],
   },

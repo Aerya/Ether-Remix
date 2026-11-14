@@ -147,6 +147,8 @@ A title search may consume multiple requests. Titles shared by sources or librar
 
 ### DMM with Real-Debrid
 
+By default, Remix queries the [public DMM instance](https://debridmediamanager.com/albums). **DMM instance address** (`PSE_MUSIC_DMM_URL`) selects a private instance reachable from the Remix container. Enter its base address without `/albums` or `/api/music`. The [DMM repository](https://github.com/debridmediamanager/debrid-media-manager#setup) documents installation; your instance must supply its catalogue and the `/api/music/search` and `/api/music/library` APIs. The public catalogue is not automatically copied.
+
 Configure at least one active Real-Debrid account in **Sources → Debrid**, then enable **DMM · Real-Debrid** under **Ether-Remix → Sources → Music streaming**. No manifest link or DMM account is needed. Browsing still uses the Deezer catalogue; DMM adds another way to find albums to play.
 
 This source does not depend on indexers. It follows the priority of your Real-Debrid accounts, just before their indexer searches; accounts are tried in priority order. Other enabled sources take over when the album or track cannot be played.
@@ -205,7 +207,7 @@ Existing `/sources/...` addresses and old Remix tabs redirect to their new locat
 
 Plex and Jellyfin prepare a page’s badges together. New episodes and collection rotations respect each viewer’s state. The playable-only catalogue keeps exact counts, including language exceptions.
 
-**Faster posters**: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. A TMDB fallback poster, served when the provider does not answer, is still rechecked every time so it does not stay on screen after the outage. Apps fetch provider posters again every 24 hours; set that delay in **Console → Ether-Remix → Posters in apps** (`PSE_POSTER_REFRESH_HOURS`, 1 to 168). Jellyfin and Emby receive the poster at the size the app asked for, and Jellyfin no longer waits before sending an image. Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.
+**Faster posters**: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. A TMDB fallback poster, served when the provider does not answer, is still rechecked every time so it does not stay on screen after the outage. Apps fetch provider posters again every 24 hours; set that delay in **Console → Ether-Remix → Content & libraries → Posters in apps** (`PSE_POSTER_REFRESH_HOURS`, 1 to 168). Jellyfin and Emby receive the poster at the size the app asked for, and Jellyfin no longer waits before sending an image. Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.
 
 
 ## Playlists and appearance

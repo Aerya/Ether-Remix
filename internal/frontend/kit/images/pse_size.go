@@ -9,11 +9,11 @@ var psePosterWidths = []int{92, 154, 185, 300, 342, 500, 780}
 // TMDBSize prend toujours la largeur au-dessus : une télé qui demande 600 px
 // reçoit alors l'affiche en 780 px, plus de deux fois plus lourde que celle
 // en 500 px. Ici, les largeurs 342 et 500 sont retenues tant que la demande
-// ne les dépasse pas de plus d'un quart, et une affiche n'est jamais servie
-// au-delà de 780 px. Les petites largeurs gardent la règle d'Ether. Une
+// ne les dépasse pas de plus d'un quart, les demandes au-delà de 780 px sont conservées
+// pour les vues détaillées. Les petites largeurs gardent la règle d'Ether. Une
 // largeur nulle ou négative est renvoyée telle quelle.
 func PSEPosterWidth(w int) int {
-	if w <= 0 {
+	if w <= 0 || w > 780 {
 		return w
 	}
 	for _, b := range psePosterWidths {

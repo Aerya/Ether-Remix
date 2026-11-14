@@ -325,6 +325,7 @@ function PseSettings() {
                   </Button>
                 ))}
               </nav>
+              {current.features.filter((f) => f.id === "posters").map((f) => renderFeature(f))}
               {content === "animes" ? (
                 <p className="text-sm text-fg-muted">
                   {L(
@@ -503,6 +504,7 @@ function FeatureSection({
       <MusicSourceSettings
         fields={feature.fields.map((fd) => ({
           key: fd.key,
+          value: draft[fd.key] ?? fd.value ?? "",
           advanced: fd.advanced,
           community: fd.community,
           control: row(fd),

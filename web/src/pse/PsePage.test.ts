@@ -27,10 +27,19 @@ describe("onglets de la page Ether-Remix", () => {
     description: { fr: "", en: "" },
     fields: [],
   });
-  const all = ["notify", "french", "indexer", "playable", "scrob", "music", "nouveau"].map(f);
+  const all = [
+    "notify",
+    "french",
+    "indexer",
+    "playable",
+    "scrob",
+    "music",
+    "posters",
+    "nouveau",
+  ].map(f);
   it("range chaque section dans son onglet", () => {
     expect(featuresOfTab("langues", all).map((x) => x.id)).toEqual(["french", "playable"]);
-    expect(featuresOfTab("contenus", all).map((x) => x.id)).toEqual(["music"]);
+    expect(featuresOfTab("contenus", all).map((x) => x.id)).toEqual(["music", "posters"]);
     expect(featuresOfTab("demande", all)).toEqual([]);
     expect(featuresOfTab("statistiques", all)).toEqual([]);
   });

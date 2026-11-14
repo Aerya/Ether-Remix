@@ -101,12 +101,13 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - Set collection refresh intervals from **1 to 168 hours**, independently of release searches.
 - Adjust when movies appear before or after their digital/physical release with a **day offset**.
 - Benefit from batched poster badge preparation in Plex and Jellyfin, per-viewer watch state and exact counts.
-- Show posters faster: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster instead of asking for it again on every screen, and you set the refresh delay. Jellyfin and Emby receive the poster at the requested size, with no wait.
+- Show posters faster: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster instead of asking for it again on every screen, and you set the refresh delay. Jellyfin and Emby receive the poster at the requested size, with no wait. Large resolutions requested for detail views are preserved.
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) Music in your applications
 
 - Browse the **public Deezer catalogue** from Plex/Plexamp, Jellyfin clients or a Subsonic application: Symfonium, Feishin, Supersonic, DSub…
 - Listen through **Audius, Eclipse addons, DMM with Real-Debrid or your AllDebrid, Real-Debrid and TorBox accounts**, depending on enabled sources.
+- Public DMM instance: [catalogue](https://debridmediamanager.com/albums). Configure its address in Sources → Music streaming → DMM / Real-Debrid to use a self-hosted instance with its own music catalogue and API.
 - **Local music**: play your files in their original format, with artists, albums and tags, from host folders or network mounts exposed through read-only Docker volumes. Scan on demand and hourly, without moving or deleting files.
 - **iBroadcast**: each viewer can connect multiple accounts through OAuth device authorization and browse their libraries. Read-only access, MP3 128 kbps playback; optional playlist import.
 - **Private access and sharing**: music folders and iBroadcast accounts are private by default, optionally shared with selected viewers or everyone. Authorized sources appear together in Music. [Setup and formats](docs/pse/GUIDE.en.md#local-media-and-ibroadcast).

@@ -15,12 +15,8 @@ import (
 // image n'a pas besoin des empreintes de flou que Jellyfin joint aux listes :
 // attendre leur calcul retardait chaque affiche de 100 ms.
 func pseImageRoute(r *http.Request) bool {
-	return strings.Contains(r.URL.Path, "/Images/")
+	return strings.Contains(strings.ToLower(r.URL.Path), "/images/")
 }
-
-// pseMaxBackdropWidth borne les fonds d'écran : au-delà, TMDB n'a que
-// l'image originale, souvent bien plus lourde.
-const pseMaxBackdropWidth = 1280
 
 // pseImageSize traduit la taille demandée par l'application (fillWidth,
 // maxWidth ou width, sinon une hauteur pour une affiche) vers le paramètre
@@ -41,8 +37,6 @@ func pseImageSize(r *http.Request) *http.Request {
 	}
 	if poster {
 		width = kitimages.PSEPosterWidth(width)
-	} else {
-		width = min(width, pseMaxBackdropWidth)
 	}
 	q.Set("w", strconv.Itoa(width))
 	out := r.Clone(r.Context())

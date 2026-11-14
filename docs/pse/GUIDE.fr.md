@@ -147,6 +147,8 @@ Une recherche de titre peut consommer plusieurs requêtes. Les titres communs à
 
 ### DMM avec Real-Debrid
 
+Par défaut, Remix interroge [l’instance publique DMM](https://debridmediamanager.com/albums). **Adresse de l’instance DMM** (`PSE_MUSIC_DMM_URL`) permet de choisir une instance privée accessible depuis le conteneur Remix. Saisissez l’adresse de base, sans `/albums` ni `/api/music`. Le [dépôt DMM](https://github.com/debridmediamanager/debrid-media-manager#setup) explique son installation ; votre instance doit fournir son catalogue et les API musicales `/api/music/search` et `/api/music/library`. Le catalogue public n’est pas copié automatiquement.
+
 Dans **Sources → Debrid**, configurez au moins un compte Real-Debrid actif, puis activez **DMM · Real-Debrid** dans **Ether-Remix → Sources → Streaming musical**. Aucun lien manifest ni compte DMM n'est nécessaire. Le catalogue de navigation reste Deezer ; DMM fournit une recherche supplémentaire des albums à lire.
 
 Cette source ne dépend pas des indexeurs. Elle se place au rang des comptes Real-Debrid, juste avant leur recherche par indexeurs ; les comptes sont essayés dans leur ordre de priorité. Les autres sources activées prennent le relais si l'album ou la piste ne peut pas être lu.
@@ -205,7 +207,7 @@ Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent ve
 
 Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épisodes et les rotations de collections respectent l’état de chaque spectateur. Le catalogue « lisible uniquement » conserve des compteurs exacts, y compris les exceptions de langue.
 
-**Affiches plus rapides** : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche pendant un jour au lieu de la redemander au serveur à chaque affichage. Une affiche de repli TMDB, servie quand le fournisseur ne répond pas, reste revérifiée à chaque fois pour ne pas rester affichée après la panne. Les applications reprennent les affiches du fournisseur toutes les 24 heures ; ce délai se règle dans **Console → Ether-Remix → Affiches dans les applications** (`PSE_POSTER_REFRESH_HOURS`, de 1 à 168). Jellyfin et Emby reçoivent l’affiche à la taille demandée par l’application, et Jellyfin n’attend plus avant d’envoyer une image. Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.
+**Affiches plus rapides** : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche pendant un jour au lieu de la redemander au serveur à chaque affichage. Une affiche de repli TMDB, servie quand le fournisseur ne répond pas, reste revérifiée à chaque fois pour ne pas rester affichée après la panne. Les applications reprennent les affiches du fournisseur toutes les 24 heures ; ce délai se règle dans **Console → Ether-Remix → Contenus et bibliothèques → Affiches dans les applications** (`PSE_POSTER_REFRESH_HOURS`, de 1 à 168). Jellyfin et Emby reçoivent l’affiche à la taille demandée par l’application, et Jellyfin n’attend plus avant d’envoyer une image. Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.
 
 
 ## Playlists et apparence
