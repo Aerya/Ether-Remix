@@ -14,11 +14,13 @@ const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 export function musicSourceGroup(key: string, community = false) {
   if (community || key === "PSE_MUSIC_ECLIPSE_URL" || key === "PSE_MUSIC_ADDON_REGISTRY")
     return "eclipse";
-  if (key === "PSE_MUSIC_DMM" || key === "PSE_MUSIC_REALDEBRID") return "realdebrid";
+  if (key === "PSE_MUSIC_DMM" || key === "PSE_MUSIC_DMM_URL" || key === "PSE_MUSIC_REALDEBRID")
+    return "realdebrid";
   return "other";
 }
 interface SourceField {
   key: string;
+  value?: string;
   advanced?: boolean;
   community?: boolean;
   control: ReactNode;
@@ -71,6 +73,23 @@ function RealDebridAccounts() {
   );
 }
 export function MusicSourceSettings({ fields }: { fields: SourceField[] }) {
+  const dmmBase =
+    fields.find((f) => f.key === "PSE_MUSIC_DMM_URL")?.value?.trim() ||
+    "https://debridmediamanager.com";
+  let dmmLink: string | undefined;
+  try {
+    const url = new URL(dmmBase);
+    if (
+      ["http:", "https:"].includes(url.protocol) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    )
+      dmmLink = dmmBase.replace(/\/+$/, "") + "/albums";
+  } catch {
+    /* Le champ peut être en cours de saisie. */
+  }
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const groups = ["eclipse", "realdebrid", "ibroadcast", "other", "diagnostic"];
@@ -161,6 +180,21 @@ export function MusicSourceSettings({ fields }: { fields: SourceField[] }) {
             "DMM catalogue albums and indexer searches using your Real-Debrid accounts.",
           )}
         >
+          <div className="space-y-2 border-b border-border p-4 text-sm">
+            <a className="text-accent underline" href={dmmLink} target="_blank" rel="noreferrer">
+              {L("Ouvrir le catalogue de l’instance DMM ↗", "Open the DMM instance catalogue ↗")}
+            </a>
+            <p>
+              <a
+                className="text-accent underline"
+                href="https://github.com/debridmediamanager/debrid-media-manager#setup"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {L("Auto-héberger DMM : code et installation ↗", "Self-host DMM: code and setup ↗")}
+              </a>
+            </p>
+          </div>
           <RealDebridAccounts />
           {controls(rd)}
         </SettingsSection>

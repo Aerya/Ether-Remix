@@ -20,6 +20,7 @@ type Settings struct {
 	// d'Ether (albums déjà en cache, trouvés sur ses indexeurs torrent).
 	Debrid     bool
 	RealDebrid bool
+	DMMURL     string
 	DMM        bool // Catalogue DMM, compte Real-Debrid existant.
 	TorBox     bool
 	// Torrent : client BitTorrent de Remix (PSE_TORRENT et PSE_TORRENT_MUSIC).
@@ -65,6 +66,7 @@ func LoadSettings() Settings {
 		Audius:      strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_MUSIC_AUDIUS"))),
 		Debrid:      on(pseenv.Get("PSE_MUSIC_ALLDEBRID")),
 		RealDebrid:  on(pseenv.Get("PSE_MUSIC_REALDEBRID")),
+		DMMURL:      pseenv.Get("PSE_MUSIC_DMM_URL"),
 		DMM:         on(pseenv.Get("PSE_MUSIC_DMM")),
 		TorBox:      on(pseenv.Get("PSE_MUSIC_TORBOX")),
 		Torrent: on(pseenv.Get("PSE_TORRENT")) && strings.TrimSpace(pseenv.Get("PSE_TORRENT_URL")) != "" &&

@@ -503,6 +503,7 @@ function FeatureSection({
       <MusicSourceSettings
         fields={feature.fields.map((fd) => ({
           key: fd.key,
+          value: draft[fd.key] ?? fd.value ?? "",
           advanced: fd.advanced,
           community: fd.community,
           control: row(fd),

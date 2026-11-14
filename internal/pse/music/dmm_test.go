@@ -144,3 +144,35 @@ func TestDMMSampleAlbumsUsesDMMCatalogueAndLogsNoSecrets(t *testing.T) {
 		t.Fatal(logs.String())
 	}
 }
+
+func TestDMMCustomInstance(t *testing.T) {
+	for _, endpoint := range []string{"search", "library"} {
+		f := &DMMFinder{BaseURL: "http://dmm:3000/private/", HTTP: &http.Client{Transport: dmmTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host != "dmm:3000" || r.URL.Path != "/private/api/music/"+endpoint {
+				t.Fatalf("unexpected URL: %s", r.URL)
+			}
+			if r.Header.Get("Authorization") != "" {
+				t.Fatal("unexpected credentials")
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"albums":[]}`))}, nil
+		})}}
+		var err error
+		if endpoint == "search" {
+			_, err = f.FindAlbum(t.Context(), "artist")
+		} else {
+			_, err = f.SampleAlbums(t.Context())
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDMMRejectsInvalidInstance(t *testing.T) {
+	for _, base := range []string{"ftp://dmm", "http://user:password@dmm", "http://dmm?key=secret", "http://dmm#fragment"} {
+		f := &DMMFinder{BaseURL: base}
+		if _, err := f.FindAlbum(t.Context(), "artist"); err == nil {
+			t.Fatal("invalid URL accepted")
+		}
+	}
+}

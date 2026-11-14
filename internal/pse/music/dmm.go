@@ -19,8 +19,9 @@ const DMMSource = "dmm"
 // DMMFinder ne consulte que le catalogue public : aucun identifiant Real-Debrid
 // n'est envoyé à DMM. La résolution des magnets passe directement par le compte.
 type DMMFinder struct {
-	HTTP *http.Client
-	Log  *slog.Logger
+	BaseURL string
+	HTTP    *http.Client
+	Log     *slog.Logger
 }
 
 func (f *DMMFinder) FindAlbum(ctx context.Context, query string) ([]TorrentHit, error) {
@@ -50,8 +51,16 @@ func (f *DMMFinder) albums(ctx context.Context, endpoint string, query url.Value
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	base := strings.TrimRight(strings.TrimSpace(f.BaseURL), "/")
+	if base == "" {
+		base = "https://debridmediamanager.com"
+	}
+	u, parseErr := url.Parse(base)
+	if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("musique : adresse de l'instance DMM invalide")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://debridmediamanager.com/api/music/"+endpoint+"?"+query.Encode(), nil)
+		base+"/api/music/"+endpoint+"?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
