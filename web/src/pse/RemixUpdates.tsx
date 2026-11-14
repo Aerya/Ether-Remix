@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-13-torrent-client",
+    id: "2026-11-14-dmm-instance",
     version: "current",
+    date: "2026-11-14",
+    title: ["Choix de l’instance DMM", "DMM instance selection"],
+    items: [
+      [
+        "La source musicale DMM affiche les liens vers le catalogue public et l’auto-hébergement. Son adresse peut être remplacée par celle de votre instance compatible.",
+        "The DMM music source links to the public catalogue and self-hosting instructions. Its address can be replaced with your compatible instance.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-13-torrent-client",
+    version: "0.2.37-remix.57.1",
     date: "2026-11-13",
     title: ["Client torrent en option", "Optional torrent client"],
     items: [

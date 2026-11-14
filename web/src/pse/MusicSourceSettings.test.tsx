@@ -29,6 +29,7 @@ it("keeps Eclipse settings, DMM and Real-Debrid together, and other sources sepa
     "PSE_MUSIC_ECLIPSE_URL",
     "PSE_MUSIC_ADDON_REGISTRY",
     "PSE_MUSIC_DMM",
+    "PSE_MUSIC_DMM_URL",
     "PSE_MUSIC_REALDEBRID",
     "PSE_MUSIC_ALLDEBRID",
     "PSE_MUSIC_TORBOX",
@@ -41,6 +42,7 @@ it("keeps Eclipse settings, DMM and Real-Debrid together, and other sources sepa
       <MusicSourceSettings
         fields={keys.map((key) => ({
           key,
+          value: key === "PSE_MUSIC_DMM_URL" ? "http://dmm:3000/local/" : "",
           community: key === "COMMUNITY",
           advanced: key === "PSE_MUSIC_HIFI_URL",
           control: <input aria-label={key} />,
@@ -59,8 +61,13 @@ it("keeps Eclipse settings, DMM and Real-Debrid together, and other sources sepa
   expect(
     within(screen.getByText("RD account").closest("#music-realdebrid") as HTMLElement).getByRole(
       "link",
+      { name: /compte|account/i },
     ),
   ).toHaveAttribute("href", "/remix/sources?source=debrid");
+  expect(screen.getByRole("link", { name: /catalogue.*DMM|DMM.*catalogue/i })).toHaveAttribute(
+    "href",
+    "http://dmm:3000/local/albums",
+  );
   fireEvent.click(screen.getByRole("tab", { name: "iBroadcast" }));
   expect(
     screen.getByText("Comptes iBroadcast fixture").closest("[role=tabpanel]"),

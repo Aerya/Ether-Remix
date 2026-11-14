@@ -146,6 +146,8 @@ A title search may consume multiple requests. Titles shared by sources or librar
 
 ### DMM with Real-Debrid
 
+By default, Remix queries the [public DMM instance](https://debridmediamanager.com/albums). **DMM instance address** (`PSE_MUSIC_DMM_URL`) selects a private instance reachable from the Remix container. Enter its base address without `/albums` or `/api/music`. The [DMM repository](https://github.com/debridmediamanager/debrid-media-manager#setup) documents installation; your instance must supply its catalogue and the `/api/music/search` and `/api/music/library` APIs. The public catalogue is not automatically copied.
+
 Configure at least one active Real-Debrid account in **Sources → Debrid**, then enable **DMM · Real-Debrid** under **Ether-Remix → Sources → Music streaming**. No manifest link or DMM account is needed. Browsing still uses the Deezer catalogue; DMM adds another way to find albums to play.
 
 This source does not depend on indexers. It follows the priority of your Real-Debrid accounts, just before their indexer searches; accounts are tried in priority order. Other enabled sources take over when the album or track cannot be played.

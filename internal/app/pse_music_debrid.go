@@ -90,7 +90,7 @@ func (a *App) musicDMMResolvers(accounts []config.DebridProvider) music.Resolver
 	for i := 0; i < max(1, len(accounts)); i++ {
 		r := a.musicDebridResolver(config.DebridRealDebrid)
 		r.Provider = "DMM · Real-Debrid"
-		r.Finder = &music.DMMFinder{HTTP: egress.Client(egress.CapIndexers, 15*time.Second), Log: a.log}
+		r.Finder = &music.DMMFinder{BaseURL: music.LoadSettings().DMMURL, HTTP: egress.Client(egress.CapIndexers, 15*time.Second), Log: a.log}
 		account := r.Account.(*pseDebridAccount)
 		account.dmm = true
 		account.log = a.log

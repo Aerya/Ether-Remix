@@ -499,6 +499,12 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 		}
 		return v, nil
 	case KindURL:
+		if fd.Key == "PSE_MUSIC_DMM_URL" && v != "" {
+			u, err := url.Parse(v)
+			if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+				return "", errors.New("adresse DMM sans identifiants, paramètres ni fragment attendue")
+			}
+		}
 		if music.IsCommunityKey(fd.Key) && v != "" {
 			u, err := url.Parse(v)
 			if err != nil || !strings.HasSuffix(u.Path, "/manifest.json") || len(strings.Fields(v)) != 1 {
