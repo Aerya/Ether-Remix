@@ -187,13 +187,13 @@ func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key fron
 				width = 500
 			}
 		}
-		s.serveRemoteImage(w, r, s.svc().imageURL(path, tmdbSize(width)))
+		s.serveRemoteImage(w, r, s.svc().imageURL(path, psePosterSize(element, width))) // PSE-HOOK: taille des affiches TMDB — voir docs/pse/FORK.fr.md
 		return
 	}
 	if width <= 0 {
 		width = defWidth
 	}
-	s.serveRemoteImage(w, r, s.svc().imageURL(path, tmdbSize(width)))
+	s.serveRemoteImage(w, r, s.svc().imageURL(path, psePosterSize(element, width))) // PSE-HOOK: taille des affiches TMDB
 }
 
 // servePlexOverlayImage is the last-resort artwork path: only when the owner

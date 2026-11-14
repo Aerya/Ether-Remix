@@ -47,6 +47,7 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 | `PSE_PLAYABLE` | `off` | `on` enables the "playable only" catalogue, with the same scope as `PSE_FRENCH`. |
 | `PSE_PLAYABLE_MIN` | `2` | Distinct releases (same name counts once) needed to list a title. |
 | `PSE_PLAYABLE_FILTER` | *(none)* | Releases that count, e.g. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Languages: `fr` (any French dub: FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (French subtitles announced), `vo` (no dub announced)… Changing the filter recomputes the catalogue at startup, without reindexing. |
+| `PSE_POSTER_REFRESH_HOURS` | `24` | With a poster provider (PostersPlus, XRDB, RPDB…), delay in hours (1 to 168) after which apps fetch its posters again. Ether used 6 hours. |
 | `PSE_FRENCH` | `off` | `on` enables the French-language catalogue: Movies and Shows pages, Home rows (including Trending), collections and similar titles. Upcoming collections, the watchlist and Continue Watching are left alone. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Countries whose digital or physical release counts (ISO codes). `FR,CA` adds Canada, not always dubbed in French. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Indexed release languages that count (`vfq` for Québec French only, `vff`…). |
@@ -203,6 +204,8 @@ Existing `/sources/...` addresses and old Remix tabs redirect to their new locat
 ### Browsing and poster badges
 
 Plex and Jellyfin prepare a page’s badges together. New episodes and collection rotations respect each viewer’s state. The playable-only catalogue keeps exact counts, including language exceptions.
+
+**Faster posters**: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. A TMDB fallback poster, served when the provider does not answer, is still rechecked every time so it does not stay on screen after the outage. Apps fetch provider posters again every 24 hours; set that delay in **Console → Ether-Remix → Posters in apps** (`PSE_POSTER_REFRESH_HOURS`, 1 to 168). Jellyfin and Emby receive the poster at the size the app asked for, and Jellyfin no longer waits before sending an image. Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.
 
 
 ## Playlists and appearance

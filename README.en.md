@@ -101,6 +101,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - Set collection refresh intervals from **1 to 168 hours**, independently of release searches.
 - Adjust when movies appear before or after their digital/physical release with a **day offset**.
 - Benefit from batched poster badge preparation in Plex and Jellyfin, per-viewer watch state and exact counts.
+- Show posters faster: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster instead of asking for it again on every screen, and you set the refresh delay. Jellyfin and Emby receive the poster at the requested size, with no wait.
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) Music in your applications
 
