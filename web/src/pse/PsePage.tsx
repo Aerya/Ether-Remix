@@ -24,6 +24,7 @@ import { SourceOrder } from "./SourceOrder";
 import { SfrHelp } from "./SfrHelp";
 import { SeerrCatalogHelp } from "./SeerrCatalogHelp";
 import { TorrentStatus } from "./TorrentStatus";
+import { XdccStatus } from "./XdccStatus";
 import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
@@ -251,6 +252,7 @@ function PseSettings() {
               torrent={current.features
                 .filter((f) => ["torrent", "torrent2", "torrent3"].includes(f.id))
                 .map((f) => renderFeature(f))}
+              xdcc={current.features.filter((f) => f.id === "xdcc").map((f) => renderFeature(f))}
               stremio={
                 <>
                   {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
@@ -287,6 +289,7 @@ function PseSettings() {
                           "torrent",
                           "torrent2",
                           "torrent3",
+                          "xdcc",
                         ].includes(f.id),
                     )
                     .map((f) => renderFeature(f))}
@@ -536,6 +539,7 @@ function FeatureSection({
         {basic.map(row)}
         {feature.id === "seerrcatalog" ? <SeerrCatalogHelp status={feature.status} /> : null}
         {feature.id === "torrent" ? <TorrentStatus status={feature.status} /> : null}
+        {feature.id === "xdcc" ? <XdccStatus status={feature.status} /> : null}
         {feature.id === "scrob" ? <ScrobLinks /> : null}
         {feature.id === "music" && placement === "content" ? (
           <>

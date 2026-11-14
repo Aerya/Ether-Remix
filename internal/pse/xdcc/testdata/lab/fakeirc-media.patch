@@ -1,0 +1,27 @@
+--- a/tools/lab/fakeirc.py
++++ b/tools/lab/fakeirc.py
+@@ -50,8 +50,13 @@
+     print(json.dumps(fields), flush=True)
+ 
+ 
++MEDIA = {}  # Remix lab: pack name -> real media file
++
++
+ def file_bytes(name, size):
+     """Deterministic content, so the downloaded file can be verified."""
++    if name in MEDIA:
++        return open(MEDIA[name], "rb").read()
+     seed = hashlib.sha256(name.encode()).digest()
+     block = (seed * (65536 // len(seed) + 1))[:65536]
+     full, rest = divmod(size, len(block))
+@@ -365,6 +370,10 @@
+ 
+ 
+ async def main(path):
++    for bot in json.load(open(path)).get("bots", []):
++        for pack in bot.get("packs", []):
++            if pack.get("file"):
++                MEDIA[pack["name"]] = pack["file"]
+     with open(path) as f:
+         config = json.load(f)
+     network = Network(config)

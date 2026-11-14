@@ -43,3 +43,8 @@ node_modules/
 # Python bytecode (SDK and examples)
 __pycache__/
 *.pyc
+
+# Guides publics de la source XDCC et de son laboratoire.
+!/docs/pse/XDCC.fr.md
+!/docs/pse/XDCC.en.md
+!/internal/pse/xdcc/testdata/lab/README.md

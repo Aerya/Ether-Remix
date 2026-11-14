@@ -69,6 +69,9 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			if ix.ID == sfrSearchID {
 				return sfrBackend{}, nil
 			}
+			if ix.ID == xdccSourceID { // PSE-HOOK: source XDCC — voir docs/pse/FORK.fr.md
+				return xdccBackend{a}, nil
+			}
 			if ix.IsStremio() {
 				return a.addons.Backend(ix)
 			}

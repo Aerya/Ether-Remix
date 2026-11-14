@@ -26,8 +26,32 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-14-vf-libraries",
+    id: "2026-11-14-xdcc-source",
     version: "current",
+    date: "2026-11-14",
+    title: ["Source XDCC en option", "Optional XDCC source"],
+    items: [
+      [
+        "Nouvelle source XDCC dans Sources → XDCC, via XDCC Grabscher installé à part. Désactivée par défaut : contrairement au debrid, les fichiers sont écrits sur votre disque.",
+        "New XDCC source under Sources → XDCC, through a separately installed XDCC Grabscher. Off by default: unlike debrid, files are written to your disk.",
+      ],
+      [
+        "Lecture pendant le transfert, téléchargement seulement, ou les deux. Le retour en arrière est immédiat ; un saut au-delà de la partie reçue est refusé sans fausses images.",
+        "Play during the transfer, download only, or both. Seeking back is instant; a jump beyond the received part is refused, without fake frames.",
+      ],
+      [
+        "La console affiche les bots et les transferts (disponible, bot hors ligne, en attente, en cours, prêt à lire, échec), permet une recherche manuelle et garde ou arrête un fichier. Le cache est plafonné ; un fichier gardé ou rangé dans une bibliothèque n'est jamais effacé.",
+        "The console shows bots and transfers (available, bot offline, waiting, downloading, ready to play, failed), offers a manual search and keeps or stops a file. The cache is capped; a kept file or one inside a library is never deleted.",
+      ],
+      [
+        "Les limites de téléchargement restent respectées lors des lectures simultanées. Le cache libère la place nécessaire au prochain fichier et protège les actions Garder et les lectures pendant le nettoyage.",
+        "Download limits remain enforced for simultaneous playback starts. The cache makes room for the next file and protects Keep actions and playback during cleanup.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-vf-libraries",
+    version: "0.2.37-remix.60.1",
     date: "2026-11-14",
     title: ["Films et Séries toujours en VF", "Movies and Shows always in French"],
     items: [

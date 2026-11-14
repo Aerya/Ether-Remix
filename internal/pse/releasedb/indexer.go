@@ -481,6 +481,9 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 			if !marks {
 				cached = cachedHints(r)
 			}
+			if src.id == XDCCSourceID {
+				cached = nil // un paquet XDCC se télécharge d'abord : jamais « en cache »
+			}
 			batch = append(batch, FromCore(t, season, episode, src.id, r, cached))
 		}
 		if err != nil {

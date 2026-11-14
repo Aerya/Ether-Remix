@@ -1,0 +1,13 @@
+{
+  "port": 16667, "channel": "#lab", "announce_every": 15,
+  "bots": [
+    { "nick": "LAB-STREAM", "mode": "good", "ports": [40021, 40022], "speed": 2097152,
+      "packs": [ { "id": 1, "name": "Lab.Movie.2021.MULTi.1080p.WEB.x264-REMIX.mkv", "size": 47119179, "file": "/media/real.mkv" },
+                 { "id": 2, "name": "Lab.Movie.2021.FRENCH.720p.WEB.x264-TAIL.mp4", "size": 39307043, "file": "/media/tailindex.mp4" },
+                 { "id": 3, "name": "Lab.Show.S01E01.MULTi.1080p.WEB.x264-REMIX.mkv", "size": 47119179, "file": "/media/real.mkv" } ] },
+    { "nick": "LAB-SILENT", "mode": "silent",
+      "packs": [ { "id": 1, "name": "Lab.Movie.2021.VOSTFR.1080p.WEB.x264-MUTE.mkv", "size": 47119179 } ] },
+    { "nick": "LAB-REFUSE", "mode": "refuse", "ports": [41001],
+      "packs": [ { "id": 1, "name": "Lab.Show.S01E02.MULTi.1080p.WEB.x264-NOPE.mkv", "size": 47119179 } ] }
+  ]
+}

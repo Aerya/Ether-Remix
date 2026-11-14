@@ -136,6 +136,7 @@ var Features = communityFields([]Feature{
 	},
 	torrentExtraClient(2),
 	torrentExtraClient(3),
+	xdccFeature(),
 	{
 		ID:          "playable",
 		Title:       tx("Catalogue « lisible uniquement »", "“Playable only” catalogue"),
