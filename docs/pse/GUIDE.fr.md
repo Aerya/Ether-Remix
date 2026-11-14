@@ -290,3 +290,13 @@ Ce mécanisme ne masque pas une erreur d’identifiants, un quota épuisé, une 
 ### Navigation et configuration
 
 La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus et bibliothèques → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.
+
+## Configuration rapide JukeBox
+
+Dans **Bibliothèques** ou **Ether-Remix → Contenus et bibliothèques**, ouvrez **Configurer avec JukeBox**. Films, Séries et Animes sont précochés ; **Créer ma sélection** crée leurs collections et bibliothèques communes à Plex, Jellyfin, Emby, Stremio, Xtream et Silo. Pour des rangées automatiques sans nouvelle bibliothèque, choisissez **Collections / sélections automatiques seulement**. Les collections sont proposées dans l’onglet Collections, sur l’accueil et dans les sections compatibles avec ces rangées.
+
+**Choisir parmi toutes les listes JukeBox** charge les listes publiques de [son profil MDBList](https://mdblist.com/lists/jukebox8786/). Recherchez par exemple « Documentaire », cochez vos listes et ajustez le type Films / Séries / Films et séries. Les trois propositions restent utilisables si le catalogue distant est indisponible. Une liste mixte crée deux collections et deux bibliothèques, une par type ; la proposition Films ne conserve que les films de la liste « Les plus piratés ».
+
+Les collections s’actualisent chaque jour, ne retiennent que les titres sortis et les trient par date de sortie décroissante. Le tri général des bibliothèques doit rester sur **Date de sortie** (valeur par défaut) ; un tri explicitement enregistré dans un client reste prioritaire. Le remplissage initial se fait en arrière-plan. Les listes n’ajoutent aucune source de lecture, ne téléchargent pas les vidéos et ne garantissent pas une VF : vos sources, filtres de langue, droits des spectateurs et règles de disponibilité continuent de s’appliquer.
+
+Un nouvel essai réutilise les éléments déjà créés, y compris après une erreur partielle, sans écraser vos modifications. Vous pouvez ensuite renommer ou masquer les bibliothèques et modifier les sources, la fréquence, le tri et les destinations des collections. Une bibliothèque supprimée peut être recréée en relançant la sélection ; supprimer une bibliothèque ne supprime pas sa collection.

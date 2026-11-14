@@ -1,3 +1,4 @@
+import { JukeboxQuickSetup } from "../../pse/JukeboxQuickSetup";
 import { sourceLabel } from "./CatalogueSources";
 import { Button, EmptyState, Switch, toast } from "@braedonsaunders/appkit-ui";
 import {
@@ -42,6 +43,7 @@ export default function Libraries() {
 function sourceBadge(lib: Library): string {
   if (lib.source === "builtin") return lib.mediaType === "show" ? t("TV shows") : t("Movies");
   if (lib.source === "filter") return t("Saved filter");
+  if (lib.source === "collection") return t("Collection");
   return lib.pluginName || lib.pluginId || t("Plugin");
 }
 
@@ -113,6 +115,8 @@ function LibrariesList() {
         </Button>
       }
     >
+      {/* PSE-HOOK: configuration rapide JukeBox — voir docs/pse/FORK.fr.md */}
+      <JukeboxQuickSetup onCreated={() => void list.reload()} />
       {list.error ? <ErrorPanel error={list.error} onRetry={() => void list.reload()} /> : null}
       {list.loading && !list.data ? <LoadingRows /> : null}
       {!list.loading && libs.length === 0 && !list.error ? (

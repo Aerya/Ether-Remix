@@ -1,3 +1,4 @@
+import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
 import { QualityProfiles } from "./QualityProfiles";
 import {
@@ -340,6 +341,7 @@ function PseSettings() {
                   </Link>
                 </p>
               ) : null}
+              {content !== "musique" ? <JukeboxQuickSetup /> : null}
               {content === "musique" ? (
                 musicPart("content")
               ) : (

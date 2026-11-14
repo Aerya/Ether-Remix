@@ -143,3 +143,7 @@ Médias possédés : `internal/pse/localmedia` confine les ouvertures aux racine
 La révision Ether `16053c6572ff7c53d4ad5452458e4ec9af6573a4` est intégrée : le catalogue conserve les contrôles des médias locaux, les vues Scrob coexistent avec les collections Jellyfin/Emby, le résolveur conserve SubMaker et les profils de qualité en complément des contrôles d’identité des épisodes. La génération des identifiants Jellyfin/Emby conserve le champ `userId` nécessaire à Scrob.
 
 Les collections Jellyfin/Emby utilisent le bit 60 pour leur vue virtuelle dans Remix. Le bit 61 + 1 et + 2 reste réservé aux vues Scrob existantes ; ne pas reprendre la constante upstream sans vérifier ces collisions. Le test `TestPSEScrobViewIDsDoNotCollideWithEther` protège cette séparation.
+
+## Configuration rapide JukeBox
+
+`internal/pse/jukebox` fournit les trois listes de démarrage, le catalogue public borné et mis en cache, et la création réentrante des collections/bibliothèques. `internal/app/pse_console.go` branche `/pse/jukebox/` sur l’API propriétaire existante. Le composant `web/src/pse/JukeboxQuickSetup.tsx` est accessible depuis Contenus et Bibliothèques ; le point d’accroche dans `web/src/pages/libraries/Libraries.tsx` le propose aussi dans les bibliothèques communes à tous les protocoles. Aucune modification des sources de lecture ni des règles de langue.

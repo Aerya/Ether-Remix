@@ -98,6 +98,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
 
+- **French quick setup**: create Movies, Shows and Anime libraries from three suggested JukeBox lists, or choose other lists (documentaries, studios…). Collection-only mode, daily refresh and newest-release-first sorting. Libraries publish to Plex, Jellyfin and Emby; your sources and language settings still apply. [Instructions](docs/pse/GUIDE.en.md#jukebox-quick-setup).
 - Organize Plex libraries by **service, studio, anime, documentaries, concerts or live shows**. Concerts combine recorded-performance keywords with the Music genre to reduce fiction matches.
 - Build their rows with TMDB collections, imported Stremio catalogues and ready-made presets.
 - Set collection refresh intervals from **1 to 168 hours**, independently of release searches.
@@ -169,6 +170,8 @@ Migrating from Ether? The data format is preserved: back up `/config`, stop the 
 ## Origin and license
 
 Ether-Remix is a fork of [Ether](https://github.com/braedonsaunders/ether) by Braedon Saunders, licensed under **GPL-3.0**.
+
+Thanks to **[JukeBox](https://mdblist.com/lists/jukebox8786/)** for the MDBList lists used in quick setup and automatic selections.
 
 Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclipsemusic.app/), [Monochrome](https://monochrome.st/), [Polyfin](https://github.com/moodiness/polyfin) and [Silo Server](https://github.com/Silo-Server/silo-server). Tracking integration: [Scrob](https://github.com/Aerya/scrob). XDCC source: [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) by CaptainEpix. Video metadata uses [TMDB](https://www.themoviedb.org/), without endorsement or certification by TMDB.
 
