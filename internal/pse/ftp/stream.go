@@ -173,8 +173,6 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request, id string) {
 		fh, err := os.Open(local)
 		if err == nil {
 			defer fh.Close()
-			s.reading(id, +1)
-			defer s.reading(id, -1)
 			w.Header().Set("Content-Type", contentType(f.Name))
 			http.ServeContent(w, r, "", f.MTime, fh)
 			return
@@ -246,8 +244,6 @@ func (s *Service) serveRemote(w http.ResponseWriter, r *http.Request, f File) {
 	if !sent {
 		writeHeaders()
 	}
-	s.reading(f.ID, +1)
-	defer s.reading(f.ID, -1)
 	want := end - start + 1
 	buf := make([]byte, min(int64(copyBuffer), want))
 	var done int64

@@ -26,7 +26,7 @@ Ether adapts to each app: it is a Plex server to Plex apps, a Jellyfin server to
 
 Ether-Remix retains Ether’s server and compatible applications, adding a French-oriented catalogue and language and quality settings. Depending on your choices, Home and collections favour French/MULTi titles or releases matching your criteria. Background indexing finds sources ahead of playback; it does not download videos.
 
-Your **local videos**, movies, episodes and personal recordings join your libraries from host folders or network mounts. Remix looks for a match in its catalogue, then TMDB, and keeps a local presentation when there is no reliable match.
+Your **local videos**, movies, episodes and personal recordings join your libraries from host folders or network mounts. Remix looks for a match in its catalogue, then TMDB, and keeps a local presentation when there is no reliable match. The **Local media** tab reports missing files, readability problems and potential duplicates without deleting your media.
 
 **Optional sources** extend debrid and Usenet: torrent clients, XDCC through Grabscher and FTP / SFTP servers. Torrent and XDCC write files to disk; FTP / SFTP also supports remote playback without a complete copy, with Ether’s normal cache. These sources are off by default.
 
@@ -67,6 +67,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Your local movies and personal videos
 
+- **Local media health**: dedicated tab for folder diagnostics, missing/unidentified files, potential duplicates and sizes per folder. Entries remain in the catalogue when a mount becomes empty or inaccessible; no files are deleted.
 - **Host folders or network mounts**: expose them through read-only Docker volumes. Scan on demand and hourly, without moving or deleting files.
 - **Catalogue matching**: search existing Remix entries first, then TMDB; identified movies and episodes reuse their entries. Without a reliable match, personal videos retain their local presentation.
 - **Libraries and collections per folder**, private by default; optionally share with selected viewers or everyone. [Setup and formats](docs/pse/GUIDE.en.md#local-media-and-ibroadcast).
@@ -135,7 +136,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) An interface that fits your habits
 
-- Seven tabs: **Sources**, **Priorities**, **Languages and quality**, **French subtitles on demand**, **Content and libraries**, **Statistics**, **Notifications and tracking**.
+- Eight tabs: **Sources**, **Priorities**, **Languages and quality**, **French subtitles on demand**, **Content and libraries**, **Local media**, **Statistics**, **Notifications and tracking**.
 - Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
 - Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.
 

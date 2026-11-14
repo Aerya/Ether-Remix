@@ -300,6 +300,14 @@ func (a *App) ownedMediaAPI() http.Handler {
 			}
 			json.NewEncoder(w).Encode(out)
 			return
+		case "GET /local/health":
+			health, err := rt.local.Health(ctx)
+			if err != nil {
+				fail(err)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(health)
+			return
 		case "GET /local":
 			roots, err := rt.local.Roots(r.Context())
 			if err != nil {

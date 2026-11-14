@@ -355,7 +355,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 func (s *Service) setState(id, state, fail string) {
 	s.mu.Lock()
 	t := s.tasks[id]
-	if t == nil {
+	if t == nil || t.State == StateCancelled {
 		s.mu.Unlock()
 		return
 	}
@@ -631,7 +631,7 @@ func (s *Service) loadTasks(ctx context.Context) {
 			continue
 		}
 		var t Task
-		if json.Unmarshal([]byte(raw), &t) == nil && t.ID != "" {
+		if json.Unmarshal([]byte(raw), &t) == nil && t.ID != "" && t.ID == s.Settings.FileID(t.Path) {
 			s.tasks[t.ID] = &t
 		}
 	}

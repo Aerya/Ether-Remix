@@ -26,7 +26,7 @@ Ether s’adapte à chaque application : c’est un serveur Plex pour les applic
 
 Ether-Remix reprend le serveur et les applications compatibles d’Ether, avec un catalogue orienté français et des réglages de langue et de qualité. Selon vos choix, l’accueil et les collections privilégient les titres en VF/MULTi ou disposant de releases correspondant à vos critères. L’indexation en arrière-plan recherche les sources à l’avance ; elle ne télécharge pas les vidéos.
 
-Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent vos bibliothèques depuis des dossiers de l’hôte ou des montages réseau. Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient.
+Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent vos bibliothèques depuis des dossiers de l’hôte ou des montages réseau. Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient. L’onglet **Médias locaux** signale les fichiers absents, les problèmes de lecture et les doublons potentiels, sans supprimer vos médias.
 
 Les **sources facultatives** complètent le debrid et Usenet : client torrent, XDCC via Grabscher et serveur FTP / SFTP. Torrent et XDCC écrivent des fichiers sur disque ; FTP / SFTP permet aussi une lecture distante sans copie complète, avec le cache habituel d’Ether. Ces sources sont désactivées par défaut.
 
@@ -67,6 +67,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Vos vidéos locales, films et vidéos personnelles
 
+- **Santé des médias locaux** : onglet dédié aux diagnostics des dossiers, fichiers absents/non identifiés, doublons potentiels et tailles par dossier. Les entrées restent au catalogue si un montage devient vide ou inaccessible ; aucun fichier supprimé.
 - **Dossiers de l’hôte ou montages réseau** : exposez-les par des volumes Docker en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer vos fichiers.
 - **Rapprochement avec le catalogue** : recherche dans les fiches déjà présentes dans Remix, puis TMDB ; films et épisodes identifiés réutilisent leurs fiches. Sans correspondance fiable, les vidéos personnelles restent affichées telles quelles.
 - **Bibliothèques et collections par dossier**, privées par défaut ; partage facultatif avec certains spectateurs ou tous. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
@@ -135,7 +136,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) Une interface adaptée à vos habitudes
 
-- Sept onglets : **Sources**, **Priorités**, **Langues et qualité**, **VOSTFR à la demande**, **Contenus et bibliothèques**, **Statistiques**, **Notifications et suivi**.
+- Huit onglets : **Sources**, **Priorités**, **Langues et qualité**, **VOSTFR à la demande**, **Contenus et bibliothèques**, **Médias locaux**, **Statistiques**, **Notifications et suivi**.
 - Sources regroupées par famille, tri par catégorie ou contenu, clés debrid affichables ponctuellement et blocs repliables sans perdre la saisie. Réglez les palettes dans **Apparence**.
 - Six palettes : **Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine**, chacune en clair et sombre, avec aperçu immédiat et mémorisation par navigateur.
 

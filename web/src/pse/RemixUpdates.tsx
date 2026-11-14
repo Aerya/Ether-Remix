@@ -50,6 +50,22 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-14-local-media-health",
+    version: "0.2.37-remix.64.1",
+    date: "2026-11-14",
+    title: ["Santé des médias locaux", "Local media health"],
+    items: [
+      [
+        "Nouvel onglet Médias locaux : diagnostic des dossiers, état des fichiers, vidéos non identifiées et doublons potentiels.",
+        "New Local media tab: folder diagnostics, file availability, unidentified videos and potential duplicates.",
+      ],
+      [
+        "Tailles par dossier et fichiers les plus lourds. Les entrées absentes sont conservées, même lorsqu’un montage apparaît vide ; aucun fichier n’est supprimé.",
+        "Sizes per folder and largest files. Missing entries are retained even when a mount appears empty; no files are deleted.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-14-jukebox-quick-setup",
     version: "0.2.37-remix.63.1",
     date: "2026-11-14",

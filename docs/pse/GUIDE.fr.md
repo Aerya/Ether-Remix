@@ -259,13 +259,21 @@ volumes:
 
 Dans **Sources → Fichiers locaux**, indiquez un nom unique, le chemin **dans le conteneur** (`/media/videos`, par exemple) et le type vidéo ou audio. Un dossier réseau doit être monté sur l’hôte avant de démarrer la stack. Le compte du conteneur doit pouvoir lire ses fichiers.
 
-L’analyse se lance après ajout, au démarrage, chaque heure et avec **Analyser maintenant**. Le panneau affiche sa progression et ses erreurs. Les métadonnées inchangées sont réutilisées. Un dossier inaccessible conserve son index précédent ; une analyse réussie retire les fichiers disparus de la bibliothèque. Retirer une source ne supprime jamais les fichiers. Les liens symboliques sont ignorés.
+L’analyse se lance après ajout, au démarrage, chaque heure et avec **Analyser maintenant**. Le panneau affiche sa progression et ses erreurs. Les métadonnées inchangées sont réutilisées. Un dossier inaccessible conserve son index précédent. Les fichiers disparus restent également dans l’index après une analyse réussie : un montage vide ou partiellement déconnecté ne vide jamais la bibliothèque. Leur retour est pris en compte à la prochaine analyse. Retirer une source ne supprime jamais les fichiers. Les liens symboliques sont ignorés.
 
 Les vidéos sont rapprochées **d’abord du catalogue Remix, puis de TMDB**. Un nom de film avec année (`Titre.2020.mkv`) ou un épisode explicite (`Série.S01E02.mkv`) permet une identification prudente : titre normalisé exact, année concordante et résultat unique. Un fichier identifié utilise la fiche existante, avec les saisons et épisodes correspondants, et fournit une lecture locale. Sans correspondance fiable, il garde son titre de fichier, sans fiche TMDB obligatoire. Chaque dossier alimente une bibliothèque et une collection ; les vidéos personnelles ne gonflent pas les compteurs TMDB.
 
 La musique locale rejoint la bibliothèque Musique et ses clients Plex/Plexamp, Jellyfin/Emby et Subsonic. Les tags fournissent titre, artiste, album, disque et piste ; à défaut, Remix utilise le nom du fichier et du dossier. Les fichiers sont servis dans leur format d’origine : la compatibilité audio dépend du client. Les fichiers locaux ne sont jamais envoyés à un fournisseur musical.
 
 Formats analysés : MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, OGV, VOB, 3GP ; MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, APE, WMA et ALAC. Un fichier doit contenir un flux du type choisi et être lisible par `ffprobe`. L’image Docker Linux fournit cet outil. Les dossiers sont **privés par défaut**, réservés au propriétaire qui les ajoute. Dans **Privé · options de partage**, choisissez certains spectateurs ou tous, puis enregistrez. Seul l’administrateur peut ajouter des chemins du serveur.
+
+### Santé des médias locaux
+
+Dans **Remix → Médias locaux**, actualisez le diagnostic pour vérifier les dossiers et fichiers déjà indexés, sans relancer `ffprobe`. Les erreurs distinguent chemin absent, permission refusée et autre indisponibilité. Un dossier indisponible rend ses fichiers non vérifiables ; un fichier absent dans un dossier lisible est signalé comme absent. Les modifications de taille/date demandent une nouvelle analyse.
+
+Filtrez par dossier, état, nom ou chemin. Les vidéos sans correspondance restent des vidéos locales valides. Les doublons potentiels partagent une fiche identifiée ou un nom de fichier dans le même dossier source : ce ne sont pas des doublons certifiés, et des éditions différentes peuvent être signalées. Les fichiers sont triés du plus lourd au plus léger, par pages de 50.
+
+Les tailles logiques sont regroupées par dossier source (une bibliothèque vidéo par dossier ; les dossiers audio rejoignent Musique). La taille accessible est vérifiée au moment du diagnostic ; la taille connue correspond au dernier index, fichiers absents compris. Les liens physiques peuvent être comptés plusieurs fois : ces chiffres ne représentent ni les blocs réellement occupés ni l’espace libre du disque. Aucun fichier n’est modifié ou supprimé. Les entrées absentes restent conservées jusqu’au retrait explicite de la source ; retirer puis ajouter la source permet de reconstruire son index, en reconfigurant son partage.
 
 ### Compte iBroadcast
 
