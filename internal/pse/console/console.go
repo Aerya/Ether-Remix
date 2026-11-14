@@ -366,6 +366,9 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 	if (fd.Key == "PSE_SEERRCATALOG_TOKEN" || fd.Key == "PSE_SEERRCATALOG_SEARCH_TOKEN") && v != "" && len(v) < 32 {
 		return "", errors.New("clé de 32 caractères minimum")
 	}
+	if out, ok, err := validateXDCC(fd.Key, v); ok {
+		return out, err
+	}
 	key := fd.Key
 	if strings.HasPrefix(key, "PSE_TORRENT2_") || strings.HasPrefix(key, "PSE_TORRENT3_") {
 		key = "PSE_TORRENT_" + key[len("PSE_TORRENT2_"):] // mêmes règles que le client principal

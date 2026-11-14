@@ -49,8 +49,20 @@ func sourceActive(id string) bool {
 	return m == nil || (*m)[id]
 }
 
+// XDCCSourceID est la source XDCC d'Ether-Remix (internal/pse/xdcc).
+const XDCCSourceID = "remix-xdcc"
+
+// XDCCMaxAge : un paquet XDCC ne compte pour le catalogue lisible que s'il
+// a été revu récemment. La recherche XDCC ne rend que les bots en ligne et
+// sans échec récent ; un bot hors ligne ou en échec fait donc sortir ses
+// paquets du compte au bout de ce délai.
+const XDCCMaxAge = 48 * time.Hour
+
 // counts indique si une release compte pour le catalogue lisible.
 func counts(r Release, now time.Time) bool {
+	if r.SourceID == XDCCSourceID && now.Sub(r.LastSeen) > XDCCMaxAge {
+		return false
+	}
 	return sourceActive(r.SourceID) && now.Sub(r.LastSeen) <= MaxAge
 }
 

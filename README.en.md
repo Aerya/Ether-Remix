@@ -85,6 +85,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - **SeerrCatalog availability**: import confirmed availability and recent sources from [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), without another search for the playable-only catalogue. Confirmation persists until deletion; expired playback sources are searched again when needed. A title found only with French subtitles (SeerrCatalog fallback) goes to the **VOSTFR** library and the **SeerrCatalog** collections, never to Movies or Shows.
 - **Searches for SeerrCatalog**: authorize complementary searches through Remix sources, including Prowlarr, using a dedicated token. Search and availability sharing are independent features grouped in the SeerrCatalog settings.
 - **Optional torrent client**: send Prowlarr or Jackett releases to one to three qBittorrent or rTorrent/ruTorrent clients, with ratio and seeding time per client and per tracker, cross-seed and a free-space alert. The client can be remote, but Remix must see its download folder (same machine or NFS/SMB share) to play the files. Off by default; debrid accounts stay cached-only. [Details](docs/pse/TORRENT.en.md)
+- **Optional XDCC source**: search movies and episodes from the XDCC bots your [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) follows, then play them during the transfer, download only, or both. Bot and transfer states, a capped and cleaned cache, kept files never deleted. Grabscher stays a separate service, never exposed to the Internet. Off by default: files are written to disk. [Setup](docs/pse/XDCC.en.md)
 - **StreamFusion Reborn database**: import French, MULTi or VOSTFR releases and search movies, episodes and packs directly in your read-only database. Debrid cache evidence expires; playback rechecks availability and retains other sources as fallbacks. Titles added to the catalogue later are also caught up. [Setup, in French](docs/pse/STREAMFUSION.fr.md).
 
 ### ![](https://api.iconify.design/lucide/captions.svg?color=%2314b8a6&width=24&height=24) External subtitles and translation with SubMaker
@@ -163,11 +164,12 @@ Migrating from Ether? The data format is preserved: back up `/config`, stop the 
 | Availability sharing and complementary searches | [SeerrCatalog integration](docs/pse/SEERRCATALOG.en.md) |
 | Read-only import from a StreamFusion Reborn database | [StreamFusion Reborn, in French](docs/pse/STREAMFUSION.fr.md) |
 | Public or self-hosted instance, languages and translation limits | [SubMaker](docs/pse/SUBMAKER.en.md) |
+| XDCC bots via XDCC Grabscher: Docker, VPN, streaming and limits | [XDCC source](docs/pse/XDCC.en.md) |
 
 ## Origin and license
 
 Ether-Remix is a fork of [Ether](https://github.com/braedonsaunders/ether) by Braedon Saunders, licensed under **GPL-3.0**.
 
-Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclipsemusic.app/), [Monochrome](https://monochrome.st/), [Polyfin](https://github.com/moodiness/polyfin) and [Silo Server](https://github.com/Silo-Server/silo-server). Tracking integration: [Scrob](https://github.com/Aerya/scrob). Video metadata uses [TMDB](https://www.themoviedb.org/), without endorsement or certification by TMDB.
+Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclipsemusic.app/), [Monochrome](https://monochrome.st/), [Polyfin](https://github.com/moodiness/polyfin) and [Silo Server](https://github.com/Silo-Server/silo-server). Tracking integration: [Scrob](https://github.com/Aerya/scrob). XDCC source: [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) by CaptainEpix. Video metadata uses [TMDB](https://www.themoviedb.org/), without endorsement or certification by TMDB.
 
 [License](LICENSE) · [Legal information](LEGAL.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)

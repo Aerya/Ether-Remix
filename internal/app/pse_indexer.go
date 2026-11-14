@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 )
@@ -23,14 +24,19 @@ func (a *App) buildPSEIndexer() {
 	a.startPSEScrobPush()
 	a.startSeerrCatalog()
 	a.startPSETorrent()
+	a.startPSEXdcc()
 	rt.restartIndexer(a)
 	a.closers = append(a.closers, rt.stopIndexer)
 }
 
 func (a *App) newPSEIndexer() *releasedb.Service {
 	return releasedb.New(releasedb.Deps{
-		DB:     a.db,
-		Config: a.cfg.Read,
+		DB: a.db,
+		Config: func() config.Config { // source XDCC comprise, si active
+			c := a.cfg.Read()
+			c.Indexers = xdccIndexers(c.Indexers)
+			return c
+		},
 		Browse: func(ctx context.Context, q core.BrowseQuery) (core.Page, error) {
 			q.Filter.PSEUnplayable = true
 			return a.catalog.Browse(ctx, q)

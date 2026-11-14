@@ -20,6 +20,7 @@ const CATEGORIES = [
   ["usenet", "Usenet", "Usenet"],
   ["debrid", "Debrid", "Debrid"],
   ["torrent", "Client torrent", "Torrent client"],
+  ["xdcc", "XDCC", "XDCC"],
   ["musique", "Streaming musical", "Music streaming"],
   ["local", "Fichiers locaux", "Local files"],
   ["iptv", "IPTV", "IPTV"],
@@ -30,11 +31,13 @@ export function RemixSources({
   indexing,
   stremio,
   torrent,
+  xdcc,
 }: {
   music: ReactNode;
   indexing: ReactNode;
   stremio?: ReactNode;
   torrent?: ReactNode;
+  xdcc?: ReactNode;
 }) {
   const [params, setParams] = useSearchParams();
   const raw = params.get("source");
@@ -123,16 +126,18 @@ export function RemixSources({
             ? [L("Musique", "Music")]
             : category === "iptv"
               ? [L("Télévision en direct", "Live TV")]
-              : [
-                  L("Films", "Movies"),
-                  L("Séries", "Shows"),
-                  L("Animes", "Anime"),
-                  ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
-                    ? [L("Musique via debrid", "Music via debrid")]
-                    : category === "torrent"
-                      ? [L("Musique", "Music")]
-                      : []),
-                ]
+              : category === "xdcc"
+                ? [L("Films", "Movies"), L("Séries (épisodes SxxEyy)", "Shows (SxxEyy episodes)")]
+                : [
+                    L("Films", "Movies"),
+                    L("Séries", "Shows"),
+                    L("Animes", "Anime"),
+                    ...(category === "debrid" || (category === "indexeurs" && protocol !== "usenet")
+                      ? [L("Musique via debrid", "Music via debrid")]
+                      : category === "torrent"
+                        ? [L("Musique", "Music")]
+                        : []),
+                  ]
         ).map((label) => (
           <Badge key={label} variant="outline">
             {label}
@@ -212,6 +217,7 @@ export function RemixSources({
           </CollapsibleBlock>
         ) : null}
         {category === "torrent" ? torrent : null}
+        {category === "xdcc" ? xdcc : null}
         {category === "musique" ? <>{music}</> : null}
         {category === "local" ? (
           <CollapsibleBlock title={L("Fichiers locaux", "Local files")}>

@@ -65,6 +65,7 @@ type pseRuntime struct {
 	lfmOnce  sync.Once
 	lastfm   *music.Scrobbler
 	torrent  pseTorrentState // client BitTorrent (PSE_TORRENT)
+	xdcc     pseXdccState    // source XDCC (PSE_XDCC)
 }
 
 // scrobbler prépare l'envoi des écoutes à Last.fm.
@@ -178,6 +179,7 @@ func (rt *pseRuntime) apply(a *App) {
 	frenchcat.Override(frenchcat.Load())
 	releasedb.OverridePlayable(releasedb.LoadPlayable())
 	rt.reloadTorrent(a)
+	rt.reloadXdcc(a)
 	rt.reloadMusic(a)
 	a.reapplyAddonIndexers()
 	go rt.restartIndexer(a) // Close attend la fin du titre en cours
@@ -225,8 +227,12 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		},
 		Sources: func() []console.Option {
 			var out []console.Option
-			for _, ix := range a.cfg.Get().Indexers {
+			for _, ix := range xdccIndexers(a.cfg.Get().Indexers) {
 				if ix.ID == "" {
+					continue
+				}
+				if ix.ID == xdccSourceID {
+					out = append(out, console.Option{Value: ix.ID, Label: console.Text{FR: "XDCC (Grabscher)", EN: "XDCC (Grabscher)"}})
 					continue
 				}
 				name := ix.Name
@@ -293,6 +299,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	}
 	ownedAPI := a.ownedMediaAPI()
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/xdcc/") {
+			a.pseXdccAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/music/access" {
 			a.pseMusicAccess(w, r)
 			return
@@ -395,6 +405,7 @@ func (a *App) pseStatus(ctx context.Context, rt *pseRuntime) map[string]any {
 	}
 	out["music"] = m
 	out["torrent"] = a.pseTorrentStatus(ctx)
+	out["xdcc"] = a.pseXdccStatus(ctx)
 	return out
 }
 

@@ -5,7 +5,7 @@ export const REMIX_TABS = [
     key: "sources",
     fr: "Sources",
     en: "Sources",
-    features: ["indexer", "sfr", "seerrcatalog", "torrent", "torrent2", "torrent3"],
+    features: ["indexer", "sfr", "seerrcatalog", "torrent", "torrent2", "torrent3", "xdcc"],
   },
   { key: "priorites", fr: "Priorités", en: "Priorities", features: [] },
   {
@@ -50,7 +50,7 @@ export function sourcesHref(tab = "debrid", search = "") {
     "source",
     tab === "indexers"
       ? "indexeurs"
-      : ["debrid", "usenet", "iptv", "stremio", "torrent"].includes(tab)
+      : ["debrid", "usenet", "iptv", "stremio", "torrent", "xdcc"].includes(tab)
         ? tab
         : "debrid",
   );

@@ -125,6 +125,10 @@ func (s *Service) DirectPayload(ctx context.Context, rel core.Release) ([]byte, 
 	if rel.OpensOnDemand() && !core.OnDemandStreamsAllowed(ctx) && !core.OnDemandWarmGranted(ctx, rel) {
 		return nil, fmt.Errorf("debrid: add-on stream %q opens only for Play: %w", rel.Name, core.ErrForegroundOnly)
 	}
+	// PSE-HOOK: source XDCC — voir docs/pse/FORK.fr.md
+	if rel, err = psePrepareDirect(ctx, rel); err != nil {
+		return nil, err
+	}
 	base := Payload{Key: payloadKey(rel), ReleaseID: rel.ID, Kind: KindHTTP, Link: rel.StreamURL, URL: rel.StreamURL,
 		StreamProvider: rel.StreamProvider, Headers: rel.StreamHeaders, Origin: rel.StreamOrigin, Release: rel.Name}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
