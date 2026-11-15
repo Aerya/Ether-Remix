@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-15-alldebrid-mediaflow",
+    id: "2026-11-15-mediaflow-test-guide",
     version: "current",
+    date: "2026-11-15",
+    title: ["Tester et installer MediaFlow", "Test and install MediaFlow"],
+    items: [
+      [
+        "Vous pouvez coller une URL de proxy HTTP/HTTPS/SOCKS5 complète, notamment SSDV2 : ses identifiants sont séparés automatiquement. L’enregistrement du proxy général conserve les réglages MediaFlow.",
+        "Paste a complete HTTP/HTTPS/SOCKS5 proxy URL, including SSDV2: credentials are split automatically. Saving the general proxy preserves MediaFlow settings.",
+      ],
+      [
+        "Sources → Debrid propose un test AllDebrid via MediaFlow et un lien vers le Compose MediaFlow + Gluetun, avec les étapes pour le relier à Remix.",
+        "Sources → Debrid now offers an AllDebrid test through MediaFlow and a link to the MediaFlow + Gluetun Compose with Remix setup instructions.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-15-alldebrid-mediaflow",
+    version: "0.2.37-remix.66.1",
     date: "2026-11-15",
     title: ["AllDebrid via MediaFlow", "AllDebrid through MediaFlow"],
     items: [

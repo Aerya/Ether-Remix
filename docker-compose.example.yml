@@ -1,27 +1,25 @@
-# Ether via Docker. Recommended: host networking, because Plex apps
-# discover servers on the LAN via GDM (UDP 32410-32414) and remote access
-# configures the router with UPnP — both need the host network namespace.
-# Bridge mode works for Plex Web / claimed remote access if you remove
-# `network_mode: host` and uncomment the ports mapping. Docker Desktop on
-# Mac and Windows does not provide host networking. Do not publish 8096;
-# other apps are on the console port at /jellyfin, /emby, and /silo.
+# Ether-Remix — à copier dans compose.yaml (ou à coller dans Dockge-Enhanced).
+# Console : http://ADRESSE_DU_SERVEUR:32400/ether/
+# Pour MediaFlow + Gluetun : voir docs/alldebrid-mediaflow.md et
+# docker-compose.mediaflow-gluetun.yml, puis ajouter le réseau media à ce service.
 services:
-  ether:
-    image: ghcr.io/braedonsaunders/ether:latest
-    container_name: ether
+  remix:
+    image: ghcr.io/aerya/ether-remix:latest
+    container_name: ether-remix
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "32400:32400"
     environment:
-      TZ: Etc/UTC
-      # ETHER_DATA_DIR: /config   # default in the image
+      TZ: Europe/Paris
     volumes:
-      - ./config:/config          # config.json, database, identity
-      - ./cache:/cache            # used automatically on a fresh install (otherwise /config/cache)
-    # Intel/AMD VAAPI or QuickSync transcoding (optional); the render
-    # node's group is added automatically:
+      - ./config:/config
+      - ./cache:/cache
+      # Source locale facultative (adaptez le chemin hôte) :
+      # - /chemin/vers/medias:/media:ro
+    # Accélération Intel/AMD facultative :
     # devices:
     #   - /dev/dri:/dev/dri
-    # NVIDIA NVENC (optional, needs nvidia-container-toolkit):
+    # NVIDIA NVENC facultatif (nécessite nvidia-container-toolkit) :
     # deploy:
     #   resources:
     #     reservations:
@@ -29,11 +27,9 @@ services:
     #         - driver: nvidia
     #           count: 1
     #           capabilities: [gpu]
-    # Already running Plex on 32400? Drop network_mode and use bridge:
-    # environment:
-    #   ETHER_PORT: "32800"
-    # ports:
-    #   - "32800:32800"
-    # ports:                      # bridge-mode only; drop network_mode above
-    #   - "32400:32400/tcp"
-    #   - "32410-32414:32410-32414/udp"
+# Si Plex utilise déjà le port 32400, changez seulement le port hôte :
+# "32800:32400". La console sera alors accessible sur le port 32800.
+# Le mode bridge ne fournit pas la découverte Plex GDM du réseau hôte.
+# Pour celle-ci, remplacez ports par network_mode: host ; ce mode ne permet
+# pas de joindre MediaFlow par son nom Docker. Le guide utilise le mode bridge.
+# Jellyfin, Emby et Silo utilisent le port de la console, pas le port 8096.

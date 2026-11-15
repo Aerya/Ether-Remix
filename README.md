@@ -63,7 +63,11 @@ Dans **Sources → Debrid** (`/ether/remix/sources?source=debrid`), activez **Ut
 
 Sur un VPS, faites sortir **MediaFlow via Gluetun**, connecté à un VPN accepté ou à votre tunnel domestique. MediaFlow seul conserve l’IP du serveur. Vérifiez les fournisseurs VPN proposés dans [votre compte AllDebrid](https://alldebrid.fr/account/). [AirVPN est une possibilité — lien affilié](https://airvpn.org/?referred_by=483746) ; sa présence dans la liste ne garantit pas l’acceptation de toutes ses IP.
 
-Appliquez **la même sortie à tous les outils de cette machine** accédant à AllDebrid, y compris les workers, planificateurs et scripts de nettoyage. Pour un outil sans intégration MediaFlow, utilisez le proxy Gluetun associé. Les appels effectués par des addons hébergés ailleurs ne sont pas contrôlés par Remix. [Installation et vérifications](docs/alldebrid-mediaflow.md).
+Appliquez **la même sortie à tous les outils de cette machine** accédant à AllDebrid, y compris les workers, planificateurs et scripts de nettoyage. Pour un outil sans intégration MediaFlow, utilisez le proxy Gluetun associé. Les appels effectués par des addons hébergés ailleurs ne sont pas contrôlés par Remix. [Installation et vérifications](docs/alldebrid-mediaflow.md). Le panneau propose un lien vers le Compose MediaFlow + Gluetun et un bouton de test AllDebrid via la connexion enregistrée.
+
+**Fichiers Compose prêts à utiliser :** [Ether-Remix](docker-compose.example.yml) · [MediaFlow + Gluetun](docker-compose.mediaflow-gluetun.yml) · [Prérequis et raccordement](docs/alldebrid-mediaflow.md).
+
+Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi être utilisé directement dans **Réglages → Général → Proxy pour les sources**, sans MediaFlow. Collez son URL complète : les identifiants sont répartis dans les champs séparés, puis enregistrez. Remix et le proxy doivent partager un réseau accessible. Activez les routes Debrid et, pour les flux issus des addons, Stremio.
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 

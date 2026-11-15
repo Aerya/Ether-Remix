@@ -13,6 +13,40 @@ export function AllDebridMediaFlow() {
   const [draft, setDraft] = useState(saved ?? empty);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [testing, setTesting] = useState(false);
+  const account = config.data?.debrid?.providers?.find((p) => p.kind === "alldebrid" && p.enabled);
+  const dirty =
+    draft.enabled !== saved?.enabled ||
+    draft.url !== saved?.url ||
+    draft.password !== saved?.password;
+  const test = async () => {
+    if (!account || !saved?.enabled || dirty) return;
+    setTesting(true);
+    setMessage("");
+    try {
+      const result = await api.testDebrid(account);
+      setMessage(
+        result.ok
+          ? L(
+              "Connexion réussie : AllDebrid répond via MediaFlow. Cela ne vérifie ni l’IP de sortie, ni la lecture vidéo, ni l’acceptation durable de cette IP.",
+              "Connection successful: AllDebrid responds through MediaFlow. This does not verify the exit IP, video playback or continued acceptance of this IP.",
+            )
+          : L(
+              "Échec du test via MediaFlow. Vérifiez le relais, son mot de passe, le tunnel Gluetun et le compte AllDebrid.",
+              "Test through MediaFlow failed. Check the relay, its password, the Gluetun tunnel and your AllDebrid account.",
+            ),
+      );
+    } catch {
+      setMessage(
+        L(
+          "Test impossible. Vérifiez la connexion à Remix et réessayez.",
+          "Unable to test. Check your connection to Remix and try again.",
+        ),
+      );
+    } finally {
+      setTesting(false);
+    }
+  };
   useEffect(() => {
     setDraft(saved ?? empty);
   }, [saved]);
@@ -33,8 +67,8 @@ export function AllDebridMediaFlow() {
       await config.reload();
       setMessage(
         L(
-          "Enregistré. Utilisez ensuite le bouton Tester du compte AllDebrid : il suivra cette connexion. Un test réussi ne garantit pas l'absence de sanction.",
-          "Saved. Use the AllDebrid account's Test button next: it follows this connection. A successful test does not guarantee against account restrictions.",
+          "Enregistré. Vous pouvez maintenant tester AllDebrid via MediaFlow.",
+          "Saved. You can now test AllDebrid through MediaFlow.",
         ),
       );
     } catch {
@@ -68,7 +102,37 @@ export function AllDebridMediaFlow() {
           "MediaFlow must itself use Gluetun connected to your VPN or home tunnel. Installing it alone on the VPS does not change its exit IP. No VPN guarantees acceptance of every exit IP.",
         )}
       </p>
+      <p className="text-sm text-fg-muted">
+        {L(
+          "MediaFlow n’est pas embarqué dans Remix. Installez MediaFlow et Gluetun avec le Compose du guide, ou réutilisez vos services existants. MediaFlow relaie les requêtes ; Gluetun assure leur sortie par le VPN ou le tunnel domestique. Raccordez ensuite Remix au réseau indiqué et renseignez ci-dessous l’adresse et le mot de passe API de MediaFlow.",
+          "MediaFlow is not bundled with Remix. Install MediaFlow and Gluetun using the guide’s Compose, or reuse existing services. MediaFlow relays requests; Gluetun sends them through the VPN or home tunnel. Then attach Remix to the documented network and enter the MediaFlow address and API password below.",
+        )}
+      </p>
       <div className="flex flex-wrap gap-4 text-sm underline">
+        <a
+          href="https://github.com/Aerya/Ether-Remix/blob/main/docker-compose.example.yml"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {L("Fichier Compose Remix", "Remix Compose file")}
+        </a>
+        <a
+          href="https://github.com/Aerya/Ether-Remix/blob/main/docker-compose.mediaflow-gluetun.yml"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {L("Fichier Compose MediaFlow + Gluetun", "MediaFlow + Gluetun Compose file")}
+        </a>
+        <a
+          href="https://github.com/Aerya/Ether-Remix/blob/main/docs/alldebrid-mediaflow.md#installation"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {L(
+            "Installer MediaFlow + Gluetun : Compose et raccordement à Remix",
+            "Install MediaFlow + Gluetun: Compose and Remix setup",
+          )}
+        </a>
         <a href="https://alldebrid.fr/account/" target="_blank" rel="noopener noreferrer">
           {L(
             "Vérifier les fournisseurs VPN dans mon compte AllDebrid",
@@ -87,7 +151,7 @@ export function AllDebridMediaFlow() {
         <input
           type="checkbox"
           checked={draft.enabled}
-          disabled={busy}
+          disabled={busy || testing}
           onChange={(e) => {
             setMessage("");
             setDraft({ ...draft, enabled: e.target.checked });
@@ -100,7 +164,7 @@ export function AllDebridMediaFlow() {
         <Input
           aria-label="MediaFlow URL"
           value={draft.url}
-          disabled={busy}
+          disabled={busy || testing}
           placeholder="http://mediaflow:8888"
           onChange={(e) => {
             setMessage("");
@@ -115,7 +179,7 @@ export function AllDebridMediaFlow() {
           type="password"
           autoComplete="new-password"
           value={draft.password}
-          disabled={busy}
+          disabled={busy || testing}
           onChange={(e) => {
             setMessage("");
             setDraft({ ...draft, password: e.target.value });
@@ -129,11 +193,40 @@ export function AllDebridMediaFlow() {
         )}
       </p>
       <Button
-        disabled={busy || !config.data || (draft.enabled && (!draft.url.trim() || !draft.password))}
+        disabled={
+          busy ||
+          testing ||
+          !config.data ||
+          (draft.enabled && (!draft.url.trim() || !draft.password))
+        }
         onClick={() => void save()}
       >
         {busy ? L("Enregistrement…", "Saving…") : L("Enregistrer la connexion", "Save connection")}
       </Button>
+      <Button
+        disabled={busy || testing || !saved?.enabled || dirty || !account}
+        onClick={() => void test()}
+      >
+        {testing
+          ? L("Test en cours…", "Testing…")
+          : L("Tester AllDebrid via MediaFlow", "Test AllDebrid through MediaFlow")}
+      </Button>
+      <p className="text-sm text-fg-muted">
+        {!account
+          ? L(
+              "Ajoutez et activez un compte AllDebrid pour effectuer le test.",
+              "Add and enable an AllDebrid account to run the test.",
+            )
+          : dirty || !saved?.enabled
+            ? L(
+                "Activez puis enregistrez la connexion MediaFlow avant de la tester.",
+                "Enable and save the MediaFlow connection before testing it.",
+              )
+            : L(
+                `Compte testé : ${account.name || account.id}. Le test utilise les réglages enregistrés.`,
+                `Account tested: ${account.name || account.id}. The test uses saved settings.`,
+              )}
+      </p>
       {message && (
         <p role="status" className="text-sm">
           {message}
