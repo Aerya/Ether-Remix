@@ -62,6 +62,8 @@ Ouvrez **http://&lt;hôte&gt;:32400/ether/** (ou le port `ETHER_PORT`) et suivez
 
 ### Régler Ether-Remix depuis la console
 
+Dans **Lecture → Transcodage**, « Qualités adaptatives en Direct Stream » permet de proposer des variantes réencodées aux connexions limitées ; ce réglage est désactivé par défaut pour les nouvelles configurations. Désactivez aussi « Démarrage accéléré » pour éviter la réduction de résolution des premiers segments lorsque la copie vidéo est possible. Les réglages existants restent inchangés ; ouvrez une nouvelle session de lecture pour appliquer vos choix. Dans Scrob, les boutons Copier récupèrent Server URL, Token et User ID sans devoir afficher le jeton.
+
 Tous les ajouts se règlent dans la console, menu **Ether-Remix** (`/ether/remix`) : activation, options et état de chaque fonction (titres indexés, titres lisibles, bibliothèque musicale…). Une valeur enregistrée sur cette page remplace la variable d'environnement du même nom et s'applique sans redémarrer ; le bouton ↺ revient à la variable ou à la valeur par défaut. Les variables ci-dessous restent utilisables pour un déploiement entièrement décrit dans le `compose.yaml`.
 
 Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, `ETHER_DATA_DIR`, `PUID`/`PGID`…) : voir [docs/install.md](../install.md). Variables propres à Ether-Remix :

@@ -17,7 +17,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ListInput, MapInput, NumberInput, SecretInput } from "../../components/fields";
 import { TitleSearch, viewerName } from "../../components/pickers";
 import { DragHandle, SortableList } from "../../components/Sortable";
-import { t, tn } from "../../i18n";
+import { getLocale, t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { api } from "../../lib/api";
 import { textOf, useRegistry, type ExtendText } from "../../lib/extend";
@@ -1192,9 +1192,9 @@ function advancedFieldMeta(key: string): { label: string; help?: string } | unde
     case "abrLadderUnderCopy":
       return {
         label: t("Adaptive bitrate ladder · Direct Stream"),
-        help: t(
-          "On by default with the transcode ladder. When off, Direct Stream sessions advertise only the copy primary with no soft encode fallbacks.",
-        ),
+        help: getLocale().startsWith("fr")
+          ? "Désactivé par défaut : les sessions Direct Stream proposent uniquement la vidéo originale, sans variantes réencodées."
+          : "Off by default. Direct Stream sessions offer only the original video, without encoded fallback variants.",
       };
     default:
       return undefined;

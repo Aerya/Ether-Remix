@@ -1,6 +1,7 @@
 import { Badge, Button, Input, toast } from "@braedonsaunders/appkit-ui";
 import { useEffect, useState } from "react";
 import { getLocale } from "../i18n";
+import { CopyButton } from "../components/CopyButton";
 import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 
@@ -229,15 +230,19 @@ export function ScrobLinks({
                     ["User ID", connections[v.id]!.userId],
                   ] as const
                 ).map(([label, field]) => (
-                  <label key={label} className="block text-xs">
-                    {label}
-                    <Input
-                      readOnly
-                      type={label === "Token" ? "password" : "text"}
-                      value={field}
-                      onFocus={(e) => e.currentTarget.select()}
-                    />
-                  </label>
+                  <div key={label} className="space-y-1 text-xs">
+                    <label htmlFor={`scrob-${v.id}-${label.replaceAll(" ", "-")}`}>{label}</label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id={`scrob-${v.id}-${label.replaceAll(" ", "-")}`}
+                        readOnly
+                        type={label === "Token" ? "password" : "text"}
+                        value={field}
+                        onFocus={(e) => e.currentTarget.select()}
+                      />
+                      <CopyButton value={field} label={L(`Copier ${label}`, `Copy ${label}`)} />
+                    </div>
+                  </div>
                 ))}
                 <p className="text-xs text-fg-muted">
                   {L(
