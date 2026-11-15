@@ -231,6 +231,12 @@ func NewProvider(cfg config.DebridProvider, opts ProviderOptions) (Provider, err
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return nil, fmt.Errorf("debrid provider %q has no API key: %w", displayName(cfg), ErrAuth)
 	}
+	if cfg.Proxy.Enabled {
+		if opts.HTTPClient == nil {
+			opts.HTTPClient = egress.Client(egress.CapDebrid, 20*time.Second)
+		}
+		opts.HTTPClient = egress.SourceClient(opts.HTTPClient, cfg.Proxy)
+	}
 	switch cfg.Kind {
 	case config.DebridRealDebrid:
 		return newRealDebrid(cfg.APIKey, opts), nil

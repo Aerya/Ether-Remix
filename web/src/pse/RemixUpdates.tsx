@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-15-mediaflow-test-guide",
+    id: "2026-11-15-source-proxies",
     version: "current",
+    date: "2026-11-15",
+    title: ["Un proxy par compte et par addon", "Per-account and per-addon proxies"],
+    items: [
+      [
+        "Chaque compte débrideur peut utiliser son propre proxy pour l’API et la lecture. Les addons Stremio disposent de deux réglages : requêtes et flux HTTP.",
+        "Each debrid account can use its own proxy for API calls and playback. Stremio addons have separate request and HTTP stream settings.",
+      ],
+      [
+        "Import des URL complètes, mots de passe protégés et priorité explicite sur MediaFlow et le proxy global, sans repli direct en cas de panne.",
+        "Import full authenticated URLs, protect passwords and explicitly override MediaFlow and the global proxy without direct fallback on failure.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-15-mediaflow-test-guide",
+    version: "0.2.37-remix.67.1",
     date: "2026-11-15",
     title: ["Tester et installer MediaFlow", "Test and install MediaFlow"],
     items: [

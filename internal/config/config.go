@@ -206,14 +206,16 @@ type UsenetProvider struct {
 }
 
 type Indexer struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	URL        string `json:"url"` // base URL; /api is appended
-	APIKey     string `json:"apiKey"`
-	DailyLimit int    `json:"dailyLimit"` // optional personal API cap per UTC day; 0 = automatic service limits
-	DailyGrabs int    `json:"dailyGrabs"` // optional personal NZB cap per UTC day; 0 = automatic service limits
-	Priority   int    `json:"priority"`
-	Enabled    bool   `json:"enabled"`
+	RequestProxy SourceProxy `json:"requestProxy,omitempty"`
+	StreamProxy  SourceProxy `json:"streamProxy,omitempty"`
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	URL          string      `json:"url"` // base URL; /api is appended
+	APIKey       string      `json:"apiKey"`
+	DailyLimit   int         `json:"dailyLimit"` // optional personal API cap per UTC day; 0 = automatic service limits
+	DailyGrabs   int         `json:"dailyGrabs"` // optional personal NZB cap per UTC day; 0 = automatic service limits
+	Priority     int         `json:"priority"`
+	Enabled      bool        `json:"enabled"`
 	// Categories override; empty uses Newznab defaults (2000 movies, 5000 TV).
 	MovieCategories []int `json:"movieCategories"`
 	TVCategories    []int `json:"tvCategories"`

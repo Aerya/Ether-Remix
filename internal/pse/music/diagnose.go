@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/egress"
 	"io"
 	"net/http"
 	"net/url"
@@ -182,7 +183,9 @@ func chain(cfg Settings, debrid DebridSources, hc *http.Client) ([]namedResolver
 func DiagnoseSource(ctx context.Context, cfg Settings, debrid DebridSources, query, only string, hc *http.Client) (Diagnosis, error) {
 	ctx = WithCachedOnly(ctx)
 	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second}
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.Proxy = egress.SourceProxySelector(tr.Proxy)
+		hc = &http.Client{Timeout: 20 * time.Second, Transport: egress.WrapMediaFlow(tr, true)}
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -259,6 +262,7 @@ func DiagnoseSource(ctx context.Context, cfg Settings, debrid DebridSources, que
 
 // probe ouvre les premiers octets du lien pour constater le format.
 func probe(ctx context.Context, hc *http.Client, st Stream, rep *SourceReport) error {
+	ctx = egress.WithStreamSource(ctx, st.DebridAccountID, "")
 	if st.File != "" {
 		f, err := os.Open(st.File)
 		if err != nil {

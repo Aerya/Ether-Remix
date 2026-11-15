@@ -39,7 +39,7 @@ L’option **Sources → Debrid → Utiliser MediaFlow pour AllDebrid** exige l�
 
 MediaFlow est facultatif si vous disposez déjà d’un proxy HTTP/HTTPS/SOCKS5 qui sort par votre VPN ou votre domicile. Dans **Réglages → Général → Proxy pour les sources**, collez l’URL complète fournie par votre gestionnaire. Remix sépare automatiquement l’adresse, le nom d’utilisateur et le mot de passe et ouvre **Plus d’options** pour vérification. Enregistrez puis testez la connexion. La saisie manuelle des trois champs reste disponible ; les identifiants ne sont pas conservés dans l’adresse.
 
-Le conteneur Remix doit pouvoir joindre le proxy, notamment via un réseau Docker commun pour un nom de service interne. Activez **Services et flux Debrid**, ainsi que **Addons Stremio** pour les flux issus des addons. L’option MediaFlow AllDebrid, si activée, reste prioritaire pour les appels qu’elle prend en charge : laissez-la désactivée si vous choisissez uniquement le proxy SSDV2. Un Worker qui relaie seulement l’API n’assure pas le transport de la vidéo.
+Le conteneur Remix doit pouvoir joindre le proxy, notamment via un réseau Docker commun pour un nom de service interne. Activez **Services et flux Debrid**, ainsi que **Addons Stremio** pour les flux issus des addons. Sans proxy spécifique à la source, l’option MediaFlow AllDebrid, si activée, reste prioritaire pour les appels qu’elle prend en charge : laissez-la désactivée si vous choisissez uniquement le proxy SSDV2. Un Worker qui relaie seulement l’API n’assure pas le transport de la vidéo.
 
 ## Vérifications
 
@@ -68,3 +68,21 @@ Check both exit IPs, then test your account and playback. An unavailable relay m
 - [AllDebrid : problèmes de téléchargement](https://help.alldebrid.com/fr/faq/download-issue)
 - [MediaFlow : relais des appels API](https://github.com/mhdzumair/mediaflow-proxy/blob/main/docs/usage/forward.md)
 - [Gluetun : profil WireGuard personnalisé](https://github.com/qdm12/gluetun-wiki/blob/main/setup/providers/custom.md)
+
+
+## Proxy par compte débrideur et addon Stremio
+
+Dans **Sources → Debrid → Modifier**, dépliez **Proxy du compte · API et lecture**. Activez le proxy spécifique et collez son URL HTTP, HTTPS ou SOCKS5 : les identifiants sont répartis dans les champs dédiés. Enregistrez ; le bouton Tester du compte utilise aussi ce proxy. Un test réussi du compte confirme l’accès API, pas une lecture complète.
+
+Dans **Sources → Stremio → Modifier**, deux blocs indépendants permettent de définir :
+
+- **Proxy des requêtes** : récupération du manifeste, recherches et récupération des NZB de cet addon. Le bouton Tester de l’addon utilise cette route.
+- **Proxy de lecture** : sondage et récupération des flux HTTP par Remix, y compris les redirections et les requêtes partielles de lecture. Pour un résultat torrent résolu par un compte débrideur Remix, c’est le proxy du compte qui s’applique.
+
+Chaque bloc est replié par défaut. Désactivé, il hérite du routage actuel. Activé, son proxy prend priorité sur MediaFlow et le proxy général, même pour une destination locale ; les exceptions du proxy global ne s’appliquent pas. Une adresse absente, un proxy indisponible ou une authentification refusée ne déclenchent aucun repli direct. Le proxy doit pouvoir joindre les destinations voulues et Remix doit pouvoir joindre le proxy.
+
+Les identifiants sont chiffrés dans la configuration et les mots de passe masqués dans l’API. Changer d’adresse ou d’utilisateur exige de ressaisir un mot de passe précédemment masqué. Les nouvelles lectures utilisent la configuration enregistrée ; un flux déjà ouvert peut terminer ses requêtes en cours avec l’ancien routage. Relancez la lecture après un changement de sortie, notamment si le fournisseur lie ses liens à l’IP.
+
+La musique qui réutilise ces comptes natifs (dont DMM / Real-Debrid) suit également leur proxy.
+
+Ces réglages concernent les comptes natifs et les manifestes ajoutés dans **Sources → Stremio**. Les plugins installés séparément, les comptes propres aux connecteurs musicaux et les appels exécutés par un addon distant ne sont pas reconfigurés. Le VPN reste géré par SSDV2, Gluetun ou votre service externe ; Remix n’installe pas de tunnel. Une URL de proxy HTTP/SOCKS5 et une URL d’API MediaFlow ne sont pas interchangeables.

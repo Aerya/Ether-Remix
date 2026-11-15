@@ -50,6 +50,11 @@ func (a *App) newPSEMusicDebrid() music.DebridSources {
 // triés par priorité.
 func musicDebridAccounts(d config.Debrid) map[string][]config.DebridProvider {
 	providers := append([]config.DebridProvider(nil), d.Providers...)
+	for i := range providers {
+		if providers[i].ID == "" {
+			providers[i].ID = fmt.Sprintf("%s-%d", providers[i].Kind, i)
+		}
+	}
 	sort.SliceStable(providers, func(i, j int) bool { return providers[i].Priority < providers[j].Priority })
 	out := map[string][]config.DebridProvider{}
 	for _, p := range providers {
@@ -153,9 +158,10 @@ type pseDebridAccount struct {
 	index int
 	opts  debrid.ProviderOptions
 
-	mu   sync.Mutex
-	key  string
-	prov debrid.Provider
+	mu    sync.Mutex
+	key   string
+	proxy config.SourceProxy
+	prov  debrid.Provider
 }
 
 func (d *pseDebridAccount) account() (config.DebridProvider, bool) {
@@ -181,14 +187,14 @@ func (d *pseDebridAccount) provider() (debrid.Provider, error) {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.prov != nil && d.key == p.APIKey {
+	if d.prov != nil && d.key == p.APIKey && d.proxy == p.Proxy {
 		return d.prov, nil
 	}
 	prov, err := debrid.NewProvider(p, d.opts)
 	if err != nil {
 		return nil, err
 	}
-	d.prov, d.key = prov, p.APIKey
+	d.prov, d.key, d.proxy = prov, p.APIKey, p.Proxy
 	return prov, nil
 }
 
@@ -282,7 +288,8 @@ func (d *pseDebridAccount) Unlock(ctx context.Context, file music.DebridFile) (s
 	if err != nil {
 		return music.Stream{}, err
 	}
-	st := music.Stream{URL: dl.URL}
+	account, _ := d.account()
+	st := music.Stream{URL: dl.URL, DebridAccountID: account.ID}
 	if !dl.Expires.IsZero() {
 		st.ExpiresAt = dl.Expires.Unix()
 	}

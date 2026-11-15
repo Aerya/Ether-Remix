@@ -156,7 +156,7 @@ func entryEpisodeIdentity(info core.ReleaseInfo, req core.SearchRequest, entryEp
 // body today says nothing permanent about the release. Only a release
 // without a usable NZB link is rejected (core.ErrReleaseRejected).
 func (b *Backend) FetchNZB(ctx context.Context, r core.Release, reserve func(context.Context, string) error) ([]byte, error) {
-	return FetchNZB(ctx, b.svc.nzb, b.origin(), r, reserve)
+	return FetchNZB(egress.WithSourceProxy(ctx, b.requestProxy), b.svc.nzb, b.origin(), r, reserve)
 }
 
 // FetchNZB downloads an add-on Usenet stream's NZB with client, trusting

@@ -37,12 +37,13 @@ type Debrid struct {
 
 // DebridProvider is one debrid account.
 type DebridProvider struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Kind     string `json:"kind"` // realdebrid, torbox, alldebrid, premiumize, debridlink, offcloud
-	APIKey   string `json:"apiKey"`
-	Priority int    `json:"priority"` // lower is tried first
-	Enabled  bool   `json:"enabled"`
+	Proxy    SourceProxy `json:"proxy,omitempty"`
+	ID       string      `json:"id"`
+	Name     string      `json:"name"`
+	Kind     string      `json:"kind"` // realdebrid, torbox, alldebrid, premiumize, debridlink, offcloud
+	APIKey   string      `json:"apiKey"`
+	Priority int         `json:"priority"` // lower is tried first
+	Enabled  bool        `json:"enabled"`
 }
 
 // EnabledProviders reports whether any provider is enabled with a key.

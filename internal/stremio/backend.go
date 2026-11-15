@@ -46,9 +46,10 @@ const (
 // Backend is a newznab.Backend for one Stremio addon: the indexer Client
 // keeps budgets, the result cache, rate-limit pauses and events around it.
 type Backend struct {
-	base   *url.URL
-	client *http.Client
-	svc    *Service
+	requestProxy config.SourceProxy
+	base         *url.URL
+	client       *http.Client
+	svc          *Service
 	// instance is the configured indexer's id: two addons configured on
 	// the same host never share HTTP or Usenet release identities.
 	instance string
@@ -131,12 +132,12 @@ func (s *Service) Backend(cfg config.Indexer) (newznab.Backend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("indexer %q: %w", cfg.Name, err)
 	}
-	key := cfg.ID + "\x00" + base.String()
+	key := fmt.Sprintf("%s\x00%s\x00%v", cfg.ID, base.String(), cfg.RequestProxy)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.backends[key]
 	if b == nil {
-		b = &Backend{base: base, client: s.client, svc: s, instance: cfg.ID, now: time.Now}
+		b = &Backend{requestProxy: cfg.RequestProxy, base: base, client: egress.SourceClient(s.client, cfg.RequestProxy), svc: s, instance: cfg.ID, now: time.Now}
 		s.backends[key] = b
 	}
 	return b, nil
@@ -144,7 +145,7 @@ func (s *Service) Backend(cfg config.Indexer) (newznab.Backend, error) {
 
 // Test checks that the addon at cfg.URL can be searched.
 func (s *Service) Test(ctx context.Context, cfg config.Indexer) error {
-	_, err := FetchManifest(ctx, s.client, cfg.URL)
+	_, err := FetchManifest(egress.WithSourceProxy(ctx, cfg.RequestProxy), s.client, cfg.URL)
 	return err
 }
 

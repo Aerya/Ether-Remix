@@ -291,7 +291,7 @@ func (s *Service) UpdateConfig(cfg config.Debrid) {
 		if pc.ID == "" {
 			pc.ID = fmt.Sprintf("%s-%d", pc.Kind, i)
 		}
-		if e, ok := old[pc.ID+"|"+pc.Kind+"|"+pc.APIKey]; ok && (!pc.Enabled || e.p != nil) {
+		if e, ok := old[pc.ID+"|"+pc.Kind+"|"+pc.APIKey]; ok && e.cfg.Proxy == pc.Proxy && (!pc.Enabled || e.p != nil) {
 			e.mu.Lock()
 			e.cfg = pc
 			e.mu.Unlock()

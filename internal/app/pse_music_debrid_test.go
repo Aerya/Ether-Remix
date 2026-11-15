@@ -16,7 +16,7 @@ import (
 
 func musicTestAccount(kind, base string) *pseDebridAccount {
 	return &pseDebridAccount{kind: kind, cfg: func() config.Debrid {
-		return config.Debrid{Providers: []config.DebridProvider{{Kind: kind, APIKey: "test-key", Enabled: true}}}
+		return config.Debrid{Providers: []config.DebridProvider{{ID: "music-account", Kind: kind, APIKey: "test-key", Enabled: true}}}
 	}, opts: debrid.ProviderOptions{BaseURL: base, PollInterval: time.Millisecond, ReadyPolls: 1}}
 }
 
@@ -130,7 +130,7 @@ func TestPSEMusicRealDebridAlbumSelection(t *testing.T) {
 			}
 			for _, f := range files {
 				st, err := acc.Unlock(t.Context(), f)
-				if err != nil || st.URL != strings.Replace(f.Link, "rd.example", "audio.example", 1) {
+				if err != nil || st.DebridAccountID != "music-account" || st.URL != strings.Replace(f.Link, "rd.example", "audio.example", 1) {
 					t.Fatalf("wrong track: %+v %v", st, err)
 				}
 			}

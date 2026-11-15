@@ -77,6 +77,11 @@ func TestPSEMusicDebridAccountBinding(t *testing.T) {
 	if _, err := acc.Unlock(t.Context(), old); err == nil {
 		t.Fatal("lien d'avant le changement de clé accepté")
 	}
+	cur[1].Proxy = config.SourceProxy{Enabled: true, URL: "http://proxy:8888"}
+	p3, err := acc.provider()
+	if err != nil || p3 == p2 {
+		t.Fatal("proxy changed: new music provider expected")
+	}
 	cur = providers[:1]
 	if _, err := acc.provider(); err == nil {
 		t.Fatal("compte retiré : ne doit pas basculer sur un autre compte")

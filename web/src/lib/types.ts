@@ -16,7 +16,15 @@ export interface UsenetProvider {
   enabled: boolean;
 }
 
+export interface SourceProxy {
+  enabled: boolean;
+  url: string;
+  username?: string;
+  password?: string;
+}
 export interface Indexer {
+  requestProxy?: SourceProxy;
+  streamProxy?: SourceProxy;
   id: string;
   name: string;
   url: string;
@@ -153,6 +161,7 @@ export type DebridKind =
 
 /** One owner-supplied debrid account. `apiKey` is redacted to "••••" when set. */
 export interface DebridProvider {
+  proxy?: SourceProxy;
   id: string;
   name: string;
   kind: DebridKind;

@@ -148,3 +148,8 @@ Les collections Jellyfin/Emby utilisent le bit 60 pour leur vue virtuelle dans R
 ## Configuration rapide JukeBox
 
 `internal/pse/jukebox` fournit les trois listes de démarrage, le catalogue public borné et mis en cache, et la création réentrante des collections/bibliothèques. `internal/app/pse_console.go` branche `/pse/jukebox/` sur l’API propriétaire existante. Le composant `web/src/pse/JukeboxQuickSetup.tsx` est accessible depuis Contenus et Bibliothèques ; le point d’accroche dans `web/src/pages/libraries/Libraries.tsx` le propose aussi dans les bibliothèques communes à tous les protocoles. Aucune modification des sources de lecture ni des règles de langue.
+
+
+### Proxys spécifiques aux sources
+
+`internal/config/source_proxy.go`, `internal/egress/source_proxy.go` et `web/src/pse/SourceProxyFields.tsx` portent le routage par compte et par addon. Préserver les appels depuis `app/outbound.go`, les constructeurs et lectures `debrid`, les requêtes `stremio`, la validation et la restauration des secrets `admin` lors des synchronisations amont. Les payloads ne persistent que l’identifiant de l’addon ; aucun identifiant de proxy n’y est copié. Un proxy spécifique précède MediaFlow et la politique globale. Les tests `source_proxy_test.go` vérifient routage, redirections, lecture et protection des secrets.

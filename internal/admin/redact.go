@@ -109,6 +109,8 @@ func RedactConfig(cfg config.Config) config.Config {
 		out.Indexers = make([]config.Indexer, len(cfg.Indexers))
 		for i, ix := range cfg.Indexers {
 			ix.APIKey = redact(ix.APIKey)
+			ix.RequestProxy.Password = redact(ix.RequestProxy.Password)
+			ix.StreamProxy.Password = redact(ix.StreamProxy.Password)
 			ix.SecretSettings = redactMap(ix.SecretSettings)
 			if ix.IsStremio() {
 				ix.URL = redactStremioURL(ix.URL)
@@ -120,6 +122,7 @@ func RedactConfig(cfg config.Config) config.Config {
 		out.Debrid.Providers = make([]config.DebridProvider, len(cfg.Debrid.Providers))
 		for i, p := range cfg.Debrid.Providers {
 			p.APIKey = redact(p.APIKey)
+			p.Proxy.Password = redact(p.Proxy.Password)
 			out.Debrid.Providers[i] = p
 		}
 	}
@@ -392,6 +395,8 @@ func (e *placeholderErrors) unredactIndexer(field string, ix config.Indexer, fla
 		}
 	}
 	bound := found && indexerIdentity(old, prev.IndexerSites.FlareSolverrURL) == indexerIdentity(ix, flareSolverr)
+	ix.RequestProxy.Password = e.restore(field+".requestProxy.password", ix.RequestProxy.Password, old.RequestProxy.Password, found && ix.RequestProxy.URL == old.RequestProxy.URL && ix.RequestProxy.Username == old.RequestProxy.Username)
+	ix.StreamProxy.Password = e.restore(field+".streamProxy.password", ix.StreamProxy.Password, old.StreamProxy.Password, found && ix.StreamProxy.URL == old.StreamProxy.URL && ix.StreamProxy.Username == old.StreamProxy.Username)
 	ix.APIKey = e.restore(field+".apiKey", ix.APIKey, old.APIKey, bound)
 	ix.SecretSettings = e.restoreMap(field+".secretSettings", ix.SecretSettings, old.SecretSettings, bound)
 	return ix
@@ -406,6 +411,7 @@ func (e *placeholderErrors) unredactDebrid(field string, p config.DebridProvider
 			break
 		}
 	}
+	p.Proxy.Password = e.restore(field+".proxy.password", p.Proxy.Password, old.Proxy.Password, bound && p.Proxy.URL == old.Proxy.URL && p.Proxy.Username == old.Proxy.Username)
 	p.APIKey = e.restore(field+".apiKey", p.APIKey, old.APIKey, bound)
 	return p
 }
