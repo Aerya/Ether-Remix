@@ -61,6 +61,8 @@ var tierTouchSources = []touchSource{
 	{table: "personalize_discovery_hidden", column: "item_key", tierA: true},
 	{table: "state_last_source", column: "rating_key", tierA: true},
 	{table: "watchlist_items", column: "item_key", tierA: true},
+	{table: "watchlist_rss_authors", column: "item_key", tierA: true},
+	{table: "watchlist_warm_intents", column: "item_key", tierA: true},
 	{table: "watchlist_episodes", column: "item_key", tierA: true},
 	{table: "watchlist_episodes", column: "episode_key", tierA: true},
 	{table: "watchlist_episodes_alerts", column: "episode_key"},
@@ -178,14 +180,16 @@ var tierUntouchedTables = []string{
 	"collections_names", "collections_defaults", "collections_meta", "release_observations", "availability_",
 	"cachefill_shared", "plex_ultrablur", "plex_shelf_generations", "onair_", "xtream_vod", "xtream_vod_refresh", "experience_row_",
 	"mediabrowser_personal_home", "frontend_image_grants", "segcache_", "debrid_", "newznab_", "cardigann_",
-	"livetv_programmes", "livetv_guide_", "livetv_numbers", "livetv_sources", "livetv_policies",
-	"livetv_channel_epoch", "livetv_plex_guide_gate", "livetv_source_history", "artwork_image_",
+	"livetv_programmes", "livetv_guide_", "livetv_owner_guides", "livetv_search_", "livetv_numbers", "livetv_sources", "livetv_policies",
+	"livetv_channel_epoch", "livetv_plex_guide_gate", "livetv_source_history", "livetv_login_", "artwork_image_",
 	"subtitles_auto_attempts", "subtitles_auto_provider_pause",
 	// Libraries hold owner filter definitions and plugin-owned items; a
 	// plugin match naming a removed title is promoted again on open.
 	"libraries", "libraries_", "plugin_", "plugins_setup",
 	// Id mappings (see above).
 	"frontend_compact_ids", "frontend_compact_id_counters", "silo_source_offer_ids", "frontend_client_families", "frontend_clients_seen",
+	// Encrypted idempotency responses contain transient authority, not durable title intent.
+	"vela_replays",
 	// Accounts, identity, sessions and devices.
 	"auth_", "identity_", "invites_", "mcp_oauth_", "capability_", "credentials_format", "safety_policies",
 	"sessions_devices", "sessions_lazy_", "sessions_sample_receipts", "sessions_delivery_tokens",

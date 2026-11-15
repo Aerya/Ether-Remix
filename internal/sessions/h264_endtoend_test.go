@@ -58,8 +58,20 @@ func TestH264ProfileDecisionMatchesFirstSegmentSPS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	playlist := httptest.NewRecorder()
+	hs.ServePlaylist(playlist, httptest.NewRequest(http.MethodGet, "/index.m3u8", nil))
+	name := ""
+	for _, line := range strings.Split(playlist.Body.String(), "\n") {
+		if n, ok := transcode.ParseSegmentName(line); ok && n == 0 {
+			name = line
+			break
+		}
+	}
+	if name == "" {
+		t.Fatal("playlist has no first segment")
+	}
 	w := httptest.NewRecorder()
-	hs.ServeSegment(w, httptest.NewRequest(http.MethodGet, "/00000.ts", nil), 0)
+	hs.ServeSegment(w, httptest.NewRequest(http.MethodGet, "/"+name, nil), 0)
 	if w.Code != http.StatusOK || w.Body.Len() == 0 {
 		t.Fatalf("segment %d: %s", w.Code, w.Body.String())
 	}

@@ -654,12 +654,19 @@ var _ frontend.Preferences = Preferences{}
 
 // LiveTV is a configurable fake for viewer-scoped live television.
 type LiveTV struct {
+	EnabledFunc          func() bool
 	ChannelsFunc         func(context.Context, *core.Viewer) ([]frontend.LiveChannel, error)
 	GuideFunc            func(context.Context, *core.Viewer, frontend.LiveGuideQuery) ([]frontend.LiveProgramme, error)
 	ResolveChannelFunc   func(context.Context, *core.Viewer, string) (frontend.LiveChannel, error)
 	ResolveProgrammeFunc func(context.Context, *core.Viewer, string, frontend.LiveGuideQuery) (frontend.LiveProgramme, error)
 }
 
+func (f LiveTV) Enabled() bool {
+	if f.EnabledFunc != nil {
+		return f.EnabledFunc()
+	}
+	return true
+}
 func (f LiveTV) Channels(ctx context.Context, v *core.Viewer) ([]frontend.LiveChannel, error) {
 	if f.ChannelsFunc != nil {
 		return f.ChannelsFunc(ctx, v)
@@ -844,4 +851,9 @@ func (f Sessions) ReportSample(ctx context.Context, a frontend.SessionAccess, id
 		err = f.Stop(ctx, a, id)
 	}
 	return frontend.ReportApplied, err
+}
+
+// CachedPaths models a host with already resolved, authorized paths.
+func (f VirtualPaths) CachedPaths(ctx context.Context, v *core.Viewer, d core.Device, keys []core.RatingKey) (map[core.RatingKey]string, error) {
+	return f.Paths(ctx, v, d, keys)
 }

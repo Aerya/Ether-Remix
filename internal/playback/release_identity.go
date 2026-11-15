@@ -165,3 +165,15 @@ func playbackAbsoluteEpisode(title *core.Title, season, episode int) int {
 	}
 	return 0
 }
+
+// An owner pin is checked at use time so warm entries, persisted resume picks
+// and old alternates cannot bypass a pin installed after they were created.
+func (m *Manager) ownerPinAllows(s *session, releaseID string) bool {
+	if pins, ok := m.deps.Resolver.(interface {
+		PinnedReleaseID(core.ResolveRequest) string
+	}); ok {
+		id := pins.PinnedReleaseID(core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer})
+		return id == "" || id == releaseID
+	}
+	return true
+}

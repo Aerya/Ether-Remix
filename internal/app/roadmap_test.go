@@ -20,8 +20,6 @@ func TestRoadmapOwnerAPIsAreWiredAndPrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = cfg.Update(func(c *config.Config) error {
-		enabled := true
-		c.LiveTV.Enabled = &enabled
 		c.Transcode.FFmpegPath = "/not-installed/ffmpeg"
 		return nil
 	}); err != nil {
@@ -63,6 +61,10 @@ func TestRoadmapOwnerAPIsAreWiredAndPrivate(t *testing.T) {
 			io.WriteString(w, "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg.ts\n")
 		}))
 		defer upstream.Close()
+		// Admission rechecks active membership in the account database.
+		if _, err := a.db.ExecContext(context.Background(), `INSERT INTO auth_users(id,plex_id,username,active,stream_limit,created_at,updated_at) VALUES(1,1,'fixture-viewer',1,1,0,0)`); err != nil {
+			t.Fatal(err)
+		}
 		channel, err := a.livetv.SaveChannel(context.Background(), livetv.Channel{ID: "fixture-channel", Number: "1", Name: "Fixture channel", Kind: "iptv", StreamURL: upstream.URL + "/live.m3u8", Rating: "PG", Enabled: true})
 		if err != nil {
 			t.Fatal(err)

@@ -10,6 +10,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/playback"
+	"github.com/braedonsaunders/ether/internal/safety"
+	"github.com/braedonsaunders/ether/internal/viewerpolicy"
 )
 
 func (a *App) viewerCapabilities(local *identity.Local, experience frontend.Experience) frontend.ViewerCapabilitiesFunc {
@@ -35,6 +37,18 @@ func (a *App) viewerCapabilities(local *identity.Local, experience frontend.Expe
 			out.PeerRemote = &remote
 		}
 		if a.safety != nil {
+			p, err := a.safety.FreshPolicy(ctx, v.ID)
+			if err != nil {
+				return out, err
+			}
+			out.Bedtime = p.Bedtime
+			state := safety.PlaybackTimeState(v, p, time.Now())
+			out.BedtimeState = &state
+			revision, err := viewerpolicy.Read(ctx, a.db)
+			if err != nil {
+				return out, err
+			}
+			out.PolicyRevision = revision
 			can := a.safety.CanPlay(v, true, time.Now())
 			out.CanPlayRemote = &can
 			if out.PeerRemote != nil {
@@ -65,7 +79,7 @@ func (a *App) viewerCapabilities(local *identity.Local, experience frontend.Expe
 		if a.livetv != nil {
 			out.CanManageLiveTV = &owner
 			if p, e := a.livetv.Policy(ctx, v.ID); e == nil {
-				allowed := !p.Disabled
+				allowed := a.livetv.Enabled() && !p.Disabled
 				out.CanUseLiveTV = &allowed
 			}
 		}

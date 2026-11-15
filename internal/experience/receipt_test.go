@@ -116,8 +116,36 @@ func TestReceiptCapAndHashStorage(t *testing.T) {
 	if err = db.QueryRowContext(ctx, `SELECT hash FROM experience_receipts`).Scan(&stored); err != nil || stored == h {
 		t.Fatal("raw receipt persisted")
 	}
-	if _, err = s.Issue(ctx, u, d, "plex", subject); err == nil {
-		t.Fatal("cap not enforced")
+	// Unused authority must yield to a new visit even before expiry.
+	replacement, err := s.Issue(ctx, u, d, "plex", subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Report(ctx, frontend.RowInteraction{Viewer: u, Device: d, Protocol: "plex", Handle: h, Kind: frontend.RowImpression}); !errors.Is(err, ErrReceipt) {
+		t.Fatalf("evicted receipt authorized: %v", err)
+	}
+	if err = s.Report(ctx, frontend.RowInteraction{Viewer: u, Device: d, Protocol: "plex", Handle: replacement, Kind: frontend.RowImpression}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Issue(ctx, u, d, "plex", subject)
+	var capacity *frontend.ReceiptCapacityError
+	if !errors.As(err, &capacity) || capacity.RetryAfter != time.Minute {
+		t.Fatalf("capacity hint: %v", err)
+	}
+	var receipts, headers int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM experience_receipts`).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.QueryRow(`SELECT COUNT(*) FROM capability_headers WHERE namespace='experience.receipt'`).Scan(&headers); err != nil || receipts != 1 || headers != 1 {
+		t.Fatalf("receipt/header quota %d/%d: %v", receipts, headers, err)
+	}
+	// A generation change supersedes even claimed authority in this surface.
+	s.opts.Generation = func(context.Context, *core.User, core.Device, core.Protocol) (int64, error) { return 1, nil }
+	if _, err = s.Issue(ctx, u, d, "plex", subject); err != nil {
+		t.Fatalf("superseded quota: %v", err)
+	}
+	if live, err := s.receiptsLive(ctx, u.ID, d.ID, "plex", []string{replacement}); err != nil || live {
+		t.Fatalf("retired cached page remained live: %v %v", live, err)
 	}
 	now = now.Add(time.Minute)
 	if _, err = s.Issue(ctx, u, d, "plex", subject); err != nil {

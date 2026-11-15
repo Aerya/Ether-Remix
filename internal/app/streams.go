@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/markers"
 	"github.com/braedonsaunders/ether/internal/subtitles"
+	"github.com/braedonsaunders/ether/internal/trackprefs"
 )
 
 // subtitleUser is u with the subtitle languages of the viewer's stream
@@ -93,9 +95,59 @@ func (s subtitleSurface) CachedSidecars(ctx context.Context, t *core.Title, u *c
 	return out
 }
 
-func (s subtitleSurface) SearchSubtitles(ctx context.Context, t *core.Title, _ *core.User, lang, release string) ([]frontend.SubtitleSearchOffer, error) {
+// subtitleSearchLanguages preserves an explicit client choice; otherwise resolve
+// the same scoped viewer rules used for playback before profile/server defaults.
+func (s subtitleSurface) subtitleSearchLanguages(ctx context.Context, t *core.Title, u *core.User, lang, device string) ([]string, error) {
+	if lang != "" {
+		return []string{lang}, nil
+	}
+	if t == nil {
+		return nil, nil
+	}
+	scope := trackprefs.Scope{Device: device}
+	if t.ShowKey != 0 {
+		scope.Series = strconv.FormatInt(int64(t.ShowKey), 10)
+	} else if t.Key.Kind() == core.KindEpisode {
+		scope.Series = strconv.FormatInt(int64(core.ShowKey(t.Key.TMDB())), 10)
+	}
+	if section, ok := brokerSectionFor(func(core.MediaType) (int, bool) { return 0, false })(t.Type); ok {
+		scope.Library = strconv.Itoa(section)
+	}
+	userID := int64(0)
+	if u != nil {
+		userID = u.ID
+	}
+	if s.app.trackprefs != nil {
+		return s.app.trackprefs.SubtitleSearchLanguages(ctx, userID, t.Key, scope)
+	}
+	if u != nil && len(u.SubtitleLanguages) > 0 {
+		return u.SubtitleLanguages, nil
+	}
+	if s.app.cfg != nil {
+		return []string{s.app.cfg.Get().Catalog.Language}, nil
+	}
+	return nil, nil
+}
+
+func (s subtitleSurface) SearchSubtitles(ctx context.Context, t *core.Title, u *core.User, lang, release string) ([]frontend.SubtitleSearchOffer, error) {
+	device := ""
+	if pr := plex.FromContext(ctx); pr != nil {
+		device = pr.ClientID
+	}
+	languages, err := s.subtitleSearchLanguages(ctx, t, u, lang, device)
+	if err != nil {
+		return nil, err
+	}
 	asked := lang
-	cands, searchErr := s.app.subtitles.SearchOnDemand(ctx, t, lang, release)
+	if asked == "" && len(languages) > 0 {
+		asked = languages[0]
+	}
+	var hash string
+	var size int64
+	if len(languages) > 0 {
+		release, hash, size = s.subtitleSearchSource(ctx, t, u, device, release)
+	}
+	cands, searchErr := s.app.subtitles.SearchOnDemandLanguagesWithHash(ctx, t, languages, release, hash, size)
 	if searchErr != nil {
 		cands = nil
 	}

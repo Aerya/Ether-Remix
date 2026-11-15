@@ -30,6 +30,12 @@ export function installMockBackend(): void {
     restore: params.get("restore") ?? undefined,
     prerolls: params.has("prerolls"),
   });
+  // Configured through the API, but the owner has not closed setup yet.
+  if (params.get("setup") === "resume") {
+    fake.state.config.setupComplete = false;
+    fake.state.boot.setupComplete = false;
+    fake.state.boot.ownerConfigured = true;
+  }
   if (params.get("backups") === "empty") fake.state.backups = [];
   fake.state.config.frontends = Object.fromEntries(
     ["plex", "jellyfin", "emby", "silo", "stremio", "webdav", "m3u", "xtream", "dlna"].map((id) => [

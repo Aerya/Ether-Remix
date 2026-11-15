@@ -25,8 +25,25 @@ type HLSRamp struct {
 }
 
 type HLSRequest struct {
-	Ramp   HLSRamp    `json:",omitzero"`
-	Resume *HLSResume `json:",omitempty"`
+	// MediaGeneration is a trusted presentation namespace retained across encoder
+	// recovery. A new playback start must use a fresh value; empty mints one.
+	MediaGeneration string `json:",omitempty"`
+
+	// QualityRungs explicitly requests the lazy, policy-filtered file-session ladder.
+	QualityRungs    bool
+	QualityRungIDs  []string
+	QualityVariants []QualityVariant `json:"-"`
+
+	// LazyStart defers the first encoder until the client selects a rendition.
+	LazyStart bool
+	// LadderVideoCodecs restricts optional encoded rungs when non-nil.
+	// An empty list permits only the primary decision.
+	LadderVideoCodecs []string
+	Diagnostics       bool
+	// Continuous disables ramps and governor changes that introduce discontinuities.
+	Continuous bool
+	Ramp       HLSRamp    `json:",omitzero"`
+	Resume     *HLSResume `json:",omitempty"`
 	// RecoveryStart is trusted composition only; nil preserves legacy behavior.
 	RecoveryStart *RecoveryStart `json:",omitempty"`
 
@@ -154,6 +171,9 @@ type SubtitleExtractor interface {
 
 // DecideOptions are per-request choices from the Plex decision request.
 type DecideOptions struct {
+	// ToneMap limits apply only to HDR-to-SDR video conversion, never direct
+	// playback or copy-only remux. Zero preserves the existing output budget.
+	ToneMapMaxHeight, ToneMapMaxBitrateKbps int
 	// DisableVideoTranscode prevents optional enhancement from promoting direct playback.
 	DisableVideoTranscode bool
 
@@ -161,6 +181,7 @@ type DecideOptions struct {
 	DirectStream   bool     // client allows remux
 	MaxBitrateKbps int      // client-requested cap (maxVideoBitrate)
 	MaxHeight      int      // from videoResolution
+	MaxWidth       int      // explicit output width ceiling
 	AudioStream    int      // selected stream index, -1 default
 	SubtitleStream int      // -1 none
 	AudioFilters   []string // trusted owner/viewer audio processing; forces audio encoding

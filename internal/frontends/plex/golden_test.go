@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -29,6 +31,7 @@ func (f *fixture) request(t *testing.T, method, target string, hdr map[string]st
 	if requestHook != nil {
 		requestHook(f, method, target, hdr)
 	}
+	target = f.followHLSResource(t, target)
 	req := httptest.NewRequest(method, target, nil)
 	req.RemoteAddr = "192.168.1.50:51000"
 	for k, v := range hdr {
@@ -218,4 +221,42 @@ func TestGoldenSessions(t *testing.T) {
 	f.get(t, "/:/timeline?ratingKey=1000000000000550&key=%2Flibrary%2Fmetadata%2F1000000000000550&state=playing&time=60000&duration=8340000",
 		"X-Plex-Product", "Plex Web", "X-Plex-Platform", "Chrome", "X-Plex-Device", "OSX", "X-Plex-Device-Name", "Chrome", "X-Plex-Session-Identifier", "sess-1")
 	checkGolden(t, "status_sessions", f.getWarm(t, "/status/sessions"))
+}
+
+func firstPlaylistMedia(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return ""
+}
+
+// Real encoder fixtures follow the namespace advertised by the media playlist.
+// The input resource selects the desired numeric slot, just as a client would.
+func (f *fixture) followHLSResource(t *testing.T, target string) string {
+	const prefix = "/video/:/transcode/universal/session/"
+	u, err := url.Parse(target)
+	if err != nil || !strings.HasPrefix(u.Path, prefix) {
+		return target
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, prefix), "/")
+	if len(parts) != 3 || strings.HasPrefix(parts[2], "g-") {
+		return target
+	}
+	if _, ok := frontend.ParseSegmentName(parts[2]); !ok {
+		return target
+	}
+	hs, ok := f.srv.plexHLSSession(parts[0])
+	if !ok {
+		return target
+	}
+	w := httptest.NewRecorder()
+	hs.ServePlaylist(w, httptest.NewRequest(http.MethodGet, "/index.m3u8", nil))
+	media := firstPlaylistMedia(w.Body.String())
+	if strings.HasPrefix(media, "g-") && len(media) > 35 {
+		u.Path = prefix + parts[0] + "/" + parts[1] + "/" + media[:35] + parts[2]
+		return u.String()
+	}
+	return target
 }

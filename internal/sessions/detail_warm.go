@@ -127,9 +127,9 @@ func (b *Broker) rememberedPlayCaps(viewer int64, protocol frontend.Protocol, de
 }
 
 // WarmDetail implements frontend.DetailWarmer. A device that has not yet
-// declared its playback caps on this surface is not warmed, and neither is
-// one whose network locality changed since: remote and LAN plays select
-// differently, so a warm pick could be lower than Play's.
+// declared its playback caps on this surface (at Play or negotiation) is not
+// warmed, nor is one whose network locality changed since. Remote and LAN
+// plays select differently, so a warm pick could be lower than Play's.
 func (b *Broker) WarmDetail(ctx context.Context, req frontend.PlanRequest) bool {
 	if req.Protocol == "" || b.policy(req.Protocol).ExternalAdmission || req.Device.ID == "" || req.Viewer == nil || req.Item == 0 || req.Channel != "" || req.Version != "" || req.Intent.Hints != nil {
 		return false
@@ -143,6 +143,9 @@ func (b *Broker) WarmDetail(ctx context.Context, req frontend.PlanRequest) bool 
 		return false
 	}
 	declared, ok := b.rememberedPlayCaps(v.ID, req.Protocol, req.Device.ID)
+	if req.Intent.DeclaredCaps {
+		declared, ok = req.Caps, true
+	}
 	if !ok || declared.Remote != req.Caps.Remote {
 		return false
 	}
@@ -159,6 +162,9 @@ func (b *Broker) WarmDetail(ctx context.Context, req frontend.PlanRequest) bool 
 	title, err := lookup(ctx, v, req.Device, req.Item)
 	if err != nil || title == nil || title.Key != req.Item || (title.Type != core.TypeMovie && title.Type != core.TypeEpisode) || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
 		return false
+	}
+	if req.Intent.DeclaredCaps {
+		b.rememberPlayCaps(v, req.Protocol, req.Device, req.Item, declared)
 	}
 	return warm.Prewarm(context.WithoutCancel(ctx), v, req.Item, b.playCaps(v, req.Protocol, req.Device, declared), core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true})
 }

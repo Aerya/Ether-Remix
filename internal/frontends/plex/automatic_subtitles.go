@@ -15,3 +15,18 @@ func (s *Server) SelectAutomaticSubtitle(access frontend.SessionAccess, key fron
 	s.playIDs.pickSubtitle(playIdentityKey{userID: access.Viewer.ID, clientID: access.Device.ID, key: key}, &track, s.now())
 	return nil
 }
+
+// subtitleSelectionEcho recognizes only a positive track this client was shown
+// selected. Absence of a track is never evidence that an Off request is an echo.
+func (s *Server) subtitleSelectionEcho(pr *Request, key frontend.RatingKey, track *frontend.StreamInfo) bool {
+	if track == nil || s.playIDs == nil {
+		return false
+	}
+	shown, _ := s.playIDs.shownSubtitles(s.playIdentityFor(pr, key), s.now())
+	for _, selected := range shown {
+		if selected.Index == track.Index && selected.External == track.External && selected.ExternalURL == track.ExternalURL && selected.Language == track.Language && selected.Codec == track.Codec && selected.Forced == track.Forced && selected.Title == track.Title {
+			return true
+		}
+	}
+	return false
+}

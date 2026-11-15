@@ -26,12 +26,15 @@ const (
 	steadySpacing        = time.Second
 	steadyDelivered      = 4 * time.Second
 	steadyRoundMax       = 8 * time.Second
+	steadyChangeWindow   = 20 * time.Second
+	steadyChangeLimit    = 3
 )
 
 type ladderSource struct {
-	fails  int       // consecutive opens that never delivered
-	last   time.Time // last open attempt
-	parked time.Time // no attempt before this
+	fails   int                          // consecutive opens that never delivered
+	last    time.Time                    // last open attempt
+	parked  time.Time                    // no attempt before this
+	changes [steadyChangeLimit]time.Time // bounded sliding window of unproductive changes
 }
 
 type steadyLadder struct {
@@ -75,12 +78,25 @@ func (l *steadyLadder) opened(id string, now time.Time) {
 func (l *steadyLadder) delivered(id string) {
 	st := l.state(id)
 	st.fails, st.parked = 0, time.Time{}
+	st.changes = [steadyChangeLimit]time.Time{}
 	if id == l.source {
 		l.episode = time.Time{}
 		l.rung, l.round = 0, 0
 		clear(l.tried)
 		l.tried[id] = true
 	}
+}
+
+// changed counts distinct decoder changes, including in-place splices. Productive
+// playback between changes starts a fresh window; opening a decoder does not.
+func (l *steadyLadder) changed(id string, aired bool, now time.Time) bool {
+	st := l.state(id)
+	if aired {
+		st.changes = [steadyChangeLimit]time.Time{}
+	}
+	copy(st.changes[:], st.changes[1:])
+	st.changes[steadyChangeLimit-1] = now
+	return !st.changes[0].IsZero() && now.Sub(st.changes[0]) <= steadyChangeWindow
 }
 
 // choose returns the source to open now from candidates (best first) and
@@ -133,7 +149,13 @@ func (l *steadyLadder) failed(id string, err error, aired, failover bool, candid
 		}
 	}
 	l.source = id
-	if errors.Is(err, transcode.ErrInputChanged) && st.parked.Before(now) {
+	changed := errors.Is(err, transcode.ErrInputChanged)
+	if errors.Is(err, errSteadyChangeStorm) || changed && l.changed(id, aired, now) {
+		st.parked = now.Add(steadyParked)
+		st.changes = [steadyChangeLimit]time.Time{}
+		failover = true
+	}
+	if changed && !failover && st.parked.Before(now) {
 		// A codec or stream-set change: the source is fine, the decoder is
 		// not. Rejoin it at the live edge without spending a rung.
 		l.next, l.liveEdge = id, true

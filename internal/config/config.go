@@ -77,7 +77,9 @@ type Config struct {
 
 // Frontend holds the enabled state of a protocol front end.
 type Frontend struct {
-	Enabled bool `json:"enabled"`
+	// AppearanceRevision survives restarts so Vela clients can reject stale looks.
+	AppearanceRevision uint64 `json:"appearanceRevision,omitempty"`
+	Enabled            bool   `json:"enabled"`
 	// PublicURL is the optional address viewers use to reach this one app
 	// from outside the home network (e.g. https://jelly.example.com), for
 	// owners who route each app through its own host name. Empty keeps the
@@ -325,8 +327,11 @@ type Cache struct {
 	RetentionDays      int    `json:"retentionDays,omitempty"`
 	ReplayBoostHours   int    `json:"replayBoostHours,omitempty"`
 	DisableSpeculation bool   `json:"disableSpeculation,omitempty"`
-	DetailWarmup       string `json:"detailWarmup,omitempty"` // empty/on or off
-	DetailBytes        int64  `json:"detailBytes,omitempty"`  // zero warms 40s of source media, capped at 256 MiB
+	// SpeculativeWarming off limits automatic warming to recent viewing, watchlist events and owner pins.
+	SpeculativeWarming string           `json:"speculativeWarming,omitempty"`
+	KeepWarmTitles     []core.RatingKey `json:"keepWarmTitles,omitempty"`
+	DetailWarmup       string           `json:"detailWarmup,omitempty"` // empty/on or off
+	DetailBytes        int64            `json:"detailBytes,omitempty"`  // zero warms 40s of source media, capped at 256 MiB
 	// PlaybackReadAheadMinutes is how many minutes of the title being played
 	// Usenet streaming keeps downloaded to the cache ahead of the viewer:
 	// 0 is off, nil is DefaultPlaybackReadAheadMinutes.
@@ -631,8 +636,9 @@ type LiveTVScreens struct {
 }
 
 type LiveTV struct {
-	// Nil preserves pre-choice installations until their saved lineup is inspected.
-	Enabled *bool `json:"enabled,omitempty"`
+	// LatencyProfile is the owner preference for every Live TV client.
+	LatencyProfile string `json:"latencyProfile,omitempty"`
+
 	// Extra act-break scan bandwidth. Zero selects defaults (1 GiB/day,
 	// 256 MiB/release including conservative read overhead, 1 GiB large-file
 	// threshold). Negative daily/release limits disable pre-air full scans.

@@ -697,3 +697,12 @@ func (r *LocalRuntime) EncodeQueue(q *PlayQueue) (string, error) { return Encode
 func (r *LocalRuntime) DecodeQueue(id, userID, rev, updated int64, data string) (*PlayQueue, error) {
 	return DecodeQueue(id, userID, rev, updated, data)
 }
+
+func (r *LocalRuntime) LiveWindow(ctx context.Context, id string) (frontend.LiveWindow, error) {
+	if r != nil {
+		if reader, ok := r.deps.Sessions.(frontend.LiveWindowReader); ok {
+			return reader.LiveWindow(ctx, id)
+		}
+	}
+	return frontend.LiveWindow{}, core.ErrNotAvailable
+}

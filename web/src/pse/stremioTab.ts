@@ -36,6 +36,7 @@ export function pseMergeOrder<T>(all: T[], slots: number[], next: T[]): T[] {
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 
 export const pseStremioText = {
+  title: () => L("Modules Stremio", "Stremio addons"),
   description: () =>
     L(
       "Addons Stremio interrogés quand quelqu'un lance une lecture, dans l'ordre de recherche des sources. Collez l'URL du manifest de l'addon de votre choix.",

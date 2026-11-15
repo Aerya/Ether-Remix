@@ -1,0 +1,556 @@
+// Package vela presents the Vela v0 protocol through neutral host services.
+package vela
+
+import (
+	"context"
+	"crypto/cipher"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
+	"github.com/braedonsaunders/ether/internal/webclient"
+)
+
+type object = map[string]any
+
+type Frontend struct {
+	AssetsDir string
+	DB        *sql.DB
+	ReplayKey []byte
+}
+
+func (Frontend) Describe() frontend.Descriptor {
+	return frontend.Descriptor{ID: "vela", Name: "Vela", Version: "0", SettingsSchema: frontend.SettingsSchema{SignInHelp: true, Sections: []frontend.SettingsSection{{Key: "appearance", Fields: []frontend.SettingsField{{Key: "defaultSkinId", Kind: "string"}}}, {Key: "find", Fields: []frontend.SettingsField{{Key: "serverName", Kind: "serverName"}}}}}}
+}
+
+// ValidateSettings keeps the owner setting additive without accepting arbitrary config.
+func (Frontend) ValidateSettings(s frontend.Settings) error {
+	for key, value := range s {
+		id, ok := value.(string)
+		if key != "defaultSkinId" || !ok || !skinIDPattern.MatchString(id) {
+			return errors.New("invalid Vela setting")
+		}
+	}
+	return nil
+}
+func (f Frontend) Mount(ctx context.Context, host frontend.Host) (frontend.Instance, error) {
+	if host.Identity == nil || host.Experience == nil || host.Sessions == nil {
+		return nil, errors.New("vela requires identity, experience and sessions")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	i := &instance{host: host, ctx: ctx, cancel: cancel, mux: http.NewServeMux(), sessions: map[string]*playSession{}, replays: map[string]*replay{}, assets: f.AssetsDir}
+	seal, err := encryption(f.ReplayKey)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	i.rowMeta = map[string]frontend.RowView{}
+	i.db = f.DB
+	i.seal = seal
+	i.routes()
+	return i, nil
+}
+
+type replay struct {
+	digest  string
+	done    chan struct{}
+	status  int
+	header  http.Header
+	body    []byte
+	expires time.Time
+}
+type instance struct {
+	appearanceMu    sync.Mutex
+	appearanceCache *appearanceEntry
+	bootstrapMu     sync.Mutex
+	bootstraps      map[string]*bootstrapEntry
+	db              *sql.DB
+	seal            cipher.AEAD
+	rowMu           sync.Mutex
+	rowMeta         map[string]frontend.RowView
+
+	host            frontend.Host
+	ctx             context.Context
+	cancel          context.CancelFunc
+	mux             *http.ServeMux
+	assets          string
+	mu              sync.Mutex
+	previewRates    map[int64]previewRate
+	previewRequests map[previewRequestKey]previewRequest
+	themes          map[string]themeGrant
+	sessions        map[string]*playSession
+	replayMu        sync.Mutex
+	replays         map[string]*replay
+	aiMu            sync.Mutex
+	aiJobs          map[string]*aiSearchJob
+	aiActive        int
+	warmMu          sync.Mutex
+	warmClients     map[string]negotiatedClient
+	warmPending     map[string]bool
+}
+
+func (i *instance) Handler() http.Handler { return http.HandlerFunc(i.serve) }
+func (*instance) Listeners() []frontend.ListenerSpec {
+	return []frontend.ListenerSpec{{Shared: true, PathPrefix: "/vela"}, {Shared: true, PathPrefix: "/sessions/media"}}
+}
+func (*instance) Discovery() []frontend.Announcer { return nil }
+func (i *instance) Status(context.Context) frontend.Status {
+	return frontend.Status{TargetVersion: "0", Conformance: "unverified", WebPlayerReady: webclient.VelaReady(i.assets)}
+}
+func (i *instance) Close(context.Context) error { i.cancel(); return nil }
+func hash(s string) string                      { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+func send(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+func problem(w http.ResponseWriter, status int, class, code string) {
+	send(w, status, object{"error": object{"class": class, "code": code, "message": strings.ReplaceAll(code, "_", " "), "retry": object{"allowed": false}}})
+}
+func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
+	var bedtime *frontend.ErrBedtime
+	if errors.As(err, &bedtime) {
+		send(w, http.StatusForbidden, object{"error": object{"class": "policy", "code": "bedtime", "message": bedtime.Error(), "nextAllowedAt": bedtime.NextAllowedAt.UTC().Format(time.RFC3339), "retry": object{"allowed": false}}})
+		return
+	}
+
+	var incompatible *frontend.NoCompatiblePathError
+	var changed *bootstrapChangedError
+	switch {
+	case errors.As(err, &incompatible):
+		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": "no compatible playback path", "rejectedPaths": incompatible.RejectedPaths, "retry": object{"allowed": false}}})
+	case errors.As(err, &changed):
+		w.Header().Set("Retry-After", "1")
+		send(w, 409, object{"error": object{"class": "conflict", "code": "bootstrap_changed", "message": "home changed while loading", "retry": object{"allowed": true, "afterSeconds": 1, "maxAttempts": 3}}})
+	case errors.Is(err, frontend.ErrPolicyUnconfirmed):
+		problem(w, 403, "policy", "policy_unconfirmed")
+	case errors.Is(err, frontend.ErrUnreleased):
+		problem(w, 409, "source", "title_unreleased")
+	case errors.Is(err, frontend.ErrTrackNotFound):
+		problem(w, 422, "playback", "track_not_found")
+	case errors.Is(err, frontend.ErrDownloadNeedsTranscode), errors.Is(err, frontend.ErrSubtitleAuthoringUnavailable), errors.Is(err, frontend.ErrSubtitleFontsUnavailable):
+		problem(w, 422, "playback", "unsupported_conversion")
+	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit):
+		problem(w, 400, "request", "invalid_request")
+	case errors.Is(err, frontend.ErrPreferencesLimit), errors.Is(err, frontend.ErrDownloadBudget):
+		problem(w, 429, "capacity", "resource_capacity")
+	case errors.Is(err, frontend.ErrQuickConnectPending):
+		w.Header().Set("Retry-After", "2")
+		send(w, 409, object{"error": object{"class": "conflict", "code": "authorization_pending", "message": "authorization pending", "retry": object{"allowed": true, "afterSeconds": 2, "maxAttempts": 3}}})
+	case errors.Is(err, frontend.ErrIdentityUnavailable):
+		problem(w, 403, "policy", "identity_unavailable")
+	case errors.Is(err, context.Canceled):
+		problem(w, 408, "request", "request_canceled")
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, frontend.ErrPrepareSlow):
+		w.Header().Set("Retry-After", "2")
+		send(w, 503, object{"error": object{"class": "capacity", "code": "preparation_pending", "message": "preparation pending", "retry": object{"allowed": true, "afterSeconds": 2, "maxAttempts": 3}}})
+	case errors.Is(err, frontend.ErrBudgetExhausted):
+		problem(w, 429, "capacity", "indexer_budget_exhausted")
+	case errors.Is(err, frontend.ErrDownloadLimit), errors.Is(err, frontend.ErrDownloadPaused):
+		problem(w, 503, "capacity", "source_capacity")
+	case errors.Is(err, frontend.ErrDebridAuth):
+		problem(w, 502, "source", "source_authentication_failed")
+	case errors.Is(err, frontend.ErrDownloadQueued), errors.Is(err, frontend.ErrDownloadRefused), errors.Is(err, frontend.ErrNotCached), errors.Is(err, frontend.ErrReleaseRejected), errors.Is(err, frontend.ErrArticleCorrupt), errors.Is(err, frontend.ErrArticleMissing):
+		problem(w, 502, "source", "source_unavailable")
+	case errors.Is(err, frontend.ErrReceiptCapacity):
+		var capacity *frontend.ReceiptCapacityError
+		seconds := 1
+		if errors.As(err, &capacity) {
+			seconds = max(1, int((capacity.RetryAfter+time.Second-1)/time.Second))
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		send(w, 429, object{"error": object{"class": "capacity", "code": "receipt_capacity", "message": "receipt capacity", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
+	case errors.Is(err, frontend.ErrTrackSourceUnavailable):
+		w.Header().Set("Retry-After", "2")
+		send(w, 502, object{"error": object{"class": "source", "code": "track_source_unavailable", "message": "track source unavailable", "retry": object{"allowed": true, "afterSeconds": 2, "maxAttempts": 3}}})
+	case errors.Is(err, frontend.ErrInteractionReceipt):
+		problem(w, 400, "request", "invalid_receipt")
+	case errors.Is(err, frontend.ErrSourceChanged):
+		problem(w, 409, "conflict", "source_changed")
+	case errors.Is(err, frontend.ErrSeekUnavailable):
+		problem(w, 409, "playback", "seek_unavailable")
+	case errors.Is(err, frontend.ErrRowViewStale), errors.Is(err, frontend.ErrLiveGuideStale):
+		problem(w, 409, "conflict", "cursor_expired")
+	case errors.Is(err, frontend.ErrTooManyTranscodes), errors.Is(err, frontend.ErrTranscodeCapacity), errors.Is(err, frontend.ErrStreamLimit), errors.Is(err, frontend.ErrSessionBusy):
+		var delay time.Duration
+		var busy *frontend.SessionBusyError
+		var encoder *frontend.TranscodeCapacityError
+		if errors.As(err, &busy) {
+			delay = busy.RetryAfter
+		}
+		if errors.As(err, &encoder) {
+			delay = encoder.RetryAfter
+		}
+		if delay > 0 && delay <= 5*time.Minute {
+			seconds := min(300, int(delay/time.Second))
+			if delay%time.Second != 0 && seconds < 300 {
+				seconds++
+			}
+			seconds = max(seconds, 1)
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			send(w, 503, object{"error": object{"class": "capacity", "code": "playback_capacity", "message": "playback capacity", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
+		} else {
+			problem(w, 503, "capacity", "playback_capacity")
+		}
+	case errors.Is(err, frontend.ErrNoSources), errors.Is(err, frontend.ErrSourceUnavailable), errors.Is(err, frontend.ErrSourceGone):
+		problem(w, 502, "source", "source_unavailable")
+	case errors.Is(err, frontend.ErrNotAvailable):
+		problem(w, 409, "source", "not_available")
+	case errors.Is(err, frontend.ErrNotFound):
+		problem(w, 404, "not-found", "not_found")
+	case errors.Is(err, frontend.ErrUnauthorized):
+		problem(w, 401, "auth", "unauthorized")
+	case errors.Is(err, frontend.ErrRateLimited):
+		var limited *frontend.IdentityRateLimitError
+		if errors.As(err, &limited) && limited.RetryAfter > 0 && limited.RetryAfter <= 15*time.Minute {
+			seconds := int((limited.RetryAfter + time.Second - 1) / time.Second)
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			send(w, 503, object{"error": object{"class": "capacity", "code": "rate_limited", "message": "rate limited", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 2}}})
+		} else {
+			problem(w, 503, "capacity", "rate_limited")
+		}
+	default:
+		logFailure(err, requests...)
+		problem(w, 503, "transient", "service_unavailable")
+	}
+}
+func cache(w http.ResponseWriter, r *http.Request, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	tag := `"` + hash(string(b)+r.Header.Get("Authorization")+r.Header.Get("X-Vela-Device-Id")+r.URL.RequestURI()) + `"`
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	w.Header().Set("ETag", tag)
+	w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+	for _, candidate := range strings.Split(r.Header.Get("If-None-Match"), ",") {
+		if strings.TrimSpace(candidate) == tag || strings.TrimSpace(candidate) == "*" {
+			w.WriteHeader(304)
+			return
+		}
+	}
+	_, _ = w.Write(b)
+}
+func (i *instance) identityContext(r *http.Request) context.Context {
+	ctx := r.Context()
+	if i.host.ClientIP != nil {
+		if ip, ok := i.host.ClientIP(r); ok {
+			ctx = frontend.WithClientIP(ctx, ip)
+		}
+	}
+	return ctx
+}
+
+type device struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Platform   string `json:"platform"`
+	AppVersion string `json:"appVersion"`
+}
+
+func (d device) neutral() frontend.Device {
+	return frontend.Device{ID: d.ID, DeviceName: d.Name, Platform: d.Platform, Version: d.AppVersion, Client: "Vela", Product: "Vela"}
+}
+func requestDevice(r *http.Request) frontend.Device {
+	return device{ID: r.Header.Get("X-Vela-Device-Id"), Name: r.Header.Get("X-Vela-Device-Name"), Platform: r.Header.Get("X-Vela-Platform"), AppVersion: r.Header.Get("X-Vela-Version")}.neutral()
+}
+func (i *instance) viewer(r *http.Request) (*frontend.Viewer, string, error) {
+	token, ok := authhdr.Bearer(r.Header.Get("Authorization"))
+	if !ok {
+		return nil, "", frontend.ErrUnauthorized
+	}
+	resolver, ok := i.host.Identity.(frontend.DeviceIdentity)
+	if !ok || requestDevice(r).ID == "" {
+		return nil, "", frontend.ErrUnauthorized
+	}
+	v, _, err := resolver.ResolveDevice(r.Context(), token, requestDevice(r))
+	if err != nil || v == nil {
+		return nil, "", frontend.ErrUnauthorized
+	}
+	return v, token, nil
+}
+func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if strings.HasPrefix(r.URL.Path, "/sessions/media/") {
+		// Media elements cannot attach the API bearer/device headers. The
+		// surface-bound broker authenticates the URL grant, viewer and current
+		// policy on every read, including playlists, segments and subtitles.
+		i.serveMedia(w, r.WithContext(i.identityContext(r)))
+		return
+	}
+	if !strings.HasPrefix(r.URL.Path, "/vela/v0/") {
+		webclient.ServeVela(w, r, i.assets)
+		return
+	}
+	r = r.WithContext(i.identityContext(r))
+	// Authentication/idempotency can fail before ServeMux dispatches. Record
+	// only its registered route template for those warnings too.
+	_, r.Pattern = i.mux.Handler(r)
+	if r.Method != "POST" && r.Method != "DELETE" {
+		i.mux.ServeHTTP(w, r)
+		return
+	}
+	// A bounded read, followed by per-key serialization, makes refresh rotation
+	// and playback admission safe to retry. No worker or allocation exists at idle.
+	var raw json.RawMessage
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&raw) != nil {
+		problem(w, 400, "request", "invalid_json")
+		return
+	}
+	var envelope struct {
+		IdempotencyKey string `json:"idempotencyKey"`
+		Device         device `json:"device"`
+		Client         struct {
+			Device device `json:"device"`
+		} `json:"client"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.IdempotencyKey == "" || len(envelope.IdempotencyKey) > 256 {
+		problem(w, 400, "request", "idempotency_key_required")
+		return
+	}
+	public := strings.HasPrefix(r.URL.Path, "/vela/v0/auth/") && !strings.HasSuffix(r.URL.Path, "/approve") && !strings.HasSuffix(r.URL.Path, "/revoke") && r.URL.Path != "/vela/v0/auth/web-code"
+	public = public || r.URL.Path == "/vela/v0/negotiate"
+	scope := ""
+	if !public {
+		_, token, err := i.viewer(r)
+		if err == nil {
+			scope, err = i.grantScope(r.Context(), token, requestDevice(r))
+		}
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+	} else {
+		d := envelope.Device
+		if d.ID == "" {
+			d = envelope.Client.Device
+		}
+		if d.ID == "" {
+			problem(w, 400, "request", "device_required")
+			return
+		}
+		scope = d.ID
+	}
+	key := hash(scope + "\x00" + r.Method + "\x00" + r.URL.Path + "\x00" + envelope.IdempotencyKey)
+	digest := hash(string(raw))
+	i.replayMu.Lock()
+	if old := i.replays[key]; old != nil {
+		i.replayMu.Unlock()
+		if old.digest != digest {
+			problem(w, 409, "conflict", "idempotency_conflict")
+			return
+		}
+		select {
+		case <-old.done:
+		case <-r.Context().Done():
+			return
+		case <-i.ctx.Done():
+			return
+		}
+		for k, v := range old.header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(old.status)
+		_, _ = w.Write(old.body)
+		return
+	}
+	if len(i.replays) >= 10000 {
+		i.replayMu.Unlock()
+		problem(w, 503, "capacity", "idempotency_capacity")
+		return
+	}
+	entry := &replay{digest: digest, done: make(chan struct{}), expires: time.Now().Add(24 * time.Hour)}
+	i.replays[key] = entry
+	i.replayMu.Unlock()
+	r.Body = http.NoBody
+	r = r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw))
+	persisted, conflict, claimErr := i.claim(r.Context(), key, digest)
+	out := httptest.NewRecorder()
+	if claimErr != nil {
+		if errors.Is(claimErr, errPending) {
+			problem(out, 409, "conflict", "mutation_outcome_unknown")
+		} else {
+			fail(out, claimErr, r)
+		}
+	} else if conflict {
+		problem(out, 409, "conflict", "idempotency_conflict")
+	} else if persisted != nil {
+		for k, v := range persisted.Header {
+			out.Header()[k] = v
+		}
+		out.WriteHeader(persisted.Status)
+		_, _ = out.Write(persisted.Body)
+	} else {
+		i.mux.ServeHTTP(out, r)
+		var saveErr error
+		if out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback" {
+			_, saveErr = i.db.ExecContext(r.Context(), `DELETE FROM vela_replays WHERE key=? AND response IS NULL`, key)
+		} else {
+			saveErr = i.save(r.Context(), key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()})
+		}
+		if saveErr != nil {
+			out = httptest.NewRecorder()
+			problem(out, 503, "transient", "mutation_outcome_unknown")
+		}
+	}
+
+	entry.status = out.Code
+	entry.header = out.Header().Clone()
+	entry.body = append([]byte(nil), out.Body.Bytes()...)
+	close(entry.done)
+	i.replayMu.Lock()
+	delete(i.replays, key)
+	i.replayMu.Unlock()
+	for k, v := range entry.header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(entry.status)
+	_, _ = w.Write(entry.body)
+}
+
+type bodyKey struct{}
+
+func body(r *http.Request, v any) error {
+	b, _ := r.Context().Value(bodyKey{}).(json.RawMessage)
+	return json.Unmarshal(b, v)
+}
+func (i *instance) route(method, path string, h http.HandlerFunc) {
+	i.mux.HandleFunc(method+" /vela/v0"+path, h)
+}
+func (i *instance) routes() {
+	i.route("GET", "/appearance", i.appearance)
+	i.route("GET", "/events", i.appearanceEvents)
+	i.route("GET", "/libraries", i.libraries)
+	i.route("GET", "/libraries/{id}/items", i.libraryItems)
+	i.route("GET", "/capabilities", func(w http.ResponseWriter, r *http.Request) { cache(w, r, i.requestCapabilities(r)) })
+	i.route("POST", "/negotiate", i.negotiate)
+	for _, p := range []string{"sign-in", "refresh", "revoke", "web-code", "web-code/redeem", "device", "device/poll", "device/approve", "quick-connect", "quick-connect/poll", "quick-connect/approve"} {
+		i.route("POST", "/auth/"+p, i.auth)
+	}
+	i.route("GET", "/bootstrap", i.bootstrap)
+	i.route("GET", "/rows", i.rows)
+	i.route("GET", "/rows/{id}", i.rows)
+	i.route("GET", "/themes/{secret}/theme.m4a", i.theme)
+	i.route("HEAD", "/themes/{secret}/theme.m4a", i.theme)
+	i.route("GET", "/titles/{id}", i.detail)
+	i.route("GET", "/titles/{id}/children", i.children)
+	i.route("GET", "/titles/{id}/extras", i.detail)
+	i.route("POST", "/search", i.search)
+	i.route("POST", "/search/ai", i.startAISearch)
+	i.route("GET", "/search/ai/{id}", i.pollAISearch)
+	i.route("POST", "/search/ai/{id}/cancel", i.cancelAISearch)
+	i.route("GET", "/images/{secret}", i.image)
+	i.route("POST", "/interactions", i.interactions)
+	i.route("POST", "/playback", i.playback)
+	i.route("POST", "/titles/{id}/trailer-preview", i.trailerPreview)
+	i.route("GET", "/titles/{id}/trailer-preview", i.trailerPreviewStatus)
+	i.route("POST", "/sessions/{id}/audio-fallback", i.audioFallback)
+	i.route("DELETE", "/sessions/{id}/audio-fallback/{audioId}", i.audioFallback)
+	i.route("GET", "/sessions/{id}", i.snapshot)
+	i.route("GET", "/sessions/{id}/events", i.events)
+	i.route("POST", "/sessions/{id}/commands", i.command)
+	i.route("POST", "/sessions/{id}/observations", i.observe)
+	i.route("GET", "/live/channels", i.channels)
+	i.route("GET", "/live/guide", i.guide)
+	i.route("POST", "/titles/{id}/watch", i.watch)
+	i.mux.HandleFunc("/vela/v0/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not-found", "not_found") })
+}
+func (*instance) unavailable(w http.ResponseWriter, r *http.Request) {
+	problem(w, 403, "policy", "feature_unavailable")
+}
+func (i *instance) capabilities() object {
+	f := func(v bool) object { return object{"available": v} }
+	s := i.host.ServerIdentity
+	descriptive := false
+	if source, ok := i.host.Experience.(frontend.DescriptiveSearcher); ok {
+		descriptive = source.DescriptiveSearchAvailable() && i.aiSearchAvailable()
+	}
+	_, live := i.host.LiveTV.(frontend.LiveGuidePager)
+	_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
+	auth := frontend.AuthenticationFeatures{}
+	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
+		auth = source.AuthenticationFeatures()
+	}
+	return object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.2.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable())}, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+}
+func (i *instance) negotiate(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Client client `json:"client"`
+	}
+	if body(r, &b) != nil {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	for _, v := range b.Client.ProtocolVersions {
+		if v == 0 {
+			if !compatibleBuild(b.Client.Device.AppVersion) {
+				problem(w, 400, "request", "unsupported_client_build")
+				return
+			}
+			i.rememberNegotiatedClient(r, b.Client)
+			send(w, 200, object{"capabilities": i.requestCapabilities(r), "client": b.Client})
+			return
+		}
+	}
+	problem(w, 400, "request", "unsupported_version")
+}
+
+func (i *instance) grantScope(ctx context.Context, token string, device frontend.Device) (string, error) {
+	service, ok := i.host.Identity.(frontend.GrantScopes)
+	if !ok {
+		return "", frontend.ErrIdentityUnavailable
+	}
+	return service.GrantScope(ctx, token, device)
+}
+
+func (i *instance) requestCapabilities(r *http.Request) object {
+	c := i.capabilities()
+	if i.host.SecureOrigins != nil {
+		if origins := i.host.SecureOrigins(r.Context(), r); len(origins) > 0 {
+			c["secureOrigins"] = origins
+		}
+	}
+	return c
+}
+
+// Check the refresh family on every media request, rather than waiting for the
+// event subscription's expiry ticker. The broker still validates the URL grant
+// and current title/source policy before accessing the shared byte engine.
+func (i *instance) serveMedia(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/sessions/media/")
+	id, _, ok := strings.Cut(rest, "/")
+	i.mu.Lock()
+	s := i.sessions[id]
+	i.mu.Unlock()
+	scopes, has := i.host.Identity.(frontend.GrantScopes)
+	if !ok || s == nil || !has {
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.Lock()
+	ended := !s.ended.IsZero() || (!s.previewExpires.IsZero() && !s.previewExpires.After(time.Now()))
+	scope, deviceID := s.scope, s.device
+	s.mu.Unlock()
+	if ended {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := scopes.GrantScopeCurrent(r.Context(), scope, frontend.Device{ID: deviceID}); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	i.serveObservedMedia(w, r)
+}

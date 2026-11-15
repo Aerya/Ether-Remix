@@ -140,6 +140,10 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, element string, width int) {
+	if r.URL.Query().Has("ranked") {
+		s.serveRankedArtwork(w, r, key, width)
+		return
+	}
 	if reader, ok := s.getHost().Artwork.(frontend.OwnerArtworkReader); ok {
 		kind := ""
 		switch element {
@@ -438,10 +442,18 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				writeHTTPError(w, http.StatusNotFound)
 				return
 			}
-			if collection := u.Query().Get("collection"); collection != "" {
+			// The inner URL carries the variant (collection scope, Top 10 rank
+			// and shape). Clients such as Plex for Apple TV fetch every poster
+			// through this transcoder, so the variant must survive the hop.
+			inner := u.Query()
+			if inner.Has("collection") || inner.Has("ranked") {
 				r = r.Clone(r.Context())
 				q := r.URL.Query()
-				q.Set("collection", collection)
+				for _, name := range []string{"collection", "ranked", "rankshape", "rv"} {
+					if v := inner.Get(name); v != "" {
+						q.Set(name, v)
+					}
+				}
 				r.URL.RawQuery = q.Encode()
 			}
 			s.serveItemImage(w, r, key, m[2], width)

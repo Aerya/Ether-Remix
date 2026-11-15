@@ -50,5 +50,13 @@ func (s *Service) stabilityPreset(c Channel) string {
 
 // stabilityReserve is the reserve the channel's preset aims for.
 func (s *Service) stabilityReserve(c Channel) time.Duration {
-	return stabilityReserves[s.stabilityPreset(c)]
+	reserve := stabilityReserves[s.stabilityPreset(c)]
+	switch s.latencyPolicy().LatencyProfile {
+	case "low":
+		return 0
+	case "stable":
+		return max(reserve, 30*time.Second)
+	default:
+		return reserve
+	}
 }

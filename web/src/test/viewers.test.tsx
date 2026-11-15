@@ -64,7 +64,9 @@ describe("Viewers", () => {
     // The kids' rating cap shows in the limits summary.
     expect(await screen.findByText("Up to PG/TV-PG/TV-Y7", {}, WAIT)).toBeInTheDocument();
     fireEvent.click(row);
-    expect(await screen.findByRole("heading", { name: /Sam Rivera/ }, WAIT)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: /Sam Rivera/ }, { timeout: 10000 }),
+    ).toBeInTheDocument();
     // Overview is the landing tab now.
     expect(await screen.findByText("Recent activity", {}, WAIT)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Taste" }));
@@ -191,11 +193,12 @@ describe("Viewers", () => {
     });
     fireEvent.click(screen.getByLabelText("Local network only"));
     fireEvent.change(screen.getByLabelText("Streams at once"), { target: { value: "2" } });
-    fireEvent.click(
-      within(screen.getByRole("group", { name: "Allowed hours" })).getByRole("button", {
-        name: "20:00",
-      }),
-    );
+    expect(screen.getByLabelText("Bedtime")).toBeChecked();
+    fireEvent.change(screen.getByLabelText("Bedtime starts"), { target: { value: "21:30" } });
+    fireEvent.change(screen.getByLabelText("Wake time"), { target: { value: "07:15" } });
+    const days = within(screen.getByRole("group", { name: "Days" }));
+    fireEvent.click(days.getByRole("button", { name: "Monday" }));
+    fireEvent.click(days.getByRole("button", { name: "Tuesday" }));
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
     await waitFor(() => expect(calls(fake, "PUT", "/safety/policies/3")).toHaveLength(1), WAIT);
     const saved = calls(fake, "PUT", "/safety/policies/3")[0]!.body as Record<string, unknown>;
@@ -203,7 +206,8 @@ describe("Viewers", () => {
       blockedGenres: ["Horror", "Thriller"],
       blockedKeywords: ["pornography", "erotic movie"],
       remoteDisabled: true,
-      allowedHours: [20],
+      allowedHours: [],
+      bedtime: { time: "21:30", wakeTime: "07:15", days: [1, 2], timezone: "" },
     });
     expect(saved).not.toHaveProperty("maxContentRating");
     expect(saved).not.toHaveProperty("streamLimit");

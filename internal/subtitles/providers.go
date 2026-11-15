@@ -18,11 +18,14 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/langtag"
 )
 
+type videoHashKey struct {
+	key     core.RatingKey
+	release string
+}
+
 type videoHashEntry struct {
-	release   string
 	movieHash string
 	videoSize int64
 }
@@ -37,10 +40,12 @@ func (s *Service) RememberVideoHash(key core.RatingKey, releaseName, movieHash s
 	}
 	s.mu.Lock()
 	if s.videoHashes == nil {
-		s.videoHashes = map[core.RatingKey]videoHashEntry{}
+		s.videoHashes = map[videoHashKey]videoHashEntry{}
 	}
-	s.videoHashes[key] = videoHashEntry{
-		release:   releaseName,
+	if len(s.videoHashes) >= 4096 {
+		clear(s.videoHashes)
+	}
+	s.videoHashes[videoHashKey{key, strings.ToLower(releaseName)}] = videoHashEntry{
 		movieHash: strings.ToLower(movieHash),
 		videoSize: videoSize,
 	}
@@ -53,11 +58,8 @@ func (s *Service) lookupVideoHash(title *core.Title, releaseName string) (string
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.videoHashes[title.Key]
+	e, ok := s.videoHashes[videoHashKey{title.Key, strings.ToLower(releaseName)}]
 	if !ok {
-		return "", 0
-	}
-	if releaseName != "" && e.release != "" && !strings.EqualFold(releaseName, e.release) {
 		return "", 0
 	}
 	return e.movieHash, e.videoSize
@@ -141,7 +143,7 @@ func (s *Service) searchProviders(ctx context.Context, title *core.Title, lang, 
 			if !s.openSubtitlesEnabled() {
 				continue
 			}
-			cands, err = s.SearchWithHash(ctx, title, lang, releaseName, movieHash)
+			cands, err = s.searchWithHashAndSize(ctx, title, lang, releaseName, movieHash, videoSize)
 			for j := range cands {
 				if cands[j].Provider == "" {
 					cands[j].Provider = "OpenSubtitles"
@@ -152,7 +154,7 @@ func (s *Service) searchProviders(ctx context.Context, title *core.Title, lang, 
 			if !s.subdlEnabled() {
 				continue
 			}
-			cands, err = s.searchSubDL(ctx, title, lang)
+			cands, err = s.searchSubDL(ctx, title, lang, releaseName)
 		default:
 			pluginID := strings.TrimSuffix(strings.TrimPrefix(p.Kind, "plugin:"), "/subtitles")
 			s.mu.Lock()
@@ -161,7 +163,7 @@ func (s *Service) searchProviders(ctx context.Context, title *core.Title, lang, 
 			if !strings.HasPrefix(p.Kind, "plugin:") || provider == nil {
 				continue
 			}
-			cands, err = provider.Search(ctx, title, lang, movieHash, videoSize)
+			cands, err = searchPluginLanguages(ctx, provider, title, lang, movieHash, videoSize)
 		}
 		if err != nil {
 			if firstErr == nil {
@@ -196,7 +198,7 @@ func (s *Service) searchProviders(ctx context.Context, title *core.Title, lang, 
 		if configured {
 			continue
 		}
-		cands, err := p.Search(ctx, title, lang, movieHash, videoSize)
+		cands, err := searchPluginLanguages(ctx, p, title, lang, movieHash, videoSize)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -211,17 +213,28 @@ func (s *Service) searchProviders(ctx context.Context, title *core.Title, lang, 
 	if len(all) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
+	filtered := all[:0]
+	seen := map[offerKey]bool{}
+	for _, c := range all {
+		k := offerKey{title.Key, c.FileID}
+		if matchesSearchLanguages(lang, c.Language) && !seen[k] {
+			filtered = append(filtered, c)
+			seen[k] = true
+		}
+	}
+	all = filtered
 	Rank(all, releaseName)
 	sort.SliceStable(all, func(i, j int) bool {
-		if lang != "" {
-			ti := langtag.MatchTier(lang, all[i].Language)
-			tj := langtag.MatchTier(lang, all[j].Language)
-			if ti != tj {
-				return ti > tj
-			}
-		}
 		if all[i].HashMatch != all[j].HashMatch {
 			return all[i].HashMatch
+		}
+		ri, rj := releaseMatch(releaseName, all[i]), releaseMatch(releaseName, all[j])
+		if ri != rj {
+			return ri > rj
+		}
+		li, lj := languagePreference(lang, all[i].Language), languagePreference(lang, all[j].Language)
+		if li != lj {
+			return li < lj
 		}
 		if all[i].Score != all[j].Score {
 			return all[i].Score > all[j].Score
@@ -232,4 +245,108 @@ func (s *Service) searchProviders(ctx context.Context, title *core.Title, lang, 
 		return all[i].FileID < all[j].FileID
 	})
 	return all, nil
+}
+
+// The plugin contract accepts one language; keep that contract and apply the
+// same final filter even if a provider ignores the requested language.
+func searchPluginLanguages(ctx context.Context, p PluginProvider, title *core.Title, langs, hash string, size int64) ([]Candidate, error) {
+	var out []Candidate
+	var firstErr error
+	seen := map[string]bool{}
+	for _, l := range searchLanguages(langs) {
+		query := l
+		if query == "nb" {
+			query = "no"
+		}
+		if seen[query] {
+			continue
+		}
+		seen[query] = true
+		cands, err := p.Search(ctx, title, query, hash, size)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		out = append(out, cands...)
+	}
+	if len(out) == 0 {
+		return nil, firstErr
+	}
+	return out, nil
+}
+
+// Exact and strong token matches outrank popularity and language preference.
+func releaseMatch(wanted string, c Candidate) int {
+	if wanted == "" {
+		return 0
+	}
+	names := append([]string{c.Release, c.FileName}, c.Releases...)
+	want := tokens(wanted)
+	best := 0
+	for _, name := range names {
+		clean := func(s string) string {
+			s = strings.ToLower(strings.TrimSpace(s))
+			for _, ext := range []string{".mkv", ".mp4", ".avi", ".srt", ".zip"} {
+				s = strings.TrimSuffix(s, ext)
+			}
+			return s
+		}
+		if clean(name) == clean(wanted) {
+			return 2
+		}
+		have := tokens(name)
+		hit := 0
+		for token := range want {
+			if have[token] {
+				hit++
+			}
+		}
+		if len(want) >= 3 && len(have) >= 3 && hit*100 >= 70*len(want) && hit*100 >= 70*len(have) {
+			best = 1
+		}
+	}
+	return best
+}
+
+func languagePreference(langs, actual string) int {
+	for i, l := range searchLanguages(langs) {
+		if matchesSearchLanguages(l, actual) {
+			return i
+		}
+	}
+	return len(searchLanguages(langs))
+}
+
+// CachedVideoHash checks the exact title/version cache without reading media.
+func (s *Service) CachedVideoHash(title *core.Title, release string) (string, int64) {
+	return s.lookupVideoHash(title, release)
+}
+
+// SearchNeedsHash avoids reading media when only title/name providers are in use.
+func (s *Service) SearchNeedsHash() bool {
+	for _, p := range s.providerList() {
+		if p.Kind == config.SubtitleProviderOpenSubtitles && s.openSubtitlesEnabled() {
+			return true
+		}
+		if strings.HasPrefix(p.Kind, "plugin:") {
+			return true
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.pluginProviders {
+		configured := false
+		for _, p := range s.providers {
+			if p.Kind == "plugin:"+id+"/subtitles" {
+				configured = true
+				break
+			}
+		}
+		if !configured {
+			return true
+		}
+	}
+	return false
 }

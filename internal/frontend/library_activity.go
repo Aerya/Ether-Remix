@@ -52,3 +52,9 @@ type LibraryActivity interface {
 type LibraryActivityGrouping interface {
 	LatestAddedGrouped(context.Context, *Viewer, Device, string, int, bool) ([]LatestItem, error)
 }
+
+// NextUpActivity selects a viewer's continuation episodes without generating
+// home recommendations, layout, receipts, playlists or live-TV shelves.
+type NextUpActivity interface {
+	NextUp(context.Context, *Viewer, Device, int) ([]Title, error)
+}

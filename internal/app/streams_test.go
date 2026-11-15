@@ -58,6 +58,10 @@ func TestPlexSubtitlesUsesStreamPreferenceLanguages(t *testing.T) {
 		!offers[0].PerfectMatch || offers[0].Title != "Night.of.the.Living.Dead.1968.1080p" {
 		t.Fatalf("search: %+v %v", offers, err)
 	}
+	offers, err = p.SearchSubtitles(ctx, title, viewer, "", "Night.of.the.Living.Dead.1968.1080p")
+	if err != nil || len(offers) != 1 || offers[0].Language != "fr" {
+		t.Fatalf("inherited search: %+v %v", offers, err)
+	}
 	st, err := p.DownloadSubtitle(ctx, title, viewer, 7)
 	if err != nil || st.Language != "fr" {
 		t.Fatalf("pick: %+v %v", st, err)

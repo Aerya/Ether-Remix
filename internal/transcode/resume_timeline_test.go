@@ -27,6 +27,7 @@ func TestRecoveryRebuildsAuthoredTimeline(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%d-%s", container, ramp.count, ramp.duration), func(t *testing.T) {
 				m := newTestManager(t, newFakeRunner(), cfg, WithoutHWDetection())
 				req := transcodeRequest(t, "initial")
+				req.MediaGeneration = randomHex(16)
 				req.Decision.Container = container
 				req.Decision.AudioCopy = true
 				req.Info.Duration = 29 * time.Second

@@ -94,6 +94,7 @@ type Volume struct {
 
 // Member is one inner file mapped onto volume byte ranges.
 type Member struct {
+	data7z     *data7zPlan
 	Name       string
 	Size       int64 // unpacked size
 	Stored     bool

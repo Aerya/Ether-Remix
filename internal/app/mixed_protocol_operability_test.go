@@ -209,6 +209,7 @@ func TestMixedProtocolOperability(t *testing.T) {
 			"emby":     {Enabled: true, Settings: map[string]any{"port": float64(18097), "discovery": false}},
 			"silo":     {Enabled: true, Settings: map[string]any{"port": float64(18090), "discovery": false}},
 			"stremio":  {Enabled: true},
+			"vela":     {Enabled: true},
 			"webdav":   {Enabled: true},
 			"m3u":      {Enabled: true},
 			"xtream":   {Enabled: true},

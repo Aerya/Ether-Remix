@@ -41,6 +41,12 @@ func (b *Broker) mintEncoderInput(ctx context.Context, playID string) (core.Enco
 }
 
 func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id string, req frontend.StreamRequest) (string, error) {
+	if (req.AudioStream != nil || req.SubtitleStream != nil) && req.Format != frontend.StreamHLS && req.Format != frontend.StreamDASH {
+		return "", core.ErrNotAvailable
+	}
+	if req.PrepareOnly && (a.Protocol != "vela" || req.Format != frontend.StreamHLS) {
+		return "", core.ErrNotAvailable
+	}
 	if req.Position < 0 || req.SegmentDuration < 0 {
 		return "", core.ErrNotAvailable
 	}
@@ -76,6 +82,9 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		return "", core.ErrUnauthorized
 	}
 	if s.restored {
+		if req.AudioStream != nil || req.SubtitleStream != nil {
+			return "", core.ErrNotAvailable
+		}
 		if req.Format != s.format || req.Position != s.streamPosition || req.SegmentDuration != s.segmentDuration {
 			return "", core.ErrNotAvailable
 		}
@@ -105,6 +114,9 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 	path := "/sessions/media/" + s.public.ID + "/" + s.grant + "/"
 	if s.live {
+		if req.AudioStream != nil || req.SubtitleStream != nil {
+			return "", core.ErrNotAvailable
+		}
 		if req.Format != frontend.StreamHLS {
 			return "", core.ErrNotAvailable
 		}
@@ -151,8 +163,16 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if b.deps.Transcoder == nil {
 		return "", core.ErrNotAvailable
 	}
-	if s.format == req.Format && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
+	tracksChanged := req.AudioStream != nil || req.SubtitleStream != nil
+	if !tracksChanged && (s.format == req.Format || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect)) && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
 		if hs, ok := b.transcodeSession(id); ok && hs != nil {
+			if !req.PrepareOnly && s.format != req.Format {
+				b.mu.Lock()
+				if live := b.sessions[id]; live != nil {
+					live.format = req.Format
+				}
+				b.mu.Unlock()
+			}
 			if entry, ok := b.bindings.Get(id); ok && entry.Started {
 				b.recordPlaybackDecision(s.playID, entry.Decision)
 			}
@@ -171,7 +191,39 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if !ok || ps == nil {
 		return "", core.ErrNotAvailable
 	}
+
 	dec := s.decision
+	if tracksChanged || dec.Reason == "original_runtime" {
+		options := s.opts
+		if req.AudioStream != nil {
+			if !validObservedTrack(ps.Info, "audio", *req.AudioStream) {
+				return "", core.ErrNotAvailable
+			}
+			options.AudioStream = *req.AudioStream
+		}
+		if req.SubtitleStream != nil {
+			if !validObservedTrack(ps.Info, "subtitle", *req.SubtitleStream) {
+				return "", core.ErrNotAvailable
+			}
+			options.SubtitleStream = *req.SubtitleStream
+			if req.BurnImageSubtitles {
+				for _, st := range ps.Info.Streams {
+					if st.Type == "subtitle" && st.Index == *req.SubtitleStream && transcode.IsImageSubtitle(st.Codec) {
+						options.BurnSubtitles = true
+					}
+				}
+			}
+		}
+		// Track restarts must package the selected source tracks, never silently
+		// return the original file's default audio selection.
+		options.DirectPlay = false
+		d, e := b.decideProfile(ps, frontend.PlanRequest{Viewer: viewer, Device: s.public.Device, Protocol: s.public.Protocol, Item: s.public.Item, Caps: s.caps, Intent: frontend.PlayIntent{Options: options, AllowTranscoding: s.allowTranscoding}})
+		if e != nil {
+			return "", e
+		}
+		dec = d
+		s.opts = options
+	}
 	proto := core.ProtocolHLS
 	if req.Format == frontend.StreamDASH {
 		proto = core.ProtocolDASH
@@ -191,27 +243,47 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		var allowed bool
 		dec, allowed = b.hlsOutputDecision(ps, s.caps, s.opts, s.allowTranscoding, dec)
 		if !allowed {
-			return "", core.ErrNotAvailable
+			return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 		}
 	}
 	if s.allowTranscoding != nil && !*s.allowTranscoding && decisionEncodes(dec, ps.Info) {
-		return "", core.ErrNotAvailable
+		return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 	}
 	if !profileDeliveryAllowed(s.caps.Profiles, dec, ps.Info, string(req.Format)) {
-		return "", core.ErrNotAvailable
+		return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 	}
 	if dec.Kind == core.DecisionRemux && !s.opts.DirectStream {
-		return "", core.ErrNotAvailable
+		return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 	}
-	b.transcodeStop(id)
-	request := core.HLSRequest{RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: req.Position, SegmentDuration: req.SegmentDuration, Protocol: proto}
+	request := core.HLSRequest{LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: req.Position, SegmentDuration: req.SegmentDuration, Protocol: proto}
+	if req.Continuous && s.public.Protocol == "vela" {
+		variants, _, e := b.qualityPlan(ctx, s, viewer)
+		if e != nil {
+			return "", e
+		}
+		request.QualityRungs = true
+		request.QualityVariants = make([]core.QualityVariant, 0, len(variants))
+		for _, variant := range variants {
+			request.QualityVariants = append(request.QualityVariants, variant)
+			request.QualityRungIDs = append(request.QualityRungIDs, variant.Rung.ID)
+		}
+	}
+	if req.Continuous {
+		// A continuous playback client declares its decoder set. Optional
+		// encoded rungs must also respect its session's transcoding policy.
+		request.LadderVideoCodecs = []string{}
+		if s.allowTranscoding == nil || *s.allowTranscoding {
+			request.LadderVideoCodecs = append(request.LadderVideoCodecs, s.caps.VideoCodecs...)
+		}
+	}
 	request.TextSubtitleStreams = progressiveTextTracks(string(s.public.Protocol), s.caps, ps.Info)
 	if len(request.TextSubtitleStreams) > 0 {
 		request.TextSubtitleSource = sourceRevision(ps)
 	}
+	b.transcodeStop(id)
 	var hs core.HLSSession
 	var lease core.EncoderInputLease
-	if remote := b.deps.DistributedHLS; remote != nil && len(request.TextSubtitleStreams) == 0 && remote.Supports(request) {
+	if remote := b.deps.DistributedHLS; remote != nil && !request.QualityRungs && len(request.TextSubtitleStreams) == 0 && remote.Supports(request) {
 		hs, err = remote.StartDistributedHLS(context.WithoutCancel(ctx), viewer.ID, s.playID, sourceRevision(ps), request)
 	} else {
 		if remote := b.deps.DistributedHLS; remote != nil && remote.Allocated(id) {
@@ -265,9 +337,15 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 	b.mu.Lock()
 	if live := b.sessions[id]; live != nil {
-		live.format = req.Format
+		if !req.PrepareOnly || live.format != frontend.StreamDirect {
+			live.format = req.Format
+		}
 		live.streamPosition = req.Position
 		live.segmentDuration = req.SegmentDuration
+		if tracksChanged {
+			live.opts = s.opts
+			live.decision = dec
+		}
 	}
 	b.mu.Unlock()
 	b.recordPlaybackDecision(s.playID, dec)
@@ -400,7 +478,7 @@ func sessionResource(sessionID, resource string) bool {
 }
 
 func (b *Broker) currentMediaPolicy(ctx context.Context, viewer *core.Viewer, s *brokerSession) bool {
-	confirmed, err := b.confirm(ctx, viewer, s.caps)
+	confirmed, err := b.confirmCurrent(ctx, viewer, s.caps)
 	if err != nil || confirmed.ID != s.public.ViewerID {
 		return false
 	}
@@ -424,6 +502,9 @@ func (b *Broker) serveMedia(protocol frontend.Protocol, access *frontend.Session
 // on its own authorized path. Empty base preserves the existing media URLs.
 func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.SessionAccess, w http.ResponseWriter, r *http.Request, liveBase string) {
 	mediasafety.SetHeaders(w)
+	if b.servePreview(protocol, access, w, r) {
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.NotFound(w, r)
 		return
@@ -525,6 +606,9 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		}
 	}
 	tail := parts[2:]
+	if serveAudioRendition(w, r, s, tail) {
+		return
+	}
 	if s.live && len(tail) >= 2 && tail[0] == "live" && b.deps.Live != nil {
 		if liveBase == "" {
 			liveBase = "/sessions/media/" + s.public.ID + "/" + s.grant + "/live/"
@@ -541,7 +625,12 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		b.serveSubtitle(w, r, s, tail[1])
 		return
 	}
-	if len(tail) == 1 && tail[0] == "file" && s.format == frontend.StreamDirect {
+	if len(tail) == 1 && tail[0] == "file" && (s.format == frontend.StreamDirect || (s.public.Protocol == "vela" && (s.opts.DirectPlay || s.opts.DirectStream))) {
+		if s.decision.Reason == "original_runtime" {
+			policy, _ := core.RangeResponseFrom(r.Context())
+			policy.StrictRanges = true
+			r = r.WithContext(core.WithRangeResponse(r.Context(), policy))
+		}
 		b.deps.Playback.ServeRange(w, r, s.playID)
 		return
 	}
@@ -555,7 +644,7 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		http.NotFound(w, r)
 		return
 	}
-	if s.format == frontend.StreamHLS {
+	if s.format == frontend.StreamHLS || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect) {
 		if len(tail) == 1 && tail[0] == "master.m3u8" {
 			b.serveMaster(w, r, s, hs)
 			return
@@ -725,4 +814,15 @@ func (b *Broker) logMasterFailure(r *http.Request, sessionID, reason string) {
 	if b.deps.Logger != nil && strings.HasSuffix(r.URL.Path, "/master.m3u8") {
 		b.deps.Logger.Warn("session master unavailable", "session", sessionID, "reason", reason)
 	}
+}
+
+func (b *Broker) StreamDecision(ctx context.Context, a frontend.SessionAccess, id string) (core.Decision, error) {
+	if _, _, err := b.access(ctx, a, id); err != nil {
+		return core.Decision{}, err
+	}
+	entry, ok := b.bindings.Get(id)
+	if !ok || !entry.Started {
+		return core.Decision{}, core.ErrNotAvailable
+	}
+	return entry.Decision, nil
 }

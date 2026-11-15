@@ -153,6 +153,8 @@ func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.C
 	// at least two segments turns bursts into a steady playlist, and the
 	// backlog primes the channel's stability reserve.
 	tl := newOwnedTimeline(ss.info.ID, log, nil, max(s.stabilityReserve(c), 2*cut), s.slateFor(c))
+	policy := s.latencyPolicy()
+	tl.windowSpan, tl.startBehind = policy.PlaylistWindow(), policy.TargetLatency()
 	output := liveRelayInfo(info, dec)
 	container := "ts"
 	if dec.Container == transcode.ContainerFMP4 {
@@ -178,7 +180,7 @@ func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.C
 func (s *Service) runRelay(ss *session, p *relayProducer) *ownedLease {
 	base := ss.ctx
 	if base == nil {
-		base = s.ctx
+		base = s.serviceContext()
 	}
 	runCtx, stop := context.WithCancel(base)
 	go p.tl.run(runCtx)
@@ -583,7 +585,7 @@ func (p *relayProducer) startHedge(ctx context.Context) {
 	p.mu.Unlock()
 	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	id, hls, hcancel, err := p.launch(sctx, info, next, relaySegment, false)
+	id, hls, hcancel, err := p.launch(sctx, info, next, p.s.latencyPolicy().SegmentDuration(), false)
 	if err != nil {
 		p.log.Warn("owned relay could not hedge a slow copy start", Diagnose("relay_hedge", err).LogAttrs()...)
 		return
@@ -627,7 +629,7 @@ func (p *relayProducer) adoptHedge(h *relayHedge) {
 	p.mu.Unlock()
 	p.noteRelayEscalation("keyframe", 0)
 	p.log.Warn("owned relay switching producer to re-encode", "reason", "the re-encode cut first")
-	if err := p.adopt(h.id, h.hls, h.cancel, info, h.dec, relaySegment); err != nil {
+	if err := p.adopt(h.id, h.hls, h.cancel, info, h.dec, p.s.latencyPolicy().SegmentDuration()); err != nil {
 		h.close()
 	}
 }
@@ -832,7 +834,7 @@ func (s *Service) segmentDamaged(data []byte) bool {
 	if ffmpeg == "" {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, 700*time.Millisecond)
+	ctx, cancel := context.WithTimeout(s.serviceContext(), 700*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-v", "error", "-threads", "1", "-f", "mpegts", "-i", "pipe:0", "-f", "null", "-")
 	cmd.Stdin = bytes.NewReader(data)
@@ -877,7 +879,7 @@ func (p *relayProducer) escalate(ctx context.Context, why string) {
 	p.log.Warn("owned relay switching producer to re-encode", "reason", why)
 	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	if err := p.start(sctx, info, next, relaySegment, false); err != nil {
+	if err := p.start(sctx, info, next, p.s.latencyPolicy().SegmentDuration(), false); err != nil {
 		p.log.Warn("owned relay re-encode producer failed", Diagnose("relay_escalate", err).LogAttrs()...)
 		p.recover(ctx, "re-encode start failed")
 	}
@@ -958,5 +960,5 @@ func (p *relayProducer) switchSource(ctx context.Context, ss *session, c Channel
 // reserve is still whole once that window is out. With no reserve (Fastest)
 // it is the plain live-edge grant.
 func (s *Service) grantDirectInput(ss *session, src StreamSource, headers http.Header) error {
-	return s.grantSteadyInputLead(ss, src, headers, 2*relaySegment)
+	return s.grantSteadyInputLead(ss, src, headers, s.latencyPolicy().TargetLatency())
 }

@@ -37,70 +37,72 @@ const (
 
 // Matroska element IDs (https://www.matroska.org/technical/elements.html).
 const (
-	mkvEBML         = 0x1a45dfa3
-	mkvDocType      = 0x4282
-	mkvSegment      = 0x18538067
-	mkvSeekHead     = 0x114d9b74
-	mkvSeek         = 0x4dbb
-	mkvSeekID       = 0x53ab
-	mkvSeekPosition = 0x53ac
-	mkvInfo         = 0x1549a966
-	mkvTimecodeScl  = 0x2ad7b1
-	mkvDuration     = 0x4489
-	mkvTracks       = 0x1654ae6b
-	mkvTrackEntry   = 0xae
-	mkvTrackNumber  = 0xd7
-	mkvTrackType    = 0x83
-	mkvFlagDefault  = 0x88
-	mkvFlagForced   = 0x55aa
-	mkvDefaultDur   = 0x23e383
-	mkvName         = 0x536e
-	mkvLanguage     = 0x22b59c
-	mkvLanguageBCP  = 0x22b59d
-	mkvCodecID      = 0x86
-	mkvCodecPrivate = 0x63a2
-	mkvCodecDelay   = 0x56aa
-	mkvVideo        = 0xe0
-	mkvPixelWidth   = 0xb0
-	mkvPixelHeight  = 0xba
-	mkvColour       = 0x55b0
-	mkvBitsPerChan  = 0x55b2
-	mkvTransfer     = 0x55ba
-	mkvPrimaries    = 0x55bb
-	mkvMatrix       = 0x55b1
-	mkvRange        = 0x55b9
-	mkvDisplayW     = 0x54b0
-	mkvDisplayH     = 0x54ba
-	mkvDisplayU     = 0x54b2
-	mkvAudio        = 0xe1
-	mkvSampling     = 0xb5
-	mkvOutSampling  = 0x78b5
-	mkvChannels     = 0x9f
-	mkvAudioDepth   = 0x6264
-	mkvAddMapping   = 0x41e4
-	mkvAddIDType    = 0x41e7
-	mkvAddIDExtra   = 0x41ed
-	mkvEncodings    = 0x6d80
-	mkvEncoding     = 0x6240
-	mkvEncScope     = 0x5032
-	mkvEncType      = 0x5033
-	mkvChapters     = 0x1043a770
-	mkvEdition      = 0x45b9
-	mkvChapterAtom  = 0xb6
-	mkvChapterUID   = 0x73c4
-	mkvChapterStart = 0x91
-	mkvChapterEnd   = 0x92
-	mkvChapDisplay  = 0x80
-	mkvChapString   = 0x85
-	mkvTags         = 0x1254c367
-	mkvTag          = 0x7373
-	mkvTargets      = 0x63c0
-	mkvTagTrackUID  = 0x63c5
-	mkvSimpleTag    = 0x67c8
-	mkvTagName      = 0x45a3
-	mkvTagString    = 0x4487
-	mkvTrackUID     = 0x73c5
-	mkvCluster      = 0x1f43b675
+	mkvEBML           = 0x1a45dfa3
+	mkvDocType        = 0x4282
+	mkvSegment        = 0x18538067
+	mkvSeekHead       = 0x114d9b74
+	mkvSeek           = 0x4dbb
+	mkvSeekID         = 0x53ab
+	mkvSeekPosition   = 0x53ac
+	mkvInfo           = 0x1549a966
+	mkvTimecodeScl    = 0x2ad7b1
+	mkvDuration       = 0x4489
+	mkvTracks         = 0x1654ae6b
+	mkvTrackEntry     = 0xae
+	mkvTrackNumber    = 0xd7
+	mkvTrackType      = 0x83
+	mkvFlagDefault    = 0x88
+	mkvFlagForced     = 0x55aa
+	mkvDefaultDur     = 0x23e383
+	mkvName           = 0x536e
+	mkvLanguage       = 0x22b59c
+	mkvLanguageBCP    = 0x22b59d
+	mkvCodecID        = 0x86
+	mkvCodecPrivate   = 0x63a2
+	mkvCodecDelay     = 0x56aa
+	mkvVideo          = 0xe0
+	mkvFlagInterlaced = 0x9a
+	mkvFieldOrder     = 0x9d
+	mkvPixelWidth     = 0xb0
+	mkvPixelHeight    = 0xba
+	mkvColour         = 0x55b0
+	mkvBitsPerChan    = 0x55b2
+	mkvTransfer       = 0x55ba
+	mkvPrimaries      = 0x55bb
+	mkvMatrix         = 0x55b1
+	mkvRange          = 0x55b9
+	mkvDisplayW       = 0x54b0
+	mkvDisplayH       = 0x54ba
+	mkvDisplayU       = 0x54b2
+	mkvAudio          = 0xe1
+	mkvSampling       = 0xb5
+	mkvOutSampling    = 0x78b5
+	mkvChannels       = 0x9f
+	mkvAudioDepth     = 0x6264
+	mkvAddMapping     = 0x41e4
+	mkvAddIDType      = 0x41e7
+	mkvAddIDExtra     = 0x41ed
+	mkvEncodings      = 0x6d80
+	mkvEncoding       = 0x6240
+	mkvEncScope       = 0x5032
+	mkvEncType        = 0x5033
+	mkvChapters       = 0x1043a770
+	mkvEdition        = 0x45b9
+	mkvChapterAtom    = 0xb6
+	mkvChapterUID     = 0x73c4
+	mkvChapterStart   = 0x91
+	mkvChapterEnd     = 0x92
+	mkvChapDisplay    = 0x80
+	mkvChapString     = 0x85
+	mkvTags           = 0x1254c367
+	mkvTag            = 0x7373
+	mkvTargets        = 0x63c0
+	mkvTagTrackUID    = 0x63c5
+	mkvSimpleTag      = 0x67c8
+	mkvTagName        = 0x45a3
+	mkvTagString      = 0x4487
+	mkvTrackUID       = 0x73c5
+	mkvCluster        = 0x1f43b675
 )
 
 type metadataReader interface {
@@ -283,6 +285,8 @@ type mkvTrack struct {
 	defaultDur  uint64
 	width       uint64
 	height      uint64
+	interlaced  uint64
+	fieldOrder  *uint64
 
 	transfer    int
 	primaries   int
@@ -333,6 +337,7 @@ func (s *nativeSource) matroska() (*core.MediaInfo, error) {
 	}
 
 	var info, tracks, chapters []byte
+	var clusterStart, clusterEnd int64
 	targets := map[uint64]int64{}
 	load := func(start, stop int64) ([]byte, error) {
 		if stop-start > nativeElementLimit {
@@ -349,6 +354,7 @@ func (s *nativeSource) matroska() (*core.MediaInfo, error) {
 			return nil, err
 		}
 		if id == mkvCluster {
+			clusterStart, clusterEnd = start, stop
 			break
 		}
 		switch id {
@@ -431,6 +437,28 @@ func (s *nativeSource) matroska() (*core.MediaInfo, error) {
 	index := 0
 	hasVideo := false
 	for _, t := range parsed {
+		complete := completeHEVCConfig(t.private)
+		if t.codecID == "V_MPEGH/ISO/HEVC" && !complete && !t.privScoped && !t.encrypted {
+			sets := hevcParameterNALs(t.private, 0)
+			if len(sets[33]) > 0 {
+				t.private = hevcProbeConfig(t.private, sets)
+			} else {
+				if clusterStart == 0 {
+					for off, n := segStart, 0; off < segEnd && n < 64; n++ {
+						id, start, stop, err := s.header(off, segEnd)
+						if err != nil || stop <= off {
+							break
+						}
+						if id == mkvCluster {
+							clusterStart, clusterEnd = start, stop
+							break
+						}
+						off = stop
+					}
+				}
+				t.private = s.firstHEVCParameters(clusterStart, clusterEnd, t.number, t.private)
+			}
+		}
 		si, accepted, err := t.stream(index)
 		if err != nil {
 			return nil, err
@@ -443,6 +471,7 @@ func (s *nativeSource) matroska() (*core.MediaInfo, error) {
 			continue // a demuxed data stream ffprobe would not map
 		}
 		if si.Type == "video" {
+			si.HEVCParameterSets = complete
 			hasVideo = true
 		}
 		if si.TimeBase == "" && scale > 0 && 1_000_000_000%scale == 0 {
@@ -969,6 +998,11 @@ func mkvTracksOf(b []byte) ([]mkvTrack, error) {
 				}
 				for _, v := range vs {
 					switch v.id {
+					case mkvFlagInterlaced:
+						t.interlaced = mkvUint(v.body)
+					case mkvFieldOrder:
+						order := mkvUint(v.body)
+						t.fieldOrder = &order
 					case mkvPixelWidth:
 						t.width = mkvUint(v.body)
 					case mkvPixelHeight:
@@ -1209,12 +1243,38 @@ func (t mkvTrack) video(si *core.StreamInfo) error {
 		dw, dh = int(t.displayW), int(t.displayH)
 	}
 	containerPicture(si, t.primaries, t.matrix, fullRange, dw, dh)
+	switch t.interlaced {
+	case 1:
+		setScanFact(si, true)
+		si.FieldOrder = "" // A container flag does not establish field ordering.
+		if t.fieldOrder != nil {
+			switch *t.fieldOrder {
+			case 1:
+				si.FieldOrder = "tt"
+			case 6:
+				si.FieldOrder = "bb"
+			case 9:
+				si.FieldOrder = "tb"
+			case 14:
+				si.FieldOrder = "bt"
+			}
+		}
+	case 2:
+		// A progressive container flag cannot negate explicit SPS
+		// interlace evidence (some HEVC muxers write conflicting flags).
+		if si.ProbedInterlaced == nil || !*si.ProbedInterlaced {
+			setScanFact(si, false)
+		}
+	}
 	return nil
 }
 
 // spsPicture records the sample aspect ratio and colour the SPS VUI
 // signals. A container's own values (mkvColour, colr, pasp) replace them.
 func spsPicture(si *core.StreamInfo, f spsFacts) {
+	if f.interlaced != nil {
+		setScanFact(si, *f.interlaced)
+	}
 	if f.sarNum > 0 && f.sarDen > 0 {
 		n, d := reduce(f.sarNum, f.sarDen)
 		si.SampleAspectRatio = fmt.Sprintf("%d:%d", n, d)
@@ -1302,6 +1362,7 @@ func videoConfig(si *core.StreamInfo, codec string, p []byte, transfer int, dovi
 			return incomplete("hevc SPS: %v", err)
 		}
 		si.MalformedHEVC = malformedHEVCConfig(p)
+		si.HEVCParameterSets = completeHEVCConfig(p)
 		si.BitDepth = f.bitDepth
 		si.PixelFormat = yuvPixFmt(f.chroma, f.bitDepth)
 		applyReferenceFrames(si, f)
@@ -1483,6 +1544,9 @@ func avcConfigSPS(c []byte) []byte {
 
 // hevcConfigSPS returns the first SPS NAL of an HEVCDecoderConfigurationRecord.
 func hevcConfigSPS(c []byte) []byte {
+	if len(c) < 23 || c[0] != 1 {
+		return nil
+	}
 	arrays := int(c[22])
 	b := c[23:]
 	for i := 0; i < arrays; i++ {
@@ -1519,11 +1583,11 @@ func (t mkvTrack) audio(si *core.StreamInfo) error {
 	case strings.HasPrefix(id, "A_AAC"):
 		si.Codec = "aac"
 		if len(t.private) >= 2 {
-			profile, sbrRate, channels, ok := aacConfig(t.private)
+			profile, sbrRate, channels, layout, ok := aacConfig(t.private)
 			if !ok {
 				return incomplete("bad AudioSpecificConfig")
 			}
-			si.Profile = profile
+			si.Profile, si.ChannelLayout = profile, layout
 			if sbrRate > 0 {
 				rate = float64(sbrRate)
 			}
@@ -1591,13 +1655,15 @@ func (t mkvTrack) audio(si *core.StreamInfo) error {
 		return incomplete("audio codec delay out of range")
 	}
 	si.DecodedPadding = int(padding)
-	si.ChannelLayout = defaultChannelLayout(si.Codec, si.Channels)
+	if si.ChannelLayout == "" {
+		si.ChannelLayout = defaultChannelLayout(si.Codec, si.Channels)
+	}
 	return nil
 }
 
 // aacConfig reads an AudioSpecificConfig: libavcodec's profile name, the
-// SBR output rate when explicitly signalled, and the channel configuration.
-func aacConfig(b []byte) (profile string, sbrRate, channels int, ok bool) {
+// SBR output rate when explicitly signalled, and the decoded channel count/layout.
+func aacConfig(b []byte) (profile string, sbrRate, channels int, layout string, ok bool) {
 	r := &bitReader{b: b}
 	rates := []int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
 	objectType := func() int {
@@ -1619,7 +1685,7 @@ func aacConfig(b []byte) (profile string, sbrRate, channels int, ok bool) {
 	}
 	aot := objectType()
 	rate()
-	channels = int(r.u(4))
+	channels, layout = aacChannelConfig(int(r.u(4)))
 	sbr, ps := false, false
 	if aot == 5 || aot == 29 {
 		sbr, ps = true, aot == 29
@@ -1644,24 +1710,56 @@ func aacConfig(b []byte) (profile string, sbrRate, channels int, ok bool) {
 		r.err = nil // extension parsing is optional
 	}
 	if r.err != nil || channels == 0 {
-		return "", 0, 0, false
+		return "", 0, 0, "", false
 	}
 	// libavcodec decodes mono SBR as stereo in case parametric stereo is
 	// present.
 	if sbr && channels == 1 {
-		channels = 2
+		channels, layout = 2, "stereo"
 	}
 	switch {
 	case ps:
-		return "HE-AACv2", sbrRate, channels, true
+		return "HE-AACv2", sbrRate, channels, layout, true
 	case sbr:
-		return "HE-AAC", sbrRate, channels, true
+		return "HE-AAC", sbrRate, channels, layout, true
 	}
 	names := map[int]string{1: "Main", 2: "LC", 3: "SSR", 4: "LTP", 23: "LD", 39: "ELD", 42: "xHE-AAC"}
 	if name, found := names[aot]; found {
-		return name, 0, channels, true
+		return name, 0, channels, layout, true
 	}
-	return "", 0, 0, false
+	return "", 0, 0, "", false
+}
+
+// aacChannelConfig maps ISO/IEC 14496-3 Table 1.19 configuration IDs to
+// channel counts and ffmpeg layout names. Zero requires a PCE; reserved IDs
+// and PCE-only layouts stay unknown so native probing can fall back.
+func aacChannelConfig(config int) (channels int, layout string) {
+	switch config {
+	case 1:
+		return 1, "mono"
+	case 2:
+		return 2, "stereo"
+	case 3:
+		return 3, "3.0"
+	case 4:
+		return 4, "4.0"
+	case 5:
+		return 5, "5.0"
+	case 6:
+		return 6, "5.1"
+	case 7:
+		return 8, "7.1(wide)"
+	case 11:
+		return 7, "6.1(back)"
+	case 12:
+		return 8, "7.1"
+	case 13:
+		return 24, "22.2"
+	case 14:
+		return 8, "5.1.2(back)"
+	default:
+		return 0, ""
+	}
 }
 
 // defaultChannelLayout is the layout name ffmpeg's decoders report for a
@@ -1856,4 +1954,14 @@ var iso6391to2 = map[string]string{
 	"ms": "may", "nb": "nob", "nl": "dut", "nn": "nno", "no": "nor", "pl": "pol", "pt": "por", "ro": "rum",
 	"ru": "rus", "sk": "slo", "sl": "slv", "sr": "srp", "sv": "swe", "ta": "tam", "te": "tel", "th": "tha",
 	"tr": "tur", "uk": "ukr", "vi": "vie", "zh": "chi",
+}
+
+// setScanFact records explicit scan evidence; interlacing alone cannot reveal
+// which field is coded or displayed first.
+func setScanFact(si *core.StreamInfo, interlaced bool) {
+	si.Interlaced = interlaced
+	si.ProbedInterlaced = &interlaced
+	if !interlaced {
+		si.FieldOrder = "progressive"
+	}
 }

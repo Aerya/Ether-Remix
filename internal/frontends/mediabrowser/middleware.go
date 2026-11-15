@@ -2,8 +2,12 @@ package mediabrowser
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
@@ -63,7 +67,34 @@ var anonymousStreamRoutes = map[route.Route]bool{
 	{Method: "HEAD", Pattern: "/Audio/{id}/{name}"}:  true,
 }
 
+// requestLog records only registered templates: concrete paths can contain
+// scoped media grants, and query strings and headers can contain account tokens.
+func (i *instance) requestLog(rt route.Route, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if i.host.Log == nil || !i.host.Log.Enabled(r.Context(), slog.LevelDebug) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		recorder := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		defer func() {
+			status := recorder.Status()
+			if status == 0 {
+				status = http.StatusOK
+			}
+			i.host.Log.DebugContext(r.Context(), "request", "frontend", i.protocol,
+				"method", safeHTTPMethod(r.Method), "route", rt.Pattern,
+				"status", status, "duration", time.Since(start))
+		}()
+		next.ServeHTTP(recorder, r)
+	})
+}
+
 func (i *instance) routeMiddleware(rt route.Route, next http.Handler) http.Handler {
+	return i.requestLog(rt, i.authenticatedRoute(rt, next))
+}
+
+func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Handler {
 	// Never sample hand-off request or response secrets in support recordings.
 	if rt.Pattern == "/Ether/WebSignIn" {
 		return next

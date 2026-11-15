@@ -28,6 +28,8 @@ type providerBroadcastPlanner struct {
 	runner                transcode.ContinuousRunner
 	mu                    sync.Mutex
 	lastAired             map[string]time.Duration
+	firstAired            bool
+	startupFailures       []TuneInputFailure
 
 	ladder     *steadyLadder
 	link       *steadyLink // granted input of the current source, reused by same-source reopens
@@ -43,12 +45,13 @@ type providerBroadcastPlanner struct {
 // steadyLink is one granted provider input: the relay grant (and with it the
 // shared tap) plus the provider-account connection it holds.
 type steadyLink struct {
-	src     StreamSource
-	ss      *session
-	release func()
-	format  string // probed container: "hls", "mpegts" or empty
-	uses    int
-	once    sync.Once
+	src           StreamSource
+	ss            *session
+	release       func()
+	format        string // probed container: "hls", "mpegts" or empty
+	uses          int
+	primedDecoder transcode.Decoder // admission already obtained its first picture
+	once          sync.Once
 }
 
 func (l *steadyLink) close(s *Service) {
@@ -56,6 +59,10 @@ func (l *steadyLink) close(s *Service) {
 		return
 	}
 	l.once.Do(func() {
+		if l.primedDecoder != nil {
+			_ = l.primedDecoder.Close()
+			l.primedDecoder = nil
+		}
 		s.revokeInput(l.ss)
 		l.ss.cancel()
 		if l.release != nil {
@@ -91,8 +98,9 @@ const (
 )
 
 var (
-	errSteadyFirstFrame = errors.New("live input produced no picture in time")
-	errSteadyStarved    = errors.New("live input stopped delivering pictures")
+	errSteadyFirstFrame  = errors.New("live input produced no picture in time")
+	errSteadyStarved     = errors.New("live input stopped delivering pictures")
+	errSteadyChangeStorm = errors.New("live input repeatedly changed without delivering pictures")
 )
 
 func (p *providerBroadcastPlanner) plans(now time.Time) (broadcastPlan, *broadcastPlan) {
@@ -127,26 +135,16 @@ func (p *providerBroadcastPlanner) plans(now time.Time) (broadcastPlan, *broadca
 // rest of a reserve the decoder starts behind the live edge stays on the
 // server, where it hides upstream stalls.
 //
-// A live output publishes two-second segments. Without a provider backlog a
-// client can only start one segment behind the first picture, and every
-// later segment must be no longer than that lag or it stalls; two seconds
-// keeps a cold raw-TS tune under five seconds without a stall. The clock
-// never stops publishing, so the 3 s (1.5x target) client limit holds.
+// The owner profile sets the segment target and desired published lead.
+// A cold source without backlog builds that lead opportunistically; neither
+// the first playlist nor the frame clock waits for the full cushion.
 func (p *providerBroadcastPlanner) coldWait() time.Duration { return 4 * time.Second }
 func (p *providerBroadcastPlanner) startupLead() time.Duration {
-	// A playlist input joined steadyStartLead deeper than its reserve, so the
-	// burst spends that backlog, not the reserve. A transport stream's reserve
-	// is only what its provider sent on connect, which no deeper join can
-	// extend: it spends one segment of it, and without a backlog the cushion
-	// builds in real time while the tune waits for it.
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.primed != nil && p.primed.format == "mpegts" {
-		return steadySegment
-	}
-	return 2 * steadySegment
+	return p.s.latencyPolicy().TargetLatency()
 }
-func (p *providerBroadcastPlanner) segmentDuration() time.Duration { return steadySegment }
+func (p *providerBroadcastPlanner) segmentDuration() time.Duration {
+	return p.s.latencyPolicy().SegmentDuration()
+}
 
 const steadySegment = 2 * time.Second
 
@@ -209,19 +207,25 @@ func (p *providerBroadcastPlanner) failed(err error) time.Time {
 	}
 	aired := a.decoder.delivered()
 	changed := errors.Is(err, transcode.ErrInputChanged)
+	if !p.firstAired && !changed {
+		p.noteStartupFailure(a.src.ID, err)
+	}
 	// A transport-stream tap already reconnected its URL itself before its
 	// readers saw the end, so the ladder skips straight to the next source.
 	tapped := a.link.format == "mpegts"
-	failover := false
+	failover := !p.firstAired && !changed
 	if h, ok := p.s.inputHealth(a.link.ss); ok {
 		tapped = h.Kind == "ts"
-		failover = h.Failed
+		failover = failover || h.Failed
 	}
-	failover = failover || tapped && steadyFailover(err)
+	failover = failover || tapped && steadyFailover(err) || errors.Is(err, errSteadyChangeStorm)
+	at := p.ladder.failed(a.src.ID, err, aired, failover, sourceIDs(candidates), now)
+	if p.ladder.state(a.src.ID).parked.After(now) && changed {
+		err, changed, failover = errSteadyChangeStorm, false, true
+	}
 	if !changed {
 		p.s.recordSourceHealth(p.channel.ID, a.src, err, false)
 	}
-	at := p.ladder.failed(a.src.ID, err, aired, failover, sourceIDs(candidates), now)
 	if failover && p.ladder.next == a.src.ID {
 		// The tap gave up on this source and its readers ended: what it
 		// buffered has aired. Rejoin at the live edge rather than re-decode it.
@@ -286,7 +290,7 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			}
 			p.link = sb.link
 			p.ladder.opened(id, now)
-			decoder := p.wrap(ctx, src, nil, sb.adopt(), 0)
+			decoder := p.wrap(ctx, src, sb.link, sb.adopt(), 0)
 			p.attempt = &steadyAttempt{src: src, link: sb.link, decoder: decoder}
 			p.mu.Unlock()
 			for _, l := range retired {
@@ -358,6 +362,11 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 }
 
 func (p *providerBroadcastPlanner) syncFailure(src StreamSource, err error, now time.Time) {
+	p.mu.Lock()
+	if !p.firstAired {
+		p.noteStartupFailure(src.ID, err)
+	}
+	p.mu.Unlock()
 	p.s.recordSourceHealth(p.channel.ID, src, err, false)
 	candidates := sourceIDs(p.s.orderedSourceCandidates(p.channel))
 	p.mu.Lock()
@@ -370,10 +379,13 @@ func (p *providerBroadcastPlanner) firstFrameDeadline(id string, backup bool) ti
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {
+	case !p.firstAired:
+		if backup {
+			return 2 * time.Second
+		}
+		return 4 * time.Second
 	case !backup:
 		return steadyFirstFrameAlone
-	case len(p.lastAired) == 0:
-		return steadyFirstFrameCold
 	case id == p.ladder.source:
 		return steadyFirstFrameRejoin
 	}
@@ -381,6 +393,11 @@ func (p *providerBroadcastPlanner) firstFrameDeadline(id string, backup bool) ti
 }
 
 func (p *providerBroadcastPlanner) startDecoder(ctx context.Context, link *steadyLink, liveEdge bool) (transcode.Decoder, error) {
+	if link.primedDecoder != nil {
+		d := link.primedDecoder
+		link.primedDecoder = nil
+		return d, nil
+	}
 	input, err := p.s.relayInput(link.ss)
 	if liveEdge {
 		input, err = p.s.relayInputLive(link.ss)
@@ -432,7 +449,7 @@ func (s *Service) linkSteadySource(ctx context.Context, c Channel, src StreamSou
 		release()
 		return nil, err
 	}
-	inputCtx, cancel := context.WithCancel(s.ctx)
+	inputCtx, cancel := context.WithCancel(s.serviceContext())
 	ss := &session{ctx: inputCtx, cancel: cancel, info: SessionInfo{ID: reservation, Channel: c}, inputSource: src, inputURL: resolved, inputHeaders: headers}
 	grant := src
 	grant.URL = resolved
@@ -516,6 +533,7 @@ type providerBroadcastDecoder struct {
 	cancel        context.CancelFunc
 	cur, cand     *decoderPump
 	lastCandidate time.Time
+	changeAired   int64 // aired ticks at the previous distinct change
 }
 
 func (d *providerBroadcastDecoder) Next(ctx context.Context) (transcode.RawFrame, error) {
@@ -571,10 +589,13 @@ func (d *providerBroadcastDecoder) next(ctx context.Context) (transcode.RawFrame
 }
 
 func (d *providerBroadcastDecoder) Aired(frame transcode.RawFrame) {
+	d.planner.mu.Lock()
+	d.planner.firstAired = true
+	d.planner.startupFailures = nil
 	if !frame.SourcePTSValid {
+		d.planner.mu.Unlock()
 		return
 	}
-	d.planner.mu.Lock()
 	if d.planner.lastAired == nil {
 		d.planner.lastAired = map[string]time.Duration{}
 	}
@@ -675,4 +696,52 @@ func (p *providerBroadcastPlanner) closePlanner() {
 	standby.close(p.s)
 	primed.close(p.s)
 	link.close(p.s)
+}
+
+// A reconnecting screen is useful after playback starts, but cannot make a
+// cold tune successful. Only an actual provider picture satisfies readiness.
+func (p *providerBroadcastPlanner) awaitFirstPicture(ctx context.Context) error {
+	candidates := len(p.s.orderedSourceCandidates(p.channel))
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		p.mu.Lock()
+		ready := p.firstAired
+		failures := append([]TuneInputFailure(nil), p.startupFailures...)
+		p.mu.Unlock()
+		if ready {
+			return nil
+		}
+		if ctx.Err() != nil || candidates > 0 && len(failures) >= candidates {
+			reason := ctx.Err()
+			if reason == nil {
+				reason = core.ErrNotAvailable
+			}
+			detail := *Diagnose("first_picture", reason)
+			if len(failures) > 0 && !errors.Is(reason, context.Canceled) {
+				last := failures[len(failures)-1]
+				detail.Code, detail.Stage, detail.UpstreamStatus = last.Code, last.Stage, last.UpstreamStatus
+			}
+			detail.Inputs = failures
+			return &detail
+		}
+		select {
+		case <-ctx.Done():
+		case <-tick.C:
+		}
+	}
+}
+
+// Caller holds mu. Retain one safe reason per input, only before any media airs.
+func (p *providerBroadcastPlanner) noteStartupFailure(id string, err error) {
+	failure := inputFailure(id, err)
+	for i := range p.startupFailures {
+		if p.startupFailures[i].Input == id {
+			p.startupFailures[i] = failure
+			return
+		}
+	}
+	if len(p.startupFailures) < MaxChannelInputs+1 {
+		p.startupFailures = append(p.startupFailures, failure)
+	}
 }

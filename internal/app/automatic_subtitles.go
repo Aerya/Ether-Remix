@@ -28,7 +28,11 @@ func (a *App) automaticSubtitleWork(ctx context.Context, b *sessions.Broker, sta
 	defer stop()
 	intents := sessions.NewSubtitleIntents(a.db)
 	intent, err := intents.Snapshot(ctx, start.Access.Viewer.ID, start.Item)
-	if err != nil || intent.Manual || start.ManualSubtitle {
+	if err != nil {
+		return
+	}
+	if intent.Manual || start.ManualSubtitle {
+		a.log.Info("automatic subtitle skipped", "viewer", start.Access.Viewer.ID, "key", start.Item, "protocol", start.Access.Protocol, "reason", "manual_selection")
 		return
 	}
 	current := func(ctx context.Context) (subtitles.AutomaticPlayback, error) {

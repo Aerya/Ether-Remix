@@ -205,7 +205,7 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) La base Ether, enrichie par Remix
 
 - **Nom affiché** : renommez un utilisateur dans la console pour les statistiques et l’activité, même avec un compte Plex. La connexion ne change pas.
-- Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs.
+- Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs. Les bibliothèques par sources de catalogue, les améliorations IPTV et le classement des releases d’Ether coexistent avec les filtres et sources Remix.
 - Images Docker pour **amd64 et arm64** et présentation des nouveautés dans la console.
 
 <a id="nav-demarrer"></a>

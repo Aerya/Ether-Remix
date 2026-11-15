@@ -59,6 +59,30 @@ func TestVirtualPathsRespectViewerPolicyAndDisambiguate(t *testing.T) {
 	if _, err = s.Path(context.Background(), &core.Viewer{ID: 8}, core.Device{}, first.Key); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("hidden item: %v", err)
 	}
+	// List enrichment must use only a current viewer-scoped index, with no
+	// catalogue reads on either a cold cache or a restriction change.
+	s.index = &pathIndex{}
+	s.stamp = func(v *core.Viewer) string {
+		if v.ID == viewer.ID {
+			return "allowed"
+		}
+		return "restricted"
+	}
+	s.experience = frontendtest.Experience{ViewsFunc: func(context.Context, *core.Viewer) ([]frontend.View, error) {
+		t.Fatal("cached lookup walked the library")
+		return nil, nil
+	}}
+	keys := []core.RatingKey{first.Key, second.Key}
+	if got, err := s.CachedPaths(context.Background(), viewer, core.Device{}, keys); err != nil || len(got) != 0 {
+		t.Fatalf("cold cache: %v %v", got, err)
+	}
+	s.index.stamp, s.index.paths = "allowed", map[core.RatingKey]string{first.Key: a, second.Key: b}
+	if got, err := s.CachedPaths(context.Background(), viewer, core.Device{}, keys); err != nil || got[first.Key] != a || got[second.Key] != b {
+		t.Fatalf("warm cache: %v %v", got, err)
+	}
+	if got, err := s.CachedPaths(context.Background(), &core.Viewer{ID: 8}, core.Device{}, keys); err != nil || len(got) != 0 {
+		t.Fatalf("restricted cache: %v %v", got, err)
+	}
 }
 
 func TestVirtualPathsBatchSharesLibraryScanAndOmitsHidden(t *testing.T) {

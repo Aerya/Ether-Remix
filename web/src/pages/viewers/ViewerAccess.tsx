@@ -1,6 +1,6 @@
 import { ViewerCatalogRules } from "./ViewerCatalogRules";
 import { Button, SearchSelect, SettingsSection, Switch, toast } from "@braedonsaunders/appkit-ui";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ChipGroup, NumberInput } from "../../components/fields";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -28,18 +28,24 @@ import { ViewerTrakt } from "./sections/ViewerTrakt";
 import { KID_PRESETS, ListText, normalizePolicy, type SafetyPolicy } from "./shared";
 import { librariesApi } from "../libraries/api";
 
-const HOURS = Array.from({ length: 24 }, (_, h) => ({
-  value: h,
-  label: `${String(h).padStart(2, "0")}:00`,
-}));
-
 /** A searchable IANA timezone picker; a stored zone the browser lacks stays listed. */
-function TimeZoneSelect({ value, onChange }: { value: string; onChange: (zone: string) => void }) {
-  const options = useMemo(() => {
+function TimeZoneSelect({
+  value,
+  onChange,
+  serverDefault = false,
+}: {
+  value: string;
+  onChange: (zone: string) => void;
+  serverDefault?: boolean;
+}) {
+  const options = (() => {
     const zones = timeZones();
     const list = value && !zones.includes(value) ? [value, ...zones] : zones;
-    return list.map((zone) => ({ value: zone, label: zone.replace(/_/g, " ") }));
-  }, [value]);
+    return [
+      ...(serverDefault ? [{ value: "", label: t("Server time zone") }] : []),
+      ...list.map((zone) => ({ value: zone, label: zone.replace(/_/g, " ") })),
+    ];
+  })();
   return (
     <SearchSelect
       value={value}
@@ -348,33 +354,120 @@ export function ViewerAccess({ viewer }: { viewer: Viewer }) {
             />
           </SettingsSection>
 
-          <SettingsSection
-            title={t("Allowed times")}
-            description={t(
-              "Hours when this viewer can start playback. Leave every hour clear to allow any time.",
-            )}
-          >
-            <SettingsRow
-              title={t("Timezone")}
-              control={
-                <div className="w-64">
-                  <TimeZoneSelect
-                    value={p.timezone}
-                    onChange={(timezone) => patchPolicy({ timezone })}
+          {user && !user.isOwner ? (
+            <SettingsSection
+              title={t("Allowed times")}
+              description={t("Let the current item finish, then pause playback until wake time.")}
+            >
+              {user && !user.isOwner ? (
+                <>
+                  <SettingsRow
+                    title={t("Bedtime")}
+                    control={
+                      <Switch
+                        checked={!!p.bedtime}
+                        onChange={(e) =>
+                          patchPolicy({
+                            allowedHours: [],
+                            bedtime: e.target.checked
+                              ? { time: "20:00", wakeTime: "06:00", timezone: p.timezone }
+                              : null,
+                          })
+                        }
+                        aria-label={t("Bedtime")}
+                      />
+                    }
                   />
-                </div>
-              }
-            />
-            <SettingsRow stacked title={t("Allowed hours")}>
-              <ChipGroup
-                ariaLabel={t("Allowed hours")}
-                size="sm"
-                options={HOURS}
-                value={p.allowedHours}
-                onChange={(v) => patchPolicy({ allowedHours: [...v].sort((a, b) => a - b) })}
-              />
-            </SettingsRow>
-          </SettingsSection>
+                  {!p.bedtime && p.allowedHours.length > 0 ? (
+                    <SettingsRow
+                      title={t("Allowed times")}
+                      control={
+                        <span>
+                          {p.allowedHours
+                            .map((hour) => `${String(hour).padStart(2, "0")}:00`)
+                            .join(", ")}
+                        </span>
+                      }
+                    />
+                  ) : null}
+                  {p.bedtime ? (
+                    <>
+                      <SettingsRow
+                        title={t("Bedtime starts")}
+                        control={
+                          <input
+                            type="time"
+                            className="rounded border border-border bg-background px-3 py-2"
+                            aria-label={t("Bedtime starts")}
+                            required
+                            value={p.bedtime.time}
+                            onChange={(e) =>
+                              patchPolicy({ bedtime: { ...p.bedtime!, time: e.target.value } })
+                            }
+                          />
+                        }
+                      />
+                      <SettingsRow
+                        title={t("Wake time")}
+                        control={
+                          <input
+                            type="time"
+                            className="rounded border border-border bg-background px-3 py-2"
+                            aria-label={t("Wake time")}
+                            required
+                            value={p.bedtime.wakeTime || "06:00"}
+                            onChange={(e) =>
+                              patchPolicy({ bedtime: { ...p.bedtime!, wakeTime: e.target.value } })
+                            }
+                          />
+                        }
+                      />
+                      <SettingsRow
+                        title={t("Days")}
+                        description={t(
+                          "Choose the days bedtime starts. With no days selected, it applies every day.",
+                        )}
+                        control={
+                          <ChipGroup
+                            ariaLabel={t("Days")}
+                            options={[
+                              { value: 0, label: t("Sunday") },
+                              { value: 1, label: t("Monday") },
+                              { value: 2, label: t("Tuesday") },
+                              { value: 3, label: t("Wednesday") },
+                              { value: 4, label: t("Thursday") },
+                              { value: 5, label: t("Friday") },
+                              { value: 6, label: t("Saturday") },
+                            ]}
+                            value={p.bedtime.days ?? []}
+                            onChange={(days) => patchPolicy({ bedtime: { ...p.bedtime!, days } })}
+                          />
+                        }
+                      />
+                    </>
+                  ) : null}
+                  <SettingsRow
+                    title={t("Time zone")}
+                    description={t("Leave empty to use the server’s time zone.")}
+                    control={
+                      <div className="w-64">
+                        <TimeZoneSelect
+                          serverDefault={!!p.bedtime || p.allowedHours.length === 0}
+                          value={p.timezone}
+                          onChange={(timezone) =>
+                            patchPolicy({
+                              timezone,
+                              ...(p.bedtime ? { bedtime: { ...p.bedtime, timezone } } : {}),
+                            })
+                          }
+                        />
+                      </div>
+                    }
+                  />
+                </>
+              ) : null}
+            </SettingsSection>
+          ) : null}
         </>
       )}
 

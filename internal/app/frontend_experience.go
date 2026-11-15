@@ -70,19 +70,6 @@ func (a *App) searchSourcesFor(stepAside *experience.StepAside) experience.Searc
 			return stepAside.FilterAvailable(ctx, ts), nil
 		}
 	}
-	if a.discoveryFeatures != nil {
-		src.Natural = experience.DiscoverySearch(a.discoveryFeatures.Frontend())
-		if stepAside != nil {
-			baseNatural := src.Natural
-			src.Natural = func(ctx context.Context, viewer *core.User, query string, limit int) ([]core.Title, bool) {
-				ts, ok := baseNatural(ctx, viewer, query, limit)
-				if !ok {
-					return nil, false
-				}
-				return stepAside.FilterAvailable(core.WithCatalogViewer(ctx, viewer), ts), true
-			}
-		}
-	}
 	if a.state != nil {
 		src.Familiar = experience.FamiliarFrom(a.state)
 	}
@@ -184,13 +171,13 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	}}
 	interactions := experience.RowInteractionPolicy{Libraries: libs, Visibility: rowVis, Get: a.catalog.CachedGet, AllowEntry: entryPolicy.Subject, CollectionMembers: func(ctx context.Context, u *core.User, key core.RatingKey, entries []core.NeutralEntryRef) bool {
 		return rowViewCollectionMembers(ctx, a.collections, u, key, entries)
-	}, Impression: a.personalize.RecordNeutralImpression, DetailOpen: a.personalize.RecordDetailOpen}
+	}, Impression: a.personalize.RecordNeutralImpression, EntryImpression: a.personalize.RecordNeutralEntryImpression, DetailOpen: a.personalize.RecordDetailOpen}
 	receipts, err := experience.NewReceipts(experience.ReceiptOptions{DB: a.db, PolicyLease: a.cfg.AcquirePolicy, Active: a.users.PolicyUser, TTL: 30 * time.Minute, MaxPerDevice: 10000, Prefetch: func(ctx context.Context, keys []core.RatingKey) {
 		_, _ = a.catalog.CachedGetMany(ctx, keys)
 	}, Allowed: func(ctx context.Context, u *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject) bool {
 		return interactions.Allowed(ctx, u, subject)
 	}, AllowedAction: func(_ context.Context, _ *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject, kind frontend.RowInteractionKind) bool {
-		return ((kind == frontend.RowImpression || kind == frontend.RowPlay) && subject.Kind == "row" && subject.Impression != nil) || (kind == frontend.RowClick && subject.Kind == string(frontend.RowEntryTitle))
+		return interactions.AllowedAction(subject, kind)
 	}, Record: func(ctx context.Context, u *core.User, _ core.Device, _ core.Protocol, subject experience.ReceiptSubject, kind frontend.RowInteractionKind) error {
 		return interactions.Record(ctx, u, subject, kind)
 	}})
@@ -210,7 +197,25 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		if !ok {
 			return nil, errors.New("experience: missing situation")
 		}
-		return experience.LayoutRows(ctx, a.personalize, libs, req, sit, rows)
+		var layout core.NeutralHomeLayoutSource = a.personalize
+		if req.HomeFallbackOnly {
+			layout = neutralLayoutFunc(a.personalize.FinalizeNeutralHomeFill)
+		}
+		extrasEnabled := a.extras != nil && a.extras.Enabled()
+		rows = append([]frontend.Row(nil), rows...)
+		for n := range rows {
+			if extrasEnabled && (rows[n].Style == "hero" || rows[n].Style == "featured") {
+				rows[n].PreviewOnFocus = true
+			}
+		}
+		arranged, err := experience.LayoutRows(ctx, layout, libs, req, sit, rows)
+		if !extrasEnabled {
+			for n := range arranged {
+				arranged[n].PreviewOnFocus = false
+				arranged[n].Layout.PreviewOnFocus = false
+			}
+		}
+		return arranged, err
 	}, Situation: func(ctx context.Context, req frontend.RowRequest) (core.HomeSituation, error) {
 		v, ok := ctx.Value(experienceSituationKey{}).(core.HomeSituation)
 		if !ok {
@@ -305,7 +310,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 		}
 		return a.catalog.RecentAirFiltered(ctx, typ, f, offset, limit)
-	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
+	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, VisibilityRows: a.catalog.CachedVisibilityRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
 		return a.catalog.ResolveShowParents(ctx, keys)
 	}, Get: func(ctx context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
 		if a.episodeorder != nil {
@@ -514,6 +519,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		deps.Collections = a.discoveryPersonal.ReviewCollections(a.collections)
 	}
 	deps.Recommender = a.personalize
+	deps.NextUp = func(ctx context.Context, viewer *core.User, limit int) ([]core.Title, error) {
+		return a.experienceContinueKind(ctx, viewer, libs, rowVis, core.TypeShow, limit)
+	}
 	deps.VibeSearch = a.collections
 	deps.SearchSources = a.searchSourcesFor(stepAside)
 	deps.FavoriteShows = a.favoriteShows
@@ -556,6 +564,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		deps.PluginLibraries = a.pluginsRT.kindCatalog
 	} else if a.libraries != nil {
 		deps.PluginLibraries = adapters.AttachKindCatalog(context.Background(), adapters.KindCatalogDeps{
+			TitleInLibrary: func(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error) {
+				return a.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
+			},
 			Libraries: a.libraries,
 			Logger:    a.log,
 		})
@@ -1018,7 +1029,7 @@ func (s *surfaceExperience) cachedRows(ctx context.Context, req frontend.RowRequ
 	// Issued rows mint receipts. A cached success would skip that transaction,
 	// so a later bind failure could not roll back and the client would keep
 	// handles whose receipts were never written. Snapshots are safe to reuse.
-	if issue || (req.Placement != frontend.PlacementHome && req.Placement != frontend.PlacementLibrary) {
+	if issue || req.HomeFallbackOnly || (req.Placement != frontend.PlacementHome && req.Placement != frontend.PlacementLibrary) {
 		return s.loadRows(ctx, req, issue)
 	}
 	key, gen := s.rowCacheKey(req)
@@ -1231,4 +1242,27 @@ func (v stepAsideVibe) VibeCollection(ctx context.Context, user *core.User, quer
 		return c, items, ok, err
 	}
 	return c, v.stepAside.FilterAvailable(core.WithCatalogViewer(ctx, user), items), ok, nil
+}
+
+type neutralLayoutFunc func(context.Context, *core.User, core.HomeSituation, string, []core.NeutralHomeRow) ([]core.NeutralHomeRow, error)
+
+func (f neutralLayoutFunc) FinalizeNeutralHome(ctx context.Context, user *core.User, situation core.HomeSituation, section string, rows []core.NeutralHomeRow) ([]core.NeutralHomeRow, error) {
+	return f(ctx, user, situation, section, rows)
+}
+
+func (v stepAsideVibe) DescriptiveSearchAvailable() bool {
+	source, ok := v.VibeSearcher.(core.DescriptiveSearcher)
+	return ok && source.DescriptiveSearchAvailable()
+}
+
+func (v stepAsideVibe) DescribeSearch(ctx context.Context, user *core.User, query string, wait bool) (core.DescriptiveResult, error) {
+	source, ok := v.VibeSearcher.(core.DescriptiveSearcher)
+	if !ok {
+		return core.DescriptiveResult{State: "unavailable"}, nil
+	}
+	result, err := source.DescribeSearch(ctx, user, query, wait)
+	if err == nil {
+		result.Items = v.stepAside.FilterAvailable(core.WithCatalogViewer(ctx, user), result.Items)
+	}
+	return result, err
 }

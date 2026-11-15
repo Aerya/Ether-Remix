@@ -36,11 +36,12 @@ type pumped struct {
 }
 
 type decoderPump struct {
-	dec    transcode.Decoder
-	ch     chan pumped
-	cancel context.CancelFunc
-	held   *pumped // a candidate's first picture, kept until the switch
-	opened time.Time
+	dec         transcode.Decoder
+	ch          chan pumped
+	cancel      context.CancelFunc
+	held        *pumped // a candidate's first picture, kept until the switch
+	opened      time.Time
+	changeNoted bool // debounce this decoder's selected-stream starvation signature
 }
 
 func startPump(parent context.Context, dec transcode.Decoder) *decoderPump {
@@ -76,10 +77,7 @@ type starving interface {
 // pull is the next picture of the current decoder, splicing a live-edge
 // candidate in when the current one starves.
 func (d *providerBroadcastDecoder) pull(ctx context.Context) (transcode.RawFrame, error) {
-	if !d.passed || d.reopen == nil {
-		return d.Decoder.Next(ctx)
-	}
-	if _, ok := d.Decoder.(starving); !ok {
+	if d.reopen == nil {
 		return d.Decoder.Next(ctx)
 	}
 	if d.cur == nil {
@@ -87,7 +85,7 @@ func (d *providerBroadcastDecoder) pull(ctx context.Context) (transcode.RawFrame
 	}
 	tick := time.NewTicker(splicePoll)
 	defer tick.Stop()
-	failed := false
+	failed := d.cur.ch == nil
 	for {
 		var candidate chan pumped
 		if d.cand != nil && d.cand.held == nil {
@@ -100,18 +98,26 @@ func (d *providerBroadcastDecoder) pull(ctx context.Context) (transcode.RawFrame
 			if r.err == nil {
 				return r.frame, nil
 			}
-			if d.cand == nil || !errors.Is(r.err, transcode.ErrInputChanged) {
+			if !errors.Is(r.err, transcode.ErrInputChanged) {
 				return r.frame, r.err
 			}
-			// The change is confirmed: wait for the candidate's picture.
+			if d.noteChange(d.cur) {
+				return transcode.RawFrame{}, errSteadyChangeStorm
+			}
+			// Even an early change belongs to this splice, not to a new
+			// planner attempt. Keep the output clock and source grant alive.
 			failed = true
 			d.cur.ch = nil
 		case r := <-candidate:
 			if r.err != nil {
+				storm := errors.Is(r.err, transcode.ErrInputChanged) && d.noteChange(d.cand)
 				d.cand.close()
 				d.cand = nil
-				if failed {
-					return transcode.RawFrame{}, transcode.ErrInputChanged
+				if storm {
+					return transcode.RawFrame{}, errSteadyChangeStorm
+				}
+				if failed && !errors.Is(r.err, transcode.ErrInputChanged) {
+					return transcode.RawFrame{}, r.err
 				}
 				continue
 			}
@@ -120,29 +126,66 @@ func (d *providerBroadcastDecoder) pull(ctx context.Context) (transcode.RawFrame
 			}
 		case <-tick.C:
 		}
-		starved, errored := d.Decoder.(starving).StarvingErrors()
+		var starved time.Duration
+		var errored bool
+		if source, ok := d.Decoder.(starving); ok {
+			starved, errored = source.StarvingErrors()
+		}
 		open, switchAfter := quietOpenAfter, quietSwitchAfter
 		if errored {
 			open, switchAfter = spliceOpenAfter, spliceSwitchAfter
 		}
 		switch {
 		case d.cand != nil && d.cand.held != nil && (failed || starved >= switchAfter):
+			if d.noteChange(d.cur) {
+				return transcode.RawFrame{}, errSteadyChangeStorm
+			}
 			frame := d.cand.held.frame
 			d.cand.held = nil
 			d.cur.close()
 			d.Decoder, d.cur, d.cand = d.cand.dec, d.cand, nil
-			d.planner.logger().Info("live input spliced to a new decoder", "input", d.sourceID, "reason", "stream change", "starved", starved)
+			d.planner.logger().Info("live input spliced to a new decoder", "input", d.sourceID, "reason", "stream change", "starved", starved, "confirmed", failed)
 			return frame, nil
-		case d.cand == nil && !failed && starved >= open && time.Since(d.lastCandidate) >= spliceRetryAfter:
+		case d.cand != nil && time.Since(d.cand.opened) >= steadyFirstFrameRejoin:
+			d.cand.close()
+			d.cand = nil
+			if failed {
+				return transcode.RawFrame{}, errSteadyStarved
+			}
+		case d.cand == nil && (failed || starved >= open) && time.Since(d.lastCandidate) >= spliceRetryAfter:
 			d.lastCandidate = time.Now()
 			if dec, err := d.reopen(); err == nil {
 				d.cand = startPump(d.life, dec)
+			} else if failed {
+				return transcode.RawFrame{}, err
 			}
 		case d.cand != nil && !failed && starved == 0 && time.Since(d.cand.opened) >= spliceRecovered:
 			d.cand.close()
 			d.cand = nil
 		}
 	}
+}
+
+// noteChange debounces repeated observations of the same failed selected
+// streams on one decoder. Extra PIDs and PMT versions never enter this path:
+// only starvation of the mapped video/audio or ErrInputChanged does. A new
+// decoder failing again is a new event, even with the same codec signature.
+func (d *providerBroadcastDecoder) noteChange(pump *decoderPump) bool {
+	if pump.changeNoted {
+		return false
+	}
+	pump.changeNoted = true
+	aired := d.aired.Load()
+	productive := time.Duration(aired-d.changeAired)*d.frame >= steadyDelivered
+	// Accumulate delivered media across short splices too: several changes
+	// with moving pictures between them must not look like no playback.
+	if productive {
+		d.changeAired = aired
+	}
+	p := d.planner
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ladder.changed(d.sourceID, productive, p.s.o.Now())
 }
 
 // replayed reports a candidate picture this source already aired.

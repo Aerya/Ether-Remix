@@ -71,6 +71,21 @@ func TestDetailWarmUsesDeclaredPlayCaps(t *testing.T) {
 	if len(pb.discarded) != 1 || !reflect.DeepEqual(pb.discarded[0], pb.warmed[0]) {
 		t.Fatalf("widened caps did not discard the warm entry: %+v", pb.discarded)
 	}
+	// Negotiation can supply the complete declaration before a device's first
+	// Play, including Vela. Owner limits and the later Prepare must still match.
+	negotiated := detail
+	negotiated.Protocol = "emby"
+	negotiated.Caps = declared
+	negotiated.Intent.DeclaredCaps = true
+	if !b.WarmDetail(ctx, negotiated) || len(pb.warmed) != 2 {
+		t.Fatal("negotiated declaration did not warm before first Play")
+	}
+	if _, err := b.Plan(ctx, frontend.PlanRequest{Viewer: viewer, Device: dev, Protocol: negotiated.Protocol, Item: negotiated.Item, Caps: declared, Intent: frontend.PlayIntent{DeclaredCaps: true, Options: core.DecideOptions{DirectPlay: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(pb.warmed[1], pb.prepared[len(pb.prepared)-1]) {
+		t.Fatal("negotiated warm caps differ from Prepare")
+	}
 }
 
 // Frontends reach the broker through the surface binding, which must not

@@ -26,6 +26,7 @@ func (s *Session) ServePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := s.renderPlaylistLocked(0)
+	s.notePlaylistLocked(0, body)
 	if s.androidMatroskaHLS && s.container == ContainerMatroska {
 		// Match PMS 1.42.2's Android segmented-Matroska playlist contract
 		// (rex subtitles_s1422.json). In particular, do not claim the
@@ -56,6 +57,15 @@ func (s *Session) span() time.Duration {
 // of the player (spike governor) or SwapInput; governed sessions render
 // an EVENT playlist fresh each time so reloads see re-planned segments.
 func (s *Session) renderPlaylistLocked(t int) []byte {
+	body := s.renderMediaPlaylistLocked(t)
+	if hasInitSegment(s.container) {
+		name := initSegmentName(s.container)
+		body = bytes.ReplaceAll(body, []byte(`URI="`+name+`"`), []byte(`URI="`+s.scopeMediaName(name)+`"`))
+	}
+	return body
+}
+
+func (s *Session) renderMediaPlaylistLocked(t int) []byte {
 	independent := !s.requireIndependentProof || s.segmentsIndependent
 	if s.liveInput && s.total == 0 && !s.isDASH() {
 		return s.livePlaylistLocked(t, func(n int) bool { return s.discontBeforeLocked(t, n) })
@@ -242,7 +252,20 @@ func (s *Session) runPlanLocked(seg int) runPlan {
 		rp.mode = ModeTranscode
 		return rp
 	}
-	if s.isDASH() || s.plan == nil || s.wantTrack != 0 {
+	if s.isDASH() || s.plan == nil {
+		return rp
+	}
+
+	if s.wantTrack != 0 {
+		// The media playlist already commits every rendition to the base clock.
+		// A lower rung must cut the same 2s startup slots before the 4s steady
+		// slots, rather than labelling four seconds of media as a two-second slot.
+		rp.mode = ModeTranscode
+		if seg < s.plan.rampSegs {
+			rp.hlsDur = s.plan.Dur(seg)
+			rp.planEnd = s.plan.rampSegs
+			rp.fastStart = true
+		}
 		return rp
 	}
 	rp.mode = s.plan.ModeAt(seg)

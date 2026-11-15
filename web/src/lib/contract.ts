@@ -91,7 +91,7 @@ const RULE_FIELDS = [
   "inProgress",
   "addedAt",
 ] as const;
-export type RuleField = (typeof RULE_FIELDS)[number];
+export type RuleField = (typeof RULE_FIELDS)[number] | `browse:${string}` | "group" | "viewer";
 
 const RULE_OPS = [
   "is",
@@ -181,6 +181,8 @@ export interface TargetSchedule {
 }
 
 export interface CollectionSpec {
+  previewOnFocus?: boolean;
+  rankedTop10?: boolean;
   localOnly?: boolean;
   releaseMode?: "released" | "upcoming" | "mixed";
   lookaheadDays?: number;
@@ -416,6 +418,8 @@ export type RowStatus = "always" | "eligible" | "off";
 
 /** The owner's policy for a row (or a family of rows) on a page. */
 export interface RowPolicy {
+  previewOnFocus?: boolean;
+  rankedTop10?: boolean;
   /** Kind ("short-on-time"), "collection:<id>", a hub id, or a glob ("because.*"). */
   row: string;
   status: RowStatus;

@@ -39,6 +39,8 @@ func TestFrontendImports(t *testing.T) {
 			prefix + "frontend": true,
 			// Pure certification model: no services and no I/O.
 			prefix + "contentrating": true,
+			// Shared credential sanitizer: stdlib only, no domain services.
+			prefix + "logredact": true,
 			// Plex wire XML/JSON DTOs and encoders owned by the Plex frontend subpackage.
 			prefix + "frontends/plex/model": true,
 			// Downloaded third-party client builds (the official Jellyfin Web

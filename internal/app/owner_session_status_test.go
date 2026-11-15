@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"testing"
+	"time"
 )
 
 func TestOwnerSessionDetails(t *testing.T) {
@@ -17,5 +18,20 @@ func TestOwnerSessionDetails(t *testing.T) {
 	got = ownerSessionDetails(p)
 	if got.OutputVideo != got.SourceVideo || got.OutputAudio != got.SourceAudio {
 		t.Fatalf("copy: %+v", got)
+	}
+}
+
+func TestOwnerSessionBitrateIsSourceNotDeliverySpeed(t *testing.T) {
+	burst := &core.PlaySession{Decision: core.DecisionDirectPlay, SpeedBps: 44_625_000, Info: core.MediaInfo{Container: "mkv", Size: 4_500_000_000, Duration: 2 * time.Hour}}
+	if got := ownerSessionDetails(burst).BitrateKbps; got != 5000 {
+		t.Fatalf("direct play bitrate = %d kbps, want 5000 from size/duration", got)
+	}
+	probed := &core.PlaySession{Decision: core.DecisionDirectPlay, Info: core.MediaInfo{BitrateKbps: 12000, Size: 1, Duration: time.Hour}}
+	if got := ownerSessionDetails(probed).BitrateKbps; got != 12000 {
+		t.Fatalf("probed bitrate = %d kbps, want 12000", got)
+	}
+	idle := &core.PlaySession{Decision: core.DecisionDirectPlay, Info: core.MediaInfo{BitrateKbps: 8000}}
+	if got := ownerSessionDetails(idle).BitrateKbps; got != 8000 {
+		t.Fatalf("idle buffer bitrate = %d kbps, want 8000", got)
 	}
 }

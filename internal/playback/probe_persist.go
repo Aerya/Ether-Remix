@@ -1,10 +1,12 @@
 package playback
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -22,6 +24,7 @@ func init() {
 	info_json TEXT NOT NULL, updated_at INTEGER NOT NULL,
 	PRIMARY KEY (user_id, rating_key, release_id)
 );`)
+	store.Register("playback_probe", 2, `ALTER TABLE playback_probe ADD COLUMN file_identity TEXT NOT NULL DEFAULT '';`)
 }
 
 // probeFactsRecord is the on-disk shape of playback_probe.info_json.
@@ -90,9 +93,9 @@ func saveProbeWith(ctx context.Context, exec resumeExecer, userID int64, key cor
 	if len(b) > maxPersistedProbeBytes {
 		return nil
 	}
-	_, err = exec.ExecContext(ctx, `INSERT INTO playback_probe(user_id,rating_key,release_id,nzb_hash,size,info_json,updated_at) VALUES(?,?,?,?,?,?,?)
-ON CONFLICT(user_id,rating_key,release_id) DO UPDATE SET nzb_hash=excluded.nzb_hash, size=excluded.size, info_json=excluded.info_json, updated_at=excluded.updated_at`,
-		userID, int64(key), releaseID, nzbHash(nzb), facts.Size, string(b), at.UnixMilli())
+	_, err = exec.ExecContext(ctx, `INSERT INTO playback_probe(user_id,rating_key,release_id,nzb_hash,size,info_json,updated_at,file_identity) VALUES(?,?,?,?,?,?,?,?)
+ON CONFLICT(user_id,rating_key,release_id) DO UPDATE SET nzb_hash=excluded.nzb_hash, size=excluded.size, info_json=excluded.info_json, updated_at=excluded.updated_at, file_identity=excluded.file_identity`,
+		userID, int64(key), releaseID, nzbHash(nzb), facts.Size, string(b), at.UnixMilli(), torrentProbeIdentity(nzb))
 	if err != nil {
 		return err
 	}
@@ -153,7 +156,27 @@ func (m *Manager) persistedProbe(ctx context.Context, userID int64, key core.Rat
 		}
 		return m.resume.liveProbeHash(userID, key, releaseID, "")
 	}
-	return m.persistedProbeHash(ctx, userID, key, releaseID, nzbHash(nzb))
+	hash := nzbHash(nzb)
+	if facts := m.persistedProbeHash(ctx, userID, key, releaseID, hash); facts != nil {
+		return facts
+	}
+	// A renewed signed link changes the descriptor hash, not the torrent's
+	// immutable file. Keep payload/revision hashes byte-exact everywhere else.
+	identity := torrentProbeIdentity(nzb)
+	if m.resume == nil || releaseID == "" || identity == "" {
+		return nil
+	}
+	var storedHash string
+	if err := m.resume.db.QueryRowContext(ctx, `SELECT nzb_hash FROM playback_probe WHERE user_id=? AND rating_key=? AND release_id=? AND file_identity=?`, userID, int64(key), releaseID, identity).Scan(&storedHash); err != nil {
+		return nil
+	}
+	facts, err := m.resume.loadProbeHash(ctx, userID, key, releaseID, storedHash)
+	if err != nil || facts == nil {
+		return nil
+	}
+	facts.nzbHash = hash // probeGeneration still binds reuse to this opened payload and size
+	m.log.Debug("reusing torrent file probe after link renewal", "key", key, "release", releaseID)
+	return facts
 }
 
 // persistedProbeHash is persistedProbe for the payload with this hash.
@@ -203,9 +226,42 @@ func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, ti
 	}
 	out := append([]core.ReleaseVariant(nil), variants...)
 	for i := range out {
-		if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, out[i].ID); ok {
+		// Menu identity may be a logical slot; probes belong to its concrete source.
+		release := out[i].Release.ID
+		if release == "" {
+			release = out[i].ID
+		}
+		if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, release); ok {
 			out[i].Info = info
 		}
 	}
 	return out
+}
+
+// torrentProbeIdentity deliberately excludes transport URLs, expiry and account
+// torrent IDs. Direct HTTP/addon links have no immutable content identity and
+// continue to require the complete descriptor hash. File paths and sizes remain
+// exact, and facts remain scoped to the viewer, title and selected release.
+func torrentProbeIdentity(payload []byte) string {
+	if !bytes.HasPrefix(payload, []byte(debridPayloadPrefix)) {
+		return ""
+	}
+	var p struct {
+		InfoHash string `json:"infoHash"`
+		Path     string `json:"path"`
+		Size     int64  `json:"size"`
+		Kind     string `json:"kind"`
+		Provider string `json:"provider"`
+	}
+	if json.Unmarshal(payload[len(debridPayloadPrefix):], &p) != nil || p.Kind == "http" || p.Kind == "" || len(p.InfoHash) != 40 || p.Path == "" || p.Size <= 0 {
+		return ""
+	}
+	p.InfoHash = strings.ToLower(p.InfoHash)
+	for _, r := range p.InfoHash {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return ""
+		}
+	}
+	encoded, _ := json.Marshal(p)
+	return nzbHash(encoded)
 }

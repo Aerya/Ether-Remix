@@ -204,8 +204,8 @@ func TestPinAndPreferStayAheadOfPolicyTiers(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err = unhealthy.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps()})
-	if err != nil || got.Release.ID != "primary" {
-		t.Fatalf("unhealthy pin did not leave the primary tier first: %+v %v", got, err)
+	if err == nil || got != nil {
+		t.Fatalf("unhealthy pin substituted another release: %+v %v", got, err)
 	}
 }
 

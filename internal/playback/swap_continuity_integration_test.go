@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,7 +102,19 @@ func TestOfflineBufferedSwapKeepsDecodableContiguousOutput(t *testing.T) {
 	fetch := func(n int) []byte {
 		t.Helper()
 		w := httptest.NewRecorder()
-		hs.ServeSegment(w, httptest.NewRequest(http.MethodGet, "/segment", nil).WithContext(ctx), n)
+		playlist := httptest.NewRecorder()
+		hs.ServePlaylist(playlist, httptest.NewRequest(http.MethodGet, "/index.m3u8", nil))
+		name := ""
+		for _, line := range strings.Split(playlist.Body.String(), "\n") {
+			if index, ok := transcode.ParseSegmentName(line); ok && index == n {
+				name = line
+				break
+			}
+		}
+		if name == "" {
+			t.Fatalf("playlist missing segment %d", n)
+		}
+		hs.ServeSegment(w, httptest.NewRequest(http.MethodGet, "/"+name, nil).WithContext(ctx), n)
 		if w.Code != http.StatusOK || w.Body.Len() == 0 {
 			t.Fatalf("segment %d status %d bytes %d", n, w.Code, w.Body.Len())
 		}

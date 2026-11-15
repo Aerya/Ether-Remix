@@ -20,6 +20,7 @@ const sz7MaxKDFPower = 24
 const sz7MaxKDFWork = 1 << 25
 
 type sz7Crypto struct {
+	data        *Data7zLimits
 	ctx         context.Context
 	password    string
 	enabled     bool

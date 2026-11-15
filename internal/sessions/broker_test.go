@@ -399,9 +399,14 @@ func TestPlanRejectsForbiddenTranscoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer b.Close(ctx)
+	// This source is already selected; denying conversion must identify it,
+	// preserve the normal typed delivery reason and never pick another one.
+	p.sessions["pinned-source"] = &core.PlaySession{ID: "pinned-source", UserID: 2, ClientID: clientKey("jellyfin", core.Device{ID: "tv"}), Key: core.MovieKey(1), Resolution: &core.Resolution{Release: core.Release{ID: "pin-hevc"}}}
 	allowed := false
 	_, err = b.Plan(ctx, frontend.PlanRequest{Viewer: &core.Viewer{ID: 2}, Device: core.Device{ID: "tv"}, Protocol: "jellyfin", Item: core.MovieKey(1), Intent: frontend.PlayIntent{AllowTranscoding: &allowed}})
-	if !errors.Is(err, core.ErrNotAvailable) {
+	var noPath *frontend.NoCompatiblePathError
+	if !errors.Is(err, core.ErrNotAvailable) || !errors.As(err, &noPath) || !strings.Contains(err.Error(), "release pin-hevc:") || !strings.Contains(err.Error(), "transcode not allowed") {
 		t.Fatalf("forbidden transcode error %v", err)
 	}
 }

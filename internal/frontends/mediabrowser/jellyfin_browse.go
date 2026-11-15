@@ -154,7 +154,10 @@ func withJellyfinListFiles(r *http.Request) *http.Request {
 	if r == nil || r.Context().Value(jellyfinListFileKey{}) != nil {
 		return r
 	}
-	return r.WithContext(context.WithValue(r.Context(), jellyfinListFileKey{}, true))
+	// Lists join stored artwork facts and let hashing finish behind the read.
+	// A 100ms hashing wait alone would consume the entire home-row budget.
+	ctx := frontend.WithoutSynchronousArtworkMetadata(r.Context())
+	return r.WithContext(context.WithValue(ctx, jellyfinListFileKey{}, true))
 }
 
 func jellyfinListFile(r *http.Request) bool {

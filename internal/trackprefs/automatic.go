@@ -23,3 +23,21 @@ func (s *Service) AutomaticSubtitleRules(ctx context.Context, user int64, key co
 	r.SubtitleLanguages = subtitleOrder(r, server, original)
 	return r, understood, manual, nil
 }
+
+// SubtitleSearchLanguages resolves the viewer/default rules, then the profile
+// and server fallback, without consulting remembered playback choices.
+func (s *Service) SubtitleSearchLanguages(ctx context.Context, user int64, key core.RatingKey, scope Scope) ([]string, error) {
+	r, _, err := s.ScopedRules(ctx, user, scope)
+	if err != nil {
+		return nil, err
+	}
+	if len(r.SubtitleLanguages) > 0 {
+		return append([]string(nil), r.SubtitleLanguages...), nil
+	}
+	if s.options.ProfileLanguages != nil {
+		if langs := canonicalLanguages(s.options.ProfileLanguages(ctx, user, key)); len(langs) > 0 {
+			return langs, nil
+		}
+	}
+	return canonicalLanguages([]string{s.serverLanguage()}), nil
+}

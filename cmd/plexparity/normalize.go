@@ -6,15 +6,18 @@ import (
 	"strings"
 )
 
-// Only the random stream grant and session read capability query parameters
+// Random media generation IDs, stream grants, and read capabilities
 // are normalized. Their names and surrounding URL bytes remain visible; all
 // other response bytes are compared.
+var mediaGeneration = regexp.MustCompile(`g-[a-f0-9]{32}-`)
+
 var streamGrant = regexp.MustCompile(`(X-Ether-Stream-Token=)[A-Za-z0-9_-]+`)
 var readCapability = regexp.MustCompile(`(X-Ether-Read-Token=)[A-Za-z0-9_-]+`)
 var delegationXML = regexp.MustCompile(`(token=")[^"]*(")`)
 var delegationJSON = regexp.MustCompile(`("token"\s*:\s*")[^"]*(")`)
 
 func normalizeResponse(body []byte) []byte {
+	body = mediaGeneration.ReplaceAll(body, []byte("g-<GENERATION>-"))
 	body = streamGrant.ReplaceAll(body, []byte(`${1}<STREAM-TOKEN>`))
 	return readCapability.ReplaceAll(body, []byte(`${1}<READ-TOKEN>`))
 }

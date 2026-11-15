@@ -113,7 +113,7 @@ func (e *realEnv) probeFile(t *testing.T, path string) []probedStream {
 func fetch(t *testing.T, s core.HLSSession, n int) []byte {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	s.ServeSegment(rec, httptest.NewRequest(http.MethodGet, "/", nil), n)
+	s.ServeSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/", nil), n), n)
 	if rec.Code != 200 {
 		if session, ok := s.(*Session); ok {
 			session.mu.Lock()

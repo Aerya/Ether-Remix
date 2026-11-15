@@ -274,71 +274,46 @@ type steadyAdmission struct {
 // the output's first decoder then reuses, so the decoder starts from the
 // bytes the probe already read on the same provider connection. It returns
 // a refusal reason when the tune must take a direct path.
-func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission, string, string) {
+func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission, string, string, error) {
 	if _, ok := s.transcoder().(continuousBudget); !ok {
-		return nil, steadyRefusedNoTranscoder, "transcoder runs no continuous outputs"
+		return nil, steadyRefusedNoTranscoder, "transcoder runs no continuous outputs", nil
 	}
 	if s.broadcasts.steadyStrained() {
-		return nil, steadyRefusedStrain, "running channels are falling behind real time"
+		return nil, steadyRefusedStrain, "running channels are falling behind real time", nil
 	}
 	rockSolid := s.stabilityPreset(c) == stabilityRockSolid
 	// Refuse before touching the provider when not even the smallest
 	// broadcast shape would fit.
 	smallest := transcode.RawFormat{Width: 1024, Height: 576, FPSNum: 25, FPSDen: 1}
 	if ok, load, budget := s.steadyCapacity(smallest); !ok && !rockSolid {
-		return nil, steadyRefusedCapacity, "encode capacity in use (" + formatCores(load) + " of " + formatCores(budget) + " cores)"
+		return nil, steadyRefusedCapacity, "encode capacity in use (" + formatCores(load) + " of " + formatCores(budget) + " cores)", nil
 	}
-	// Keep time for encoder startup and the reconnecting screen even when
-	// every candidate probe stalls. Per-input limits alone exhaust the tune.
-	probeCtx, stopProbes := context.WithTimeout(ctx, 3*time.Second)
+	probeCtx, stopProbes := context.WithTimeout(ctx, 7*time.Second)
 	defer stopProbes()
-	var probed *steadyAdmission
 	candidates := s.orderedSourceCandidates(c)
-	for i, src := range candidates {
-		if probeCtx.Err() != nil {
-			break
-		}
-		link, err := s.linkSteadySource(probeCtx, c, src, "broadcast-"+c.ID, steadyStartLead)
-		if errors.Is(err, ErrProviderBusy) || errors.Is(err, ErrProviderPaced) {
-			continue
-		}
-		if err != nil {
-			s.recordSourceHealth(c.ID, src, err, false)
-			continue
-		}
-		// A hanging input leaves the tune's budget for the next one.
-		probeBudget := 6 * time.Second
-		if i < len(candidates)-1 {
-			probeBudget = 3 * time.Second
-		}
-		attempt, cancel := context.WithTimeout(probeCtx, probeBudget)
-		info, err := s.probeSteadyLink(attempt, c, link)
-		cancel()
-		if err == nil && info != nil && info.Video() == nil && len(info.Streams) > 0 {
-			// Radio: Steady renders pictures; an audio-only source plays direct.
-			link.close(s)
-			return nil, steadyRefusedAudioOnly, "audio-only source plays direct"
-		}
-		if err != nil || info == nil || info.Video() == nil {
-			if err == nil {
-				err = core.ErrNotAvailable
-			}
-			s.recordSourceHealth(c.ID, src, err, false)
-			link.close(s)
-			continue
-		}
-		link.format = steadyInputFormat(info)
-		probed = &steadyAdmission{shape: steadyShapeFor(info), link: link, info: info}
-		break
+	probed, failures, silent, radio, last := s.raceSteadyInputs(probeCtx, c, candidates)
+	if radio && probed == nil {
+		return nil, steadyRefusedAudioOnly, "audio-only source plays direct", nil
+	}
+	if probed == nil && silent {
+		return nil, steadyRefusedVideoOnly, "all playable candidates lack audio; trying direct fallback", nil
+	}
+	if probed == nil && s.coldFallbackAllowed(c) && ctx.Err() == nil {
+		// Start the selected slate on the continuous output. Its planner
+		// keeps retrying the provider without interrupting the viewer.
+		probed = &steadyAdmission{shape: steadyShapeFor(nil)}
 	}
 	if probed == nil {
-		// Nothing answered within the tune: Steady still starts on its
-		// reconnecting screen and its ladder keeps trying every input.
-		probed = &steadyAdmission{shape: steadyShapeFor(nil)}
+		if probeCtx.Err() != nil && len(failures) == 0 {
+			last = probeCtx.Err()
+		}
+		detail := *Diagnose("source_start", last)
+		detail.Inputs = failures
+		return nil, "", "", &detail
 	}
 	if code, detail := steadyRefusal(probed.info); code != "" {
 		probed.link.close(s)
-		return nil, code, detail
+		return nil, code, detail, nil
 	}
 	src := StreamSource{}
 	if probed.link != nil {
@@ -350,9 +325,9 @@ func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission,
 	probed.class = class
 	if code != "" {
 		probed.link.close(s)
-		return nil, code, detail
+		return nil, code, detail, nil
 	}
-	return probed, "", ""
+	return probed, "", "", nil
 }
 
 func formatCores(v float64) string {
@@ -373,15 +348,14 @@ func (s *Service) probeSteadyLink(ctx context.Context, c Channel, link *steadyLi
 		return nil, err
 	}
 	defer s.revokeInput(probe)
+	s.setInputAdmission(probe, true)
+	// Read through the shared tap first: ffprobe sees only the loopback HTTP
+	// status and would otherwise hide the provider’s actual refusal.
+	if _, _, err := s.sniffInput(ctx, probe, 1); err != nil {
+		return nil, err
+	}
 	return s.probeSessionInput(ctx, probe)
 }
-
-// steadyStartLead is how much deeper than the stability reserve the tune's
-// input joins: the startup burst (two segments) plus the decoded pictures the
-// clock's input buffer holds ahead of the output (three seconds), so the whole
-// reserve is still ahead once the output starts. A transport stream only
-// gains what its tap actually buffered.
-const steadyStartLead = 8 * time.Second
 
 // steadyInputFormat names the demuxer of a probed live input.
 func steadyInputFormat(info *core.MediaInfo) string {
@@ -437,6 +411,9 @@ func probeCacheKey(ss *session) string {
 	if len(ss.inputHeaders) != 0 {
 		encoded, _ := json.Marshal(ss.inputHeaders)
 		key = stableID(ss.inputURL, string(encoded))
+	}
+	if ss.caps.MaxHeight > 0 || ss.caps.MaxBitrateKbps > 0 {
+		key = stableID(key, variantClass(core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}))
 	}
 	return key
 }

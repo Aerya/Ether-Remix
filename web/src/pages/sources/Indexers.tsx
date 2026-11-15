@@ -461,7 +461,7 @@ export function IndexerList({
       ) : null}
       <Section
         id="sources-indexers"
-        title={view === "stremio" ? t("Stremio addons") : t("Indexers")} // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
+        title={view === "stremio" ? pseStremioText.title() : t("Indexers")} // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
         description={
           view === "stremio"
             ? pseStremioText.description()

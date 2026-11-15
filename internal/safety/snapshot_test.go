@@ -32,7 +32,7 @@ func TestPutStoresIndependentPolicySnapshot(t *testing.T) {
 	if svc.Allowed(u, &core.Title{Genres: []string{"Horror"}}) || svc.Allowed(u, &core.Title{Keywords: []string{"violence"}}) {
 		t.Fatal("caller changed active content restrictions without saving")
 	}
-	if !svc.CanPlay(u, false, time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)) || svc.CanPlay(u, false, time.Date(2026, 1, 1, 22, 0, 0, 0, time.UTC)) {
+	if !svc.CanPlay(u, false, time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)) || CheckBedtime(u, svc.Get(u.ID), time.Date(2026, 1, 1, 22, 0, 0, 0, time.UTC)) == nil {
 		t.Fatal("caller changed active playback hours without saving")
 	}
 }

@@ -62,7 +62,11 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		inst.pages = newBrowseCache()
 	}
 	r.SetMiddleware(inst.routeMiddleware)
-	r.SetFallback(mediaBrowserError)
+	r.SetFallback(func(w http.ResponseWriter, req *http.Request, status int) {
+		inst.requestLog(route.Route{Pattern: "<unmatched>"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mediaBrowserError(w, r, status)
+		})).ServeHTTP(w, req)
+	})
 	unmatched := &unmatchedLogger{}
 	r.SetUnmatched(func(req *http.Request, status int) { unmatched.log(inst, req, status) })
 	mounted := false
@@ -105,10 +109,19 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 	if err := r.Handle("GET", "/LiveTv/Info", http.HandlerFunc(inst.liveTVInfo)); err != nil {
 		return nil, err
 	}
+	if err := r.Handle("GET", "/LiveTv/GuideInfo", http.HandlerFunc(inst.liveTVGuideInfo)); err != nil {
+		return nil, err
+	}
+	if err := r.Handle("GET", "/LiveTv/ChannelTags", http.HandlerFunc(inst.channelTags)); err != nil {
+		return nil, err
+	}
 	if err := r.Handle("GET", "/LiveTv/Channels", http.HandlerFunc(inst.channels)); err != nil {
 		return nil, err
 	}
 	if err := r.Handle("GET", "/LiveTv/Channels/{id}", http.HandlerFunc(inst.channel)); err != nil {
+		return nil, err
+	}
+	if err := r.Handle("POST", "/LiveTv/Programs", http.HandlerFunc(inst.postProgrammes)); err != nil {
 		return nil, err
 	}
 	if err := r.Handle("GET", "/LiveTv/Programs", http.HandlerFunc(inst.programmes)); err != nil {

@@ -50,7 +50,17 @@ func (b *Broker) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id s
 	}
 	url := fmt.Sprintf("/sessions/media/%s/%s/subtitles/%d.%s", s.public.ID, s.grant, index, format)
 	if b.progressiveSubtitle(s, ps.Info, st) {
-		url += "?ether_stream=1"
+		window := false
+		for _, p := range s.caps.Profiles.Subtitles {
+			if p.Format == "ether-vtt-window" {
+				window = true
+			}
+		}
+		if window {
+			url += "?ether_window=1&from_ms=0"
+		} else {
+			url += "?ether_stream=1"
+		}
 	}
 	return url, nil
 }
@@ -100,6 +110,17 @@ func (b *Broker) serveSubtitle(w http.ResponseWriter, r *http.Request, s *broker
 	if !ok || transcode.IsImageSubtitle(stream.Codec) {
 		http.NotFound(w, r)
 		return
+	}
+	if r.URL.Query().Get("ether_window") == "1" && format == "vtt" {
+		if b.progressiveSubtitle(s, ps.Info, stream) {
+			// A window is a growing view of the live cue tee.
+			w.Header().Set("X-Ether-Subtitle-Complete", "0")
+			b.serveSubtitleWindow(w, r, s, stream)
+			return
+		}
+		// Cached and sidecar tracks answer a window request with the whole
+		// track, so the client can stop polling.
+		w.Header().Set("X-Ether-Subtitle-Complete", "1")
 	}
 	if r.URL.Query().Get("ether_stream") == "1" && (format == "js" || format == "vtt") && b.progressiveSubtitle(s, ps.Info, stream) {
 		b.serveProgressiveSubtitle(w, r, s, stream)

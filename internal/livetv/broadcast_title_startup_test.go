@@ -67,8 +67,8 @@ func TestColdTuneTitleStartupSequence(t *testing.T) {
 		}}
 		planner := &scheduleBroadcastPlanner{s: service, runner: runner, format: format, channel: Channel{ID: "riot", Name: "RIOT 90", Look: &ChannelLook{LookID: "showcase-90", Tonight: &enabled}}, window: []Programme{{ID: "current", Start: now.Add(-4 * time.Minute), End: now.Add(time.Hour), Item: Item{Key: 1, Title: "NewsRadio"}}}}
 		intro, duration := planner.introPlan(now)
-		if intro.id == "" || intro.fill || duration != 4*time.Second || !planner.joinAt.Equal(now.Add(duration)) {
-			t.Fatalf("warm title lacks an exclusive segment/seek: %+v %s join=%s", intro, duration, planner.joinAt)
+		if intro.id == "" || !intro.fill || duration != 2*time.Second || !planner.joinAt.Equal(now) {
+			t.Fatalf("warm title does not cover concurrent programme acquisition: %+v %s join=%s", intro, duration, planner.joinAt)
 		}
 		graphics.cached = false
 		coldIntro, coldDuration := planner.introPlan(now)

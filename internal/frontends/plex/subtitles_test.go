@@ -1094,7 +1094,7 @@ func TestSubtitleSearchGrammarAndLocalIdentities(t *testing.T) {
 	for _, tc := range []struct {
 		query string
 		code  int
-	}{{"", 400}, {"?language=", 500}, {"?language=eng", 500}, {"?language=xx", 500}, {"?language=EN", 200}, {"?language=en-US", 200}, {"?language=de", 200}} {
+	}{{"", 200}, {"?language=", 200}, {"?language=eng", 500}, {"?language=xx", 500}, {"?language=EN", 200}, {"?language=en-US", 200}, {"?language=de", 200}} {
 		if rec := f.get(t, root+tc.query); rec.Code != tc.code {
 			t.Fatalf("%s: %d want %d", tc.query, rec.Code, tc.code)
 		}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 // ---------------------------------------------------------------------------
@@ -559,6 +560,11 @@ func TestPrepareProbeFailureUsesEstimate(t *testing.T) {
 	// A catalogue runtime cannot safely bound the source when probing fails.
 	if !ps.Info.Estimated || ps.Info.Size != 10000 || ps.Info.Duration != 0 {
 		t.Fatalf("info = %+v", ps.Info)
+	}
+	caps := defaultCaps("vela-unverified")
+	caps.Protocol = "vela"
+	if _, err := h.m.PrepareSurface(context.Background(), owner, movieKey, caps, "", false); !errors.Is(err, frontend.ErrTrackSourceUnavailable) {
+		t.Fatalf("Vela accepted estimates or lost typed cause: %v", err)
 	}
 }
 

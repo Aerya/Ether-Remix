@@ -233,8 +233,8 @@ func TestReceiptBoundedSweepIgnoresExpiredBacklogForQuota(t *testing.T) {
 	if expired != 1 || live != 1 || headers != 2 {
 		t.Fatalf("expired=%d live=%d headers=%d", expired, live, headers)
 	}
-	if _, err = s.Issue(ctx, viewer, device, "jellyfin", ReceiptSubject{Kind: "title", ID: "another"}); err == nil {
-		t.Fatal("live quota bypassed")
+	if _, err = s.Issue(ctx, viewer, device, "jellyfin", ReceiptSubject{Kind: "title", ID: "another"}); err != nil {
+		t.Fatalf("unused live quota did not recover: %v", err)
 	}
 }
 

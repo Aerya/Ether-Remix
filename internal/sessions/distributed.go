@@ -20,6 +20,9 @@ func (b *Broker) transcodeSession(id string) (core.HLSSession, bool) {
 	if d := b.deps.DistributedHLS; d != nil && d.Allocated(id) {
 		return d.Session(id)
 	}
+	if b.deps.Transcoder == nil {
+		return nil, false
+	}
 	return b.deps.Transcoder.Session(id)
 }
 func (b *Broker) transcodeStop(id string) {

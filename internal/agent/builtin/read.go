@@ -343,6 +343,7 @@ func readTools(d Deps) []tools.Tool {
 				if err != nil {
 					return tools.Result{}, err
 				}
+				core.PublishDescribeProgress(ctx, nil, found)
 				out := make([]any, 0, len(found))
 				for _, t := range found {
 					out = append(out, titleSummary(t))
@@ -468,6 +469,7 @@ func readTools(d Deps) []tools.Tool {
 				if err != nil {
 					return tools.Result{}, err
 				}
+				core.PublishDescribeProgress(ctx, spec, preview.Items)
 				specJSON, err := json.Marshal(spec)
 				if err != nil {
 					return tools.Result{}, err

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -30,7 +31,7 @@ func rankedCandidates(hubs []core.Hub, err error) ([]experience.RankedCandidate,
 	}
 	out := make([]experience.RankedCandidate, len(hubs))
 	for i, h := range hubs {
-		out[i] = experience.RankedCandidate{ID: h.ID, Purpose: experience.CandidatePurpose(h), Title: h.Title, Type: h.Type, Style: h.Style, Promoted: h.Promoted, Items: h.Items, More: h.More, Key: h.Key, ItemCount: h.ItemCount}
+		out[i] = experience.RankedCandidate{ID: h.ID, PreviewOnFocus: h.PreviewOnFocus, RankedTop10: h.RankedTop10, Purpose: experience.CandidatePurpose(h), Title: h.Title, Type: h.Type, Style: h.Style, Promoted: h.Promoted, Items: h.Items, More: h.More, Key: h.Key, ItemCount: h.ItemCount}
 	}
 	return out, nil
 }
@@ -69,12 +70,14 @@ func (a *App) productionExperienceRows(ctx context.Context, req frontend.RowRequ
 	if req.Viewer == nil || a.personalize == nil {
 		return nil, core.ErrNotFound
 	}
-	if req.Purpose == frontend.RowNextUp && !a.personalize.ModelReady(req.Viewer.ID) {
+	// Next Up is viewer history even when a taste model is ready. Building
+	// discovery candidates here visits dozens of unrelated catalogue windows.
+	if req.Purpose == frontend.RowNextUp {
 		limit := req.Limit
 		if limit <= 0 {
 			limit = 20
 		}
-		items, err := a.experienceContinue(ctx, req.Viewer, libraries, visibility, limit)
+		items, err := a.experienceContinueKind(ctx, req.Viewer, libraries, visibility, core.TypeShow, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -122,6 +125,10 @@ func (a *App) productionExperienceRows(ctx context.Context, req frontend.RowRequ
 
 // experienceContinue supplies the shared continue/next-up service with real app dependencies.
 func (a *App) experienceContinue(ctx context.Context, viewer *core.User, libraries []experience.Library, surfaceVis experience.Visibility, limit int) ([]core.Title, error) {
+	return a.experienceContinueKind(ctx, viewer, libraries, surfaceVis, "", limit)
+}
+
+func (a *App) experienceContinueKind(ctx context.Context, viewer *core.User, libraries []experience.Library, surfaceVis experience.Visibility, kind core.MediaType, limit int) ([]core.Title, error) {
 	if a.state == nil || a.catalog == nil || a.safety == nil {
 		return nil, core.ErrNotFound
 	}
@@ -198,7 +205,14 @@ func (a *App) experienceContinue(ctx context.Context, viewer *core.User, librari
 		return a.catalog.Grandchildren(ctx, key)
 	}
 	var loadErr error
-	c := experience.Continue{State: a.state, Now: time.Now, FavoriteShows: a.favoriteShows, GetTitles: getTitles, PrefetchTitles: prefetch, Grandchildren: grandchildren, NextEpisode: a.catalog.NextStoredEpisode, NextEpisodes: a.catalog.NextStoredEpisodes, Visible: visibility.Visible,
+	c := experience.Continue{State: a.state, Now: time.Now, FavoriteShows: a.favoriteShows, GetTitles: getTitles, PrefetchTitles: prefetch, Grandchildren: grandchildren, NextEpisode: a.catalog.NextStoredEpisode, NextEpisodes: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]*core.Title, error) {
+		// Pending SQLite edits overlay persisted flags. Retain the state-aware
+		// walk until those bounded edits have drained, without flushing here.
+		if a.state.HasPendingWatch(viewer.ID) {
+			return a.catalog.NextStoredEpisodes(ctx, keys)
+		}
+		return a.catalog.NextUnwatchedStoredEpisodes(ctx, viewer.ID, keys)
+	}, Visible: visibility.Visible,
 		SameDayUnavailable: func(ctx context.Context, title *core.Title) bool {
 			var source core.AvailabilitySource
 			if a.resolver != nil {
@@ -211,6 +225,9 @@ func (a *App) experienceContinue(ctx context.Context, viewer *core.User, librari
 		},
 		OnError: func(err error) { loadErr = err },
 	}
+	if a.favorites != nil {
+		c.FavoriteShowsFor = a.favorites.HasTitles
+	}
 	if a.episodeorder != nil {
 		c.EpisodeOrder = a.episodeorder
 	}
@@ -218,7 +235,7 @@ func (a *App) experienceContinue(ctx context.Context, viewer *core.User, librari
 		c.Filter = a.discoveryPersonal.FilterContinue
 	}
 	c.Filter = experience.ContinueFilter(c.State, c.Filter)
-	items, _ := c.Row(ctx, viewer, "", limit)
+	items, _ := c.Row(ctx, viewer, kind, limit)
 	return items, loadErr
 }
 
@@ -263,5 +280,74 @@ func (a *App) experienceHomeFallback(ctx context.Context, req frontend.RowReques
 	for _, entry := range excluded {
 		keys = append(keys, entry.Key)
 	}
+	if req.HomeFallbackOnly {
+		return a.experienceHeroFallback(ctx, req, libraries, keys)
+	}
 	return experience.ColdHomeRows(ctx, req.Viewer, libraries, visibility, req.Limit, keys, a.catalog.Browse)
+}
+
+// experienceHeroFallback reads only the remaining slots, with art and policy
+// selected before LIMIT. The row service applies owner layout and receipts.
+func (a *App) experienceHeroFallback(ctx context.Context, req frontend.RowRequest, libraries []experience.Library, excluded []core.RatingKey) ([]frontend.Row, error) {
+	ctx = core.WithCatalogViewer(ctx, req.Viewer)
+	excluded = append(append([]core.RatingKey(nil), excluded...), req.ExcludeItems...)
+	remaining := min(max(req.Limit, 1), 6)
+	var rows []frontend.Row
+	type source struct {
+		library  experience.Library
+		trending bool
+	}
+	sources := map[string]source{}
+	candidates := []core.NeutralHomeRow{}
+	for _, trending := range []bool{true, false} {
+		for _, library := range libraries {
+			if !experience.SectionAllowed(req.Viewer, library.ID) {
+				continue
+			}
+			kind, purpose := "trending", frontend.RowRecommendation
+			if !trending {
+				kind, purpose = "recently-added", frontend.RowRecentlyAdded
+			}
+			id := "vela.hero." + kind + "." + strconv.Itoa(library.ID)
+			sources[id] = source{library: library, trending: trending}
+			candidates = append(candidates, core.NeutralHomeRow{ID: id, Kind: kind, Purpose: purpose, Type: library.Type, ItemCount: remaining})
+		}
+	}
+	// Apply owner source controls before spending slots or querying a hidden
+	// source, so a disabled trending row can still fill from recent releases.
+	situation, _ := ctx.Value(experienceSituationKey{}).(core.HomeSituation)
+	if situation.Now.IsZero() {
+		situation = situationFor(req)
+	}
+	allowed, err := a.personalize.FinalizeNeutralHomeFill(ctx, req.Viewer, situation, "home", candidates)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range allowed {
+		if remaining == 0 {
+			break
+		}
+		source := sources[candidate.ID]
+		filter := core.Filter{Type: source.library.Type, KnownAddedDate: true, MaxContentRating: req.Viewer.MaxContentRating, ExcludeKeys: excluded}
+		if a.availability != nil {
+			filter, err = a.availability.PagingFilter(ctx, filter)
+			if err != nil {
+				return nil, err
+			}
+		}
+		items, err := a.catalog.HeroCandidates(ctx, filter, remaining, source.trending)
+		if err != nil {
+			return nil, err
+		}
+		row := frontend.Row{ID: candidate.ID, Kind: candidate.Kind, Purpose: candidate.Purpose, Title: candidate.Kind}
+		for n := range items {
+			row.Entries = append(row.Entries, frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &items[n]})
+			excluded = append(excluded, items[n].Key)
+		}
+		remaining -= len(items)
+		if len(items) > 0 {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
 }

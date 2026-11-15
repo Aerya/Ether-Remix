@@ -153,3 +153,7 @@ Les collections Jellyfin/Emby utilisent le bit 60 pour leur vue virtuelle dans R
 ### Proxys spécifiques aux sources
 
 `internal/config/source_proxy.go`, `internal/egress/source_proxy.go` et `web/src/pse/SourceProxyFields.tsx` portent le routage par compte et par addon. Préserver les appels depuis `app/outbound.go`, les constructeurs et lectures `debrid`, les requêtes `stremio`, la validation et la restauration des secrets `admin` lors des synchronisations amont. Les payloads ne persistent que l’identifiant de l’addon ; aucun identifiant de proxy n’y est copié. Un proxy spécifique précède MediaFlow et la politique globale. Les tests `source_proxy_test.go` vérifient routage, redirections, lecture et protection des secrets.
+
+## Synchronisation du 15 novembre 2026
+
+Révision Ether intégrée : `13d21d35fd15980c13c2bca15a26ddb7e5b8734a`. Conserver le filtrage de découverte des collections, les messages de téléchargement local, les traductions des rangées Plex, la signature des profils de qualité, la priorité SubMaker et le routage MediaFlow lors des prochaines fusions. Les bibliothèques upstream utilisent désormais la source `catalogue` ; les bibliothèques issues des collections Remix restent disponibles. Le repère upstream avance avec cette résolution, sans changement des workflows de synchronisation.

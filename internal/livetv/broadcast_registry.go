@@ -280,3 +280,28 @@ func (r *broadcastRegistry) yieldIdle(except *broadcast) bool {
 	}
 	return len(idle) > 0 || r.yielding.Load() > 0
 }
+
+// A failed cold tune keeps no grace-period encoder running for an absent viewer.
+func (r *broadcastRegistry) discardCold(b *broadcast) {
+	r.mu.Lock()
+	b.startMu.Lock()
+	b.mu.Lock()
+	unused := b.viewers == 0
+	if unused {
+		b.closed = true
+		b.cancel()
+	}
+	b.mu.Unlock()
+	if unused {
+		for key, output := range r.outputs {
+			if output == b {
+				delete(r.outputs, key)
+			}
+		}
+	}
+	b.startMu.Unlock()
+	r.mu.Unlock()
+	if unused {
+		b.wg.Wait()
+	}
+}

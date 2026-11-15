@@ -68,7 +68,15 @@ func probe(ctx context.Context, r Runner, ffprobe, input string) (*core.MediaInf
 func probeMode(ctx context.Context, r Runner, ffprobe, input string, live bool) (*core.MediaInfo, error) {
 	var best *core.MediaInfo
 	var lastErr error
-	for i, a := range probeAttempts {
+	attempts := probeAttempts
+	if live {
+		// Endless feeds cannot afford the file probe’s 10-second fallback.
+		attempts = []probeAttempt{
+			{probesize: 512 << 10, analyzeDuration: 500 * time.Millisecond, timeout: 2 * time.Second},
+			{probesize: 2 << 20, analyzeDuration: 1500 * time.Millisecond, timeout: 3 * time.Second},
+		}
+	}
+	for i, a := range attempts {
 		info, err := probeOnceMode(ctx, r, ffprobe, input, a, live)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -87,7 +95,7 @@ func probeMode(ctx context.Context, r Runner, ffprobe, input string, live bool) 
 			markADTSProgramConfigs(ctx, r, ffprobe, input, info)
 			return info, nil
 		}
-		if i < len(probeAttempts)-1 {
+		if i < len(attempts)-1 {
 			lastErr = errors.New("incomplete stream parameters")
 		}
 	}
@@ -340,6 +348,14 @@ func mapStream(s ffprobeStream) (core.StreamInfo, bool) {
 			v := s.FieldOrder != "progressive"
 			si.ProbedInterlaced = &v
 		}
+		for _, side := range s.SideDataList {
+			if side["side_data_type"] != "Display Matrix" {
+				continue
+			}
+			if rotation, ok := side["rotation"].(float64); ok && !math.IsNaN(rotation) && !math.IsInf(rotation, 0) {
+				si.Rotation = &rotation
+			}
+		}
 		si.PixelFormat = probedColour(s.PixFmt)
 		si.DisplayAspectRatio = probedSAR(s.DAR)
 		if s.Refs != nil && *s.Refs >= 0 {
@@ -440,6 +456,16 @@ func mapStream(s ffprobeStream) (core.StreamInfo, bool) {
 		}
 		if si.Codec == "hevc" {
 			si.MalformedHEVC = malformedHEVCConfig(extra)
+			si.HEVCParameterSets = completeHEVCConfig(extra)
+			// Some ffprobe builds label frame-based interlaced HEVC as
+			// progressive. Explicit SPS interlace evidence must not grant
+			// clients permission to use a progressive-only raw path.
+			if f, err := hevcSPS(hevcConfigSPS(extra)); err == nil && f.interlaced != nil && *f.interlaced {
+				setScanFact(&si, true)
+				if si.FieldOrder == "progressive" {
+					si.FieldOrder = ""
+				}
+			}
 		}
 	case "audio":
 		si.Channels = s.Channels

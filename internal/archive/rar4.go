@@ -79,7 +79,7 @@ func readRAR4(r io.ReaderAt, size int64, o RAROptions) (*RARVolume, error) {
 				return nil, err
 			}
 			length := int64(binary.LittleEndian.Uint16(base[5:]))
-			if length < rar4BaseLen || length > size-pos {
+			if length < rar4BaseLen || length > size-pos || (o.MaxHeaderBytes > 0 && length > o.MaxHeaderBytes) {
 				return nil, fmt.Errorf("archive: invalid RAR4 header size: %w", ErrCorrupt)
 			}
 			h = make([]byte, length)
@@ -277,6 +277,8 @@ func parseRAR4File(h []byte, flags uint16) (RARFile, int64, error) {
 		return f, 0, fmt.Errorf("name (%d bytes) overflows header: %w", nameSize, ErrCorrupt)
 	}
 	f.Name = decodeRAR4Name(h[p:p+nameSize], flags&rar4FileUnicode != 0)
+	f.NonRegular = (h[15] == 3 && binary.LittleEndian.Uint32(h[28:])&0xf000 != 0 && binary.LittleEndian.Uint32(h[28:])&0xf000 != 0x8000 && binary.LittleEndian.Uint32(h[28:])&0xf000 != 0x4000) || (h[15] == 2 && binary.LittleEndian.Uint32(h[28:])&0x400 != 0)
+	f.UnsafeName = strings.Contains(decodeRAR4RawName(h[p:p+nameSize], flags&rar4FileUnicode != 0), "\\")
 	f.Stored = f.Method == rar4MethodStore
 	f.Encrypted = flags&rar4FilePassword != 0
 	f.Solid = flags&rar4FileSolid != 0
@@ -290,6 +292,10 @@ func parseRAR4File(h []byte, flags uint16) (RARFile, int64, error) {
 // field is either plain UTF-8 (no NUL) or an OEM name, a NUL and RAR's
 // compact UTF-16 encoding relative to that name.
 func decodeRAR4Name(field []byte, unicode bool) string {
+	return strings.ReplaceAll(decodeRAR4RawName(field, unicode), `\`, "/")
+}
+
+func decodeRAR4RawName(field []byte, unicode bool) string {
 	var name string
 	nul := -1
 	for i, c := range field {
@@ -312,7 +318,7 @@ func decodeRAR4Name(field []byte, unicode bool) string {
 		}
 		name = bytesToString(field)
 	}
-	return strings.ReplaceAll(name, `\`, "/")
+	return name
 }
 
 // bytesToString keeps valid UTF-8 and otherwise maps each byte to the rune

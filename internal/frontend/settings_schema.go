@@ -32,7 +32,7 @@ type SettingsSection struct {
 
 // SettingsField is one setting. Kind is one of: serverName (read-only name
 // from General settings), port, bool, number, viewer (the DLNA browse-as
-// picker), rowKinds (personalized row kind switches) or note (static text
+// picker), rowKinds (personalized row kind switches), string, or note (static text
 // named by Key, for example "addon", "files" or "playlist").
 type SettingsField struct {
 	Key     string   `json:"key"`
@@ -154,6 +154,10 @@ func (s SettingsSchema) validate(settings Settings) error {
 
 func (f SettingsField) validateValue(v any) error {
 	switch f.Kind {
+	case "string":
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
 	case "bool":
 		if _, ok := v.(bool); !ok {
 			return fmt.Errorf("invalid %s", f.Key)

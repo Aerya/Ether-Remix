@@ -93,14 +93,14 @@ func testIntegrationAdaptiveRapidMediaHandoff(t *testing.T, copyPrimary bool) {
 				}
 			} else {
 				rec := httptest.NewRecorder()
-				s.ServeRungSegment(rec, httptest.NewRequest(http.MethodGet, "/", nil), s.rungs[len(s.rungs)-1].id, 2)
+				s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/", nil), 2), s.rungs[len(s.rungs)-1].id, 2)
 				if rec.Code != http.StatusOK {
 					t.Fatalf("switch %d %s", rec.Code, rec.Body.String())
 				}
 				body = rec.Body.Bytes()
 				if container == ContainerFMP4 {
 					rec = httptest.NewRecorder()
-					s.ServeRungSegment(rec, httptest.NewRequest(http.MethodGet, "/", nil), s.rungs[len(s.rungs)-1].id, InitSegment)
+					s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/", nil), InitSegment), s.rungs[len(s.rungs)-1].id, InitSegment)
 					if rec.Code != 200 {
 						t.Fatal("missing switched init")
 					}
@@ -113,7 +113,7 @@ func testIntegrationAdaptiveRapidMediaHandoff(t *testing.T, copyPrimary bool) {
 					nextAudioBody = body
 					if container == ContainerFMP4 {
 						rec := httptest.NewRecorder()
-						s.ServeSegment(rec, httptest.NewRequest(http.MethodGet, "/", nil), InitSegment)
+						s.ServeSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/", nil), InitSegment), InitSegment)
 						previousAudioBody = append(append([]byte(nil), rec.Body.Bytes()...), previousBody...)
 						nextAudioBody = append(append([]byte(nil), init...), body...)
 					}

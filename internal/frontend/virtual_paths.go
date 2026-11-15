@@ -16,3 +16,10 @@ type VirtualPaths interface {
 	// WebDAV is disabled or unreachable for the requesting client.
 	Base(context.Context, *http.Request) (string, error)
 }
+
+// CachedVirtualPaths resolves only from an existing authorized index. It must
+// not walk the library or schedule index work on a list request. A cold index
+// returns no paths, allowing the protocol's bounded file-label fallback.
+type CachedVirtualPaths interface {
+	CachedPaths(context.Context, *Viewer, Device, []RatingKey) (map[RatingKey]string, error)
+}

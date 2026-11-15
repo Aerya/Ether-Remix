@@ -59,7 +59,7 @@ func TestIntegrationSlowSegmentIsPadded(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer hs.Close()
-			client := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hs.ServeSegment(w, r, 0) }))
+			client := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hs.ServeSegment(w, mediaRequest(hs, r, 0), 0) }))
 			defer client.Close()
 			resp, err := http.Get(client.URL)
 			if err != nil {
@@ -185,7 +185,7 @@ func TestIntegrationPaddedSegmentThatNeverArrivesAborts(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer hs.Close()
-			client := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hs.ServeSegment(w, r, 0) }))
+			client := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hs.ServeSegment(w, mediaRequest(hs, r, 0), 0) }))
 			defer client.Close()
 			start := time.Now()
 			resp, err := http.Get(client.URL)

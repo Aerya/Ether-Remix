@@ -104,7 +104,7 @@ type Service struct {
 	flights     flight.Group[string, string]
 	negative    map[string]time.Time // title+lang -> when nothing was found
 	quotaTill   time.Time            // downloads refused until then
-	videoHashes map[core.RatingKey]videoHashEntry
+	videoHashes map[videoHashKey]videoHashEntry
 
 	// pickMu serialises writes of a title's picked subtitle: concurrent
 	// picks of one file rename onto the same path, which Windows refuses
@@ -180,7 +180,7 @@ func New(opts Options) *Service {
 		negTTL:         opts.NegativeTTL,
 		maxWait:        opts.MaxRetryAfter,
 		now:            opts.Now,
-		videoHashes:    map[core.RatingKey]videoHashEntry{},
+		videoHashes:    map[videoHashKey]videoHashEntry{},
 		alignLanguages: alignLangs,
 		speechSem:      make(chan struct{}, 2),
 		ffmpeg:         opts.FFmpeg,
@@ -257,6 +257,7 @@ type Candidate struct {
 	FileID        int64
 	FileName      string
 	Language      string
+	Releases      []string // provider-declared compatible releases
 	Release       string
 	DownloadCount int
 	Ratings       float64
@@ -317,7 +318,7 @@ func imdbNumeric(id string) string {
 // searchQuery builds OpenSubtitles search params for a title + language.
 func searchQuery(title *core.Title, lang string) url.Values {
 	q := url.Values{}
-	q.Set("languages", queryLang(lang))
+	q.Set("languages", providerLanguages(lang, queryLang))
 	q.Set("order_by", "download_count")
 	q.Set("order_direction", "desc")
 	switch title.Type {
@@ -368,6 +369,14 @@ func (s *Service) Search(ctx context.Context, title *core.Title, lang, releaseNa
 
 // SearchWithHash prefers exact cached-source matches; empty hash uses release ranking.
 func (s *Service) SearchWithHash(ctx context.Context, title *core.Title, lang, releaseName, movieHash string) ([]Candidate, error) {
+	cached, size := s.lookupVideoHash(title, releaseName)
+	if cached != movieHash {
+		size = 0
+	}
+	return s.searchWithHashAndSize(ctx, title, lang, releaseName, movieHash, size)
+}
+
+func (s *Service) searchWithHashAndSize(ctx context.Context, title *core.Title, lang, releaseName, movieHash string, videoSize int64) ([]Candidate, error) {
 	if title == nil {
 		return nil, fmt.Errorf("nil title")
 	}
@@ -384,8 +393,11 @@ func (s *Service) SearchWithHash(ctx context.Context, title *core.Title, lang, r
 			}
 		}
 		q.Set("moviehash", movieHash)
+		if videoSize > 0 {
+			q.Set("moviebytesize", strconv.FormatInt(videoSize, 10))
+		}
 	}
-	cacheKey := q.Encode()
+	cacheKey := "opensubtitles:" + q.Encode() + "|" + providerLanguages(lang, func(l string) string { return l })
 	s.mu.Lock()
 	until, missed := s.negative[cacheKey]
 	if missed && !s.now().Before(until) {
@@ -396,7 +408,7 @@ func (s *Service) SearchWithHash(ctx context.Context, title *core.Title, lang, r
 	if missed {
 		return nil, nil
 	}
-	u := s.base + "/subtitles?" + cacheKey
+	u := s.base + "/subtitles?" + q.Encode()
 	resp, err := s.send(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
@@ -426,7 +438,7 @@ func (s *Service) SearchWithHash(ctx context.Context, title *core.Title, lang, r
 		if len(a.Files) == 0 {
 			continue
 		}
-		if lang != "" && a.Language != "" && langtag.MatchTier(lang, a.Language) == 0 {
+		if lang != "" && !matchesSearchLanguages(lang, a.Language) {
 			continue // the API matched a different language variant
 		}
 		out = append(out, Candidate{
@@ -1027,6 +1039,8 @@ func (s *Service) fetchAndCache(ctx context.Context, id string, c Candidate, key
 // the languages parameter (it splits Portuguese and Chinese by region).
 func queryLang(l string) string {
 	switch n := langtag.Normalize(l); n {
+	case "nb":
+		return "no"
 	case "pt":
 		return "pt-pt"
 	case "zh":

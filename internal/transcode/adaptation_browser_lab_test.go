@@ -96,7 +96,7 @@ func TestAdaptiveBrowserLab(t *testing.T) {
 				return
 			}
 		}
-		s.ServeRungSegment(w, r, id, n)
+		s.ServeRungSegment(w, mediaRequest(s, r, n), id, n)
 	})
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

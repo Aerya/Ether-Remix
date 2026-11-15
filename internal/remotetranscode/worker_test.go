@@ -35,13 +35,14 @@ func (l *fakeLease) InputErr() error {
 }
 
 type fakeSession struct {
-	observed observation
-	soft     *int
-	touched  bool
-	playback string
-	done     chan struct{}
-	stopped  bool
-	input    *fakeLease
+	mediaName string
+	observed  observation
+	soft      *int
+	touched   bool
+	playback  string
+	done      chan struct{}
+	stopped   bool
+	input     *fakeLease
 }
 
 func (s *fakeSession) ID() string { return "backend" }
@@ -50,6 +51,7 @@ func (s *fakeSession) ServePlaylist(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("#EXTM3U\n"))
 }
 func (s *fakeSession) ServeSegment(w http.ResponseWriter, r *http.Request, n int) {
+	s.mediaName = r.URL.Path
 	w.Header().Set("Content-Range", "bytes 0-2/3")
 	w.WriteHeader(206)
 	w.Write([]byte("abc"))

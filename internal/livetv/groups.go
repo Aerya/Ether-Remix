@@ -76,6 +76,13 @@ func (s *Service) applyGroupRules(ctx context.Context, src *Source, cs []Channel
 			drop[key] = true
 		}
 	}
+	adult := map[string]bool{}
+	for _, g := range groups {
+		adult[normGroup(g.Name)] = g.Adult
+	}
+	for i := range cs {
+		cs[i].ProviderAdult = cs[i].adult || adult[normGroup(cs[i].Group)]
+	}
 	src.Groups = groups
 	if len(drop) > 0 {
 		kept := cs[:0]

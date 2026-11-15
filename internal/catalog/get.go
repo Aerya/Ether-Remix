@@ -878,6 +878,17 @@ func (c *Catalog) NextStoredEpisode(ctx context.Context, episode core.RatingKey)
 // (or, before, every episode of each window) read titles' facts and their
 // shows' seasons fifty times per Home request.
 func (c *Catalog) NextStoredEpisodes(ctx context.Context, episodes []core.RatingKey) (map[core.RatingKey]*core.Title, error) {
+	return c.nextStoredEpisodes(ctx, episodes, nil)
+}
+
+// NextUnwatchedStoredEpisodes skips completed successors with indexed state
+// probes, before selecting each show's bounded window. Home must not walk a
+// long watched season one episode (and one status query) at a time.
+func (c *Catalog) NextUnwatchedStoredEpisodes(ctx context.Context, uid int64, episodes []core.RatingKey) (map[core.RatingKey]*core.Title, error) {
+	return c.nextStoredEpisodes(ctx, episodes, &uid)
+}
+
+func (c *Catalog) nextStoredEpisodes(ctx context.Context, episodes []core.RatingKey, uid *int64) (map[core.RatingKey]*core.Title, error) {
 	out := map[core.RatingKey]*core.Title{}
 	if c == nil || c.db == nil {
 		return out, nil
@@ -908,6 +919,10 @@ func (c *Catalog) NextStoredEpisodes(ctx context.Context, episodes []core.Rating
 			wargs := []any{show, w.from.Season(), w.from.Season(), w.from.Episode()}
 			if w.from.Season() <= 0 {
 				cond, wargs = `season>0`, []any{show}
+			}
+			if uid != nil {
+				cond += ` AND NOT EXISTS(SELECT 1 FROM state_watch watched WHERE watched.user_id=? AND watched.rating_key=catalog_titles.key AND watched.view_count>0 AND watched.view_offset_ns<=0 LIMIT 1 OFFSET 0)`
+				wargs = append(wargs, *uid)
 			}
 			branches = append(branches, `SELECT * FROM (SELECT `+titleCols+`,`+strconv.Itoa(start+i)+` AS w FROM catalog_titles WHERE type='episode' AND show_key=? AND `+cond+` ORDER BY season ASC, episode ASC LIMIT 8) AS n`+strconv.Itoa(i))
 			args = append(args, wargs...)

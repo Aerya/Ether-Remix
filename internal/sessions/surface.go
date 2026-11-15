@@ -117,6 +117,16 @@ func (s surface) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 	return s.broker.StartStream(ctx, a, id, r)
 }
+func (s surface) StreamDecision(ctx context.Context, a frontend.SessionAccess, id string) (core.Decision, error) {
+	if a.Protocol != s.protocol {
+		return core.Decision{}, core.ErrUnauthorized
+	}
+	if reader, ok := s.broker.(frontend.StreamDecisionReader); ok {
+		return reader.StreamDecision(ctx, a, id)
+	}
+	return core.Decision{}, core.ErrNotAvailable
+}
+
 func (s surface) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id string, index int, format string) (string, error) {
 	if a.Protocol != s.protocol {
 		return "", core.ErrUnauthorized
@@ -774,4 +784,59 @@ func (s surface) policy() core.SessionPolicy {
 		return b.policy(s.protocol)
 	}
 	return core.SessionPolicy{}
+}
+
+func (s surface) AudioFallbackAvailable() bool {
+	service, ok := s.broker.(frontend.AudioFallback)
+	return s.protocol == "vela" && ok && service.AudioFallbackAvailable()
+}
+func (s surface) StartAudioFallback(ctx context.Context, a frontend.SessionAccess, id string, track int, pos time.Duration) (frontend.AudioFallbackResult, error) {
+	service, ok := s.broker.(frontend.AudioFallback)
+	if !ok || a.Protocol != s.protocol {
+		return frontend.AudioFallbackResult{}, core.ErrUnauthorized
+	}
+	return service.StartAudioFallback(ctx, a, id, track, pos)
+}
+func (s surface) StopAudioFallback(ctx context.Context, a frontend.SessionAccess, id, audioID string) error {
+	service, ok := s.broker.(frontend.AudioFallback)
+	if !ok || a.Protocol != s.protocol {
+		return core.ErrUnauthorized
+	}
+	return service.StopAudioFallback(ctx, a, id, audioID)
+}
+
+func (s surface) ProactiveFallbackAvailable() bool {
+	q, ok := s.broker.(frontend.QualitySessions)
+	return s.protocol == "vela" && ok && q.ProactiveFallbackAvailable()
+}
+func (s surface) QualityRungs(ctx context.Context, a frontend.SessionAccess, id string) ([]core.HLSRung, error) {
+	q, ok := s.broker.(frontend.QualitySessions)
+	if !ok || a.Protocol != s.protocol {
+		return nil, core.ErrNotAvailable
+	}
+	return q.QualityRungs(ctx, a, id)
+}
+func (s surface) PrepareQuality(ctx context.Context, a frontend.SessionAccess, id, rung string, pos time.Duration) (string, time.Duration, error) {
+	q, ok := s.broker.(frontend.QualitySessions)
+	if !ok || a.Protocol != s.protocol {
+		return "", 0, core.ErrNotAvailable
+	}
+	return q.PrepareQuality(ctx, a, id, rung, pos)
+}
+
+func (s surface) QualityLimitations(ctx context.Context, a frontend.SessionAccess, id string) ([]core.QualityLimitation, error) {
+	q, ok := s.broker.(interface {
+		QualityLimitations(context.Context, frontend.SessionAccess, string) ([]core.QualityLimitation, error)
+	})
+	if !ok || a.Protocol != s.protocol {
+		return nil, core.ErrNotAvailable
+	}
+	return q.QualityLimitations(ctx, a, id)
+}
+
+func (s surface) LiveWindow(ctx context.Context, id string) (frontend.LiveWindow, error) {
+	if reader, ok := s.broker.(frontend.LiveWindowReader); ok {
+		return reader.LiveWindow(ctx, id)
+	}
+	return frontend.LiveWindow{}, core.ErrNotAvailable
 }

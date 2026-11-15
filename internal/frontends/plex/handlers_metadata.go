@@ -270,6 +270,18 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				pr.versionFlowKey = t.Key
 			}
 			md = s.detail(ctx, pr, t, metadataOptionOn(q.Get("includeChildren")), metadataOptionOn(q.Get("includeOnDeck")), metadataOptionOn(q.Get("includeRelated")), metadataOptionOn(q.Get("includeExtras")), q.Get("extraTypes"))
+			if len(keys) == 1 {
+				if s.host.Themes != nil && s.host.Themes.Theme(*t, true) {
+					md.Theme = "/library/metadata/" + t.Key.String() + "/theme/1"
+					if t.Type == frontend.TypeEpisode {
+						md.GrandparentTheme = md.Theme
+						md.ParentTheme = md.Theme
+					}
+					if t.Type == frontend.TypeSeason {
+						md.ParentTheme = md.Theme
+					}
+				}
+			}
 			if q.Get("includePreferences") == "1" {
 				md.Preferences = s.itemTrackPreferences(ctx, pr, t)
 			}
@@ -314,6 +326,7 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 	items := s.renderTitles(ctx, pr, ts, renderOpts{detail: true, media: true})
 	s.applyLeafCounts(ctx, pr, items, ts, memo)
 	md := items[0]
+
 	// Per-viewer decision header (#31); detail pages only, never lists.
 	s.decorateDetail(ctx, pr, t, &md)
 	if children && t.Type == frontend.TypeShow {
@@ -1105,6 +1118,9 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 			}
 			mc.Size = len(mc.Metadata)
 			mc.SetPage(min(offset, total), total)
+			if c.RankedTop10 {
+				paintRankedCollection(mc, offset)
+			}
 			s.write(w, r, mc)
 			return
 		}
@@ -1128,6 +1144,9 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 		mc.Metadata = s.renderTitles(ctx, pr, uniq[offset:end], renderOpts{media: true, availabilityInSQL: true})
 		mc.Size = len(mc.Metadata)
 		mc.SetPage(offset, total)
+		if c.RankedTop10 {
+			paintRankedCollection(mc, offset)
+		}
 		s.write(w, r, mc)
 		return
 	}
@@ -1163,6 +1182,9 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 	offset = min(offset, page.Total)
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(offset, page.Total)
+	if c.RankedTop10 {
+		paintRankedCollection(mc, offset)
+	}
 	s.write(w, r, mc)
 }
 
@@ -1174,24 +1196,13 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request, k front
 func (s *Server) collectionMemberPage(w http.ResponseWriter, r *http.Request, c *frontend.Collection, k frontend.RatingKey) {
 	ctx := withStoredPolicy(r.Context())
 	pr := FromContext(ctx)
-	selected, _, err := s.shelfSnapshotResult(ctx, pr, frontend.Hub{ID: "collection.grid." + k.String(), Key: k}, hubCtx{}, func() ([]frontend.Title, []model.Metadata, error) {
-		page, err := s.collectionSelection().Page(ctx, pr.User, c, k, collectionDevice(ctx), 0, int(^uint(0)>>1))
-		if err != nil {
-			return nil, nil, err
-		}
-		members := s.openableTitles(ctx, pr.User, page.Items, false)
-		identities := make([]model.Metadata, 0, len(members))
-		for _, title := range members {
-			identities = append(identities, model.Metadata{RatingKey: title.Key.String()})
-		}
-		return members, identities, nil
-	})
+	selected, _, err := s.collectionSnapshot(ctx, pr, c, k, "")
 	if err != nil {
 		s.writeErr(w, r, err)
 		return
 	}
 	// Retain the discovery cut, but recheck current authorization before paging.
-	selected = s.openableTitles(ctx, pr.User, selected, true)
+	selected = s.openableTitles(withShelfMembers(ctx, selected), pr.User, selected, true)
 	offset, size := pr.pageOf(0)
 	total := len(selected)
 	offset = min(offset, total)
@@ -1200,10 +1211,53 @@ func (s *Server) collectionMemberPage(w http.ResponseWriter, r *http.Request, c 
 	if strings.HasPrefix(r.URL.Path, "/library/metadata/") {
 		mc.SetSyncProjection(true)
 	}
-	mc.Metadata = s.renderTitles(ctx, pr, selected[offset:end], renderOpts{media: true, availabilityInSQL: true})
+	mc.Metadata = s.renderTitles(withShelfMembers(ctx, selected[offset:end]), pr, selected[offset:end], renderOpts{media: true, availabilityInSQL: true})
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(offset, total)
+	if c.RankedTop10 {
+		paintRankedCollection(mc, offset)
+	}
 	s.write(w, r, mc)
+}
+
+// Collection grids and previews read the same source order and admission cut.
+// The source build hash changes on edits or ordered membership changes, not
+// when show facts (air dates/availability) change while a viewer is browsing.
+func (s *Server) collectionSnapshot(ctx context.Context, pr *Request, c *frontend.Collection, k frontend.RatingKey, mediaType frontend.MediaType) ([]frontend.Title, string, error) {
+	h := frontend.Hub{ID: "collection.grid." + k.String(), Key: k}
+	if mediaType != "" {
+		h.ID += "." + string(mediaType)
+	}
+	revision := c.MembershipRevision
+	if revision == "" {
+		revision = c.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return s.shelfSnapshotRevision(ctx, pr, h, hubCtx{}, revision, func() ([]frontend.Title, []model.Metadata, error) {
+		var members []frontend.Title
+		if mediaType != "" {
+			// Filter a projection of the canonical cut, never a fresh source read.
+			all, _, err := s.collectionSnapshot(ctx, pr, c, k, "")
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, title := range all {
+				if title.Type == mediaType {
+					members = append(members, title)
+				}
+			}
+		} else {
+			page, err := s.collectionSelection().Page(ctx, pr.User, c, k, collectionDevice(ctx), 0, int(^uint(0)>>1))
+			if err != nil {
+				return nil, nil, err
+			}
+			members = s.openableTitles(withStoredPolicy(ctx), pr.User, page.Items, false)
+		}
+		identities := make([]model.Metadata, 0, len(members))
+		for _, title := range members {
+			identities = append(identities, model.Metadata{RatingKey: title.Key.String()})
+		}
+		return members, identities, nil
+	})
 }
 
 func (s *Server) collectionItemsContainer(c *frontend.Collection, k frontend.RatingKey) *model.MediaContainer {

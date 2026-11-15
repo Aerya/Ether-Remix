@@ -37,6 +37,8 @@ type Continue struct {
 	SectionAllowed     func(*core.User, core.MediaType) bool
 	OnError            func(error)
 	FavoriteShows      func(context.Context, *core.User) (map[core.RatingKey]bool, error)
+	// FavoriteShowsFor checks only the already-visible candidate series.
+	FavoriteShowsFor func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
 	// Unrestricted is a trusted policy capability; nil fails closed. It is
 	// supplied only when the catalogue and policy authorize the legacy path.
 	Unrestricted func(*core.User) bool
@@ -108,6 +110,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 	// Each show's first next episode and its watch state are read up front
 	// in one batch; the walk below reads further only past a watched one.
 	firstNext := map[core.RatingKey]*core.Title{}
+	firstNextRead := false
 	var walk []core.RatingKey
 	for _, h := range recent {
 		if ctx.Err() == nil && statuses[h.Key].ViewCount != 0 && !grouped[core.ShowKey(h.Key.TMDB())] {
@@ -117,6 +120,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 	if c.NextEpisodes != nil && len(walk) > 0 {
 		if got, err := c.NextEpisodes(ctx, walk); err == nil {
 			firstNext = got
+			firstNextRead = true
 		}
 	} else {
 		for _, k := range walk {
@@ -132,9 +136,11 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 		}
 	}
 	nextStates := map[core.RatingKey]core.WatchStatus{}
+	nextStatesRead := false
 	if len(nextKeys) > 0 {
 		if got, err := c.State.GetMany(ctx, viewer.ID, nextKeys); err == nil {
 			nextStates = got
+			nextStatesRead = true
 		}
 	}
 	for _, h := range recent {
@@ -160,18 +166,19 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 		}
 		for n := 0; n < 32; n++ {
 			var next *core.Title
+			var nextErr error
 			if grouped[core.ShowKey(current.TMDB())] {
 				if n >= len(ordered) {
 					break
 				}
 				next = &ordered[n]
 			} else {
-				if n == 0 && firstNext[current] != nil {
+				if n == 0 && (firstNextRead || firstNext[current] != nil) {
 					next = firstNext[current]
 				} else {
-					next, err = c.NextEpisode(ctx, current)
+					next, nextErr = c.NextEpisode(ctx, current)
 				}
-				if err != nil || next == nil || next.Key == current {
+				if nextErr != nil || next == nil || next.Key == current {
 					break
 				}
 			}
@@ -186,7 +193,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 				break
 			}
 			st, ok := nextStates[next.Key]
-			if !ok || n > 0 {
+			if (!ok && (!nextStatesRead || grouped[core.ShowKey(h.Key.TMDB())])) || n > 0 {
 				var e error
 				if st, e = c.State.Get(ctx, viewer.ID, next.Key); e != nil {
 					break
@@ -259,6 +266,21 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 		state[st.Key] = st
 	}
 	candidates := c.GetTitles(ctx, keys)
+	// Visibility checks the episode's parent. Preload all parents once, just
+	// as appendNext does for completed episodes, before checking candidates.
+	if c.PrefetchTitles != nil {
+		seen := map[core.RatingKey]bool{}
+		var shows []core.RatingKey
+		for _, title := range candidates {
+			if title.ShowKey != 0 && !seen[title.ShowKey] {
+				seen[title.ShowKey] = true
+				shows = append(shows, title.ShowKey)
+			}
+		}
+		if len(shows) > 0 {
+			c.PrefetchTitles(ctx, shows)
+		}
+	}
 	titles := make([]core.Title, 0, len(candidates))
 	for i := range candidates {
 		allowed := unrestricted || c.Visible(ctx, viewer, &candidates[i])
@@ -278,7 +300,23 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 		}
 		return titles[i].Key < titles[j].Key
 	})
-	if c.FavoriteShows != nil {
+	if c.FavoriteShowsFor != nil {
+		seen := map[core.RatingKey]bool{}
+		var keys []core.RatingKey
+		for _, title := range titles {
+			if title.Type != core.TypeEpisode {
+				continue
+			}
+			key := core.ShowKey(title.Key.TMDB())
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+		if favorites, err := c.FavoriteShowsFor(ctx, viewer, keys); err == nil {
+			PrioritizeFavoriteShows(titles, favorites)
+		}
+	} else if c.FavoriteShows != nil {
 		if favorites, err := c.FavoriteShows(ctx, viewer); err == nil {
 			PrioritizeFavoriteShows(titles, favorites)
 		}

@@ -66,11 +66,11 @@ func (s *Service) resolvePreferred(ctx context.Context, req core.ResolveRequest,
 		}
 	}
 	if index < 0 {
+		reason := candidateReason(trace, pinID)
+		note(PinRejected, reason, "rejected: "+reason)
 		if req.PreferredOnly {
 			return out, core.ErrNotAvailable
 		}
-		reason := candidateReason(trace, pinID)
-		note(PinRejected, reason, "rejected: "+reason)
 		s.log.Info("preferred release not among candidates; using normal ranking", "title", req.Title.Key, "prefer", prefer)
 		return out, nil
 	}

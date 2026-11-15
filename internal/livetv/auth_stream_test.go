@@ -29,7 +29,12 @@ func (p *authLiveProbeFixture) ProbeLive(ctx context.Context, input string) (*co
 		res.Body.Close()
 		p.body = string(b)
 	}
-	return p.fixtureLiveProber.ProbeLive(ctx, input)
+	info, err := p.fixtureLiveProber.ProbeLive(ctx, input)
+	if info != nil {
+		// An audible input, so silent-source deferral does not reorder candidates.
+		info.Streams = append(info.Streams, core.StreamInfo{Type: "audio", Codec: "aac", Channels: 2})
+	}
+	return info, err
 }
 
 func (p *authLiveProbeFixture) Decide(core.MediaInfo, core.ClientCaps, core.DecideOptions) core.Decision {

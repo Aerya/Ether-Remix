@@ -66,6 +66,10 @@ type inputRelay struct {
 }
 
 type inputGrant struct {
+	variantCaps   core.ClientCaps // immutable input quality ceilings
+	variantLogged sync.Once
+
+	login        *loginLease
 	log          *slog.Logger // immutable, credential-free session correlation
 	token        string
 	origin       string      // the only origin that receives authentication
@@ -84,6 +88,7 @@ type inputGrant struct {
 	// original source entry, not the resolved URL); immutable.
 	histChannel string
 	histSrc     StreamSource
+	admitting   atomic.Bool // cold admission tries another input after one refusal
 	reported    atomic.Bool // the grant's session has been counted in history
 	service     *Service
 
@@ -184,6 +189,20 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 	if source == "" && c.SourceID != "" && (src.ID == stableID(c.ID, "playlist") || len(c.StreamSources) <= 1) {
 		source = c.SourceID
 	}
+	lease, err := s.leaseLogin(ss.ctx, source, src.URL, headers)
+	if err != nil {
+		return err
+	}
+	accepted := false
+	defer func() {
+		if !accepted {
+			s.releaseLogin(lease)
+		}
+	}()
+	if lease != nil {
+		src.URL = lease.raw
+		headers = lease.headers
+	}
 	u, err := url.Parse(src.URL)
 	if err != nil || !validHTTP(src.URL) {
 		return core.ErrNotAvailable
@@ -199,12 +218,12 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 	if reserve == 0 {
 		lead = 0
 	}
-	ctx, cancel := context.WithCancel(s.ctx)
+	ctx, cancel := context.WithCancel(s.serviceContext())
 	histSrc := src
 	if ss.inputSource.ID != "" {
 		histSrc = ss.inputSource
 	}
-	g := &inputGrant{reserve: reserve, lead: lead, steady: steady, service: s, histChannel: c.ID, histSrc: histSrc,
+	g := &inputGrant{variantCaps: core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}, login: lease, reserve: reserve, lead: lead, steady: steady, service: s, histChannel: c.ID, histSrc: histSrc,
 		log:   s.sessionLog(ss).With("input", src.ID),
 		token: base64.RawURLEncoding.EncodeToString(b[:]), origin: relayOrigin(u), headers: headers.Clone(), mediaHeaders: redirectMediaHeaders(src.Headers),
 		ctx: ctx, cancel: cancel, slots: make(chan struct{}, relayConcurrency), source: source,
@@ -225,6 +244,17 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 		cancel()
 		return core.ErrNotAvailable
 	}
+	if lease != nil {
+		s.loginPool.mu.Lock()
+		if lease.lost {
+			s.loginPool.mu.Unlock()
+			cancel()
+			return ErrProviderBusy
+		}
+		lease.grants[g] = struct{}{}
+		s.loginPool.mu.Unlock()
+	}
+	accepted = true
 	r.grants[tokenKey(g.token)] = g
 	r.bySess[ss] = g
 	r.health.Store(ss, g)
@@ -271,6 +301,12 @@ func (r *inputRelay) dropLocked(ss *session, g *inputGrant) {
 	delete(r.bySess, ss)
 	// Synchronous: a retune that follows finds the old connection closed.
 	r.taps.release(g)
+	if g.login != nil {
+		g.service.loginPool.mu.Lock()
+		delete(g.login.grants, g)
+		g.service.loginPool.mu.Unlock()
+		g.service.releaseLogin(g.login)
+	}
 }
 
 // relayInput is the URL ffmpeg and ffprobe read the session's input from.
@@ -287,7 +323,7 @@ func (s *Service) relayInput(ss *session) (string, error) {
 
 func (s *Service) startRelayLocked() error {
 	r := &s.inputRelay
-	if s.ctx.Err() != nil {
+	if s.serviceContext().Err() != nil {
 		return core.ErrNotAvailable
 	}
 	if r.host != "" {
@@ -309,7 +345,7 @@ func (s *Service) startRelayLocked() error {
 	r.grants, r.bySess = map[[sha256.Size]byte]*inputGrant{}, map[*session]*inputGrant{}
 	go srv.Serve(ln)
 	go func() {
-		<-s.ctx.Done()
+		<-s.serviceContext().Done()
 		srv.Close()
 	}()
 	return nil
@@ -525,6 +561,15 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		return
 	}
 	if hls {
+		if isMasterPlaylist(b) {
+			b = selectedHLSMaster(b, base, g.variantCaps)
+			g.variantLogged.Do(func() {
+				m := parseMasterPlaylist(b, base)
+				if v, ok := pickVariant(m, g.variantCaps); ok && g.log != nil {
+					g.log.Info("live HLS input variant selected", "height", v.height, "bandwidth", v.bandwidth, "audio", variantHasAudio(v), "separate_audio", m.demuxedAudio[v.audio], "max_height", g.variantCaps.MaxHeight, "max_bitrate_kbps", g.variantCaps.MaxBitrateKbps)
+				}
+			})
+		}
 		// Health, and for Steady the reserve window (reserve_hls.go).
 		var events []UpstreamEvent
 		h := g.hlsState()
@@ -640,7 +685,9 @@ func (s *Service) relayFetchAs(ctx context.Context, cancel context.CancelFunc, g
 	// A provider that sells connections counts every attempt; it gets one,
 	// not a burst of retries.
 	attempts := 3
-	if segment {
+	if g.admitting.Load() && !segment {
+		attempts = 1
+	} else if segment {
 		attempts = 2
 	} else if g.source != "" && s.sourceConnectionLimit(g.source) > 0 {
 		attempts = 1

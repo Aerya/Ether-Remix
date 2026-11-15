@@ -100,7 +100,7 @@ func TestIssue417FMP4LongGOPSequentialAndSeek(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/00003.m4s", nil)
 	req.Header.Set("Range", "bytes=16-")
 	rec := httptest.NewRecorder()
-	s.ServeSegment(rec, req, 3)
+	s.ServeSegment(rec, mediaRequest(s, req, 3), 3)
 	if rec.Code != http.StatusPartialContent || !bytes.Equal(rec.Body.Bytes(), seek3.Body.Bytes()[16:]) {
 		t.Fatalf("Range retry on segment 3: status=%d len=%d", rec.Code, rec.Body.Len())
 	}

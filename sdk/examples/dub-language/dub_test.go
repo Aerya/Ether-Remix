@@ -91,9 +91,9 @@ func TestStudioReplayChangesPick(t *testing.T) {
 	defer eng.Close()
 	runner := studio.NewRunner(studio.ReplayDeps{DB: db, Engine: eng})
 	defer runner.Close()
-	tr := resolver.Trace{TitleName: "Fixture", Profile: "default", At: time.Now(), Winner: "a", Candidates: []resolver.CandidateTrace{{ReleaseID: "a", Name: "Film.1080p.WEB-DL", Score: 100, Height: 1080}, {ReleaseID: "b", Name: "Film.FRENCH.DUB.1080p.WEB-DL", Score: 90, Height: 1080}}}
+	tr := resolver.Trace{TitleName: "Fixture", Profile: "default", At: time.Now(), Winner: "a", Candidates: []resolver.CandidateTrace{{ReleaseID: "a", Name: "Film.2019.1080p.WEB-DL", Score: 100, Height: 1080}, {ReleaseID: "b", Name: "Film.2019.FRENCH.DUB.1080p.WEB-DL", Score: 90, Height: 1080}}}
 	encoded, _ := json.Marshal(tr)
-	_, err := db.Exec(`INSERT INTO resolver_history(id,resolved_at,rating_key,title_name,profile,release_id,release_name,indexer,size,error,failover,pinned,candidates,trace) VALUES (1,1,1,'Fixture','default','a','Film.1080p.WEB-DL','test',1,'',0,0,2,?)`, string(encoded))
+	_, err := db.Exec(`INSERT INTO resolver_history(id,resolved_at,rating_key,title_name,profile,release_id,release_name,indexer,size,error,failover,pinned,candidates,trace) VALUES (1,1,1,'Fixture','default','a','Film.2019.1080p.WEB-DL','test',1,'',0,0,2,?)`, string(encoded))
 	if err != nil {
 		t.Fatal(err)
 	}

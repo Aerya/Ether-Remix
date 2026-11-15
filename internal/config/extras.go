@@ -8,6 +8,11 @@ import "time"
 // the owner as a yt-dlp-compatible resolver command. Off by default; with no
 // working command Ether advertises no extras at all.
 type Extras struct {
+	// ThemeMusic defaults on when extras are enabled.
+	ThemeMusic *bool `json:"themeMusic,omitempty"`
+	// TrailerCacheMaxBytes bounds on-demand trailer bytes, including staging.
+	// Zero uses 512 MiB; negative disables caching. No prewarming or sweeps.
+	TrailerCacheMaxBytes int64 `json:"trailerCacheMaxBytes,omitempty"`
 	// Enabled turns extras (and Cinema Trailers) on.
 	Enabled bool `json:"enabled"`
 	// ResolverCommand is the path (or PATH name) of a yt-dlp-compatible

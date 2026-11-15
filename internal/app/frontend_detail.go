@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -78,6 +79,59 @@ func (s *surfaceExperience) ratingFact(ctx context.Context, viewer *core.Viewer,
 			}
 		}
 		out[title.Key] = fact
+	}
+	return out
+}
+
+// PageCachedRatings shares Plex's owner-keyed cache, exposing all real sources,
+// without PageRatings' background refresh on cache misses.
+func (s *surfaceExperience) PageCachedRatings(ctx context.Context, viewer *core.Viewer, titles []core.Title) map[core.RatingKey][]frontend.RatingScore {
+	out := map[core.RatingKey][]frontend.RatingScore{}
+	if s == nil || s.detail.ratings == nil || viewer == nil {
+		return out
+	}
+	cfg, err := s.detail.ratings.Settings(ctx)
+	if err != nil || !cfg.Enabled {
+		return out
+	}
+	cached, err := s.detail.ratings.CachedMany(ctx, titles)
+	if err != nil {
+		return out
+	}
+	for _, title := range titles {
+		if title.Type != core.TypeMovie && title.Type != core.TypeShow {
+			continue
+		}
+		// A single title is a detail open, which is real use: fetch missing
+		// badges in the background (bounded, deduplicated queue), as the Plex
+		// detail path does. Card pages stay cache-only.
+		if _, ok := cached[title.Key]; !ok && len(titles) == 1 && title.Key != 0 {
+			s.detail.ratings.Queue(title)
+		}
+		for _, b := range cached[title.Key] {
+			if b.Scale <= 0 || math.IsNaN(b.Value) || math.IsInf(b.Value, 0) || b.Value < 0 || b.Value > b.Scale {
+				continue
+			}
+			r := frontend.RatingScore{Source: b.Source, Value: b.Value, Scale: b.Scale, Votes: max(0, b.Votes), Kind: "audience"}
+			switch b.Source {
+			case "tomatoes":
+				r.Kind, r.State = "critic", "rotten"
+				if b.Value/b.Scale >= .6 {
+					r.State = "fresh"
+				}
+			case "metacritic":
+				r.Kind = "critic"
+			case "popcorn":
+				r.State = "spilled"
+				if b.Value/b.Scale >= .6 {
+					r.State = "upright"
+				}
+			case "imdb", "letterboxd":
+			default:
+				continue
+			}
+			out[title.Key] = append(out[title.Key], r)
+		}
 	}
 	return out
 }

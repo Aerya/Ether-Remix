@@ -25,6 +25,7 @@ func TestPolicyPersistsAndFailsClosed(t *testing.T) {
 	}
 	u := &core.User{ID: 1, MaxContentRating: preset.MaxContentRating}
 	p := preset.Policy
+	p.Bedtime = nil // Exercise the retained hourly policy format.
 	p.RemoteDisabled = true
 	p.AllowedHours = []int{9}
 	if err := s.Put(ctx, 1, p); err != nil {
@@ -43,7 +44,7 @@ func TestPolicyPersistsAndFailsClosed(t *testing.T) {
 		}
 	}
 	now := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
-	if s.CanPlay(u, true, now) || !s.CanPlay(u, false, now) || s.CanPlay(u, false, now.Add(time.Hour)) {
+	if s.CanPlay(u, true, now) || !s.CanPlay(u, false, now) || CheckBedtime(u, s.Get(u.ID), now.Add(time.Hour)) == nil {
 		t.Fatal("play policy failed")
 	}
 }

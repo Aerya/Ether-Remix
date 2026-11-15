@@ -377,6 +377,17 @@ func arrangeLayout(rows []core.HomeRow, d core.HomeLayout, user int64, hc core.H
 			layer = "override"
 		}
 		row.Policy = p
+		if p != nil && p.PreviewOnFocus != nil {
+			row.Hub.PreviewOnFocus = *p.PreviewOnFocus
+		}
+		// Built-in Top 10 families are ranked by default. Resolve this before
+		// the three-state owner policy so an explicit Off still wins.
+		if row.Kind == KindTop10 || row.Kind == KindTop10Today {
+			row.Hub.RankedTop10 = true
+		}
+		if p != nil && p.RankedTop10 != nil {
+			row.Hub.RankedTop10 = *p.RankedTop10
+		}
 		row.PolicyLayer = ""
 		explicitAlways := false
 		if p != nil {
@@ -716,6 +727,16 @@ func (e *Engine) HomeRowEnabled(ctx context.Context, user *core.User, hc core.Hu
 }
 
 func (e *Engine) FinalizeNeutralHome(ctx context.Context, user *core.User, situation core.HomeSituation, section string, candidates []core.NeutralHomeRow) ([]core.NeutralHomeRow, error) {
+	return e.finalizeNeutralHome(ctx, user, situation, section, candidates, false)
+}
+
+// FinalizeNeutralHomeFill applies the owner rules to a minimal hero fill. Shelf
+// sparsity and taste curation must not discard the one or two missing slots.
+func (e *Engine) FinalizeNeutralHomeFill(ctx context.Context, user *core.User, situation core.HomeSituation, section string, candidates []core.NeutralHomeRow) ([]core.NeutralHomeRow, error) {
+	return e.finalizeNeutralHome(ctx, user, situation, section, candidates, true)
+}
+
+func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situation core.HomeSituation, section string, candidates []core.NeutralHomeRow, fill bool) ([]core.NeutralHomeRow, error) {
 	ctx = core.WithCatalogViewer(ctx, user)
 	hc := core.HubContext{Device: situation.Device, Daypart: situation.Daypart, Weekend: situation.Weekend, Now: situation.Now, SectionID: situation.LibraryID, Product: situation.Product, Platform: situation.Platform, SessionID: situation.SessionID, ClientID: situation.ClientID}
 	rows := make([]core.HomeRow, 0, len(candidates))
@@ -725,14 +746,47 @@ func (e *Engine) FinalizeNeutralHome(ctx context.Context, user *core.User, situa
 		if kind == "" {
 			kind = hubKind(candidate.ID)
 		}
-		h := core.Hub{ID: candidate.ID, Title: candidate.Title, Type: candidate.Type, Items: candidate.Items, ItemCount: candidate.ItemCount}
+		h := core.Hub{ID: candidate.ID, Title: candidate.Title, Type: candidate.Type, Items: candidate.Items, ItemCount: candidate.ItemCount, PreviewOnFocus: candidate.PreviewOnFocus, RankedTop10: candidate.RankedTop10}
 		rows = append(rows, core.HomeRow{HubID: candidate.ID, Title: candidate.Title, Kind: kind, Source: core.RowSourcePrecomposed, Items: candidate.Items, Hub: h})
 		byID[candidate.ID] = candidate
 	}
-	arranged := e.finalizeHomeRows(ctx, user, hc, section, rows)
+	var arranged []core.HomeRow
+	if fill {
+		if user == nil {
+			return nil, core.ErrUnauthorized
+		}
+		hc.Now = hc.Now.In(e.loc)
+		// Fill is a band, so shelf-only default slots (Recently Added at
+		// slot eight) do not apply. Explicit owner rules still do.
+		layout := e.layoutForContext(ctx)
+		layout.Global = append([]core.LayoutPage(nil), layout.Global...)
+		page := pageFor(layout.Global, section)
+		if page == nil {
+			layout.Global = append(layout.Global, core.LayoutPage{Section: section})
+			page = &layout.Global[len(layout.Global)-1]
+		}
+		page.Rows = append([]core.RowPolicy(nil), page.Rows...)
+		for _, row := range rows {
+			if policy, _ := effectiveHomePolicy(layout, user.ID, section, row); policy == nil {
+				page.Rows = append(page.Rows, core.RowPolicy{Row: row.HubID, Status: "eligible"})
+			}
+		}
+		for _, row := range arrangeLayout(rows, layout, user.ID, hc, section, e.opts.MaxHomeRows) {
+			if !row.Hidden {
+				arranged = append(arranged, row)
+			}
+		}
+	} else {
+		arranged = e.finalizeHomeRows(ctx, user, hc, section, rows)
+	}
 	out := make([]core.NeutralHomeRow, 0, len(arranged))
 	for _, row := range arranged {
 		if candidate, ok := byID[row.HubID]; ok {
+			candidate.PreviewOnFocus = row.Hub.PreviewOnFocus
+			if row.Policy != nil {
+				candidate.PreviewOnFocusPolicy = row.Policy.PreviewOnFocus
+			}
+			candidate.RankedTop10 = row.Hub.RankedTop10
 			candidate.Always = row.Policy != nil && row.Policy.Status == "always"
 			out = append(out, candidate)
 		}

@@ -31,6 +31,11 @@ func (s *Server) currentPlexEncoder() SegmentedEncoder {
 	return s.plexEncoder
 }
 func (s *Server) startPlexHLS(ctx context.Context, viewer *frontend.User, playID, id string, req frontend.HLSRequest) (frontend.HLSSession, error) {
+	if len(req.TextSubtitleStreams) > 0 {
+		if keyer, ok := s.playback().(frontend.PlaybackSourceKeyer); ok {
+			req.TextSubtitleSource = keyer.SourceKey(playID)
+		}
+	}
 	if encoder := s.currentPlexEncoder(); encoder != nil {
 		return encoder.StartSegmentedHLS(ctx, viewer, playID, id, req)
 	}
@@ -98,8 +103,13 @@ func strictPlexMediaID(r *http.Request) (string, bool) {
 		}
 	}
 	file := parts[2]
-	if file != "index.m3u8" && file != "init.mp4" && file != "header" && !strings.HasSuffix(file, ".ts") && !strings.HasSuffix(file, ".m4s") && !strings.HasSuffix(file, ".mkv") {
+	if file != "index.m3u8" && !isHLSSegmentName(file) && !strings.HasSuffix(file, ".ts") && !strings.HasSuffix(file, ".m4s") && !strings.HasSuffix(file, ".mkv") {
 		return "", false
 	}
 	return parts[0], true
+}
+
+func isHLSSegmentName(name string) bool {
+	_, ok := frontend.ParseSegmentName(name)
+	return ok
 }

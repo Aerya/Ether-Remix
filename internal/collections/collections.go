@@ -71,19 +71,23 @@ type Service struct {
 	auth     core.Auth
 	chat     Chatter
 	// Ephemeral vibe-search collections (vibe_ephemeral.go).
-	vibeRefiner core.VibeRefiner
-	vibe        *vibeRegistry
-	vibeTTL     time.Duration
-	vibeMax     int
-	scorer      atomic.Pointer[scorerBox]
-	art         *artwork.Renderer
-	images      *artwork.Images
-	catCfg      func() config.Catalog
-	// PSE-HOOK : filtre français et lisible des pages de collections.
+	describeMu     sync.Mutex
+	describeJobs   map[string]*describeJob
+	describeDrafts map[string]*describeDraft
+	describeActive int
+	describeAgent  CollectionDraftAgent
+	vibe           *vibeRegistry
+	vibeTTL        time.Duration
+	vibeMax        int
+	scorer         atomic.Pointer[scorerBox]
+	art            *artwork.Renderer
+	images         *artwork.Images
+	catCfg         func() config.Catalog
+	kinds          *KindRegistry
+	traktCfg       func() config.Trakt
+	sealer         config.FieldSealer
+	// PSE-HOOK: discovery filtering.
 	pseDiscovery func(context.Context, []core.RatingKey) ([]core.RatingKey, error)
-	kinds        *KindRegistry
-	traktCfg     func() config.Trakt
-	sealer       config.FieldSealer
 
 	liveTTL     time.Duration
 	tick        time.Duration
@@ -727,8 +731,11 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 	if row.spec.MediaType == MediaMixed && t != "" {
 		keys = sectionKeys(keys, t)
 	}
-	c := core.Collection{Key: row.key(), Title: row.spec.Name, Summary: row.spec.Description, Kind: "smart",
+	c := core.Collection{PreviewOnFocus: row.spec.PreviewOnFocus, RankedTop10: row.spec.RankedTop10, Key: row.key(), Title: row.spec.Name, Summary: row.spec.Description, Kind: "smart",
 		OwnerUserID: row.owner, ChildCount: len(keys), Upcoming: row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed"}
+	if c.RankedTop10 {
+		c.ChildCount = min(c.ChildCount, 10)
+	}
 	if row.spec.MediaType == MediaMixed && t != "" {
 		c.Key = core.SectionCollectionKey(c.Key, t)
 	}
@@ -790,6 +797,7 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 		c.Type = core.TypeMovie
 	}
 	c.UpdatedAt = row.stamp()
+	c.MembershipRevision = row.buildHash
 	return c
 }
 

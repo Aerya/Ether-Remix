@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"strconv"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -231,7 +232,16 @@ func (s subtitleSurface) Search(ctx context.Context, viewer *core.Viewer, device
 			release = session.Resolution.Release.Name
 		}
 	}
-	found, err := s.app.subtitles.SearchOnDemand(ctx, &detail.Title, language, release)
+	languages, err := s.subtitleSearchLanguages(ctx, &detail.Title, viewer, language, device.ID)
+	if err != nil {
+		return nil, err
+	}
+	var hash string
+	var size int64
+	if len(languages) > 0 {
+		release, hash, size = s.subtitleSearchSource(ctx, &detail.Title, viewer, device.ID, release)
+	}
+	found, err := s.app.subtitles.SearchOnDemandLanguagesWithHash(ctx, &detail.Title, languages, release, hash, size)
 	if err != nil {
 		return nil, err
 	}
@@ -298,4 +308,20 @@ func (s subtitleSurface) Download(ctx context.Context, viewer *core.Viewer, devi
 		}
 	}
 	return info.Index, nil
+}
+
+func (s extraSurface) OpenCachedExtra(ctx context.Context, key core.RatingKey) (*os.File, string, error) {
+	if s.extras == nil {
+		return nil, "", core.ErrNotAvailable
+	}
+	clip, ok := s.extras.Lookup(key)
+	if !ok || !clip.IsTrailer() {
+		return nil, "", core.ErrNotAvailable
+	}
+	cached, err := s.extras.CacheTrailer(ctx, clip)
+	if err != nil {
+		return nil, "", err
+	}
+	f, err := s.extras.OpenCachedTrailer(cached)
+	return f, cached.MIMEType, err
 }

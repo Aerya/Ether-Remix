@@ -2,6 +2,7 @@ package transcode
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -28,7 +29,7 @@ const copyKeyframeProbeTimeout = 3 * time.Second
 // needsCopyKeyframe reports whether s is a video copy restart whose input
 // cannot seek to a keyframe by itself.
 func needsCopyKeyframe(s runSpec) bool {
-	if s.Start <= 0 || s.HasSeekFrom || !s.Decision.VideoCopy || s.LiveInput || s.LoopInput || s.RTXTimeline || len(s.Info.Keyframes) > 0 || s.Info.Video() == nil || !s.titleClock() {
+	if s.Start <= 0 || s.HasSeekFrom || s.CopyOrigin || !s.Decision.VideoCopy || s.LiveInput || s.LoopInput || s.RTXTimeline || len(s.Info.Keyframes) > 0 || s.Info.Video() == nil || !s.titleClock() {
 		return false
 	}
 	if _, _, ok := pceSeekInput(s); ok {
@@ -79,6 +80,11 @@ func (m *Manager) copyKeyframeBefore(ctx context.Context, s runSpec) (time.Durat
 // times: "packet,<pts>,<flags>" lines and one "format,<start>") into title
 // time.
 func lastKeyframeAtOrBefore(listing []byte, at time.Duration) (time.Duration, bool) {
+	best, found := copyKeyframePresentation(listing, at)
+	return max(0, best.Truncate(time.Millisecond)-time.Millisecond), found
+}
+
+func copyKeyframeTimes(listing []byte) []time.Duration {
 	var keys []float64
 	origin, haveOrigin := 0.0, false
 	for line := range strings.Lines(string(listing)) {
@@ -95,19 +101,23 @@ func lastKeyframeAtOrBefore(listing []byte, at time.Duration) (time.Duration, bo
 		}
 	}
 	if !haveOrigin {
-		return 0, false
+		return nil
 	}
-	best, found := time.Duration(0), false
+	times := make([]time.Duration, 0, len(keys))
 	for _, pts := range keys {
-		t := time.Duration((pts - origin) * float64(time.Second))
-		if t >= 0 && t <= at && (!found || t > best) {
+		times = append(times, time.Duration((pts-origin)*float64(time.Second)))
+	}
+	return times
+}
+
+func copyKeyframePresentation(listing []byte, at time.Duration) (time.Duration, bool) {
+	best, found := time.Duration(0), false
+	for _, t := range copyKeyframeTimes(listing) {
+		if t >= 0 && ((at == 0 && (!found || t < best)) || (t <= at && (!found || t > best))) {
 			best, found = t, true
 		}
 	}
-	// Seek a millisecond early: the demuxer lands on the packet at or
-	// before the target, and copy discards non-key pictures up to the
-	// keyframe.
-	return max(0, best.Truncate(time.Millisecond)-time.Millisecond), found
+	return best, found
 }
 
 // stopContext is a context canceled when stop closes (never, for nil).
@@ -121,4 +131,59 @@ func stopContext(stop <-chan struct{}) (context.Context, context.CancelFunc) {
 		}
 	}()
 	return ctx, cancel
+}
+
+// continuousCopyOrigin measures presentation time, not decode time or the
+// requested seek. Bounded packet headers are enough; no frame decoding or
+// whole-title index is needed. A failed proof must not publish a false origin.
+func (m *Manager) continuousCopyOrigin(ctx context.Context, s runSpec) (time.Duration, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(ctx, copyKeyframeProbeTimeout)
+	defer cancel()
+	var measured time.Duration
+	haveMeasured := false
+	for _, window := range copyKeyframeWindows {
+		from := max(0, s.Start-window)
+		args := []string{"-hide_banner", "-v", "error"}
+		args = append(args, inputSafetyArgs(s.Input, false)...)
+		args = append(args, httpInputArgs(s.Input, false)...)
+		args = appendInputHeaders(args, s.commandHeaders())
+		// A demuxer may seek earlier than from; allow one extra window so a
+		// later keyframe before the target is not accidentally omitted.
+		args = append(args, "-select_streams", strconv.Itoa(s.Info.Video().Index),
+			"-read_intervals", "+"+secs(from)+"%+"+secs(s.Start-from+window),
+			"-show_entries", "packet=pts_time,flags:format=start_time", "-of", "csv", "-i", s.Input)
+		var out cappedProbeBuffer
+		if err := m.runner.Run(ctx, Command{Path: m.ffprobe, Args: args, Stdout: &out}); err != nil {
+			if haveMeasured {
+				return measured, 0, nil
+			}
+			return 0, 0, errors.New("transcode: cannot prove copy presentation origin")
+		}
+		if origin, ok := copyKeyframePresentation(out.buf.Bytes(), s.Start); ok {
+			next := time.Duration(0)
+			for _, k := range copyKeyframeTimes(out.buf.Bytes()) {
+				if k > origin && (next == 0 || k < next) {
+					next = k
+				}
+			}
+			measured, haveMeasured = origin, true
+			if next > 0 {
+				return origin, next, nil
+			}
+		}
+	}
+	if haveMeasured {
+		next := time.Duration(0)
+		if s.Info.Duration > measured && s.Info.Duration-measured <= 20*time.Second {
+			next = s.Info.Duration
+		}
+		return measured, next, nil
+	}
+	return 0, 0, errors.New("transcode: no keyframe in bounded copy seek window")
+}
+
+// Millisecond command precision must not round the keyframe seek backwards
+// into the previous GOP. Keep the plan itself at the measured exact PTS.
+func copyOriginSeek(at time.Duration) time.Duration {
+	return ((at+time.Millisecond-1)/time.Millisecond)*time.Millisecond + time.Millisecond
 }

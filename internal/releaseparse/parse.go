@@ -158,13 +158,13 @@ func Parse(name string) core.ReleaseInfo {
 	// Words before the release year, episode/season marker, or post-title
 	// technical metadata block are the title ("The.Spanish.Princess.S01E01",
 	// "The.French.Dispatch.2021", "Pelicula [BluRay 1080p][Castellano] (2019)").
-	// When no year or episode marker is present (floor < 0), floor stays -1 so
-	// unbracketed post-title tags ("Movie.Title.FRENCH.1080p") still count.
+	// A technical metadata block also establishes the floor without a year
+	// or episode marker, keeping language words in the title out of audio tags.
 	floor := yearAt
 	if markerAt >= 0 && (floor < 0 || markerAt < floor) {
 		floor = markerAt
 	}
-	if floor > 0 && metaAt > 0 && metaAt-1 < floor {
+	if metaAt > 0 && (floor < 0 || metaAt-1 < floor) {
 		floor = metaAt - 1
 	}
 	// "COMPLETE" before the release year is usually part of the title
@@ -488,7 +488,58 @@ func firstMetadataAt(stem, spaced string) int {
 			}
 		}
 	}
-	return cut
+	return contextualMetadataAt(spaced, cut)
+}
+
+// contextualMetadataAt extends a technical block backwards across language,
+// edition and ambiguous release words. Adjacency is required: French Kiss and
+// The Danish Girl remain titles, while Title NORWEGIAN DivX ends at NORWEGIAN.
+// A trailing scene group can supply the same evidence without a technical tag.
+func contextualMetadataAt(spaced string, cut int) int {
+	end := cut
+	if m := reGroupTail.FindStringSubmatchIndex(spaced); m != nil && !isKnownTail(spaced[m[2]:m[3]]) {
+		if end < 0 || m[0] < end {
+			end = m[0]
+		}
+	}
+	if end < 0 {
+		return cut
+	}
+	for {
+		prefix := strings.TrimRight(spaced[:end], " -")
+		start := len(prefix)
+		consider := func(token string) {
+			at := len(prefix) - len(token)
+			if at > 0 && (prefix[at-1] == ' ' || prefix[at-1] == '-') && strings.EqualFold(prefix[at:], token) && at < start {
+				start = at
+			}
+		}
+		if words := strings.Fields(prefix); len(words) > 0 {
+			last := words[len(words)-1]
+			if hasAudioOrLanguageTag(last) {
+				consider(last)
+			}
+		}
+		for _, l := range languages {
+			consider(l.token)
+		}
+		for _, l := range subtitleTags {
+			consider(l.token)
+		}
+		for _, kw := range boundaryKeywords {
+			consider(kw)
+		}
+		for _, edition := range editionPatterns {
+			for _, needle := range edition.needles {
+				consider(needle)
+			}
+		}
+		consider("DC")
+		if start == len(prefix) {
+			return cut
+		}
+		cut, end = start, start
+	}
 }
 
 func isKnownTail(g string) bool {
@@ -1373,7 +1424,7 @@ func extractTitle(spaced string, yearAt, markerAt, metaAt, floor int, info *core
 		// Only words that also occur in titles get that protection:
 		// resolutions, sources, codecs and PROPER/REPACK always end the
 		// title ("Show.Name.720p.S01E01").
-		if idx := tokenIndex(spaced, kw); idx > 0 && (idx > floor || !titleWordKeywords[kw] || kw == "COMPLETE" && namesPack(spaced[idx+len(kw):])) {
+		if idx := tokenIndex(spaced, kw); idx > 0 && (floor >= 0 && idx > floor || !titleWordKeywords[kw] || kw == "COMPLETE" && namesPack(spaced[idx+len(kw):])) {
 			consider(idx)
 		}
 	}

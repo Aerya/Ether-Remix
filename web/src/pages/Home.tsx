@@ -28,16 +28,16 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { useApp, useLiveDashboard } from "../app-context";
 import { Artwork } from "../components/Artwork";
 import { SessionArtwork } from "../components/SessionArtwork";
 import { Meter, TimeBars } from "../components/charts";
-import { ErrorPanel, LoadingRows } from "../components/feedback";
+import { ErrorPanel, LoadingRows, MutationError } from "../components/feedback";
 import { ServerPanel } from "../components/ServerPanel";
 import { LevelBadge, StatusDot } from "../components/status";
-import { getLocale, localized, t, tn, tx } from "../i18n";
+import { getLocale, localized, t, tn } from "../i18n";
 import { api } from "../lib/api";
 import { MusicActivity } from "../pse/MusicActivity"; // PSE-HOOK: voir docs/pse/FORK.fr.md
 import type { ActivityDay, RowInsight, Viewer } from "../lib/contract";
@@ -156,6 +156,52 @@ function GettingStarted({ sessions }: { sessions: NowPlaying[] }) {
   );
 }
 
+function SetupNotice() {
+  const { reloadBoot } = useApp();
+  const navigate = useNavigate();
+  const status = useAsync(() => api.setupStatus(), []);
+  const [error, setError] = useState<unknown>(null);
+  const ready = status.data?.requiredComplete === true;
+  // A server whose required steps are all done is set up: finish quietly,
+  // with no banner, however it was configured.
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const completed = await api.setupComplete();
+        sessionStorage.removeItem("ether.setup.step");
+        sessionStorage.removeItem("ether.setup.skipped");
+        if (cancelled) return;
+        await reloadBoot();
+        if (completed.cacheRestartRequired) navigate("/setup?resume=1");
+      } catch (e) {
+        if (!cancelled) setError(e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, reloadBoot, navigate]);
+  if (!status.data && !status.error) return null;
+  if (ready && !error) return null;
+  return (
+    <Alert variant="warning" className="shrink-0">
+      <AlertTitle>{t("Setup isn't finished")}</AlertTitle>
+      <AlertDescription>
+        <p>{t("Your saved settings are kept. Continue with the remaining setup steps.")}</p>
+        <Link className="font-medium underline" to="/setup?resume=1">
+          {t("Continue setup")}
+        </Link>
+        <MutationError error={error} />
+        {status.error ? (
+          <ErrorPanel error={status.error} onRetry={() => void status.reload()} />
+        ) : null}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 function greeting(now = new Date()): string {
   const h = now.getHours();
   return h < 5
@@ -235,22 +281,7 @@ export default function Home() {
             </Button>
           </header>
 
-          {!boot.setupComplete ? (
-            <Alert variant="warning" className="shrink-0">
-              <AlertTitle>{t("Setup isn't finished")}</AlertTitle>
-              <AlertDescription>
-                {tx("Apps can't find this server until setup is complete. {link}", {
-                  link: (
-                    <Link className="font-medium underline" to="/setup">
-                      {t("Continue setup")}
-                    </Link>
-                  ),
-                })}
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <GettingStarted sessions={sessions} />
-          )}
+          {!boot.setupComplete ? <SetupNotice /> : <GettingStarted sessions={sessions} />}
           {dashboardError && !dashboard ? (
             <div className="shrink-0">
               <ErrorPanel error={dashboardError} onRetry={() => void refreshDashboard()} />

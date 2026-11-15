@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -45,7 +46,7 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 	}
 	if res == nil {
 		res = m.resumeResolution(ctx, s.ident.userID, s.ident.key, profile, s.caps, original)
-		if res != nil && prefer != "" && res.Release.ID != prefer {
+		if res != nil && prefer != "" && !res.MatchesVersion(prefer) {
 			res = nil // a picked version wins over the remembered release
 		}
 		if res != nil {
@@ -60,7 +61,7 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 			}
 		}
 	}
-	if res != nil && (slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
+	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
 		return nil, nil, false
 	}
 	if res != nil && (!m.rememberedReleaseMatchesTitle(ctx, res.Release, s.title) || !payloadMatchesTitle(res.NZB, s.title)) {
@@ -92,7 +93,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			if err == nil && pick != nil && pick.Release.ID == s.prefer {
+			if err == nil && pick != nil && pick.MatchesVersion(s.prefer) {
 				res = pick
 			} else if err == nil || errors.Is(err, core.ErrNotAvailable) {
 				res, cached, fromResume = auto, facts, remembered
@@ -128,7 +129,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			fromResume = false
 			var err error
 			res, err = m.nextResolution(ctx, s, tried, alternates)
-			if err == nil && len(tried) == 0 && s.prefer != "" && !s.exact && res.Release.ID != s.prefer {
+			if err == nil && len(tried) == 0 && s.prefer != "" && !s.exact && !res.MatchesVersion(s.prefer) {
 				// The picked version fell back to normal ranking. Play the
 				// automatic choice the warm-up (or resume) already holds, so
 				// the opening prefetch is not wasted on another release, and
@@ -146,6 +147,12 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 					s.tried = append(s.tried, tried...)
 					s.mu.Unlock()
 					return g, nil
+				}
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				if errors.Is(lastErr, frontend.ErrTrackSourceUnavailable) {
+					return nil, lastErr
 				}
 				if lastErr != nil && errors.Is(err, core.ErrNotAvailable) {
 					if errors.Is(lastErr, core.ErrDebridAuth) {
@@ -167,7 +174,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if s.caps.BroadcastReadyRelease != "" && cached == nil {
 			cached = m.persistedProbe(ctx, s.ident.userID, s.ident.key, res.Release.ID, res.NZB)
 		}
-		if s.exact && res.Release.ID != s.prefer {
+		if s.exact && !res.MatchesVersion(s.prefer) {
 			return nil, fmt.Errorf("%w: %w", core.ErrNotAvailable, core.ErrSourceChanged)
 		}
 		if len(res.NZB) > 0 {
@@ -247,6 +254,9 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			attempt--
 		}
 		if s.exact {
+			if errors.Is(err, frontend.ErrTrackSourceUnavailable) {
+				return nil, err
+			}
 			if errors.Is(err, core.ErrNotFound) {
 				return nil, fmt.Errorf("%w: %w", core.ErrNotAvailable, core.ErrSourceChanged)
 			}
@@ -279,6 +289,8 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 // like) cannot change how the failure is reported to the client.
 func releasesFailed(n int, lastErr error, allUncached bool) error {
 	switch {
+	case errors.Is(lastErr, frontend.ErrTrackSourceUnavailable):
+		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, core.ErrDebridAuth):
 		return fmt.Errorf("%w: %d releases failed (last: %v): %w", core.ErrNotAvailable, n, lastErr, core.ErrDebridAuth)
 	case allUncached && n > 0:
@@ -306,26 +318,27 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 	}
 	m.mu.Unlock()
 	if m.deps.FetchNZB != nil {
-		// An add-on that did not answer one on-demand link may still be
-		// preparing it; opening another would make it fetch a second
-		// release, and a fresh Resolve would reopen the same link.
-		var preparing error
+		// Fetches run sequentially. A timed-out on-demand fetch has returned
+		// and cancelled its request, so the next eligible source may open.
+		var fetchErr error
+		fetched := 0
 		for i, alt := range alternates {
-			if alt.ID == "" || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(tried, alt.ID) || !releaseMatchesTitle(alt, s.title) {
+			if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(tried, alt.ID) || !releaseMatchesTitle(alt, s.title) {
 				continue
 			}
-			if preparing != nil && alt.OpensOnDemand() {
-				continue
+			if fetched >= m.opts.MaxAttempts {
+				return nil, fetchErr
 			}
+			fetched++
 			nzb, err := m.deps.FetchNZB(ctx, alt)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
 				m.log.Warn("alternate nzb fetch failed", "release", alt.Name, "err", err)
-				if alt.OpensOnDemand() && (errors.Is(err, core.ErrPrepareSlow) || errors.Is(err, context.DeadlineExceeded)) {
-					preparing = err
-				}
+				fetchErr = err
+				// A fresh Resolve must not retry a link that just timed out.
+				tried = append(tried, alt.ID)
 				continue
 			}
 			return &core.Resolution{
@@ -336,8 +349,8 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 				ResolvedAt: m.now(),
 			}, nil
 		}
-		if preparing != nil {
-			return nil, preparing
+		if fetchErr != nil && fetched >= m.opts.MaxAttempts {
+			return nil, fetchErr
 		}
 	}
 	u := s.user
@@ -408,6 +421,9 @@ func allowsH264Transcode(c core.ClientCaps) bool {
 // marked bad. When the probe fails for another reason, fallback supplies the
 // media info.
 func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Resolution, fallback func(size int64) core.MediaInfo, cached ...*probeCache) (*generation, error) {
+	if !m.ownerPinAllows(s, res.Release.ID) {
+		return nil, fmt.Errorf("%w: owner pinned a different release", core.ErrNotAvailable)
+	}
 	if slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) {
 		return nil, fmt.Errorf("%w: source exceeds channel delivery budget", core.ErrNotAvailable)
 	}
@@ -473,7 +489,8 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	var perr error
 	var facts *probeCache
 	prober := "cache"
-	if len(cached) > 0 && cached[0] != nil && cached[0].releaseID == res.Release.ID && cached[0].info.Size == src.Size() &&
+	if len(cached) > 0 && cached[0] != nil && cached[0].releaseID == res.Release.ID && cached[0].info.Size == src.Size() && !cached[0].info.Estimated &&
+		(s.caps.Protocol != "vela" || (cached[0].info.Duration > 0 && cached[0].info.Video() != nil)) &&
 		(cached[0].nzbHash == "" || (len(res.NZB) > 0 && cached[0].nzbHash == nzbHash(res.NZB))) {
 		facts = cached[0]
 		copy := facts.info
@@ -513,6 +530,14 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 		mi.Duration = 0
 	default:
 		mi = core.CloneMediaInfo(*info)
+	}
+	// Vela publishes stable source track identities in its initial plan. A
+	// failed/incomplete probe cannot supply those identities. Let the bounded
+	// candidate loop try another release, without blacklisting this one.
+	if s.caps.Protocol == "vela" && (mi.Estimated || mi.Duration <= 0 || mi.Video() == nil || len(mi.Streams) == 0) {
+		m.log.Warn("source lacks verified playback facts", "release", res.Release.Name, "sourceSize", src.Size(), "releaseSize", res.Release.Size, "duration", mi.Duration, "estimated", mi.Estimated, "probeError", perr)
+		m.dropGeneration(g)
+		return nil, fmt.Errorf("probe %s: %w", res.Release.Name, frontend.ErrTrackSourceUnavailable)
 	}
 	// Reused persisted probes pass through here too, including a remembered
 	// playback_resume release played from zero with no requested offset.

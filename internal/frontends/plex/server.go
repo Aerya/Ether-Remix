@@ -214,6 +214,8 @@ type Server struct {
 	// Stalled-start watches and Dolby Vision base-layer fallbacks.
 	starts frontend.StartGuard
 
+	liveDiscovery liveDiscoveryCache
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -816,6 +818,13 @@ func (s *Server) Close() error {
 		} else {
 			s.releaseAllDownloads()
 		}
+		s.liveDiscovery.mu.Lock()
+		s.liveDiscovery.closed = true
+		if s.liveDiscovery.idleTimer != nil {
+			s.liveDiscovery.idleTimer.Stop()
+		}
+		s.liveDiscovery.entries = nil
+		s.liveDiscovery.mu.Unlock()
 		s.cancel()
 
 		s.notifier.close()

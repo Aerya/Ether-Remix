@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +32,7 @@ func TestMatroskaNativeRenditionsCannotReplaceActiveEncoderDuringProbes(t *testi
 	}
 	for _, rung := range []string{"1080p8m", "720p4m", "480p1500k", "360p800k"} {
 		rec := httptest.NewRecorder()
-		s.ServeRungSegment(rec, httptest.NewRequest("GET", "/header", nil), rung, InitSegment)
+		s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest("GET", "/header", nil), InitSegment), rung, InitSegment)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("unadvertised rung %s = %d", rung, rec.Code)
 		}
@@ -169,6 +171,11 @@ func TestLadderSessionLazyRungStart(t *testing.T) {
 	if low.ID == "" || low.Height != 720 || low.Bandwidth <= 0 || low.Codecs == "" {
 		t.Fatalf("720 rung = %+v", low)
 	}
+	// Metadata is lazy; request the first segment before testing cached
+	// older media after a later switch.
+	if r := get(t, s, 0); r.Code != 200 {
+		t.Fatalf("base segment 0: %d", r.Code)
+	}
 	// Primary only until a lower rung is requested.
 	if r := get(t, s, 3); r.Code != 200 {
 		t.Fatalf("base segment 3: %d", r.Code)
@@ -185,13 +192,11 @@ func TestLadderSessionLazyRungStart(t *testing.T) {
 	}
 	// A segment on the lower rung lazily switches the one encoder there.
 	rec = httptest.NewRecorder()
-	s.ServeRungSegment(rec, httptest.NewRequest(http.MethodGet, "/720p4m/00010.ts", nil), "720p4m", 10)
+	s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/720p4m/00010.ts", nil), 10), "720p4m", 10)
 	if rec.Code != 200 || !strings.HasPrefix(rec.Body.String(), "segment 10") {
 		t.Fatalf("rung segment 10: %d %q", rec.Code, rec.Body.String())
 	}
-	if !primaryProc.wasKilled() {
-		t.Error("primary encoder not stopped when the rung took over")
-	}
+	waitFor(t, "previous rung stop after handoff", primaryProc.wasKilled)
 	last := fr.lastStart()
 	mustContain(t, last, "-start_number 10", "scale_vt=w=1280:h=720")
 	mustNotContain(t, last, "-c:v copy")
@@ -200,7 +205,7 @@ func TestLadderSessionLazyRungStart(t *testing.T) {
 	}
 	// Unknown rung 404s.
 	rec = httptest.NewRecorder()
-	s.ServeRungSegment(rec, httptest.NewRequest(http.MethodGet, "/x", nil), "nope", 0)
+	s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/x", nil), 0), "nope", 0)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown rung: %d", rec.Code)
 	}
@@ -259,7 +264,7 @@ func TestRungSwitchWaitsOutDwell(t *testing.T) {
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		s.ServeRungSegment(rec, httptest.NewRequest(http.MethodGet, "/720p4m/00000.ts", nil), "720p4m", 0)
+		s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/720p4m/00000.ts", nil), 0), "720p4m", 0)
 		done <- rec
 	}()
 	time.Sleep(150 * time.Millisecond)
@@ -346,5 +351,101 @@ func TestBuildRungsHealthyLinkKeepsOriginal(t *testing.T) {
 	file := HLSCopyPeakKbps(info, 0)
 	if dropped := info.BitrateKbps - base.avgKbps; dropped <= 0 || base.peakKbps != file-dropped {
 		t.Fatalf("base peak %d avg %d, file peak %d", base.peakKbps, base.avgKbps, file)
+	}
+}
+
+// One contract covers the MSE startup invariants: metadata is free, first
+// selected rendition starts once, and every rung advertises the same clock.
+func TestMSELazyContinuousRenditions(t *testing.T) {
+	t.Run("decoder and policy ladder limits", func(t *testing.T) {
+		for n, codecs := range [][]string{{}, {"hevc"}, {"h264"}} {
+			fr := newFakeRunner()
+			m := newTestManager(t, fr, config.Transcode{ABRLadder: true})
+			req := ladderEncodeRequest(t, fmt.Sprintf("caps-%d", n), 10*time.Minute)
+			req.LazyStart, req.Continuous = true, true
+			req.LadderVideoCodecs = codecs
+			s := startSession(t, m, req)
+			if n < 2 && len(s.Rungs()) != 1 {
+				t.Fatal("unapproved encoded rungs", s.Rungs())
+			}
+			if n == 2 && len(s.Rungs()) < 2 {
+				t.Fatal("approved ladder missing")
+			}
+			if fr.startCount() != 0 {
+				t.Fatal("metadata started encoder")
+			}
+		}
+		info := ladderEncodeRequest(t, "geometry", time.Minute).Info
+		caps := core.ClientCaps{VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}}
+		d := Decide(info, caps, core.DecideOptions{MaxWidth: 1280, MaxHeight: 1080, MaxBitrateKbps: 4000, AudioStream: -1, SubtitleStream: -1}, Policy{})
+		for _, r := range buildRungs(info, d, adaptiveSettings{Ladder: true}) {
+			if r.width > 1280 || r.height > 1080 || r.avgKbps > 4000 {
+				t.Fatalf("rung exceeds caps: %+v", r)
+			}
+		}
+	})
+	fr := newFakeRunner()
+	m := newTestManager(t, fr, config.Transcode{ABRLadder: true})
+	req := ladderEncodeRequest(t, "mse-lazy", 10*time.Minute)
+	req.LazyStart, req.Continuous, req.Diagnostics = true, true, true
+	req.Decision.Container = ContainerFMP4
+	s := startSession(t, m, req)
+	if n := fr.startCount(); n != 0 {
+		t.Fatalf("metadata started %d encoders", n)
+	}
+	var clock string
+	for _, rung := range s.Rungs() {
+		if rung.OutputCodecs != "" {
+			t.Fatal("unproduced output claims verified codecs")
+		}
+		rec := httptest.NewRecorder()
+		s.ServeRungPlaylist(rec, httptest.NewRequest("GET", "/"+rung.ID+"/index.m3u8", nil), rung.ID)
+		playlist := rec.Body.String()
+		if !strings.Contains(playlist, "#EXT-X-MAP") || strings.Contains(playlist, "#EXT-X-DISCONTINUITY") {
+			t.Fatalf("noncontinuous fMP4: %s", playlist)
+		}
+		var durations []string
+		for _, line := range strings.Split(playlist, "\n") {
+			if strings.HasPrefix(line, "#EXTINF") {
+				durations = append(durations, line)
+			}
+		}
+		got := strings.Join(durations, "\n")
+		if clock == "" {
+			clock = got
+		} else if got != clock {
+			t.Fatal("rung segment clocks differ")
+		}
+	}
+	if fr.startCount() != 0 {
+		t.Fatal("playlist GET started encoder")
+	}
+	rungs := s.Rungs()
+	chosen := rungs[len(rungs)-1].ID
+	rec := httptest.NewRecorder()
+	s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest("GET", "/"+chosen+"/init.mp4", nil), InitSegment), chosen, InitSegment)
+	if rec.Code != 200 || fr.startCount() != 1 {
+		t.Fatalf("selected init status=%d starts=%d", rec.Code, fr.startCount())
+	}
+	if !strings.Contains(argValue(fr.lastStart(), "-hls_segment_filename"), "rung-"+chosen) {
+		t.Fatal("initial encoder started on wrong rung")
+	}
+	// Encoder restart/fallback metadata must come from that run's real init,
+	// even when the first init used a different profile or output dimensions.
+	evidence := &Session{diagnosticsEnabled: true, container: ContainerFMP4, outputCodecs: map[int]string{}, outputInit: map[int]string{}, outputAudioChannels: map[int]int{}, sessionAdaptation: sessionAdaptation{rungs: []rung{{}}}}
+	dir := t.TempDir()
+	for n, c := range []struct {
+		entry []byte
+		codec string
+		width int
+	}{{avc1Entry(1280, 720, 0x64, 0, 0x28), "avc1.640028", 1280}, {avc1Entry(640, 360, 0x42, 0, 0x1e), "avc1.42001e", 640}} {
+		file := filepath.Join(dir, fmt.Sprintf("init-%d.mp4", n))
+		if err := os.WriteFile(file, testInit("vide", 90000, 0, c.entry), 0600); err != nil {
+			t.Fatal(err)
+		}
+		evidence.noteOutputCodecsLocked(0, file)
+		if evidence.outputCodecs[0] != c.codec || evidence.rungs[0].width != c.width {
+			t.Fatalf("unverified/stale output metadata: %s %+v", evidence.outputCodecs[0], evidence.rungs[0])
+		}
 	}
 }

@@ -102,6 +102,9 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 		return nil, err
 	}
 	n := len(vols)
+	if _, ok := b.rel.doc.MovieHint(); ok && n > 1 {
+		return b.rarFullScan(ctx, vols)
+	}
 	if _, ok := b.rel.doc.EpisodeHint(); ok && n > 1 {
 		// A season in one archive: the wanted episode is not the member that
 		// spans the set from volume 1, so the uniform-layout shortcut below
@@ -543,6 +546,25 @@ func (b *builder) planZIP(ctx context.Context, vols []*postedFile) (*plan, error
 // (nzb.MetaEpisode), when it names one. A member that is not that episode is
 // never played in its place.
 func (b *builder) chooseMember(members []archive.Member) *archive.Member {
+	if movie, ok := b.rel.doc.MovieHint(); ok {
+		features := 0
+		for _, m := range members {
+			info := nzb.Classify(m.Name)
+			if !m.Dir && info.Kind == nzb.KindVideo && !info.Sample && !info.Extra {
+				features++
+			}
+		}
+		if features <= 1 {
+			return chooseMember(members)
+		}
+		var matching []archive.Member
+		for _, m := range members {
+			if releaseparse.MovieFileMatches(m.Name, movie.Titles, movie.Year) {
+				matching = append(matching, m)
+			}
+		}
+		return chooseMember(matching)
+	}
 	h, ok := b.rel.doc.EpisodeHint()
 	if !ok {
 		return chooseMember(members)

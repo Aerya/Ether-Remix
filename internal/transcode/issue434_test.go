@@ -167,7 +167,7 @@ func TestIssue434LGWebOSBaseReads(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/00003.m4s", nil)
 	req.Header.Set("Range", "bytes=8-")
 	rec := httptest.NewRecorder()
-	s.ServeSegment(rec, req, 3)
+	s.ServeSegment(rec, mediaRequest(s, req, 3), 3)
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("ranged segment 3: HTTP %d, want 206", rec.Code)
 	}

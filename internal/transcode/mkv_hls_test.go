@@ -127,7 +127,7 @@ func TestIntegrationMatroskaHLSDecodeSeekAndSwap(t *testing.T) {
 	decode := func(n int, name string, wantStart float64) {
 		t.Helper()
 		r := httptest.NewRecorder()
-		hs.ServeSegment(r, httptest.NewRequest(http.MethodGet, "/", nil), n)
+		hs.ServeSegment(r, mediaRequest(hs, httptest.NewRequest(http.MethodGet, "/", nil), n), n)
 		if r.Code != 200 || r.Header().Get("Content-Type") != "video/x-matroska" {
 			t.Fatalf("segment %d: %d %s", n, r.Code, r.Body.String())
 		}

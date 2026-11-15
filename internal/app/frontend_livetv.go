@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -18,10 +21,15 @@ const maxLiveProgrammes = 10000
 var errLiveQuery = errors.New("invalid live guide query")
 
 type surfaceLiveTV struct {
-	app            *App
-	surface        string // the app this lineup is for; the owner's per-app visibility applies
-	channelArtwork func(*core.Viewer, livetv.Channel) frontend.Image
-	artwork        frontend.Artwork
+	app              *App
+	surface          string // the app this lineup is for; the owner's per-app visibility applies
+	channelArtwork   func(*core.Viewer, livetv.Channel) frontend.Image
+	programmeArtwork func(*core.Viewer, livetv.Programme) []frontend.Image
+	artwork          frontend.Artwork
+}
+
+func (s surfaceLiveTV) Enabled() bool {
+	return s.app != nil && s.app.livetv != nil && s.app.livetv.Enabled()
 }
 
 func (s surfaceLiveTV) host() frontend.LiveTV {
@@ -73,16 +81,26 @@ func (s surfaceLiveTV) Channels(ctx context.Context, v *core.Viewer) ([]frontend
 	return out, nil
 }
 func (s surfaceLiveTV) Guide(ctx context.Context, v *core.Viewer, q frontend.LiveGuideQuery) ([]frontend.LiveProgramme, error) {
+	page, err := s.guidePage(ctx, v, frontend.LiveGuidePageQuery{LiveGuideQuery: q}, false)
+	return page.Items, err
+}
+
+func (s surfaceLiveTV) GuidePage(ctx context.Context, v *core.Viewer, pageQuery frontend.LiveGuidePageQuery) (frontend.LiveGuidePage, error) {
+	return s.guidePage(ctx, v, pageQuery, true)
+}
+
+func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery frontend.LiveGuidePageQuery, paged bool) (frontend.LiveGuidePage, error) {
+	q := pageQuery.LiveGuideQuery
 	ctx = core.WithLiveApp(ctx, s.surface)
-	if !q.Until.After(q.From) || q.Until.Sub(q.From) > 7*24*time.Hour || q.Limit < 0 || q.Limit > maxLiveProgrammes {
-		return nil, errLiveQuery
+	if !q.Until.After(q.From) || q.Until.Sub(q.From) > 7*24*time.Hour || q.Limit < 0 || q.Limit > maxLiveProgrammes || pageQuery.Offset < 0 {
+		return frontend.LiveGuidePage{}, errLiveQuery
 	}
 	viewer, err := s.viewer(ctx, v)
 	if err != nil {
-		return nil, err
+		return frontend.LiveGuidePage{}, err
 	}
 	if s.app.livetv == nil {
-		return nil, core.ErrNotAvailable
+		return frontend.LiveGuidePage{}, core.ErrNotAvailable
 	}
 	s.app.livetv.NoteClientActivity()
 	var permitted []livetv.Channel
@@ -92,7 +110,7 @@ func (s surfaceLiveTV) Guide(ctx context.Context, v *core.Viewer, q frontend.Liv
 		permitted, err = s.app.livetv.AllowedChannels(ctx, viewer)
 	}
 	if err != nil {
-		return nil, err
+		return frontend.LiveGuidePage{}, err
 	}
 	selected := make(map[string]bool, len(q.Channels))
 	for _, id := range q.Channels {
@@ -113,27 +131,73 @@ func (s surfaceLiveTV) Guide(ctx context.Context, v *core.Viewer, q frontend.Liv
 		programmes, err = s.app.livetv.Guide(ctx, viewer, q.From, q.Until)
 	}
 	if err != nil {
-		return nil, err
+		return frontend.LiveGuidePage{}, err
 	}
 	limit := q.Limit
 	if limit == 0 {
 		limit = maxLiveProgrammes
 	}
-	out := make([]frontend.LiveProgramme, 0, min(len(programmes), limit))
-	imageCache := make(map[core.RatingKey][]frontend.Image)
+	// The source materializes the selected time window from its guide snapshot.
+	// Fingerprint that authorized order without counting the media library or
+	// hydrating titles outside this response page.
+	fingerprint := sha256.New()
+	encoder := json.NewEncoder(fingerprint)
+	if paged {
+		if err := encoder.Encode([]any{q.From.UTC(), q.Until.UTC(), q.Channels}); err != nil {
+			return frontend.LiveGuidePage{}, err
+		}
+	}
+	selectedPage := make([]livetv.Programme, 0, min(len(programmes), limit+1))
+	index := 0
 	for _, p := range programmes {
 		if !allowed[p.ChannelID] {
 			continue
 		}
-		item := frontend.LiveProgramme{ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End, Item: p.Item.Key, Title: p.Item.Title, Summary: p.Item.Summary, Rating: p.Item.Rating}
+		if paged {
+			if err := encoder.Encode([]any{p.ID, p.ChannelID, p.Start.UTC(), p.End.UTC(), p.Item.Key, p.Item.Title, p.Item.Summary, p.Item.Rating, p.Item.Thumb, p.Item.Art, p.Item.Genres}); err != nil {
+				return frontend.LiveGuidePage{}, err
+			}
+		}
+		if index >= pageQuery.Offset && len(selectedPage) <= limit {
+			selectedPage = append(selectedPage, p)
+		}
+		index++
+		if !paged && len(selectedPage) == limit {
+			break
+		}
+	}
+	snapshot := hex.EncodeToString(fingerprint.Sum(nil))
+	if pageQuery.Snapshot != "" && pageQuery.Snapshot != snapshot {
+		return frontend.LiveGuidePage{}, frontend.ErrLiveGuideStale
+	}
+	more := len(selectedPage) > limit
+	selectedPage = selectedPage[:min(len(selectedPage), limit)]
+	out := make([]frontend.LiveProgramme, 0, len(selectedPage))
+	imageCache := make(map[core.RatingKey][]frontend.Image)
+	for _, p := range selectedPage {
+		item := frontend.LiveProgramme{ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End, Item: p.Item.Key, Title: p.Item.Title, Summary: p.Item.Summary, Rating: p.Item.Rating, ShowTitle: p.Item.ShowTitle, EpisodeTitle: p.Item.EpisodeTitle, Season: p.Item.Season, Episode: p.Item.Episode, Genres: p.Item.Genres}
+		if s.programmeArtwork != nil {
+			item.Images = s.programmeArtwork(viewer, p)
+		}
 		if p.Item.Key != 0 && s.app.catalog != nil {
 			if title, e := s.app.catalog.Get(ctx, p.Item.Key); e == nil {
-				item.ShowTitle = title.ShowTitle
-				item.EpisodeTitle = title.Title
-				item.Season = title.Season
-				item.Episode = title.Episode
+				if item.ShowTitle == "" {
+					item.ShowTitle = title.ShowTitle
+				}
+				if item.EpisodeTitle == "" && title.Type == core.TypeEpisode {
+					item.EpisodeTitle = title.Title
+				}
+				if item.Season == 0 {
+					item.Season = title.Season
+				}
+				if item.Episode == 0 {
+					item.Episode = title.Episode
+				}
+				if len(item.Genres) == 0 {
+					item.Genres = title.Genres
+				}
 			}
-			if s.artwork != nil {
+			if s.artwork != nil && len(item.Images) == 0 {
 				images, found := imageCache[p.Item.Key]
 				if !found {
 					var complete bool
@@ -147,11 +211,8 @@ func (s surfaceLiveTV) Guide(ctx context.Context, v *core.Viewer, q frontend.Liv
 			}
 		}
 		out = append(out, item)
-		if len(out) == limit {
-			break
-		}
 	}
-	return out, nil
+	return frontend.LiveGuidePage{Items: out, Snapshot: snapshot, More: more}, nil
 }
 func normalizeLiveGUID(raw string, kind ids.Kind) (string, error) {
 	n, err := ids.ParseGUID(kind, raw)
@@ -340,6 +401,12 @@ func (s surfaceLiveTV) GuideChannelLogo(ctx context.Context, c frontend.LiveTVCh
 	}
 	return ""
 }
+func (s surfaceLiveTV) SourceHubGroups(ctx context.Context) ([]frontend.LiveSourceHubGroup, error) {
+	if h, ok := s.host().(frontend.LiveTVSourceHubGroups); ok {
+		return h.SourceHubGroups(ctx)
+	}
+	return nil, nil
+}
 func (s surfaceLiveTV) TuneWithSession(ctx context.Context, u *frontend.User, id string, caps frontend.ClientCaps, sessionID string) (frontend.LiveTVSessionInfo, error) {
 	h := s.host()
 	if h == nil {
@@ -399,3 +466,14 @@ func (s surfaceLiveTV) LogoKey() []byte {
 }
 
 var _ frontend.LiveTV = surfaceLiveTV{}
+
+func (s surfaceLiveTV) FilterDiscovery(ctx context.Context, u *frontend.User, ps []frontend.LiveTVProgramme) ([]frontend.LiveTVProgramme, []frontend.LiveTVChannel, error) {
+	viewer, err := s.viewer(ctx, u)
+	if err != nil {
+		return nil, nil, err
+	}
+	if h, ok := s.host().(frontend.LiveTVDiscoveryPolicy); ok {
+		return h.FilterDiscovery(core.WithLiveApp(ctx, s.surface), viewer, ps)
+	}
+	return nil, nil, frontend.ErrNotAvailable
+}

@@ -27,6 +27,7 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/Items/Filters", i.queryFilters}, {"/Items/Filters2", i.queryFilters},
 		{"/Shows/Upcoming", i.upcomingEpisodes},
 		{"/Videos/{id}/AdditionalParts", i.additionalParts},
+		{"/Items/{id}/theme.m4a", i.themeStream},
 		{"/Items/{id}/ThemeMedia", i.themeMedia}, {"/Items/{id}/ThemeSongs", i.themeMedia}, {"/Items/{id}/ThemeVideos", i.themeMedia},
 		{"/Items/{id}/PlaybackInfo", i.playbackInfo},
 		{"/Localization/Options", i.emptyOptionalArray},
@@ -158,19 +159,39 @@ func (i *instance) additionalParts(w http.ResponseWriter, r *http.Request) {
 	jsonReply(w, i.queryResult([]any{}, 0, 0))
 }
 
+func (i *instance) themeStream(w http.ResponseWriter, r *http.Request) {
+	d, ok := i.authorizedTheme(w, r)
+	if !ok {
+		return
+	}
+	if i.host.Themes == nil {
+		http.NotFound(w, r)
+		return
+	}
+	i.host.Themes.ServeTheme(w, r, d.Title)
+}
+
 func (i *instance) themeMedia(w http.ResponseWriter, r *http.Request) {
-	if _, ok := i.authorizedItem(w, r); !ok {
+	d, ok := i.authorizedTheme(w, r)
+	if !ok {
 		return
 	}
-	// Theme assets are optional and Ether does not index them. Preserve the
-	// nested result shape expected by Jellyfin Web rather than a bare array.
 	empty := i.queryResult([]any{}, 0, 0)
-	empty["OwnerId"] = "00000000000000000000000000000000"
-	if strings.EqualFold(r.URL.Path, "/Items/"+r.PathValue("id")+"/ThemeMedia") {
-		jsonReply(w, map[string]any{"ThemeSongsResult": empty, "ThemeVideosResult": empty, "SoundtrackSongsResult": empty})
+	empty["OwnerId"] = r.PathValue("id")
+	songs := empty
+	if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/themevideos") && i.host.Themes != nil && i.host.Themes.Theme(d.Title, true) {
+		id := r.PathValue("id")
+		themeID := themeWireID(d.Title.Key)
+		path := "/Audio/" + themeID + "/stream.m4a"
+		source := map[string]any{"Id": themeID, "Path": path, "Protocol": "Http", "Container": "m4a", "SupportsDirectPlay": true, "SupportsDirectStream": true, "SupportsTranscoding": false, "MediaStreams": []any{map[string]any{"Type": "Audio", "Codec": "aac", "Index": 0, "Channels": 2}}, "DirectStreamUrl": path}
+		songs = i.queryResult([]any{map[string]any{"Id": themeID, "Name": d.Title.Title, "Type": "Audio", "MediaType": "Audio", "Container": "m4a", "IsFolder": false, "Path": path, "MediaSources": []any{source}, "MediaStreams": source["MediaStreams"]}}, 1, 0)
+		songs["OwnerId"] = id
+	}
+	if strings.HasSuffix(strings.ToLower(r.URL.Path), "/thememedia") {
+		jsonReply(w, map[string]any{"ThemeSongsResult": songs, "ThemeVideosResult": empty, "SoundtrackSongsResult": empty})
 		return
 	}
-	jsonReply(w, empty)
+	jsonReply(w, songs)
 }
 
 // Stop only the authenticated device's broker session; a client-supplied
@@ -374,4 +395,54 @@ func (i *instance) userItemData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonReply(w, i.userDataDTO(idsWire, state[key]))
+}
+
+func (i *instance) themePlaybackInfo(w http.ResponseWriter, r *http.Request) {
+	wireID := r.PathValue("id")
+	r.SetPathValue("id", themeParentID(wireID))
+	d, ok := i.authorizedTheme(w, r)
+	if !ok {
+		return
+	}
+	if i.host.Themes == nil || !i.host.Themes.Theme(d.Title, false) {
+		http.NotFound(w, r)
+		return
+	}
+	path := "/Audio/" + wireID + "/stream.m4a"
+	jsonReply(w, map[string]any{"MediaSources": []any{map[string]any{"Id": wireID, "Path": path, "Protocol": "Http", "Container": "m4a", "SupportsDirectPlay": true, "SupportsDirectStream": true, "SupportsTranscoding": false, "DirectStreamUrl": path, "MediaStreams": []any{map[string]any{"Type": "Audio", "Codec": "aac", "Index": 0, "Channels": 2}}}}})
+}
+
+// Negative item GUIDs reserve a stateless audio identity separate from the
+// positive catalogue key, while remaining UUID-shaped for native clients.
+func themeWireID(key frontend.RatingKey) string { return ids.RatingKeyGUID(-key) }
+func themeParentID(id string) string {
+	key, err := ids.ParseRatingKeyGUID(id)
+	if err != nil || key >= 0 {
+		return ""
+	}
+	parent := -key
+	switch parent.Kind() {
+	case frontend.KindShow, frontend.KindSeason, frontend.KindEpisode:
+		return ids.RatingKeyGUID(parent)
+	}
+	return ""
+}
+
+func (i *instance) authorizedTheme(w http.ResponseWriter, r *http.Request) (frontend.ItemDetail, bool) {
+	viewer, _, err := i.viewer(r)
+	if err != nil || viewer == nil {
+		http.Error(w, "Unauthorized", 401)
+		return frontend.ItemDetail{}, false
+	}
+	key, err := ids.ParseRatingKeyGUID(r.PathValue("id"))
+	if err != nil || i.host.ThemeTitle == nil {
+		http.NotFound(w, r)
+		return frontend.ItemDetail{}, false
+	}
+	title, err := i.host.ThemeTitle(i.identityContext(r), viewer, key)
+	if err != nil {
+		http.NotFound(w, r)
+		return frontend.ItemDetail{}, false
+	}
+	return frontend.ItemDetail{Title: *title}, true
 }

@@ -13,7 +13,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -134,7 +133,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			// listing's total still comes from the tally (tallyTotal).
 			var ok bool
 			if total, ok, err = c.tallyTotal(ctx, q.Filter, where, args); err == nil && !ok {
-				err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE `+where, args...).Scan(&total)
+				err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t`+c.topicIndexHint(q.Filter)+` WHERE `+where, args...).Scan(&total)
 			}
 		} else {
 			total, err = c.countBrowse(ctx, q.Filter, ckey, where, args)
@@ -200,13 +199,13 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	// enumerating every matching title; the total (above) keeps the
 	// studio-index-driven IN-list form.
 	pageWhere = c.studioProbe(ctx, pageWhere, q.Filter)
-	keysetHint := ""
+	keysetHint := c.topicIndexHint(q.Filter)
 	if q.Sort == core.SortKey && q.AfterKey > 0 {
 		pageWhere += " AND t.key>?"
 		pageArgs = append(append([]any{}, args...), q.AfterKey)
 		// Pin the seek: planner statistics must never turn a keyset page back
 		// into a sort of the type's whole browse set.
-		if q.Filter.Type != "" && store.DialectOf(c.db) != store.Postgres {
+		if q.Filter.Topic == "" && q.Filter.Type != "" && store.DialectOf(c.db) != store.Postgres {
 			keysetHint = c.indexedBy(keysetIndex)
 		}
 	}
@@ -598,8 +597,18 @@ func flagInt(b bool) int {
 // membership is a property of the saved filter alone, not of who is asking.
 func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.RatingKey) (bool, error) {
 	f.LocalOnly = true
+	// Membership protects direct lookup and playback. Discovery-only hides
+	// affect browse pages, never whether a title belongs to an allowed source.
+	if len(f.ExtraRules) > 0 {
+		rules := make([]core.LibraryExclusion, 0, len(f.ExtraRules))
+		for _, rule := range f.ExtraRules {
+			if rule.Scope != core.VisibilityDiscovery {
+				rules = append(rules, rule)
+			}
+		}
+		f.ExtraRules = rules
+	}
 	f.IncludeKeys = []core.RatingKey{key}
-	f.CollectionMembers = 0
 	f.ExcludeKeys = nil
 	f.CatalogViewerID = 0
 	f.RuleVisibility = ""
@@ -612,7 +621,7 @@ func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.Rat
 	f.UpdatedAfter, f.UpdatedBefore, f.AddedAfter, f.AddedBefore = 0, 0, 0, 0
 	f.DigitalDiscovery = false
 	f.DigitalDateEvidence = false
-	where, args, err := c.browseWhere(f)
+	where, args, err := c.browseWhereMode(f, true)
 	if err != nil {
 		return false, err
 	}
@@ -624,12 +633,22 @@ func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.Rat
 }
 
 func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
+	return c.browseWhereMode(f, false)
+}
+
+// Membership evaluates saved predicates independently of presentation/release gates.
+func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, []any, error) {
 	// Positive metadata flags retain their source meaning; absence is unknown.
 	if f.Anime {
 		f.Keywords = append(append([]string{}, f.Keywords...), "anime")
 	}
 	var conds []string
 	var args []any
+	if f.Topic != "" {
+		match, topicArgs := c.topicMatch(f.Topic)
+		conds = append(conds, match)
+		args = append(args, topicArgs...)
+	}
 	for _, tag := range f.Tags {
 		conds = append(conds, "t.key IN (SELECT key FROM catalog_owner_tags WHERE tag=?)")
 		args = append(args, strings.ToLower(strings.TrimSpace(tag)))
@@ -647,22 +666,24 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 		conds = append(conds, "EXISTS (SELECT 1 FROM catalog_genres kg WHERE kg.key=t.key AND kg.genre='Kids')")
 	}
 	nowTS := c.now().Unix()
-	if cfg := c.config(); cfg.ShowUpcomingMovies && f.RuleVisibility == "" {
-		conds = append(conds, "(t.browsable=1 OR (t.type='movie' AND t.release_known=1 AND t.released_ts>? AND ((?<=0 AND ?<=0) OR (?>0 AND t.popularity>=?) OR (?>0 AND t.vote_count>=?))))", "t.adult=0")
-		args = append(args, nowTS, cfg.MinPopularity, cfg.MinVotes, cfg.MinPopularity, cfg.MinPopularity, cfg.MinVotes, cfg.MinVotes)
-	} else {
-		conds = append(conds, "t.browsable=1", "t.adult=0")
-	}
-	// queryTitles keeps released titles, plus explicitly enabled upcoming
-	// movies. Apply that same guard before counting and paging.
-	// The Postgres driver binds Go bools as 0/1 for the BIGINT flag
-	// columns; a bare `AND ?` would make Postgres infer boolean and reject
-	// the int. Compare the flag numerically with an int argument instead.
-	conds = append(conds, "t.release_known=1 AND (t.released_ts<=? OR (t.type='movie' AND ?<>0))")
-	args = append(args, nowTS, flagInt(c.config().ShowUpcomingMovies))
-	if gc, ga := browseGateConds(f, nowTS); len(gc) > 0 {
-		conds = append(conds, gc...)
-		args = append(args, ga...)
+	if !membershipOnly {
+		if cfg := c.config(); cfg.ShowUpcomingMovies && f.RuleVisibility == "" {
+			conds = append(conds, "(t.browsable=1 OR (t.type='movie' AND t.release_known=1 AND t.released_ts>? AND ((?<=0 AND ?<=0) OR (?>0 AND t.popularity>=?) OR (?>0 AND t.vote_count>=?))))", "t.adult=0")
+			args = append(args, nowTS, cfg.MinPopularity, cfg.MinVotes, cfg.MinPopularity, cfg.MinPopularity, cfg.MinVotes, cfg.MinVotes)
+		} else {
+			conds = append(conds, "t.browsable=1", "t.adult=0")
+		}
+		// queryTitles keeps released titles, plus explicitly enabled upcoming
+		// movies. Apply that same guard before counting and paging.
+		// The Postgres driver binds Go bools as 0/1 for the BIGINT flag
+		// columns; a bare `AND ?` would make Postgres infer boolean and reject
+		// the int. Compare the flag numerically with an int argument instead.
+		conds = append(conds, "t.release_known=1 AND (t.released_ts<=? OR (t.type='movie' AND ?<>0))")
+		args = append(args, nowTS, flagInt(c.config().ShowUpcomingMovies))
+		if gc, ga := browseGateConds(f, nowTS); len(gc) > 0 {
+			conds = append(conds, gc...)
+			args = append(args, ga...)
+		}
 	}
 	for _, hidden := range []struct {
 		kind string
@@ -715,7 +736,7 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 			}
 		}
 		if f.RuleVisibility != "all" {
-			policy, err := libraryfilter.CompilePolicy(f.PreviewRules, f.PreviewFallback)
+			policy, err := c.compileLibraryRules(f.PreviewRules, f.PreviewFallback)
 			if err != nil {
 				return "", nil, err
 			}
@@ -726,32 +747,34 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 			conds = append(conds, "("+clause+")")
 			args = append(args, values...)
 		}
-	} else if policy := c.viewerFilter(f.CatalogViewerID, false); !f.CatalogCandidates && policy != nil {
-		clause, a := c.policySQLHidden(f.CatalogViewerID, policy)
-		conds = append(conds, clause)
-		args = append(args, a...)
-		// A strict viewer's rules fail closed on rows without details whose
-		// fields they cannot judge, as FilterVisibility and safety do.
-		if !policy.Passive() && c.strictViewer(f.CatalogViewerID, f.MaxContentRating != "") {
-			if u := policy.SQLUndecidable(); u != "0=1" {
-				conds = append(conds, "NOT (t.detail=0 AND "+u+")")
+	} else if !membershipOnly && !f.CatalogCandidates {
+		if policy := c.viewerFilter(f.CatalogViewerID, false); policy != nil {
+			clause, a := c.policySQLHidden(f.CatalogViewerID, policy)
+			conds = append(conds, clause)
+			args = append(args, a...)
+			// A strict viewer's rules fail closed on rows without details whose
+			// fields they cannot judge, as FilterVisibility and safety do.
+			if !policy.Passive() && c.strictViewer(f.CatalogViewerID, f.MaxContentRating != "") {
+				if u := policy.SQLUndecidable(); u != "0=1" {
+					conds = append(conds, "NOT (t.detail=0 AND "+u+")")
+				}
 			}
 		}
 	}
 	if len(f.ExtraRules) > 0 || f.ExtraFallback != "" {
-		extra, err := libraryfilter.CompilePolicy(f.ExtraRules, f.ExtraFallback)
+		extra, err := c.compileLibraryRulesMode(f.ExtraRules, f.ExtraFallback, membershipOnly)
 		if err != nil {
 			return "", nil, err
 		}
 		if !extra.Passive() {
-			clause, values := extra.SQLHidden()
-			conds = append(conds, "NOT ("+clause+")")
+			clause, values := extra.SQLShown()
+			conds = append(conds, "("+clause+")")
 			args = append(args, values...)
 		}
 	}
 	// Rule browsing gates like everything else: its totals must match the
 	// titles queryTitles hands back, which never include ungated movies.
-	if cfg := c.config(); cfg.ReleaseMode == config.ModeDigital && !(f.DigitalDiscovery && f.HiddenMovieSeq != 0) {
+	if cfg := c.config(); !membershipOnly && cfg.ReleaseMode == config.ModeDigital && !(f.DigitalDiscovery && f.HiddenMovieSeq != 0) {
 		gateSQL := homeReleaseSQL("t")
 		if cfg.ShowUpcomingMovies {
 			gateSQL = "(t.type='movie' AND t.release_known=1 AND t.released_ts>? OR (" + gateSQL + "))"
@@ -1193,7 +1216,7 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 			}
 		}
 	}
-	if f.RuleVisibility == "" {
+	if !membershipOnly && f.RuleVisibility == "" {
 		// The unary plus keeps "released by now" (nearly every title) from
 		// steering the plan: without planner statistics SQLite took it as a
 		// selective range on catalog_titles_type_browse_count and sorted the
@@ -1239,7 +1262,7 @@ func (c *Catalog) countBrowse(ctx context.Context, f core.Filter, ckey, where st
 		return 0, err
 	}
 	if !ok {
-		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE `+where, args...).Scan(&total); err != nil {
+		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t`+c.topicIndexHint(f)+` WHERE `+where, args...).Scan(&total); err != nil {
 			return 0, err
 		}
 	}
@@ -1474,7 +1497,7 @@ func (c *Catalog) mergedTypeKeys(ctx context.Context, where string, args []any, 
 	desc := dir == "DESC"
 	var all []sortedKey
 	for _, typ := range []core.MediaType{core.TypeMovie, core.TypeShow} {
-		hint := ""
+		hint := c.topicIndexHint(q.Filter)
 		if q.Filter.LocalOnly && q.Sort == core.SortPopularity && len(q.SecondarySorts) == 0 && store.DialectOf(c.db) != store.Postgres && !consoleHasSparseCandidates(q.Filter) {
 			hint = c.indexHint("catalog_titles_console_pop_page")
 		}

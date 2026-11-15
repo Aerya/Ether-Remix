@@ -688,9 +688,48 @@ func isExtra(p string) bool {
 	return false
 }
 
-// ChooseFile picks the main video file of a torrent: for a target episode
-// the largest file whose name matches it, else the largest video.
+// ChooseFile honors explicit plugin file selectors first, including non-video
+// files. Otherwise it picks the main video: the target episode or largest video.
 func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
+	featureCount := 0
+	for _, f := range files {
+		if isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 {
+			featureCount++
+		}
+	}
+	movieMatches := func(f File) bool { return featureCount <= 1 || movieFileMatches(f.Path, target) }
+
+	if target != nil && (target.FileIndex != nil || target.ExactFile != "") {
+		matches := func(f File) bool {
+			want := strings.ReplaceAll(target.ExactFile, "\\", "/")
+			name := strings.ReplaceAll(f.Path, "\\", "/")
+			return want == "" || name == want || (!strings.Contains(want, "/") && path.Base(name) == want)
+		}
+		if target.FileIndex != nil {
+			i := *target.FileIndex
+			if i < 0 || i >= len(files) {
+				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d: %w", i, len(files), core.ErrWrongContent)
+			}
+			f := files[i]
+			if f.Size <= 0 || !matches(f) || !movieMatches(f) {
+				return File{}, fmt.Errorf("debrid: selected file is empty or does not match file: %w", core.ErrWrongContent)
+			}
+			return f, nil
+		}
+		var chosen File
+		count := 0
+		for _, f := range files {
+			if f.Size > 0 && matches(f) && movieMatches(f) {
+				chosen = f
+				count++
+			}
+		}
+		if count != 1 {
+			return File{}, fmt.Errorf("debrid: file matched %d files: %w", count, core.ErrWrongContent)
+		}
+		return chosen, nil
+	}
+
 	if target != nil && target.Season == 0 && target.AddonSpecialEpisode > 0 {
 		copy := *target
 		copy.Episode = target.AddonSpecialEpisode
@@ -702,7 +741,7 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	var videos []File
 	identityMismatch := false
 	for _, f := range files {
-		if target != nil && (!fileCourMatchesTarget(f.Path, target) || !fileIdentityMatches(f, target)) {
+		if target != nil && (!movieMatches(f) || !fileCourMatchesTarget(f.Path, target) || !fileIdentityMatches(f, target)) {
 			identityMismatch = identityMismatch || (isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0)
 			continue
 		}
@@ -943,6 +982,9 @@ func fileIdentityMatches(f File, target *core.ReleaseTarget) bool {
 	if target == nil {
 		return true
 	}
+	if len(target.MovieTitles) > 0 {
+		return true // movie identity is arbitrated only with the complete multi-file list
+	}
 	idMatch, idConflict := releaseparse.CompareTitleIDs(target.ReportedIDs, target.ExpectedIDs)
 	if idConflict {
 		return false
@@ -956,4 +998,8 @@ func fileIdentityMatches(f File, target *core.ReleaseTarget) bool {
 	info := releaseparse.Parse(full)
 	year := releaseparse.EpisodeSeriesYear(full, info.Year)
 	return releaseparse.SeriesYearMatches(year, target.ShowYear) && (target.Season == 0 || year != 0 || idMatch || releaseparse.EpisodeTitleMatches(path.Base(strings.ReplaceAll(f.Path, "\\", "/")), target.EpisodeTitle))
+}
+
+func movieFileMatches(name string, target *core.ReleaseTarget) bool {
+	return target == nil || len(target.MovieTitles) == 0 || releaseparse.MovieFileMatches(name, target.MovieTitles, target.MovieYear)
 }

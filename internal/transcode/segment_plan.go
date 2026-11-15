@@ -108,6 +108,11 @@ func adaptiveFromConfig(c config.Transcode) adaptiveSettings {
 	return a
 }
 
+// Continuous opening cuts retain the encoder mode and mux clock: encoded
+// output forces 0.5/0.5/1s cuts, while copied output ends its first segment
+// at the next observed keyframe. One source GOP is the copy latency floor;
+// short hls_time alone cannot split it. Subsequent cuts use the steady plan.
+//
 // Timeline is a session's segment plan. Starts are relative to the
 // session's playlist position zero (the HLS StartOffset); callers add base
 // for absolute media time.
@@ -128,13 +133,15 @@ type Timeline struct {
 	clamps map[int]int
 	// keyframed: the boundaries were placed on source keyframes, so runs
 	// must be regrouped by timestamp to match them (see chunks.go).
-	keyframed bool
+	keyframed    bool
+	shortOpening bool // variable opening cuts use the chunk collector on one clock
 }
 
 // Keyframed reports whether the boundaries come from a keyframe index.
 func (tl *Timeline) Keyframed() bool { return tl != nil && tl.keyframed }
 
 type timelineOptions struct {
+	opening         []time.Duration // continuous clock: short cuts, without encoder mode switches
 	steadyMode      SegMode
 	fastStart       bool
 	rampSegs        int
@@ -153,7 +160,7 @@ func buildTimeline(span, steady time.Duration, o timelineOptions) *Timeline {
 	if steady <= 0 {
 		steady = DefaultSegmentDuration
 	}
-	tl := &Timeline{steady: steady, span: span, steadyMode: o.steadyMode}
+	tl := &Timeline{steady: steady, span: span, steadyMode: o.steadyMode, shortOpening: len(o.opening) > 0}
 	if o.fastStart {
 		tl.rampSegs = o.rampSegs
 		tl.rampDur = o.rampDur
@@ -217,6 +224,9 @@ func buildTimeline(span, steady time.Duration, o timelineOptions) *Timeline {
 		if i < tl.rampSegs {
 			dur = tl.rampDur
 		}
+		if i < len(o.opening) {
+			dur = o.opening[i]
+		}
 		next := last + dur
 		switch {
 		case i == tl.rampSegs-1 && rampEnd > 0:
@@ -226,7 +236,7 @@ func buildTimeline(span, steady time.Duration, o timelineOptions) *Timeline {
 			// a pure copy timeline, and the ramp->copy switch onward.
 			next = snap(kfs, next, steady, span)
 		}
-		if next >= span || span-next < steady/4 {
+		if next >= span || (i >= len(o.opening) && span-next < steady/4) {
 			next = span
 		}
 		bounds = append(bounds, next)

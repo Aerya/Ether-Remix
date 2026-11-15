@@ -58,6 +58,8 @@ describe("console session", () => {
   });
 
   it("goes only to this console's API", async () => {
+    // Node's Response cannot consume jsdom's Blob (which lacks stream()).
+    // A string body still exercises Response.blob() through apiBlob.
     const fetcher = vi
       .fn<typeof fetch>()
       .mockImplementation(async () => new Response("x", { status: 200 }));

@@ -157,6 +157,16 @@ func (s *Service) useBroadcast(c Channel) bool {
 	}
 	return c.Kind == "iptv" && (c.Screens == nil || c.Screens.NoSignal != "error")
 }
+
+// coldFallbackAllowed distinguishes an owner-selected outage screen from the
+// default reconnecting screen used after a provider has already aired.
+func (s *Service) coldFallbackAllowed(c Channel) bool {
+	if !s.useBroadcast(c) || s.screenStyle(c, false) == "error" {
+		return false
+	}
+	return c.Kind == "virtual" || (c.Screens != nil && c.Screens.NoSignal != "") || (c.Look != nil && c.Look.LookID != "")
+}
+
 func (s *Service) screenRequest(c Channel, reason string) core.ClipRequest {
 	offair := reason == offAirSlate
 	style := s.screenStyle(c, offair)
@@ -389,7 +399,11 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 			format, full = running.format, running.steadyBitrate
 		} else {
 			var code, detail string
-			admitted, code, detail = s.admitSteady(ctx, c)
+			var admissionErr error
+			admitted, code, detail, admissionErr = s.admitSteady(ctx, c)
+			if admissionErr != nil {
+				return admissionErr
+			}
 			if code != "" {
 				s.sessionLog(ss).Info("live playback path selected", "path", "direct", "reason", code, "detail", detail)
 				ss.mu.Lock()
@@ -446,6 +460,13 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 	ss.broadcast = lease
 	ss.info.MediaInfo = &info
 	ss.mu.Unlock()
+	if provider, ok := lease.broadcast.planner.(*providerBroadcastPlanner); ok && !s.coldFallbackAllowed(c) {
+		if err := provider.awaitFirstPicture(ctx); err != nil {
+			lease.close()
+			s.broadcasts.discardCold(lease.broadcast)
+			return err
+		}
+	}
 	awaitBroadcastCushion(ctx, lease, c.Kind == "iptv")
 	return nil
 }
@@ -514,11 +535,12 @@ func (s *Service) launchBroadcast(ctx context.Context, ss *session, l broadcastL
 			provider := &providerBroadcastPlanner{s: s, channel: c, format: format, runner: runner, ladder: newSteadyLadder()}
 			if admitted != nil && admitted.link != nil {
 				provider.primed = admitted.link
+				provider.ladder.next = admitted.link.src.ID
 				consumed = true
 			}
 			planner = provider
 		}
-		b, err := newBroadcast(s.ctx, runner, planner, format)
+		b, err := newBroadcast(s.serviceContext(), runner, planner, format)
 		if err != nil {
 			return nil, err
 		}
@@ -571,13 +593,13 @@ func steadyRendition(f transcode.RawFormat, full int, caps core.ClientCaps) (int
 }
 
 func (p *scheduleBroadcastPlanner) introPlan(now time.Time) (broadcastPlan, time.Duration) {
-	titleDuration := segmentDuration
+	titleDuration := p.segmentDuration()
 	p.mu.Lock()
 	for _, programme := range p.window {
 		if now.Before(programme.Start) || !now.Before(programme.End) {
 			continue
 		}
-		if interstitial(programme.Item) {
+		if interstitial(programme.Item) || programme.Item.Slate == offAirSlate {
 			p.mu.Unlock()
 			return broadcastPlan{}, 0
 		}
@@ -585,7 +607,7 @@ func (p *scheduleBroadcastPlanner) introPlan(now time.Time) (broadcastPlan, time
 		break
 	}
 	p.mu.Unlock()
-	c := p.s.personalChannel(p.s.ctx, p.channel, &p.user)
+	c := p.s.personalChannel(p.s.serviceContext(), p.channel, &p.user)
 	if welcome, ok := p.s.personalWelcome(c, now); ok {
 		p.joinAt = welcome.End
 		return p.programme(welcome), welcome.End.Sub(now)
@@ -595,9 +617,10 @@ func (p *scheduleBroadcastPlanner) introPlan(now time.Time) (broadcastPlan, time
 		if request.Moment == "tonight" || request.Moment == "upnext" {
 			title := p.momentScreenAt(now)
 			title.id = "intro-" + title.id
-			// Cold and cached titles own the same bounded media interval. Decoder
-			// preparation can delay publication, but cannot lengthen the card.
-			p.joinAt = now.Add(titleDuration)
+			// The unscheduled tune title covers acquisition only. The programme
+			// opens concurrently and takes over on its first decoded picture.
+			title.fill = true
+			p.joinAt = now
 			return title, titleDuration
 		}
 	}

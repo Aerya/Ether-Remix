@@ -39,6 +39,8 @@ type LibraryPageExclusions struct {
 
 // ServiceDeps contains trusted host dependencies, never provided by a frontend.
 type ServiceDeps struct {
+	// NextUp returns episodes authorized for the supplied active viewer.
+	NextUp func(context.Context, *core.User, int) ([]core.Title, error)
 	// LibraryPresentation and BuiltinNative are supplied by the surface wiring.
 	LibraryPresentation func(core.Presentations, core.MediaType) (core.MediaType, string, bool)
 	BuiltinNative       func(core.MediaType) string
@@ -69,6 +71,8 @@ type ServiceDeps struct {
 	// people's portraits (frontend.WithArtworkRows): movies and shows as
 	// their rows with the facts given, not read in full. Optional.
 	ArtworkRows func(context.Context, []core.RatingKey, core.TitleFacts) (map[core.RatingKey]core.Title, error)
+	// VisibilityRows reads current policy facts plus requested facets without credits.
+	VisibilityRows func(context.Context, []core.RatingKey, core.TitleFacts) (map[core.RatingKey]core.Title, error)
 	// ParentTitles resolves distinct parents using the same semantics as GetTitle.
 	ParentTitles func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
 	// CachedVirtualSeason resolves a viewer's already-computed episode layout.
@@ -288,6 +292,10 @@ func (s *Service) viewer(ctx context.Context, v *core.User) (*core.User, error) 
 	}
 	if memo := frontend.RequestMemoFrom(ctx); memo != nil {
 		memo.Mu.Lock()
+		if memo.Viewer == nil || memo.Viewer.ID != active.ID {
+			memo.Visible = nil
+			memo.Aired = nil
+		}
 		memo.Viewer = active
 		memo.Mu.Unlock()
 	}
@@ -396,7 +404,7 @@ func (s *Service) LibraryCount(ctx context.Context, viewer *core.Viewer, viewID 
 		switch lib.Source {
 		case core.LibraryPlugin:
 			return s.d.PluginLibraries.Count(ctx, lib)
-		case core.LibraryFilter, core.LibraryCollection:
+		case core.LibraryCatalog, core.LibraryCollection:
 			page, err := s.LibraryItems(ctx, v, core.Device{}, viewID, frontend.ItemQuery{Limit: 1})
 			if err != nil {
 				return 0, err
@@ -582,12 +590,6 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	// catalogue total when this viewer has no extra visibility filter. The
 	// browse total already excludes adult and hidden titles.
 	plainTotal := bounded && !expand && q.Watched == nil && q.Favorite == nil && len(q.Types) == 0 && q.Season == nil && plainItemFilter(q.Filter) && v.MaxContentRating == "" && (v.IsOwner || len(v.AllowedLibraries) == 0) && s.d.Visibility.FilterAvailable == nil && s.d.Visibility.Policy == nil
-	if expand && wantShowEpisodes && s.d.Grandchildren == nil {
-		return core.Page{}, errors.New("experience: recursive library unavailable")
-	}
-	if expand && wantShowChildren && s.d.Children == nil {
-		return core.Page{}, errors.New("experience: recursive library unavailable")
-	}
 	// Recursive episode queries keep at most one bounded batch of visible,
 	// statically matching candidates in addition to the existing results.
 	var recursiveBatch []core.Title
@@ -673,6 +675,11 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	} else if ok {
 		return page, nil
 	}
+	if page, ok, err := s.indexedRecursivePage(ctx, v, library, q); err != nil {
+		return core.Page{}, err
+	} else if ok {
+		return page, nil
+	}
 	if page, ok, err := s.indexedLibraryPage(ctx, v, library, q); err != nil {
 		return core.Page{}, err
 	} else if ok {
@@ -681,6 +688,12 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		// A sort or request shape SQL cannot page uses the bounded
 		// in-process walk; an indexed page already returned above.
 		return s.collectionLibraryScan(ctx, v, library, q, stored.CollectionID)
+	}
+	if expand && wantShowEpisodes && s.d.Grandchildren == nil {
+		return core.Page{}, errors.New("experience: recursive library unavailable")
+	}
+	if expand && wantShowChildren && s.d.Children == nil {
+		return core.Page{}, errors.New("experience: recursive library unavailable")
 	}
 	for offset := 0; ; {
 		filter := q.Filter
@@ -1177,11 +1190,31 @@ func (s *Service) artworkRows(ctx context.Context, v *core.User, keys []core.Rat
 	if s.d.ArtworkRows == nil || frontend.ArtworkRowsFrom(ctx) == nil {
 		return nil, nil
 	}
+	return s.policyRows(ctx, v, keys, 0, s.d.ArtworkRows)
+}
+
+// visibilityRows keeps synthetic seasons and non-catalogue keys on their
+// existing readers; the bounded row source handles mirrored movies and shows.
+func (s *Service) visibilityRows(ctx context.Context, v *core.User, keys []core.RatingKey, facts core.TitleFacts) (map[core.RatingKey]core.Title, error) {
+	for _, key := range keys {
+		if key.Kind() != core.KindMovie && key.Kind() != core.KindShow {
+			return nil, nil
+		}
+	}
+	return s.policyRows(ctx, v, keys, facts, s.d.VisibilityRows)
+}
+
+// policyRows loads only policy and requested facts, reading full titles when
+// discovery evidence needs them. These partial rows never enter the title cache.
+func (s *Service) policyRows(ctx context.Context, v *core.User, keys []core.RatingKey, facts core.TitleFacts, read func(context.Context, []core.RatingKey, core.TitleFacts) (map[core.RatingKey]core.Title, error)) (map[core.RatingKey]core.Title, error) {
+	if read == nil {
+		return nil, nil
+	}
 	judge, known := s.d.Visibility.FactJudge(ctx)
 	if !known {
 		return nil, nil
 	}
-	rows, err := s.d.ArtworkRows(ctx, keys, s.d.Visibility.TitleFacts(v))
+	rows, err := read(ctx, keys, facts|core.FactHomeRelease|s.d.Visibility.TitleFacts(v))
 	if err != nil {
 		return nil, err
 	}
@@ -1775,10 +1808,28 @@ func (s *Service) UserData(ctx context.Context, viewer *core.Viewer, keys []core
 	}
 	allowed := make([]core.RatingKey, 0, len(keys))
 	var pluginKeys, tmdbKeys []core.RatingKey
+	// A list may already have authorized these same keys in this request.
+	// Reuse only verdicts belonging to this active viewer.
+	tmdbAllowed := map[core.RatingKey]bool{}
+	known := map[core.RatingKey]bool{}
+	if memo := frontend.RequestMemoFrom(ctx); memo != nil {
+		memo.Mu.Lock()
+		if memo.Viewer != nil && memo.Viewer.ID == v.ID {
+			for _, key := range keys {
+				if !key.IsPluginKey() {
+					if yes, ok := memo.Visible[key]; ok {
+						known[key] = true
+						tmdbAllowed[key] = yes
+					}
+				}
+			}
+		}
+		memo.Mu.Unlock()
+	}
 	for _, k := range keys {
 		if k.IsPluginKey() {
 			pluginKeys = append(pluginKeys, k)
-		} else {
+		} else if !known[k] {
 			tmdbKeys = append(tmdbKeys, k)
 		}
 	}
@@ -1795,11 +1846,14 @@ func (s *Service) UserData(ctx context.Context, viewer *core.Viewer, keys []core
 			}
 		}
 	}
-	var tmdbAllowed map[core.RatingKey]bool
 	if len(tmdbKeys) > 0 {
-		tmdbAllowed = make(map[core.RatingKey]bool, len(tmdbKeys))
 		if s.d.CachedGetMany != nil {
-			titles, err := s.d.CachedGetMany(ctx, tmdbKeys)
+			// Watch status needs current authorization, not cast, crew or trailers.
+			// Keep the full read fallback for sources without visibility rows.
+			titles, err := s.visibilityRows(ctx, v, tmdbKeys, 0)
+			if err == nil && titles == nil {
+				titles, err = s.d.CachedGetMany(ctx, tmdbKeys)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -2386,7 +2440,7 @@ func (s *Service) Facets(ctx context.Context, viewer *core.Viewer, device core.D
 			}
 			// A collection library's facet values are counted over the same
 			// SQL semi-join as its page, then the walk stays the last word.
-		case core.LibraryFilter:
+		case core.LibraryCatalog:
 			if out, ok, err := s.filterLibraryFacets(ctx, viewer, lib, name); err != nil || ok {
 				return out, err
 			}

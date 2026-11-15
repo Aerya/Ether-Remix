@@ -32,7 +32,7 @@ func TestSubDLSearchDownloadRank(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/subtitles", func(w http.ResponseWriter, r *http.Request) {
 		searchQuery = r.URL.RawQuery
-		if r.Header.Get("X-API-Key") != "subdl-key" {
+		if r.URL.Query().Get("api_key") != "subdl-key" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -47,12 +47,14 @@ func TestSubDLSearchDownloadRank(t *testing.T) {
 					"name":         "Inception.2010.1080p.BluRay.x264-GRP.fr.zip",
 					"url":          "/subtitle/3197651-3213944.zip",
 					"hi":           false,
+					"language":     "French",
 				},
 				map[string]any{
 					"release_name": "Some.Other.Edition.720p",
 					"name":         "other.fr.zip",
 					"url":          "/subtitle/3197651-3213945.zip",
 					"hi":           true,
+					"language":     "French",
 				},
 			},
 		})
@@ -66,6 +68,10 @@ func TestSubDLSearchDownloadRank(t *testing.T) {
 	})
 	srv = httptest.NewServer(mux)
 	defer srv.Close()
+
+	if err := testSubDL(context.Background(), srv.Client(), srv.URL, config.SubDL{APIKey: "subdl-key"}); err != nil {
+		t.Fatalf("connection test: %v", err)
+	}
 
 	svc := New(Options{
 		SubDL:            config.SubDL{Enabled: true, APIKey: "subdl-key"},
@@ -118,4 +124,80 @@ func TestSubDLOnlyWhenEnabled(t *testing.T) {
 	if svc.subdlEnabled() {
 		t.Fatal("subdlEnabled must require a key")
 	}
+}
+
+// TestSubDLLanguageSet covers the provider contract: query aliases, language
+// filtering, multilingual offers and language-scoped negative caching.
+func TestSubDLLanguageSet(t *testing.T) {
+	var queries []string
+	const release = "Troll.2022.1080p.WEB.mkv"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("languages"))
+		if r.URL.Query().Get("file_name") != release || r.URL.Query().Get("releases") != "1" {
+			t.Errorf("missing release query: %v", r.URL.Query())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":true,"subtitles":[
+   {"language":"Norwegian","name":"n.zip","url":"/n.zip"},
+   {"language":"EN","name":"e.zip","url":"/e.zip","releases":["Troll.2022.1080p.WEB.mkv"]},
+   {"language":"French","name":"f.zip","url":"/f.zip"},
+   {"language":"sv","name":"s.zip","url":"/s.zip"},
+   {"language":"da","name":"d.zip","url":"/d.zip"},
+   {"language":"","name":"unknown.zip","url":"/unknown.zip"}
+  ]}`))
+	}))
+	defer srv.Close()
+	svc := New(Options{SubDL: config.SubDL{Enabled: true, APIKey: "test"}, CacheDir: t.TempDir(), SubDLURL: srv.URL})
+	title := &core.Title{Key: core.MovieKey(1), Type: core.TypeMovie, IDs: core.IDs{IMDB: "tt11116912"}}
+	ctx := context.Background()
+	cands, err := svc.SearchOnDemandLanguages(ctx, title, []string{"no", "nb", "nob", "eng", "swe", "dan"}, release)
+	if err != nil || len(cands) != 4 {
+		t.Fatalf("preferred results: %+v, %v", cands, err)
+	}
+	if cands[0].Language != "en" {
+		t.Fatalf("release match did not beat language order: %+v", cands)
+	}
+	if queries[0] != "DA,EN,NO,SV" {
+		t.Fatalf("query: %q", queries[0])
+	}
+	for _, c := range cands {
+		svc.offersMu.Lock()
+		o := svc.offers[offerKey{title.Key, c.FileID}]
+		svc.offersMu.Unlock()
+		if o.lang != c.Language || o.lang == "" {
+			t.Fatalf("offer lost language: %+v", o)
+		}
+	}
+	cands, err = svc.SearchOnDemand(ctx, title, "fra", release)
+	if err != nil || len(cands) != 1 || cands[0].Language != "fr" || queries[1] != "FR" {
+		t.Fatalf("explicit search: %+v, %v, %v", cands, err, queries)
+	}
+	// A miss for a different language cannot suppress a later matching search.
+	_, err = svc.SearchOnDemand(ctx, title, "de", release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(queries)
+	cands, err = svc.SearchOnDemand(ctx, title, "nb", release)
+	if err != nil || len(cands) != 1 || len(queries) != before+1 || queries[len(queries)-1] != "NO" {
+		t.Fatalf("Norwegian: %+v %v %v", cands, err, queries)
+	}
+	before = len(queries)
+	if _, err = svc.SearchOnDemandLanguages(ctx, title, nil, ""); err != nil || len(queries) != before {
+		t.Fatal("empty preferences queried provider")
+	}
+	os := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("moviehash") != "000000000000abcd" || q.Get("moviebytesize") != "1048576" || q.Get("languages") != "en,no" {
+			t.Errorf("OpenSubtitles query: %v", q)
+		}
+		w.Write([]byte(`{"data":[{"attributes":{"language":"en","moviehash_match":true,"files":[{"file_id":99}]}},{"attributes":{"language":"fr","files":[{"file_id":100}]}}]}`))
+	}))
+	defer os.Close()
+	opensubs := New(Options{Config: config.OpenSubtitles{Enabled: true, APIKey: "test"}, CacheDir: t.TempDir(), BaseURL: os.URL})
+	cands, err = opensubs.SearchOnDemandLanguagesWithHash(ctx, title, []string{"nb", "en"}, release, "000000000000abcd", 1048576)
+	if err != nil || len(cands) != 1 || !cands[0].HashMatch {
+		t.Fatalf("OpenSubtitles result: %+v %v", cands, err)
+	}
+
 }

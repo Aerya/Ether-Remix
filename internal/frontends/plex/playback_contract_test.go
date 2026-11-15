@@ -25,8 +25,9 @@ func TestPlaybackCorpusLifecycle(t *testing.T) {
 				defer f.srv.Close()
 				f.trans.decision = core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, Container: "mpegts"}
 				queueID := ""
+				segment := ""
 				for _, probe := range conformplex.PlaybackCorpus() {
-					path := strings.NewReplacer("{{machineID}}", f.srv.identity().MachineIdentifier, "{{movieKey}}", fightClub.Key.String(), "{{session}}", "contract-stream", "{{queueID}}", queueID).Replace(probe.Path)
+					path := strings.NewReplacer("{{segment}}", segment, "{{machineID}}", f.srv.identity().MachineIdentifier, "{{movieKey}}", fightClub.Key.String(), "{{session}}", "contract-stream", "{{queueID}}", queueID).Replace(probe.Path)
 					hdr := map[string]string{}
 					key := profile
 					if jsonMode {
@@ -72,6 +73,7 @@ func TestPlaybackCorpusLifecycle(t *testing.T) {
 							t.Fatalf("master: %s", rec.Body.String())
 						}
 					case "transcode-playlist":
+						segment = firstPlaylistMedia(rec.Body.String())
 						if !strings.Contains(rec.Body.String(), "00000.ts") {
 							t.Fatalf("media playlist: %s", rec.Body.String())
 						}

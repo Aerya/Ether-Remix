@@ -27,7 +27,8 @@ type testDoc struct {
 	err  error
 }
 
-// Document returns the parsed, checksum-verified pinned spec for
+// Document returns the parsed, checksum-verified pinned spec with checked-in
+// Ether extensions for
 // protocol. It returns nil only when the spec is not cached and DirEnv is
 // unset, so the caller skips schema validation (and says so in the test
 // log). Every other problem — a checksum mismatch, an unreadable file, a
@@ -40,7 +41,7 @@ func Document(tb testing.TB, protocol string) *openapi.Document {
 	return nil
 }
 
-// Bytes returns the raw checksum-verified spec under the same rules as
+// Bytes returns the checksum-verified spec with Ether extensions under the same rules as
 // Document (it is parsed too, so a malformed spec still fails).
 func Bytes(tb testing.TB, protocol string) []byte {
 	tb.Helper()
@@ -56,6 +57,9 @@ func load(tb testing.TB, protocol string) *testDoc {
 	d := v.(*testDoc)
 	d.once.Do(func() {
 		d.data, d.err = openapi.CachedSpecManifest(specs.Manifest, protocol, os.Getenv(DirEnv))
+		if d.err == nil {
+			d.data, d.err = specs.Extend(protocol, d.data)
+		}
 		if d.err == nil {
 			d.doc, d.err = openapi.Parse(d.data)
 		}
