@@ -1,5 +1,6 @@
 import { Badge, Button, Input, Select, toast } from "@braedonsaunders/appkit-ui";
 import { useEffect, useMemo, useState } from "react";
+import { CollapsibleBlock } from "../components/CollapsibleSections";
 import { getLocale } from "../i18n";
 import { api, apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
@@ -153,11 +154,8 @@ export function SearchPriority() {
   const total = prio.data.total ?? 0;
   const max = prio.data.max ?? 0;
   return (
-    <details className="rounded-xl border border-border bg-surface">
-      <summary className="cursor-pointer px-4 py-3 font-medium">
-        {L("Priorité de recherche", "Search priority")}
-      </summary>
-      <div className="border-t border-border p-4">
+    <CollapsibleBlock title={L("Priorité de recherche", "Search priority")}>
+      <div className="p-4">
         <p className="mb-4 text-sm text-fg-muted">
           {L(
             "Cherche les releases de certaines collections ou bibliothèques avant le reste. Les limites de chaque source restent appliquées.",
@@ -241,6 +239,6 @@ export function SearchPriority() {
           ) : null}
         </div>
       </div>
-    </details>
+    </CollapsibleBlock>
   );
 }
