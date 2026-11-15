@@ -359,6 +359,7 @@ func (c *Client) Track(ctx context.Context, id int64) (Track, error) {
 
 // Stream décrit un flux audio direct.
 type Stream struct {
+	DebridAccountID string `json:"-"` // Native account routing, never credentials.
 	// Open is set only by a trusted local source; remote URLs never become paths.
 	Open      func() (io.ReadSeekCloser, time.Time, error) `json:"-"`
 	Provider  string

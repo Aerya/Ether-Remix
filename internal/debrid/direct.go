@@ -131,7 +131,7 @@ func (s *Service) DirectPayload(ctx context.Context, rel core.Release) ([]byte, 
 	if rel, err = psePrepareDirect(ctx, rel); err != nil {
 		return nil, err
 	}
-	base := Payload{Key: payloadKey(rel), ReleaseID: rel.ID, Kind: KindHTTP, Link: rel.StreamURL, URL: rel.StreamURL,
+	base := Payload{AddonID: rel.IndexerID, Key: payloadKey(rel), ReleaseID: rel.ID, Kind: KindHTTP, Link: rel.StreamURL, URL: rel.StreamURL,
 		StreamProvider: rel.StreamProvider, Headers: rel.StreamHeaders, Origin: rel.StreamOrigin, Release: rel.Name, Target: rel.Target}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
@@ -244,6 +244,7 @@ func directMediaError(p Payload, err error) error {
 
 // directRequest holds the shared provider slot through the response body.
 func (s *Service) directRequest(hc *http.Client, req *http.Request, p Payload) (*http.Response, error) {
+	req = req.WithContext(egress.WithAddonStream(req.Context(), p.AddonID, p.Origin))
 	if strings.EqualFold(p.StreamProvider, "alldebrid") {
 		req = req.WithContext(egress.WithAllDebrid(req.Context()))
 	}

@@ -11,6 +11,7 @@ import (
 // drops warm NNTP connections when the route they dial changes.
 func (a *App) applyOutbound(c config.Config) {
 	egress.Use(c.Outbound, a.log)
+	egress.UseSources(c)
 	key := outboundDialKey(c.Outbound)
 	changed := a.outboundDial != "" && a.outboundDial != key
 	a.outboundDial = key

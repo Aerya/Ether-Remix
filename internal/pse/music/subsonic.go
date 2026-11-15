@@ -64,6 +64,7 @@ func NewServer(o Options) *Server {
 	if o.Media == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.ResponseHeaderTimeout = 20 * time.Second
+		t.Proxy = egress.SourceProxySelector(t.Proxy)
 		o.Media = &http.Client{Transport: egress.WrapMediaFlow(t, true), CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("music: trop de redirections")
@@ -1022,6 +1023,7 @@ func (s *Server) relayAudio(w http.ResponseWriter, r *http.Request, id int64) er
 		if strings.EqualFold(st.Provider, "alldebrid") {
 			streamContext = egress.WithAllDebrid(ctx)
 		}
+		streamContext = egress.WithStreamSource(streamContext, st.DebridAccountID, "")
 		res, err := s.openAudio(streamContext, r, st.URL)
 		if err != nil {
 			if ctx.Err() != nil {

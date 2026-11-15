@@ -33,6 +33,7 @@ const payloadMagic = "ETHER-DEBRID/1\n"
 // fresh link can be generated after the last one expires. It never holds
 // an API key.
 type Payload struct {
+	AddonID   string    `json:"addonId,omitempty"`
 	Key       string    `json:"key,omitempty"`       // payload cache key (release + target)
 	ReleaseID string    `json:"releaseId,omitempty"` // core.Release.ID (segment cache key)
 	Provider  string    `json:"provider"`            // config.DebridProvider.ID

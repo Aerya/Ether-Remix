@@ -63,6 +63,9 @@ func (t *mediaFlowTransport) CloseIdleConnections() {
 var errMediaFlow = errors.New("AllDebrid MediaFlow relay unavailable; direct fallback is disabled")
 
 func (t *mediaFlowTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if _, explicit := sourceProxy(req.Context()); explicit {
+		return t.base.RoundTrip(req)
+	}
 	cfg := Current().MediaFlow
 	forced, _ := req.Context().Value(allDebridContextKey{}).(bool)
 	if !cfg.Enabled || (!forced && !IsAllDebridHost(req.URL.Hostname())) {

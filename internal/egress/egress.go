@@ -131,6 +131,9 @@ func PolicyFrom(o config.Outbound) Policy {
 // policy on every request.
 func ProxyFunc(cap Capability) func(*http.Request) (*url.URL, error) {
 	return func(req *http.Request) (*url.URL, error) {
+		if proxy, selected, err := selectedSourceProxy(req); selected {
+			return proxy, err
+		}
 		return Current().selectProxy(req, cap)
 	}
 }

@@ -1596,6 +1596,11 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 		if payload.Kind == "alldebrid" || strings.EqualFold(payload.StreamProvider, "alldebrid") {
 			rctx = egress.WithAllDebrid(rctx)
 		}
+		if payload.IsDirect() {
+			rctx = egress.WithAddonStream(rctx, payload.AddonID, payload.Origin)
+		} else {
+			rctx = egress.WithStreamSource(rctx, payload.Provider, "")
+		}
 		resp, tm, err := f.e.get(rctx, u, start, end, urgent, f.conns)
 		if err != nil && isAnalysisRead(ctx) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 			f.analysis.errors.Add(1)

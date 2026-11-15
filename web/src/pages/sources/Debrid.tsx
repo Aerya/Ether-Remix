@@ -1,8 +1,9 @@
 import { AllDebridMediaFlow } from "../../pse/AllDebridMediaFlow";
+import { SourceProxyFields } from "../../pse/SourceProxyFields";
 import { DebridKeyField } from "../../pse/DebridKeyField";
 import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import { formatThroughput } from "../../lib/format";
-import { t, tn, tx } from "../../i18n";
+import { getLocale, t, tn, tx } from "../../i18n";
 import {
   Alert,
   AlertDescription,
@@ -575,6 +576,15 @@ export function DebridSources({
                 onChange={(v) => set({ apiKey: v })}
               />
             </SettingsRow>
+            <SourceProxyFields
+              title={
+                getLocale().startsWith("fr")
+                  ? "Proxy du compte · API et lecture"
+                  : "Account proxy · API and playback"
+              }
+              value={draft.proxy}
+              onChange={(proxy) => set({ proxy })}
+            />
           </SettingsSection>
         ) : null}
       </RecordDrawer>

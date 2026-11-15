@@ -1,3 +1,4 @@
+import { SourceProxyFields } from "../../pse/SourceProxyFields";
 import {
   Alert,
   AlertDescription,
@@ -258,7 +259,11 @@ export function IndexerList({
   view = "all", // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
 }: {
   version?: number;
-  addRequest?: { nonce: number; type: "site" | "newznab" | "stremio" | "zilean"; name?: string } | null;
+  addRequest?: {
+    nonce: number;
+    type: "site" | "newznab" | "stremio" | "zilean";
+    name?: string;
+  } | null;
   view?: PseIndexerView;
 }) {
   const { dashboard, refreshDashboard } = useApp();
@@ -790,6 +795,33 @@ export function IndexerList({
       >
         {draft ? (
           <>
+            {stremio && (
+              <>
+                <SourceProxyFields
+                  title={
+                    getLocale().startsWith("fr")
+                      ? "Proxy des requêtes · manifeste et recherches"
+                      : "Request proxy · manifest and searches"
+                  }
+                  value={draft.requestProxy}
+                  onChange={(requestProxy) => set({ requestProxy })}
+                />
+                <SourceProxyFields
+                  title={
+                    getLocale().startsWith("fr")
+                      ? "Proxy de lecture · flux HTTP de cet addon"
+                      : "Playback proxy · this addon’s HTTP streams"
+                  }
+                  value={draft.streamProxy}
+                  onChange={(streamProxy) => set({ streamProxy })}
+                />
+                <p className="text-sm text-fg-muted">
+                  {getLocale().startsWith("fr")
+                    ? "Le proxy de lecture concerne les flux récupérés par Remix. Pour un torrent résolu par un compte débrideur de Remix, le proxy du compte s’applique. Les appels effectués par un addon distant restent sous son contrôle."
+                    : "The playback proxy applies to streams fetched by Remix. Torrents resolved through a Remix debrid account use that account’s proxy. Calls made by a remote addon remain under its control."}
+                </p>
+              </>
+            )}
             {stat && draft.dailyLimit > 0 ? (
               <Meter
                 value={used / draft.dailyLimit}

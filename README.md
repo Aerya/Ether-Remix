@@ -69,6 +69,8 @@ Appliquez **la même sortie à tous les outils de cette machine** accédant à A
 
 Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi être utilisé directement dans **Réglages → Général → Proxy pour les sources**, sans MediaFlow. Collez son URL complète : les identifiants sont répartis dans les champs séparés, puis enregistrez. Remix et le proxy doivent partager un réseau accessible. Activez les routes Debrid et, pour les flux issus des addons, Stremio.
 
+**Proxys par source** : chaque compte débrideur peut utiliser son propre proxy HTTP/HTTPS/SOCKS5 pour ses appels API et la lecture vidéo ou musicale. Dans **Sources → Stremio**, choisissez séparément le proxy des requêtes (manifeste, recherches) et celui des flux HTTP. Les blocs acceptent les URL complètes avec identifiants. Un proxy spécifique prend priorité sur MediaFlow et le proxy global, sans repli direct ; désactivé, il conserve le comportement global. Les torrents résolus par Remix utilisent le proxy du compte débrideur.
+
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
 - **Profils de qualité** : formats, codecs, résolutions, HDR/Dolby Vision, taille, langues et regex, globalement ou par bibliothèque/collection. Mode profils ou critères simples, sans cumul ; formats détaillés, résolution inconnue, langue originale et cache debrid annoncé. Import AIOStreams par JSON ou manifest/source enregistrée avec le mot de passe de configuration, aperçu et modification avant enregistrement (variantes non reproduites).

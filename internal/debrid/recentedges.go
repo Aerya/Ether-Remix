@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
@@ -396,6 +397,7 @@ func (f *remoteFile) rerouteWave(ctx context.Context, failed string, usable func
 			f.edgeCursorKey, f.edgeCursorHost = cursorKey, host
 			f.mu.Unlock()
 			pctx, cancel := context.WithTimeout(ctx, edgeProbeBudget)
+			pctx = egress.WithStreamSource(pctx, p.Provider, "")
 			verdict := f.e.probeLink(pctx, u, off, f.size)
 			timedOut := pctx.Err() != nil && ctx.Err() == nil
 			cancel()
