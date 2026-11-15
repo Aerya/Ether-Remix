@@ -2,6 +2,34 @@
 
 [Ether-Remix overview](../../README.en.md) · [Français](GUIDE.fr.md)
 
+**Contents**
+
+- [Installation](#nav-installation)
+  - [Configuring Ether-Remix from the console](#nav-configuring-ether-remix-from-the-console)
+  - [Connecting Scrob](#nav-connecting-scrob)
+  - [Connecting a music client (Subsonic)](#nav-connecting-a-music-client-subsonic)
+  - [Eclipse community sources](#nav-eclipse-community-sources)
+  - [Statistics and source activity](#nav-statistics-and-source-activity)
+  - [DMM with Real-Debrid](#nav-dmm-with-real-debrid)
+  - [History and TMDB comparison](#nav-history-and-tmdb-comparison)
+- [Anime](#nav-anime)
+  - [On-demand subtitled exceptions](#nav-on-demand-subtitled-exceptions)
+  - [Public instances or self-hosting](#nav-public-instances-or-self-hosting)
+- [Settings organization](#nav-settings-organization)
+  - [Browsing and poster badges](#nav-browsing-and-poster-badges)
+- [Playlists and appearance](#nav-playlists-and-appearance)
+- [SubMaker](#nav-submaker)
+  - [Unified history and Listening](#nav-unified-history-and-listening)
+- [Local media and iBroadcast](#nav-local-media-and-ibroadcast)
+  - [Video and audio folders](#nav-video-and-audio-folders)
+  - [iBroadcast account](#nav-ibroadcast-account)
+- [Search caching and source outages](#nav-search-caching-and-source-outages)
+  - [Navigation and configuration](#nav-navigation-and-configuration)
+- [JukeBox quick setup](#nav-jukebox-quick-setup)
+  - [Local media health](#nav-local-media-health)
+
+<a id="nav-installation"></a>
+
 ## Installation
 
 The Docker image is public. No GHCR login or GitHub token is needed to download it.
@@ -29,6 +57,8 @@ Open **http://&lt;host&gt;:32400/ether/** (or the `ETHER_PORT` port) and follow 
 > **Migrating from Ether:** same data format. Stop Ether, point Ether-Remix's `/config` and `/cache` volumes to the existing directories, start Ether-Remix. Keep a copy of `/config` first.
 
 > **Update notices:** the console may announce new *Ether* versions. In a container Ether never updates itself: ignore the notice, Ether-Remix images are updated by the rolling release (Dockge-Enhanced automatic updates or `docker compose pull`).
+
+<a id="nav-configuring-ether-remix-from-the-console"></a>
 
 ### Configuring Ether-Remix from the console
 
@@ -71,6 +101,8 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 | `PSE_MUSIC_DISCOVER` | `on` | Per-viewer “Discoveries” playlist: about fifty tracks by artists close to their plays and playlists. |
 | `PSE_PLAYABLE_PENDING` | `hide` | `show` keeps titles not yet indexed visible (handy during the first indexing run). |
 
+<a id="nav-connecting-scrob"></a>
+
 ### Connecting Scrob
 
 1. Under **Ether-Remix → Notifications and tracking → Scrob**, create the viewer’s Jellyfin credentials.
@@ -82,6 +114,8 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 Scrob’s **Failed to connect to Jellyfin or invalid User ID** error can also indicate a proxy or firewall HTTP 403 before Remix receives the token. Check `/jellyfin/System/Info` and `/jellyfin/Users/{UserId}` with the token from the Scrob server, alongside proxy logs. Sync may enumerate many URLs: anti-crawling protection must distinguish successful authenticated reads from rejected access attempts.
 
 The panel automatically refreshes the viewer’s latest Jellyfin access (Scrob or another client) and webhook status, without reloading the page or clearing unsaved inputs. An API access does not prove that a sync completed. **Trigger Library Scan** requests a refresh from Remix: because its catalogue is virtual, the request is acknowledged immediately without a file scan or global reindex. Episode lists without an explicit sort use the stored, paginated catalogue when episode order is not customized. Use **Pull** to import data into Scrob and **Push** to send it back to Remix.
+
+<a id="nav-connecting-a-music-client-subsonic"></a>
 
 ### Connecting a music client (Subsonic)
 
@@ -117,6 +151,8 @@ The library fills up with favourites (artists, albums, tracks) and plays. Search
 
 **Free audio sources:** Audius was validated with a complete 320 kbit/s MP3 track through Ether-Remix. No new account-free FLAC/Hi-Res source is certified. Diagnostics inspect the first bytes and report FLAC bit depth/sample rate; this is not a full playback test. [Audit, excluded sources, configuration and limitations (French)](AUDIO-SOURCES.fr.md).
 
+<a id="nav-eclipse-community-sources"></a>
+
 ### Eclipse community sources
 
 Under **Ether-Remix → Sources → Music streaming → Eclipse community sources**, open **Configure** for your provider. Generate its link, paste the `manifest.json` and save. An empty field disables the source. Select **Music** for Internet Archive. UltraMax and Deezer Ricky request your Deezer account on their own website; Ether-Remix only stores the generated link, masked in the console.
@@ -135,6 +171,8 @@ Dedicated sources run in this order, after custom Eclipse links and before debri
 **Address tracking:** `PSE_MUSIC_ADDON_REGISTRY=on` by default, checking the public Eclipse registry every 6 hours while music is active. The refresh button also works when automatic checks are disabled (at most one attempt per minute). Public links are cached in the database across restarts and outages. Changes from the address shipped with Ether-Remix are flagged: verify the provider before recreating your link. Personal manifests are never changed automatically. Providers absent from the registry retain their last known address. No Discord monitoring.
 
 
+<a id="nav-statistics-and-source-activity"></a>
+
 ### Statistics and source activity
 
 **Ether-Remix → Stats** separates the dashboard from **Movies & shows** settings. It combines catalogue coverage, seven-day request charts (UTC days), stored releases by source, quotas, errors, partial responses and average durations.
@@ -146,6 +184,8 @@ Source statistics refresh every thirty seconds. Detailed catalogue and library t
 A title search may consume multiple requests. Titles shared by sources or libraries should not be added together; a stored release does not guarantee playback.
 
 
+<a id="nav-dmm-with-real-debrid"></a>
+
 ### DMM with Real-Debrid
 
 By default, Remix queries the [public DMM instance](https://debridmediamanager.com/albums). **DMM instance address** (`PSE_MUSIC_DMM_URL`) selects a private instance reachable from the Remix container. Enter its base address without `/albums` or `/api/music`. The [DMM repository](https://github.com/debridmediamanager/debrid-media-manager#setup) documents installation; your instance must supply its catalogue and the `/api/music/search` and `/api/music/library` APIs. The public catalogue is not automatically copied.
@@ -156,6 +196,8 @@ This source does not depend on indexers. It follows the priority of your Real-De
 
 Ether-Remix sends no credentials to DMM: searches are public, then magnets are resolved directly through Real-Debrid. FLAC/MP3 tracks are selected together to match DMM's cache. Unready additions are removed, with the same Real-Debrid limitation as indexer searches: the service may briefly start a download before removal. **Test** searches for a link; the source diagnostic can check its first audio bytes.
 
+
+<a id="nav-history-and-tmdb-comparison"></a>
 
 ### History and TMDB comparison
 
@@ -177,6 +219,8 @@ Under **Sources → Debrid → Edit**, **Show API key** only reveals the selecte
 
 Under **Sources → Indexing**, **Imported sources** can be filtered and sorted by category, name or content. **Search priority** expands on demand.
 
+<a id="nav-anime"></a>
+
 ## Anime
 
 In **Ether-Remix → Content & libraries → Anime**, create the Anime preset to get popular and top-rated movie/show collections from TMDB. Mixed libraries appear as separate Movies and Shows sections in Plex. Their Anime category is retained after renaming. Anime libraries respect your language filters, including French/MULTi. Original audio and subtitles remain an explicit choice through on-demand exceptions or the Any language option.
@@ -185,13 +229,19 @@ Under **Sources → Stremio**, use **Add addon** and paste the `manifest.json` U
 
 The **What's new** button in the console header reopens release notes. The popup only shows unread notes since the last viewed version. Closing or acknowledging it remembers the version and read notes in this browser; rebuilding Docker does not repeat them. The previous marker is migrated automatically. **Full history** provides optional access to earlier notes. The sidebar version is provided by the running server; official images include an automatically increasing Remix build number. The footer links to both Ether and Ether-Remix.
 
+<a id="nav-on-demand-subtitled-exceptions"></a>
+
 ### On-demand subtitled exceptions
 
 **Ether-Remix → On-demand subtitles → On-demand subtitled titles** groups movies, shows and anime explicitly allowed without French dubbing. Each addition queues a priority search when background indexing is enabled, within source budgets and playback pauses. These titles also appear in the VOSTFR library. Your existing selection is preserved.
 
+<a id="nav-public-instances-or-self-hosting"></a>
+
 ### Public instances or self-hosting
 
 Music sources identify public instances and link to available self-hosting projects: [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music) and [HiFi API](https://github.com/binimum/hifi-api). For Stremio, paste your public or private instance manifest; no provider is recommended. Your personal manifest remains your own configuration.
+
+<a id="nav-settings-organization"></a>
 
 ## Settings organization
 
@@ -204,6 +254,8 @@ Music sources identify public instances and link to available self-hosting proje
 
 Existing `/sources/...` addresses and old Remix tabs redirect to their new locations. Accounts and manifests are not duplicated. Categories organize sources; they do not guarantee that a particular title is available.
 
+<a id="nav-browsing-and-poster-badges"></a>
+
 ### Browsing and poster badges
 
 Plex and Jellyfin prepare a page’s badges together. New episodes and collection rotations respect each viewer’s state. The playable-only catalogue keeps exact counts, including language exceptions.
@@ -214,6 +266,8 @@ Plex and Jellyfin prepare a page’s badges together. New episodes and collectio
 
 **Movies and Shows always in French**: a title without a French version (chosen as VOSTFR, placed in an “Any language” library or an exception collection, or found only with French subtitles by SeerrCatalog) stays visible in its library or collection, but never in Movies, Shows or the home screen.
 
+
+<a id="nav-playlists-and-appearance"></a>
 
 ## Playlists and appearance
 
@@ -229,11 +283,15 @@ Choose a viewer, inspect the preview and confirm. Import creates a personal copy
 
 **Appearance**: the palette button in the top bar offers Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine. Select light or dark mode separately; previews are immediate and your preference is stored in this browser. Other users keep their own preferences.
 
+<a id="nav-submaker"></a>
+
 ## SubMaker
 
 [Configure external subtitles and optional translation](SUBMAKER.en.md), globally or per library/collection, with SeerrCatalog.
 
 For visibility rules and search intervals, see [Catalogue and indexing](CATALOGUE.en.md). To connect the addon, see [SeerrCatalog](SEERRCATALOG.en.md).
+
+<a id="nav-unified-history-and-listening"></a>
 
 ### Unified history and Listening
 
@@ -243,7 +301,11 @@ For visibility rules and search intervals, see [Catalogue and indexing](CATALOGU
 
 **Activity → Listening** uses the same period, year and user filters as Viewing. Counts, daily listens, weekday/hour heatmap and track, artist, album and listener rankings cover the entire period, independently of the history limit. Charts use the browser time zone. Existing listens remain included even when the music source is disabled.
 
+<a id="nav-local-media-and-ibroadcast"></a>
+
 ## Local media and iBroadcast
+
+<a id="nav-video-and-audio-folders"></a>
 
 ### Video and audio folders
 
@@ -267,6 +329,8 @@ Local audio joins Music in Plex/Plexamp, Jellyfin/Emby and Subsonic clients. Tag
 
 Recognized formats: MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, OGV, VOB, 3GP; MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, APE, WMA and ALAC. Files must contain the selected stream type and be readable by `ffprobe`, included in the Linux Docker image. Folders are **private by default**, accessible only to the owner who adds them. Under **Private · sharing options**, select individual viewers or everyone and save. Only the administrator can add server filesystem paths.
 
+<a id="nav-ibroadcast-account"></a>
+
 ### iBroadcast account
 
 In **Sources → Music streaming → iBroadcast**, or your **personal portal** as a viewer, first choose **Add account** and give it a name:
@@ -278,6 +342,8 @@ In **Sources → Music streaming → iBroadcast**, or your **personal portal** a
 
 Each iBroadcast account is **private by default**, belongs to the viewer who connects it and has separate encrypted credentials. You can add multiple accounts and optionally share each with selected viewers or everyone. Authorized libraries appear together in Music; favourites and listening history remain personal. Enable **Import my iBroadcast playlists** to bring them into your clients, preserving track order and repeated songs while skipping deleted or unavailable tracks. Playlists refresh with the library and remain personal to the account owner. Tracks stream as **MP3 128 kbps**, including free accounts. Playlist and tag edits are not written back to iBroadcast. Tokens are encrypted in the database, refreshed automatically and excluded from client responses. Disconnecting removes the library from Remix; revoke the provider authorization separately in iBroadcast **Apps**.
 
+<a id="nav-search-caching-and-source-outages"></a>
+
 ## Search caching and source outages
 
 The resolver's “Remember searches for” duration is a strict ceiling (six hours by default). A title's age never overrides it. Empty results expire sooner: up to three minutes for recent or undated titles, thirty minutes for older titles, always within the configured ceiling. A successful empty search replaces previous results.
@@ -287,9 +353,13 @@ During a temporary outage (timeout, connection failure, server error or automati
 This does not hide credential errors, exhausted quotas, cancellation or valid empty responses. Disabling caching or the source disables this fallback too. Changes to the source address, credentials or search configuration invalidate the cache identity. Fallback use is logged as `using expired search candidates`.
 
 
+<a id="nav-navigation-and-configuration"></a>
+
 ### Navigation and configuration
 
 The console uses `/ether/remix`. Old bookmarks redirect with their parameters preserved. Configuration sections start collapsed; opening or closing them preserves drafts. Sources → Music streaming groups Eclipse, DMM / Real-Debrid, iBroadcast and other providers. Subsonic address and library counts are under Content & libraries → Music. For Spotify, use `/ether/remix/contenus?content=musique` as the allowed callback path; callbacks already started with the old path remain accepted.
+
+<a id="nav-jukebox-quick-setup"></a>
 
 ## JukeBox quick setup
 
@@ -300,6 +370,8 @@ In **Libraries** or **Ether-Remix → Content and libraries**, open **Set up wit
 Collections refresh daily, keep released titles only and sort by release date descending. Keep the general library sort on **Release date** (the default); explicit client sorting takes precedence. Initial population runs in the background. Lists add no playback sources, download no videos and do not guarantee French audio: sources, language filters, viewer permissions and availability rules still apply.
 
 Retrying reuses entries already created, including after a partial error, without overwriting your edits. You can rename or hide libraries and change collection sources, refresh frequency, sorting and targets afterwards. A deleted library can be recreated by running the selection again; deleting a library does not delete its collection.
+
+<a id="nav-local-media-health"></a>
 
 ### Local media health
 
