@@ -65,6 +65,8 @@ Sur un VPS, faites sortir **MediaFlow via Gluetun**, connecté à un VPN accept�
 
 Appliquez **la même sortie à tous les outils de cette machine** accédant à AllDebrid, y compris les workers, planificateurs et scripts de nettoyage. Pour un outil sans intégration MediaFlow, utilisez le proxy Gluetun associé. Les appels effectués par des addons hébergés ailleurs ne sont pas contrôlés par Remix. [Installation et vérifications](docs/alldebrid-mediaflow.md). Le panneau propose un lien vers le Compose MediaFlow + Gluetun et un bouton de test AllDebrid via la connexion enregistrée.
 
+**Fichiers Compose prêts à utiliser :** [Ether-Remix](docker-compose.example.yml) · [MediaFlow + Gluetun](docker-compose.mediaflow-gluetun.yml) · [Prérequis et raccordement](docs/alldebrid-mediaflow.md).
+
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
 - **Profils de qualité** : formats, codecs, résolutions, HDR/Dolby Vision, taille, langues et regex, globalement ou par bibliothèque/collection. Mode profils ou critères simples, sans cumul ; formats détaillés, résolution inconnue, langue originale et cache debrid annoncé. Import AIOStreams par JSON ou manifest/source enregistrée avec le mot de passe de configuration, aperçu et modification avant enregistrement (variantes non reproduites).

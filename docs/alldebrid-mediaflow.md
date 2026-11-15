@@ -6,39 +6,15 @@ MediaFlow est un relais HTTP applicatif, pas un VPN. Pour un VPS, utilisez cette
 
 `Remix → MediaFlow → Gluetun → VPN accepté / tunnel domestique → AllDebrid`
 
-Déployez la pile ci-dessous dans votre gestionnaire Docker. Placez le profil WireGuard dans `wg0.conf` (permissions `600`) et définissez `MEDIAFLOW_API_PASSWORD` dans le fichier `.env`. Pour un fournisseur VPN, adaptez Gluetun selon sa documentation. Le profil doit autoriser la route Internet ; ne publiez jamais sa clé privée.
+Téléchargez le [Compose MediaFlow + Gluetun](../docker-compose.mediaflow-gluetun.yml) et déployez-le comme une stack distincte dans Dockge-Enhanced. Pour une nouvelle installation de Remix, utilisez le [Compose Remix](../docker-compose.example.yml). Placez le profil WireGuard dans `wg0.conf` (permissions `600`) et définissez `MEDIAFLOW_API_PASSWORD` dans le fichier `.env`. Pour un fournisseur VPN, adaptez Gluetun selon sa documentation. Le profil doit autoriser la route Internet ; ne publiez jamais sa clé privée.
 
-```yaml
-services:
-  gluetun:
-    image: qmcgaw/gluetun:latest
-    restart: unless-stopped
-    cap_add: [NET_ADMIN]
-    devices: [/dev/net/tun:/dev/net/tun]
-    volumes:
-      - ./wg0.conf:/gluetun/wireguard/wg0.conf:ro
-    environment:
-      VPN_SERVICE_PROVIDER: custom
-      VPN_TYPE: wireguard
-      HTTPPROXY: "on"
-      HTTPPROXY_LOG: "off"
-      FIREWALL_INPUT_PORTS: "8888,8889"
-    networks: [media]
-  mediaflow:
-    image: mhdzumair/mediaflow-proxy:latest
-    restart: unless-stopped
-    network_mode: service:gluetun
-    depends_on:
-      gluetun:
-        condition: service_healthy
-    environment:
-      API_PASSWORD: ${MEDIAFLOW_API_PASSWORD:?Définissez un mot de passe}
-      PORT: "8889"
-networks:
-  media:
-    external: true
-    name: media
+Dans le dossier de la stack MediaFlow + Gluetun, créez un fichier `.env` (ou utilisez l’onglet environnement de Dockge) :
+
+```dotenv
+MEDIAFLOW_API_PASSWORD=remplacez-par-un-long-mot-de-passe-unique
 ```
+
+Le Compose place MediaFlow dans le réseau de Gluetun. MediaFlow écoute sur le port interne **8889**, et le proxy HTTP Gluetun sur **8888**. Aucun port n’est publié sur l’hôte. Le montage `wg0.conf` doit être un fichier existant, jamais un dossier. Déployez la stack après avoir créé le réseau `media` ci-dessous.
 
 MediaFlow et Gluetun sont deux services externes : Remix ne les embarque pas. Si vous les avez déjà installés, réutilisez-les au lieu de créer une seconde instance.
 
@@ -55,7 +31,7 @@ networks:
     name: media
 ```
 
-Redéployez la stack Remix dans votre gestionnaire Docker. Aucun port n’est publié sur l’hôte : configurez `http://gluetun:8889` dans Remix. Le proxy HTTP Gluetun écoute sur `http://gluetun:8888` pour les outils sans prise en charge de MediaFlow. Pour une instance distante, utilisez HTTPS et une authentification ; ne rendez pas ce relais public sans protection. Adaptez le DNS de Gluetun à votre réseau, notamment pour conserver votre filtrage domestique.
+Redéployez la stack Remix dans votre gestionnaire Docker. La stack MediaFlow + Gluetun ne publie aucun port sur l’hôte : configurez `http://gluetun:8889` dans Remix. Le proxy HTTP Gluetun écoute sur `http://gluetun:8888` pour les outils sans prise en charge de MediaFlow. Pour une instance distante, utilisez HTTPS et une authentification ; ne rendez pas ce relais public sans protection. Adaptez le DNS de Gluetun à votre réseau, notamment pour conserver votre filtrage domestique.
 
 L’option **Sources → Debrid → Utiliser MediaFlow pour AllDebrid** exige l’adresse et le mot de passe API du relais. Le mot de passe est masqué dans la console et protégé comme les autres identifiants. L’option reste propre à chaque nœud : configurez aussi les nœuds qui effectuent les téléchargements.
 
@@ -77,7 +53,7 @@ MediaFlow est une instance de confiance : elle reçoit les destinations et ident
 
 ## English
 
-Deploy MediaFlow behind Gluetun using the example above. Attach Remix to the private `media` network, set the relay URL to `http://gluetun:8889` and enter its API password under **Sources → Debrid**. Other tools can use Gluetun’s HTTP proxy on port 8888. Preserve your intended DNS settings. Do not expose the relay without authentication; use HTTPS for remote access.
+MediaFlow is not bundled with Remix. Download the [Remix Compose](../docker-compose.example.yml) and the separate [MediaFlow + Gluetun Compose](../docker-compose.mediaflow-gluetun.yml). Before deployment, create the external network with `docker network create media`, provide an existing `wg0.conf` file and set `MEDIAFLOW_API_PASSWORD` in `.env`. Attach Remix to the private `media` network, set the relay URL to `http://gluetun:8889` and enter its API password under **Sources → Debrid**. Other tools can use Gluetun’s HTTP proxy on port 8888. Preserve your intended DNS settings. Do not expose the relay without authentication; use HTTPS for remote access.
 
 Check both exit IPs, then test your account and playback. An unavailable relay must cause an error, never direct fallback. Configure every AllDebrid tool and background job on the same exit. Hosted addons make their own upstream requests; opaque third-party relay URLs cannot always be identified. MediaFlow requires a version supporting `/proxy/forward` and encrypted tokens. It is a trusted service receiving upstream credentials; avoid request/URL logging.
 

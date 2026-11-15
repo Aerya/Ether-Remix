@@ -110,6 +110,20 @@ export function AllDebridMediaFlow() {
       </p>
       <div className="flex flex-wrap gap-4 text-sm underline">
         <a
+          href="https://github.com/Aerya/Ether-Remix/blob/main/docker-compose.example.yml"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {L("Fichier Compose Remix", "Remix Compose file")}
+        </a>
+        <a
+          href="https://github.com/Aerya/Ether-Remix/blob/main/docker-compose.mediaflow-gluetun.yml"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {L("Fichier Compose MediaFlow + Gluetun", "MediaFlow + Gluetun Compose file")}
+        </a>
+        <a
           href="https://github.com/Aerya/Ether-Remix/blob/main/docs/alldebrid-mediaflow.md#installation"
           target="_blank"
           rel="noopener noreferrer"
