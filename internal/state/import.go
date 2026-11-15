@@ -22,7 +22,11 @@ type ImportRecord struct {
 	ViewedAt         time.Time
 	RatingsOnly      bool
 }
-type ImportBatch struct{ Records, History []ImportRecord }
+type ImportBatch struct {
+	Records, History []ImportRecord
+	// HistoryOnly adds dated events without altering watched state or progress.
+	HistoryOnly []ImportRecord
+}
 
 // ImportTransaction commits a reviewed import with the caller's own bookkeeping
 // and list writes. State owns every watch/history write and emits ordinary state
@@ -135,6 +139,15 @@ func (s *State) importTx(ctx context.Context, tx *sql.Tx, b ImportBatch) ([]Even
 			events = append(events, Event{Kind: EventRated, UserID: r.UserID, Key: r.Key, Rating: r.Rating, At: s.now()})
 		}
 	}
+	for _, r := range b.HistoryOnly {
+		if !r.Key.Valid() || r.UserID <= 0 || r.ViewedAt.IsZero() {
+			return nil, errors.New("invalid imported history event")
+		}
+		if err := addHistory(r); err != nil {
+			return nil, err
+		}
+	}
+
 	type histAgg struct {
 		userID int64
 		key    core.RatingKey
