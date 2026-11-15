@@ -38,7 +38,7 @@ func TestContinueWatchingRetainsImportedOldSeriesOnHome(t *testing.T) {
 			t.Fatal("invented resume offset", off)
 		}
 	}
-	// A movie plus a next episode must not cause a duplicate On Deck row.
+	// A movie must not displace the next episode from Home Continue Watching.
 	if err := st.Progress(ctx, ownerUser.ID, fightClub.Key, time.Minute, time.Hour, "playing"); err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +46,17 @@ func TestContinueWatchingRetainsImportedOldSeriesOnHome(t *testing.T) {
 	found := false
 	for _, row := range mc["Hub"].([]any) {
 		h := row.(map[string]any)
-		if h["hubIdentifier"] == "home.ondeck" {
-			t.Fatalf("duplicated series shelf: %v", mc)
-		}
 		if h["hubIdentifier"] == "home.continue" {
 			found = true
+			count := 0
+			for _, item := range h["Metadata"].([]any) {
+				if item.(map[string]any)["ratingKey"] == bbE2.Key.String() {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("next episode count %d: %v", count, h)
+			}
 		}
 	}
 	if !found {
