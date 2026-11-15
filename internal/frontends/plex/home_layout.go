@@ -52,7 +52,7 @@ func (s *Server) prepareHomeContinueAndOnDeck(ctx context.Context, pr *Request, 
 	spec.included, spec.noPromoted, spec.plain = false, false, false
 	ondeck := s.renderHub(ctx, pr, spec, hubCtx{})
 
-	same := len(ondeck.Metadata) > 0 && len(ondeck.Metadata) == len(cwRendered.Metadata)
+	same := len(ondeck.Metadata) > 0
 	keys := make(map[string]bool, len(cwRendered.Metadata))
 	for _, item := range cwRendered.Metadata {
 		keys[item.RatingKey] = true
