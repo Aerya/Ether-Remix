@@ -833,6 +833,15 @@ func TestPMSFullHistoryBackfill(t *testing.T) {
 		t.Fatalf("unmatched after full read = %+v, %v", un, err)
 	}
 
+	var imported int
+	var first, last int64
+	if err := h.svc.db.QueryRow(`SELECT COUNT(*),MIN(viewed_at),MAX(viewed_at) FROM state_history WHERE user_id=? AND rating_key=? AND imported=1`, pmsViewer, int64(movieA)).Scan(&imported, &first, &last); err != nil {
+		t.Fatal(err)
+	}
+	if imported != 520 || first != oldBase.UnixNano() || last != oldBase.Add(519*time.Second).UnixNano() {
+		t.Fatalf("imported chronology: %d %d %d", imported, first, last)
+	}
+
 	// Repeating full read after completion does not increment view_count.
 	var countBefore int
 	if err := h.svc.db.QueryRow(`SELECT view_count FROM state_watch WHERE user_id=? AND rating_key=?`, pmsViewer, int64(movieA)).Scan(&countBefore); err != nil {
@@ -850,6 +859,13 @@ func TestPMSFullHistoryBackfill(t *testing.T) {
 	}
 	if countAfter != countBefore {
 		t.Fatalf("repeating full read bumped view_count from %d to %d", countBefore, countAfter)
+	}
+
+	if err := h.svc.db.QueryRow(`SELECT COUNT(*) FROM state_history WHERE user_id=? AND rating_key=? AND imported=1`, pmsViewer, int64(movieA)).Scan(&imported); err != nil {
+		t.Fatal(err)
+	}
+	if imported != 520 {
+		t.Fatalf("reimport duplicated events: %d", imported)
 	}
 
 	// Server B: test full send of old watched and in-progress rows, preserving
