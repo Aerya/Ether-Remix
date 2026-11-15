@@ -46,7 +46,17 @@ type Continue struct {
 
 func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []core.Title, state map[core.RatingKey]core.WatchStatus, limit int) []core.Title {
 	ctx = core.WithCatalogViewer(ctx, viewer)
-	history, err := c.State.History(ctx, viewer.ID, c.Now().Add(-90*24*time.Hour), 200)
+	// Prefer one completed anchor per series, so a binge or movie history
+	// cannot crowd older unfinished shows out of the bounded candidate list.
+	var history []core.HistoryEntry
+	var err error
+	if source, ok := c.State.(interface {
+		ContinueSeriesHistory(context.Context, int64, int) ([]core.HistoryEntry, error)
+	}); ok {
+		history, err = source.ContinueSeriesHistory(ctx, viewer.ID, 200)
+	} else {
+		history, err = c.State.History(ctx, viewer.ID, time.Time{}, 200)
+	}
 	if err != nil {
 		return titles
 	}
@@ -288,7 +298,7 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 			titles = append(titles, candidates[i])
 		}
 	}
-	// Resume unfinished media and advance recently completed series. A
+	// Resume unfinished media and advance completed series. A
 	// completed episode has no offset, so InProgress alone loses the show.
 	if t != core.TypeMovie {
 		titles = c.appendNext(ctx, viewer, titles, state, limit)

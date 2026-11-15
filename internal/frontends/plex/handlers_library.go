@@ -77,23 +77,20 @@ const defaultUnpagedLimit = 500
 // /:/prefs reports it.
 const plexOnDeckLimit = 40
 
-// plexOnDeckWindow is PMS's OnDeckWindow default, 16 weeks: "Media that has
-// not been watched in this many weeks will not appear in Continue
-// Watching." With OnDeckIncludePremieres (default on) a new season premiere
-// appears however long ago the show was watched. /:/prefs reports both.
+// Retain the PMS recency window for movies. Unfinished series are bounded
+// by the deck size instead of their last viewing date.
 const plexOnDeckWindow = 16 * 7 * 24 * time.Hour
 
 // onDeckSince is the start of the On Deck window.
 func (s *Server) onDeckSince() time.Time { return s.now().Add(-plexOnDeckWindow) }
 
-// inOnDeckWindow reports a deck row PMS would still show: watched within
-// the window (st carries the show's latest view for a next-up episode), or
-// a season premiere, episode 1 of a later season, that aired within it.
+// Series remain resumable regardless of when the last episode was watched.
+// Keep the recency window for movies; the deck still bounds series by count.
 func inOnDeckWindow(t *frontend.Title, st frontend.WatchStatus, since time.Time) bool {
-	if st.LastViewedAt.Unix() <= 0 || !st.LastViewedAt.Before(since) {
+	if t.Type == frontend.TypeEpisode || st.LastViewedAt.Unix() <= 0 || !st.LastViewedAt.Before(since) {
 		return true // an undated view is not known to be old (the deck query's latest<=0)
 	}
-	return t.Type == frontend.TypeEpisode && t.Episode == 1 && t.Season > 1 && !t.Released.IsZero() && !t.Released.Before(since)
+	return false
 }
 
 // onDeckWindowed keeps the rows inside the On Deck window, in order.

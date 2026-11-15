@@ -341,15 +341,6 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 			}
 		}
 	}
-	if v == cwHome {
-		resuming := items[:0]
-		for _, item := range items {
-			if state[item.Key].ViewOffset > 0 {
-				resuming = append(resuming, item)
-			}
-		}
-		items = resuming
-	}
 	items = s.takeVisible(pr.User, items, count)
 	hs := hubSpec{Hub: frontend.Hub{Title: "Continue Watching", Style: "hero", Promoted: true}, state: state}
 	switch v {
