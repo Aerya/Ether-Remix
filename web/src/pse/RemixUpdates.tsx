@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-15-source-proxies",
+    id: "2026-11-15-copy-quality-scrob",
     version: "current",
+    date: "2026-11-15",
+    title: [
+      "Qualité vidéo et copie des identifiants Scrob",
+      "Video quality and Scrob credential copying",
+    ],
+    items: [
+      [
+        "Réglages visibles pour les qualités adaptatives en Direct Stream et le démarrage accéléré. Les variantes réencodées sont désactivées par défaut dans les nouvelles configurations ; vos choix existants sont conservés.",
+        "Visible controls for adaptive Direct Stream qualities and accelerated start. Encoded variants are off by default in new configurations; existing preferences are preserved.",
+      ],
+      [
+        "Boutons de copie pour les trois identifiants Jellyfin destinés à Scrob.",
+        "Copy buttons for all three Jellyfin credentials used by Scrob.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-15-source-proxies",
+    version: "0.2.37-remix.68.1",
     date: "2026-11-15",
     title: ["Un proxy par compte et par addon", "Per-account and per-addon proxies"],
     items: [

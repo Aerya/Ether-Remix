@@ -62,6 +62,8 @@ Open **http://&lt;host&gt;:32400/ether/** (or the `ETHER_PORT` port) and follow 
 
 ### Configuring Ether-Remix from the console
 
+Under **Playback → Transcoding**, adaptive Direct Stream qualities offer encoded variants for limited connections; this is off by default for new configurations. Also disable accelerated start to avoid reducing resolution in the opening segments when video copy is possible. Existing settings are retained; start a new playback session to apply your choices. Scrob Copy buttons copy Server URL, Token and User ID without revealing the token.
+
 Every addition is configured in the console, under **Ether-Remix** (`/ether/remix`): switches, options and the state of each feature (indexed titles, playable titles, music library…). A value saved on that page replaces the environment variable of the same name and applies without a restart; the ↺ button goes back to the variable or the default. The variables below still work for a deployment fully described in `compose.yaml`.
 
 Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_DIR`, `PUID`/`PGID`…): see [docs/install.md](../install.md). Ether-Remix-specific variables:

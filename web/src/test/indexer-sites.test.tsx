@@ -264,7 +264,7 @@ describe("Sources › Indexers definitions", () => {
       await screen.findByRole("button", { name: "More options: Site definitions" }, WAIT),
     );
     const flare = screen.getByLabelText("FlareSolverr");
-    expect(screen.queryByRole("button", { name: /Save changes/ })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Save changes/ })).toBeNull());
     fireEvent.change(flare, { target: { value: "http://localhost:8191" } });
     fireEvent.change(screen.getByLabelText("Definitions source"), {
       target: { value: "https://defs.invalid/definitions/" },
