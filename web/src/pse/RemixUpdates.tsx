@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-15-upstream-sync",
+    id: "2026-11-15-continue-old-series",
     version: "current",
+    date: "2026-11-15",
+    title: ["Reprendre les séries anciennes", "Resume older series"],
+    items: [
+      [
+        "Les séries en cours ne disparaissent plus après 90 jours. L’accueil Plex propose aussi le prochain épisode, sans doublons ni fausse position de reprise.",
+        "Unfinished series no longer disappear after 90 days. Plex Home also offers the next episode, without duplicates or an invented resume position.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-15-upstream-sync",
+    version: "0.2.37-remix.72.1",
     date: "2026-11-15",
     title: ["Synchronisation Ether rétablie", "Ether synchronization restored"],
     items: [
