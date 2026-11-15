@@ -88,6 +88,12 @@ export function AllDebridMediaFlow() {
       title={L("AllDebrid : connexion et MediaFlow", "AllDebrid: connection and MediaFlow")}
       bodyClassName="space-y-4 p-4"
     >
+      <p className="text-sm text-fg-muted">
+        {L(
+          "Option globale pour tous les comptes AllDebrid de Remix : MediaFlow relaie les appels API et les fichiers vidéo ou audio récupérés par Remix pour ses clients. Vous pouvez configurer plus finement un proxy dans chaque compte débrideur, AllDebrid ou autre. Le proxy du compte est prioritaire sur cette option globale.",
+          "Global option for all AllDebrid accounts in Remix: MediaFlow relays API calls and video or audio files fetched by Remix for its clients. You can configure a dedicated proxy in each debrid account, AllDebrid or otherwise. The account proxy takes precedence over this global option.",
+        )}
+      </p>
       <Alert variant="warning">
         <AlertDescription>
           {L(
@@ -109,20 +115,6 @@ export function AllDebridMediaFlow() {
         )}
       </p>
       <div className="flex flex-wrap gap-4 text-sm underline">
-        <a
-          href="https://github.com/Aerya/Ether-Remix/blob/main/docker-compose.example.yml"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {L("Fichier Compose Remix", "Remix Compose file")}
-        </a>
-        <a
-          href="https://github.com/Aerya/Ether-Remix/blob/main/docker-compose.mediaflow-gluetun.yml"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {L("Fichier Compose MediaFlow + Gluetun", "MediaFlow + Gluetun Compose file")}
-        </a>
         <a
           href="https://github.com/Aerya/Ether-Remix/blob/main/docs/alldebrid-mediaflow.md#installation"
           target="_blank"
@@ -188,29 +180,33 @@ export function AllDebridMediaFlow() {
       </label>
       <p className="text-sm text-fg-muted">
         {L(
-          "Une fois activé, les appels API AllDebrid et les fichiers AllDebrid récupérés par Remix passent par MediaFlow, sans repli direct en cas de panne. Configurez la même sortie pour tous les outils qui accèdent à AllDebrid sur cette machine, y compris les tâches automatiques. Un outil sans intégration MediaFlow peut utiliser le proxy Gluetun de cette même sortie. Les appels exécutés par les addons publics restent hors du contrôle de Remix.",
-          "When enabled, AllDebrid API calls and AllDebrid files fetched by Remix use MediaFlow, without direct fallback on failure. Configure the same exit for every tool accessing AllDebrid on this machine, including background jobs. Tools without MediaFlow integration can use the Gluetun proxy on that same exit. Calls made by public addons remain outside Remix's control.",
+          "Sans proxy spécifique au compte, activer cette option fait passer les accès AllDebrid gérés par Remix par MediaFlow, sans repli direct en cas de panne. Configurez la même sortie pour tous les outils qui accèdent à AllDebrid sur cette machine, y compris les tâches automatiques. Un outil sans intégration MediaFlow peut utiliser le proxy Gluetun de cette même sortie. Les appels exécutés par les addons publics restent hors du contrôle de Remix.",
+          "Without a dedicated account proxy, enabling this option routes AllDebrid access handled by Remix through MediaFlow, without direct fallback on failure. Configure the same exit for every tool accessing AllDebrid on this machine, including background jobs. Tools without MediaFlow integration can use the Gluetun proxy on that same exit. Calls made by public addons remain outside Remix's control.",
         )}
       </p>
-      <Button
-        disabled={
-          busy ||
-          testing ||
-          !config.data ||
-          (draft.enabled && (!draft.url.trim() || !draft.password))
-        }
-        onClick={() => void save()}
-      >
-        {busy ? L("Enregistrement…", "Saving…") : L("Enregistrer la connexion", "Save connection")}
-      </Button>
-      <Button
-        disabled={busy || testing || !saved?.enabled || dirty || !account}
-        onClick={() => void test()}
-      >
-        {testing
-          ? L("Test en cours…", "Testing…")
-          : L("Tester AllDebrid via MediaFlow", "Test AllDebrid through MediaFlow")}
-      </Button>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          disabled={
+            busy ||
+            testing ||
+            !config.data ||
+            (draft.enabled && (!draft.url.trim() || !draft.password))
+          }
+          onClick={() => void save()}
+        >
+          {busy
+            ? L("Enregistrement…", "Saving…")
+            : L("Enregistrer la connexion", "Save connection")}
+        </Button>
+        <Button
+          disabled={busy || testing || !saved?.enabled || dirty || !account}
+          onClick={() => void test()}
+        >
+          {testing
+            ? L("Test en cours…", "Testing…")
+            : L("Tester AllDebrid via MediaFlow", "Test AllDebrid through MediaFlow")}
+        </Button>
+      </div>
       <p className="text-sm text-fg-muted">
         {!account
           ? L(
