@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-15-copy-quality-scrob",
+    id: "2026-11-15-pms-history",
     version: "current",
+    date: "2026-11-15",
+    title: ["Historique Plex dans l’activité", "Plex history in activity"],
+    items: [
+      [
+        "L’import complet depuis Plex Media Server alimente aussi l’activité récente avec les dates d’origine, sans doublons. Relancez l’import complet pour compléter un ancien import ; les états locaux plus récents restent prioritaires.",
+        "Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-15-copy-quality-scrob",
+    version: "0.2.37-remix.69.1",
     date: "2026-11-15",
     title: [
       "Qualité vidéo et copie des identifiants Scrob",

@@ -105,6 +105,8 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 
 <a id="nav-connecter-scrob"></a>
 
+L’import complet depuis Plex Media Server alimente aussi l’activité récente avec les dates d’origine, sans doublons. Relancez « Récupérer tout l’historique depuis ce serveur » pour compléter un ancien import ; les états locaux plus récents restent prioritaires.
+
 ### Connecter Scrob
 
 1. Dans **Ether-Remix → Notifications et suivi → Scrob**, créez les identifiants Jellyfin du spectateur.

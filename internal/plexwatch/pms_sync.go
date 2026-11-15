@@ -509,6 +509,13 @@ func (s *Servers) applyHistory(ctx context.Context, p *pmsPair, h pmsMetadata) e
 			return nil // Ether's own scrobble coming back
 		}
 	}
+	// Keep historical events even when a more recent local unwatch wins.
+	// Retries and full-history reimports are deduplicated by viewer/title/date.
+	if err := s.state.ImportTransaction(ctx, func(*sql.Tx) (state.ImportBatch, error) {
+		return state.ImportBatch{HistoryOnly: []state.ImportRecord{{UserID: p.userID, Key: key, ViewedAt: viewedAt}}}, nil
+	}); err != nil {
+		return err
+	}
 	watched := true
 	err = s.state.ApplyRemote(ctx, p.userID, key, &watched, viewedAt, nil, time.Time{})
 	if err != nil && !errors.Is(err, state.ErrLocalNewer) {
