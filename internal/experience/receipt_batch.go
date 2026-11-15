@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"database/sql"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -101,6 +102,7 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 			s.opts.Prefetch(ctx, keys)
 		}
 	}
+	ctx = context.WithValue(ctx, rowInteractionBatchKey{}, make(map[*core.NeutralImpression]bool))
 	for _, subject := range subjects {
 		if !s.opts.Allowed(ctx, active, device, protocol, subject) {
 			return nil, ErrReceipt
@@ -139,7 +141,39 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 		return nil, err
 	}
 	if count+len(subjects) > s.opts.MaxPerDevice {
-		return nil, errors.New("experience: receipt limit reached")
+		// Retire only this device's oldest dispensable authority. The delete
+		// triggers retire headers and claims in the same transaction. The window
+		// ranks only this quota-bounded device, never the library; older
+		// duplicates are superseded even if an impression was reported.
+		need := count + len(subjects) - s.opts.MaxPerDevice
+		result, evictErr := tx.ExecContext(ctx, `DELETE FROM experience_receipts WHERE viewer_id=? AND device_id=? AND hash IN (
+ SELECT r.hash FROM (
+ SELECT hash,expires,protocol,generation,
+ ROW_NUMBER() OVER (PARTITION BY protocol,kind,subject,purpose,rank,generation ORDER BY expires DESC,hash DESC) AS recency
+ FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires>?
+ ) r WHERE r.recency>1 OR (?=1 AND r.protocol=? AND r.generation<>?) OR NOT EXISTS (
+ SELECT 1 FROM capability_claims c WHERE c.namespace=? AND c.digest=r.hash)
+ ORDER BY r.expires,r.hash LIMIT ?)`, viewer.ID, device.ID, viewer.ID, device.ID, now, store.BoolInt(s.opts.Generation != nil), string(protocol), generation, ReceiptCapabilityNamespace, need)
+		if evictErr != nil {
+			return nil, evictErr
+		}
+		removed, evictErr := result.RowsAffected()
+		if evictErr != nil {
+			return nil, evictErr
+		}
+		// Recount live authority after the bounded eviction.
+		if removed > 0 {
+			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires>?`, viewer.ID, device.ID, now).Scan(&count); err != nil {
+				return nil, err
+			}
+		}
+		if count+len(subjects) > s.opts.MaxPerDevice {
+			var earliest int64
+			if err = tx.QueryRowContext(ctx, `SELECT MIN(expires) FROM experience_receipts WHERE viewer_id=? AND device_id=? AND expires>?`, viewer.ID, device.ID, now).Scan(&earliest); err != nil {
+				return nil, err
+			}
+			return nil, &frontend.ReceiptCapacityError{RetryAfter: time.Duration(max(1, earliest-now)) * time.Second}
+		}
 	}
 	tokens := make([]string, len(subjects))
 	hashes := make([]string, len(subjects))
@@ -191,4 +225,29 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 		return nil, err
 	}
 	return tokens, nil
+}
+
+// receiptsLive checks only the fixed page's digests, so cache reuse cannot
+// publish tokens retired by quota recovery on this or another node.
+func (s *Receipts) receiptsLive(ctx context.Context, viewer int64, device string, protocol core.Protocol, tokens []string) (bool, error) {
+	for start := 0; start < len(tokens); start += receiptInsertRows {
+		end := min(start+receiptInsertRows, len(tokens))
+		args := []any{viewer, device, string(protocol), s.opts.Now().Unix()}
+		for _, token := range tokens[start:end] {
+			hash, ok := s.codec.Hash(token)
+			if !ok {
+				return false, nil
+			}
+			args = append(args, hash)
+		}
+		var count int
+		query := `SELECT COUNT(*) FROM experience_receipts WHERE viewer_id=? AND device_id=? AND protocol=? AND expires>? AND hash IN (` + strings.TrimSuffix(strings.Repeat("?,", end-start), ",") + `)`
+		if err := s.opts.DB.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+			return false, err
+		}
+		if count != end-start {
+			return false, nil
+		}
+	}
+	return true, nil
 }

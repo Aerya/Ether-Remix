@@ -960,6 +960,7 @@ export const EXTRAS: FieldGroup[] = localized(() => [
     title: t("Trailers"),
     description: t("Play a trailer before a movie or episode."),
     fields: [
+      { key: "themeMusic", label: t("Theme music"), kind: "bool" },
       {
         key: "enabled",
         label: t("Trailers and Cinema Trailers"),
@@ -986,6 +987,13 @@ export const EXTRAS: FieldGroup[] = localized(() => [
         ),
       },
       { key: "resolverTimeout", label: t("Give up after"), kind: "duration" },
+      {
+        key: "trailerCacheMaxBytes",
+        label: t("Trailer cache limit"),
+        kind: "bytes",
+        unit: "MiB",
+        help: t("Trailers are cached when opened. 0 uses 512 MiB."),
+      },
       {
         key: "prewarmBytes",
         label: t("Pre-buffer the feature"),
@@ -1021,3 +1029,25 @@ export function searchIdentityOptions(includeCustom: boolean, includeEther = tru
     (o) => o.value !== "sabnzbd" && o.value !== "nzbget",
   );
 }
+
+export const LIVE_LATENCY: FieldGroup[] = localized(() => [
+  {
+    id: "live-latency",
+    title: t("Live TV"),
+    fields: [
+      {
+        key: "latencyProfile",
+        label: t("Live TV delay"),
+        kind: "select",
+        options: [
+          { value: "auto", label: t("Automatic") },
+          { value: "low", label: t("Prefer low delay") },
+          { value: "stable", label: t("Prefer stability") },
+        ],
+        help: t(
+          "Choose how close to live everyone watches. Less delay can mean more interruptions.",
+        ),
+      },
+    ],
+  },
+]);

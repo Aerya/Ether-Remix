@@ -206,6 +206,22 @@ func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s
 			c.Frontends["plex"] = config.Frontend{Enabled: true} // Preserve the default main-listener registration.
 		}
 		v := c.Frontends[string(id)]
+		if id == "vela" {
+			oldSkin, _ := v.Settings["defaultSkinId"].(string)
+			newSkin, _ := s["defaultSkinId"].(string)
+			if oldSkin == "" {
+				oldSkin = "cinematic"
+			}
+			if newSkin == "" {
+				newSkin = "cinematic"
+			}
+			if oldSkin != newSkin {
+				if v.AppearanceRevision >= 9007199254740991 {
+					return errors.New("appearance revision exhausted")
+				}
+				v.AppearanceRevision++
+			}
+		}
 		// Only a present publicUrl changes the stored address; a settings
 		// save that never heard of it must not clear the owner's address.
 		// A present empty value clears it.

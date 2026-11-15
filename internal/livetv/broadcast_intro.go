@@ -7,7 +7,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
-// Only the unscheduled cold-tune ident is fill. Scheduled moments retain their
+// Unscheduled cold-tune titles and idents are fill. Scheduled moments retain their
 // complete saved duration. Keep decoding its next frames during the 300ms cut.
 func (b *broadcast) finishIntro(now time.Time) {
 	b.introUntil = now

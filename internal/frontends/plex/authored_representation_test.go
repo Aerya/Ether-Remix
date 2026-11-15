@@ -165,7 +165,11 @@ func TestAuthoredPlexRepresentationOwnerContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		seenFiles[filepath.Base(u.Path)] = true
+		file := filepath.Base(u.Path)
+		if strings.HasPrefix(file, "g-") && len(file) > 35 {
+			file = file[35:]
+		}
+		seenFiles[file] = true
 		t.Run(strings.Split(target, "?")[0], func(t *testing.T) {
 			for _, method := range []string{"GET", "HEAD"} {
 				req := httptest.NewRequest(method, target, nil)

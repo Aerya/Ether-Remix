@@ -98,6 +98,7 @@ func (s *Service) RunAutomatic(ctx context.Context, budget *AutomaticBudget, tar
 	}
 	lang := NeededAutomaticLanguage(p)
 	if lang == "" {
+		s.log.Info("automatic subtitle skipped", "viewer", p.Viewer, "reason", "no_missing_preferred_language", "manual", p.Manual, "mode", p.Preferences.Mode)
 		return nil
 	}
 	attach := func(st core.StreamInfo) error {

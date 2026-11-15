@@ -1,6 +1,7 @@
 package nzb
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -30,4 +31,19 @@ func (n *NZB) EpisodeHint() (EpisodeHint, bool) {
 		return EpisodeHint{}, false
 	}
 	return h, true
+}
+
+// MetaMovie carries the requested movie identity into an archive's member selector.
+const MetaMovie = "ether-movie"
+
+type MovieHint struct {
+	Titles []string
+	Year   int
+}
+
+func (h MovieHint) String() string { b, _ := json.Marshal(h); return string(b) }
+func (n *NZB) MovieHint() (MovieHint, bool) {
+	var h MovieHint
+	err := json.Unmarshal([]byte(n.MetaValue(MetaMovie)), &h)
+	return h, err == nil && len(h.Titles) > 0
 }

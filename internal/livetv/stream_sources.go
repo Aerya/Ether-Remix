@@ -188,7 +188,8 @@ func (s *Service) sourceStatus(channelID string, src StreamSource) StreamSourceS
 // orderedSourceCandidates lists a channel's enabled inputs, best first. Health
 // only orders them: a cooling-down source still appears, after every source
 // that is not, so recovery never waits out a cooldown while any input remains.
-// Within each health class owner priority decides; cooling sources come back
+// Recently played healthy inputs precede unchecked ones, then failed inputs.
+// Owner priority breaks ties; cooling sources come back
 // soonest-retry first. exclude skips source IDs (typically the one that just
 // failed). Invalid channel sources yield nil.
 func (s *Service) orderedSourceCandidates(c Channel, exclude ...string) []StreamSource {
@@ -196,9 +197,10 @@ func (s *Service) orderedSourceCandidates(c Channel, exclude ...string) []Stream
 		return nil
 	}
 	type ranked struct {
-		src   StreamSource
-		class int
-		retry time.Time
+		src    StreamSource
+		class  int
+		retry  time.Time
+		played time.Time
 	}
 	var out []ranked
 	for _, src := range c.StreamSources {
@@ -206,20 +208,25 @@ func (s *Service) orderedSourceCandidates(c Channel, exclude ...string) []Stream
 			continue
 		}
 		st := s.sourceStatus(c.ID, src)
-		class := 0
+		class := 1
 		switch st.State {
+		case "available":
+			class = 0
 		case "retry_ready":
-			class = 1
-		case "cooling_down":
 			class = 2
+		case "cooling_down":
+			class = 3
 		}
-		out = append(out, ranked{src: src, class: class, retry: st.RetryAfter})
+		out = append(out, ranked{src: src, class: class, retry: st.RetryAfter, played: st.LastPlayed})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].class != out[j].class {
 			return out[i].class < out[j].class
 		}
-		return out[i].class == 2 && out[i].retry.Before(out[j].retry)
+		if out[i].class == 0 {
+			return out[i].played.After(out[j].played)
+		}
+		return out[i].class == 3 && out[i].retry.Before(out[j].retry)
 	})
 	list := make([]StreamSource, len(out))
 	for i, r := range out {
@@ -340,8 +347,21 @@ func (s *Service) ResolveStreamSource(ctx context.Context, c Channel, src Stream
 	return resolved, headers, nil
 }
 
+var errSilentInput = errors.New("live input has no audio")
+
+func liveInputHasAudio(info *core.MediaInfo) bool {
+	if info != nil {
+		for _, st := range info.Streams {
+			if st.Type == "audio" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // startIPTV selects one input per viewing session, under the caller's existing
-// ten-second startup deadline. It never substitutes another provider's bytes,
+// shared startup deadline. It never substitutes another provider's bytes,
 // keys or media sequence into the active HLS resource map.
 func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 	c := ss.info.Channel
@@ -365,10 +385,13 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		candidates = append(candidates, src)
 	}
 	var last error = core.ErrNotAvailable
+	var failures []TuneInputFailure
 	if len(candidates) == 0 && !earliestRetry.IsZero() {
 		return &TuneError{Code: "source_cooldown", Stage: "source_selection", RetryAfter: earliestRetry.Sub(s.o.Now()), cause: core.ErrNotAvailable}
 	}
-	for index, src := range candidates {
+	primaryCount := len(candidates)
+	for index := 0; index < len(candidates); index++ {
+		src := candidates[index]
 		started := time.Now()
 		log := s.sessionLog(ss).With("input", src.ID, "attempt", index+1, "candidates", len(candidates))
 		log.Debug("live source attempt started")
@@ -378,14 +401,19 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		attemptCtx := ctx
 		cancel := func() {}
 		if len(candidates) > 1 {
-			// Leave a stalled primary only half the total tune budget, so a
-			// backup can still be tried. Fast failures advance immediately.
-			attemptCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+			// Share the remaining budget among untried inputs. Fast failures
+			// leave their unused time for the next candidate.
+			budget := 8 * time.Second
+			if deadline, ok := ctx.Deadline(); ok {
+				budget = time.Until(deadline)
+			}
+			attemptCtx, cancel = context.WithTimeout(ctx, budget/time.Duration(len(candidates)-index))
 		}
 		resolvedURL, headers, err := s.ResolveStreamSource(attemptCtx, c, src)
 		if err != nil {
 			cancel()
 			last = Diagnose("source_resolve", err)
+			failures = append(failures, inputFailure(src.ID, last))
 			log.Warn("live source resolve failed", append(Diagnose("source_resolve", err).LogAttrs(), "elapsed", time.Since(started))...)
 			if !errors.Is(ctx.Err(), context.Canceled) {
 				s.recordSourceHealth(c.ID, src, err, false)
@@ -401,7 +429,7 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		// with the provider URL or headers on their command line.
 		err = s.grantDirectInput(ss, grantSrc, headers)
 		if err == nil {
-			err = s.startIPTVSource(attemptCtx, ss)
+			err = s.startIPTVSource(attemptCtx, ss, primaryCount > 1 && index < primaryCount)
 		}
 		cancel()
 		if err == nil {
@@ -413,7 +441,15 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		ss.owned.close()
 		ss.owned = nil
 		s.revokeInput(ss)
+		if errors.Is(err, errSilentInput) {
+			// Retry silent inputs only after every original candidate. No health
+			// penalty: they remain usable when all audible inputs are down.
+			candidates = append(candidates, src)
+			log.Info("live silent source deferred", "reason", "trying other candidates before silent fallback")
+			continue
+		}
 		last = Diagnose("source_start", err)
+		failures = append(failures, inputFailure(src.ID, last))
 		if !errors.Is(ctx.Err(), context.Canceled) {
 			s.recordSourceHealth(c.ID, src, err, false)
 		}
@@ -425,7 +461,9 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 			log.Warn("live source attempt failed", attrs...)
 		}
 	}
-	return last
+	detail := *Diagnose("source_start", last)
+	detail.Inputs = failures
+	return &detail
 }
 
 func (s *Service) channelSourceEnabled(ctx context.Context, id string) bool {

@@ -27,7 +27,11 @@ import (
 
 // BrokerDeps are the explicit dependencies shared by all protocol surfaces.
 type BrokerDeps struct {
-	SurfacePolicy func(frontend.Protocol) core.SessionPolicy
+	PreviewAvailable func() bool
+	ExtraLookup      func(core.RatingKey) (frontend.Extra, bool)
+	ExtraSource      func(context.Context, *core.Viewer, *core.Title, core.RatingKey, string) (PreviewSource, error)
+	PreviewSource    func(context.Context, *core.Viewer, *core.Title, string) (PreviewSource, error)
+	SurfacePolicy    func(frontend.Protocol) core.SessionPolicy
 	// OnActualPlaying runs in a bounded worker after authenticated playing telemetry.
 	OnActualPlaying func(context.Context, *Broker, PlayingSubtitleSession)
 	// DistributedHLS is opt-in; unsupported plans stay local before reservation.
@@ -64,10 +68,12 @@ type BrokerDeps struct {
 	SourceHistory SourceHistoryWriter
 	ActiveViewer  func(context.Context, int64) (*core.Viewer, error)
 	CanPlay       func(*core.Viewer, bool, time.Time) bool
-	// FreshPlay re-reads fenced membership and safety policy. A returned viewer
+	// CurrentPlay rechecks a running item without imposing bedtime.
+	// FreshPlay re-reads fenced membership and safety policy for admission. A returned viewer
 	// replaces the cached one for the rest of the call. ErrPolicyUnconfirmed
 	// keeps the cached CanPlay decision for an unrestricted viewer.
-	FreshPlay func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)
+	CurrentPlay func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)
+	FreshPlay   func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)
 	// ReceiptCurrent rechecks the acceptance Plex stored for this request.
 	ReceiptCurrent     func(context.Context, auth.Acceptance) error
 	BitrateLimit       func(*core.Viewer) int
@@ -108,6 +114,8 @@ type brokerPlan struct {
 }
 type brokerSession struct {
 	observedSourceRevision string
+	audio                  *audioRendition
+	audioGeneration        uint64
 
 	manualSubtitle        bool
 	autoSubtitleIdentity  *int
@@ -165,6 +173,10 @@ type retiredSession struct {
 
 // Broker coordinates playback admission for every protocol, including Plex.
 type Broker struct {
+	previews            map[string]previewSession
+	previewPending      map[int64]bool
+	previewPreparations map[int64]*previewPreparation
+	previewWG           sync.WaitGroup
 	autoSubtitleWG      sync.WaitGroup
 	autoSubtitleRunning int
 	sampleLimit         int
@@ -277,6 +289,18 @@ func (b *Broker) permitted(v *core.Viewer, caps core.ClientCaps) bool {
 // confirm applies a fenced playback policy when one is installed. The returned
 // viewer is the one later lookups must use.
 func (b *Broker) confirm(ctx context.Context, v *core.Viewer, caps core.ClientCaps) (*core.Viewer, error) {
+	return b.confirmPolicy(ctx, v, caps, b.deps.FreshPlay)
+}
+
+// Current item checks deliberately exclude bedtime: an admitted item can finish.
+func (b *Broker) confirmCurrent(ctx context.Context, v *core.Viewer, caps core.ClientCaps) (*core.Viewer, error) {
+	fresh := b.deps.CurrentPlay
+	if fresh == nil {
+		fresh = b.deps.FreshPlay
+	}
+	return b.confirmPolicy(ctx, v, caps, fresh)
+}
+func (b *Broker) confirmPolicy(ctx context.Context, v *core.Viewer, caps core.ClientCaps, freshPlay func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)) (*core.Viewer, error) {
 	if v == nil || v.ID <= 0 {
 		return nil, core.ErrUnauthorized
 	}
@@ -284,8 +308,8 @@ func (b *Broker) confirm(ctx context.Context, v *core.Viewer, caps core.ClientCa
 	if b.deps.Now != nil {
 		at = b.deps.Now()
 	}
-	if b.deps.FreshPlay != nil {
-		fresh, err := b.deps.FreshPlay(ctx, v, caps.Remote, at)
+	if freshPlay != nil {
+		fresh, err := freshPlay(ctx, v, caps.Remote, at)
 		if err == nil && fresh != nil && fresh.ID == v.ID {
 			return fresh, nil
 		}
@@ -318,6 +342,14 @@ func clientKey(protocol frontend.Protocol, device core.Device) string {
 	return fmt.Sprintf("%d:%s%s", len(protocol), protocol, device.ID)
 }
 func copyRequest(r frontend.PlanRequest) frontend.PlanRequest {
+	if r.Intent.OriginalPlayback != nil {
+		original := *r.Intent.OriginalPlayback
+		original.DemuxContainers = slices.Clone(original.DemuxContainers)
+		original.VideoDecoders = slices.Clone(original.VideoDecoders)
+		original.AudioDecoders = slices.Clone(original.AudioDecoders)
+		r.Intent.OriginalPlayback = &original
+	}
+
 	if r.Intent.AudioOrdinal != nil {
 		ordinal := *r.Intent.AudioOrdinal
 		r.Intent.AudioOrdinal = &ordinal
@@ -336,6 +368,7 @@ func copyRequest(r frontend.PlanRequest) frontend.PlanRequest {
 	r.Caps.Containers = slices.Clone(r.Caps.Containers)
 	r.Caps.HLSContainers = slices.Clone(r.Caps.HLSContainers)
 	r.Caps.SubtitleCodecs = slices.Clone(r.Caps.SubtitleCodecs)
+	r.Caps.HDRFormats = slices.Clone(r.Caps.HDRFormats)
 	r.Caps.DVProfiles = slices.Clone(r.Caps.DVProfiles)
 	r.Caps.VideoLevels = maps.Clone(r.Caps.VideoLevels)
 	r.Caps.VideoMaxHeights = maps.Clone(r.Caps.VideoMaxHeights)
@@ -386,7 +419,7 @@ func publicMedia(info core.MediaInfo) core.MediaInfo {
 	info.Keyframes = slices.Clone(info.Keyframes)
 	return info
 }
-func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (planned frontend.PlayPlan, planErr error) {
 	requested := b.deps.Now()
 	req = copyRequest(req)
 	v, err := b.viewer(ctx, req.Viewer)
@@ -638,6 +671,15 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (frontend.P
 	if ps == nil {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
+	// Keep the selected source identifiable when delivery negotiation fails.
+	// In particular, an owner pin must explain why it cannot be delivered
+	// without concealing which release was kept instead of substituting one.
+	defer func() {
+		var noPath *frontend.NoCompatiblePathError
+		if errors.As(planErr, &noPath) && ps.Resolution != nil && ps.Resolution.Release.ID != "" {
+			planErr = fmt.Errorf("release %s: %w", ps.Resolution.Release.ID, planErr)
+		}
+	}()
 	if req.Intent.ExactVersion && (ps.Resolution == nil || ps.Resolution.Release.ID != req.Version) {
 		if !existed || previous == nil || previous.ID != ps.ID {
 			b.deps.Playback.Stop(ps.ID)
@@ -680,15 +722,22 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (frontend.P
 		}
 		req.Intent.Options = selected
 	}
+	sourceChosenAt := b.deps.Now()
 	dec, err := b.decideProfile(ps, req)
+	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
 	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
-		return frontend.PlayPlan{}, core.ErrNotAvailable
+		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
 	}
 	if (dec.Kind == core.DecisionDirectPlay && !req.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !req.Intent.Options.DirectStream) {
-		return frontend.PlayPlan{}, core.ErrNotAvailable
+		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
+	}
+	if req.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
+		if allowed, _ := b.hlsPlanOutput(ps, req, dec); !allowed {
+			return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
+		}
 	}
 	id := rand.Text()
 	etag := sourceRevision(ps)
@@ -716,7 +765,7 @@ func (b *Broker) plan(ctx context.Context, req frontend.PlanRequest) (frontend.P
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)
 	hls, hlsContainer := b.hlsPlanOutput(ps, req, dec)
-	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
 }
 func (b *Broker) open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()
@@ -1006,7 +1055,7 @@ func (b *Broker) accessSession(ctx context.Context, a frontend.SessionAccess, id
 		return nil, nil, core.ErrUnauthorized
 	}
 	if enforcePlaybackPolicy && !owner {
-		confirmed, err := b.confirm(ctx, viewer, s.caps)
+		confirmed, err := b.confirmCurrent(ctx, viewer, s.caps)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1024,7 +1073,17 @@ func (b *Broker) Recover(ctx context.Context, id, url string, at time.Duration) 
 // HasBinding reports whether this broker owns an encoder ID.
 func (b *Broker) HasBinding(id string) bool { _, ok := b.bindings.Get(id); return ok }
 func (b *Broker) TranscodeFor(_ context.Context, id string) (core.HLSSession, bool) {
-	return TranscodeFor(b.bindings, b.deps.Transcoder, id)
+	// Neutral frontends use the public session ID, which is also the encoder
+	// ID. Do not interpret it as a playback source ID: those are distinct.
+	if b.HasBinding(id) {
+		return b.transcodeSession(id)
+	}
+	for _, encoderID := range b.bindings.ByPlayID(id) {
+		if hs, ok := b.transcodeSession(encoderID); ok && hs != nil {
+			return hs, true
+		}
+	}
+	return nil, false
 }
 func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]frontend.Session, error) {
 	v, err := b.viewer(ctx, a.Viewer)
@@ -1041,6 +1100,14 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 	b.mu.Lock()
 	liveness, checkLiveness := b.deps.Playback.(interface{ SessionActive(string) bool })
 	var out []frontend.Session
+	isolated := map[string]bool{}
+	b.prunePreviewsLocked()
+	for _, s := range b.previews {
+		if owner || s.public.ViewerID == v.ID {
+			out = append(out, s.public)
+			isolated[s.public.ID] = true
+		}
+	}
 	for _, s := range b.sessions {
 		if checkLiveness && !s.live && s.playID != "" && !liveness.SessionActive(s.playID) {
 			continue
@@ -1063,7 +1130,7 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 	}
 	visible := out[:0]
 	for i := range out {
-		if b.cluster != nil && !b.policy(out[i].Protocol).ExternalAdmission {
+		if !isolated[out[i].ID] && out[i].Purpose != "preview" && b.cluster != nil && !b.policy(out[i].Protocol).ExternalAdmission {
 			active, err := b.cluster.store.current(ctx, out[i].ID)
 			if err != nil {
 				return nil, err
@@ -1080,6 +1147,9 @@ func (b *Broker) Sessions(ctx context.Context, a frontend.SessionAccess) ([]fron
 	return visible, nil
 }
 func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string, t frontend.Timeline) error {
+	if handled, err := b.previewControl(ctx, a, id, t.State == "stopped"); handled {
+		return err
+	}
 	if _, handled, err := b.forwardNeutralControl(ctx, a, id, "report", t, frontend.StreamRequest{}); handled {
 		return err
 	}
@@ -1336,6 +1406,9 @@ func (b *Broker) ReportProgress(ctx context.Context, a frontend.SessionAccess, i
 	return nil
 }
 func (b *Broker) Stop(ctx context.Context, a frontend.SessionAccess, id string) error {
+	if handled, err := b.previewControl(ctx, a, id, true); handled {
+		return err
+	}
 	if _, handled, err := b.forwardNeutralControl(ctx, a, id, "stop", frontend.Timeline{}, frontend.StreamRequest{}); handled {
 		return err
 	}
@@ -1392,6 +1465,9 @@ func (b *Broker) Stop(ctx context.Context, a frontend.SessionAccess, id string) 
 	return b.stopLocked(ctx, s)
 }
 func (b *Broker) stopLocked(ctx context.Context, s *brokerSession) error {
+	if err := b.retireAudio(ctx, s); err != nil {
+		return err
+	}
 	if s.autoSubtitleCancel != nil {
 		s.autoSubtitleCancel()
 	}
@@ -1529,6 +1605,14 @@ func (b *Broker) Close(ctx context.Context) {
 	}
 	firstClose := !b.closed
 	b.closed = true
+	for _, s := range b.previews {
+		s.cancel()
+	}
+	b.previews = nil
+	for _, job := range b.previewPreparations {
+		job.cancel()
+	}
+	b.previewPreparations = nil
 	if b.historyCancel != nil {
 		b.historyCancel()
 	}
@@ -1559,6 +1643,7 @@ func (b *Broker) Close(ctx context.Context) {
 		cancel()
 	}
 	b.autoSubtitleWG.Wait()
+	b.previewWG.Wait()
 	// Shutdown must still release sessions when its caller has already been
 	// canceled; bound the cleanup so an unresponsive gate cannot block forever.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.shutdownTimeout)

@@ -127,6 +127,11 @@ func validImageSecret(secret string) (string, bool) {
 	return hex.EncodeToString(h[:]), true
 }
 func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer, device core.Device, item core.RatingKey, channel string, image frontend.Image) error {
+	base, _, _, rankErr := frontend.UnrankArtwork(image)
+	if rankErr != nil {
+		return rankErr
+	}
+	image = base
 	if strings.HasPrefix(image.Path, frontend.LibraryCollagePrefix) {
 		experience := s.experience()
 		if experience == nil {
@@ -149,7 +154,7 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		if s.artwork == nil {
 			return core.ErrNotAvailable
 		}
-		images, complete, err := s.artwork.List(ctx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Channel: channel})
+		images, complete, err := s.artwork.List(core.WithLiveApp(ctx, string(s.surface)), channelImageRequest(viewer, device, channel, image))
 		if err != nil {
 			return err
 		}
@@ -167,7 +172,7 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 	if experience == nil {
 		return core.ErrNotAvailable
 	}
-	if s.surface == "silo" && image.Kind == frontend.ImagePerson {
+	if (s.surface == "silo" || s.surface == "vela") && image.Kind == frontend.ImagePerson {
 		people, ok := experience.(frontend.PeopleImageReader)
 		if !ok {
 			return core.ErrNotAvailable
@@ -296,8 +301,13 @@ func (s *ImageGrantService) ServePublic(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
+	base, _, _, rankErr := frontend.UnrankArtwork(img)
+	if rankErr != nil {
+		http.NotFound(w, r)
+		return
+	}
 	for _, candidate := range images {
-		if frontend.SameImage(candidate, img) {
+		if frontend.SameImage(candidate, base) {
 			s.writeGrantedImage(w, r, reader, device, item, "", img, "", "", "")
 			return
 		}
@@ -440,17 +450,20 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 	var contentType string
 	var err error
 	if s.artwork != nil {
-		data, contentType, err = s.artwork.Read(r.Context(), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: item, Channel: channel}, img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur, Quality: quality, Fit: mediaBrowser})
+		data, contentType, err = s.artwork.Read(core.WithLiveApp(r.Context(), string(s.surface)), grantedArtworkRequest(viewer, device, item, channel, img), img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur, Quality: quality, Fit: mediaBrowser || s.surface == "vela"})
 	} else {
 		data, contentType, err = s.images.Get(r.Context(), img.Path, width)
+	}
+	if err == nil && s.surface == "vela" && !strings.HasPrefix(contentType, "image/svg") {
+		data, contentType, err = fitGrantedImage(data, contentType, width, height)
 	}
 	if err != nil {
 		http.Error(w, "image unavailable", 502)
 		return
 	}
-	// A Silo portrait fetch may cross I/O after its first authorization. Check
+	// A portrait fetch may cross I/O after its first authorization. Check
 	// current credited membership and fresh policy again before publishing bytes.
-	if s.surface == "silo" && img.Kind == frontend.ImagePerson {
+	if (s.surface == "silo" || s.surface == "vela") && img.Kind == frontend.ImagePerson {
 		if err := s.authorizePersonGrant(r.Context(), viewer, device, item, channel, img, hash, sourceHash, deviceJSON); err != nil {
 			http.NotFound(w, r)
 			return
@@ -489,8 +502,25 @@ func grantedImageWidth(r *http.Request, surface frontend.Protocol) int {
 	if width < 0 || width > 4000 {
 		width = 500
 	}
-	if width == 0 && r.URL.Query().Get("h") == "" && surface != "jellyfin" && surface != "emby" {
+	if width == 0 && r.URL.Query().Get("h") == "" && surface != "jellyfin" && surface != "emby" && surface != "vela" {
 		width = 500
 	}
 	return width
+}
+
+// Programme descriptors use the existing channel capability and persist the
+// exact airing identity in image_subject. Both admission and reads re-enumerate
+// that airing under current channel/programme policy, without a library scan.
+func channelImageRequest(viewer *core.Viewer, device core.Device, channel string, image frontend.Image) frontend.ArtworkRequest {
+	req := frontend.ArtworkRequest{Viewer: viewer, Device: device, Channel: channel}
+	if image.Kind == frontend.ImageStill || image.Kind == frontend.ImageBackdrop {
+		req.Programme = image.Subject
+	}
+	return req
+}
+func grantedArtworkRequest(viewer *core.Viewer, device core.Device, item core.RatingKey, channel string, image frontend.Image) frontend.ArtworkRequest {
+	if channel != "" {
+		return channelImageRequest(viewer, device, channel, image)
+	}
+	return frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: item}
 }

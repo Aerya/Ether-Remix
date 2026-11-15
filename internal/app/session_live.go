@@ -12,6 +12,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/clientreg"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/livetv"
 )
 
@@ -197,4 +198,8 @@ func liveTVClientCaps(caps core.ClientCaps) core.ClientCaps {
 	}
 	caps.ProbeLiveWithoutCodecs = caps.ProbeLiveWithoutCodecs || clientreg.HasQuirk(clientreg.Identity{Product: caps.Product, Platform: caps.Platform, Device: caps.Device, Version: caps.Version}, "probe-hls-without-codecs")
 	return caps
+}
+
+func (l sessionLive) LiveWindow(ctx context.Context, id string) (frontend.LiveWindow, error) {
+	return l.service.LiveWindow(ctx, id)
 }

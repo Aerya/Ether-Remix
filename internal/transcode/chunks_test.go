@@ -459,7 +459,7 @@ func TestChunkedMatroskaAliasServedForSeeks(t *testing.T) {
 	}
 	// A probe requests metadata only: the next GET still needs its GOP.
 	head := httptest.NewRecorder()
-	s.ServeSegment(head, httptest.NewRequest(http.MethodHead, "/0.mkv", nil), 0)
+	s.ServeSegment(head, mediaRequest(s, httptest.NewRequest(http.MethodHead, "/0.mkv", nil), 0), 0)
 	if head.Code != http.StatusOK || head.Body.Len() != 0 {
 		t.Fatalf("HEAD segment 0: %d %q", head.Code, head.Body.Bytes())
 	}
@@ -484,7 +484,7 @@ func TestChunkedMatroskaAliasServedForSeeks(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/1.mkv", nil)
 	req.Header.Set("Range", "bytes=4-")
 	rec := httptest.NewRecorder()
-	s.ServeSegment(rec, req, 1)
+	s.ServeSegment(rec, mediaRequest(s, req, 1), 1)
 	if rec.Code != http.StatusPartialContent || !bytes.Equal(rec.Body.Bytes(), b[4:]) {
 		t.Errorf("range retry changed segment 1: status=%d body=%q", rec.Code, rec.Body.Bytes())
 	}

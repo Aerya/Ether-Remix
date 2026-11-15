@@ -13,7 +13,10 @@ import (
 )
 
 type candidate struct {
+	sourcePreferred  bool // source routing deliberately selected this candidate as the leader
 	identityWeak     bool // shared title without evidence identifying this show
+	belowScore       bool
+	counted          int
 	fallback         bool
 	pluginKeys       map[string]int64
 	policy           releasepolicy.Result
@@ -92,7 +95,7 @@ func (s *Service) resolution(key core.RatingKey, cands []candidate, winner int, 
 	res := s.resolutionSkipping(key, cands, winner, nzb, func(c candidate) bool { return tr.Candidates[c.trace].Rejected })
 	ct := tr.Candidates[cands[winner].trace]
 	res.HealthVerified = ct.HealthChecked && ct.Healthy && !tr.Unverified
-	if cands[winner].fallback {
+	if cands[winner].fallback || cands[winner].belowScore {
 		res.QualityFallback = qualityFallbackReason(cands[winner].rel, tr)
 		tr.Downgrade = res.QualityFallback
 	}
@@ -107,12 +110,17 @@ func (s *Service) resolutionSkipping(key core.RatingKey, cands []candidate, winn
 	// edition come before other cuts (ranked order within each group).
 	edition := cands[winner].rel.Info.Edition
 	for _, same := range []bool{true, false} {
-		for i, c := range cands {
-			if i == winner || skip(c) || len(res.Alternates) >= s.maxCandidates() {
-				continue
-			}
-			if (c.rel.Info.Edition == edition) == same {
-				res.Alternates = append(res.Alternates, c.rel)
+		// Keep a cached equivalent inside the bounded alternate list even
+		// when source preference put many Usenet releases ahead of it.
+		for _, ready := range []bool{true, false} {
+			for i, c := range cands {
+				cachedPeer := s.readyPeer([]candidate{cands[winner], c}) == 1
+				if i == winner || skip(c) || cachedPeer != ready || len(res.Alternates) >= s.maxCandidates() {
+					continue
+				}
+				if (c.rel.Info.Edition == edition) == same {
+					res.Alternates = append(res.Alternates, c.rel)
+				}
 			}
 		}
 	}
@@ -122,8 +130,14 @@ func (s *Service) resolutionSkipping(key core.RatingKey, cands []candidate, winn
 // validateCandidates races bounded groups when enabled. Ranked mode still starts
 // two checks together, preferring rank order during a short grace. A healthy
 // equivalent can then bypass a stalled preferred source without losing quality.
-// Every worker is cancelled and joined before this function returns.
+// Losing checks are cancelled and joined, except an already-running fallback
+// retained by ready-source validation under the service shutdown lifecycle.
 func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr *Trace, race int) (int, []byte, error) {
+	if !core.IsSpeculative(ctx) && !channelAvailabilityCheck(ctx) {
+		if peer := s.readyPeer(cands); peer >= 0 {
+			return s.validateReady(ctx, cands, tr, peer)
+		}
+	}
 	if len(cands) > 0 && cands[0].fallback {
 		// Even an owner-enabled health race must preserve fallback tier order.
 		race = 1
@@ -136,7 +150,6 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 	width := min(race, 4)
 	limit := min(len(cands), maxHealthAttempts)
 	var transient error
-	onDemandHeld := false // see ondemand.go
 	for base := 0; base < limit; {
 		if core.IsSpeculative(ctx) && base >= speculativeHealthAttempts {
 			break
@@ -144,13 +157,6 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 		if cands[base].rel.OpensOnDemand() {
 			if !core.OnDemandAllowedAt(ctx, cands[base].rel, base) {
 				return -1, nil, errors.Join(transient, errOnDemandForeground)
-			}
-			if onDemandHeld {
-				ct := &tr.Candidates[cands[base].trace]
-				ct.Rejected, ct.Reason, ct.err = true, errOnDemandHeld.Error(), errOnDemandHeld
-				transient = errors.Join(transient, errOnDemandHeld)
-				base++
-				continue
 			}
 		}
 		count := min(width, limit-base)
@@ -164,7 +170,7 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 			// not be selected while a primary in this window is still valid.
 			// It never includes an on-demand link.
 			same := 1
-			for same < count && !cands[base+same].rel.OpensOnDemand() && releasepolicy.Equivalent(cands[base].policy, cands[base+same].policy) && pluginKeysEqual(cands[base], cands[base+same]) {
+			for same < count && !cands[base+same].rel.OpensOnDemand() && samePreferenceTier(cands[base], cands[base+same]) && releasepolicy.Equivalent(cands[base].policy, cands[base+same].policy) && pluginKeysEqual(cands[base], cands[base+same]) {
 				same++
 			}
 			count = same
@@ -181,7 +187,6 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 		for j := 0; j < count; j++ {
 			v := <-results
 			noteValidation(ctx, cands[v.index].rel, v)
-			onDemandHeld = onDemandHeld || onDemandSlow(cands[v.index].rel, v)
 			ct := &tr.Candidates[cands[v.index].trace]
 			ct.Attempted = true
 			ct.FetchDuration = v.fetchDuration
@@ -264,6 +269,23 @@ func permanentFailure(err error) bool {
 }
 
 func qualityFallbackReason(rel core.Release, tr *Trace) string {
+	for _, c := range tr.Candidates {
+		if c.ReleaseID != rel.ID {
+			continue
+		}
+		if c.MinimumFormatScore != nil {
+			score := 0
+			for _, match := range c.CustomFormats {
+				if core.CountsTowardMinimum(match.ID) {
+					score += match.Score
+				}
+			}
+			return fmt.Sprintf("Best available — below this profile's minimum (score %d of %d)", score, *c.MinimumFormatScore)
+		}
+		if !c.Rejected && strings.HasPrefix(c.Reason, "Best available") {
+			return c.Reason
+		}
+	}
 	height := fallbackHeight(rel.Info)
 	label := "unknown resolution"
 	if height > 0 {

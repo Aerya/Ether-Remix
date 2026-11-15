@@ -190,3 +190,20 @@ func normalizeLiveMedia(in *core.MediaInfo) core.MediaInfo {
 	out.Streams = kept
 	return out
 }
+
+// LiveWindow forwards a previously authorized session's existing output clock.
+func (b *Broker) LiveWindow(ctx context.Context, id string) (frontend.LiveWindow, error) {
+	b.mu.Lock()
+	s := b.sessions[id]
+	if s == nil || !s.live || b.closed {
+		b.mu.Unlock()
+		return frontend.LiveWindow{}, core.ErrNotAvailable
+	}
+	playID := s.playID
+	b.mu.Unlock()
+	reader, ok := b.deps.Live.(frontend.LiveWindowReader)
+	if !ok {
+		return frontend.LiveWindow{}, core.ErrNotAvailable
+	}
+	return reader.LiveWindow(ctx, playID)
+}

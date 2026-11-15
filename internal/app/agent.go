@@ -28,6 +28,9 @@ func (a *App) buildAgent(ctx context.Context, cfg config.Config) (*agentRuntime,
 		Store:     agent.NewStore(a.db),
 		Logger:    a.log.With("component", "agent"),
 	})
+	if a.collections != nil {
+		a.collections.SetDescribeAgent(svc)
+	}
 	return &agentRuntime{svc: svc}, nil
 }
 

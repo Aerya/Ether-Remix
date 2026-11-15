@@ -150,7 +150,7 @@ func TestRTXNativeLifecycle(t *testing.T) {
 			if adaptive {
 				for seg := 0; seg < 2; seg++ {
 					rec := httptest.NewRecorder()
-					s.ServeRungSegment(rec, httptest.NewRequest("GET", "/base-segment", nil), "base", seg)
+					s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest("GET", "/base-segment", nil), seg), "base", seg)
 					if rec.Code != 200 {
 						t.Fatalf("base delivery %d: %d", seg, rec.Code)
 					}
@@ -167,7 +167,7 @@ func TestRTXNativeLifecycle(t *testing.T) {
 					}
 					rec := httptest.NewRecorder()
 					started := time.Now()
-					s.ServeRungSegment(rec, httptest.NewRequest("GET", "/segment", nil), id, seg)
+					s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest("GET", "/segment", nil), seg), id, seg)
 					elapsed := time.Since(started)
 					if rec.Code != 200 {
 						t.Fatalf("switch %s: %d %s", id, rec.Code, rec.Body.String())
@@ -224,7 +224,7 @@ func TestRTXNativeLifecycle(t *testing.T) {
 				checkOrdinary := func(s *Session, seg int, at float64) {
 					t.Helper()
 					rec := httptest.NewRecorder()
-					s.ServeRungSegment(rec, httptest.NewRequest("GET", "/fallback", nil), "base", seg)
+					s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest("GET", "/fallback", nil), seg), "base", seg)
 					if rec.Code != 200 {
 						t.Fatalf("fallback media %d %s", rec.Code, rec.Body.String())
 					}

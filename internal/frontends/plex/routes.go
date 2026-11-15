@@ -100,6 +100,7 @@ func (s *Server) routes() chi.Router {
 	get("/library/metadata/{key}/subscription/modes", s.handleSubscriptionModes)
 	get("/library/metadata/{key}/parent", s.handleParent)
 	get("/library/metadata/{key}/grandparent", s.handleParent)
+	get("/library/metadata/{key}/theme/{version}", s.handleTheme)
 	get("/library/metadata/{key}/extras", s.handlePlaylistExtras)
 	r.Post("/library/metadata/{key}/extras", func(w http.ResponseWriter, r *http.Request) { writeHTTPError(w, http.StatusBadRequest) })
 	get("/library/metadata/{key}/extras/all", s.handlePlaylistExtras)

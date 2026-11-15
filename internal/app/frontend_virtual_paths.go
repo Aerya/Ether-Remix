@@ -160,3 +160,19 @@ func (s surfaceVirtualPaths) virtualPathCatalog() experience.VirtualPathCatalog 
 		},
 	}
 }
+
+func (s surfaceVirtualPaths) CachedPaths(_ context.Context, viewer *core.Viewer, _ core.Device, keys []core.RatingKey) (map[core.RatingKey]string, error) {
+	if viewer == nil || s.index == nil || s.stamp == nil || (s.enabled != nil && !s.enabled()) {
+		return nil, nil
+	}
+	stamp := s.stamp(viewer)
+	if stamp == "" {
+		return nil, nil
+	}
+	s.index.mu.Lock()
+	defer s.index.mu.Unlock()
+	if s.index.stamp != stamp {
+		return nil, nil
+	}
+	return pathLookup(s.index.paths, keys), nil
+}

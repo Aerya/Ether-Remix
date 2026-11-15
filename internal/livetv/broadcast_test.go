@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/transcode"
 )
@@ -493,6 +494,7 @@ type burstTestPlanner struct {
 	broadcastFakePlanner
 	cutAt   time.Time
 	cutPlan broadcastPlan
+	latency *config.LiveLatencyPolicy
 }
 
 func (p burstTestPlanner) plans(now time.Time) (broadcastPlan, *broadcastPlan) {
@@ -502,86 +504,100 @@ func (p burstTestPlanner) plans(now time.Time) (broadcastPlan, *broadcastPlan) {
 	return p.broadcastFakePlanner.plans(now)
 }
 
-func (burstTestPlanner) startupLead() time.Duration { return 12 * time.Second }
+func (p burstTestPlanner) startupLead() time.Duration {
+	if p.latency != nil {
+		return p.latency.TargetLatency()
+	}
+	return 12 * time.Second
+}
+func (p burstTestPlanner) segmentDuration() time.Duration {
+	if p.latency != nil {
+		return p.latency.SegmentDuration()
+	}
+	return segmentDuration
+}
 
 func TestBroadcastBoundedStartupLead(t *testing.T) {
-	for _, source := range []string{"fast", "slow", "short-file", "blocked"} {
-		t.Run(source, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				slow := source == "slow"
-				format := smallBroadcastFormat()
-				planner := burstTestPlanner{broadcastFakePlanner: broadcastFakePlanner{plan: broadcastPlan{id: "programme", open: func(context.Context) (transcode.Decoder, func(), error) {
-					d := &broadcastFakeDecoder{format: format, closed: make(chan struct{})}
-					if slow {
-						return &burstSlowDecoder{broadcastFakeDecoder: d}, nil, nil
-					}
-					if source == "blocked" {
-						return &burstBlockedDecoder{broadcastFakeDecoder: d}, nil, nil
-					}
+	for _, profile := range []string{"auto", "low", "stable"} {
+		policy := (config.LiveTV{LatencyProfile: profile}).LatencyPolicy()
+		for _, source := range []string{"fast", "slow", "short-file", "blocked"} {
+			t.Run(profile+"/"+source, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					slow := source == "slow"
+					format := smallBroadcastFormat()
+					planner := burstTestPlanner{latency: &policy, broadcastFakePlanner: broadcastFakePlanner{plan: broadcastPlan{id: "programme", open: func(context.Context) (transcode.Decoder, func(), error) {
+						d := &broadcastFakeDecoder{format: format, closed: make(chan struct{})}
+						if slow {
+							return &burstSlowDecoder{broadcastFakeDecoder: d}, nil, nil
+						}
+						if source == "blocked" {
+							return &burstBlockedDecoder{broadcastFakeDecoder: d}, nil, nil
+						}
+						if source == "short-file" {
+							return &burstFiniteDecoder{broadcastFakeDecoder: d, remaining: 239}, nil, nil
+						}
+						return d, nil, nil
+					}}}}
 					if source == "short-file" {
-						return &burstFiniteDecoder{broadcastFakeDecoder: d, remaining: 239}, nil, nil
+						planner.cutAt = time.Now().Add(8 * time.Second)
+						planner.cutPlan = broadcastPlan{id: "next", start: planner.cutAt, open: func(context.Context) (transcode.Decoder, func(), error) {
+							return &broadcastFakeDecoder{format: format, closed: make(chan struct{}), value: 90}, nil, nil
+						}}
+						planner.next = &planner.cutPlan
 					}
-					return d, nil, nil
-				}}}}
-				if source == "short-file" {
-					planner.cutAt = time.Now().Add(8 * time.Second)
-					planner.cutPlan = broadcastPlan{id: "next", start: planner.cutAt, open: func(context.Context) (transcode.Decoder, func(), error) {
-						return &broadcastFakeDecoder{format: format, closed: make(chan struct{}), value: 90}, nil, nil
-					}}
-					planner.next = &planner.cutPlan
-				}
-				runner := &broadcastFakeRunner{}
-				b, err := newBroadcast(context.Background(), runner, planner, format)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer b.close()
-				if _, err = b.addRendition(context.Background(), "main", core.Decision{MaxHeight: 720}); err != nil {
-					t.Fatal(err)
-				}
-				runner.encoders[0].mu.Lock()
-				runner.encoders[0].index = burstSampleIndex{encoder: runner.encoders[0]}
-				runner.encoders[0].mu.Unlock()
-				start := time.Now()
-				b.start()
-				time.Sleep(5 * time.Second)
-				synctest.Wait()
-				if frames := runner.encoders[0].snapshot(); len(frames) < 150 {
-					t.Fatalf("cold source stopped the continuous clock: %d ticks in five seconds", len(frames))
-				}
-				time.Sleep(17 * time.Second)
-				synctest.Wait()
-				b.close()
-				if !b.startupUntil.IsZero() {
-					t.Fatal("startup remained active beyond deadline")
-				}
-				if b.lead < 0 || b.lead > 16*time.Second {
-					t.Fatalf("unbounded lead: %s", b.lead)
-				}
-				if !slow && source != "blocked" && b.lead < 11*time.Second {
-					t.Fatalf("fast source did not fill lead: %s", b.lead)
-				}
-				if slow && b.lead != 0 {
-					t.Fatalf("slow source invented media lead: %s", b.lead)
-				}
-				frames := runner.encoders[0].snapshot()
-				if len(frames) == 0 {
-					t.Fatal("no continuous output")
-				}
-				for n, f := range frames {
-					want := start.Add(time.Duration(n) * time.Second / 30)
-					if f.OutputTime != want {
-						t.Fatalf("frame %d schedule time %s, want %s", n, f.OutputTime, want)
+					runner := &broadcastFakeRunner{}
+					b, err := newBroadcast(context.Background(), runner, planner, format)
+					if err != nil {
+						t.Fatal(err)
 					}
-					if len(f.PCM) != 6400 {
-						t.Fatalf("frame %d audio samples lost", n)
+					defer b.close()
+					if _, err = b.addRendition(context.Background(), "main", core.Decision{MaxHeight: 720}); err != nil {
+						t.Fatal(err)
 					}
-					if source == "short-file" && n >= 240 && f.Video[0] != 90 {
-						t.Fatalf("frame %d missed the scheduled element cut", n)
+					runner.encoders[0].mu.Lock()
+					runner.encoders[0].index = burstSampleIndex{encoder: runner.encoders[0], segment: policy.SegmentDuration()}
+					runner.encoders[0].mu.Unlock()
+					start := time.Now()
+					b.start()
+					time.Sleep(5 * time.Second)
+					synctest.Wait()
+					if frames := runner.encoders[0].snapshot(); len(frames) < 150 {
+						t.Fatalf("cold source stopped the continuous clock: %d ticks in five seconds", len(frames))
 					}
-				}
+					time.Sleep(17 * time.Second)
+					synctest.Wait()
+					b.close()
+					if !b.startupUntil.IsZero() {
+						t.Fatal("startup remained active beyond deadline")
+					}
+					if b.lead < 0 || b.lead > policy.TargetLatency()+2*policy.SegmentDuration() {
+						t.Fatalf("unbounded lead: %s", b.lead)
+					}
+					if !slow && source != "blocked" && b.lead < policy.TargetLatency()-time.Second {
+						t.Fatalf("fast source did not fill lead: %s", b.lead)
+					}
+					if slow && b.lead != 0 {
+						t.Fatalf("slow source invented media lead: %s", b.lead)
+					}
+					frames := runner.encoders[0].snapshot()
+					if len(frames) == 0 {
+						t.Fatal("no continuous output")
+					}
+					for n, f := range frames {
+						want := start.Add(time.Duration(n) * time.Second / 30)
+						if f.OutputTime != want {
+							t.Fatalf("frame %d schedule time %s, want %s", n, f.OutputTime, want)
+						}
+						if len(f.PCM) != 6400 {
+							t.Fatalf("frame %d audio samples lost", n)
+						}
+						if source == "short-file" && n >= 240 && f.Video[0] != 90 {
+							t.Fatalf("frame %d missed the scheduled element cut", n)
+						}
+					}
+				})
 			})
-		})
+		}
 	}
 }
 
@@ -675,17 +691,23 @@ func (d *burstSlowDecoder) Next(ctx context.Context) (transcode.RawFrame, error)
 }
 
 type burstSampleIndex struct {
+	segment time.Duration
 	fakeBroadcastIndex
 	encoder *broadcastFakeEncoder
 }
 
 func (s burstSampleIndex) Latest() (transcode.Segment, bool) {
 	frames := s.encoder.snapshot()
-	ticks := len(frames) / 120 * 120
+	segment := s.segment
+	if segment == 0 {
+		segment = 4 * time.Second
+	}
+	segmentTicks := int(segment * 30 / time.Second)
+	ticks := len(frames) / segmentTicks * segmentTicks
 	if ticks == 0 {
 		return transcode.Segment{}, false
 	}
-	return transcode.Segment{Start: frames[0].OutputTime.Add(time.Duration(ticks-120) * time.Second / 30), Duration: 4 * time.Second}, true
+	return transcode.Segment{Start: frames[0].OutputTime.Add(time.Duration(ticks-segmentTicks) * time.Second / 30), Duration: segment}, true
 }
 
 // The first picture may take seconds to decode after a fast cold ident. That

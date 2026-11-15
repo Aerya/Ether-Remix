@@ -31,6 +31,13 @@ type channelLogoFetcher interface {
 
 func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 	r := chi.NewRouter()
+	r.Get("/search", s.ownerSearchRoute)
+	r.Get("/guides", s.ownerGuidesRoute)
+	r.Put("/guides", s.ownerGuidesRoute)
+	r.Post("/channels/decades", func(w http.ResponseWriter, r *http.Request) {
+		err := s.AddShowcaseDefaults(r.Context())
+		ownerResult(w, map[string]bool{"ok": err == nil}, err)
+	})
 	raster := artwork.NewSVGRasterizer()
 	r.Get("/diagnostics", func(w http.ResponseWriter, r *http.Request) {
 		ownerResult(w, map[string]any{"maintenance": s.MaintenanceDiagnostics()}, nil)
@@ -115,7 +122,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		offset, _ := strconv.Atoi(q.Get("offset"))
 		v, e := s.ChannelPage(r.Context(), ChannelPageQuery{
 			Limit: limit, Offset: offset, Q: q.Get("q"), Filter: q.Get("filter"), Source: q.Get("source"),
-			Group: q.Get("group"),
+			Group: q.Get("group"), Sort: q.Get("sort"),
 		})
 		if e == nil {
 			s.redactAddonChannels(r.Context(), v.Channels)

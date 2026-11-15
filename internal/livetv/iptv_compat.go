@@ -19,11 +19,9 @@ func (s *Service) relayPlan(ss *session, info core.MediaInfo) (dec core.Decision
 	if relayTSOnly(ss.caps) {
 		dec.Container = "mpegts"
 	}
-	// Two-second segments: the first owned playlist carries two of them
-	// (about four seconds of media, so a player does not start at a stalling
-	// live edge) within the cold-tune budget. Copy cuts at the first source
-	// keyframe after it.
-	cut = relaySegment
+	// Use the owner segment target. Copy cuts at the first source keyframe
+	// after it, so a long source GOP may raise the playlist target.
+	cut = s.latencyPolicy().SegmentDuration()
 	if dec.Container != transcode.ContainerFMP4 && dec.Container != transcode.ContainerMPEGTS {
 		dec.Container = transcode.ContainerMPEGTS
 	}

@@ -111,3 +111,53 @@ func TestSubtitleSourceLeaseRequiresPlayingAndFencesRetirement(t *testing.T) {
 	}
 	lease.Close()
 }
+
+type subtitleSearchRangeSource struct {
+	core.MediaSource
+	calls   int
+	offsets []int64
+}
+
+func (*subtitleSearchRangeSource) Name() string { return "playing-file.mkv" }
+func (*subtitleSearchRangeSource) Size() int64  { return 1024 * 1024 }
+func (s *subtitleSearchRangeSource) ReadAtPrefetchContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.calls++
+	s.offsets = append(s.offsets, off)
+	return len(p), nil
+}
+
+func TestSubtitleSearchRangesRespectCancellation(t *testing.T) {
+	src := &subtitleSearchRangeSource{}
+	life, retire := context.WithCancel(context.Background())
+	defer retire()
+	lease := &SubtitleSource{Context: life, generation: &generation{src: src}}
+	name, size := lease.SearchFile()
+	if name != "playing-file.mkv" || size != 1024*1024 {
+		t.Fatal(name, size)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	for _, off := range []int64{0, size - 65536} {
+		if n, err := lease.ReadSearchAt(ctx, make([]byte, 65536), off); err != nil || n != 65536 {
+			t.Fatal(n, err)
+		}
+	}
+	if src.calls != 2 || src.offsets[0] != 0 || src.offsets[1] != size-65536 {
+		t.Fatal(src.offsets)
+	}
+	cancel()
+	if _, err := lease.ReadSearchAt(ctx, make([]byte, 1), 0); !errors.Is(err, context.Canceled) || src.calls != 2 {
+		t.Fatal(err, src.calls)
+	}
+	retire()
+	if _, err := lease.ReadSearchAt(context.Background(), make([]byte, 1), 0); !errors.Is(err, core.ErrSourceChanged) {
+		t.Fatal(err)
+	}
+	// A plain ReaderAt has no cancellation/no-read-ahead contract: fail closed.
+	lease = &SubtitleSource{Context: context.Background(), generation: &generation{src: &fakeSource{}}}
+	if _, err := lease.ReadSearchAt(context.Background(), make([]byte, 1), 0); !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatal(err)
+	}
+}

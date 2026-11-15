@@ -380,3 +380,42 @@ Archivo Black is also bundled under SIL Open Font License 1.1 for the Grunge 90
 family, with its complete licence in `internal/onair/fonts/data/archivoblack-OFL.txt`.
 It is subset with the same script and renamed EtherAir12, retaining its
 original licence metadata. Monoton is not bundled.
+
+## Research prototype font: Anton
+
+The standalone Top 10 raster experiment in `docs/research/top10-prototype`
+includes Anton, Copyright 2020 The Anton Project Authors, under the SIL Open
+Font License 1.1. Source: https://github.com/google/fonts/tree/main/ofl/anton.
+The full licence is [OFL.txt](docs/research/top10-prototype/OFL.txt).
+The ranked artwork compositor also bundles this font under `internal/overlays`,
+with the complete licence in `internal/overlays/anton-OFL.txt`.
+
+## RAR member decoder
+
+`third_party/rardecode` contains github.com/nwaples/rardecode/v2 v2.4.5,
+Copyright (c) 2015, Nicholas Waples, BSD-2-Clause. Ether adds PPMd and
+filter allocation bounds; see `third_party/rardecode/ETHER.md`.
+
+Copyright (c) 2015, Nicholas Waples
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -111,7 +112,16 @@ func (s *RowViewService) resolveAll(ctx context.Context, u *core.User, device co
 	return entries, nil
 }
 
-type RowViewService struct{ o RowViewOptions }
+type RowViewService struct {
+	o            RowViewOptions
+	receiptMu    sync.Mutex
+	pageReceipts map[[32]byte]rowPageReceipts
+}
+type rowPageReceipts struct {
+	tokens  []string
+	expires int64
+	epoch   int64
+}
 
 func NewRowViewService(o RowViewOptions) (*RowViewService, error) {
 	if o.DB == nil || o.TTL < time.Second || o.TTL > 24*time.Hour || o.Active == nil || o.Build == nil || o.ValidRow == nil || o.ResolveEntry == nil || o.Receipts == nil {
@@ -176,12 +186,15 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 	manifestScope := hex.EncodeToString(scopeHash[:])
 	if !req.Refresh {
 		views, found, err := s.loadManifest(ctx, req, manifestScope)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrRowViewStale) {
 			return nil, err
 		}
 		if found {
-			return views, nil
+			return views, err
 		}
+		// Listing starts a visit. A cached manifest can outlive its members
+		// or policy revision; replace it instead of rejecting a fresh visit.
+		req.Refresh = errors.Is(err, ErrRowViewStale)
 	}
 	rows, err := s.o.Build(ctx, req)
 	if err != nil {
@@ -346,7 +359,9 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 type manifestRow struct{ ID, Snapshot string }
 
 // loadManifest returns the shared ordered visit, revalidating every row and
-// entry. A revoked member invalidates the visit instead of shifting offsets.
+// entry. Once initial validation succeeds, found stays true on errors so a
+// concurrent refresh or policy change cannot trigger a silent rebuild.
+// A revoked member invalidates the visit instead of shifting offsets.
 func (s *RowViewService) loadManifest(ctx context.Context, req frontend.RowViewRequest, scope string) ([]frontend.RowView, bool, error) {
 	var generation, payload string
 	var expires int64
@@ -366,43 +381,79 @@ func (s *RowViewService) loadManifest(ctx context.Context, req frontend.RowViewR
 	}
 	out := make([]frontend.RowView, 0, len(refs))
 	snapshots := make([]RowViewSnapshot, 0, len(refs))
+	type storedRow struct {
+		id, payload string
+		expires     int64
+	}
+	stored := make(map[string]storedRow, len(refs))
+	if len(refs) > 0 {
+		args := []any{req.Viewer.ID, req.Device.ID, string(req.Protocol)}
+		for _, ref := range refs {
+			args = append(args, ref.Snapshot)
+		}
+		query := `SELECT id,snapshot,payload,expires FROM experience_row_views WHERE viewer_id=? AND device_id=? AND protocol=? AND snapshot IN (` + strings.TrimSuffix(strings.Repeat("?,", len(refs)), ",") + `)`
+		rows, e := s.o.DB.QueryContext(ctx, query, args...)
+		if e != nil {
+			return nil, false, e
+		}
+		for rows.Next() {
+			var snapshot string
+			var row storedRow
+			if e = rows.Scan(&row.id, &snapshot, &row.payload, &row.expires); e != nil {
+				rows.Close()
+				return nil, false, e
+			}
+			stored[snapshot] = row
+		}
+		e = rows.Err()
+		rows.Close()
+		if e != nil {
+			return nil, false, e
+		}
+	}
+	var allRefs []core.NeutralEntryRef
 	for _, ref := range refs {
-		var raw string
-		var expiry int64
-		err = s.o.DB.QueryRowContext(ctx, `SELECT payload,expires FROM experience_row_views WHERE id=? AND snapshot=? AND viewer_id=? AND device_id=? AND protocol=?`, ref.ID, ref.Snapshot, req.Viewer.ID, req.Device.ID, string(req.Protocol)).Scan(&raw, &expiry)
-		if err != nil || expiry <= s.o.Now().UnixMilli() {
+		row, found := stored[ref.Snapshot]
+		if !found || row.id != ref.ID || row.expires <= s.o.Now().UnixMilli() {
 			return nil, false, ErrRowViewStale
 		}
 		var snap RowViewSnapshot
-		if json.Unmarshal([]byte(raw), &snap) != nil || snap.Placement != req.Placement || snap.ViewID != req.ViewID || snap.Item != req.Item || !s.o.ValidRow(ctx, req.Viewer, req.Device, req.Protocol, snap) {
+		if json.Unmarshal([]byte(row.payload), &snap) != nil || snap.Placement != req.Placement || snap.ViewID != req.ViewID || snap.Item != req.Item || !s.o.ValidRow(ctx, req.Viewer, req.Device, req.Protocol, snap) {
 			return nil, false, ErrRowViewStale
 		}
-		if _, err := s.resolveAll(ctx, req.Viewer, req.Device, req.Protocol, snap.Entries); err != nil {
-			return nil, false, ErrRowViewStale
-		}
-		out = append(out, frontend.RowView{ID: ref.Snapshot, Title: snap.Row.Title, Kind: snap.Row.Kind, Purpose: snap.Row.Purpose, Layout: snap.Row.Layout, Rank: snap.Row.Rank})
+		allRefs = append(allRefs, snap.Entries...)
+		out = append(out, frontend.RowView{ExpiresAt: time.UnixMilli(row.expires), ID: ref.Snapshot, Title: snap.Row.Title, Kind: snap.Row.Kind, Purpose: snap.Row.Purpose, Layout: snap.Row.Layout, Rank: snap.Row.Rank})
 		snapshots = append(snapshots, snap)
+	}
+	// Rehydrate the visit as bounded batches, sharing title/parent reads across
+	// shelves rather than starting a new catalogue pass for every row.
+	if len(allRefs) > 0 {
+		if _, err := s.resolveAll(ctx, req.Viewer, req.Device, req.Protocol, allRefs); err != nil {
+			return nil, false, ErrRowViewStale
+		}
 	}
 	var current string
 	var currentExpiry int64
 	if err = s.o.DB.QueryRowContext(ctx, `SELECT generation,expires FROM experience_row_view_manifests WHERE scope_hash=? AND viewer_id=? AND device_id=? AND protocol=?`, scope, req.Viewer.ID, req.Device.ID, string(req.Protocol)).Scan(&current, &currentExpiry); err != nil || current != generation || currentExpiry <= s.o.Now().UnixMilli() {
-		return nil, false, ErrRowViewStale
+		return nil, true, ErrRowViewStale
 	}
 	active, err := s.viewer(ctx, req.Viewer, req.Device, req.Protocol)
 	if err != nil {
-		return nil, false, ErrRowViewNotFound
+		return nil, true, ErrRowViewNotFound
 	}
 	for _, snap := range snapshots {
 		if !s.o.ValidRow(ctx, active, req.Device, req.Protocol, snap) {
-			return nil, false, ErrRowViewStale
+			return nil, true, ErrRowViewStale
 		}
-		if _, err := s.resolveAll(ctx, active, req.Device, req.Protocol, snap.Entries); err != nil {
-			return nil, false, ErrRowViewStale
+	}
+	if len(allRefs) > 0 {
+		if _, err := s.resolveAll(ctx, active, req.Device, req.Protocol, allRefs); err != nil {
+			return nil, true, ErrRowViewStale
 		}
 	}
 	// A refresh can commit while the final policy pass is running.
 	if err = s.o.DB.QueryRowContext(ctx, `SELECT generation,expires FROM experience_row_view_manifests WHERE scope_hash=? AND viewer_id=? AND device_id=? AND protocol=?`, scope, req.Viewer.ID, req.Device.ID, string(req.Protocol)).Scan(&current, &currentExpiry); err != nil || current != generation || currentExpiry <= s.o.Now().UnixMilli() {
-		return nil, false, ErrRowViewStale
+		return nil, true, ErrRowViewStale
 	}
 	return out, true, nil
 }
@@ -439,6 +490,8 @@ func (s *RowViewService) ResolveRowView(ctx context.Context, req frontend.RowVie
 	if !s.o.ValidRow(ctx, u, req.Device, req.Protocol, snap) {
 		return page, ErrRowViewStale
 	}
+	page.ExpiresAt = time.UnixMilli(expires)
+	page.RankedTop10 = snap.Row.RankedTop10 || snap.Row.Layout.RankedTop10
 	allowedKinds := map[frontend.RowEntryKind]bool{}
 	for _, kind := range req.Kinds {
 		allowedKinds[kind] = true
@@ -494,22 +547,85 @@ func (s *RowViewService) ResolveRowView(ctx context.Context, req frontend.RowVie
 		e := &page.Entries[i]
 		subjects = append(subjects, ReceiptSubject{Kind: string(e.Kind), ID: fmt.Sprintf("%s/%s/%s", snap.Row.ID, e.Kind, entryIdentity(*e)), Purpose: snap.Row.Purpose, Rank: snap.Row.Rank, Impression: imp})
 	}
-	tokens, err := s.o.Receipts.issueBatchChecked(ctx, u, req.Device, req.Protocol, subjects, current, func(tx *sql.Tx) error {
-		var expiry int64
-		query := `SELECT expires FROM experience_row_views WHERE snapshot=? AND viewer_id=? AND device_id=? AND protocol=?`
-		if store.DialectOf(s.o.DB) == store.Postgres {
-			query += ` FOR SHARE`
+	// Vela revisits immutable pages while idle. Reuse their already-issued
+	// receipts after the same fresh policy checks, instead of consuming the
+	// device's quota again on every bootstrap. Never cache a policy failure.
+	var receiptKey [32]byte
+	var receiptEpoch int64
+	var tokens []string
+	receiptExpiry := time.Unix(s.o.Receipts.opts.Now().Add(s.o.Receipts.opts.TTL).Unix(), 0)
+	reuse := req.Protocol == "vela" && s.o.Receipts.opts.Generation == nil
+	if reuse {
+		b, e := json.Marshal([]any{u, req.Device.ID, req.Protocol, req.ID, req.Offset, req.Limit, req.Kinds, subjects})
+		if e != nil {
+			return frontend.RowViewPage{}, e
 		}
-		if err := tx.QueryRowContext(ctx, query, req.ID, u.ID, req.Device.ID, string(req.Protocol)).Scan(&expiry); err != nil || expiry <= s.o.Now().UnixMilli() {
-			return ErrRowViewStale
+		receiptKey = sha256.Sum256(b)
+		receiptEpoch, err = viewerpolicy.Read(ctx, s.o.DB)
+		if err != nil {
+			return frontend.RowViewPage{}, err
 		}
-		return nil
-	})
+		s.receiptMu.Lock()
+		cached, found := s.pageReceipts[receiptKey]
+		s.receiptMu.Unlock()
+		if found && cached.expires > s.o.Receipts.opts.Now().Unix() && cached.epoch == receiptEpoch {
+			if !current() {
+				return frontend.RowViewPage{}, ErrRowViewStale
+			}
+			after, e := viewerpolicy.Read(ctx, s.o.DB)
+			if e != nil {
+				return frontend.RowViewPage{}, e
+			}
+			if after != receiptEpoch {
+				return frontend.RowViewPage{}, ErrRowViewStale
+			}
+			live, e := s.o.Receipts.receiptsLive(ctx, u.ID, req.Device.ID, req.Protocol, cached.tokens)
+			if e != nil {
+				return frontend.RowViewPage{}, e
+			}
+			if live {
+				tokens = cached.tokens
+				receiptExpiry = time.Unix(cached.expires, 0)
+			}
+		}
+	}
+	if tokens == nil {
+		tokens, err = s.o.Receipts.issueBatchChecked(ctx, u, req.Device, req.Protocol, subjects, current, func(tx *sql.Tx) error {
+			var expiry int64
+			query := `SELECT expires FROM experience_row_views WHERE snapshot=? AND viewer_id=? AND device_id=? AND protocol=?`
+			if store.DialectOf(s.o.DB) == store.Postgres {
+				query += ` FOR SHARE`
+			}
+			if err := tx.QueryRowContext(ctx, query, req.ID, u.ID, req.Device.ID, string(req.Protocol)).Scan(&expiry); err != nil || expiry <= s.o.Now().UnixMilli() {
+				return ErrRowViewStale
+			}
+			return nil
+		})
+		if err == nil && reuse {
+			s.receiptMu.Lock()
+			if s.pageReceipts == nil {
+				s.pageReceipts = make(map[[32]byte]rowPageReceipts)
+			}
+			now := s.o.Receipts.opts.Now()
+			for key, cached := range s.pageReceipts {
+				if cached.expires <= now.Unix() {
+					delete(s.pageReceipts, key)
+				}
+			}
+			if _, exists := s.pageReceipts[receiptKey]; exists || len(s.pageReceipts) < 512 {
+				s.pageReceipts[receiptKey] = rowPageReceipts{tokens: tokens, expires: min(expires/1000, receiptExpiry.Unix()), epoch: receiptEpoch}
+			}
+			s.receiptMu.Unlock()
+		}
+	}
 	if errors.Is(err, viewerpolicy.ErrChanged) {
 		return frontend.RowViewPage{}, ErrRowViewStale
 	}
 	if err != nil {
 		return frontend.RowViewPage{}, err
+	}
+	if receiptExpiry.Before(page.ExpiresAt) {
+		page.ExpiresAt = receiptExpiry
 	}
 	page.ImpressionHandle = tokens[0]
 	for i := range page.Entries {

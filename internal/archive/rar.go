@@ -10,6 +10,8 @@ import (
 
 // RARFile is one file header found in one RAR volume.
 type RARFile struct {
+	NonRegular   bool        // Unix special file, reparse point or RAR redirection
+	UnsafeName   bool        // name used a backslash before normalization
 	Name         string      // path inside the archive, '/'-separated
 	HeaderOffset int64       // offset of the block header in this volume
 	DataOffset   int64       // offset of this file's data in this volume
@@ -44,10 +46,11 @@ type RARVolume struct {
 // RAROptions tunes ReadRARVolume.
 type RAROptions struct {
 	// MaxFiles stops parsing after this many file headers (0 = no limit).
-	MaxFiles      int
-	Password      string `json:"-"`
-	Context       context.Context
-	PasswordCache *RARPasswordCache
+	MaxHeaderBytes int64 // optional pre-allocation header ceiling (0 = format maximum)
+	MaxFiles       int
+	Password       string `json:"-"`
+	Context        context.Context
+	PasswordCache  *RARPasswordCache
 }
 
 // ReadRARVolume parses the block headers of one RAR4 or RAR5 volume without

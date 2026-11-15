@@ -27,6 +27,8 @@ type session struct {
 	inputSource         StreamSource
 	inputHeaders        http.Header
 	firstMediaDelivered bool
+	firstMediaByte      bool
+	tuneStartedAt       time.Time
 	lastMediaWarning    time.Time
 	consumed            bool
 	mediaStarted        bool
@@ -140,7 +142,7 @@ func (ss *session) cancelBound() {
 func (s *Service) startOwnedHLS(request context.Context, ss *session, req core.HLSRequest) (core.HLSSession, context.CancelFunc, error) {
 	base := ss.ctx
 	if base == nil {
-		base = s.ctx
+		base = s.serviceContext()
 	}
 	if base == nil {
 		base = context.Background()
@@ -234,7 +236,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 			if detail.Code == "cancelled" {
 				log.Debug("live tune cancelled", attrs...)
 			} else {
-				log.Warn("live tune failed", attrs...)
+				log.Info("live tune failed", attrs...)
 			}
 		} else {
 			log.Info("live tune ready", append(attrs, "source", result.Channel.SourceID, "analyzed", result.MediaInfo != nil)...)
@@ -247,6 +249,13 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	if u == nil || (s.o.CanPlay != nil && !s.o.CanPlay(u, caps.Remote, s.o.Now())) {
 		return SessionInfo{}, core.ErrUnauthorized
 	}
+	if s.o.ConfirmAdmission != nil {
+		confirmed, err := s.o.ConfirmAdmission(ctx, u, caps.Remote, s.o.Now())
+		if err != nil {
+			return SessionInfo{}, err
+		}
+		u = confirmed
+	}
 	ctx, policy, err := s.withPolicy(ctx, u)
 	if err != nil {
 		return SessionInfo{}, err
@@ -254,6 +263,15 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	c, err := s.Channel(ctx, channelID)
 	if err != nil {
 		return SessionInfo{}, err
+	}
+	if c.Kind == "virtual" {
+		// Cold guide preparation and source startup share the first-playlist
+		// budget. A tune immediately after restart may need more than the
+		// five seconds allowed to an ordinary guide request.
+		var cancelStartup context.CancelFunc
+		ctx, cancelStartup = context.WithTimeout(ctx, 20*time.Second)
+		defer cancelStartup()
+		ctx = context.WithValue(ctx, virtualTuneGuideKey{}, true)
 	}
 	c = s.personalChannel(ctx, c, u)
 	ps, err := s.programmes(ctx, c, s.o.Now(), s.o.Now().Add(time.Second))
@@ -341,6 +359,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	s.nextSubscription++
 	ss := &session{
+		tuneStartedAt: started,
 		info: SessionInfo{
 			ID: attemptID, SubscriptionID: s.nextSubscription,
 			ActivityID: liveSessionID(), ClientSessionID: clientSessionID,
@@ -348,7 +367,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		},
 		streamGrant: randomID(), user: *u, caps: caps, last: s.o.Now(),
 	}
-	base := s.ctx
+	base := s.serviceContext()
 	if base == nil {
 		base = context.Background()
 	}
@@ -357,7 +376,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	// source must not occupy a viewer slot for three HTTP timeouts.
 	var cancel context.CancelFunc
 	if c.Kind == "iptv" {
-		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, 8*time.Second)
 	} else {
 		ctx, cancel = context.WithCancel(ctx)
 	}
@@ -662,6 +681,11 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 }
 
 func writeStreamError(w http.ResponseWriter, err error) {
+	var bedtime *core.ErrBedtime
+	if errors.As(err, &bedtime) {
+		http.Error(w, bedtime.Error(), http.StatusForbidden)
+		return
+	}
 	code := http.StatusBadGateway
 	switch err {
 	case core.ErrNotFound:
@@ -717,7 +741,7 @@ func (s *Service) Failover(ctx context.Context, id string, u *core.User) error {
 // startIPTV recognizes HLS without assuming URL suffixes (many owners use
 // signed extensionless URLs). Other HTTP streams are remuxed through ffmpeg,
 // whose existing input layer reconnects on network errors with bounded delay.
-func (s *Service) startIPTVSource(ctx context.Context, ss *session) error {
+func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent bool) error {
 	if ss.closed {
 		return core.ErrNotFound
 	}
@@ -764,6 +788,9 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session) error {
 				copy.Duration = 0
 				info = &copy
 				ss.info.MediaInfo = info
+				if deferSilent && !liveInputHasAudio(info) {
+					return errSilentInput
+				}
 				if analyze {
 					// A playlist is a transport, not evidence that its codecs are
 					// playable. MPEG-2/MP2 HLS needs conversion on Apple TV too.
@@ -791,6 +818,9 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session) error {
 	copy := *info
 	copy.Duration = 0
 	ss.info.MediaInfo = &copy
+	if deferSilent && !liveInputHasAudio(info) {
+		return errSilentInput
+	}
 	return s.startIPTVRelay(ctx, ss, copy)
 }
 
@@ -873,7 +903,13 @@ func (s *Service) serveOwnedPlaylist(w http.ResponseWriter, r *http.Request, ss 
 		writeStreamError(w, core.ErrNotFound)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// Include the source target for passthrough inputs with longer segments.
+	// AVPlayer can hang the item permanently when its first playlist takes
+	// a whole target duration. Keep the wait below that, including startup.
+	lease.tl.mu.Lock()
+	target := max(lease.tl.target, lease.tl.targetFloor, s.latencyPolicy().SegmentDuration())
+	lease.tl.mu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), target/2)
 	defer cancel()
 	err := lease.tl.waitStarted(ctx)
 	if errors.Is(err, errNeedsRelay) {
@@ -890,11 +926,14 @@ func (s *Service) serveOwnedPlaylist(w http.ResponseWriter, r *http.Request, ss 
 		return
 	}
 	prefix := "/livetv/sessions/" + ss.info.ID + "/0/"
-	body := lease.tl.render(func(seq int64, ext string) string {
+	body, window := lease.tl.renderSnapshot(func(seq int64, ext string) string {
 		return withAuth(prefix+"relay/"+strconv.FormatInt(seq, 10)+"."+ext, ss.streamGrant)
 	}, func(name string) string {
 		return withAuth(prefix+"resource/"+name, ss.streamGrant)
-	})
+	}, ss.caps.Protocol == "vela")
+	if ss.caps.Protocol == "vela" {
+		writeLiveAnchor(w, window)
+	}
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodHead {

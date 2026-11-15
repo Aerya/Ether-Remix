@@ -189,7 +189,7 @@ func (b *Broker) OpenSidecar(ctx context.Context, access frontend.SessionAccess,
 }
 
 func (b *Broker) confirmPlex(ctx context.Context, access frontend.SessionAccess) (*core.Viewer, error) {
-	return b.confirm(ctx, access.Viewer, core.ClientCaps{Remote: adapterServeRemote(ctx)})
+	return b.confirmCurrent(ctx, access.Viewer, core.ClientCaps{Remote: adapterServeRemote(ctx)})
 }
 
 func (b *Broker) adapterSessionOwned(id string, viewer int64) bool {

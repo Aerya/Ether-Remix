@@ -422,7 +422,7 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Caps.Remote = req.Caps.Remote || s.remote(r)
-	fresh, err := s.broker.confirm(ctx, viewer, req.Caps)
+	fresh, err := s.broker.confirmCurrent(ctx, viewer, req.Caps)
 	if err != nil || (req.Item == 0) == (req.Channel == "") {
 		http.NotFound(w, r)
 		return
@@ -792,7 +792,7 @@ func (s *lazyStreams) heartbeatBinding(ctx context.Context, cancel context.Cance
 			return
 		case <-ticks:
 			viewer, err := s.broker.deps.ActiveViewer(ctx, viewerID)
-			if _, confirmErr := s.broker.confirm(ctx, viewer, req.Caps); err != nil || viewer == nil || s.grants.ValidateGrantReference(ctx, string(s.protocol), reference, viewerID) != nil || confirmErr != nil {
+			if _, confirmErr := s.broker.confirmCurrent(ctx, viewer, req.Caps); err != nil || viewer == nil || s.grants.ValidateGrantReference(ctx, string(s.protocol), reference, viewerID) != nil || confirmErr != nil {
 				cancel()
 				return
 			}

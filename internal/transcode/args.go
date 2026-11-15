@@ -16,6 +16,7 @@ import (
 // runSpec is everything needed to build one ffmpeg HLS run.
 type runSpec struct {
 	HealTimestamps bool
+	CopyOrigin     bool // retain audio from the measured video presentation origin
 	// RampClock keeps every run of a fast-start session on the steady clock.
 	RampClock bool
 	// AuthoredTimeline preserves adaptive sessions with a separate clock.
@@ -184,10 +185,18 @@ func buildArgs(s runSpec) []string {
 			}
 		}
 		if s.RTXTimeline {
-			// Both HLS and its child TS muxer must preserve timestamps: the
-			// child otherwise shifts a zero-origin B-frame run to positive DTS.
+			// Copied audio keeps the native clock unchanged. Encoded audio
+			// instead needs the shared priming shift below, even at zero delay.
 			args = append(args, "-muxdelay", "0", "-muxpreload", "0")
-			segmentOptions = append(segmentOptions, "mpegts_copyts=1", "avoid_negative_ts=disabled")
+			segmentOptions = append(segmentOptions, "mpegts_copyts=1")
+			if !s.encodesAudio() {
+				segmentOptions = append(segmentOptions, "avoid_negative_ts=disabled")
+			}
+		}
+		if s.encodesAudio() {
+			// Normalize in the child muxer, including zero-delay RTX fallback.
+			// Otherwise encoder priming can wrap into the 33-bit TS clock.
+			segmentOptions = append(segmentOptions, "avoid_negative_ts=make_non_negative")
 		}
 		if s.Start > 0 || (s.LiveInput && s.StartSeg > 0) {
 			// A new muxer resets each PID's continuity counter. Mark that reset
@@ -243,16 +252,19 @@ func appendSoftSubtitleOutput(args []string, s runSpec) []string {
 // one EXT-X-MAP, never refetched. A failover to an encode with different
 // SPS/PPS then decodes against the old ones. Repeating them in-band at
 // every keyframe reconfigures the open decoder. These filters only add
-// parameter sets from extradata (Annex B input passes through unchanged);
+// parameter sets from extradata; HEVC needs a complete hvcC record.
+// Annex B and in-band-only sources already carry their own parameter sets;
 // matroskaenc stores the packets length-prefixed and still writes the
 // avcC/hvcC CodecPrivate.
-func matroskaCopyParameterSets(d core.Decision, codec string) string {
+func matroskaCopyParameterSets(d core.Decision, v *core.StreamInfo) string {
 	if d.Container != ContainerMatroska {
 		return ""
 	}
-	switch codec {
+	switch v.Codec {
 	case "hevc":
-		return "hevc_mp4toannexb"
+		if v.HEVCParameterSets {
+			return "hevc_mp4toannexb"
+		}
 	case "h264":
 		return "h264_mp4toannexb"
 	}
@@ -375,7 +387,14 @@ func buildCodecArgs(s runSpec) []string {
 	}
 	if s.Start > 0 && !pceOutputSeek {
 		seek := secs(s.Start)
-		if s.HasSeekFrom {
+		if s.CopyOrigin && d.VideoCopy {
+			seek = secs(copyOriginSeek(s.Start))
+			if s.Info.Container == "mpegts" || s.Info.Container == "mpeg" {
+				// Unindexed timestamp seeks must land before the keyframe packet.
+				seek = secs(max(0, s.Start.Truncate(time.Millisecond)-time.Millisecond))
+			}
+			args = append(args, "-noaccurate_seek")
+		} else if s.HasSeekFrom {
 			seek = secs(s.SeekFrom)
 		} else if lead := hlsNVENCPreroll(s); lead > 0 {
 			// Keep the measured NVENC seek and its hardware-frame trim.
@@ -490,11 +509,11 @@ func buildCodecArgs(s runSpec) []string {
 					// HDR10 base NALs remain byte-for-byte unchanged.
 					filter += ",filter_units=remove_types=62|63"
 				}
-				if ps := matroskaCopyParameterSets(d, v.Codec); ps != "" {
+				if ps := matroskaCopyParameterSets(d, v); ps != "" {
 					filter += "," + ps
 				}
 				args = append(args, "-bsf:v", filter)
-			} else if ps := matroskaCopyParameterSets(d, v.Codec); ps != "" {
+			} else if ps := matroskaCopyParameterSets(d, v); ps != "" {
 				args = append(args, "-bsf:v", ps)
 			}
 			if container == ContainerFMP4 && v.Codec != "hevc" {
@@ -599,6 +618,9 @@ func buildCodecArgs(s runSpec) []string {
 			args = append(args, "-c:a", enc, "-ac", strconv.Itoa(ch), "-ar", strconv.Itoa(decisionAudioRate(d)),
 				"-b:a", fmt.Sprintf("%dk", kbps))
 			filters := append([]string(nil), d.AudioFilters...)
+			if s.CopyOrigin && d.VideoCopy {
+				filters = append(filters, "atrim=start="+strconv.FormatFloat(s.Start.Seconds(), 'f', 9, 64))
+			}
 			if start, ok := hlsAudioPreroll(s); ok {
 				rate := decisionAudioRate(d)
 				// Coarse demuxer clocks round packet PTS. Recover the decoded
@@ -640,10 +662,44 @@ func buildCodecArgs(s runSpec) []string {
 		// Shift only decode time; presentation time must retain source order.
 		args = appendVideoClockBSF(args, "setts=pts=PTS:dts=DTS-"+strconv.FormatFloat(fastLead.Seconds(), 'f', 9, 64)+"/TB")
 	}
+	lead = max(lead, hlsEncodedClockLead(s))
 	if lead > 0 {
 		args = append(args, "-output_ts_offset", strconv.FormatFloat(lead.Seconds(), 'f', 9, 64))
 	}
 	return args
+}
+
+// hlsEncodedClockLead fixes the mux clock before any packets arrive. Using
+// the same encoder plan for every run and rendition keeps priming and video
+// reorder from causing a title-zero-only shift in the nested MP4 muxer.
+func hlsEncodedClockLead(s runSpec) time.Duration {
+	if !s.encodesAudio() || s.Decision.VideoCopy || s.LoopInput || s.LiveInput || s.RTXTimeline || s.Decision.Container != ContainerFMP4 || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
+		return 0
+	}
+	codec := s.Decision.AudioCodec
+	priming := 0.0
+	switch codec {
+	case "", "aac":
+		priming = 1024.0 / float64(decisionAudioRate(s.Decision))
+	case "opus":
+		if s.Features.encoders == nil || s.Features.hasEncoder("libopus") {
+			priming = 0.0065
+		}
+	}
+	if priming == 0 {
+		return 0
+	}
+	encoder, _ := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features)
+	if encoder != "libx264" && encoder != "h264_nvenc" {
+		return 0
+	}
+	if s.RampClock {
+		s.FastStart = false
+	}
+	if fps := hlsOutputFPS(s); fps > 0 {
+		priming = math.Max(priming, float64(h264ReorderFrames(s))/fps)
+	}
+	return time.Duration(math.Ceil(priming * float64(time.Second)))
 }
 
 // hlsAudioPreroll warms the AAC encoder on its original sample grid. Only
@@ -897,6 +953,12 @@ func h264ReorderFrames(s runSpec) int {
 	return delay
 }
 
+// encodesAudio includes synthetic silence, which replaces even a copied track
+// with an encoder and therefore introduces codec priming too.
+func (s runSpec) encodesAudio() bool {
+	return (!s.Decision.AudioCopy || s.SilenceAudio) && findStream(s.Info, s.Decision.AudioStream, "audio") != nil
+}
+
 // hlsMuxArgs is the HLS muxer part of a run's command line.
 func hlsMuxArgs(s runSpec) []string {
 	segDur := s.SegDur
@@ -938,7 +1000,19 @@ func hlsMuxArgs(s runSpec) []string {
 		// was moved before them. HLS does not use sidx, and the chunked
 		// path already drops it from multi-chunk segments.
 		options := "movflags=+frag_discont+skip_sidx"
-		if s.NormalizeNegativeDTS {
+		audioOnlyAAC := s.Info.Video() == nil && !s.Decision.AudioCopy && s.Decision.AudioCodec == "aac"
+		if audioOnlyAAC {
+			// MSE ignores an empty edit that delays the first AAC sample.
+			// Keep this rendition's title clock in tfdt itself, without
+			// depending on client edit-list support. frag_discont and the
+			// inner timestamp policy below preserve the absolute clock.
+			options += ":use_editlist=0"
+		}
+		if s.NormalizeNegativeDTS || audioOnlyAAC || s.encodesAudio() {
+			// Planned H264 encodes already carry a fixed priming/reorder
+			// lead on every run. Keep this safety net for copied video and
+			// other encoder plans, where negative priming must not wrap.
+			// Unlike the automatic policy it preserves positive seek times.
 			options += ":avoid_negative_ts=make_non_negative"
 		}
 		if s.VideoTimescale != 0 {

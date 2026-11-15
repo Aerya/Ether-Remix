@@ -59,6 +59,13 @@ export default function Playback() {
         groups={S.TRANSCODE}
         label={t("Streams & transcoding")}
       />
+      <ConfigSection
+        hidden={tab !== "transcoding"}
+        configKey="liveTV"
+        endpoint="livetv"
+        groups={S.LIVE_LATENCY}
+        label={t("Live TV")}
+      />
       {tab === "devices" ? <DeviceCapabilities /> : null}
       {tab === "prerolls" ? (
         <SectionHeading

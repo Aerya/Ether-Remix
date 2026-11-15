@@ -43,7 +43,7 @@ func TestRTXOrdinaryLadderAndRecovery(t *testing.T) {
 			serve := func(id string, n int) {
 				t.Helper()
 				rec := httptest.NewRecorder()
-				s.ServeRungSegment(rec, httptest.NewRequest("GET", "/segment", nil), id, n)
+				s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest("GET", "/segment", nil), n), id, n)
 				if rec.Code != 200 {
 					t.Fatalf("%s/%d: %d %s", id, n, rec.Code, rec.Body.String())
 				}

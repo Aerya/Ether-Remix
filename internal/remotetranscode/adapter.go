@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	urlpath "path"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,7 +111,7 @@ func (a *Adapter) StartHLSOwned(ctx context.Context, r core.HLSRequest) (core.HL
 	if !validIdentity(assignment.Identity) || assignment.Identity.Session != r.SessionID || len(assignment.Grant) == 0 || len(assignment.Grant) > 4096 || !assignment.Expires.After(time.Now()) {
 		return nil, nil, errors.New("remotetranscode: invalid assignment")
 	}
-	start := Start{Ramp: r.Ramp, Resume: cloneResume(r.Resume), RecoveryStart: core.CloneRecoveryStart(r.RecoveryStart), Keyframes: append([]core.KeyframePoint(nil), r.Info.Keyframes...), SoftSubtitleStream: r.SoftSubtitleStream, Protocol: r.Protocol, ReleaseID: r.ReleaseID, Identity: assignment.Identity, Grant: assignment.Grant, Expires: assignment.Expires, Info: r.Info, Decision: r.Decision, Offset: r.StartOffset, SegmentDuration: r.SegmentDuration, IndependentProof: r.RequireIndependentProof}
+	start := Start{MediaGeneration: r.MediaGeneration, Ramp: r.Ramp, Resume: cloneResume(r.Resume), RecoveryStart: core.CloneRecoveryStart(r.RecoveryStart), Keyframes: append([]core.KeyframePoint(nil), r.Info.Keyframes...), SoftSubtitleStream: r.SoftSubtitleStream, Protocol: r.Protocol, ReleaseID: r.ReleaseID, Identity: assignment.Identity, Grant: assignment.Grant, Expires: assignment.Expires, Info: r.Info, Decision: r.Decision, Offset: r.StartOffset, SegmentDuration: r.SegmentDuration, IndependentProof: r.RequireIndependentProof}
 	b, err := json.Marshal(start)
 	if err != nil || len(b) > MaxMessage-1024 {
 		return nil, nil, ErrUnsupported
@@ -414,6 +415,13 @@ func (s *Session) serve(w http.ResponseWriter, r *http.Request, op string, n int
 	s.serveRepresentation(w, r, message{Op: op, Segment: n})
 }
 func (s *Session) serveRepresentation(w http.ResponseWriter, r *http.Request, m message) (facts RepresentationCompletion) {
+	if m.Op == "segment" || m.Op == "rung-segment" {
+		// Direct trusted HLSSession calls can have no resource path. Do not
+		// turn their root placeholder into a forbidden filename on the wire.
+		if name := urlpath.Base(r.URL.Path); name != "/" && name != "." {
+			m.MediaName = name
+		}
+	}
 	n := m.Segment
 	if n < -1 || n > 10000000 {
 		http.Error(w, "invalid segment", 400)

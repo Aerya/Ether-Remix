@@ -67,9 +67,10 @@ type DecoderRequest struct {
 }
 
 // ErrInputChanged reports that a live input changed its codec or stream set
-// mid-stream (a PMT version bump, or another codec on the same PID): one
+// mid-stream affecting the selected audio/video (such as a new codec on a PID): one
 // elementary stream keeps flowing while the other can no longer be decoded.
-// The caller reopens the same source at its live edge.
+// The caller splices a replacement decoder into its existing output timeline.
+// PMT version bumps and unrelated elementary streams alone are not changes.
 var ErrInputChanged = errors.New("transcode: live input changed its streams")
 
 // Decoder yields frames already in Format, one per call, paced by the caller.

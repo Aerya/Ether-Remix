@@ -91,6 +91,13 @@ func (d *standbyDecoder) Close() error {
 	return nil
 }
 
+func (d *standbyDecoder) StarvingErrors() (time.Duration, bool) {
+	if source, ok := d.sb.decoder.(starving); ok {
+		return source.StarvingErrors()
+	}
+	return 0, false
+}
+
 func (d *standbyDecoder) Diagnostics() string {
 	if source, ok := d.sb.decoder.(interface{ Diagnostics() string }); ok {
 		return "standby " + source.Diagnostics()

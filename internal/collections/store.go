@@ -16,6 +16,9 @@ import (
 )
 
 func init() {
+	// Profile membership checks seek one title within a collection, independent of its size.
+	store.Register("collections", 8, `CREATE INDEX collections_members_profile_lookup ON collections_members(spec_id,key,shared);`)
+
 	store.Register("collections", 2, `
 CREATE TABLE collections_specs (
   id INTEGER PRIMARY KEY,
@@ -451,6 +454,9 @@ func specFromFilter(c core.Collection) core.CollectionSpec {
 		Refresh: RefreshLive, Enabled: true, Sort: string(c.Sort), SortDesc: c.Sort != core.SortTitle,
 		Artwork: core.CollectionArtwork{Mode: "auto"},
 		Targets: core.CollectionTargets{CollectionsTab: true, Users: core.AllUsers()},
+	}
+	if f.Topic != "" {
+		sp.Sources[0].Params = map[string]string{"topic": f.Topic}
 	}
 	switch typ {
 	case core.TypeMovie:

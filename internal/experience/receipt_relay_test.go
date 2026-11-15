@@ -170,7 +170,11 @@ func TestReceiptRelayLegacyAuthorityGate(t *testing.T) {
 		viewer := &core.User{ID: 1}
 		device := core.Device{ID: "tv"}
 		subject := ReceiptSubject{Kind: "row", ID: "r"}
-		if _, err = s.Issue(ctx, viewer, device, "plex", subject); err != nil {
+		token, err := s.Issue(ctx, viewer, device, "plex", subject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Report(ctx, frontend.RowInteraction{Viewer: viewer, Device: device, Protocol: "plex", Handle: token, Kind: frontend.RowImpression}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = s.Issue(ctx, viewer, device, "plex", subject); err == nil || !strings.Contains(err.Error(), "receipt limit reached") {
@@ -321,7 +325,7 @@ func TestReceiptRelayConcurrency(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
-	if ok != 1 || limited != 1 {
+	if ok != 2 || limited != 0 {
 		t.Fatalf("issues ok=%d limited=%d", ok, limited)
 	}
 	var token string

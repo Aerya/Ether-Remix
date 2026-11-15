@@ -1,7 +1,9 @@
 package transcode
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -12,7 +14,8 @@ import (
 // The ABR ladder: one session, one shared segment Timeline, several
 // rungs. The primary rung ("base", track 0) is the decision the session
 // was started with; lower rungs are transcodes planned from the same
-// decision. Only one ffmpeg runs at a time — a segment request on an
+// decision. One steady encoder runs; a rendition switch briefly retains
+// the old encoder until the requested replacement segment is ready. A request on an
 // idle rung restarts the encoder at that segment with the rung's
 // decision (unused rungs are therefore stopped, not just paused, which
 // is the cheapest idle state). Segment files are kept per rung (the
@@ -124,7 +127,7 @@ func decisionAudioKbps(info core.MediaInfo, d core.Decision) int {
 	case d.AudioCopy:
 		return copiedAudioKbps(a)
 	default:
-		return audioBitrateKbps(d.AudioCodec, outputChannels(d.AudioCodec, a))
+		return audioBitrateKbps(d.AudioCodec, decisionAudioChannels(d, a))
 	}
 }
 
@@ -314,10 +317,12 @@ func (s *Session) Rungs() []core.HLSRung {
 	out := make([]core.HLSRung, 0, len(s.rungs))
 	for t, r := range s.rungs {
 		peak := s.rungPeakKbpsLocked(t)
+		video, videoPeak, codec, dr := qualityMetadata(s.info, r)
 
 		out = append(out, core.HLSRung{
+			VideoBitrate: video, PeakVideoBitrate: videoPeak, Codec: codec, DynamicRange: dr,
 			ID: r.id, Bandwidth: peak * 1000, AverageBandwidth: r.avgKbps * 1000,
-			Width: r.width, Height: r.height, Codecs: r.codecs, FrameRate: fr,
+			Width: r.width, Height: r.height, Codecs: r.codecs, OutputCodecs: s.outputCodecs[t], OutputAudioChannels: s.outputAudioChannels[t], FrameRate: fr,
 		})
 	}
 	return out
@@ -358,6 +363,7 @@ func (s *Session) ServeRungPlaylist(w http.ResponseWriter, r *http.Request, rung
 		return
 	}
 	body := s.renderPlaylistLocked(t)
+	s.notePlaylistLocked(t, body)
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -369,6 +375,9 @@ func (s *Session) ServeRungPlaylist(w http.ResponseWriter, r *http.Request, rung
 
 // ServeRungSegment implements core.HLSLadderSession.
 func (s *Session) ServeRungSegment(w http.ResponseWriter, r *http.Request, rungID string, n int) {
+	if !s.acceptMediaGeneration(w, r) {
+		return
+	}
 	s.mu.Lock()
 	t := s.rungTrack(rungID)
 	s.mu.Unlock()
@@ -410,3 +419,51 @@ func dashRepsLadder(info core.MediaInfo, primary core.Decision, rungs []rung) []
 
 var _ core.HLSLadderSession = (*Session)(nil)
 var _ core.GoodputSession = (*Session)(nil)
+
+// PrepareRung requests the existing ladder's segment; it creates no parallel encoder.
+func (s *Session) PrepareRung(ctx context.Context, id string, position time.Duration) error {
+	s.mu.Lock()
+	t := s.rungTrack(id)
+	n := 0
+	if s.plan != nil {
+		n = s.plan.IndexAt(position - s.base)
+	}
+	s.mu.Unlock()
+	if t < 0 {
+		return core.ErrNotAvailable
+	}
+	w := &preparationSink{header: make(http.Header)}
+	r, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/prepare", nil)
+	if err != nil {
+		return err
+	}
+	// A one-byte GET activates the lazy rung and waits for real publication.
+	r.Header.Set("Range", "bytes=0-0")
+	s.serveSegment(w, r, t, n)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if w.status >= 400 || !w.wrote {
+		return core.ErrNotAvailable
+	}
+	return nil
+}
+
+type preparationSink struct {
+	header http.Header
+	status int
+	wrote  bool
+}
+
+func (w *preparationSink) Header() http.Header         { return w.header }
+func (w *preparationSink) WriteHeader(n int)           { w.status = n; w.wrote = true }
+func (w *preparationSink) Write(p []byte) (int, error) { w.wrote = true; return io.Discard.Write(p) }
+
+func (m *Manager) ProactiveFallbackAvailable() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.closed
+}

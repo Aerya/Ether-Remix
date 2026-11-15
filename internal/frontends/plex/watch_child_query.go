@@ -44,6 +44,22 @@ func (s *Server) childQuery(ctx context.Context, pr *Request, items []frontend.T
 	for _, f := range s.metaType(sec, typ, "").Field {
 		titles[stripFieldTypePrefix(f.Key)] = f.Title
 	}
+	// Children URLs may inherit options from another endpoint or a newer app.
+	// Ignore unknown options here; keep validation for known browse fields and
+	// query structure, without relaxing the section query editor's grammar.
+	for key := range q {
+		switch key {
+		case "type", "sort", "limit", "group", "push", "pop", "and", "or":
+			continue
+		}
+		field := stripFieldTypePrefix(strings.TrimRight(key, "!<>="))
+		if !queryFieldKnown(field, "=", titles) {
+			q.Del(key)
+		}
+	}
+	if len(q) == 0 || (len(q) == 1 && q.Has("type")) {
+		return items, nil
+	}
 	tree := parseQueryTree(q.Encode(), typeNumber(typ), titles)
 	if tree.status != 0 || len(tree.Error) > 0 {
 		// Never log the raw query or error values: requests can carry tokens.
@@ -87,6 +103,11 @@ func (s *Server) childQuery(ctx context.Context, pr *Request, items []frontend.T
 // These are request options, not catalogue fields. Keep this children-specific:
 // the section query editor has its own PMS-compatible validation semantics.
 func childQueryParamIgnored(key string) bool {
+	// Search clients carry this hub-scope option onto metadata children reads.
+	// It does not filter seasons or episodes, even when its value is 0.
+	if key == "libraryHubsOnly" {
+		return true
+	}
 	// skipCount is a watch predicate, despite sharing the skip option prefix.
 	if key == "limit" || key == "group" || strings.TrimRight(key, "!<>=") == "skipCount" {
 		return false

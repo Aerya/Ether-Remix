@@ -95,9 +95,11 @@ func (s *Service) acquirePassthrough(ss *session) *ownedLease {
 		sh = nil
 	}
 	if sh == nil {
-		ctx, cancel := context.WithCancel(s.ctx)
+		ctx, cancel := context.WithCancel(s.serviceContext())
 		log := s.logger().With("channel", c.ID, "owned", "passthrough")
 		tl := newOwnedTimeline(c.ID, log, nil, reserve, slates)
+		policy := s.latencyPolicy()
+		tl.windowSpan, tl.startBehind = policy.PlaylistWindow(), policy.TargetLatency()
 		tl.setHint(slateProfileFromInfo(c.ID, ss.info.MediaInfo, "ts"))
 		p := &passthroughProducer{s: s, tl: tl, c: c, caps: ss.caps, log: log,
 			src: ss.inputSource, raw: ss.inputURL, headers: ss.inputHeaders.Clone(), suggest: make(chan sourceChoice, 1)}
@@ -239,8 +241,6 @@ type passthroughProducer struct {
 
 	rounds int // failover rounds since the last progress
 
-	variant    hlsVariant
-	hasVariant bool
 	ingest     *hlsIngest
 	errs       int
 	reresolved bool
@@ -263,8 +263,8 @@ type passthroughProducer struct {
 	seenSkipped   int64
 }
 
-// open points the producer at a source: it selects the variant (keeping a
-// previous choice) and rebases the ingest. keep preserves the ingest
+// open points the producer at a source: it selects the best current variant
+// and rebases the ingest. keep preserves the ingest
 // position when the source is the same stream (a re-resolution).
 func (p *passthroughProducer) open(ctx context.Context, src StreamSource, raw string, headers http.Header, keep bool) error {
 	o := &providerOrigin{s: p.s, mediaURL: raw, source: raw, headers: headers, public: redirectMediaHeaders(src.Headers), name: "provider:" + src.ID}
@@ -274,17 +274,19 @@ func (p *passthroughProducer) open(ctx context.Context, src StreamSource, raw st
 	}
 	if isMasterPlaylist(body) {
 		m := parseMasterPlaylist(body, base)
-		var v hlsVariant
-		var ok bool
-		if p.hasVariant {
-			v, ok = sameVariant(m, p.variant, p.caps)
-		} else {
-			v, ok = pickVariant(m, p.caps)
-		}
-		if !ok {
+		v, ok := pickVariant(m, p.caps)
+		// The relay can convert a codec the viewer cannot play. Do not
+		// discard its audible program in favor of compatible silent video.
+		inputCaps := p.caps
+		inputCaps.VideoCodecs = nil
+		best, _ := pickVariant(m, inputCaps)
+		needsConversion := variantHasAudio(best) && !variantHasAudio(v)
+		overCeiling := (p.caps.MaxHeight > 0 && v.height > p.caps.MaxHeight) ||
+			(p.caps.MaxBitrateKbps > 0 && v.bandwidth > p.caps.MaxBitrateKbps*1000)
+		if !ok || needsConversion || overCeiling || (v.audio != "" && m.demuxedAudio[v.audio]) {
+			p.log.Info("owned passthrough requires remux", "height", v.height, "bandwidth", v.bandwidth, "audio_group", v.audio)
 			return errNeedsRelay
 		}
-		p.variant, p.hasVariant = v, true
 		o.mediaURL = v.uri
 		p.log.Info("owned passthrough variant selected", "bandwidth", v.bandwidth, "height", v.height, "codecs", v.codecs, "variants", len(m.variants))
 	} else if base != nil {

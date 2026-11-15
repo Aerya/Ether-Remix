@@ -66,8 +66,8 @@ func TestSeekReconnectFollowsActualPlaylistAndSegment(t *testing.T) {
 			fmt.Fprint(w, "#EXTM3U\nsession/real/base/index.m3u8\n")
 		case "/video/:/transcode/universal/session/real/base/index.m3u8":
 			sawReconnect = true
-			fmt.Fprint(w, "#EXTM3U\nsegment.ts\n")
-		case "/video/:/transcode/universal/session/real/base/segment.ts":
+			fmt.Fprint(w, "#EXTM3U\ng-0123456789abcdef0123456789abcdef-00003.ts\n")
+		case "/video/:/transcode/universal/session/real/base/g-0123456789abcdef0123456789abcdef-00003.ts":
 			fmt.Fprint(w, "media")
 		default:
 			http.NotFound(w, r)
@@ -76,7 +76,7 @@ func TestSeekReconnectFollowsActualPlaylistAndSegment(t *testing.T) {
 	defer s.Close()
 	playlist := "/video/:/transcode/universal/session/real/base/index.m3u8"
 	captures, segment, err := seekAndReconnect(context.Background(), s.Client(), s.URL, "owner", "web", "remux", "/video/:/transcode/universal/start.m3u8?session=real", playlist, http.Header{}, nil)
-	if err != nil || len(captures) != 4 || !sawSeek || !sawReconnect || segment != "/video/:/transcode/universal/session/real/base/segment.ts" {
+	if err != nil || len(captures) != 4 || !sawSeek || !sawReconnect || segment != "/video/:/transcode/universal/session/real/base/g-0123456789abcdef0123456789abcdef-00003.ts" {
 		t.Fatalf("captures=%d segment=%q seek=%v reconnect=%v err=%v", len(captures), segment, sawSeek, sawReconnect, err)
 	}
 }

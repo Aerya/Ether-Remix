@@ -456,6 +456,9 @@ type Host struct {
 	// ExtraStreams opens a playable trailer or extra. Nil means extras are not
 	// configured; listing routes still authorize the parent and return nothing.
 	ExtraStreams ExtraStreams
+	Themes       Themes
+	// ThemeTitle authorizes cached metadata without discovery or detail enrichment.
+	ThemeTitle func(context.Context, *Viewer, RatingKey) (*Title, error)
 	// DirectProxy selects the proxy for trailer fetches. Nil follows the
 	// process environment. The app wires the direct route so frontends do
 	// not import the egress policy.
@@ -494,6 +497,9 @@ type Host struct {
 	Log       *slog.Logger
 	// ViewerPortalURL returns a reachable owner-selected viewer portal URL for this client.
 	ViewerPortalURL func(context.Context, *http.Request) (string, error)
+	// SecureOrigins returns trusted published HTTPS base origins, preferred first.
+	// It never probes the network or derives hosts from request headers.
+	SecureOrigins func(context.Context, *http.Request) []string
 	// SecurePortalURL selects a verified reachable HTTPS portal address.
 	SecurePortalURL func(context.Context, *http.Request) (string, error)
 	// SurfaceURL returns a reachable, verified base for this frontend's routes.

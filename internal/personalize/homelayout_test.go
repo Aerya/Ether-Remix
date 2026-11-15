@@ -706,3 +706,69 @@ func TestPreviewLayoutExplainsAbsentAlwaysRows(t *testing.T) {
 		t.Fatalf("filtered_by_availability kind %s = %+v", KindTrending, r)
 	}
 }
+
+func TestNeutralHeroFillRespectsOwnerWithoutShelfMinimum(t *testing.T) {
+	h := newHarness(t, nil)
+	user := &core.User{ID: 1}
+	situation := core.HomeSituation{Now: testNow, Device: core.DeviceTV}
+	candidates := []core.NeutralHomeRow{{ID: "vela.hero.recently-added.1", Kind: KindRecentlyAdded, Items: []core.Title{{Key: core.MovieKey(11), Type: core.TypeMovie}}}}
+	got, err := h.e.FinalizeNeutralHomeFill(context.Background(), user, situation, "home", candidates)
+	if err != nil || len(got) != 1 || len(got[0].Items) != 1 {
+		t.Fatal("shelf minimum discarded open hero slot", got, err)
+	}
+	layout := core.HomeLayout{Global: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: KindRecentlyAdded, Status: "off"}}}}}
+	ctx := context.WithValue(context.Background(), draftLayoutKey{}, layout)
+	got, err = h.e.FinalizeNeutralHomeFill(ctx, user, situation, "home", candidates)
+	if err != nil || len(got) != 0 {
+		t.Fatal("fill bypassed owner source policy", got, err)
+	}
+}
+
+// The same policy resolution feeds owner previews and every client adapter.
+func TestTop10RankedDefault(t *testing.T) {
+	h := newHarness(t, nil)
+	on, off := true, false
+	for _, tc := range []struct {
+		name, id, kind string
+		ranked         bool
+		global, viewer *bool
+		policy         bool
+		want           bool
+	}{
+		{name: "today default by ID", id: "home.top10.today", want: true},
+		{name: "personal default by ID", id: "movie.top10", want: true},
+		{name: "today default by kind", id: "custom", kind: KindTop10Today, want: true},
+		{name: "designer default", id: "tv.top10.today", policy: true, want: true},
+		{name: "owner off", id: "home.top10.today", ranked: true, global: &off},
+		{name: "owner on", id: "home.top10", global: &on, want: true},
+		{name: "viewer off", id: "home.top10.today", global: &on, viewer: &off},
+		{name: "other row unchanged", id: "home.trending"},
+		{name: "collection opt in retained", id: "collection.saved", ranked: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var layout core.HomeLayout
+			if tc.policy || tc.global != nil {
+				layout.Global = []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: tc.id, Status: "eligible", RankedTop10: tc.global}}}}
+			}
+			if tc.viewer != nil {
+				layout.Viewers = []core.ViewerLayout{{UserID: 1, Pages: []core.LayoutPage{{Section: "home", Rows: []core.RowPolicy{{Row: tc.id, Status: "eligible", RankedTop10: tc.viewer}}}}}}
+			}
+			ctx := context.WithValue(context.Background(), draftLayoutKey{}, layout)
+			// The deliberately misleading title must never determine the default.
+			candidate := core.NeutralHomeRow{ID: tc.id, Kind: tc.kind, Title: "Top 10 on Renamed Server Today", ItemCount: 10, RankedTop10: tc.ranked}
+			got, err := h.e.FinalizeNeutralHome(ctx, &core.User{ID: 1}, core.HomeSituation{Now: testNow, Device: core.DeviceTV}, "home", []core.NeutralHomeRow{candidate})
+			if err != nil || len(got) != 1 {
+				t.Fatalf("neutral rows = %+v, %v", got, err)
+			}
+			if got[0].RankedTop10 != tc.want {
+				t.Fatalf("neutral ranked = %v, want %v", got[0].RankedTop10, tc.want)
+			}
+			if tc.kind == "" {
+				hubs, err := h.e.FinalizeHome(ctx, &core.User{ID: 1}, hubContext(testNow, core.DeviceTV), "home", []core.Hub{{ID: tc.id, Title: candidate.Title, ItemCount: 10, RankedTop10: tc.ranked}})
+				if err != nil || len(hubs) != 1 || hubs[0].RankedTop10 != tc.want {
+					t.Fatalf("Plex hubs = %+v, %v; want ranked %v", hubs, err, tc.want)
+				}
+			}
+		})
+	}
+}

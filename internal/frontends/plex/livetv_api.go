@@ -26,14 +26,15 @@ import (
 const liveProviderPath = "/" + frontend.LiveTVProvider
 
 type liveChannel struct {
-	ID       string `plex:"id"`
-	GridKey  string `plex:"gridKey"`
-	VCN      string `plex:"vcn"`
-	IsHD     bool   `plex:"isHd"`
-	Thumb    string `plex:"thumb"`
-	Title    string `plex:"title"`
-	CallSign string `plex:"callSign"`
-	Language string `plex:"language"`
+	ID              string           `plex:"id"`
+	GridKey         string           `plex:"gridKey"`
+	VCN             string           `plex:"vcn"`
+	IsHD            bool             `plex:"isHd"`
+	Thumb           string           `plex:"thumb"`
+	Title           string           `plex:"title"`
+	CallSign        string           `plex:"callSign"`
+	Language        string           `plex:"language"`
+	GenreRatingKeys model.StringList `plex:"genreRatingKeys,omitempty"`
 }
 type liveMapping struct {
 	ChannelKey       string `plex:"channelKey"`
@@ -79,16 +80,38 @@ type liveContainer struct {
 }
 
 func (s *Server) liveTVEnabled() bool {
-	return s.svc().liveTV != nil && s.identity().MyPlexSubscription
+	return s.svc().liveTV != nil && s.svc().liveTV.Enabled() && s.identity().MyPlexSubscription
 }
 func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.MediaProvider {
 	if !s.liveTVEnabled() || !s.svc().liveTV.VisibleTo(ctx, u) {
 		return nil
 	}
+	filters := s.liveGuideFilters(ctx, u)
 	return &model.MediaProvider{Extra: []model.Attr{model.A("id", 1), model.A("parentID", 1), model.A("providerIdentifier", "tv.plex.providers.epg.xmltv"), model.A("epgSource", "XMLTV")}, Identifier: frontend.LiveTVProvider, Title: "Live TV", Types: "video", Protocols: "livetv", Feature: []model.Feature{
-		{Type: "content", Key: liveProviderPath, Directory: []model.ProviderDirectory{{ID: "livetv", Key: liveProviderPath + "/lineups/dvr/channels", HubKey: liveProviderPath + "/hubs", Title: "Live TV", Type: "livetv"}}},
+		{
+			Type: "content",
+			Key:  liveProviderPath + "/sections",
+			// Keep one keyed Live TV directory for clients that discover by key,
+			// with the native What's On / Guide pivots and separate grid filters.
+			Directory: []model.ProviderDirectory{
+				{
+					ID:     "livetv",
+					Key:    liveProviderPath + "/lineups/dvr/channels",
+					Type:   "livetv",
+					HubKey: liveProviderPath + "/hubs/discover",
+					Title:  "Live TV & DVR",
+					Pivot: []model.Pivot{
+						{ID: "dvr.whatson", Key: liveProviderPath + "/hubs/discover", Type: "hub", Title: "What's On", Context: "content.dvr.discover", Symbol: "star"},
+						{ID: "dvr.guide", Key: "view://dvr/guide", Type: "view", Title: "Guide", Context: "content.dvr.guide", Symbol: "guide"},
+					},
+				},
+			},
+		},
 		{Type: "universalsearch", Key: liveProviderPath + "/library/search"},
-		{Type: "grid", Key: liveProviderPath + "/grid"}, {Type: "metadata", Key: liveProviderPath + "/metadata"}, {Type: "livetv", Key: "/livetv/dvrs"},
+		{Type: "grid", Key: liveProviderPath + "/grid", PromotedGridChannelFilter: []model.GridChannelFilter{{Identifier: "featured", Key: liveProviderPath + "/lineups/dvr/channels/featured", Title: "Featured"}}, GridChannelFilter: filters},
+		{Type: "metadata", Key: liveProviderPath + "/metadata"},
+		{Type: "livetv", Key: "/livetv/dvrs"},
+		{Type: "promoted", Key: liveProviderPath + "/hubs/discover?promoted=1&includeTypeFirst=1"},
 	}}
 }
 
@@ -117,7 +140,15 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	r.Delete("/media/subscriptions/{subscription}", guard(s.handleLiveSubscriptionStop))
 	get("/media/grabbers/operations/{operation}", s.handleLiveOperation)
 	r.Delete("/media/grabbers/operations/{operation}", guard(s.handleLiveOperationStop))
-	get("/livetv/dvrs", s.handleLiveDVRs)
+	listDVRs := func(w http.ResponseWriter, r *http.Request) {
+		if s.svc().liveTV == nil || !s.svc().liveTV.Enabled() {
+			s.write(w, r, &liveContainer{Size: 0, Identifier: frontend.LiveTVProvider, DVR: []liveDVR{}})
+			return
+		}
+		guard(s.handleLiveDVRs)(w, r)
+	}
+	r.Get("/livetv/dvrs", listDVRs)
+	r.Head("/livetv/dvrs", listDVRs)
 	get("/livetv/dvrs/{dvr}", s.handleLiveDVRs)
 	r.Post("/livetv/dvrs/{dvr}/channels/{channel}/tune", guard(s.handleLiveTune))
 	get("/media/grabbers", s.handleLiveGrabbers)
@@ -129,13 +160,23 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 		get(path, s.handleLiveChannels)
 	}
 	get(liveProviderPath, s.handleLiveRoot)
+	get(liveProviderPath+"/sections", s.handleLiveRoot)
+	get(liveProviderPath+"/lineups/dvr/channels/featured", s.handleLiveChannels)
+	get(liveProviderPath+"/guides/{guide}/channels", s.handleLiveChannels)
+	get(liveProviderPath+"/categories/{category}/channels", s.handleLiveChannels)
 	get(liveProviderPath+"/grid", s.handleLiveGuide)
 	get(liveProviderPath+"/metadata/{programme}", s.handleLiveGuide)
 	get(liveProviderPath+"/channels/{channel}", s.handleLiveChannel)
 	get(liveProviderPath+"/hubs", s.handleLiveHubs)
+	get(liveProviderPath+"/hubs/sections/home", s.handleLiveHubs)
+	get(liveProviderPath+"/hubs/discover", s.handleLiveHubs)
+	get(liveProviderPath+"/hubs/promoted", s.handleLiveHubs)
 	get(liveProviderPath+"/library/search", s.handleLiveChannelSearch)
 	get(liveProviderPath+"/watchnow", s.handleLiveWatchNow)
 	get(liveProviderPath+"/watchnow/all", s.handleLiveGuide)
+	get(liveProviderPath+"/watchnow/tonight", s.handleLiveGuide)
+	get(liveProviderPath+"/watchnow/categories/{category}", s.handleLiveGuide)
+	get(liveProviderPath+"/watchnow/groups/{sourceID}/{group}", s.handleLiveGuide)
 	get(liveProviderPath+"/sections/{section}/all", s.handleLiveGuide)
 	get("/livetv/guide.xml", func(w http.ResponseWriter, r *http.Request) {
 		s.svc().liveTV.ServeXMLTV(w, r, FromContext(r.Context()).User)
@@ -338,10 +379,52 @@ func (s *Server) handleLiveChannels(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
+	if id := chi.URLParam(r, "guide"); id != "" {
+		if g, ok := s.svc().liveTV.(frontend.LiveTVGuides); ok {
+			cs, err = g.GuideChannels(r.Context(), FromContext(r.Context()).User, id)
+		} else {
+			err = frontend.ErrNotFound
+		}
+		if err != nil {
+			s.writeErr(w, r, err)
+			return
+		}
+	}
+	category := chi.URLParam(r, "category")
+	if category == "" {
+		category = strings.TrimSpace(r.URL.Query().Get("genre"))
+	}
+	snapshot := s.liveDiscoverySnapshot(r.Context(), FromContext(r.Context()).User)
+	genreKeys := map[string]model.StringList{}
+	if snapshot != nil {
+		genreKeys = snapshot.genres
+	}
+	if category != "" {
+		canonical, ok := normalizeLiveCategory(category)
+		if !ok {
+			s.writeErr(w, r, frontend.ErrNotFound)
+			return
+		}
+		if snapshot == nil {
+			w.Header().Set("Retry-After", "1")
+			writeHTTPError(w, 503)
+			return
+		}
+		filtered := make([]frontend.LiveTVChannel, 0)
+		for _, c := range cs {
+			for _, key := range genreKeys[c.ID] {
+				if key == "ether.category."+canonical {
+					filtered = append(filtered, c)
+					break
+				}
+			}
+		}
+		cs = filtered
+	}
 	out := []liveChannel{}
 	maps := []liveMapping{}
 	for _, c := range cs {
-		out = append(out, liveChannel{ID: c.ID, GridKey: c.ID, VCN: c.Number, Thumb: s.liveGuideLogo(r, c), Title: c.Name, CallSign: c.Name, Language: "eng"})
+		out = append(out, liveChannel{ID: c.ID, GridKey: c.ID, VCN: c.Number, Thumb: s.liveGuideLogo(r, c), Title: c.Name, CallSign: c.Name, Language: "eng", GenreRatingKeys: genreKeys[c.ID]})
 		maps = append(maps, liveMapping{c.ID, c.Number, "1", c.GuideID})
 	}
 	s.write(w, r, &liveContainer{Size: len(out), Identifier: frontend.LiveTVProvider, Channel: out, ChannelMapping: maps})
@@ -384,6 +467,9 @@ func (s *Server) liveProgrammeMetadata(c frontend.LiveTVChannel, p frontend.Live
 		mediaType = "movie"
 	}
 	md := model.Metadata{RatingKey: p.ID, Key: liveProviderPath + "/metadata/" + url.PathEscape(p.ID), GUID: "ether://livetv/" + p.ID, Type: mediaType, Title: p.Item.Title, Summary: p.Item.Summary, ContentRating: rating, Thumb: s.liveProgrammeThumb(p.Item.Key, p.Item.Thumb), Duration: dur, Media: []model.Media{{ID: p.Start.Unix(), Duration: dur, Protocol: "livetv", Extra: []model.Attr{model.A("beginsAt", p.Start.Unix()), model.A("endsAt", p.End.Unix()), model.A("channelIdentifier", c.ID), model.A("channelID", c.ID), model.A("channelTitle", c.Name), model.A("channelCallSign", c.Name), model.A("channelVcn", c.Number), model.A("channelThumb", liveLogo(c)), model.A("gridKey", c.ID)}}}}
+	for _, g := range p.Item.Genres {
+		md.Genre = append(md.Genre, model.Tag{Tag: g})
+	}
 	if p.Lens != "" {
 		md.Summary = p.Lens + "\n\n" + md.Summary
 	}
@@ -412,9 +498,6 @@ func (s *Server) liveProgrammeMetadata(c frontend.LiveTVChannel, p frontend.Live
 		if p.Item.ReleasedMS > 0 {
 			md.OriginallyAvailableAt = time.UnixMilli(p.Item.ReleasedMS).UTC().Format("2006-01-02")
 		}
-		for _, g := range p.Item.Genres {
-			md.Genre = append(md.Genre, model.Tag{Tag: g})
-		}
 		md.Media[0].Extra = append(md.Media[0].Extra, model.A("premiere", p.Item.Premiere), model.A("live", p.Item.Live))
 	}
 	return md
@@ -428,6 +511,9 @@ func (s *Server) liveGuideMetadata(r *http.Request) ([]model.Metadata, error) {
 }
 
 func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.LiveTVProgramme) ([]model.Metadata, error) {
+	if strings.Contains(r.URL.Path, "/watchnow/") {
+		return s.liveDiscoveryMetadata(r, captured)
+	}
 	from := s.now()
 	until := from.Add(time.Second)
 	q := r.URL.Query()
@@ -596,13 +682,43 @@ func (s *Server) handleLiveGuide(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, 404)
 		return
 	}
-	s.write(w, r, &model.MediaContainer{Size: len(md), Identifier: frontend.LiveTVProvider, Metadata: md})
+	mc := &model.MediaContainer{Size: len(md), Identifier: frontend.LiveTVProvider, Metadata: md}
+	if strings.Contains(r.URL.Path, "/watchnow/") {
+		total := len(md)
+		lo, hi := 0, total
+		if pr.HasPage {
+			lo, hi = pr.window(total)
+		} else {
+			if raw := r.URL.Query().Get("offset"); raw != "" {
+				if n, parseErr := strconv.Atoi(raw); parseErr == nil && n > 0 {
+					lo = min(n, total)
+				}
+			}
+			if raw := r.URL.Query().Get("limit"); raw != "" {
+				if n, parseErr := strconv.Atoi(raw); parseErr == nil && n >= 0 {
+					hi = lo + min(n, total-lo)
+				}
+			}
+		}
+		md = md[lo:hi]
+		mc.Metadata = md
+		mc.Size = len(md)
+		mc.SetPage(lo, total)
+	}
+	s.write(w, r, mc)
 }
 func (s *Server) handleLiveRoot(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, &model.MediaContainer{Size: 2, Identifier: frontend.LiveTVProvider, Directory: []model.Directory{{Key: liveProviderPath + "/lineups/dvr/channels", Title: "Guide", Type: "livetv"}, {Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed"}}})
 }
 func (s *Server) handleLiveWatchNow(w http.ResponseWriter, r *http.Request) {
-	s.write(w, r, &model.MediaContainer{Size: 1, Identifier: frontend.LiveTVProvider, Type: []model.MetaType{{Active: true, Key: liveProviderPath + "/watchnow/all", Title: "All Channels", Type: "mixed"}}})
+	types := []model.MetaType{{Active: true, Key: liveProviderPath + "/watchnow/all", Title: "All Channels", Type: "mixed"}}
+	dirs := []model.Directory{{Key: liveProviderPath + "/watchnow/all", Title: "All Channels", Type: "mixed"}}
+	for _, c := range []struct{ id, title string }{{"movie", "Movies"}, {"sports", "Sports"}, {"news", "News"}, {"kids", "Kids"}, {"series", "TV Shows"}} {
+		k := liveProviderPath + "/watchnow/categories/" + c.id
+		types = append(types, model.MetaType{Key: k, Title: c.title, Type: "mixed"})
+		dirs = append(dirs, model.Directory{Key: k, Title: c.title, Type: "mixed"})
+	}
+	s.write(w, r, &model.MediaContainer{Size: len(types), Identifier: frontend.LiveTVProvider, Type: types, Directory: dirs})
 }
 func (s *Server) liveTVHub(r *http.Request) *model.Hub {
 	h, _ := s.liveTVHubProjection(r)
@@ -610,74 +726,21 @@ func (s *Server) liveTVHub(r *http.Request) *model.Hub {
 }
 
 func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row) {
-	if !s.liveTVEnabled() {
+	items, channels, err := s.liveDiscoveryItems(r, "all", 96)
+	if err != nil || len(items) == 0 {
 		return nil, frontend.Row{}
 	}
-	var programmes []frontend.LiveTVProgramme
-	md, err := s.liveGuideMetadataCapture(r, &programmes)
-	if err != nil {
-		return nil, frontend.Row{}
+	if len(items) > 24 {
+		items = items[:24]
 	}
-	cs, err := s.svc().liveTV.AllowedChannels(r.Context(), FromContext(r.Context()).User)
-	if err != nil {
-		return nil, frontend.Row{}
-	}
-	found := map[string]bool{}
-	for _, item := range md {
-		for _, media := range item.Media {
-			for _, a := range media.Extra {
-				if a.Name == "channelIdentifier" {
-					if id, ok := a.Value.(string); ok {
-						found[id] = true
-					}
-				}
-			}
-		}
-	}
-	for _, c := range cs {
-		if !found[c.ID] {
-			md = append(md, s.liveChannelMetadata(r, c))
-		}
-	}
-	if len(md) == 0 {
-		return nil, frontend.Row{}
-	}
-	if len(md) > 24 {
-		md = md[:24]
-	}
+	md := s.liveDiscoveryToMetadata(r, items, channels)
 	h := &model.Hub{Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed", HubIdentifier: "livetv.onnow", Context: "hub.livetv.onnow", Size: len(md), Style: "shelf", Promoted: model.Ptr(true), Metadata: md}
 	row := frontend.Row{ID: "livetv.onnow", Title: "On Now", Purpose: frontend.RowLive, Style: "shelf", Promoted: true}
-	channels := make(map[string]frontend.LiveTVChannel, len(cs))
-	for _, c := range cs {
-		channels[c.ID] = c
-	}
-	for _, item := range md {
-		var id string
-		for _, media := range item.Media {
-			for _, attr := range media.Extra {
-				if attr.Name == "channelIdentifier" {
-					id, _ = attr.Value.(string)
-				}
-			}
-		}
-		c, ok := channels[id]
-		if !ok {
-			continue
-		}
+	for _, item := range items {
+		c := channels[item.ChannelID]
 		entry := &frontend.RowLiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Logo: liveLogo(c), GuideReference: c.GuideID}
-		now := s.now()
-		for _, p := range programmes {
-			if p.ChannelID != id || !p.End.After(now) {
-				continue
-			}
-			programme := &frontend.RowProgramme{ID: p.ID, Title: p.Item.Title, Start: p.Start, End: p.End, Item: p.Item.Key}
-			if !p.Start.After(now) {
-				if entry.Current == nil || p.Start.Before(entry.Current.Start) {
-					entry.Current = programme
-				}
-			} else if entry.Next == nil || p.Start.Before(entry.Next.Start) {
-				entry.Next = programme
-			}
+		if item.ID != "" {
+			entry.Current = &frontend.RowProgramme{ID: item.ID, Title: item.Item.Title, Start: item.Start, End: item.End, Item: item.Item.Key}
 		}
 		row.Entries = append(row.Entries, frontend.RowEntry{Kind: frontend.RowEntryLiveChannel, LiveChannel: entry})
 	}
@@ -701,11 +764,70 @@ func (s *Server) handleLiveChannel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLiveHubs(w http.ResponseWriter, r *http.Request) {
 	mc := &model.MediaContainer{Identifier: frontend.LiveTVProvider}
+	hubs := []model.Hub{}
 	if h := s.liveTVHub(r); h != nil {
-		mc.Hub = []model.Hub{*h}
-		mc.Size = 1
+		hubs = append(hubs, *h)
+	}
+	hubs = append(hubs, s.liveCategoryHubs(r)...)
+	if len(hubs) > 0 {
+		mc.Hub = hubs
+		mc.Size = len(hubs)
 	}
 	s.write(w, r, mc)
+}
+
+// Natural digit runs preserve channel subnumbers (4.2 precedes 4.10) and
+// give a total order even for provider strings such as NaN or 12 HD.
+func compareChannelNum(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	for len(a) > 0 && len(b) > 0 {
+		ai, bi := 0, 0
+		for ai < len(a) && a[ai] >= '0' && a[ai] <= '9' {
+			ai++
+		}
+		for bi < len(b) && b[bi] >= '0' && b[bi] <= '9' {
+			bi++
+		}
+		if ai > 0 && bi > 0 {
+			an, bn := strings.TrimLeft(a[:ai], "0"), strings.TrimLeft(b[:bi], "0")
+			if len(an) != len(bn) {
+				return len(an) < len(bn)
+			}
+			if an != bn {
+				return an < bn
+			}
+			a, b = a[ai:], b[bi:]
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
+}
+
+func (s *Server) liveCategoryHubs(r *http.Request) []model.Hub {
+	snapshot := s.liveDiscoverySnapshot(r.Context(), FromContext(r.Context()).User)
+	if snapshot == nil {
+		return nil
+	}
+	out := []model.Hub{}
+	for _, b := range snapshot.buckets {
+		if b.id == "all" {
+			continue
+		}
+		items, channels, err := s.liveDiscoveryItems(r, b.id, 96)
+		if err != nil || len(items) == 0 {
+			continue
+		}
+		if len(items) > 24 {
+			items = items[:24]
+		}
+		md := s.liveDiscoveryToMetadata(r, items, channels)
+		out = append(out, model.Hub{Key: b.key, Title: b.title, Type: "mixed", HubIdentifier: "livetv." + b.id, Context: "hub.livetv." + b.id, Size: len(md), Style: "shelf", Metadata: md})
+	}
+	return out
 }
 func (s *Server) liveSessionMetadata(info frontend.LiveTVSessionInfo) model.Metadata {
 	md := model.Metadata{RatingKey: info.ID, Key: "/livetv/sessions/" + info.ID, GUID: "plex://livetv/session/" + info.ID, Type: "clip", Title: info.Channel.Name, Summary: "", Extra: []model.Attr{model.A("live", true), model.A("genuineMediaAnalysis", false)}}

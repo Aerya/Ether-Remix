@@ -156,8 +156,9 @@ type sz7Streams struct {
 
 // sz7Buf is a cursor over 7z header bytes with a sticky error.
 type sz7Buf struct {
-	b   []byte
-	err error
+	b        []byte
+	maxCount uint64
+	err      error
 }
 
 func (s *sz7Buf) fail(format string, a ...any) {
@@ -202,7 +203,7 @@ func (s *sz7Buf) count(limit uint64, what string) int {
 	if s.err != nil {
 		return 0
 	}
-	if v > limit || v > uint64(len(s.b))+1 {
+	if v > limit || (s.maxCount > 0 && v > s.maxCount) || v > uint64(len(s.b))+1 {
 		s.fail("%s count %d out of range", what, v)
 		return 0
 	}
@@ -524,7 +525,7 @@ func (s *sz7Buf) filesInfo() []sz7File {
 		if t == sz7End || s.err != nil {
 			break
 		}
-		p := sz7Buf{b: s.bytes(s.number())}
+		p := sz7Buf{b: s.bytes(s.number()), maxCount: s.maxCount}
 		if s.err != nil {
 			break
 		}
@@ -640,7 +641,7 @@ func list7z(crypto *sz7Crypto, r io.ReaderAt, size int64) ([]Member, error) {
 		return nil, nil // empty archive
 	}
 	avail := uint64(size - sz7SigHeaderLen)
-	if nextSize > sz7MaxHeader || nextOff > avail || nextSize > avail-nextOff {
+	if nextSize > crypto.headerLimit() || nextOff > avail || nextSize > avail-nextOff {
 		return nil, fmt.Errorf("archive: 7z header (%d bytes at %d) outside archive of %d bytes: %w",
 			nextSize, nextOff, size, ErrCorrupt)
 	}
@@ -665,7 +666,7 @@ func list7z(crypto *sz7Crypto, r io.ReaderAt, size int64) ([]Member, error) {
 			if depth >= sz7MaxNesting {
 				return nil, fmt.Errorf("archive: 7z encoded headers nested too deep: %w", ErrCorrupt)
 			}
-			b := sz7Buf{b: hdr[1:]}
+			b := sz7Buf{b: hdr[1:], maxCount: crypto.countLimit()}
 			st := b.streamsInfo()
 			if b.err != nil {
 				return nil, b.err
@@ -693,7 +694,7 @@ func decode7zHeader(crypto *sz7Crypto, r io.ReaderAt, size int64, st *sz7Streams
 	unpack := f.unpackSize()
 	packSize := st.packSizes[0]
 	avail := uint64(size - sz7SigHeaderLen)
-	if unpack > sz7MaxHeader || packSize > sz7MaxHeader || st.packPos > avail || packSize > avail-st.packPos {
+	if unpack > crypto.headerLimit() || packSize > crypto.headerLimit() || st.packPos > avail || packSize > avail-st.packPos {
 		return nil, fmt.Errorf("archive: 7z encoded header out of range: %w", ErrCorrupt)
 	}
 	packed := make([]byte, packSize)
@@ -707,13 +708,19 @@ func decode7zHeader(crypto *sz7Crypto, r io.ReaderAt, size int64, st *sz7Streams
 		}
 		c := &f.coders[i]
 		n := f.unpackSizes[i]
-		if n > sz7MaxHeader {
+		if n > crypto.headerLimit() {
 			return nil, fmt.Errorf("archive: 7z header intermediate size exceeds limit: %w", ErrCorrupt)
 		}
 		if bytes.Equal(c.id, sz7MethodAES) {
 			packed, err = crypto.decrypt(c.props, packed, n)
 			encrypted = true
 		} else {
+			if crypto.data != nil {
+				_, err = data7zCoder(c, nil, n, crypto.data.MemoryBytes/2)
+				if err != nil {
+					return nil, err
+				}
+			}
 			packed, err = decode7zHeaderCoder(c, packed, n)
 		}
 		if err != nil {
@@ -785,7 +792,7 @@ func decode7zHeaderCoder(c *sz7Coder, packed []byte, unpack uint64) ([]byte, err
 
 // parse7zHeader parses a plain Header (after its kHeader byte) into members.
 func parse7zHeader(crypto *sz7Crypto, hdr []byte, size int64) ([]Member, error) {
-	b := sz7Buf{b: hdr}
+	b := sz7Buf{b: hdr, maxCount: crypto.countLimit()}
 	id := b.byte()
 	if id == sz7ArchiveProperties {
 		for b.err == nil {
@@ -797,6 +804,9 @@ func parse7zHeader(crypto *sz7Crypto, hdr []byte, size int64) ([]Member, error) 
 		id = b.byte()
 	}
 	if id == sz7AdditionalStreamsInfo {
+		if crypto.data != nil {
+			return nil, fmt.Errorf("archive: additional 7z streams: %w", ErrUnsupported)
+		}
 		b.streamsInfo()
 		id = b.byte()
 	}
@@ -817,6 +827,16 @@ func parse7zHeader(crypto *sz7Crypto, hdr []byte, size int64) ([]Member, error) 
 		return nil, fmt.Errorf("archive: 7z header: unexpected property %#x: %w", id, ErrCorrupt)
 	}
 
+	if crypto.data != nil {
+		if len(files) > crypto.data.Members {
+			return nil, ErrUnsupported
+		}
+		for _, f := range files {
+			if f.anti || (f.hasAttr && (f.attr&0x400 != 0 || (f.attr>>16&0xf000 != 0 && f.attr>>16&0xf000 != 0x8000 && f.attr>>16&0xf000 != 0x4000))) {
+				return nil, fmt.Errorf("archive: non-regular 7z member: %w", ErrUnsupported)
+			}
+		}
+	}
 	// Where each folder's first pack stream starts.
 	packStart := make([]uint64, len(st.folders))
 	firstPack := make([]int, len(st.folders))
@@ -877,6 +897,22 @@ func parse7zHeader(crypto *sz7Crypto, hdr []byte, size int64) ([]Member, error) 
 			Encrypted: fo.hasMethod(sz7MethodAES),
 			Dir:       f.hasAttr && f.attr&attrDirectory != 0,
 			Method:    fo.method(),
+		}
+		if crypto.data != nil {
+			if fo.numPacked != 1 || len(fo.coders) != 1 {
+				return nil, fmt.Errorf("archive: unsupported 7z coder chain: %w", ErrUnsupported)
+			}
+			packed := st.packSizes[firstPack[fi]]
+			if packStart[fi] > uint64(size) || packed > uint64(size)-packStart[fi] || inFolder > fo.unpackSize() || sz > fo.unpackSize()-inFolder {
+				return nil, ErrCorrupt
+			}
+			if _, err := data7zCoder(&fo.coders[0], nil, fo.unpackSize(), crypto.data.MemoryBytes/2); err != nil {
+				return nil, err
+			}
+			if fo.unpackSize() > uint64(crypto.data.ExpandedBytes) || (fo.unpackSize() > 0 && (packed == 0 || (packed <= ^uint64(0)/1000 && fo.unpackSize() > packed*1000))) {
+				return nil, fmt.Errorf("archive: 7z block exceeds size or ratio limit: %w", ErrUnsupported)
+			}
+			m.data7z = &data7zPlan{ctx: crypto.ctx, coder: fo.coders[0], start: int64(packStart[fi]), packed: int64(packed), unpacked: fo.unpackSize(), skip: int64(inFolder), memory: crypto.data.MemoryBytes / 2}
 		}
 		if m.Encrypted && crypto.enabled {
 			order, err := fo.chain()

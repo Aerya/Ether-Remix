@@ -442,6 +442,13 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	if active := siloActiveQuality(b.Quality, qualities, plan.Decision.VideoCopy, encodeHeight); active != "" {
 		output["active_quality"] = active
 	}
+	if liveFile {
+		live := (frontend.HostConfig{}).LiveTV
+		if i.host.HostConfig != nil {
+			live = i.host.HostConfig().LiveTV
+		}
+		output["livePolicy"] = live.LatencyPolicy()
+	}
 	document := map[string]any{"outcome": "playable", "protocol_version": 3, "server_features": []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1"}, "session_id": session.ID, "playback_plan": output}
 	i.rememberPlan(session.ID, playbackPlan{format: format, live: liveFile, baseID: plan.ID, delivery: delivery, requireAuthored: requireAuthoredFidelity, body: document})
 	reply(w, 201, document)

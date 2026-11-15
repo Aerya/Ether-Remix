@@ -58,3 +58,9 @@ func (s *State) RecentlyViewedSettings(ctx context.Context, uid int64, _ time.Ti
 	}
 	return out, rows.Err()
 }
+
+// Match both recency terms of InProgress, including imported rows sharing a
+// last-viewed timestamp. Both SQLite and PostgreSQL support this partial index.
+func init() {
+	store.Register("state_resume_order", 1, `CREATE INDEX state_resume_order ON state_watch(user_id,last_viewed_at DESC,updated_at DESC) WHERE view_offset_ns>0;`)
+}

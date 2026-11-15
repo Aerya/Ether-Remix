@@ -25,6 +25,15 @@ import (
 // track per representation (video, audio); ffmpeg's dash muxer writes short
 // chunks that the session regroups into numbered segments by timestamp.
 type Session struct {
+	// Explicit quality sessions retire the old run before starting a rung.
+	serialRungs             bool
+	copyOrigin              bool // continuous copy uses a measured presentation origin
+	diagnosticsEnabled      bool
+	preparation             []core.HLSPreparationEvent
+	diagnosticRecords       []core.HLSDiagnosticRecord
+	outputCodecs            map[int]string
+	outputInit              map[int]string
+	outputAudioChannels     map[int]int
 	resumeWarm              *Session
 	resumeWarmAt            int
 	resumeWarmUsed          bool
@@ -37,6 +46,7 @@ type Session struct {
 	qsvRetried              bool
 	normalizeNegativeDTS    bool
 	encoder                 *encoderLifetime
+	mediaGeneration         string // immutable HLS resource namespace for this session instance
 	id                      string
 	m                       *Manager
 	dir                     string
@@ -102,6 +112,15 @@ type sessionInput struct {
 	liveRecovering      bool
 	liveDiscontinuities map[int]bool
 	liveDurations       map[int]time.Duration // live: each published segment's real length (session_playlist.go)
+
+	// Header recovery survives input swaps and HTTP retries.
+	headerInputs          map[string]int // deterministic header attempts, retained across swaps
+	headerRestarts        restartBudget
+	headerLastFailure     time.Time
+	headerRecovering      bool
+	headerFallbackPending string
+	headerRejected        map[string]bool
+
 	// contract is the delivered video a static-header session keeps
 	// across failovers; nil for every other session (contract.go).
 	contract       *videoContract
@@ -120,6 +139,8 @@ type sessionEncoding struct {
 	pendingTrack   int
 	reaping        <-chan struct{} // previous encoder exit barrier; waited without mu
 	resumeAt       int             // segment to restart at after a throttle stop; -1 none
+	handoff        *run            // previous rendition, retained only until replacement publishes
+	handoffAt      time.Time
 	cur            *run
 	runSeq         int
 	endSeg         int // last segment of the input once a run hit EOF; -1 unknown
@@ -392,7 +413,7 @@ func (s *Session) segName(n int) string {
 	if s.androidMatroskaHLS && container == ContainerMatroska {
 		container = ContainerMPEGTS
 	}
-	return s.m.opts.segmentURI(n, container)
+	return s.scopeMediaName(s.m.opts.segmentURI(n, container))
 }
 
 // runDirLocked is where the wanted track's ffmpeg run writes segments:
@@ -449,3 +470,6 @@ func (s *Session) PlaybackDelivered() bool {
 	defer s.mu.Unlock()
 	return s.playbackDelivered
 }
+
+// TimelineOrigin is the title time represented by playlist time zero.
+func (s *Session) TimelineOrigin() time.Duration { return s.base }

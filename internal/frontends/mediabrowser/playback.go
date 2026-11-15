@@ -128,6 +128,12 @@ func offerJellyfinStatic(source map[string]any, opts frontend.DecideOptions) {
 }
 
 func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
+	var bedtime *frontend.ErrBedtime
+	if errors.As(err, &bedtime) {
+		http.Error(w, bedtime.Error(), http.StatusForbidden)
+		return
+	}
+
 	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrSourceGone) {
 		if protocol == "jellyfin" {
 			w.Header().Set("Content-Type", "text/plain")
@@ -171,6 +177,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	v, credential, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if themeParentID(r.PathValue("id")) != "" {
+		i.themePlaybackInfo(w, r)
 		return
 	}
 	if i.host.Sessions == nil || i.host.Capabilities == nil {
@@ -479,6 +489,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	if playback {
 		session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: i.protocol, PlanID: plan.ID, Viewer: v, Device: dev})
 		if err != nil {
+			if channel != "" {
+				i.liveTuneError(w, err)
+				return
+			}
 			if !jellyfinStaticFallback(err) || !staticPlayable {
 				if i.protocol == "jellyfin" {
 					i.playbackInfoError(w, "open", err)
@@ -694,12 +708,12 @@ func (i *instance) liveStreamsOpen(w http.ResponseWriter, r *http.Request) {
 	intent := frontend.PlayIntent{Options: opts, AllowTranscoding: &allowed}
 	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: dev, Protocol: i.protocol, Channel: channel, Caps: capability.Client, Intent: intent})
 	if err != nil {
-		http.Error(w, "Playback unavailable", 503)
+		i.liveTuneError(w, err)
 		return
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: i.protocol, PlanID: plan.ID, Viewer: v, Device: dev})
 	if err != nil {
-		http.Error(w, "Playback unavailable", 503)
+		i.liveTuneError(w, err)
 		return
 	}
 	url, err := i.host.Sessions.StartStream(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, frontend.StreamRequest{Format: frontend.StreamHLS})
@@ -729,6 +743,81 @@ func (i *instance) liveStreamsOpen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonReply(w, map[string]any{"MediaSource": source})
+}
+
+// liveStreamsMediaInfo returns the source of an already open, authorized live
+// stream. Looking up metadata never opens another provider connection.
+func (i *instance) liveStreamsMediaInfo(w http.ResponseWriter, r *http.Request) {
+	v, _, err := i.viewer(r)
+	if err != nil || v == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.host.Sessions == nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	var body struct {
+		LiveStreamId string `json:"LiveStreamId"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decode(r, &body); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "Bad Request", 400)
+			return
+		}
+	}
+	streamID := body.LiveStreamId
+	if values := route.Query(r.URL.Query(), "LiveStreamId"); len(values) > 1 {
+		http.Error(w, "Bad Request", 400)
+		return
+	} else if len(values) == 1 && values[0] != "" {
+		streamID = values[0]
+	}
+	if streamID == "" {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
+	access := frontend.SessionAccess{Viewer: v, Device: device(r), Protocol: i.protocol}
+	sessions, err := i.host.Sessions.Sessions(r.Context(), access)
+	if err != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	for _, session := range sessions {
+		if session.ID != streamID || session.Channel == "" {
+			continue
+		}
+		url, err := i.host.Sessions.StartStream(r.Context(), access, streamID, frontend.StreamRequest{Format: frontend.StreamHLS})
+		if err != nil {
+			streamError(i.protocol, w, err)
+			return
+		}
+		if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
+			url = prefix + url
+		}
+		id, err := ids.StringGUID(ids.Channel, session.Channel)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		var media frontend.MediaInfo
+		if session.Media != nil {
+			media = *session.Media
+		}
+		media = defaultLiveMediaInfo(media)
+		source := i.detailMediaSourceDTO(id, media)
+		i.shapeLiveMediaSource(source, id, "", streamID, url, media, true)
+		i.mediaSourceDialect(source)
+		if i.protocol == "jellyfin" {
+			i.jellyfinMediaSourceDTO(source, media, true)
+		}
+		if i.protocol == "emby" {
+			i.embyMediaSourceDTO(source, id, media)
+		}
+		jsonReply(w, source)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (i *instance) liveStreamsClose(w http.ResponseWriter, r *http.Request) {
@@ -942,6 +1031,9 @@ func (i *instance) playbackRoutes() error {
 	if err := i.router.Handle("POST", "/LiveStreams/Open", http.HandlerFunc(i.liveStreamsOpen)); err != nil {
 		return err
 	}
+	if err := i.router.Handle("POST", "/LiveStreams/MediaInfo", http.HandlerFunc(i.liveStreamsMediaInfo)); err != nil {
+		return err
+	}
 	if err := i.router.Handle("POST", "/LiveStreams/Close", http.HandlerFunc(i.liveStreamsClose)); err != nil {
 		return err
 	}
@@ -1132,7 +1224,12 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, stage string, err er
 	} else if errors.Is(err, frontend.ErrStreamLimit) {
 		code = "RateLimitExceeded"
 	}
-	jsonReply(w, map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": code})
+	body := map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": code}
+	var bedtime *frontend.ErrBedtime
+	if errors.As(err, &bedtime) {
+		body["Message"] = bedtime.Error()
+	}
+	jsonReply(w, body)
 }
 
 func (i *instance) writeNoCompatibleStream(w http.ResponseWriter) {
@@ -1145,6 +1242,16 @@ func directFilePath(path string) bool {
 
 // streamAlias translates client-generated URLs into broker-owned, scoped URLs.
 func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
+	if themeParentID(r.PathValue("id")) != "" {
+		name := strings.ToLower(r.PathValue("name"))
+		if name != "stream" && name != "stream.m4a" {
+			http.NotFound(w, r)
+			return
+		}
+		r.SetPathValue("id", themeParentID(r.PathValue("id")))
+		i.themeStream(w, r)
+		return
+	}
 	mediasafety.SetHeaders(w)
 	name := strings.ToLower(r.PathValue("name"))
 	if i.protocol == "emby" && queryBool(r, "Static", false) && (name == "stream" || strings.HasPrefix(name, "stream.")) {
@@ -1305,4 +1412,17 @@ func (i *instance) streamAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.serveAliasSession(w, r, access, sessions, sessionID, versionScope, version, detailSource, format)
+}
+
+// Both MediaBrowser dialects resolve tune failures with a native playback code.
+func (i *instance) liveTuneError(w http.ResponseWriter, err error) {
+	detail := frontend.DiagnoseLiveTV("tune", err)
+	code := "NoCompatibleStream"
+	if errors.Is(err, frontend.ErrUnauthorized) {
+		code = "NotAllowed"
+	} else if errors.Is(err, frontend.ErrStreamLimit) {
+		code = "RateLimitExceeded"
+	}
+	w.Header().Set("X-Ether-LiveTV-Error", detail.Code)
+	jsonReply(w, map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": code, "Message": detail.Message, "LiveTVErrorCode": detail.Code})
 }

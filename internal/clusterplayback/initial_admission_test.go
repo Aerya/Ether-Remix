@@ -105,9 +105,10 @@ func TestDurableAdmissionAcrossCoordinatorRestart(t *testing.T) {
 	expected := cloneAdmissionRequest(request)
 	expected.InputURL = ""
 	type receivedStart struct {
-		hash        [32]byte
-		identity    remotetranscode.Identity
-		beforeStart bool
+		hash            [32]byte
+		identity        remotetranscode.Identity
+		beforeStart     bool
+		mediaGeneration string
 	}
 	received := make(chan receivedStart, 1)
 	release := make(chan struct{})
@@ -145,11 +146,17 @@ func TestDurableAdmissionAcrossCoordinatorRestart(t *testing.T) {
 		calls.Add(1)
 		front.mu.Lock()
 		x := front.executions[request.SessionID]
-		before := x != nil && x.initial != nil && x.initial.route == x.route && x.initial.hasCommitment && reflect.DeepEqual(x.initial.request, expected)
+		// The coordinator authors the media namespace from its placement
+		// operation before retaining the snapshot. Check that exact value too.
+		want := cloneAdmissionRequest(expected)
+		if x != nil && len(x.request.Operation) >= 32 {
+			want.MediaGeneration = x.request.Operation[:32]
+		}
+		before := want.MediaGeneration != "" && x != nil && x.initial != nil && x.initial.route == x.route && x.initial.hasCommitment && reflect.DeepEqual(x.initial.request, want)
 		front.mu.Unlock()
 		durable, durableErr := front.readAdmission(q.Context(), x.route)
-		before = before && durableErr == nil && durable.StartHash == sha256.Sum256(message.Start)
-		received <- receivedStart{hash: sha256.Sum256(message.Start), identity: message.Identity, beforeStart: before}
+		before = before && durableErr == nil && reflect.DeepEqual(durable.Request, want) && durable.StartHash == sha256.Sum256(message.Start)
+		received <- receivedStart{hash: sha256.Sum256(message.Start), identity: message.Identity, beforeStart: before, mediaGeneration: want.MediaGeneration}
 		<-release
 		// The bytes were received over mTLS, but no acknowledgement or worker
 		// acceptance proof is returned. The caller must retain the exact token.
@@ -195,6 +202,7 @@ func TestDurableAdmissionAcrossCoordinatorRestart(t *testing.T) {
 	if !observed.beforeStart {
 		t.Fatal("detached authoritative snapshot did not precede start")
 	}
+	expected.MediaGeneration = observed.mediaGeneration
 	// Simulate loss of all coordinator execution memory while the worker has
 	// received Start but no response has returned. Source is an independent role
 	// whose original bound lifetime must survive for this historical read.

@@ -148,6 +148,8 @@ func (r *Runtime) StartPreparedHLS(ctx context.Context, viewer int64, prepared P
 	if e != nil {
 		return nil, e
 	}
+	// The authored namespace survives encoder recovery, but never a new start.
+	q.MediaGeneration = operation[:32]
 	request := placement.Request{Session: q.SessionID, Operation: operation, ExpectedGeneration: expected, Controller: placement.Controller{ID: r.o.Self.NodeID, Boot: r.o.Self.Boot}, Target: target, Role: config.RoleTranscode, Claims: claims, Lease: 2 * time.Minute}
 	var rec placement.Record
 	e = r.retryTargetCapacity(ctx, q, prepared.Owner, "", target, claims, capabilities, encoder, func(t placement.Target, c []placement.Claim, caps remotetranscode.Capabilities, chosenEncoder string) error {

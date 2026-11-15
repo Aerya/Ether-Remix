@@ -3,7 +3,6 @@ package livetv
 import (
 	"bufio"
 	"bytes"
-	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -252,26 +251,15 @@ func parseMasterPlaylist(body []byte, base *url.URL) masterPlaylist {
 // provider variant fits. Viewers in the same class share one timeline.
 func variantClass(caps core.ClientCaps) string {
 	h := caps.MaxHeight
-	if h <= 0 || h >= 2160 {
-		h = 0
-	}
 	kbps := caps.MaxBitrateKbps
-	if kbps > 0 {
-		kbps = 1 << int(math.Ceil(math.Log2(float64(kbps)))) // coarse buckets
-	}
 	hevc := caps.SupportsVideo("hevc") || len(caps.VideoCodecs) == 0
 	return strconv.Itoa(h) + "/" + strconv.Itoa(kbps) + "/" + strconv.FormatBool(hevc)
 }
 
-// pickVariant keeps the best muxed variant the viewer can play: codecs it
-// declares, within its height and bitrate ceilings. Variants whose audio
-// lives in a separate rendition cannot ride one owned timeline; ok=false
-// tells the caller to use the relay, which remuxes them.
+// pickVariant ranks audio-bearing variants first, then quality within the
+// viewer/allocation ceilings. The caller must remux separate audio renditions.
 func pickVariant(m masterPlaylist, caps core.ClientCaps) (hlsVariant, bool) {
 	playable := func(v hlsVariant) bool {
-		if v.audio != "" && m.demuxedAudio[v.audio] {
-			return false
-		}
 		if len(caps.VideoCodecs) > 0 && v.codecs != "" {
 			for _, c := range strings.Split(v.codecs, ",") {
 				c = strings.TrimSpace(c)
@@ -307,23 +295,73 @@ func pickVariant(m masterPlaylist, caps core.ClientCaps) (hlsVariant, bool) {
 	if len(candidates) == 0 {
 		return hlsVariant{}, false
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].bandwidth > candidates[j].bandwidth })
-	for _, v := range candidates {
-		if fits(v) {
-			return v, true
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if variantHasAudio(a) != variantHasAudio(b) {
+			return variantHasAudio(a)
 		}
-	}
-	// Nothing fits the ceiling: the smallest is the closest.
-	return candidates[len(candidates)-1], true
+		if fits(a) != fits(b) {
+			return fits(a)
+		}
+		// If every choice exceeds the allocation, minimize the excess.
+		if !fits(a) {
+			return a.bandwidth < b.bandwidth
+		}
+		if a.height != b.height {
+			return a.height > b.height
+		}
+		return a.bandwidth > b.bandwidth
+	})
+	return candidates[0], true
 }
 
-// sameVariant finds the variant matching a previous choice after a playlist
-// refresh or source re-resolution (URLs carry rotating tokens).
-func sameVariant(m masterPlaylist, want hlsVariant, caps core.ClientCaps) (hlsVariant, bool) {
-	for _, v := range m.variants {
-		if v.bandwidth == want.bandwidth && v.height == want.height && v.codecs == want.codecs {
-			return v, true
+func variantHasAudio(v hlsVariant) bool {
+	if v.audio != "" {
+		return true
+	}
+	for _, c := range strings.Split(v.codecs, ",") {
+		c = strings.TrimSpace(c)
+		if strings.HasPrefix(c, "mp4a") || strings.HasPrefix(c, "ac-3") || strings.HasPrefix(c, "ec-3") || strings.HasPrefix(c, "opus") || strings.HasPrefix(c, "mp3") {
+			return true
 		}
 	}
-	return pickVariant(m, caps)
+	return false
+}
+
+// selectedHLSMaster keeps the selected stream and its rendition declarations.
+// ffprobe and ffmpeg see the same program, including external audio, instead
+// of probing one program and then automatically mapping a different one.
+func selectedHLSMaster(body []byte, base *url.URL, caps core.ClientCaps) []byte {
+	m := parseMasterPlaylist(body, base)
+	v, ok := pickVariant(m, caps)
+	if !ok {
+		return body
+	}
+	var out []string
+	var streamTag string
+	for _, line := range strings.Split(string(body), "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "#EXT-X-STREAM-INF:") {
+			streamTag = line
+			continue
+		}
+		if streamTag != "" && trim != "" && !strings.HasPrefix(trim, "#") {
+			if uri, ok := resolveHLS(base, trim); ok && uri == v.uri {
+				out = append(out, streamTag, v.uri)
+			}
+			streamTag = ""
+			continue
+		}
+		if strings.HasPrefix(trim, "#EXT-X-MEDIA:") {
+			a := hlsAttrs(strings.TrimPrefix(trim, "#EXT-X-MEDIA:"))
+			if strings.EqualFold(a["TYPE"], "AUDIO") && a["GROUP-ID"] != v.audio {
+				continue
+			}
+		}
+		if strings.HasPrefix(trim, "#EXT-X-I-FRAME-STREAM-INF:") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
 }

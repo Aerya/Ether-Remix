@@ -115,9 +115,8 @@ func (f flakyFetchIndexer) FetchNZB(ctx context.Context, r core.Release) ([]byte
 	return f.fakeIndexer.FetchNZB(ctx, r)
 }
 
-// A pin whose indexer is temporarily out of grabs must not make the title
-// unplayable while other releases work.
-func TestPinTransientFailureFallsBackToRanking(t *testing.T) {
+// A temporary failure must preserve the owner's source constraint and reason.
+func TestPinTransientFailurePreservesSource(t *testing.T) {
 	ctx := context.Background()
 	idx := flakyFetchIndexer{fakeIndexer: &fakeIndexer{releases: movieReleases()}, down: "sd720"}
 	s := New(idx, fakeHealth{}, nil, testCfg(), Options{})
@@ -127,13 +126,16 @@ func TestPinTransientFailureFallsBackToRanking(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := s.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps()})
-	if err != nil || res.Release.ID == "sd720" {
+	if !errors.Is(err, core.ErrBudgetExhausted) || res != nil {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
 	if p, _ := s.PinFor(matrixTitle().Key); p.LastStatus != PinUnavailable {
 		t.Fatalf("pin status %q", p.LastStatus)
 	}
-	// A viewer's pick behaves the same way.
+	// Without a pin, a viewer's preference retains its ordinary fallback.
+	if _, err := s.Unpin(ctx, matrixTitle().Key); err != nil {
+		t.Fatal(err)
+	}
 	res, err = s.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps(), Prefer: "sd720"})
 	if err != nil || res.Release.ID == "sd720" {
 		t.Fatalf("prefer res=%+v err=%v", res, err)

@@ -1,0 +1,218 @@
+package plugins
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"hash/crc32"
+	"io"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/braedonsaunders/ether/internal/archive/archivetest"
+)
+
+// These invariants cover format-independent wire ranges, solid dependencies,
+// header-only enumeration, and refusal before allocating/decompressing input.
+func TestDataArchiveFormats(t *testing.T) {
+	ctx := context.Background()
+	for _, name := range []string{"lzma.7z", "lzma2.7z", "store4.rar", "store5.rar"} {
+		t.Run(name, func(t *testing.T) {
+			b, e := os.ReadFile("testdata/archives/" + name)
+			if e != nil {
+				t.Fatal(e)
+			}
+			h := &dataTestHost{data: b}
+			raw, e := CallDataHost(ctx, h, "archive.list", json.RawMessage(`["blob:test"]`))
+			if e != nil {
+				t.Fatal(e)
+			}
+			var members []ArchiveMember
+			if e = json.Unmarshal(raw, &members); e != nil || len(members) != 2 {
+				t.Fatalf("list %s: %v", raw, e)
+			}
+			for i, m := range members {
+				if m.Index != i || m.Name != fmt.Sprintf("%c.txt", 'a'+i) {
+					t.Fatalf("members: %+v", members)
+				}
+				expected := []string{"first member: abcdefghijklmnopqrstuvwxyz", "second member: 0123456789"}[i]
+				if strings.HasSuffix(name, ".7z") {
+					expected = strings.Repeat(expected, 30)
+				}
+				for _, r := range []DataRange{{7, 13}, {int64(len(expected) - 4), 20}, {int64(len(expected)), 8}} {
+					arg, _ := json.Marshal([]any{"blob:test", i, r})
+					raw, e = CallDataHost(ctx, h, "archive.open", arg)
+					if e != nil {
+						t.Fatal(e)
+					}
+					var out struct {
+						BodyBase64 string
+						Size       int
+					}
+					if e = json.Unmarshal(raw, &out); e != nil {
+						t.Fatal(e)
+					}
+					got, e := base64.StdEncoding.DecodeString(out.BodyBase64)
+					if e != nil {
+						t.Fatal(e)
+					}
+					want := expected[r.Offset:min(int64(len(expected)), r.Offset+r.Length)]
+					if string(got) != want || out.Size != len(want) {
+						t.Fatalf("range %+v: %q != %q", r, got, want)
+					}
+				}
+			}
+			if h.opens != h.closes {
+				t.Fatal("cache reader leaked")
+			}
+			for _, limit := range []RuntimeLimits{
+				{MemoryBytes: 1 << 19}, {ArchiveMembers: 1}, {ArchiveMemberBytes: 8}, {ArchiveExpandedBytes: 8}, {FetchBytes: 16},
+			} {
+				l := defaultDataLimits()
+				if limit.MemoryBytes > 0 {
+					l.MemoryBytes = limit.MemoryBytes
+				}
+				if limit.ArchiveMembers > 0 {
+					l.ArchiveMembers = limit.ArchiveMembers
+				}
+				if limit.ArchiveMemberBytes > 0 {
+					l.ArchiveMemberBytes = limit.ArchiveMemberBytes
+				}
+				if limit.ArchiveExpandedBytes > 0 {
+					l.ArchiveExpandedBytes = limit.ArchiveExpandedBytes
+				}
+				if limit.FetchBytes > 0 {
+					l.FetchBytes = limit.FetchBytes
+				}
+				if _, e = openDataArchive(ctx, bytes.NewReader(b), l); e == nil {
+					t.Fatalf("grant ignored: %+v", limit)
+				}
+			}
+		})
+	}
+	for _, version := range []int{4, 5} {
+		for _, name := range []string{"../escape", "/absolute", "C:drive", "a\\b"} {
+			b, e := archivetest.BuildRAR([]archivetest.RARFile{{Name: name, Data: []byte("ok")}}, archivetest.RAROptions{Version: version})
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = openDataArchive(ctx, bytes.NewReader(b[0]), defaultDataLimits()); e == nil {
+				t.Fatalf("unsafe RAR%d %q accepted", version, name)
+			}
+		}
+		for _, opts := range []archivetest.RAROptions{{Version: version, HeaderEncrypted: true}, {Version: version, VolumeSize: 128}} {
+			b, e := archivetest.BuildRAR([]archivetest.RARFile{{Name: "a.txt", Data: bytes.Repeat([]byte{1}, 300)}}, opts)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = openDataArchive(ctx, bytes.NewReader(b[0]), defaultDataLimits()); e == nil {
+				t.Fatalf("unsafe RAR options accepted: %+v", opts)
+			}
+		}
+		for _, file := range []archivetest.RARFile{{Name: "a", Encrypted: true, Data: []byte("ok")}, {Name: "a", Data: []byte("x"), UnknownSize: true}} {
+			b, e := archivetest.BuildRAR([]archivetest.RARFile{file}, archivetest.RAROptions{Version: version})
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = openDataArchive(ctx, bytes.NewReader(b[0]), defaultDataLimits()); e == nil {
+				t.Fatalf("unsafe RAR member accepted: %+v", file)
+			}
+		}
+	}
+	for _, name := range []string{"../escape", "/absolute", "a\\b"} {
+		b := archivetest.Build7zCopy([]archivetest.SevenZipFile{{Name: name, Data: []byte("ok")}}, true)
+		if _, e := openDataArchive(ctx, bytes.NewReader(b), defaultDataLimits()); e == nil {
+			t.Fatalf("unsafe 7z %q accepted", name)
+		}
+	}
+	for _, name := range []string{"enc_header.7z", "enc_content.7z", "store_vol.7z.001"} {
+		b, e := os.ReadFile("../archive/testdata/7z/" + name)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = openDataArchive(ctx, bytes.NewReader(b), defaultDataLimits()); e == nil {
+			t.Fatalf("unsafe 7z %s accepted", name)
+		}
+	}
+	// Correctly checksummed metadata must still refuse special files and bombs.
+	for _, attribute := range []uint32{0xa0000000, 0x400} {
+		b := archivetest.Build7zCopy([]archivetest.SevenZipFile{{Name: "link", Data: []byte("x")}}, false)
+		off := 32 + int(binary.LittleEndian.Uint64(b[12:]))
+		hdr := append([]byte(nil), b[off:len(b)-2]...)
+		hdr = append(hdr, 0x15, 6, 1, 0)
+		hdr = binary.LittleEndian.AppendUint32(hdr, attribute)
+		hdr = append(hdr, 0, 0)
+		b = append(b[:off], hdr...)
+		binary.LittleEndian.PutUint64(b[20:], uint64(len(hdr)))
+		binary.LittleEndian.PutUint32(b[28:], crc32.ChecksumIEEE(hdr))
+		binary.LittleEndian.PutUint32(b[8:], crc32.ChecksumIEEE(b[12:32]))
+		if _, e := openDataArchive(ctx, bytes.NewReader(b), defaultDataLimits()); e == nil {
+			t.Fatal("special 7z member accepted")
+		}
+	}
+	for _, version := range []int{4, 5} {
+		for _, special := range []bool{false, true} {
+			h := archivetest.Header{Name: "a", PackSize: 1, UnpackSize: 100001, Method: 1}
+			var b []byte
+			if version == 4 {
+				b = append([]byte("Rar!\x1a\x07\x00"), archivetest.RAR4MainHeader(0)...)
+				header := archivetest.RAR4FileHeader(h)
+				if special {
+					binary.LittleEndian.PutUint32(header[11:], 1)
+					header[15] = 3
+					binary.LittleEndian.PutUint32(header[28:], 0xa000)
+					binary.LittleEndian.PutUint16(header, uint16(crc32.ChecksumIEEE(header[2:])))
+				}
+				b = append(b, header...)
+				b = append(b, 'x')
+				b = append(b, archivetest.RAR4EndHeader(false, -1)...)
+			} else {
+				b = append([]byte("Rar!\x1a\x07\x01\x00"), archivetest.RAR5MainHeader(false, 0, false)...)
+				if special {
+					// Flags, size, Unix symlink attributes, compression info, Unix host, name.
+					fields := []byte{0, 1}
+					fields = append(fields, archivetest.Vint(0xa000)...)
+					fields = append(fields, 0, 1, 1, 'a')
+					b = append(b, archivetest.RAR5Block(2, 0, fields, nil, true, 1)...)
+				} else {
+					b = append(b, archivetest.RAR5FileHeader(h)...)
+				}
+				b = append(b, 'x')
+				b = append(b, archivetest.RAR5EndHeader(false)...)
+			}
+			if _, e := openDataArchive(ctx, bytes.NewReader(b), defaultDataLimits()); e == nil {
+				t.Fatalf("unsafe RAR%d accepted (special=%v)", version, special)
+			}
+		}
+	}
+
+	// Existing generated compressed/solid RARs exercise the real decoder too.
+	for _, name := range []string{"compressed.rar", "solid.rar"} {
+		b, e := os.ReadFile("../archive/testdata/altmount/" + name)
+		if e != nil {
+			t.Fatal(e)
+		}
+		a, e := openDataArchive(ctx, bytes.NewReader(b), defaultDataLimits())
+		if e != nil {
+			t.Fatal(e)
+		}
+		for i, m := range a.members {
+			if m.Size == 0 {
+				continue
+			}
+			r, e := a.open(i)
+			if e != nil {
+				t.Fatal(e)
+			}
+			_, e = io.Copy(io.Discard, r)
+			r.Close()
+			if e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
+}

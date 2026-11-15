@@ -17,6 +17,14 @@ import (
 // An unrestricted viewer whose epoch has not moved since the last fence is
 // answered from that snapshot, so a play does not take a write lock.
 func (s *Service) ConfirmPlayback(ctx context.Context, u *core.User, remote bool, now time.Time) (*core.User, error) {
+	return s.confirmPlayback(ctx, u, remote, now, false)
+}
+
+// ConfirmAdmission adds bedtime only when starting a new item or tuning a channel.
+func (s *Service) ConfirmAdmission(ctx context.Context, u *core.User, remote bool, now time.Time) (*core.User, error) {
+	return s.confirmPlayback(ctx, u, remote, now, true)
+}
+func (s *Service) confirmPlayback(ctx context.Context, u *core.User, remote bool, now time.Time, admission bool) (*core.User, error) {
 	if s == nil || s.db == nil || u == nil || u.ID <= 0 {
 		return nil, core.ErrUnauthorized
 	}
@@ -27,6 +35,11 @@ func (s *Service) ConfirmPlayback(ctx context.Context, u *core.User, remote bool
 			if merged, policy, ok := s.cachedConfirm(u.ID, epoch); ok {
 				if !CanPlayWithPolicy(merged, policy, remote, now) {
 					return nil, core.ErrUnauthorized
+				}
+				if admission {
+					if err := CheckBedtime(merged, policy, now); err != nil {
+						return nil, err
+					}
 				}
 				return merged, nil
 			}
@@ -69,6 +82,11 @@ func (s *Service) ConfirmPlayback(ctx context.Context, u *core.User, remote bool
 		}
 		if !s.Restricted(merged) {
 			s.storeConfirm(merged.ID, epoch, merged, policy)
+		}
+		if admission {
+			if err := CheckBedtime(merged, policy, now); err != nil {
+				return nil, err
+			}
 		}
 		return merged, nil
 	}

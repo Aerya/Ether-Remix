@@ -16,30 +16,15 @@ import (
 
 // Owner pins
 //
-// A pin tells Resolve to try one specific release first for a movie or
-// episode, the way a viewer's Play Version pick does (ResolveRequest.Prefer):
-// it is fetched and health-checked like any candidate and, when it fails,
-// resolution falls back to normal ranking. A failing pin is never deleted;
-// its last status is recorded and surfaced to the owner.
+// A pin selects the source for playback. Resolve validates only that release;
+// rejection, failed health, blocklisting and failover exclusion are errors,
+// never permission to substitute another release. Pins override owner quality
+// and identity heuristics, but retain source safety gates below. Client codec
+// and HDR support are delivery decisions: playback can remux, transcode or
+// tone-map the pinned source, or explain why no delivery path exists.
 //
-// Gates. A pin overrides the owner's own policy: quality profile limits
-// (height, HDR/DV policy, imported quality gates, size range, minimum
-// custom format score) and identity heuristics (title/year matching,
-// blocked terms and groups, CAM, sample detection) do not apply, because
-// the owner matched the release to the title by hand. It still respects
-// what would make playback fail or misbehave regardless of policy:
-//   - a passworded torrent release, a blocklisted release, or one already tried in
-//     this playback (failover Exclude);
-//   - a season pack for an episode (playback cannot pick the episode);
-//   - a video codec the client cannot decode (direct play is impossible and
-//     offline downloads never transcode);
-//   - Dolby Vision without an HDR10 base layer on a client without Dolby
-//     Vision (it would play with wrong colours).
-//
-// Scope. A viewer's explicit Play Version pick wins over a pin, and pins do
-// not apply to offline downloads, which use their own compact profile. For
-// the version picker the pin is Auto, the release normal resolution tries
-// first.
+// An explicit viewer version choice overrides a pin. The logical Auto slot
+// still honours it. Offline downloads retain their own profile and ignore pins.
 
 // PinStatus is the outcome of the last time a pin was tried or checked.
 type PinStatus string
@@ -268,25 +253,32 @@ func (s *Service) pinForResolve(req core.ResolveRequest) (*Pin, string) {
 		return nil, ""
 	}
 	switch {
-	case req.Prefer != "" && req.Prefer != p.Release.ID:
+	case req.Prefer != "" && req.Prefer != p.Release.ID && !autoVersion(req.Prefer):
 		return nil, "skipped: viewer picked another version"
 	case req.Client.Download:
 		return nil, "skipped: downloads use their own profile"
 	}
-	for _, id := range req.Exclude {
-		if id == p.Release.ID {
-			return nil, "skipped: already tried in this playback"
-		}
-	}
-	if s.isBad(p.Release.ID) {
-		return nil, "skipped: pinned release is blocklisted"
-	}
 	return &p, ""
+}
+
+// PinnedReleaseID returns the authoritative playback source, if this request
+// uses an owner pin. Playback uses it to recheck warm/resume and failover paths
+// that can otherwise reuse a release without calling Resolve.
+func (s *Service) PinnedReleaseID(req core.ResolveRequest) string {
+	if pin, _ := s.pinForResolve(req); pin != nil {
+		return pin.Release.ID
+	}
+	return ""
+}
+
+func autoVersion(prefer string) bool {
+	slot, ok := parseVersionSlot(prefer)
+	return ok && slot.Kind == "auto"
 }
 
 // pinRejectReason is the gate set for an owner pin (see the package
 // comment above): "" to accept.
-func (s *Service) pinRejectReason(rel core.Release, sreq core.SearchRequest, caps core.ClientCaps, exclude map[string]bool) string {
+func (s *Service) pinRejectReason(rel core.Release, sreq core.SearchRequest, _ core.ClientCaps, exclude map[string]bool) string {
 	switch {
 	case rel.Password && rel.Protocol == core.ProtocolTorrent:
 		return "passworded"
@@ -298,10 +290,6 @@ func (s *Service) pinRejectReason(rel core.Release, sreq core.SearchRequest, cap
 		return "season pack (skipped in v1)"
 	case sreq.Type == core.TypeEpisode && rel.Info.FullSeason && !packCoversSeason(rel.Info, sreq.Season):
 		return "season/episode mismatch"
-	case rel.Info.VideoCodec != "" && len(caps.VideoCodecs) > 0 && !caps.SupportsVideo(rel.Info.VideoCodec):
-		return "video codec unsupported by client"
-	case rel.Info.DolbyVision && !rel.Info.HDR10 && !caps.DolbyVision && len(caps.VideoCodecs) > 0:
-		return "dolby vision without hdr10 fallback on a client without dolby vision"
 	}
 	return ""
 }

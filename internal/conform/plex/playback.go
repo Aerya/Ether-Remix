@@ -15,7 +15,7 @@ func PlaybackCorpus() []Request {
 		{Name: "unscrobble", Method: http.MethodGet, Path: "/:/unscrobble?identifier=com.plexapp.plugins.library&key={{movieKey}}"},
 		{Name: "transcode-start", Method: http.MethodGet, Path: "/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F{{movieKey}}&session={{session}}&protocol=hls&directPlay=0&directStream=1"},
 		{Name: "transcode-playlist", Method: http.MethodGet, Path: "/video/:/transcode/universal/session/{{session}}/base/index.m3u8"},
-		{Name: "transcode-segment", Method: http.MethodGet, Path: "/video/:/transcode/universal/session/{{session}}/base/00000.ts"},
+		{Name: "transcode-segment", Method: http.MethodGet, Path: "/video/:/transcode/universal/session/{{session}}/base/{{segment}}"},
 		{Name: "transcode-stop", Method: http.MethodGet, Path: "/video/:/transcode/universal/stop?session={{session}}"},
 	}
 	for i := range probes {

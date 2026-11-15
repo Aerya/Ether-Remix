@@ -395,7 +395,7 @@ func TestIntegrationKeyframePlannedEncodedRuns(t *testing.T) {
 		id := s.rungs[len(s.rungs)-1].id
 		for n := 0; n < len(starts)-1; n++ {
 			rec := httptest.NewRecorder()
-			s.ServeRungSegment(rec, httptest.NewRequest(http.MethodGet, "/", nil), id, n)
+			s.ServeRungSegment(rec, mediaRequest(s, httptest.NewRequest(http.MethodGet, "/", nil), n), id, n)
 			if rec.Code != 200 {
 				t.Fatalf("rung segment %d: %d %s", n, rec.Code, rec.Body.String())
 			}
@@ -586,7 +586,7 @@ func TestIntegrationCopyWithoutKeyframeIndex(t *testing.T) {
 				req := httptest.NewRequest(http.MethodGet, "/segment", nil)
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 				rec := httptest.NewRecorder()
-				hs.ServeSegment(rec, req, n)
+				hs.ServeSegment(rec, mediaRequest(hs, req, n), n)
 				if rec.Code != http.StatusPartialContent || !bytes.Equal(rec.Body.Bytes(), seg[offset:]) {
 					t.Fatalf("%s range retry: status=%d bytes=%d", name, rec.Code, rec.Body.Len())
 				}
@@ -597,7 +597,7 @@ func TestIntegrationCopyWithoutKeyframeIndex(t *testing.T) {
 			if container == ContainerMatroska || container == ContainerFMP4 {
 				_ = fetch(t, hs, 14)
 				head := httptest.NewRecorder()
-				hs.ServeSegment(head, httptest.NewRequest(http.MethodHead, "/0."+segmentExt(container), nil), 0)
+				hs.ServeSegment(head, mediaRequest(hs, httptest.NewRequest(http.MethodHead, "/0."+segmentExt(container), nil), 0), 0)
 				if head.Code != http.StatusOK || head.Body.Len() != 0 {
 					t.Fatalf("HEAD segment: %d bytes=%d", head.Code, head.Body.Len())
 				}

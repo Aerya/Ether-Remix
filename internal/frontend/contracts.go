@@ -43,9 +43,11 @@ const (
 )
 
 type View struct {
-	ID   string
-	Name string
-	Type core.MediaType
+	// Revision changes when the published library definition changes.
+	Revision string
+	ID       string
+	Name     string
+	Type     core.MediaType
 	// Virtual is true only when the host asserts this library has no physical
 	// locations. False means the host did not assert virtual origin.
 	Virtual bool
@@ -108,10 +110,14 @@ type RowDirectory struct {
 
 // RowLayout describes Home Designer presentation selected by experience.
 type RowLayout struct {
-	Order  int
-	Style  string
-	Paint  RowPaint
-	Always bool
+	RankedTop10    bool
+	PreviewOnFocus bool
+	// PreviewOnFocusPolicy retains the owner override when a shelf becomes a hero.
+	PreviewOnFocusPolicy *bool
+	Order                int
+	Style                string
+	Paint                RowPaint
+	Always               bool
 }
 
 // RowPaint carries optional presentation colors and artwork references.
@@ -121,6 +127,8 @@ type RowPaint struct {
 }
 
 type Row struct {
+	RankedTop10    bool
+	PreviewOnFocus bool
 	// Situation is the server-owned ranking context retained for deferred receipts.
 	Situation    core.HomeSituation
 	ID, Title    string
@@ -140,12 +148,16 @@ type Row struct {
 	Collection core.RatingKey
 }
 type RowRequest struct {
-	Viewer    *core.Viewer
-	Device    core.Device
-	Placement Placement
-	ViewID    string
-	Item      core.RatingKey
-	Limit     int
+	// HomeFallbackOnly requests a bounded, indexed hero fill through the normal
+	// policy, owner layout and receipt pipeline. It is internal to Home.
+	HomeFallbackOnly bool
+	ExcludeItems     []core.RatingKey
+	Viewer           *core.Viewer
+	Device           core.Device
+	Placement        Placement
+	ViewID           string
+	Item             core.RatingKey
+	Limit            int
 	// Purpose asks for one row. The zero value still returns the whole placement.
 	Purpose RowPurpose
 }
@@ -242,6 +254,7 @@ const (
 )
 
 type SearchPage struct {
+	Descriptive  *DescriptiveSearchStatus
 	Page         core.Page
 	TotalExact   bool
 	Continuation Continuation
@@ -640,6 +653,10 @@ type Experience interface {
 }
 
 type PlayIntent struct {
+	// OriginalPlayback declares an installed demux/decoder runtime independently
+	// of native media element capabilities. Originals are pinned for byte reads.
+	OriginalPlayback *OriginalPlaybackCapabilities
+
 	Estimate bool
 	Options  core.DecideOptions
 	// ExactVersion treats PlanRequest.Version as a scoped opaque handle and
@@ -711,6 +728,19 @@ const (
 // StreamRequest describes output, not an upstream URL or credential. The
 // broker owns the input, decision and stream grant.
 type StreamRequest struct {
+	// PrepareOnly keeps original-file delivery authorized while preparing HLS.
+	PrepareOnly bool
+
+	// Track changes are source stream indices, validated before output restart.
+	AudioStream, SubtitleStream *int
+	// BurnImageSubtitles burns a selected image subtitle (PGS, VobSub, DVB)
+	// into segmented output even when the client could draw it from the
+	// original file: HLS cannot carry image subtitles.
+	BurnImageSubtitles bool
+	// LazyStart leaves the encoder idle until a rendition is requested.
+	LazyStart bool
+	// Continuous uses one uniform segment clock, without adaptive discontinuities.
+	Continuous      bool
 	Format          StreamFormat
 	Position        time.Duration
 	SegmentDuration time.Duration
@@ -741,10 +771,11 @@ type PlanRequest struct {
 	Intent  PlayIntent
 }
 type PlayPlan struct {
-	ID        string
-	Estimated bool
-	Media     core.MediaInfo
-	Decision  core.Decision
+	SourceChosenAt, DecisionAt time.Time
+	ID                         string
+	Estimated                  bool
+	Media                      core.MediaInfo
+	Decision                   core.Decision
 	// Alternatives are evaluated against this same source and client policy.
 	// DirectPlay, DirectStream, Transcoding are evaluated against this same source.
 	DirectPlay, DirectStream, Transcoding bool
@@ -782,6 +813,7 @@ type OpenRequest struct {
 	Device   core.Device
 }
 type Session struct {
+	Purpose       string // preview grants never report library progress
 	ID, MediaPath string
 	Protocol      Protocol
 	ViewerID      int64
@@ -979,4 +1011,17 @@ type RowReceiptIssuer interface {
 // FilterFacetReader supplies bounded indexed filter values without a title walk.
 type FilterFacetReader interface {
 	FilterFacets(context.Context, *Viewer, Device, string, string) ([]FacetValue, error)
+}
+
+// StreamDecisionReader returns the admitted decision after an authorized restart.
+type StreamDecisionReader interface {
+	StreamDecision(context.Context, SessionAccess, string) (core.Decision, error)
+}
+
+// QualitySessions offers lazy variants of the pinned file using the broker ladder.
+// Preparation returns only after a real media segment has been published.
+type QualitySessions interface {
+	ProactiveFallbackAvailable() bool
+	QualityRungs(context.Context, SessionAccess, string) ([]HLSRung, error)
+	PrepareQuality(context.Context, SessionAccess, string, string, time.Duration) (string, time.Duration, error)
 }

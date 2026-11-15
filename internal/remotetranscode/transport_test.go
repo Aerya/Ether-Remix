@@ -75,7 +75,11 @@ func TestMutualTLSAdapterAndDisconnect(t *testing.T) {
 	}
 	checkKeyframeRoundTrip(t, a, f, indexedRequest, hs)
 	out := httptest.NewRecorder()
-	hs.ServeSegment(out, httptest.NewRequest("GET", "https://frontend/segment", nil), -1)
+	const mediaName = "/g-0123456789abcdef0123456789abcdef-init.mp4"
+	hs.ServeSegment(out, httptest.NewRequest("GET", "https://frontend"+mediaName, nil), -1)
+	if f.session.mediaName != mediaName {
+		t.Fatalf("remote transport lost generation filename: %q", f.session.mediaName)
+	}
 	if out.Code != 206 || out.Body.String() != "abc" || out.Header().Get("Content-Range") != "bytes 0-2/3" {
 		t.Fatalf("proxy lost representation: %v", out)
 	}

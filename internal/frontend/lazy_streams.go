@@ -27,8 +27,9 @@ type LazyStreamWarmer interface {
 // (PlayIntent.DeclaredCaps), so the later Play takes the warm result. It
 // never warms with req.Caps' generic declaration: that would let a lower
 // release than the device can play stand in for Play's pick. req.Caps only
-// supplies the request's network locality. It is best effort, never blocks
-// on the resolve, and reports whether a warm-up was scheduled.
+// supplies the request's network locality, unless Intent.DeclaredCaps marks
+// caps built from a complete negotiated client declaration. It is best effort
+// and never blocks on the resolve, and reports whether a warm-up was scheduled.
 type DetailWarmer interface {
 	WarmDetail(context.Context, PlanRequest) bool
 }

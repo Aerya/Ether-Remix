@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-15-copy-quality-scrob",
+    id: "2026-11-15-upstream-sync",
     version: "current",
+    date: "2026-11-15",
+    title: ["Synchronisation Ether rétablie", "Ether synchronization restored"],
+    items: [
+      [
+        "Les améliorations des bibliothèques, de l’IPTV et du classement des releases d’Ether sont intégrées en conservant les filtres, les sous-titres et les proxys Remix.",
+        "Ether library, IPTV and release-ranking improvements are integrated while preserving Remix filters, subtitles and proxies.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-15-copy-quality-scrob",
+    version: "0.2.37-remix.69.1",
     date: "2026-11-15",
     title: [
       "Qualité vidéo et copie des identifiants Scrob",

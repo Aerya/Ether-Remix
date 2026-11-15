@@ -32,9 +32,10 @@ func ownerSessionStatuses(sessions []*core.PlaySession) []ownerSessionStatus {
 }
 func ownerSessionDetails(p *core.PlaySession) ownerSessionStatus {
 	out := ownerSessionStatus{PlaySession: p, IP: p.Client.ClientIP, RatingKey: p.Key}
-	if p.SpeedBps > 0 {
-		out.BitrateKbps = p.SpeedBps * 8 / 1000
-	}
+	// Direct play and copies carry the source's own bitrate. Delivery speed
+	// (SpeedBps) is bursty — zero while the player's buffer is full, hundreds
+	// of Mbps while it refills — so it is never shown as the stream bitrate.
+	out.BitrateKbps = sourceBitrateKbps(p.Info)
 	d := p.DeliveryDecision
 	if p.Encoder != nil {
 		d = &p.Encoder.Decision
@@ -183,4 +184,16 @@ func audioLabel(codec, layout string, channels int) string {
 		parts = append(parts, fmt.Sprintf("%dch", channels))
 	}
 	return strings.Join(parts, " ")
+}
+
+// sourceBitrateKbps is the media's overall bitrate: the probed value when
+// known, otherwise file size over duration.
+func sourceBitrateKbps(info core.MediaInfo) int64 {
+	if info.BitrateKbps > 0 {
+		return int64(info.BitrateKbps)
+	}
+	if ms := info.Duration.Milliseconds(); info.Size > 0 && ms > 0 {
+		return info.Size * 8 / ms // bits per millisecond == kbit/s
+	}
+	return 0
 }

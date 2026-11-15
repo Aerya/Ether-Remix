@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
 var errEOF = io.EOF
@@ -141,6 +142,8 @@ func (b *builder) build(ctx context.Context) (*plan, error) {
 	// of other episodes too: one of them being broken or protected says
 	// nothing about the wanted episode's set, so every set is tried.
 	_, hinted := b.rel.doc.EpisodeHint()
+	_, movieHinted := b.rel.doc.MovieHint()
+	hinted = hinted || movieHinted
 	hinted = hinted && len(cands) > 1
 	if !hinted {
 		if err := b.checkCachedRAR(ctx, cands[0]); err != nil {
@@ -244,6 +247,9 @@ func (b *builder) planFor(ctx context.Context, c candidate) (*plan, error) {
 	}
 	switch c.kind {
 	case nzb.KindVideo, nzb.KindISO:
+		if movie, ok := b.rel.doc.MovieHint(); ok && len(b.candidates(b.rel.files)) > 1 && !releaseparse.MovieFileMatches(c.files[0].Name(), movie.Titles, movie.Year) {
+			return nil, ErrNoPlayableFile
+		}
 		return b.planPlain(ctx, c.files[0])
 	case nzb.KindRAR:
 		return b.planRAR(ctx, c.files)

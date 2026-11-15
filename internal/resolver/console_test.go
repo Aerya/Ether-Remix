@@ -196,15 +196,15 @@ func TestPinHonouredAndGated(t *testing.T) {
 	if err != nil || res.Release.ID != "uhd" {
 		t.Fatalf("4K pin res=%+v err=%v", res, err)
 	}
-	// ...but not a client that cannot decode it.
+	// ...and client codec/DV limits are handled by the playback delivery decision.
 	res, err = svc.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps()})
-	if err != nil || res.Release.ID != "hd" {
+	if err != nil || res == nil || res.Release.ID != "uhd" {
 		t.Fatalf("hevc pin on h264 client res=%+v err=%v", res, err)
 	}
-	if tr := svc.Traces()[0]; tr.PinStatus != "rejected: video codec unsupported by client" {
+	if tr := svc.Traces()[0]; tr.PinStatus != "used" {
 		t.Fatalf("pin status %q", tr.PinStatus)
 	}
-	if p, _ := svc.PinFor(matrixTitle().Key); p.LastStatus != PinRejected {
+	if p, _ := svc.PinFor(matrixTitle().Key); p.LastStatus != PinHealthy {
 		t.Fatalf("pin %+v", p)
 	}
 	// Downloads ignore pins.
@@ -226,7 +226,7 @@ func TestPinHonouredAndGated(t *testing.T) {
 	}
 }
 
-func TestPinUnhealthyFallsBackAndKeepsPin(t *testing.T) {
+func TestPinUnhealthyFailsAndKeepsPin(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	idx := &fakeIndexer{releases: movieReleases()}
@@ -239,7 +239,7 @@ func TestPinUnhealthyFallsBackAndKeepsPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := svc.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps()})
-	if err != nil || res.Release.ID != "hd" {
+	if !errors.Is(err, core.ErrNotAvailable) || res != nil {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
 	if tr := svc.Traces()[0]; tr.PinStatus != "unhealthy: health: unhealthy" {
@@ -274,11 +274,11 @@ func TestPinExcludedOnFailoverAndSurvivesSearchLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := svc.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps(), Exclude: []string{"sd720"}})
-	if err != nil || res.Release.ID != "hd" {
+	if !errors.Is(err, core.ErrNotAvailable) || res != nil {
 		t.Fatalf("failover res=%+v err=%v", res, err)
 	}
 	tr := svc.Traces()[0]
-	if !tr.Failover || tr.PinStatus != "skipped: already tried in this playback" {
+	if !tr.Failover || tr.PinStatus != "rejected: excluded (already tried)" {
 		t.Fatalf("failover trace %+v", tr)
 	}
 	// The release drops out of the indexers: the stored pin still plays.
@@ -582,7 +582,7 @@ func TestCheckReleaseOnDemand(t *testing.T) {
 	if r := findRelease(t, search, "sd720"); !r.Blocked || r.Health == nil || r.Health.Healthy || r.Reason != "marked bad" {
 		t.Fatalf("listed sd720 %+v", r)
 	}
-	if search.PinNote != "skipped: pinned release is blocklisted" || search.Pin == nil {
+	if search.Pin == nil || search.Pin.Release.ID != "sd720" {
 		t.Fatalf("pin note %q", search.PinNote)
 	}
 }
@@ -606,10 +606,10 @@ func TestBlockingAPinnedReleaseSurfacesOnThePin(t *testing.T) {
 		t.Fatalf("pin %+v", p)
 	}
 	res, err := svc.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps()})
-	if err != nil || res.Release.ID != "hd" {
+	if !errors.Is(err, core.ErrNotAvailable) || res != nil {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
-	if tr := svc.Traces()[0]; tr.PinStatus != "skipped: pinned release is blocklisted" || tr.TitleName != "The Signal (1999)" {
+	if tr := svc.Traces()[0]; tr.PinStatus != "rejected: marked bad" || tr.TitleName != "The Signal (1999)" {
 		t.Fatalf("trace %q %q", tr.PinStatus, tr.TitleName)
 	}
 }

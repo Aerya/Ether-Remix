@@ -14,6 +14,11 @@ import (
 // unset.
 const DefaultSegmentDuration = 4 * time.Second
 
+// AudioFallbackSegmentDuration is 72 AAC frames at the fallback's 48 kHz
+// output rate. Even a folded tail (less than a quarter segment) stays below
+// 1.92s, leaving room for encoder priming within Vela's strict 2s limit.
+const AudioFallbackSegmentDuration = 1536 * time.Millisecond
+
 // InitSegment is the segment number ServeSegment uses for the fMP4
 // initialization segment (init.mp4).
 const InitSegment = -1
@@ -180,6 +185,13 @@ func SegmentName(n int, container string) string {
 func ParseSegmentName(name string) (int, bool) {
 	if i := strings.LastIndexByte(name, '/'); i >= 0 {
 		name = name[i+1:]
+	}
+	if strings.HasPrefix(name, "g-") {
+		_, rest, ok := splitMediaGeneration(name)
+		if !ok {
+			return 0, false
+		}
+		name = rest
 	}
 	if name == InitSegmentName || name == MatroskaHeaderName {
 		return InitSegment, true

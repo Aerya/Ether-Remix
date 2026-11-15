@@ -71,6 +71,8 @@ type ChannelPageQuery struct {
 	Source string
 	// Group keeps only channels in this lineup group (exact name).
 	Group string
+	// Sort orders matching channels by "number", "name", "id", or "source".
+	Sort string
 }
 
 type ChannelPage struct {
@@ -132,8 +134,7 @@ func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	// Virtual channels lead, then sources in the same id order Sources() uses,
-	// then natural channel number.
+	// Virtual channels lead, then natural channel number, source and ID.
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		ar, br := 1, 1
@@ -146,14 +147,56 @@ func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error
 		if ar != br {
 			return ar < br
 		}
-		if a.SourceID != b.SourceID {
-			return a.SourceID < b.SourceID
-		}
 		if cmp := a.numberKey.compare(b.numberKey); cmp != 0 {
 			return cmp < 0
 		}
+		if a.SourceID != b.SourceID {
+			return a.SourceID < b.SourceID
+		}
 		return a.ID < b.ID
 	})
+	// Cache numeric/name/id/source orders once per lineup generation. Paging
+	// never sorts 10,000 channels, and equal keys keep a stable ID tie-break.
+	orders := map[string][]int{}
+	for _, kind := range []string{"number", "source", "name", "id"} {
+		order := make([]int, len(out))
+		for i := range order {
+			order[i] = i
+		}
+		switch kind {
+		case "", "number":
+			sort.SliceStable(order, func(i, j int) bool {
+				a, b := out[order[i]], out[order[j]]
+				if cmp := a.numberKey.compare(b.numberKey); cmp != 0 {
+					return cmp < 0
+				}
+				return strings.ToLower(a.Name) < strings.ToLower(b.Name)
+			})
+		case "source":
+			sort.SliceStable(order, func(i, j int) bool {
+				a, b := out[order[i]], out[order[j]]
+				if a.SourceID != b.SourceID {
+					return a.SourceID < b.SourceID
+				}
+				return a.numberKey.compare(b.numberKey) < 0
+			})
+		case "name":
+			sort.SliceStable(order, func(i, j int) bool {
+				a, b := out[order[i]], out[order[j]]
+				na, nb := strings.ToLower(a.Name), strings.ToLower(b.Name)
+				if na != nb {
+					return na < nb
+				}
+				return a.numberKey.compare(b.numberKey) < 0
+			})
+		case "id":
+			sort.SliceStable(order, func(i, j int) bool {
+				return out[order[i]].ID < out[order[j]].ID
+			})
+		}
+		orders[kind] = order
+	}
+	s.lineupOrders = orders
 	s.lineupIndex = out
 	s.lineupRev = rev
 	return out, nil
@@ -299,8 +342,8 @@ func nextChannelNumber(all []ChannelSummary) string {
 // ChannelPage returns one page of full channel records for the console list
 // and guide, plus the totals and groups the page needs to lay out the rest.
 func (s *Service) ChannelPage(ctx context.Context, q ChannelPageQuery) (ChannelPage, error) {
-	all, err := s.channelSummaries(ctx)
-	if err != nil {
+	// Builds or refreshes the immutable lineup index read under lineupMu below.
+	if _, err := s.channelSummaries(ctx); err != nil {
 		return ChannelPage{}, err
 	}
 	stats, err := s.guideCoverageStats(ctx)
@@ -316,9 +359,22 @@ func (s *Service) ChannelPage(ctx context.Context, q ChannelPageQuery) (ChannelP
 	if q.Offset < 0 {
 		q.Offset = 0
 	}
-	order := make([]int, 0, len(all))
-	for i, c := range all {
-		if channelMatches(c, q, stats) {
+	kind := q.Sort
+	if kind == "" {
+		kind = "number"
+	}
+	s.lineupMu.Lock()
+	candidates := s.lineupOrders[kind]
+	// A concurrent generation rebuild may replace the cache after our index
+	// read. Re-read the matching immutable index and its order together.
+	all := s.lineupIndex
+	if candidates == nil {
+		candidates = s.lineupOrders["number"]
+	}
+	s.lineupMu.Unlock()
+	order := make([]int, 0, len(candidates))
+	for _, i := range candidates {
+		if channelMatches(all[i], q, stats) {
 			order = append(order, i)
 		}
 	}

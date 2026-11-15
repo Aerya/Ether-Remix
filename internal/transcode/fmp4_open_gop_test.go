@@ -532,7 +532,7 @@ func TestIntegrationFMP4FailoverChangedTimescaleRefused(t *testing.T) {
 				aborted = true
 			}
 		}()
-		hs.ServeSegment(rec, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx), mid)
+		hs.ServeSegment(rec, mediaRequest(hs, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx), mid), mid)
 		return false
 	}()
 	if rec.Code == http.StatusOK && !aborted {

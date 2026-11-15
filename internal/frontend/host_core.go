@@ -90,6 +90,8 @@ var (
 	ErrPrepareSlow       = core.ErrPrepareSlow
 	ErrReleaseRejected   = core.ErrReleaseRejected
 	ErrSourceUnavailable = core.ErrSourceUnavailable
+	ErrSourceChanged     = core.ErrSourceChanged
+	ErrSeekUnavailable   = core.ErrSeekUnavailable
 	ErrUnreleased        = core.ErrUnreleased
 )
 
@@ -128,3 +130,6 @@ func WithSearchListFacts(ctx context.Context) context.Context {
 
 // LocalDownloadMessage describes a pending local torrent through the frontend boundary.
 func LocalDownloadMessage(err error, lang string) string { return core.LocalDownloadMessage(err, lang) }
+
+// ErrBedtime carries the next playback admission time.
+type ErrBedtime = core.ErrBedtime

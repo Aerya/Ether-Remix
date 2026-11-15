@@ -96,7 +96,7 @@ func (s *Service) linkSessionInput(ss *session, c Channel, src StreamSource, inp
 	if account == "" {
 		account = c.SourceID
 	}
-	entry, err := s.sourceEntry(s.ctx, account)
+	entry, err := s.sourceEntry(s.serviceContext(), account)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func (s *Service) linkSessionInput(ss *session, c Channel, src StreamSource, inp
 	if err != nil {
 		return nil, err
 	}
-	inputCtx, cancel := context.WithCancel(s.ctx)
+	inputCtx, cancel := context.WithCancel(s.serviceContext())
 	link := &session{ctx: inputCtx, cancel: cancel, info: SessionInfo{ID: "broadcast-" + c.ID, Channel: c}, inputSource: src, inputURL: input, inputHeaders: headers}
 	grant := src
 	grant.URL = input
@@ -144,7 +144,7 @@ func (f *steadyFeed) Playlist(ctx context.Context) ([]byte, error) {
 		return nil, core.ErrNotAvailable
 	}
 	end := latest.Start.Add(latest.Duration)
-	segments := index.Window(end.Add(-24*time.Second), end)
+	segments := index.Window(end.Add(-f.s.latencyPolicy().PlaylistWindow()), end)
 	if len(segments) == 0 {
 		return nil, core.ErrNotAvailable
 	}
@@ -156,6 +156,7 @@ func (f *steadyFeed) Playlist(ctx context.Context) ([]byte, error) {
 	target := int(math.Ceil(broadcastSegment(f.lease).Seconds()))
 	var b strings.Builder
 	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:%d\n", target, segments[0].Seq)
+	fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=-%.3f,PRECISE=NO\n", f.s.latencyPolicy().TargetLatencySeconds)
 	for _, seg := range segments {
 		fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n#EXTINF:%.6f,\n%d.ts\n", seg.Start.UTC().Format(time.RFC3339Nano), seg.Duration.Seconds(), seg.Seq)
 	}

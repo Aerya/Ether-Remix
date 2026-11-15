@@ -32,7 +32,7 @@ func TestIntegrationOffAirSlate(t *testing.T) {
 			ds := hs.(core.DASHSession)
 			ds.ServeMedia(rec, r, 0, 2)
 		} else {
-			hs.ServeSegment(rec, r, 0)
+			hs.ServeSegment(rec, mediaRequest(hs, r, 0), 0)
 		}
 		if rec.Code != 200 || rec.Body.Len() == 0 {
 			t.Fatalf("%s segment: %d %s", proto, rec.Code, rec.Body.String())
@@ -43,7 +43,7 @@ func TestIntegrationOffAirSlate(t *testing.T) {
 			ds := hs.(core.DASHSession)
 			ds.ServeMedia(tail, r, 1, 3)
 		} else {
-			hs.ServeSegment(tail, r, 1)
+			hs.ServeSegment(tail, mediaRequest(hs, r, 1), 1)
 		}
 		if tail.Code != 200 || tail.Body.Len() == 0 {
 			t.Fatalf("%s final/audio segment: %d", proto, tail.Code)

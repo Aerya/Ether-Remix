@@ -2,13 +2,16 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/sessions"
 	"github.com/braedonsaunders/ether/internal/state"
@@ -48,6 +51,41 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 		}
 	}
 	return sessions.NewBroker(sessions.BrokerDeps{SurfacePolicy: sessionPolicy,
+		ExtraLookup: func(key core.RatingKey) (frontend.Extra, bool) {
+			if a.extras == nil || !a.extras.Enabled() {
+				return frontend.Extra{}, false
+			}
+			clip, ok := a.extras.Lookup(key)
+			return frontendExtra(clip), ok
+		},
+		ExtraSource: func(ctx context.Context, viewer *core.Viewer, title *core.Title, key core.RatingKey, lang string) (sessions.PreviewSource, error) {
+			if a.extras == nil {
+				return sessions.PreviewSource{}, core.ErrNotAvailable
+			}
+			clip, ok := a.extras.Lookup(key)
+			if !ok || clip.ParentKey != title.Key || !clip.IsTrailer() {
+				return sessions.PreviewSource{}, core.ErrNotFound
+			}
+			return a.cachedTrailerSource(ctx, clip)
+		},
+		PreviewAvailable: func() bool {
+			return a.extras != nil && a.extras.Enabled() && a.cfg.Read().Extras.TrailerCacheMaxBytes >= 0
+		},
+		PreviewSource: func(ctx context.Context, viewer *core.Viewer, title *core.Title, lang string) (sessions.PreviewSource, error) {
+			if a.extras == nil {
+				return sessions.PreviewSource{}, core.ErrNotAvailable
+			}
+			clips, err := a.extras.List(ctx, title, lang)
+			if err != nil {
+				return sessions.PreviewSource{}, err
+			}
+			for _, clip := range clips {
+				if clip.IsTrailer() {
+					return a.cachedTrailerSource(ctx, clip)
+				}
+			}
+			return sessions.PreviewSource{}, core.ErrNotFound
+		},
 		OnActualPlaying:     a.automaticSubtitleWork,
 		DistributedHLS:      a.distributedHLS(),
 		Trickplay:           a.trickplay.Borrow(),
@@ -100,7 +138,7 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			}
 			return a.safety.UserPolicy(v), nil
 		},
-		CanPlay: a.safety.CanPlay, FreshPlay: a.safety.ConfirmPlayback, ReceiptCurrent: a.users.ReceiptCurrent, BitrateLimit: a.safety.BitrateLimit,
+		CanPlay: a.safety.CanPlay, FreshPlay: a.safety.ConfirmAdmission, CurrentPlay: a.safety.ConfirmPlayback, ReceiptCurrent: a.users.ReceiptCurrent, BitrateLimit: a.safety.BitrateLimit,
 		RemoteBitrateLimit: func() int { return a.cfg.Read().Transcode.RemoteMaxBitrateKbps },
 		OnTimeline: func(v *core.Viewer, key core.RatingKey, pos, dur time.Duration, playState string) {
 			if playState == "playing" && a.personalize != nil {
@@ -196,4 +234,16 @@ func subscribeSessionState(watch *state.State, events *sessions.EventBus, onErro
 			}
 		}
 	})
+}
+
+// Both full playback and focus previews resolve and retain exactly these bytes.
+func (a *App) cachedTrailerSource(ctx context.Context, clip extras.Extra) (sessions.PreviewSource, error) {
+	cached, err := a.extras.CacheTrailer(ctx, clip)
+	if errors.Is(err, extras.ErrCachePreparing) {
+		return sessions.PreviewSource{}, sessions.ErrPreviewPreparing
+	}
+	if err != nil {
+		return sessions.PreviewSource{}, err
+	}
+	return sessions.PreviewSource{MIMEType: cached.MIMEType, SourceGeneration: cached.SourceGeneration, Open: func() (*os.File, error) { return a.extras.OpenCachedTrailer(cached) }}, nil
 }

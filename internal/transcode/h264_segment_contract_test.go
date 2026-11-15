@@ -35,7 +35,7 @@ func TestH264FastStartSegmentMatchesAdvertisedCodecs(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	hs.ServeSegment(w, httptest.NewRequest(http.MethodGet, "/00000.ts", nil), 0)
+	hs.ServeSegment(w, mediaRequest(hs, httptest.NewRequest(http.MethodGet, "/00000.ts", nil), 0), 0)
 	if w.Code != http.StatusOK || w.Body.Len() == 0 {
 		t.Fatalf("first segment: %d %s", w.Code, w.Body.String())
 	}

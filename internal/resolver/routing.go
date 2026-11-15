@@ -283,6 +283,7 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 	}
 	out := make([]candidate, 0, len(cands))
 	out = append(out, cands[first])
+	out[0].sourcePreferred = true
 	// Hedge: the best of the other source second, so ranked validation
 	// checks both sources at once.
 	other := -1
@@ -368,12 +369,16 @@ func (s *Service) sourceAlwaysFirst(cands []candidate, want string, trace *Trace
 	out := slices.Clone(cands)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
+		if !samePreferenceTier(a, b) {
+			return compareCandidates(a, b)
+		}
 		if a.policy.Fallback != b.policy.Fallback {
 			return a.policy.Fallback < b.policy.Fallback
 		}
 		if a.langOK != b.langOK {
 			return a.langOK
 		}
+
 		return preferred(a) && !preferred(b)
 	})
 	// A remembered success may break a score tie, but cannot jump ahead

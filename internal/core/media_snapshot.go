@@ -6,6 +6,12 @@ import "slices"
 // values. The caller must own the input or hold its writer's lock during this
 // copy; cloning does not synchronize concurrent mutation of the input itself.
 func CloneMediaInfo(info MediaInfo) MediaInfo {
+	for _, field := range []**bool{&info.Has64bitOffsets, &info.OptimizedForStreaming} {
+		if *field != nil {
+			value := **field
+			*field = &value
+		}
+	}
 	info.Streams = slices.Clone(info.Streams)
 	info.Chapters = slices.Clone(info.Chapters)
 	info.Keyframes = slices.Clone(info.Keyframes)
@@ -33,7 +39,7 @@ func CloneMediaInfo(info MediaInfo) MediaInfo {
 				*field = &value
 			}
 		}
-		for _, field := range []**float64{&s.AverageFrameRate, &s.ReferenceFrameRate} {
+		for _, field := range []**float64{&s.AverageFrameRate, &s.ReferenceFrameRate, &s.Rotation} {
 			if *field != nil {
 				value := **field
 				*field = &value

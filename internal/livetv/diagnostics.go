@@ -3,18 +3,35 @@ package livetv
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
-// TuneError retains machine-readable evidence without retaining a provider URL,
-// response body or headers in its printable message. Unwrap preserves existing
-// cancellation, availability and stream-limit handling.
+// TuneInputFailure retains a safe per-input startup diagnosis.
+type TuneInputFailure struct {
+	Input          string `json:"input"`
+	Code           string `json:"code"`
+	Stage          string `json:"stage"`
+	UpstreamStatus int    `json:"upstream_status,omitempty"`
+}
+
+func inputFailure(id string, err error) TuneInputFailure {
+	d := Diagnose("source_start", err)
+	return TuneInputFailure{Input: id, Code: d.Code, Stage: d.Stage, UpstreamStatus: d.UpstreamStatus}
+}
+
+// TuneError retains machine-readable evidence without provider URLs, bodies or
+// headers. Unwrap preserves cancellation, availability and stream-limit handling.
 type TuneError struct {
+	Inputs         []TuneInputFailure
 	Code           string
 	Stage          string
 	UpstreamStatus int
@@ -24,6 +41,9 @@ type TuneError struct {
 
 func (e *TuneError) Unwrap() error { return e.cause }
 func (e *TuneError) Error() string {
+	if e.UpstreamStatus > 0 {
+		return fmt.Sprintf("The channel source isn't responding (HTTP %d from the provider).", e.UpstreamStatus)
+	}
 	switch e.Code {
 	case "provider_busy":
 		return "All connections allowed by this Live TV provider are in use."
@@ -40,7 +60,7 @@ func (e *TuneError) Error() string {
 	case "provider_http":
 		return "The Live TV provider returned an unsuccessful stream response."
 	case "timeout":
-		return "The Live TV stream did not become ready before the startup deadline."
+		return "The channel source isn't responding (the provider took too long)."
 	case "cancelled":
 		return "The Live TV request was cancelled."
 	case "dns":
@@ -61,6 +81,8 @@ func (e *TuneError) Error() string {
 		return "The live channel could not be started."
 	}
 }
+
+var providerHTTPFailure = regexp.MustCompile(`(?:HTTP error |Server returned )([1-5][0-9]{2})\b`)
 
 // Diagnose never copies an upstream error's text: net/url and ffmpeg errors
 // commonly include credentials in path components, not just query parameters.
@@ -96,6 +118,23 @@ func Diagnose(stage string, err error) *TuneError {
 		}
 	case errors.Is(err, errRelayUnsupported):
 		e.Code = "unsupported"
+	default:
+		// ffmpeg reports transport errors as text. Extract only a known status
+		// number or classification; never retain its URLs, headers or stderr.
+		if err != nil {
+			if match := providerHTTPFailure.FindStringSubmatch(err.Error()); len(match) == 2 {
+				status, _ := strconv.Atoi(match[1])
+				e = providerResponseError(status)
+				e.Stage, e.cause = stage, err
+			} else {
+				text := strings.ToLower(err.Error())
+				if strings.Contains(text, "timed out") {
+					e.Code = "timeout"
+				} else if strings.Contains(text, "connection refused") {
+					e.Code = "network"
+				}
+			}
+		}
 	}
 	return e
 }
@@ -114,7 +153,7 @@ func providerResponseError(status int) *TuneError {
 }
 
 func (e *TuneError) LogAttrs() []any {
-	return []any{"failure_code", e.Code, "stage", e.Stage, "upstream_status", e.UpstreamStatus, "retry_after", e.RetryAfter}
+	return []any{"failure_code", e.Code, "stage", e.Stage, "upstream_status", e.UpstreamStatus, "retry_after", e.RetryAfter, "inputs", e.Inputs}
 }
 
 func (s *Service) logger() *slog.Logger {
@@ -154,6 +193,16 @@ func (w *mediaObservation) Write(p []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 	n, err := w.ResponseWriter.Write(p)
+	if w.bytes == 0 && n > 0 && err == nil {
+		w.ss.mu.Lock()
+		first := !w.ss.firstMediaByte
+		w.ss.firstMediaByte = true
+		started := w.ss.tuneStartedAt
+		w.ss.mu.Unlock()
+		if first && !started.IsZero() {
+			w.s.sessionLog(w.ss).Debug("live first media byte delivered", "sinceTune", time.Since(started), "requestElapsed", time.Since(w.started))
+		}
+	}
 	w.bytes += n
 	w.writeFailed = w.writeFailed || err != nil
 	return n, err

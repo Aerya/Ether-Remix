@@ -41,7 +41,7 @@ func TestIntegrationResumeSegmentFirstByte(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hs.ServeSegment(w, r, 133) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hs.ServeSegment(w, mediaRequest(hs, r, 133), 133) }))
 	defer server.Close()
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	req.Header.Set("Range", "bytes=0-")

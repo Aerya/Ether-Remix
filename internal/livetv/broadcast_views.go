@@ -15,17 +15,23 @@ import (
 	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
-// awaitBroadcastCushion holds a tune (never a playlist request) until its
-// output has published a first segment and, for a live provider output, one
-// whole target duration: a client then starts with a segment of cushion and
-// its first playlist answers at once.
+// awaitBroadcastCushion prefers three target durations for virtual
+// channels and one target duration for providers. Only tune waits, with a
+// bounded budget; the first playlist never waits for this cushion.
 func awaitBroadcastCushion(ctx context.Context, lease *broadcastLease, provider bool) {
 	index, err := lease.output()
 	if err != nil {
 		return
 	}
 	segment := broadcastSegment(lease)
-	limit := 6 * time.Second
+	limit := 3 * time.Second
+	targets := 1
+	if !provider {
+		// Prefer AVPlayer's three-target startup buffer at tune time.
+		// Playlist handlers never wait for this cushion.
+		limit = 3 * time.Second
+		targets = 3
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		limit = min(limit, time.Until(deadline)-500*time.Millisecond)
 	}
@@ -40,13 +46,10 @@ func awaitBroadcastCushion(ctx context.Context, lease *broadcastLease, provider 
 			return
 		}
 	}
-	// A live output's client starts two segments behind its first picture.
-	// AVPlayer reloads a changed playlist once per target duration, so its
-	// buffer then never drops below about one segment, and a segment
-	// published up to a second late costs nothing; no opening cut of the
-	// ladder is longer than that lead (continuousLadder).
+	// Return the first playable provider segment immediately. The frame clock
+	// continues building the cushion while the client fetches its playlist.
 	first := index.Since(-1, 1)
-	for provider && len(first) > 0 && latest.Start.Add(latest.Duration).Sub(first[0].Start) < segment*2 {
+	for len(first) > 0 && latest.Start.Add(latest.Duration).Sub(first[0].Start) < segment*time.Duration(targets) {
 		if latest, err = index.Wait(wait, latest.Seq); err != nil {
 			return
 		}
@@ -142,14 +145,14 @@ func (s *Service) broadcastWindow(ctx context.Context, ss *session, r *http.Requ
 		}
 	}
 	end := latest.Start.Add(latest.Duration)
-	from := end.Add(-24 * time.Second)
+	from := end.Add(-s.latencyPolicy().PlaylistWindow())
 	if raw := r.URL.Query().Get("offset"); raw != "" {
 		seconds, err := strconv.ParseFloat(raw, 64)
 		if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 || seconds > broadcastDVR.Seconds() {
 			return nil, nil, fmt.Errorf("invalid DVR offset")
 		}
 		end = end.Add(-time.Duration(seconds * float64(time.Second)))
-		from = end.Add(-24 * time.Second)
+		from = end.Add(-s.latencyPolicy().PlaylistWindow())
 	}
 	ss.mu.Lock()
 	user := ss.user
@@ -171,13 +174,22 @@ func (s *Service) broadcastWindow(ctx context.Context, ss *session, r *http.Requ
 	return index, segments, nil
 }
 func (s *Service) serveBroadcastPlaylist(w http.ResponseWriter, r *http.Request, ss *session) {
-	_, segments, err := s.broadcastWindow(r.Context(), ss, r)
+	index, segments, err := s.broadcastWindow(r.Context(), ss, r)
 	if err != nil {
 		if errors.Is(err, core.ErrNotAvailable) {
 			w.Header().Set("Retry-After", "1")
 		}
 		writeStreamError(w, err)
 		return
+	}
+	ss.mu.Lock()
+	lease, vela := ss.broadcast, ss.caps.Protocol == "vela"
+	ss.mu.Unlock()
+	if vela {
+		window, err := broadcastLiveWindow(r.Context(), lease, index, segments)
+		if err == nil {
+			writeLiveAnchor(w, window)
+		}
 	}
 	// TARGETDURATION is a property of the rendition, including its short
 	// startup segments, and must not change as the window advances.
@@ -189,13 +201,18 @@ func (s *Service) serveBroadcastPlaylist(w http.ResponseWriter, r *http.Request,
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:%d\n", target, segments[0].Seq)
+	fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=-%.3f,PRECISE=NO\n", s.latencyPolicy().TargetLatencySeconds)
 	for _, seg := range segments {
 		uri := fmt.Sprintf("relay/%d.ts", seg.Seq)
 		if !strings.Contains(r.URL.Path, "/livetv/sessions/") {
 			uri = fmt.Sprintf("/livetv/sessions/%s/0/relay/%d.ts", ss.info.ID, seg.Seq)
 		}
 		uri = withAuth(uri, ss.streamGrant)
-		fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n#EXTINF:%.6f,\n%s\n", seg.Start.UTC().Format(time.RFC3339Nano), seg.Duration.Seconds(), uri)
+		precision := 6
+		if vela {
+			precision = 9
+		}
+		fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n#EXTINF:%.*f,\n%s\n", seg.Start.UTC().Format(time.RFC3339Nano), precision, seg.Duration.Seconds(), uri)
 	}
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")

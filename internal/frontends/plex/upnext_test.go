@@ -77,11 +77,12 @@ func TestPostplayUpNextReloadAndPlayQueue(t *testing.T) {
 					}
 				}
 				f.trans.decision = core.Decision{Kind: core.DecisionRemux, VideoCopy: true, AudioCopy: true, Container: "mpegts"}
+				segment := ""
 				for _, probe := range conformplex.PlaybackCorpus() {
 					if !strings.HasPrefix(probe.Name, "transcode-") {
 						continue
 					}
-					path := strings.NewReplacer("{{movieKey}}", bbE2.Key.String(), "{{session}}", "up-next").Replace(probe.Path)
+					path := strings.NewReplacer("{{segment}}", segment, "{{movieKey}}", bbE2.Key.String(), "{{session}}", "up-next").Replace(probe.Path)
 					if probe.Name == "transcode-start" {
 						if decision := f.request(t, "GET", decisionPath(path), headers); decision.Code != 200 {
 							t.Fatalf("next episode decision: %d %s", decision.Code, decision.Body)
@@ -90,6 +91,9 @@ func TestPostplayUpNextReloadAndPlayQueue(t *testing.T) {
 					r := f.request(t, probe.Method, path, headers)
 					if r.Code != 200 {
 						t.Fatalf("next episode %s: %d %s", probe.Name, r.Code, r.Body)
+					}
+					if probe.Name == "transcode-playlist" {
+						segment = firstPlaylistMedia(r.Body.String())
 					}
 					if probe.Name == "transcode-segment" && r.Body.String() != "segment-0" {
 						t.Fatal("next episode media not delivered")

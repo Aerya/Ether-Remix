@@ -20,6 +20,7 @@ func randomID(n int) string {
 func Defaults(dataDir string) Config {
 	return Config{
 		Availability: DefaultAvailability(),
+		LiveTV:       LiveTV{LatencyProfile: "auto"},
 		// Preserve watch sync for installations predating the global switch.
 		PlexServers: PlexServers{Enabled: true},
 		Usenet:      Usenet{MinIdle: 2, Repair: Repair{AdaptiveSummaries: true, SummaryRows: 4, MaxDownloadBytes: 512 << 20, LiveWait: Duration(2 * time.Second), AheadWait: Duration(90 * time.Second)}},
@@ -29,7 +30,7 @@ func Defaults(dataDir string) Config {
 		Personalize: Personalize{
 			PostPlay: true, PostPlayPrebuffer: true, MicroReasons: true, SessionIntent: true,
 		},
-		Extras:   Extras{PrewarmBytes: 48 << 20, ResolverTimeout: Duration(20 * time.Second)},
+		Extras:   Extras{ThemeMusic: new(true), PrewarmBytes: 48 << 20, ResolverTimeout: Duration(20 * time.Second)},
 		Outbound: Outbound{Indexers: true, Stremio: true, Debrid: true, Usenet: true},
 		Server: Server{
 			StartupAnimation:   true,

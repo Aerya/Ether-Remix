@@ -150,3 +150,31 @@ func (m *Manager) SubtitleSourceEpoch(id string) uint64 {
 	}
 	return uint64(s.cur.n) + 1
 }
+
+// SearchFile identifies the file pinned by this lease, without opening a source.
+func (l *SubtitleSource) SearchFile() (string, int64) {
+	if l == nil || l.Context.Err() != nil {
+		return "", 0
+	}
+	src := sharedInner(l.generation.src)
+	return src.Name(), src.Size()
+}
+
+// ReadSearchAt reads only the requested range, with cancellation and without
+// speculative read-ahead. Unsupported sources simply omit the search hash.
+func (l *SubtitleSource) ReadSearchAt(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if l == nil || l.Context.Err() != nil {
+		return 0, core.ErrSourceChanged
+	}
+	src := sharedInner(l.generation.src)
+	if r, ok := src.(core.PrefetchReaderAt); ok {
+		return r.ReadAtPrefetchContext(ctx, p, off)
+	}
+	if r, ok := src.(core.MetadataReaderAt); ok {
+		return r.ReadMetadataAtContext(ctx, p, off)
+	}
+	return 0, core.ErrNotAvailable
+}

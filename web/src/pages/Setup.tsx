@@ -12,7 +12,7 @@ import {
 } from "@braedonsaunders/appkit-ui";
 import { Check, ExternalLink, KeyRound, Newspaper, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAppOptional } from "../app-context";
 import { RestartButton } from "../components/RestartDrawer";
 import { EtherMark } from "../components/brand";
@@ -45,8 +45,6 @@ import { ProwlarrImport } from "../components/ProwlarrImport";
 import { DEBRID_KINDS } from "./sources/Debrid";
 import { DEBRID_TOKEN_URL } from "./sources/cards";
 import { addonUrlHasDebridKey, isStremio, normalizeAddonUrl } from "./sources/Indexers";
-import { Drawer } from "../components/Drawer";
-import { SourceEditor } from "./livetv/SourceEditor";
 import { LanguageStep } from "./setup/LanguageStep";
 import { StarterBundlesCard } from "./setup/StarterBundlesCard";
 import { SetupReady, connectDevicePath } from "./setup/SetupReady";
@@ -61,7 +59,7 @@ import { normalizeRules, type StreamRules } from "./viewers/shared";
 import { MIN_LOCAL_PASSWORD } from "./me/SignInMethods";
 
 export type WizardStepId =
-  "livetv" | "language" | "apps" | "account" | "sources" | "indexers" | "cache" | "catalog";
+  "language" | "apps" | "account" | "sources" | "indexers" | "cache" | "catalog";
 
 /** Survives a remount after the owner account is created so the visit does not start over. */
 export const SETUP_STEP_KEY = "ether.setup.step";
@@ -114,7 +112,6 @@ export function wizardSteps(
     { id: "sources", title: STEP_COPY.sourcesTitle, heading: STEP_COPY.sourcesHeading },
     { id: "indexers", title: STEP_COPY.indexersTitle, heading: STEP_COPY.indexersHeading },
     { id: "cache", title: STEP_COPY.cacheTitle, heading: STEP_COPY.cacheHeading },
-    { id: "livetv", title: t("Live TV"), heading: t("Do you want Live TV?") },
     { id: "catalog", title: STEP_COPY.catalogTitle, heading: STEP_COPY.catalogHeading },
   ];
 }
@@ -365,7 +362,6 @@ export function canAdvance(
   },
 ): boolean {
   switch (step) {
-    case "livetv":
     case "language":
     case "apps":
     case "cache":
@@ -407,8 +403,10 @@ export function canAdvance(
 
 export default function Setup() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const resumePending = useRef(params.get("resume") === "1");
+  const [finishReview, setFinishReview] = useState(false);
   const app = useAppOptional();
-  const [liveSourceOpen, setLiveSourceOpen] = useState(false);
   const [cfg, setCfg] = useState<EtherConfig | null>(null);
   const [languageChoice, setLanguageChoice] = useState<HouseholdLanguage | null>(null);
   const languageBaseline = useRef<HouseholdLanguage | null>(null);
@@ -456,16 +454,6 @@ export default function Setup() {
           .catch(() => {});
       })
       .catch(() => {});
-    api
-      .setupStatus()
-      .then((s) => {
-        const catalog = s.steps.find((x) => x.id === "catalog");
-        setTmdbBundled(Boolean(catalog?.complete));
-        setCacheVolume(s.cacheVolume ?? "");
-        setServerSteps(Object.fromEntries(s.steps.map((step) => [step.id, step.complete])));
-        if (s.setupComplete && s.cacheRestartRequired) setCacheRestartRequired(true);
-      })
-      .catch(() => {});
   }, []);
   const [optTests, setOptTests] = useState<Record<string, TestState>>({});
   const [pin, setPin] = useState<{ id: string; code: string; authUrl: string } | null>(null);
@@ -497,10 +485,11 @@ export default function Setup() {
   const load = useCallback(() => {
     Promise.all([
       api.getConfig(),
+      api.setupStatus(),
       apiFetch<{ descriptor: { id: string; name: string } }[]>("/frontends").catch(() => null),
       apiFetch<Partial<StreamRules>>("/stream-preferences/0").catch(() => ({})),
     ])
-      .then(([c, list, rules]) => {
+      .then(([c, status, list, rules]) => {
         const catalog = appCatalog(list);
         setApps(catalog);
         setFrontends(
@@ -529,6 +518,24 @@ export default function Setup() {
               .filter((ix) => ix.id && ix.url.trim())
               .map((ix) => [ix.id, ix.url.trim()]),
           );
+        }
+        const catalogStep = status.steps.find((item) => item.id === "catalog");
+        setTmdbBundled(Boolean(catalogStep?.complete));
+        setCacheVolume(status.cacheVolume ?? "");
+        setServerSteps(Object.fromEntries(status.steps.map((item) => [item.id, item.complete])));
+        if (status.setupComplete && status.cacheRestartRequired) setCacheRestartRequired(true);
+        if (resumePending.current) {
+          // Server status is authoritative; a stored wizard position can be stale.
+          const missing = status.steps.find((item) => item.required && !item.complete);
+          if (missing) {
+            const id = missing.id === "plex" ? "account" : missing.id;
+            const next = wizardSteps(true).findIndex((item) => item.id === id);
+            if (next < 0) throw new Error(t("Finish the remaining setup step in Settings."));
+            setStep(next);
+          } else {
+            setFinishReview(true);
+          }
+          resumePending.current = false;
         }
         setCfg(c);
         setPinDone(Boolean(c.plex.token));
@@ -828,10 +835,7 @@ export default function Setup() {
         const status = await api.setupStatus();
         setServerSteps(Object.fromEntries(status.steps.map((item) => [item.id, item.complete])));
       }
-      let draft =
-        stepId === "livetv"
-          ? { ...cfg, liveTV: { ...cfg.liveTV, enabled: cfg.liveTV?.enabled ?? false } }
-          : cfg;
+      let draft = cfg;
       if (stepId === "language" && languageChoice) {
         const baseline = languageBaseline.current;
         const edited = !baseline || !sameHouseholdLanguage(languageChoice, baseline);
@@ -915,6 +919,32 @@ export default function Setup() {
         initialConfig={cfg}
         tmdbAvailable={tmdbBundled || Boolean(cfg.catalog?.tmdbKey?.trim())}
       />
+    );
+
+  if (finishReview)
+    return (
+      <div className="mx-auto w-full max-w-2xl space-y-4 p-6">
+        <EtherMark size={40} />
+        <h1 className="text-xl font-semibold">{t("Everything is set up")}</h1>
+        <p>{t("Finish setup to leave setup mode. Your settings are saved.")}</p>
+        <MutationError error={error} />
+        <Button
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            setError(null);
+            try {
+              await finish(false);
+            } catch (e) {
+              setError(e);
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          {t("Finish setup")}
+        </Button>
+      </div>
     );
 
   return (
@@ -1037,66 +1067,6 @@ export default function Setup() {
       {stepId === "language" && languageChoice ? (
         <LanguageStep choice={languageChoice} onChange={setLanguageChoice} />
       ) : null}
-      {stepId === "livetv" ? (
-        <div className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            {[true, false].map((enabled) => (
-              <button
-                key={String(enabled)}
-                type="button"
-                aria-label={enabled ? t("Yes") : t("Not now")}
-                aria-pressed={cfg.liveTV?.enabled === enabled}
-                onClick={() => setCfg({ ...cfg, liveTV: { ...cfg.liveTV, enabled } })}
-                className={`rounded-xl border-2 p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 ${cfg.liveTV?.enabled === enabled ? "border-primary bg-primary/10" : "border-border bg-surface hover:bg-surface-hover"}`}
-              >
-                <span className="flex items-center justify-between gap-3 font-semibold">
-                  {enabled ? t("Yes") : t("Not now")}
-                  <span aria-hidden="true">{cfg.liveTV?.enabled === enabled ? "●" : "○"}</span>
-                </span>
-                <span className="mt-2 block text-sm text-fg-muted">
-                  {enabled
-                    ? t("Four decade channels, ready to watch, plus any IPTV you add later")
-                    : t("Live TV stays off and costs nothing; turn it on any time in Live TV")}
-                </span>
-              </button>
-            ))}
-          </div>
-          {cfg.liveTV?.enabled ? (
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                className="px-4 py-2"
-                variant="outline"
-                onClick={async () => {
-                  try {
-                    await api.putConfig(cfg);
-                    setLiveSourceOpen(true);
-                  } catch (e) {
-                    setError(e instanceof Error ? e.message : String(e));
-                  }
-                }}
-              >
-                {t("Add a source now")}
-              </Button>
-              <Button className="px-4 py-2" variant="ghost" onClick={() => next()}>
-                {t("Later")}
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      <Drawer
-        open={liveSourceOpen}
-        onClose={() => setLiveSourceOpen(false)}
-        title={t("Add a source now")}
-        size="lg"
-      >
-        <SourceEditor
-          source={null}
-          kind="playlist"
-          onSaved={() => setLiveSourceOpen(false)}
-          onDeleted={() => setLiveSourceOpen(false)}
-        />
-      </Drawer>
       {stepId === "apps" ? (
         <div className="space-y-4">
           <p className="text-sm text-fg-muted">

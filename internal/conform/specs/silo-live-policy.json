@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["latencyProfile", "targetLatencySeconds"],
+  "properties": {
+    "latencyProfile": {"type": "string", "enum": ["auto", "low", "stable"]},
+    "targetLatencySeconds": {"type": "number", "minimum": 0, "exclusiveMinimum": true}
+  }
+}

@@ -138,21 +138,21 @@ func TestHLSInitRangeStartsInactiveRung(t *testing.T) {
 	if got, want := strings.Join(ids, ","), "base,360p800k"; got != want {
 		t.Fatalf("rungs = %s, want %s", got, want)
 	}
-	if fr.startCount() != 1 {
-		t.Fatalf("starts = %d, want 1 (base only)", fr.startCount())
+	if fr.startCount() != 0 {
+		t.Fatalf("starts = %d, want 0 before rendition selection", fr.startCount())
 	}
 	req := httptest.NewRequest(http.MethodGet, "/360p800k/init.mp4", nil)
 	req.Header.Set("Range", "bytes=0-")
 	rec := httptest.NewRecorder()
-	s.ServeRungSegment(rec, req, "360p800k", InitSegment)
+	s.ServeRungSegment(rec, mediaRequest(s, req, InitSegment), "360p800k", InitSegment)
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("ranged init of inactive rung: status=%d body=%q, want 206", rec.Code, rec.Body.String())
 	}
 	if rec.Body.Len() == 0 {
 		t.Fatal("ranged init served no bytes")
 	}
-	if fr.startCount() != 2 {
-		t.Fatalf("starts = %d, want 2 (rung started by its ranged init)", fr.startCount())
+	if fr.startCount() != 1 {
+		t.Fatalf("starts = %d, want 1 (only the rung selected by its ranged init)", fr.startCount())
 	}
 	mustContain(t, fr.lastStart(), "scale_vt=w=640:h=268")
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -155,14 +158,44 @@ type liveTVHost struct {
 	s *Service
 }
 
+func (h liveTVHost) Enabled() bool { return h.s.Enabled() }
+
 func (h liveTVHost) Channels(ctx context.Context, v *core.Viewer) ([]frontend.LiveChannel, error) {
 	cs, err := h.s.AllowedChannels(ctx, v)
 	if err != nil {
 		return nil, err
 	}
+	gs, err := h.s.OwnerGuides(ctx)
+	if err != nil {
+		return nil, err
+	}
+	individual := map[string][]frontend.LiveGuide{}
+	order := map[string]int{}
+	for i, g := range gs {
+		order[g.ID] = i
+		if !g.Hidden {
+			for _, id := range g.Channels {
+				individual[id] = append(individual[id], frontend.LiveGuide{ID: g.ID, Name: g.Name})
+			}
+		}
+	}
+	memberships := map[GuideGroup][]frontend.LiveGuide{}
 	out := make([]frontend.LiveChannel, len(cs))
 	for i, c := range cs {
-		out[i] = frontend.LiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Logo: c.Logo, Rating: c.Rating, Group: c.Group, Favorite: c.Favorite}
+		group := GuideGroup{c.SourceID, c.Group}
+		guides, ok := memberships[group]
+		if !ok {
+			guides = guideMemberships(gs, c.SourceID, c.Group)
+			memberships[group] = guides
+		}
+		guides = slices.Clone(guides)
+		for _, g := range individual[c.ID] {
+			if !slices.ContainsFunc(guides, func(v frontend.LiveGuide) bool { return v.ID == g.ID }) {
+				guides = append(guides, g)
+			}
+		}
+		sort.SliceStable(guides, func(i, j int) bool { return order[guides[i].ID] < order[guides[j].ID] })
+		out[i] = frontend.LiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Logo: c.Logo, Rating: c.Rating, Group: c.Group, Favorite: c.Favorite, Guides: guides}
 	}
 	return out, nil
 }
@@ -180,7 +213,7 @@ func (h liveTVHost) Guide(ctx context.Context, v *core.Viewer, q frontend.LiveGu
 	}
 	out := make([]frontend.LiveProgramme, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, frontend.LiveProgramme{ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End, Item: p.Item.Key, Title: p.Item.Title, Summary: p.Item.Summary, Rating: p.Item.Rating, ShowTitle: p.Item.ShowTitle, EpisodeTitle: p.Item.EpisodeTitle, Season: p.Item.Season, Episode: p.Item.Episode})
+		out = append(out, frontend.LiveProgramme{ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End, Genres: p.Item.Genres, MediaType: p.Item.MediaType, Item: p.Item.Key, Title: p.Item.Title, Summary: p.Item.Summary, Rating: p.Item.Rating, ShowTitle: p.Item.ShowTitle, EpisodeTitle: p.Item.EpisodeTitle, Season: p.Item.Season, Episode: p.Item.Episode})
 		if q.Limit > 0 && len(out) >= q.Limit {
 			break
 		}
@@ -298,6 +331,45 @@ func (h liveTVHost) GuideChannelLogo(ctx context.Context, c frontend.LiveTVChann
 	return h.s.GuideChannelLogo(ctx, FromFrontendChannel(c))
 }
 
+func (h liveTVHost) SourceHubGroups(ctx context.Context) ([]frontend.LiveSourceHubGroup, error) {
+	srcs, err := h.s.Sources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []frontend.LiveSourceHubGroup
+	for _, src := range srcs {
+		if !src.HubGroups || len(src.Groups) == 0 {
+			continue
+		}
+		byKey := make(map[string]SourceGroup, len(src.Groups))
+		var included []SourceGroup
+		for _, g := range src.Groups {
+			if g.Excluded || strings.TrimSpace(g.Name) == "" {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(g.Name))
+			byKey[key] = g
+			included = append(included, g)
+		}
+		seen := make(map[string]bool, len(included))
+		for _, name := range src.GroupOrder {
+			key := strings.ToLower(strings.TrimSpace(name))
+			if g, ok := byKey[key]; ok && !seen[key] {
+				seen[key] = true
+				out = append(out, frontend.LiveSourceHubGroup{SourceID: src.ID, Group: g.Name})
+			}
+		}
+		for _, g := range included {
+			key := strings.ToLower(strings.TrimSpace(g.Name))
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, frontend.LiveSourceHubGroup{SourceID: src.ID, Group: g.Name})
+			}
+		}
+	}
+	return out, nil
+}
+
 func (h liveTVHost) TuneWithSession(ctx context.Context, u *frontend.User, id string, caps frontend.ClientCaps, sessionID string) (frontend.LiveTVSessionInfo, error) {
 	info, err := h.s.TuneWithSession(ctx, u, id, caps, sessionID)
 	if err != nil {
@@ -345,4 +417,62 @@ func (h liveTVHost) AuthenticateMediaGrant(r *http.Request, active func(context.
 
 func (h liveTVHost) LogoKey() []byte {
 	return nil
+}
+
+func (h liveTVHost) FilterDiscovery(ctx context.Context, u *frontend.User, ps []frontend.LiveTVProgramme) ([]frontend.LiveTVProgramme, []frontend.LiveTVChannel, error) {
+	ids := make([]string, 0, len(ps))
+	seen := map[string]bool{}
+	for _, p := range ps {
+		if !seen[p.ChannelID] {
+			seen[p.ChannelID] = true
+			ids = append(ids, p.ChannelID)
+		}
+	}
+	visible, err := h.s.searchVisibleGuideIDs(ctx, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	cs, err := h.s.searchAllowedChannels(ctx, u, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx, _, err = h.s.withPolicy(ctx, u)
+	if err != nil {
+		return nil, nil, err
+	}
+	allowed := map[string]Channel{}
+	for _, c := range cs {
+		if visible[c.ID] {
+			allowed[c.ID] = c
+		}
+	}
+	out := []frontend.LiveTVProgramme{}
+	for _, p := range ps {
+		if c, ok := allowed[p.ChannelID]; ok {
+			if p.ID == "" {
+				out = append(out, p)
+				continue
+			}
+			raw := Programme{ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End, Item: Item{Key: p.Item.Key, Rating: p.Item.Rating, Genres: p.Item.Genres, MediaType: p.Item.MediaType}}
+			var permitted bool
+			if raw.Item.Key != 0 {
+				// Discovery must never fetch a missing catalogue title on a
+				// client request. Local safety facts are authoritative; missing
+				// facts fail closed and can appear after ordinary preparation.
+				var lookup func(context.Context, core.RatingKey) (*core.Title, error)
+				if cached, ok := h.s.o.Catalog.(interface {
+					CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+				}); ok {
+					lookup = cached.CachedGet
+				}
+				permitted = h.s.allowedWithLookup(ctx, u, c, &raw, lookup, true)
+			} else {
+				permitted = h.s.allowedProgramme(ctx, u, c, &raw)
+			}
+			if p.End.After(h.s.o.Now()) && permitted {
+				out = append(out, p)
+			}
+		}
+	}
+	return out, toFrontendChannels(cs), nil
 }

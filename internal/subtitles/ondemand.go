@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/langtag"
 )
 
 // manualSig is the index-file signature of a viewer-picked track. Release
@@ -211,13 +210,32 @@ func (s *Service) SearchOnDemand(ctx context.Context, title *core.Title, lang, r
 	return s.SearchOnDemandWithHash(ctx, title, lang, releaseName, movieHash, videoSize)
 }
 
+// SearchOnDemandLanguages searches the effective language set in one request per
+// built-in provider. No preferences means no unfiltered provider request.
+func (s *Service) SearchOnDemandLanguages(ctx context.Context, title *core.Title, languages []string, release string) ([]Candidate, error) {
+	if len(searchLanguages(strings.Join(languages, ","))) == 0 {
+		return nil, nil
+	}
+	return s.SearchOnDemand(ctx, title, strings.Join(languages, ","), release)
+}
+
+// SearchOnDemandLanguagesWithHash accepts facts from an already-open playing
+// source; it never opens media or computes a hash itself.
+func (s *Service) SearchOnDemandLanguagesWithHash(ctx context.Context, title *core.Title, languages []string, release, hash string, size int64) ([]Candidate, error) {
+	langs := strings.Join(searchLanguages(strings.Join(languages, ",")), ",")
+	if langs == "" {
+		return nil, nil
+	}
+	return s.SearchOnDemandWithHash(ctx, title, langs, release, hash, size)
+}
+
 // SearchOnDemandWithHash is SearchOnDemand when the caller already has a
 // movieHash and videoSize from cached ranges.
 func (s *Service) SearchOnDemandWithHash(ctx context.Context, title *core.Title, lang, releaseName, movieHash string, videoSize int64) ([]Candidate, error) {
 	if title == nil || !s.Enabled() {
 		return nil, nil
 	}
-	lang = langtag.Normalize(lang)
+	lang = strings.Join(searchLanguages(lang), ",")
 	if lang == "" {
 		return nil, fmt.Errorf("subtitle search needs a language")
 	}
@@ -237,7 +255,7 @@ func (s *Service) SearchOnDemandWithHash(ctx context.Context, title *core.Title,
 		s.offers = kept
 	}
 	for _, c := range cands {
-		s.offers[offerKey{title.Key, c.FileID}] = offer{cand: c, lang: lang, at: now}
+		s.offers[offerKey{title.Key, c.FileID}] = offer{cand: c, lang: searchLanguage(c.Language), at: now}
 	}
 	s.offersMu.Unlock()
 	return cands, nil

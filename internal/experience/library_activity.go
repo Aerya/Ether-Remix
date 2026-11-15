@@ -330,6 +330,16 @@ func (s *Service) prefetchActivity(ctx context.Context, states []core.WatchStatu
 	if err != nil {
 		return nil
 	}
+	if titles == nil {
+		titles = make(map[core.RatingKey]core.Title, len(keys))
+	}
+	// Remember negative results too. Deleted or policy-hidden watch rows
+	// must not turn a successful batch into one lookup per missing title.
+	for _, key := range keys {
+		if _, ok := titles[key]; !ok {
+			titles[key] = core.Title{}
+		}
+	}
 	var shows []core.RatingKey
 	seen := map[core.RatingKey]bool{}
 	for _, t := range titles {
@@ -348,4 +358,35 @@ func (s *Service) prefetchActivity(ctx context.Context, states []core.WatchStatu
 		}
 	}
 	return titles
+}
+
+// NextUp is a watch-state read, independent of discovery home rows.
+func (s *Service) NextUp(ctx context.Context, viewer *core.Viewer, _ core.Device, limit int) ([]core.Title, error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, err
+	}
+	if s.d.NextUp == nil {
+		return nil, core.ErrNotAvailable
+	}
+	titles, err := s.d.NextUp(ctx, v, activityLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	// The trusted activity source returns viewer-authorized episodes. Keep
+	// that request's verdict for the immediately following user-data batch.
+	if memo := frontend.RequestMemoFrom(ctx); memo != nil {
+		memo.Mu.Lock()
+		if memo.Viewer != nil && memo.Viewer.ID == v.ID {
+			if memo.Visible == nil {
+				memo.Visible = map[core.RatingKey]bool{}
+			}
+			for _, title := range titles {
+				memo.Visible[title.Key] = true
+			}
+		}
+		memo.Mu.Unlock()
+	}
+	return titles, nil
 }

@@ -15,13 +15,21 @@ func (i *instance) virtualPaths(r *http.Request, viewer *frontend.Viewer, keys [
 	if i.host.VirtualPaths == nil || viewer == nil {
 		return result
 	}
+	resolve := i.host.VirtualPaths.Paths
+	if i.protocol == "jellyfin" && jellyfinListFile(r) {
+		cached, ok := i.host.VirtualPaths.(frontend.CachedVirtualPaths)
+		if !ok {
+			return result
+		}
+		resolve = cached.CachedPaths
+	}
 	for start := 0; start < len(keys); start += 50 {
 		end := min(start+50, len(keys))
 		requested := make(map[frontend.RatingKey]bool, end-start)
 		for _, key := range keys[start:end] {
 			requested[key] = true
 		}
-		batch, err := i.host.VirtualPaths.Paths(i.identityContext(r), viewer, device(r), keys[start:end])
+		batch, err := resolve(i.identityContext(r), viewer, device(r), keys[start:end])
 		if err != nil {
 			continue
 		}

@@ -1,7 +1,6 @@
 package sessions
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
@@ -42,7 +41,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 			if playback != nil && !r.PreserveSourceOnFailure {
 				playback.Stop(ps.ID)
 			}
-			return core.Decision{}, fmt.Errorf("this client requires media conversion; install or configure FFmpeg")
+			return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "conversion", Reasons: []string{"media conversion requires FFmpeg"}}}}
 		}
 	}
 	// Usenet sources can change during failover. Copy-only remux gives MDE

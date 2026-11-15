@@ -1,10 +1,15 @@
 package frontend
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // RowView identifies one server-owned, viewer/device/surface-scoped visit.
 // ID binds one immutable snapshot and changes on refresh.
 type RowView struct {
+	// ExpiresAt bounds caching of this immutable visit. Zero means unknown.
+	ExpiresAt   time.Time
 	ID          string
 	Title, Kind string
 	Purpose     RowPurpose
@@ -33,6 +38,9 @@ type RowViewPageRequest struct {
 }
 
 type RowViewPage struct {
+	// ExpiresAt is the earliest expiry of the visit and its page receipts.
+	ExpiresAt        time.Time
+	RankedTop10      bool
 	Entries          []RowEntry
 	ImpressionHandle string
 	Total            int

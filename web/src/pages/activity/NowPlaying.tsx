@@ -103,7 +103,7 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
       : title?.year
         ? String(title.year)
         : "";
-  const rate = mbpsOf(s.bitrateKbps ? s.bitrateKbps * 1000 : s.speedBps * 8);
+  const rate = mbpsOf((s.bitrateKbps ?? 0) * 1000);
   return (
     <article className="overflow-hidden rounded-2xl border border-border bg-surface shadow-xs">
       <div className="relative isolate h-44 overflow-hidden">
@@ -323,7 +323,7 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
           </p>
           <p className="truncate text-fg-muted">
             <span className="font-medium tabular-nums text-fg">
-              {mbpsOf(s.bitrateKbps ? s.bitrateKbps * 1000 : s.speedBps * 8)}
+              {mbpsOf((s.bitrateKbps ?? 0) * 1000)}
             </span>
             {s.origin ? ` · ${s.origin}` : ""}
           </p>

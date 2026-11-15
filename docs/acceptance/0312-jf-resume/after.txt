@@ -1,0 +1,8 @@
+    jf_resume_perf_test.go:165: /UserItems/Resume?Limit=20 12.311125ms pass=0 queries=22 rows=73 db=3.570288ms items=5
+    jf_resume_perf_test.go:165: /UserItems/Resume?Limit=20 7.411458ms pass=1 queries=20 rows=72 db=2.839709ms items=5
+    jf_resume_perf_test.go:165: /Shows/NextUp?Limit=20 45.015875ms pass=0 queries=26 rows=893 db=9.891287ms items=20
+    jf_resume_perf_test.go:165: /Shows/NextUp?Limit=20 975.833µs pass=1 queries=2 rows=2 db=157.416µs items=20
+    jf_resume_perf_test.go:165: /Shows/000000000000000100071afd498d0001/Seasons 10.660125ms pass=0 queries=26 rows=48 db=4.113994ms items=2
+    jf_resume_perf_test.go:165: /Shows/000000000000000100071afd498d0001/Seasons 11.05625ms pass=1 queries=22 rows=45 db=4.237ms items=2
+--- PASS: TestJFResumeLibraryBound (9.26s)
+ok  	github.com/braedonsaunders/ether/internal/app	10.296s

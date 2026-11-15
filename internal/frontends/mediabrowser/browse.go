@@ -335,8 +335,30 @@ func (i *instance) browseRoutes() error {
 					i.logRowFailure(purpose, err)
 					titles = nil
 				}
+			} else if activity, ok := i.host.Experience.(frontend.NextUpActivity); purpose == frontend.RowNextUp && ok {
+				offset, limit := queryInt(r, "StartIndex", 0), queryInt(r, "Limit", 50)
+				if offset > 500 || limit > 500 || offset > 500-limit {
+					http.Error(w, "Unsupported page", http.StatusBadRequest)
+					return
+				}
+				if limit != 0 {
+					titles, err = activity.NextUp(r.Context(), v, device(r), offset+limit)
+					if err != nil {
+						i.logRowFailure(purpose, err)
+						titles = nil
+					}
+				}
 			} else {
-				rows, err := i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: device(r), Placement: frontend.PlacementHome, Purpose: purpose})
+				offset, limit := queryInt(r, "StartIndex", 0), queryInt(r, "Limit", 50)
+				if offset > 500 || limit > 500 || offset > 500-limit {
+					http.Error(w, "Unsupported page", http.StatusBadRequest)
+					return
+				}
+				if limit == 0 {
+					i.replyItems(w, r, i.queryResult([]any{}, 0, offset))
+					return
+				}
+				rows, err := i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: device(r), Placement: frontend.PlacementHome, Purpose: purpose, Limit: max(50, offset+limit)})
 				if err != nil {
 					i.logRowFailure(purpose, err)
 					rows = nil
@@ -434,6 +456,7 @@ func (i *instance) browseRoutes() error {
 				for key, value := range images[title.Key] {
 					item[key] = value
 				}
+				previewRowArtwork(r, item)
 				i.shapeJellyfinItem(r, v, item, title)
 				i.jellyfinSeasonListFields(r, item, title)
 				i.applyListedRatings(item, ratingFacts, title.Key)
@@ -775,6 +798,9 @@ func (i *instance) pageWithVersion(w http.ResponseWriter, r *http.Request, v *fr
 }
 
 func (i *instance) pageWithCount(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, page frontend.Page, offset int, anchor frontend.RatingKey, version string, count *bool) {
+	i.pageWithExtra(w, r, v, page, offset, anchor, version, count, nil)
+}
+func (i *instance) pageWithExtra(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, page frontend.Page, offset int, anchor frontend.RatingKey, version string, count *bool, extra []any) {
 	r = withJellyfinListFiles(withBrowseMemo(withListMediaEstimate(withSeriesStudioCache(r))))
 	keys := make([]frontend.RatingKey, 0, len(page.Items))
 	for _, title := range page.Items {
@@ -807,6 +833,7 @@ func (i *instance) pageWithCount(w http.ResponseWriter, r *http.Request, v *fron
 				for key, value := range images[title.Key] {
 					item[key] = value
 				}
+				previewRowArtwork(r, item)
 				i.shapeJellyfinItem(r, v, item, title)
 				i.jellyfinListFacts(r, item, title)
 				i.jellyfinListFields(r, item, title)
@@ -834,6 +861,7 @@ func (i *instance) pageWithCount(w http.ResponseWriter, r *http.Request, v *fron
 		for key, value := range images[title.Key] {
 			item[key] = value
 		}
+		previewRowArtwork(r, item)
 		i.shapeJellyfinItem(r, v, item, title)
 		i.jellyfinListFacts(r, item, title)
 		i.jellyfinListFields(r, item, title)
@@ -842,6 +870,7 @@ func (i *instance) pageWithCount(w http.ResponseWriter, r *http.Request, v *fron
 		i.applyListedRatings(item, ratingFacts, title.Key)
 		items = append(items, item)
 	}
+	items = append(extra, items...)
 	total := page.Total + len(items) - len(page.Items)
 	if total < len(items) {
 		total = len(items)
@@ -899,10 +928,24 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := itemQuery(r)
-	result, err := i.searchPage(r, v, terms[0], q)
+	_, token, _ := i.viewer(r)
+	live, e := i.liveSearchItems(r, v, token, terms[0])
+	if e != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	extra := paging.Slice(live, q.Offset, q.Limit)
+	catalogQuery := q
+	catalogQuery.Offset = max(0, q.Offset-len(live))
+	catalogQuery.Limit = max(1, q.Limit-len(extra))
+	result, err := i.searchPage(r, v, terms[0], catalogQuery)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
+	}
+	room := max(0, q.Limit-len(extra))
+	if len(result.Page.Items) > room {
+		result.Page.Items = result.Page.Items[:room]
 	}
 	hints := make([]any, 0, len(result.Page.Items))
 	// Hints carry the poster grant as PrimaryImageTag, as Jellyfin's do;
@@ -932,13 +975,23 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		}
 		hints = append(hints, hint)
 	}
-	i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": result.Page.Total})
+
+	for _, raw := range extra {
+		if dto, ok := raw.(map[string]any); ok {
+			dto["ItemId"] = dto["Id"]
+		}
+	}
+	hints = append(extra, hints...)
+	i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": result.Page.Total + len(live)})
 }
 
 func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 	v, _, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.writeLiveSearchItems(w, r, v) {
 		return
 	}
 	if liveChannelTypesOnly(r) {
@@ -1004,12 +1057,27 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		// from the title index with a bounded window, not a library walk
 		// filtered by name.
 		q.Filter.Query = ""
-		result, e := i.searchPage(r, v, search, q)
+		_, token, _ := i.viewer(r)
+		live, e := i.liveSearchItems(r, v, token, search)
 		if e != nil {
 			http.Error(w, "Unavailable", 503)
 			return
 		}
-		i.page(w, r, v, result.Page, q.Offset)
+		extra := paging.Slice(live, q.Offset, q.Limit)
+		catalogQuery := q
+		catalogQuery.Offset = max(0, q.Offset-len(live))
+		catalogQuery.Limit = max(1, q.Limit-len(extra))
+		result, e := i.searchPage(r, v, search, catalogQuery)
+		if e != nil {
+			http.Error(w, "Unavailable", 503)
+			return
+		}
+		room := max(0, q.Limit-len(extra))
+		if len(result.Page.Items) > room {
+			result.Page.Items = result.Page.Items[:room]
+		}
+		result.Page.Total += len(live) - len(extra)
+		i.pageWithExtra(w, r, v, result.Page, q.Offset, 0, "", nil, extra)
 		return
 	}
 	if len(parent) == 0 || parent[0] == "" {
@@ -1022,6 +1090,18 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(id), q)
 	} else if key, e := ids.ParseRatingKeyGUID(parent[0]); e == nil {
 		page, err = i.host.Experience.Children(r.Context(), v, device(r), key, q)
+		if key.Kind() == frontend.KindCollection && err == nil {
+			detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+			if e == nil && detail.Collection != nil && detail.Collection.RankedTop10 {
+				if q.Offset >= 10 {
+					page.Items = nil
+				} else {
+					page.Items = page.Items[:min(len(page.Items), 10-q.Offset)]
+				}
+				page.Total = min(page.Total, 10)
+				r = withRankedRow(r, true, page.Items, q.Offset)
+			}
+		}
 	} else {
 		http.NotFound(w, r)
 		return
@@ -1126,6 +1206,14 @@ func (i *instance) ancestors(w http.ResponseWriter, r *http.Request) {
 	v, _, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if _, err := ids.ParseGUID(ids.Channel, r.PathValue("id")); err == nil && i.liveTVEnabled() {
+		if _, err := i.host.LiveTV.ResolveChannelGUID(r.Context(), v, r.PathValue("id")); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		jsonReply(w, []any{})
 		return
 	}
 	if i.host.Experience == nil {

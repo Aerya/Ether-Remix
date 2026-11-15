@@ -407,6 +407,9 @@ func convertWith(streams []stream, req core.SearchRequest, packs bool, opts conv
 			rel.GUID = "btih:" + hash + guidSuffix(s, req, packs)
 			rel.Protocol = core.ProtocolTorrent
 			rel.InfoHash = hash
+			if req.Type == core.TypeMovie && s.FileIdx != nil {
+				rel.Target = &core.ReleaseTarget{FileIndex: s.FileIdx}
+			}
 			rel.MagnetURL = newznab.MagnetFor(hash, cmp.Or(torrent, name), streamTrackers(s))
 			if streamURL != "" && !packs {
 				rel.StreamURL, rel.StreamHeaders, rel.StreamOrigin = streamURL, s.requestHeaders(), opts.origin
