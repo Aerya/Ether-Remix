@@ -67,6 +67,8 @@ Appliquez **la même sortie à tous les outils de cette machine** accédant à A
 
 **Fichiers Compose prêts à utiliser :** [Ether-Remix](docker-compose.example.yml) · [MediaFlow + Gluetun](docker-compose.mediaflow-gluetun.yml) · [Prérequis et raccordement](docs/alldebrid-mediaflow.md).
 
+Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi être utilisé directement dans **Réglages → Général → Proxy pour les sources**, sans MediaFlow. Collez son URL complète : les identifiants sont répartis dans les champs séparés, puis enregistrez. Remix et le proxy doivent partager un réseau accessible. Activez les routes Debrid et, pour les flux issus des addons, Stremio.
+
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
 - **Profils de qualité** : formats, codecs, résolutions, HDR/Dolby Vision, taille, langues et regex, globalement ou par bibliothèque/collection. Mode profils ou critères simples, sans cumul ; formats détaillés, résolution inconnue, langue originale et cache debrid annoncé. Import AIOStreams par JSON ou manifest/source enregistrée avec le mot de passe de configuration, aperçu et modification avant enregistrement (variantes non reproduites).

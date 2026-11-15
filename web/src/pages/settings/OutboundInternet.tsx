@@ -14,12 +14,15 @@ import { ListInput, SecretInput } from "../../components/fields";
 import { MoreOptions } from "../../components/ConfigSection";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
-import { t } from "../../i18n";
+import { getLocale, t } from "../../i18n";
+import { importProxyAddress } from "../../lib/proxy-address";
+const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 import { api, ApiError } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { EtherConfig } from "../../lib/types";
 
 interface OutboundConfig {
+  allDebridMediaFlow?: NonNullable<EtherConfig["outbound"]>["allDebridMediaFlow"];
   enabled: boolean;
   preset?: string;
   url: string;
@@ -44,6 +47,7 @@ export interface OutboundCheck {
 
 function defaults(saved: EtherConfig["outbound"]): OutboundConfig {
   return {
+    ...saved,
     enabled: saved?.enabled ?? false,
     preset: saved?.preset ?? "",
     url: saved?.url ?? "",
@@ -79,6 +83,7 @@ export function OutboundInternet({ hidden = false }: { hidden?: boolean }) {
   const [fields, setFields] = useState<Record<string, string>>({});
   const [check, setCheck] = useState<OutboundCheck | null>(null);
   const [checking, setChecking] = useState(false);
+  const [imported, setImported] = useState(false);
 
   const saveBar = (
     <SaveBar
@@ -176,9 +181,30 @@ export function OutboundInternet({ hidden = false }: { hidden?: boolean }) {
             value={draft.url}
             placeholder="http://127.0.0.1:8888"
             spellCheck={false}
-            onChange={(e) =>
-              patch({ url: e.currentTarget.value, preset: draft.preset || "custom" })
-            }
+            onPaste={(e) => {
+              try {
+                const proxy = importProxyAddress(e.clipboardData.getData("text"));
+                if (!proxy) return;
+                e.preventDefault();
+                patch({ ...proxy, preset: "custom" });
+                setImported(true);
+                setCheck(null);
+                setFields({});
+              } catch {
+                e.preventDefault();
+                setFields({
+                  "outbound.url": L(
+                    "URL de proxy invalide. Vérifiez le protocole, le port et l’encodage des identifiants.",
+                    "Invalid proxy URL. Check the protocol, port and credential encoding.",
+                  ),
+                });
+              }
+            }}
+            onChange={(e) => {
+              patch({ url: e.currentTarget.value, preset: draft.preset || "custom" });
+              setFields({});
+              setCheck(null);
+            }}
           />
           <SearchSelect
             ariaLabel={t("Common proxy setups")}
@@ -196,6 +222,20 @@ export function OutboundInternet({ hidden = false }: { hidden?: boolean }) {
             ]}
           />
         </div>
+        <p className="text-sm text-fg-muted">
+          {L(
+            "Vous pouvez coller une URL complète de proxy HTTP, HTTPS ou SOCKS5 (SSDV2, Gluetun…). Ses identifiants seront placés dans les champs séparés. Ce réglage est distinct du relais MediaFlow ; les conteneurs doivent pouvoir se joindre sur leur réseau Docker.",
+            "Paste a complete HTTP, HTTPS or SOCKS5 proxy URL (SSDV2, Gluetun…). Its credentials will be moved into separate fields. This setting is separate from the MediaFlow relay; containers must be reachable on their Docker network.",
+          )}
+        </p>
+        {imported && (
+          <p role="status" className="text-sm">
+            {L(
+              "Identifiants importés dans Plus d’options. Vérifiez puis enregistrez la connexion.",
+              "Credentials imported into More options. Review and save the connection.",
+            )}
+          </p>
+        )}
         {fields["outbound.url"] ? (
           <p role="alert" className="text-sm">
             {fields["outbound.url"]}
@@ -213,6 +253,7 @@ export function OutboundInternet({ hidden = false }: { hidden?: boolean }) {
         {check ? <CheckResult result={check} /> : null}
       </div>
       <MoreOptions
+        reveal={imported}
         setting="how-ether-reaches-the-internet"
         label={t("More options: How Ether reaches the internet")}
       >

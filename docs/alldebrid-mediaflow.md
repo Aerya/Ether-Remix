@@ -35,6 +35,12 @@ Redéployez la stack Remix dans votre gestionnaire Docker. La stack MediaFlow + 
 
 L’option **Sources → Debrid → Utiliser MediaFlow pour AllDebrid** exige l’adresse et le mot de passe API du relais. Le mot de passe est masqué dans la console et protégé comme les autres identifiants. L’option reste propre à chaque nœud : configurez aussi les nœuds qui effectuent les téléchargements.
 
+## Proxy existant (SSDV2, HTTP ou SOCKS5)
+
+MediaFlow est facultatif si vous disposez déjà d’un proxy HTTP/HTTPS/SOCKS5 qui sort par votre VPN ou votre domicile. Dans **Réglages → Général → Proxy pour les sources**, collez l’URL complète fournie par votre gestionnaire. Remix sépare automatiquement l’adresse, le nom d’utilisateur et le mot de passe et ouvre **Plus d’options** pour vérification. Enregistrez puis testez la connexion. La saisie manuelle des trois champs reste disponible ; les identifiants ne sont pas conservés dans l’adresse.
+
+Le conteneur Remix doit pouvoir joindre le proxy, notamment via un réseau Docker commun pour un nom de service interne. Activez **Services et flux Debrid**, ainsi que **Addons Stremio** pour les flux issus des addons. L’option MediaFlow AllDebrid, si activée, reste prioritaire pour les appels qu’elle prend en charge : laissez-la désactivée si vous choisissez uniquement le proxy SSDV2. Un Worker qui relaie seulement l’API n’assure pas le transport de la vidéo.
+
 ## Vérifications
 
 1. Vérifiez l’IP de sortie de Gluetun puis celle de MediaFlow (`/proxy/ip`, authentification `api_password` dans l’en-tête). Elles doivent correspondre à la sortie choisie.
