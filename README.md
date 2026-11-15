@@ -34,6 +34,27 @@ Côté **musique**, réunissez le catalogue Deezer, vos fichiers audio et vos co
 
 La configuration rapide **JukeBox** aide à créer vos bibliothèques et collections. Les sous-titres avec SubMaker, le suivi Scrob et Last.fm, les statistiques et la console en français complètent ces usages.
 
+**Sommaire**
+
+- [Applications compatibles](#nav-applications-compatibles)
+- [Fonctionnalités Remix](#nav-fonctionnalites-remix)
+  - [Films, séries et animés selon vos préférences](#nav-films-series-et-animes-selon-vos-preferences)
+  - [Vos vidéos locales, films et vidéos personnelles](#nav-vos-videos-locales-films-et-videos-personnelles)
+  - [Des sources réunies et une recherche anticipée](#nav-des-sources-reunies-et-une-recherche-anticipee)
+  - [AllDebrid sur un VPS : MediaFlow et Gluetun](#nav-alldebrid-sur-un-vps-mediaflow-et-gluetun)
+  - [Sous-titres externes et traduction avec SubMaker](#nav-sous-titres-externes-et-traduction-avec-submaker)
+  - [Des bibliothèques et collections personnalisées](#nav-des-bibliotheques-et-collections-personnalisees)
+  - [La musique dans vos applications](#nav-la-musique-dans-vos-applications)
+    - [Vos playlists et de nouvelles découvertes](#nav-vos-playlists-et-de-nouvelles-decouvertes)
+  - [Statistiques et suivi](#nav-statistiques-et-suivi)
+  - [Une interface adaptée à vos habitudes](#nav-une-interface-adaptee-a-vos-habitudes)
+  - [La base Ether, enrichie par Remix](#nav-la-base-ether-enrichie-par-remix)
+- [Démarrer](#nav-demarrer)
+- [Documentation](#nav-documentation)
+- [Origine et licence](#nav-origine-et-licence)
+
+<a id="nav-applications-compatibles"></a>
+
 ## Applications compatibles
 
 | Accès | Applications |
@@ -51,25 +72,11 @@ La configuration rapide **JukeBox** aide à créer vos bibliothèques et collect
 
 Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
 
-**Mise à jour du 14 novembre 2026 :** intégration d’Ether jusqu’à `16053c65` : améliorations des collections, de l’identification des épisodes et de la lecture. La synchronisation automatique conserve les ajouts Remix.
+<a id="nav-fonctionnalites-remix"></a>
 
 ## Fonctionnalités Remix
 
-### AllDebrid sur un VPS : MediaFlow et Gluetun
-
-AllDebrid peut bloquer les IP de VPS/serveurs, de datacenters et certaines sorties VPN, notamment **Cloudflare WARP**. Des accès depuis plusieurs pays ou assimilés à du partage peuvent entraîner une suspension, voire un bannissement du compte.
-
-Dans **Sources → Debrid** (`/ether/remix/sources?source=debrid`), activez **Utiliser MediaFlow pour AllDebrid**, puis renseignez l’adresse et le mot de passe API de votre instance. Les appels API et fichiers AllDebrid récupérés par Remix passent alors par MediaFlow, sans repli direct en cas de panne. L’option est désactivée par défaut et nécessite une instance MediaFlow existante ; elle n’installe aucun conteneur.
-
-Sur un VPS, faites sortir **MediaFlow via Gluetun**, connecté à un VPN accepté ou à votre tunnel domestique. MediaFlow seul conserve l’IP du serveur. Vérifiez les fournisseurs VPN proposés dans [votre compte AllDebrid](https://alldebrid.fr/account/). [AirVPN est une possibilité — lien affilié](https://airvpn.org/?referred_by=483746) ; sa présence dans la liste ne garantit pas l’acceptation de toutes ses IP.
-
-Appliquez **la même sortie à tous les outils de cette machine** accédant à AllDebrid, y compris les workers, planificateurs et scripts de nettoyage. Pour un outil sans intégration MediaFlow, utilisez le proxy Gluetun associé. Les appels effectués par des addons hébergés ailleurs ne sont pas contrôlés par Remix. [Installation et vérifications](docs/alldebrid-mediaflow.md). Le panneau propose un lien vers le Compose MediaFlow + Gluetun et un bouton de test AllDebrid via la connexion enregistrée.
-
-**Fichiers Compose prêts à utiliser :** [Ether-Remix](docker-compose.example.yml) · [MediaFlow + Gluetun](docker-compose.mediaflow-gluetun.yml) · [Prérequis et raccordement](docs/alldebrid-mediaflow.md).
-
-Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi être utilisé directement dans **Réglages → Général → Proxy pour les sources**, sans MediaFlow. Collez son URL complète : les identifiants sont répartis dans les champs séparés, puis enregistrez. Remix et le proxy doivent partager un réseau accessible. Activez les routes Debrid et, pour les flux issus des addons, Stremio.
-
-**Proxys par source** : chaque compte débrideur peut utiliser son propre proxy HTTP/HTTPS/SOCKS5 pour ses appels API et la lecture vidéo ou musicale. Dans **Sources → Stremio**, choisissez séparément le proxy des requêtes (manifeste, recherches) et celui des flux HTTP. Les blocs acceptent les URL complètes avec identifiants. Un proxy spécifique prend priorité sur MediaFlow et le proxy global, sans repli direct ; désactivé, il conserve le comportement global. Les torrents résolus par Remix utilisent le proxy du compte débrideur.
+<a id="nav-films-series-et-animes-selon-vos-preferences"></a>
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
@@ -81,12 +88,16 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - **VOSTFR à la demande** : ajoutez les titres souhaités ; chaque ajout lance une recherche prioritaire lorsque l’indexation est active. En option, SubMaker prépare leurs sous-titres français, et chaque titre affiche l’état de ses sous-titres.
 - **Animés** : créez leurs bibliothèques et collections à partir de TMDB, avec vos préférences FR/MULTi et les addons Stremio de votre choix.
 
+<a id="nav-vos-videos-locales-films-et-videos-personnelles"></a>
+
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Vos vidéos locales, films et vidéos personnelles
 
 - **Santé des médias locaux** : onglet dédié aux diagnostics des dossiers, fichiers absents/non identifiés, doublons potentiels et tailles par dossier. Les entrées restent au catalogue si un montage devient vide ou inaccessible ; aucun fichier supprimé.
 - **Dossiers de l’hôte ou montages réseau** : exposez-les par des volumes Docker en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer vos fichiers.
 - **Rapprochement avec le catalogue** : recherche dans les fiches déjà présentes dans Remix, puis TMDB ; films et épisodes identifiés réutilisent leurs fiches. Sans correspondance fiable, les vidéos personnelles restent affichées telles quelles.
 - **Bibliothèques et collections par dossier**, privées par défaut ; partage facultatif avec certains spectateurs ou tous. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
+
+<a id="nav-des-sources-reunies-et-une-recherche-anticipee"></a>
 
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Des sources réunies et une recherche anticipée
 
@@ -103,6 +114,27 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - **Source FTP / SFTP en option** : films et épisodes d’un serveur distant, index local et lecture directe avec déplacements dans la vidéo. SFTP, FTPS et FTP ; copie complète ou streaming avec copie gardée en option. Désactivée par défaut, lecture distante sans copie complète comme mode initial (cache habituel d’Ether conservé). [Configuration et stockage](docs/pse/FTP.fr.md)
 - **Base StreamFusion Reborn** : importez les releases françaises, MULTi ou VOSTFR et recherchez directement films, épisodes et packs dans votre base en lecture seule. Les preuves de cache debrid expirent ; la lecture revérifie la disponibilité et conserve le recours aux autres sources. Les titres ajoutés plus tard au catalogue sont aussi rattrapés. [Mise en place](docs/pse/STREAMFUSION.fr.md).
 
+<a id="alldebrid-sur-un-vps--mediaflow-et-gluetun"></a>
+<a id="nav-alldebrid-sur-un-vps-mediaflow-et-gluetun"></a>
+
+### ![](https://api.iconify.design/lucide/network.svg?color=%2314b8a6&width=24&height=24) AllDebrid sur un VPS : MediaFlow et Gluetun
+
+AllDebrid peut bloquer les IP de VPS/serveurs, de datacenters et certaines sorties VPN, notamment **Cloudflare WARP**. Des accès depuis plusieurs pays ou assimilés à du partage peuvent entraîner une suspension, voire un bannissement du compte.
+
+Dans **Sources → Debrid** (`/ether/remix/sources?source=debrid`), activez **Utiliser MediaFlow pour AllDebrid**, puis renseignez l’adresse et le mot de passe API de votre instance. Les appels API et fichiers AllDebrid récupérés par Remix passent alors par MediaFlow, sans repli direct en cas de panne. L’option est désactivée par défaut et nécessite une instance MediaFlow existante ; elle n’installe aucun conteneur.
+
+Sur un VPS, faites sortir **MediaFlow via Gluetun**, connecté à un VPN accepté ou à votre tunnel domestique. MediaFlow seul conserve l’IP du serveur. Vérifiez les fournisseurs VPN proposés dans [votre compte AllDebrid](https://alldebrid.fr/account/). [AirVPN est une possibilité — lien affilié](https://airvpn.org/?referred_by=483746) ; sa présence dans la liste ne garantit pas l’acceptation de toutes ses IP.
+
+Appliquez **la même sortie à tous les outils de cette machine** accédant à AllDebrid, y compris les workers, planificateurs et scripts de nettoyage. Pour un outil sans intégration MediaFlow, utilisez le proxy Gluetun associé. Les appels effectués par des addons hébergés ailleurs ne sont pas contrôlés par Remix. [Installation et vérifications](docs/alldebrid-mediaflow.md). Le panneau propose un lien vers le Compose MediaFlow + Gluetun et un bouton de test AllDebrid via la connexion enregistrée.
+
+**Fichiers Compose prêts à utiliser :** [Ether-Remix](docker-compose.example.yml) · [MediaFlow + Gluetun](docker-compose.mediaflow-gluetun.yml) · [Prérequis et raccordement](docs/alldebrid-mediaflow.md).
+
+Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi être utilisé directement dans **Réglages → Général → Proxy pour les sources**, sans MediaFlow. Collez son URL complète : les identifiants sont répartis dans les champs séparés, puis enregistrez. Remix et le proxy doivent partager un réseau accessible. Activez les routes Debrid et, pour les flux issus des addons, Stremio.
+
+**Proxys par source** : chaque compte débrideur peut utiliser son propre proxy HTTP/HTTPS/SOCKS5 pour ses appels API et la lecture vidéo ou musicale. Dans **Sources → Stremio**, choisissez séparément le proxy des requêtes (manifeste, recherches) et celui des flux HTTP. Les blocs acceptent les URL complètes avec identifiants. Un proxy spécifique prend priorité sur MediaFlow et le proxy global, sans repli direct ; désactivé, il conserve le comportement global. Les torrents résolus par Remix utilisent le proxy du compte débrideur.
+
+<a id="nav-sous-titres-externes-et-traduction-avec-submaker"></a>
+
 ### ![](https://api.iconify.design/lucide/captions.svg?color=%2314b8a6&width=24&height=24) Sous-titres externes et traduction avec SubMaker
 
 - **Instance au choix** : utilisez [SubMaker](https://github.com/xtremexq/StremioSubMaker) [public](https://submaker.elfhosted.com/configure) ou auto-hébergé avec un manifeste personnel ; l’intégration est désactivée par défaut.
@@ -110,6 +142,8 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - **Préparation contrôlée** : recherche d’un SRT correspondant à la release, traduction si nécessaire, file d’attente, cache et budget journalier. Seuls les résultats complets et validés sont retenus ; les traductions doivent conserver les timecodes et le nombre de répliques.
 - **Lecture et SeerrCatalog** : ajoutez le SRT préparé aux pistes de la release correspondante et transmettez-le à SeerrCatalog par la recherche authentifiée. Une traduction en attente ne confirme pas la disponibilité ; une lecture déjà ouverte doit être relancée après préparation.
 - **Release déjà sous-titrée en priorité** : à qualité, langue audio et score de formats égaux, la lecture choisit la release dont le SRT est déjà prêt plutôt qu’une autre ayant plus de seeders ou un fichier plus gros. [Configuration et limites](docs/pse/SUBMAKER.fr.md).
+
+<a id="nav-des-bibliotheques-et-collections-personnalisees"></a>
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Des bibliothèques et collections personnalisées
 
@@ -120,6 +154,8 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - Ajustez l’apparition des films avant ou après leur sortie numérique/physique avec un **décalage en jours**.
 - Profitez d’une préparation groupée des badges d’affiches dans Plex et Jellyfin, avec l’état de lecture propre à chaque spectateur et des compteurs exacts.
 - Affichez les affiches plus vite : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche au lieu de la redemander à chaque affichage, et vous réglez le délai de renouvellement. Jellyfin et Emby reçoivent l’affiche à la taille demandée, sans attente. Les grandes résolutions demandées pour les vues détaillées sont conservées.
+
+<a id="nav-la-musique-dans-vos-applications"></a>
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) La musique dans vos applications
 
@@ -133,6 +169,8 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - Retrouvez vos **favoris et votre historique par utilisateur**. La qualité disponible dépend des sources.
 - **Activité musicale** : lectures en cours signalées par Plex, Jellyfin/Emby et Subsonic ; historique chronologique commun aux vidéos et à la musique ; onglet **Écoute** avec tendances quotidiennes, horaires et classements par morceau, artiste, album et auditeur, filtrables par période et utilisateur.
 
+<a id="nav-vos-playlists-et-de-nouvelles-decouvertes"></a>
+
 #### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Vos playlists et de nouvelles découvertes
 
 - **Parcourez les playlists Deezer** et connectez votre compte Spotify pour retrouver vos playlists accessibles.
@@ -142,6 +180,8 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - **Playlists iBroadcast** : activez leur import pour chaque compte connecté ; ordre des titres et répétitions conservés, actualisation sans doublons, sans modification chez iBroadcast.
 - Explorez les **tops par pays, écoutes récentes, titres les plus écoutés et nouveautés des artistes suivis**. Genres, artistes similaires, radios et mix sont proposés selon le client.
 
+<a id="nav-statistiques-et-suivi"></a>
+
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistiques et suivi
 
 - Remix s’ouvre sur les statistiques : anneaux de progression colorés, historique à barres fines, recherches, erreurs, quotas, durées et résultats par source en direct.
@@ -150,17 +190,23 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - Connectez Remix à **Scrob comme un serveur Jellyfin** et choisissez dans Scrob le sens et la fréquence des synchronisations : historique de visionnage et notes, dans un sens ou les deux. Le webhook pour les événements en temps réel (délai maximal de **60 secondes**) et les bibliothèques « Vus et notés » sont facultatifs.
 - Associez **Last.fm** à chaque utilisateur pour ses écoutes musicales et retrouvez les statistiques dans la Vue d’ensemble.
 
+<a id="nav-une-interface-adaptee-a-vos-habitudes"></a>
+
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) Une interface adaptée à vos habitudes
 
 - Huit onglets : **Sources**, **Priorités**, **Langues et qualité**, **VOSTFR à la demande**, **Contenus et bibliothèques**, **Médias locaux**, **Statistiques**, **Notifications et suivi**.
 - Sources regroupées par famille, tri par catégorie ou contenu, clés debrid affichables ponctuellement et blocs repliables sans perdre la saisie. Réglez les palettes dans **Apparence**.
 - Six palettes : **Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine**, chacune en clair et sombre, avec aperçu immédiat et mémorisation par navigateur.
 
+<a id="nav-la-base-ether-enrichie-par-remix"></a>
+
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) La base Ether, enrichie par Remix
 
 - **Nom affiché** : renommez un utilisateur dans la console pour les statistiques et l’activité, même avec un compte Plex. La connexion ne change pas.
 - Synchronisation quotidienne avec le projet d’origine, contrôles avant fusion et signalement des échecs.
 - Images Docker pour **amd64 et arm64** et présentation des nouveautés dans la console.
+
+<a id="nav-demarrer"></a>
 
 ## Démarrer
 
@@ -171,10 +217,13 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 
 Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/config`, arrêtez l’ancien serveur et réutilisez ses volumes `/config` et `/cache`.
 
+<a id="nav-documentation"></a>
+
 ## Documentation
 
 | Besoin | Guide |
 | --- | --- |
+| AllDebrid sur VPS, MediaFlow + Gluetun et proxys par source | [Réseau et proxys](docs/alldebrid-mediaflow.md) |
 | Installation, réglages, sources musicales, playlists, Scrob et clients | [Guide de configuration](docs/pse/GUIDE.fr.md) |
 | Visibilité des titres, priorités et délais de recherche | [Catalogue et indexation](docs/pse/CATALOGUE.fr.md) |
 | Partage des disponibilités et recherches complémentaires | [Intégration SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) |
@@ -184,6 +233,8 @@ Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/c
 | Vidéos, musique locale et comptes iBroadcast | [Médias locaux et iBroadcast](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast) |
 | Bots XDCC via XDCC Grabscher : Docker, VPN, streaming et limites | [Source XDCC](docs/pse/XDCC.fr.md) |
 | FTP / SFTP : connexion, lecture et stockage | [Source FTP / SFTP](docs/pse/FTP.fr.md) |
+
+<a id="nav-origine-et-licence"></a>
 
 ## Origine et licence
 

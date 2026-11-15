@@ -2,6 +2,34 @@
 
 [Présentation d’Ether-Remix](../../README.md) · [English](GUIDE.en.md)
 
+**Sommaire**
+
+- [Installation](#nav-installation)
+  - [Régler Ether-Remix depuis la console](#nav-regler-ether-remix-depuis-la-console)
+  - [Connecter Scrob](#nav-connecter-scrob)
+  - [Connecter un client musique (Subsonic)](#nav-connecter-un-client-musique-subsonic)
+  - [Sources communautaires Eclipse](#nav-sources-communautaires-eclipse)
+  - [Statistiques et suivi des sources](#nav-statistiques-et-suivi-des-sources)
+  - [DMM avec Real-Debrid](#nav-dmm-avec-real-debrid)
+  - [Historique et comparaison TMDB](#nav-historique-et-comparaison-tmdb)
+- [Animes](#nav-animes)
+  - [Exceptions VOSTFR à la demande](#nav-exceptions-vostfr-a-la-demande)
+  - [Instances publiques ou auto-hébergement](#nav-instances-publiques-ou-auto-hebergement)
+- [Organisation des réglages](#nav-organisation-des-reglages)
+  - [Navigation et badges des affiches](#nav-navigation-et-badges-des-affiches)
+- [Playlists et apparence](#nav-playlists-et-apparence)
+- [SubMaker](#nav-submaker)
+  - [Historique commun et Écoute](#nav-historique-commun-et-ecoute)
+- [Médias locaux et iBroadcast](#nav-medias-locaux-et-ibroadcast)
+  - [Dossiers vidéo et audio](#nav-dossiers-video-et-audio)
+  - [Santé des médias locaux](#nav-sante-des-medias-locaux)
+  - [Compte iBroadcast](#nav-compte-ibroadcast)
+- [Cache des recherches et pannes de sources](#nav-cache-des-recherches-et-pannes-de-sources)
+  - [Navigation et configuration](#nav-navigation-et-configuration)
+- [Configuration rapide JukeBox](#nav-configuration-rapide-jukebox)
+
+<a id="nav-installation"></a>
+
 ## Installation
 
 L’image Docker est publique. Aucune connexion à GHCR ni aucun jeton GitHub ne sont nécessaires pour la télécharger.
@@ -29,6 +57,8 @@ Ouvrez **http://&lt;hôte&gt;:32400/ether/** (ou le port `ETHER_PORT`) et suivez
 > **Migration depuis Ether :** même format de données. Arrêtez Ether, faites pointer les volumes `/config` et `/cache` d'Ether-Remix vers les dossiers existants, puis démarrez Ether-Remix. Conservez d'abord une copie de `/config`.
 
 > **Annonces de mise à jour :** la console peut signaler de nouvelles versions d'*Ether*. Dans un conteneur, Ether ne se met jamais à jour seul : ignorez l'annonce, les images Ether-Remix suivent la rolling release (mises à jour automatiques de Dockge-Enhanced ou `docker compose pull`).
+
+<a id="nav-regler-ether-remix-depuis-la-console"></a>
 
 ### Régler Ether-Remix depuis la console
 
@@ -71,6 +101,8 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 | `PSE_MUSIC_DISCOVER` | `on` | Playlist « Découvertes » par spectateur : une cinquantaine de titres d'artistes proches de ses écoutes et de ses playlists. |
 | `PSE_PLAYABLE_PENDING` | `hide` | `show` garde visibles les titres pas encore indexés (pratique pendant la première indexation). |
 
+<a id="nav-connecter-scrob"></a>
+
 ### Connecter Scrob
 
 1. Dans **Ether-Remix → Notifications et suivi → Scrob**, créez les identifiants Jellyfin du spectateur.
@@ -82,6 +114,8 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 L’erreur Scrob **Failed to connect to Jellyfin or invalid User ID** peut également signaler un HTTP 403 du proxy ou du pare-feu avant que Remix reçoive le jeton. Vérifiez depuis le serveur Scrob les réponses de `/jellyfin/System/Info` et `/jellyfin/Users/{UserId}` avec le jeton, ainsi que les journaux du proxy. Une synchronisation peut parcourir beaucoup d’URLs : un système anti-exploration doit distinguer les lectures authentifiées réussies des tentatives d’accès refusées.
 
 Le panneau actualise automatiquement le dernier accès Jellyfin du spectateur (Scrob ou autre client) et l’état du webhook, sans recharger la page ni effacer les champs en cours de saisie. Un accès API ne prouve pas la fin d’une synchronisation. **Trigger Library Scan** demande un rafraîchissement à Remix : son catalogue étant virtuel, la demande est acquittée immédiatement sans scan de fichiers ni réindexation globale. Les listes d’épisodes sans tri explicite utilisent le catalogue stocké et paginé lorsque l’ordre des épisodes n’est pas personnalisé. Utilisez **Pull** pour importer les données dans Scrob et **Push** pour les renvoyer à Remix.
+
+<a id="nav-connecter-un-client-musique-subsonic"></a>
 
 ### Connecter un client musique (Subsonic)
 
@@ -117,6 +151,8 @@ La bibliothèque se remplit avec les favoris (artistes, albums, titres) et les �
 
 **Sources audio gratuites :** Audius a été validé en MP3 320 kbit/s sur un morceau complet à travers Ether-Remix. Aucune nouvelle source FLAC/Hi-Res sans compte n’est certifiée. Le diagnostic vérifie les premiers octets et indique profondeur/fréquence pour FLAC ; ce n’est pas un test de lecture complète. [Audit, sources exclues, configuration et limites](AUDIO-SOURCES.fr.md).
 
+<a id="nav-sources-communautaires-eclipse"></a>
+
 ### Sources communautaires Eclipse
 
 Dans **Ether-Remix → Sources → Streaming musical → Sources communautaires Eclipse**, ouvrez **Configurer** pour le fournisseur souhaité. Générez son lien, collez le `manifest.json`, puis enregistrez. Un champ vide désactive la source. Pour Internet Archive, choisissez la catégorie **Music**. UltraMax et Deezer Ricky demandent votre compte Deezer sur leur propre site ; Ether-Remix conserve uniquement le lien généré, masqué dans la console.
@@ -135,6 +171,8 @@ Les sources dédiées sont essayées dans cet ordre, après les liens Eclipse li
 **Suivi des adresses :** `PSE_MUSIC_ADDON_REGISTRY=on` par défaut, consultation du registre public Eclipse toutes les 6 h lorsque la musique est active. Le bouton d’actualisation fonctionne aussi si le suivi automatique est désactivé (limité à une tentative par minute). Les liens publics sont conservés en base pour les redémarrages et les pannes. Un changement par rapport à l’adresse fournie avec Ether-Remix est signalé : vérifiez le fournisseur avant de recréer votre lien. Aucun manifest personnel n’est modifié automatiquement. Les fournisseurs absents du registre gardent leur dernière adresse connue. Pas de surveillance Discord.
 
 
+<a id="nav-statistiques-et-suivi-des-sources"></a>
+
 ### Statistiques et suivi des sources
 
 **Ether-Remix → Stats** sépare le tableau de bord des réglages **Films & séries**. Il regroupe la couverture du catalogue, les graphiques de requêtes sur sept jours (jours UTC), les releases conservées par source, les quotas, erreurs, réponses partielles et durées moyennes.
@@ -146,6 +184,8 @@ Les statistiques par source sont actualisées toutes les trente secondes. Les to
 Une recherche de titre peut consommer plusieurs requêtes. Les titres communs à plusieurs sources ou bibliothèques ne doivent pas être additionnés ; une release conservée n’est pas une garantie de lecture.
 
 
+<a id="nav-dmm-avec-real-debrid"></a>
+
 ### DMM avec Real-Debrid
 
 Par défaut, Remix interroge [l’instance publique DMM](https://debridmediamanager.com/albums). **Adresse de l’instance DMM** (`PSE_MUSIC_DMM_URL`) permet de choisir une instance privée accessible depuis le conteneur Remix. Saisissez l’adresse de base, sans `/albums` ni `/api/music`. Le [dépôt DMM](https://github.com/debridmediamanager/debrid-media-manager#setup) explique son installation ; votre instance doit fournir son catalogue et les API musicales `/api/music/search` et `/api/music/library`. Le catalogue public n’est pas copié automatiquement.
@@ -156,6 +196,8 @@ Cette source ne dépend pas des indexeurs. Elle se place au rang des comptes Rea
 
 Ether-Remix ne transmet aucune clé à DMM : la recherche est publique, puis les magnets sont résolus directement auprès de Real-Debrid. Les pistes FLAC/MP3 sont sélectionnées ensemble pour retrouver le cache de DMM. Un album non prêt est retiré, avec la même limite Real-Debrid que pour la source par indexeurs : le service peut brièvement commencer un téléchargement avant son retrait. **Tester** cherche un lien ; le diagnostic des sources peut vérifier ses premiers octets audio.
 
+
+<a id="nav-historique-et-comparaison-tmdb"></a>
 
 ### Historique et comparaison TMDB
 
@@ -177,6 +219,8 @@ Dans **Sources → Debrid → Modifier**, **Afficher la clé API** révèle seul
 
 Dans **Sources → Indexation**, **Sources importées** se filtre et se trie par catégorie, nom ou contenus concernés. **Priorité de recherche** se déplie à la demande.
 
+<a id="nav-animes"></a>
+
 ## Animes
 
 Dans **Ether-Remix → Contenus et bibliothèques → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
@@ -185,13 +229,19 @@ Dans **Sources → Stremio**, utilisez **Ajouter un addon**, puis collez le lien
 
 Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir les notes de livraison. La popup ne présente que les notes non lues depuis la dernière version consultée. Fermer ou valider mémorise la version et les notes lues dans ce navigateur ; une reconstruction Docker ne les réaffiche pas. L’ancien repère est repris automatiquement. **Historique complet** permet de consulter les notes précédentes à la demande. La version dans le menu est fournie par le serveur exécuté ; les images officielles incluent un numéro de build Remix automatiquement croissant. Le pied du menu mène aux dépôts Ether et Ether-Remix.
 
+<a id="nav-exceptions-vostfr-a-la-demande"></a>
+
 ### Exceptions VOSTFR à la demande
 
 **Ether-Remix → VOSTFR à la demande → Titres en VOSTFR à la demande** regroupe les films, séries et animés explicitement autorisés sans VF. Chaque ajout lance une recherche prioritaire si l’indexation est active, dans les limites des quotas et des pauses de lecture. Ces titres figurent aussi dans la bibliothèque VOSTFR. Votre sélection existante est conservée.
 
+<a id="nav-instances-publiques-ou-auto-hebergement"></a>
+
 ### Instances publiques ou auto-hébergement
 
 Les sources musicales identifient les instances publiques et proposent les liens d’auto-hébergement disponibles : [UltraMax Music](https://github.com/PaRaN01a-hash/ultramax-music) et [HiFi API](https://github.com/binimum/hifi-api). Pour Stremio, collez le manifest de votre instance publique ou privée ; aucun fournisseur n’est recommandé. Votre manifest personnel reste votre configuration.
+
+<a id="nav-organisation-des-reglages"></a>
 
 ## Organisation des réglages
 
@@ -204,6 +254,8 @@ Les sources musicales identifient les instances publiques et proposent les liens
 
 Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent vers les nouveaux écrans. Il n’y a pas de copie des comptes ou manifests. Les catégories servent à organiser les sources ; elles ne garantissent pas qu’un titre précis existe chez un fournisseur.
 
+<a id="nav-navigation-et-badges-des-affiches"></a>
+
 ### Navigation et badges des affiches
 
 Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épisodes et les rotations de collections respectent l’état de chaque spectateur. Le catalogue « lisible uniquement » conserve des compteurs exacts, y compris les exceptions de langue.
@@ -214,6 +266,8 @@ Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épis
 
 **Films et Séries toujours en VF** : un titre sans VF (choisi en VOSTFR, rangé dans une bibliothèque « Toutes langues », dans une collection d’exception ou trouvé seulement en VOSTFR par SeerrCatalog) reste visible dans sa bibliothèque ou sa collection, mais jamais dans Films, Séries ou l’accueil.
 
+
+<a id="nav-playlists-et-apparence"></a>
 
 ## Playlists et apparence
 
@@ -229,11 +283,15 @@ Choisissez le spectateur, vérifiez l’aperçu, puis validez. Une copie personn
 
 **Apparence** : le bouton en forme de palette dans la barre supérieure propose Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine. Choisissez séparément le mode clair ou sombre ; l’aperçu est immédiat et le choix est conservé dans ce navigateur. Les autres utilisateurs gardent leurs propres préférences.
 
+<a id="nav-submaker"></a>
+
 ## SubMaker
 
 [Configurer les sous-titres externes et la traduction facultative](SUBMAKER.fr.md), globalement ou par bibliothèque/collection, avec SeerrCatalog.
 
 Pour les règles de visibilité et les délais de recherche, voir [Catalogue et indexation](CATALOGUE.fr.md). Pour connecter l’addon, voir [SeerrCatalog](SEERRCATALOG.fr.md).
+
+<a id="nav-historique-commun-et-ecoute"></a>
 
 ### Historique commun et Écoute
 
@@ -243,7 +301,11 @@ Pour les règles de visibilité et les délais de recherche, voir [Catalogue et 
 
 **Activité → Écoute** reprend les filtres période, année et utilisateur de Visionnage. Les compteurs, écoutes par jour, grille jour/heure et classements par morceau, artiste, album et auditeur portent sur toute la période, sans la limite de l’historique. Les graphiques utilisent le fuseau du navigateur. Les anciennes écoutes sont incluses, même si la source musicale est désactivée.
 
+<a id="nav-medias-locaux-et-ibroadcast"></a>
+
 ## Médias locaux et iBroadcast
+
+<a id="nav-dossiers-video-et-audio"></a>
 
 ### Dossiers vidéo et audio
 
@@ -267,6 +329,8 @@ La musique locale rejoint la bibliothèque Musique et ses clients Plex/Plexamp, 
 
 Formats analysés : MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, OGV, VOB, 3GP ; MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, APE, WMA et ALAC. Un fichier doit contenir un flux du type choisi et être lisible par `ffprobe`. L’image Docker Linux fournit cet outil. Les dossiers sont **privés par défaut**, réservés au propriétaire qui les ajoute. Dans **Privé · options de partage**, choisissez certains spectateurs ou tous, puis enregistrez. Seul l’administrateur peut ajouter des chemins du serveur.
 
+<a id="nav-sante-des-medias-locaux"></a>
+
 ### Santé des médias locaux
 
 Dans **Remix → Médias locaux**, actualisez le diagnostic pour vérifier les dossiers et fichiers déjà indexés, sans relancer `ffprobe`. Les erreurs distinguent chemin absent, permission refusée et autre indisponibilité. Un dossier indisponible rend ses fichiers non vérifiables ; un fichier absent dans un dossier lisible est signalé comme absent. Les modifications de taille/date demandent une nouvelle analyse.
@@ -274,6 +338,8 @@ Dans **Remix → Médias locaux**, actualisez le diagnostic pour vérifier les d
 Filtrez par dossier, état, nom ou chemin. Les vidéos sans correspondance restent des vidéos locales valides. Les doublons potentiels partagent une fiche identifiée ou un nom de fichier dans le même dossier source : ce ne sont pas des doublons certifiés, et des éditions différentes peuvent être signalées. Les fichiers sont triés du plus lourd au plus léger, par pages de 50.
 
 Les tailles logiques sont regroupées par dossier source (une bibliothèque vidéo par dossier ; les dossiers audio rejoignent Musique). La taille accessible est vérifiée au moment du diagnostic ; la taille connue correspond au dernier index, fichiers absents compris. Les liens physiques peuvent être comptés plusieurs fois : ces chiffres ne représentent ni les blocs réellement occupés ni l’espace libre du disque. Aucun fichier n’est modifié ou supprimé. Les entrées absentes restent conservées jusqu’au retrait explicite de la source ; retirer puis ajouter la source permet de reconstruire son index, en reconfigurant son partage.
+
+<a id="nav-compte-ibroadcast"></a>
 
 ### Compte iBroadcast
 
@@ -286,6 +352,8 @@ Dans **Sources → Streaming musical → iBroadcast**, ou dans votre **espace pe
 
 Chaque compte iBroadcast est **privé par défaut**, appartient au spectateur qui le connecte et possède ses propres identifiants chiffrés. Plusieurs comptes peuvent être ajoutés. Le partage facultatif avec certains spectateurs ou tous se règle pour chaque compte ; les bibliothèques autorisées apparaissent ensemble dans Musique. Les favoris et historiques restent personnels. Activez **Importer mes playlists iBroadcast** pour les retrouver dans vos clients : leur ordre et les morceaux répétés sont conservés ; les pistes supprimées ou absentes sont ignorées. L’import est actualisé avec la bibliothèque et les playlists importées restent personnelles au propriétaire du compte. Cette intégration lit les pistes en **MP3 128 kb/s**, y compris avec un compte gratuit ; elle ne renvoie pas de modifications de playlists ou de tags vers iBroadcast. Les jetons sont chiffrés dans la base, renouvelés automatiquement et absents des réponses destinées aux clients. Déconnecter retire la bibliothèque de Remix ; pour révoquer également l’autorisation auprès du fournisseur, utilisez **Apps** sur iBroadcast.
 
+<a id="nav-cache-des-recherches-et-pannes-de-sources"></a>
+
 ## Cache des recherches et pannes de sources
 
 La durée « Mémoriser les recherches » du résolveur est un plafond strict (six heures par défaut). L’ancienneté du titre ne permet pas de le dépasser. Les réponses vides sont conservées moins longtemps : jusqu’à trois minutes pour un titre récent ou sans date, trente minutes pour un titre ancien, toujours dans le plafond configuré. Une recherche vide réussie remplace les anciens résultats.
@@ -295,9 +363,13 @@ Lors d’une panne temporaire (délai, connexion, erreur serveur ou suspension a
 Ce mécanisme ne masque pas une erreur d’identifiants, un quota épuisé, une annulation ou une réponse vide valide. Désactiver le cache ou la source désactive également ce repli. Les changements d’adresse, d’identifiants ou de configuration de recherche invalident l’identité du cache. Les reprises sont signalées dans les journaux comme `using expired search candidates`.
 
 
+<a id="nav-navigation-et-configuration"></a>
+
 ### Navigation et configuration
 
 La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus et bibliothèques → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.
+
+<a id="nav-configuration-rapide-jukebox"></a>
 
 ## Configuration rapide JukeBox
 

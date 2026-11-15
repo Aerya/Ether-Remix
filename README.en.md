@@ -34,6 +34,27 @@ For **music**, bring together the Deezer catalogue, your audio files and your iB
 
 **JukeBox** quick setup helps create libraries and collections. SubMaker subtitles, Scrob and Last.fm tracking, statistics and the French console round out these features.
 
+**Contents**
+
+- [Compatible apps](#nav-compatible-apps)
+- [Remix Features](#nav-remix-features)
+  - [Movies, shows and anime your way](#nav-movies-shows-and-anime-your-way)
+  - [Your local movies and personal videos](#nav-your-local-movies-and-personal-videos)
+  - [Unified sources and searches ahead of playback](#nav-unified-sources-and-searches-ahead-of-playback)
+  - [AllDebrid on a VPS: MediaFlow and Gluetun](#nav-alldebrid-on-a-vps-mediaflow-and-gluetun)
+  - [External subtitles and translation with SubMaker](#nav-external-subtitles-and-translation-with-submaker)
+  - [Personal libraries and collections](#nav-personal-libraries-and-collections)
+  - [Music in your applications](#nav-music-in-your-applications)
+    - [Your playlists and new discoveries](#nav-your-playlists-and-new-discoveries)
+  - [Statistics and tracking](#nav-statistics-and-tracking)
+  - [An interface that fits your habits](#nav-an-interface-that-fits-your-habits)
+  - [Ether, extended by Remix](#nav-ether-extended-by-remix)
+- [Get started](#nav-get-started)
+- [Documentation](#nav-documentation)
+- [Origin and license](#nav-origin-and-license)
+
+<a id="nav-compatible-apps"></a>
+
 ## Compatible apps
 
 | Access | Apps |
@@ -51,25 +72,11 @@ For **music**, bring together the Deezer catalogue, your audio files and your iB
 
 Turn access on under **Console → Apps**. Each viewer finds their links and app passwords on their **Your account** page.
 
-**November 14, 2026 update:** integrated Ether through `16053c65`: improvements to collections, episode identification and playback. Automatic synchronization preserves Remix additions.
+<a id="nav-remix-features"></a>
 
 ## Remix Features
 
-### AllDebrid on a VPS: MediaFlow and Gluetun
-
-AllDebrid may block VPS/server, datacenter and some VPN exit IPs, including **Cloudflare WARP**. Access from several countries or interpreted as account sharing may lead to suspension or a permanent account ban.
-
-Under **Sources → Debrid** (`/ether/remix/sources?source=debrid`), enable **Use MediaFlow for AllDebrid**, then enter your instance URL and API password. AllDebrid API calls and files fetched by Remix use MediaFlow, without direct fallback on failure. Disabled by default; requires an existing MediaFlow instance and does not install containers.
-
-On a VPS, route **MediaFlow through Gluetun**, connected to an accepted VPN or your home tunnel. MediaFlow alone keeps the server’s exit IP. Check the VPN providers offered in [your AllDebrid account](https://alldebrid.fr/account/). [AirVPN is one option — affiliate link](https://airvpn.org/?referred_by=483746); being listed does not guarantee acceptance of every exit IP.
-
-Use **the same exit for every tool on this machine** accessing AllDebrid, including workers, schedulers and cleanup scripts. Tools without MediaFlow integration can use the associated Gluetun proxy. Calls made by externally hosted addons are outside Remix’s control. [Setup and checks](docs/alldebrid-mediaflow.md). The panel links to the MediaFlow + Gluetun Compose and can test AllDebrid through the saved connection.
-
-**Ready-to-use Compose files:** [Ether-Remix](docker-compose.example.yml) · [MediaFlow + Gluetun](docker-compose.mediaflow-gluetun.yml) · [Prerequisites and setup](docs/alldebrid-mediaflow.md).
-
-An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be used directly under **Settings → General → Source proxy**, without MediaFlow. Paste its complete URL: credentials are moved into separate fields, then save. Remix must be able to reach the proxy on its network. Enable Debrid routing and, for addon streams, Stremio routing.
-
-**Per-source proxies**: each debrid account can use its own HTTP/HTTPS/SOCKS5 proxy for API calls and video or music playback. Under **Sources → Stremio**, choose separate proxies for requests (manifest, searches) and HTTP streams. Full authenticated URLs can be pasted into either form. A dedicated proxy takes precedence over MediaFlow and the global proxy, without direct fallback; disabling it restores global behavior. Torrents resolved by Remix use the debrid account’s proxy.
+<a id="nav-movies-shows-and-anime-your-way"></a>
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
 
@@ -81,12 +88,16 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled. Optionally, SubMaker prepares their French subtitles, and each title shows its subtitle state.
 - **Anime**: create TMDB-based libraries and collections with your French/MULTi preferences and any Stremio addons you choose.
 
+<a id="nav-your-local-movies-and-personal-videos"></a>
+
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Your local movies and personal videos
 
 - **Local media health**: dedicated tab for folder diagnostics, missing/unidentified files, potential duplicates and sizes per folder. Entries remain in the catalogue when a mount becomes empty or inaccessible; no files are deleted.
 - **Host folders or network mounts**: expose them through read-only Docker volumes. Scan on demand and hourly, without moving or deleting files.
 - **Catalogue matching**: search existing Remix entries first, then TMDB; identified movies and episodes reuse their entries. Without a reliable match, personal videos retain their local presentation.
 - **Libraries and collections per folder**, private by default; optionally share with selected viewers or everyone. [Setup and formats](docs/pse/GUIDE.en.md#local-media-and-ibroadcast).
+
+<a id="nav-unified-sources-and-searches-ahead-of-playback"></a>
 
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Unified sources and searches ahead of playback
 
@@ -103,6 +114,27 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - **Optional FTP / SFTP source**: remote movies and episodes, local index and direct playback with seeking. SFTP, FTPS and FTP; optional complete download or streaming with a kept copy. Off by default; remote playback without a full copy is the default mode (Ether’s normal cache still applies). [Setup and storage](docs/pse/FTP.en.md)
 - **StreamFusion Reborn database**: import French, MULTi or VOSTFR releases and search movies, episodes and packs directly in your read-only database. Debrid cache evidence expires; playback rechecks availability and retains other sources as fallbacks. Titles added to the catalogue later are also caught up. [Setup, in French](docs/pse/STREAMFUSION.fr.md).
 
+<a id="alldebrid-on-a-vps-mediaflow-and-gluetun"></a>
+<a id="nav-alldebrid-on-a-vps-mediaflow-and-gluetun"></a>
+
+### ![](https://api.iconify.design/lucide/network.svg?color=%2314b8a6&width=24&height=24) AllDebrid on a VPS: MediaFlow and Gluetun
+
+AllDebrid may block VPS/server, datacenter and some VPN exit IPs, including **Cloudflare WARP**. Access from several countries or interpreted as account sharing may lead to suspension or a permanent account ban.
+
+Under **Sources → Debrid** (`/ether/remix/sources?source=debrid`), enable **Use MediaFlow for AllDebrid**, then enter your instance URL and API password. AllDebrid API calls and files fetched by Remix use MediaFlow, without direct fallback on failure. Disabled by default; requires an existing MediaFlow instance and does not install containers.
+
+On a VPS, route **MediaFlow through Gluetun**, connected to an accepted VPN or your home tunnel. MediaFlow alone keeps the server’s exit IP. Check the VPN providers offered in [your AllDebrid account](https://alldebrid.fr/account/). [AirVPN is one option — affiliate link](https://airvpn.org/?referred_by=483746); being listed does not guarantee acceptance of every exit IP.
+
+Use **the same exit for every tool on this machine** accessing AllDebrid, including workers, schedulers and cleanup scripts. Tools without MediaFlow integration can use the associated Gluetun proxy. Calls made by externally hosted addons are outside Remix’s control. [Setup and checks](docs/alldebrid-mediaflow.md). The panel links to the MediaFlow + Gluetun Compose and can test AllDebrid through the saved connection.
+
+**Ready-to-use Compose files:** [Ether-Remix](docker-compose.example.yml) · [MediaFlow + Gluetun](docker-compose.mediaflow-gluetun.yml) · [Prerequisites and setup](docs/alldebrid-mediaflow.md).
+
+An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be used directly under **Settings → General → Source proxy**, without MediaFlow. Paste its complete URL: credentials are moved into separate fields, then save. Remix must be able to reach the proxy on its network. Enable Debrid routing and, for addon streams, Stremio routing.
+
+**Per-source proxies**: each debrid account can use its own HTTP/HTTPS/SOCKS5 proxy for API calls and video or music playback. Under **Sources → Stremio**, choose separate proxies for requests (manifest, searches) and HTTP streams. Full authenticated URLs can be pasted into either form. A dedicated proxy takes precedence over MediaFlow and the global proxy, without direct fallback; disabling it restores global behavior. Torrents resolved by Remix use the debrid account’s proxy.
+
+<a id="nav-external-subtitles-and-translation-with-submaker"></a>
+
 ### ![](https://api.iconify.design/lucide/captions.svg?color=%2314b8a6&width=24&height=24) External subtitles and translation with SubMaker
 
 - **Choose your instance**: use [public](https://submaker.elfhosted.com/configure) or self-hosted [SubMaker](https://github.com/xtremexq/StremioSubMaker) with a personal manifest; the integration is disabled by default.
@@ -110,6 +142,8 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - **Controlled preparation**: find an SRT matching the release, translate when necessary, and manage processing with a queue, cache and daily budget. Only complete, validated results are accepted; translations must retain timestamps and cue counts.
 - **Playback and SeerrCatalog**: attach the prepared SRT to its matching release and send it to SeerrCatalog through authenticated search. A pending translation does not confirm availability; restart an already open playback after preparation.
 - **Subtitled release first**: with equal quality, audio language and format score, playback picks the release whose SRT is already ready over one with more seeders or a larger file. [Setup and limitations](docs/pse/SUBMAKER.en.md).
+
+<a id="nav-personal-libraries-and-collections"></a>
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
 
@@ -120,6 +154,8 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - Adjust when movies appear before or after their digital/physical release with a **day offset**.
 - Benefit from batched poster badge preparation in Plex and Jellyfin, per-viewer watch state and exact counts.
 - Show posters faster: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster instead of asking for it again on every screen, and you set the refresh delay. Jellyfin and Emby receive the poster at the requested size, with no wait. Large resolutions requested for detail views are preserved.
+
+<a id="nav-music-in-your-applications"></a>
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) Music in your applications
 
@@ -133,6 +169,8 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - Keep **per-user favourites and listening history**. Available quality depends on the sources.
 - **Music activity**: current playback reported by Plex, Jellyfin/Emby and Subsonic; one chronological history for video and music; a **Listening** tab with daily trends, listening times and track, artist, album and listener rankings, filterable by period and user.
 
+<a id="nav-your-playlists-and-new-discoveries"></a>
+
 #### ![](https://api.iconify.design/lucide/list-music.svg?color=%2314b8a6&width=24&height=24) Your playlists and new discoveries
 
 - **Browse Deezer playlists** and connect your Spotify account to find playlists you can access.
@@ -142,6 +180,8 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - **iBroadcast playlists**: enable import for each connected account; track order and repetitions are preserved, with updates without duplicates and no changes sent to iBroadcast.
 - Explore **country charts, recent plays, most-played tracks and new releases from followed artists**. Genres, similar artists, radios and mixes depend on the client.
 
+<a id="nav-statistics-and-tracking"></a>
+
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistics and tracking
 
 - Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
@@ -150,17 +190,23 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook (**60-second** timeout) and history-only libraries are optional.
 - Connect **Last.fm** per user for music scrobbling and find listening statistics in Overview.
 
+<a id="nav-an-interface-that-fits-your-habits"></a>
+
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) An interface that fits your habits
 
 - Eight tabs: **Sources**, **Priorities**, **Languages and quality**, **French subtitles on demand**, **Content and libraries**, **Local media**, **Statistics**, **Notifications and tracking**.
 - Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
 - Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.
 
+<a id="nav-ether-extended-by-remix"></a>
+
 ### ![](https://api.iconify.design/lucide/refresh-cw.svg?color=%2314b8a6&width=24&height=24) Ether, extended by Remix
 
 - **Display name**: rename a viewer in the console for statistics and activity, even with a Plex account. Sign-in does not change.
 - Daily synchronization with the original project, checks before merging and failure reporting.
 - Docker images for **amd64 and arm64**, with update notes in the console.
+
+<a id="nav-get-started"></a>
 
 ## Get started
 
@@ -171,10 +217,13 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 
 Migrating from Ether? The data format is preserved: back up `/config`, stop the old server and reuse its `/config` and `/cache` volumes.
 
+<a id="nav-documentation"></a>
+
 ## Documentation
 
 | Need | Guide |
 | --- | --- |
+| AllDebrid on a VPS, MediaFlow + Gluetun and per-source proxies | [Networking and proxies (French)](docs/alldebrid-mediaflow.md) |
 | Installation, settings, music sources, playlists, Scrob and clients | [Configuration guide](docs/pse/GUIDE.en.md) |
 | Title visibility, priorities and search intervals | [Catalogue and indexing](docs/pse/CATALOGUE.en.md) |
 | Availability sharing and complementary searches | [SeerrCatalog integration](docs/pse/SEERRCATALOG.en.md) |
@@ -184,6 +233,8 @@ Migrating from Ether? The data format is preserved: back up `/config`, stop the 
 | Videos, local music and iBroadcast accounts | [Local media and iBroadcast](docs/pse/GUIDE.en.md#local-media-and-ibroadcast) |
 | XDCC bots via XDCC Grabscher: Docker, VPN, streaming and limits | [XDCC source](docs/pse/XDCC.en.md) |
 | FTP / SFTP: connection, playback and storage | [FTP / SFTP source](docs/pse/FTP.en.md) |
+
+<a id="nav-origin-and-license"></a>
 
 ## Origin and license
 
