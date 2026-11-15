@@ -55,6 +55,9 @@ func TestMediaFlowAPIAndStream(t *testing.T) {
 					t.Error("upstream credential sent to relay headers")
 				}
 				data := decodeMediaFlow(t, r.URL.Query().Get("token"), "test-password")
+				if data["h_accept-encoding"] != "identity" || r.Header.Get("Accept-Encoding") != "identity" {
+					t.Error("relay must use identity encoding on both hops")
+				}
 				if data["d"] != "https://api.alldebrid.com/v4/user?agent=ether" || data["h_authorization"] != "Bearer upstream-secret" || data["h_range"] != "bytes=5-9" {
 					t.Errorf("bad destination/headers: %v", data)
 				}

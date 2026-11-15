@@ -88,7 +88,10 @@ func (t *mediaFlowTransport) RoundTrip(req *http.Request) (*http.Response, error
 		endpoint = "/proxy/stream"
 	}
 	root.Path += endpoint
-	data := map[string]any{"d": req.URL.String(), "exp": time.Now().Add(5 * time.Minute).Unix()}
+	// Some MediaFlow versions decompress upstream API bodies while retaining
+	// Content-Encoding. Request identity on both hops to avoid double decoding
+	// and to preserve byte ranges for media.
+	data := map[string]any{"d": req.URL.String(), "exp": time.Now().Add(5 * time.Minute).Unix(), "h_accept-encoding": "identity"}
 	for name, values := range req.Header {
 		switch strings.ToLower(name) {
 		case "authorization", "content-type", "range", "if-range", "user-agent", "referer", "origin", "cookie", "accept":
@@ -105,6 +108,7 @@ func (t *mediaFlowTransport) RoundTrip(req *http.Request) (*http.Response, error
 	routed.Host = ""
 	routed.Header = make(http.Header)
 	routed.Header.Set("api_password", cfg.Password)
+	routed.Header.Set("Accept-Encoding", "identity")
 	if ct := req.Header.Get("Content-Type"); ct != "" {
 		routed.Header.Set("Content-Type", ct)
 	}
