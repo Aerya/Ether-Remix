@@ -1193,7 +1193,7 @@ function advancedFieldMeta(key: string): { label: string; help?: string } | unde
       return {
         label: t("Adaptive bitrate ladder · Direct Stream"),
         help: t(
-          "On by default with the transcode ladder. When off, Direct Stream sessions advertise only the copy primary with no soft encode fallbacks.",
+          "Off by default. When off, Direct Stream sessions advertise only the copy primary with no soft encode fallbacks.",
         ),
       };
     default:

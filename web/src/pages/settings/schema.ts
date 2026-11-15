@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { QualityHelp } from "../releases/QualityHelp";
-import { localized, t } from "../../i18n";
+import { getLocale, localized, t } from "../../i18n";
 import type { FieldGroup } from "./SchemaForm";
 
 export const SERVER: FieldGroup[] = localized(() => [
@@ -533,7 +533,27 @@ export const TRANSCODE: FieldGroup[] = localized(() => {
       description: t(
         "Ether plays the file directly when the app can. It converts the video on this computer only when it has to.",
       ),
-      fields: [HW_ACCEL],
+      fields: [
+        HW_ACCEL,
+        {
+          key: "abrLadderUnderCopy",
+          kind: "bool",
+          label: getLocale().startsWith("fr")
+            ? "Qualités adaptatives en Direct Stream"
+            : "Adaptive qualities in Direct Stream",
+          help: getLocale().startsWith("fr")
+            ? "Désactivé par défaut : conserve uniquement la qualité originale lorsque la vidéo peut être copiée. Activez pour proposer aussi des variantes réencodées plus légères aux connexions limitées."
+            : "Off by default: only offer original quality when video can be copied. Enable to also offer lower-quality encoded variants for limited connections.",
+        },
+        {
+          key: "fastStart",
+          kind: "bool",
+          label: getLocale().startsWith("fr") ? "Démarrage accéléré" : "Accelerated start",
+          help: getLocale().startsWith("fr")
+            ? "Peut réencoder les premiers segments en résolution réduite. Désactivez cette option et les qualités adaptatives en Direct Stream pour préserver l’image originale dès le début lorsque le client permet la copie vidéo. S’applique aux nouvelles sessions."
+            : "May encode the first segments at reduced resolution. Turn this and adaptive Direct Stream qualities off to preserve the original picture from the start when the client supports video copy. Applies to new sessions.",
+        },
+      ],
       more: [
         {
           key: "vaapiDevice",
