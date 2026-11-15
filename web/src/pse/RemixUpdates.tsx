@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-14-ftp-source",
+    id: "2026-11-15-alldebrid-mediaflow",
     version: "current",
+    date: "2026-11-15",
+    title: ["AllDebrid via MediaFlow", "AllDebrid through MediaFlow"],
+    items: [
+      [
+        "Option MediaFlow dans Sources → Debrid pour les appels API et fichiers AllDebrid, sans repli direct si le relais échoue.",
+        "MediaFlow option under Sources → Debrid for AllDebrid API calls and files, without direct fallback if the relay fails.",
+      ],
+      [
+        "Information sur les risques des IP de VPS et de Cloudflare WARP, guide Gluetun/VPN ou tunnel domestique et recommandation d’utiliser la même sortie pour les autres outils AllDebrid.",
+        "Information about VPS and Cloudflare WARP IP risks, Gluetun/VPN or home tunnel guide, and advice to use the same exit for other AllDebrid tools.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-14-ftp-source",
+    version: "0.2.37-remix.65.1",
     date: "2026-11-14",
     title: ["Source FTP / SFTP en option", "Optional FTP / SFTP source"],
     items: [

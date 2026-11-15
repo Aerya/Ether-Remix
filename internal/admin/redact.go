@@ -94,6 +94,7 @@ func RedactConfig(cfg config.Config) config.Config {
 	}
 	out.LLM = redactLLM(out.LLM)
 	out.Outbound.Password = redact(out.Outbound.Password)
+	out.Outbound.AllDebridMediaFlow.Password = redact(out.Outbound.AllDebridMediaFlow.Password)
 	out.Prowlarr.APIKey = redact(out.Prowlarr.APIKey)
 	out.ClientIdentity.Headers = redactMap(cfg.ClientIdentity.Headers)
 	out.Database = out.Database.Redacted()
@@ -306,6 +307,7 @@ func UnredactConfig(next, prev config.Config) (config.Config, []FieldError) {
 	}
 	out.LLM = errs.unredactLLM(next.LLM, prev.LLM)
 	out.Outbound.Password = errs.restore("outbound.password", next.Outbound.Password, prev.Outbound.Password, strings.TrimSpace(next.Outbound.URL) == strings.TrimSpace(prev.Outbound.URL))
+	out.Outbound.AllDebridMediaFlow.Password = errs.restore("outbound.allDebridMediaFlow.password", next.Outbound.AllDebridMediaFlow.Password, prev.Outbound.AllDebridMediaFlow.Password, strings.TrimSpace(next.Outbound.AllDebridMediaFlow.URL) == strings.TrimSpace(prev.Outbound.AllDebridMediaFlow.URL))
 	out.Prowlarr.APIKey = errs.restore("prowlarr.apiKey", next.Prowlarr.APIKey, prev.Prowlarr.APIKey, sameProwlarrURL(next.Prowlarr.URL, prev.Prowlarr.URL))
 	out.ClientIdentity.Headers = errs.restoreMap("clientIdentity.headers", next.ClientIdentity.Headers, prev.ClientIdentity.Headers, true)
 	if next.Usenet.Providers != nil {

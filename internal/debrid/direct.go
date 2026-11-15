@@ -63,7 +63,9 @@ func (d *directClients) init() {
 			g = &safefetch.Guard{}
 		}
 		mk := func() *http.Client {
-			return g.Client(&http.Client{Transport: streamingTransport(nil, egress.CapStremio), CheckRedirect: dropHeadersAcrossOrigins})
+			client := g.Client(&http.Client{Transport: streamingTransport(nil, egress.CapStremio), CheckRedirect: dropHeadersAcrossOrigins})
+			client.Transport = egress.WrapGuardedMediaFlow(client.Transport, g.ValidatePublicURL)
+			return client
 		}
 		d.primary, d.hedge = mk(), mk()
 	})
@@ -242,6 +244,9 @@ func directMediaError(p Payload, err error) error {
 
 // directRequest holds the shared provider slot through the response body.
 func (s *Service) directRequest(hc *http.Client, req *http.Request, p Payload) (*http.Response, error) {
+	if strings.EqualFold(p.StreamProvider, "alldebrid") {
+		req = req.WithContext(egress.WithAllDebrid(req.Context()))
+	}
 	release := func() {}
 	if p.StreamProvider != "" {
 		if s.opts.AcquireStreamProvider == nil {

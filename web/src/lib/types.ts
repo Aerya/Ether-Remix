@@ -302,6 +302,7 @@ export interface EtherConfig {
   debrid?: DebridConfig;
   /** Node-local outbound proxy. Absent until the server sends the section. */
   outbound?: {
+    allDebridMediaFlow?: { enabled: boolean; url: string; password: string };
     enabled: boolean;
     preset?: string;
     url: string;

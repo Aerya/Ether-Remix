@@ -1,3 +1,4 @@
+import { AllDebridMediaFlow } from "../../pse/AllDebridMediaFlow";
 import { DebridKeyField } from "../../pse/DebridKeyField";
 import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import { formatThroughput } from "../../lib/format";
@@ -347,6 +348,7 @@ export function DebridSources({
         </div>
       ) : null}
 
+      <AllDebridMediaFlow />
       <Section
         id="sources-debrid"
         title={t("Debrid providers")}
