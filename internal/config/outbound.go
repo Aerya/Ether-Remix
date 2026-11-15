@@ -14,7 +14,8 @@ import (
 // way it always has. Passwords are sealed with the other secrets; the URL
 // must not carry them.
 type Outbound struct {
-	Enabled bool `json:"enabled"`
+	AllDebridMediaFlow MediaFlow `json:"allDebridMediaFlow"`
+	Enabled            bool      `json:"enabled"`
 	// Preset is "gluetun", "custom", or empty. It only affects the owner
 	// console; routing uses URL.
 	Preset   string `json:"preset,omitempty"`
@@ -45,7 +46,7 @@ var errOutboundURL = errors.New("outbound proxy address is not valid")
 // address. A non-empty address is checked either way, and an enabled proxy
 // requires one. Messages never include the address or the password.
 func (o Outbound) Problems() []OutboundProblem {
-	var out []OutboundProblem
+	out := o.AllDebridMediaFlow.Problems()
 	raw := strings.TrimSpace(o.URL)
 	switch o.Preset {
 	case "", "gluetun", "custom":

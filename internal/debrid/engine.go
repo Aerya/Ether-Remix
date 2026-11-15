@@ -213,23 +213,23 @@ func NewEngine(svc *Service, opts EngineOptions) *Engine {
 	// CDN counts every open connection from this server.
 	limit := newConnCap(defaultHostConnections)
 	limit.dialGap = 250 * time.Millisecond
-	var owned []*http.Transport
+	var owned []*http.Client
 	client := func(t *http.Transport) *http.Client {
 		var transport http.RoundTripper = t
 		if opts.WrapMediaTransport != nil {
 			transport = opts.WrapMediaTransport(transport)
 		}
-		return &http.Client{Transport: transport}
+		return &http.Client{Transport: egress.WrapMediaFlow(transport, true)}
 	}
 	if e.hc == nil {
 		t := newStreamingTransport(limit)
-		owned = append(owned, t)
 		e.hc = client(t)
+		owned = append(owned, e.hc)
 	}
 	if e.hedge == nil {
 		t := newStreamingTransport(limit)
-		owned = append(owned, t)
 		e.hedge = client(t)
+		owned = append(owned, e.hedge)
 	}
 	e.hcReplay = noRedirect(e.hc)
 	e.hedgeReplay = noRedirect(e.hedge)
@@ -1592,6 +1592,9 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 		if isAnalysisRead(ctx) {
 			f.analysis.requests.Add(1)
 			f.e.svc.analysisTotals.requests.Add(1)
+		}
+		if payload.Kind == "alldebrid" || strings.EqualFold(payload.StreamProvider, "alldebrid") {
+			rctx = egress.WithAllDebrid(rctx)
 		}
 		resp, tm, err := f.e.get(rctx, u, start, end, urgent, f.conns)
 		if err != nil && isAnalysisRead(ctx) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {

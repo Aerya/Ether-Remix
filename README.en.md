@@ -55,6 +55,16 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 ## Remix Features
 
+### AllDebrid on a VPS: MediaFlow and Gluetun
+
+AllDebrid may block VPS/server, datacenter and some VPN exit IPs, including **Cloudflare WARP**. Access from several countries or interpreted as account sharing may lead to suspension or a permanent account ban.
+
+Under **Sources → Debrid** (`/ether/remix/sources?source=debrid`), enable **Use MediaFlow for AllDebrid**, then enter your instance URL and API password. AllDebrid API calls and files fetched by Remix use MediaFlow, without direct fallback on failure. Disabled by default; requires an existing MediaFlow instance and does not install containers.
+
+On a VPS, route **MediaFlow through Gluetun**, connected to an accepted VPN or your home tunnel. MediaFlow alone keeps the server’s exit IP. Check the VPN providers offered in [your AllDebrid account](https://alldebrid.fr/account/). [AirVPN is one option — affiliate link](https://airvpn.org/?referred_by=483746); being listed does not guarantee acceptance of every exit IP.
+
+Use **the same exit for every tool on this machine** accessing AllDebrid, including workers, schedulers and cleanup scripts. Tools without MediaFlow integration can use the associated Gluetun proxy. Calls made by externally hosted addons are outside Remix’s control. [Setup and checks](docs/alldebrid-mediaflow.md).
+
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
 
 - **Quality profiles**: formats, codecs, resolutions, HDR/Dolby Vision, size, languages and regex, globally or per library/collection. Choose profiles or simple criteria without stacking them, including detailed formats, unknown resolution, original language and declared debrid cache. Import AIOStreams from JSON or a manifest/saved source with the configuration password, preview and edit before saving (variants are not reproduced).

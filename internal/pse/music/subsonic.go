@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/braedonsaunders/ether/internal/egress"
 )
 
 // Authenticator vérifie un couple identifiant / mot de passe d'Ether et
@@ -62,7 +64,7 @@ func NewServer(o Options) *Server {
 	if o.Media == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.ResponseHeaderTimeout = 20 * time.Second
-		o.Media = &http.Client{Transport: t, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		o.Media = &http.Client{Transport: egress.WrapMediaFlow(t, true), CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("music: trop de redirections")
 			}
@@ -1016,7 +1018,11 @@ func (s *Server) relayAudio(w http.ResponseWriter, r *http.Request, id int64) er
 			http.ServeContent(w, r, "audio", modified, f)
 			return nil
 		}
-		res, err := s.openAudio(ctx, r, st.URL)
+		streamContext := ctx
+		if strings.EqualFold(st.Provider, "alldebrid") {
+			streamContext = egress.WithAllDebrid(ctx)
+		}
+		res, err := s.openAudio(streamContext, r, st.URL)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()

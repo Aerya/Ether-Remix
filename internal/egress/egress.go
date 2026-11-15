@@ -49,14 +49,15 @@ const (
 // Policy is the live routing decision. Proxy is nil when there is nothing
 // to dial. The URL may carry a username and password; callers must not log it.
 type Policy struct {
-	Enabled  bool
-	Proxy    *url.URL
-	Indexers bool
-	Stremio  bool
-	Debrid   bool
-	Usenet   bool
-	Metadata bool
-	Bypass   []string
+	MediaFlow config.MediaFlow
+	Enabled   bool
+	Proxy     *url.URL
+	Indexers  bool
+	Stremio   bool
+	Debrid    bool
+	Usenet    bool
+	Metadata  bool
+	Bypass    []string
 }
 
 var current atomic.Pointer[Policy]
@@ -103,13 +104,14 @@ func Use(o config.Outbound, log *slog.Logger) {
 // proxy, so routed dials fail instead of going direct.
 func PolicyFrom(o config.Outbound) Policy {
 	p := Policy{
-		Enabled:  o.Enabled,
-		Indexers: o.Indexers,
-		Stremio:  o.Stremio,
-		Debrid:   o.Debrid,
-		Usenet:   o.Usenet,
-		Metadata: o.Metadata,
-		Bypass:   append([]string(nil), o.Bypass...),
+		MediaFlow: o.AllDebridMediaFlow,
+		Enabled:   o.Enabled,
+		Indexers:  o.Indexers,
+		Stremio:   o.Stremio,
+		Debrid:    o.Debrid,
+		Usenet:    o.Usenet,
+		Metadata:  o.Metadata,
+		Bypass:    append([]string(nil), o.Bypass...),
 	}
 	if !o.Enabled {
 		return p
@@ -145,7 +147,11 @@ func Transport(cap Capability) *http.Transport {
 func Client(cap Capability, timeout time.Duration) *http.Client {
 	tr := baseTransport()
 	tr.Proxy = ProxyFunc(cap)
-	return &http.Client{Timeout: timeout, Transport: tr}
+	var transport http.RoundTripper = tr
+	if cap == CapDebrid {
+		transport = WrapMediaFlow(tr, false)
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}
 }
 
 // SnapshotClient is an HTTP client bound to p, for a check that must not

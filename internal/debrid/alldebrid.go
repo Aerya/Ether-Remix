@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/egress"
 )
 
 // AllDebrid API v4 / v4.1 (https://api.alldebrid.com). Bearer API key plus
@@ -75,7 +76,7 @@ func (p *allDebrid) do(ctx context.Context, r apiRequest) (json.RawMessage, erro
 		r.query = url.Values{}
 	}
 	r.query.Set("agent", allDebridAgent)
-	status, body, err := call(ctx, p.opts.HTTPClient, p.opts.BaseURL, r, func(req *http.Request) {
+	status, body, err := call(egress.WithAllDebrid(ctx), p.opts.HTTPClient, p.opts.BaseURL, r, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+p.key)
 	})
 	if err != nil {
