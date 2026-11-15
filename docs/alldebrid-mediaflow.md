@@ -40,7 +40,22 @@ networks:
     name: media
 ```
 
-Créez le réseau privé `media` et raccordez-y Remix. Aucun port n’est publié sur l’hôte : configurez `http://gluetun:8889` dans Remix. Le proxy HTTP Gluetun écoute sur `http://gluetun:8888` pour les outils sans prise en charge de MediaFlow. Pour une instance distante, utilisez HTTPS et une authentification ; ne rendez pas ce relais public sans protection. Adaptez le DNS de Gluetun à votre réseau, notamment pour conserver votre filtrage domestique.
+MediaFlow et Gluetun sont deux services externes : Remix ne les embarque pas. Si vous les avez déjà installés, réutilisez-les au lieu de créer une seconde instance.
+
+Créez une seule fois le réseau privé avec `docker network create media`. Dans le Compose de Remix, ajoutez `media` aux réseaux du service existant, en conservant ses autres réseaux :
+
+```yaml
+services:
+  remix: # utilisez le nom réel de votre service Remix
+    networks: [default, media]
+networks:
+  default: {}
+  media:
+    external: true
+    name: media
+```
+
+Redéployez la stack Remix dans votre gestionnaire Docker. Aucun port n’est publié sur l’hôte : configurez `http://gluetun:8889` dans Remix. Le proxy HTTP Gluetun écoute sur `http://gluetun:8888` pour les outils sans prise en charge de MediaFlow. Pour une instance distante, utilisez HTTPS et une authentification ; ne rendez pas ce relais public sans protection. Adaptez le DNS de Gluetun à votre réseau, notamment pour conserver votre filtrage domestique.
 
 L’option **Sources → Debrid → Utiliser MediaFlow pour AllDebrid** exige l’adresse et le mot de passe API du relais. Le mot de passe est masqué dans la console et protégé comme les autres identifiants. L’option reste propre à chaque nœud : configurez aussi les nœuds qui effectuent les téléchargements.
 
@@ -48,7 +63,7 @@ L’option **Sources → Debrid → Utiliser MediaFlow pour AllDebrid** exige l�
 
 1. Vérifiez l’IP de sortie de Gluetun puis celle de MediaFlow (`/proxy/ip`, authentification `api_password` dans l’en-tête). Elles doivent correspondre à la sortie choisie.
 2. Consultez [les fournisseurs VPN proposés dans votre compte AllDebrid](https://alldebrid.fr/account/). [AirVPN — lien affilié](https://airvpn.org/?referred_by=483746) est une possibilité, sans garantie sur chaque serveur/IP.
-3. Activez l’option dans Remix, puis utilisez **Tester** sur le compte AllDebrid. Vérifiez ensuite une lecture et un déplacement dans la vidéo.
+3. Activez et enregistrez l’option dans Remix, puis utilisez **Tester AllDebrid via MediaFlow** dans ce même panneau (un compte AllDebrid actif est nécessaire). Le test appelle l’API du compte via le relais ; il ne certifie pas son IP de sortie. Vérifiez ensuite une lecture et un déplacement dans la vidéo.
 4. Arrêtez temporairement MediaFlow : les requêtes AllDebrid de Remix doivent échouer sans sortir directement. Vérifiez aussi l’absence de sortie directe quand le tunnel Gluetun tombe.
 5. Configurez les autres clients AllDebrid, workers et scripts de la machine sur la même sortie. Un proxy défini seulement dans Remix ne protège pas les autres applications.
 

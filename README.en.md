@@ -63,7 +63,7 @@ Under **Sources → Debrid** (`/ether/remix/sources?source=debrid`), enable **Us
 
 On a VPS, route **MediaFlow through Gluetun**, connected to an accepted VPN or your home tunnel. MediaFlow alone keeps the server’s exit IP. Check the VPN providers offered in [your AllDebrid account](https://alldebrid.fr/account/). [AirVPN is one option — affiliate link](https://airvpn.org/?referred_by=483746); being listed does not guarantee acceptance of every exit IP.
 
-Use **the same exit for every tool on this machine** accessing AllDebrid, including workers, schedulers and cleanup scripts. Tools without MediaFlow integration can use the associated Gluetun proxy. Calls made by externally hosted addons are outside Remix’s control. [Setup and checks](docs/alldebrid-mediaflow.md).
+Use **the same exit for every tool on this machine** accessing AllDebrid, including workers, schedulers and cleanup scripts. Tools without MediaFlow integration can use the associated Gluetun proxy. Calls made by externally hosted addons are outside Remix’s control. [Setup and checks](docs/alldebrid-mediaflow.md). The panel links to the MediaFlow + Gluetun Compose and can test AllDebrid through the saved connection.
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Movies, shows and anime your way
 

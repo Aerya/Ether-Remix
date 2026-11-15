@@ -63,7 +63,7 @@ Dans **Sources → Debrid** (`/ether/remix/sources?source=debrid`), activez **Ut
 
 Sur un VPS, faites sortir **MediaFlow via Gluetun**, connecté à un VPN accepté ou à votre tunnel domestique. MediaFlow seul conserve l’IP du serveur. Vérifiez les fournisseurs VPN proposés dans [votre compte AllDebrid](https://alldebrid.fr/account/). [AirVPN est une possibilité — lien affilié](https://airvpn.org/?referred_by=483746) ; sa présence dans la liste ne garantit pas l’acceptation de toutes ses IP.
 
-Appliquez **la même sortie à tous les outils de cette machine** accédant à AllDebrid, y compris les workers, planificateurs et scripts de nettoyage. Pour un outil sans intégration MediaFlow, utilisez le proxy Gluetun associé. Les appels effectués par des addons hébergés ailleurs ne sont pas contrôlés par Remix. [Installation et vérifications](docs/alldebrid-mediaflow.md).
+Appliquez **la même sortie à tous les outils de cette machine** accédant à AllDebrid, y compris les workers, planificateurs et scripts de nettoyage. Pour un outil sans intégration MediaFlow, utilisez le proxy Gluetun associé. Les appels effectués par des addons hébergés ailleurs ne sont pas contrôlés par Remix. [Installation et vérifications](docs/alldebrid-mediaflow.md). Le panneau propose un lien vers le Compose MediaFlow + Gluetun et un bouton de test AllDebrid via la connexion enregistrée.
 
 ### ![](https://api.iconify.design/lucide/clapperboard.svg?color=%2314b8a6&width=24&height=24) Films, séries et animés selon vos préférences
 
