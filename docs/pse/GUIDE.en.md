@@ -409,6 +409,8 @@ The console uses `/ether/remix`. Old bookmarks redirect with their parameters pr
 
 ## Nuvio-inspired navigation cards
 
+A **style for multiple cards** can be prepared from one gallery: choose cards, search their artwork, filter by creator, set or folder and select unique matches in one click. Review variants before bulk application; cards without a choice keep their artwork. Available metadata varies by source, and the same creator does not guarantee the same style. Searches are limited to 30 cards per batch; nothing is saved until “Apply cards to my home screens”.
+
 This is an **optional BETA**, disabled until you apply it. Open **Ether-Remix → Quick start** or **Content and libraries → Nuvio-inspired cards → Quick setup**.
 
 1. Use **Starter selection** or build your own. **Studios and labels** searches TMDB production companies by name or ID; it is not a comprehensive music-label directory. **Genres** offers TMDB movie genres, with TV equivalents where available.

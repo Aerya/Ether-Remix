@@ -14,10 +14,12 @@ import (
 )
 
 type galleryImage struct {
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Source string `json:"source"`
-	Page   string `json:"page,omitempty"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	Source  string `json:"source"`
+	Page    string `json:"page,omitempty"`
+	SetID   string `json:"setId,omitempty"`
+	Creator string `json:"creator,omitempty"`
 }
 
 var galleryCache struct {

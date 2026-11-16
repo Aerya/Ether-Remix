@@ -84,7 +84,7 @@ func publicImages(data []byte, provider, name, page string) []galleryImage {
 	out := []galleryImage{}
 	seen := map[string]bool{}
 	walk(root, func(n *html.Node) {
-		var address, title string
+		var address, title, setID, creator string
 		if provider == "ACdb" && n.Data == "img" && strings.Contains(attr(n, "class"), "primary-img") {
 			address, title = attr(n, "src"), attr(n, "alt")
 			if strings.HasPrefix(address, "/static/images/") {
@@ -101,12 +101,28 @@ func publicImages(data []byte, provider, name, page string) []galleryImage {
 				}
 			}
 			address, title = "https://theposterdb.com/api/assets/"+id, name
+			foundTitle := false
+			walk(n, func(c *html.Node) {
+				if c.Data == "p" && !foundTitle && !strings.Contains(attr(c, "class"), "uploaded-by") {
+					if t := nodeText(c); t != "" {
+						title = t
+						foundTitle = true
+					}
+				}
+				href := attr(c, "href")
+				if c.Data == "a" && strings.HasPrefix(href, "https://theposterdb.com/user/") {
+					creator = nodeText(c)
+				}
+				if c.Data == "a" && strings.HasPrefix(href, "https://theposterdb.com/set/") {
+					setID = strings.TrimPrefix(href, "https://theposterdb.com/set/")
+				}
+			})
 		}
 		if address == "" || seen[address] {
 			return
 		}
 		seen[address] = true
-		out = append(out, galleryImage{Name: title, URL: address, Source: provider, Page: page})
+		out = append(out, galleryImage{Name: title, URL: address, Source: provider, Page: page, SetID: setID, Creator: creator})
 	})
 	return out
 }
