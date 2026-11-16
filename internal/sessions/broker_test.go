@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/state"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -413,12 +414,13 @@ func TestPlanRejectsForbiddenTranscoding(t *testing.T) {
 
 func TestBrokerSupersededReportCannotStopReplacement(t *testing.T) {
 	ctx := context.Background()
+	var retired []string
 	p := &fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 2}
 	progress := &fakeProgress{}
 	active := func(_ context.Context, id int64) (*core.Viewer, error) { return &core.Viewer{ID: id}, nil }
 	bus := NewEventBus(nil, active)
 	defer bus.Close()
-	b, err := NewBroker(BrokerDeps{SurfacePolicy: testSessionPolicy, Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
+	b, err := NewBroker(BrokerDeps{OnStopped: func(s frontend.Session, _ state.Origin) { retired = append(retired, s.ID) }, SurfacePolicy: testSessionPolicy, Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
 		return &core.Title{Key: k}, nil
 	}, Playback: p, Transcoder: fakeBrokerTranscoder{}, Progress: progress, ActiveViewer: active, CanPlay: func(*core.Viewer, bool, time.Time) bool { return true }, BitrateLimit: func(*core.Viewer) int { return 0 }, OnTimeline: func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string) {}, Events: bus})
 	if err != nil {
@@ -440,6 +442,9 @@ func TestBrokerSupersededReportCannotStopReplacement(t *testing.T) {
 		return s
 	}
 	old, current := open(), open()
+	if len(retired) != 1 || retired[0] != old.ID {
+		t.Fatalf("superseded callbacks=%v", retired)
+	}
 	listed, err := b.Sessions(ctx, frontend.SessionAccess{Viewer: v})
 	if err != nil || len(listed) != 1 || listed[0].ID != current.ID {
 		t.Fatalf("superseded sessions remain visible: %+v %v", listed, err)
@@ -472,6 +477,9 @@ func TestBrokerSupersededReportCannotStopReplacement(t *testing.T) {
 	}
 	if err := b.Stop(ctx, a, current.ID); err != nil {
 		t.Fatalf("idempotent stop: %v", err)
+	}
+	if len(retired) != 2 || retired[1] != current.ID {
+		t.Fatalf("retirement callbacks=%v", retired)
 	}
 }
 
@@ -658,6 +666,8 @@ func (f *livenessFakePlayback) PlaybackProgress(_ int64, clientID string, key co
 
 func TestBrokerReportItemProgressStoppedAndIdleSessionsVisibility(t *testing.T) {
 	ctx := context.Background()
+	var stopped []frontend.Session
+	var origins []state.Origin
 	p := &livenessFakePlayback{
 		fakePlayback: fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 4},
 		active:       map[string]bool{},
@@ -672,6 +682,7 @@ func TestBrokerReportItemProgressStoppedAndIdleSessionsVisibility(t *testing.T) 
 		Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
 			return &core.Title{Key: k}, nil
 		},
+		OnStopped:    func(s frontend.Session, o state.Origin) { stopped = append(stopped, s); origins = append(origins, o) },
 		Playback:     p,
 		Transcoder:   fakeBrokerTranscoder{},
 		Progress:     &fakeProgress{},
@@ -747,5 +758,45 @@ func TestBrokerReportItemProgressStoppedAndIdleSessionsVisibility(t *testing.T) 
 	listed, err = b.Sessions(ctx, access)
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("expected 0 sessions when playback session is idle, got %+v (%v)", listed, err)
+	}
+	// The playback engine's idle reaper invokes StopPlayback after retiring
+	// the source; listing alone only hides inactive sessions.
+	p.mu.Lock()
+	ids := make([]string, 0, len(p.sessions))
+	for id := range p.sessions {
+		ids = append(ids, id)
+	}
+	p.mu.Unlock()
+	for _, id := range ids {
+		b.StopPlayback(ctx, id)
+	}
+	if len(stopped) != 2 || stopped[0].ID != opened.ID || stopped[0].ViewerID != viewer.ID || origins[0].SessionID != opened.ID || origins[0].Surface != "jellyfin" {
+		t.Fatalf("lifecycle stops: %+v origins=%+v", stopped, origins)
+	}
+	_, _ = b.Sessions(ctx, access)
+	if len(stopped) != 2 {
+		t.Fatal("duplicate retirement callback")
+	}
+}
+
+func TestStoppedNotificationUsesProgressOrigin(t *testing.T) {
+	for _, protocol := range []frontend.Protocol{"plex", "jellyfin"} {
+		var got state.Origin
+		calls := 0
+		b := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, OnStopped: func(_ frontend.Session, origin state.Origin) { calls++; got = origin }}}
+		s := &brokerSession{public: frontend.Session{ID: "public", Protocol: protocol, Device: core.Device{ID: "device"}}, playbackID: "external"}
+		b.notifyStopped(s)
+		want := "public"
+		if protocol == "plex" {
+			want = "external"
+		}
+		if got.SessionID != want || got.Surface != protocol || got.ClientID != "device" {
+			t.Fatalf("%s: %+v", protocol, got)
+		}
+		s.public.Purpose = "preview"
+		b.notifyStopped(s)
+		if calls != 1 {
+			t.Fatal("preview generated a stop")
+		}
 	}
 }

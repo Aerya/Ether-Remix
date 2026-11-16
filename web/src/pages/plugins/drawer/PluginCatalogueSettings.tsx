@@ -20,6 +20,7 @@ export function PluginCatalogueSettings({
   );
   const sources = useAsync((signal) => librariesApi.catalogueSources(signal), [pluginId]);
   const [busy, setBusy] = useState(false);
+  const [syncingCatalogueId, setSyncingCatalogueId] = useState<string | null>(null);
   const sync = async (id: number, full: boolean) => {
     setBusy(true);
     try {
@@ -58,7 +59,7 @@ export function PluginCatalogueSettings({
                 {t("Full re-sync")}
               </Button>
               <Button size="sm" disabled={busy} onClick={() => void sync(lib.id, false)}>
-                {t("Sync now")}
+                {busy ? t("Syncing…") : t("Sync now")}
               </Button>
             </div>
           }
@@ -81,18 +82,20 @@ export function PluginCatalogueSettings({
               disabled={busy}
               onClick={async () => {
                 setBusy(true);
+                setSyncingCatalogueId(source.id);
                 try {
                   await librariesApi.syncCatalogueSource(source.id);
-                  void sources.reload();
                   toast.success(t("Settings saved"));
                 } catch (e) {
                   toast.error(errorMessage(e));
                 } finally {
+                  void sources.reload();
+                  setSyncingCatalogueId(null);
                   setBusy(false);
                 }
               }}
             >
-              {t("Sync now")}
+              {syncingCatalogueId === source.id ? t("Syncing…") : t("Sync now")}
             </Button>
           }
         />

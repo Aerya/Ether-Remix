@@ -102,7 +102,7 @@ var tokenCanon = map[string]string{
 	"eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15",
 	"sixteen": "16", "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
 	"thirty": "30", "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80", "ninety": "90",
-	"versus": "vs", "part": "pt", "volume": "vol",
+	"versus": "vs", "part": "pt", "partie": "pt", "volume": "vol",
 	"mister": "mr", "doctor": "dr", "saint": "st", "brothers": "bros",
 	"international": "intl",
 }
@@ -127,6 +127,14 @@ var regionalSuffixes = map[string]string{
 // across an already-normalized title string.
 func canonicalTokens(norm string) []string {
 	raw := strings.Fields(norm)
+	// French elisions can be written with a scene separator instead of an
+	// apostrophe: "l age" and "lage", "d amour" and "damour".
+	for i := 0; i+1 < len(raw); i++ {
+		if (raw[i] == "l" || raw[i] == "d") && len(raw[i+1]) > 1 && strings.ContainsRune("aeiouyh", rune(raw[i+1][0])) {
+			raw[i] += raw[i+1]
+			raw = append(raw[:i+1], raw[i+2:]...)
+		}
+	}
 	if len(raw) == 0 {
 		return nil
 	}
@@ -174,6 +182,9 @@ func canonicalTokens(norm string) []string {
 					continue
 				}
 			}
+		}
+		if tok == "i" && len(out) > 0 && out[len(out)-1] == "pt" {
+			tok = "1"
 		}
 		out = append(out, tok)
 	}
@@ -523,4 +534,57 @@ func AnimeSearchEpisode(req core.SearchRequest) int {
 		return req.Episode
 	}
 	return 0
+}
+
+// MovieTitleMatches allows an inserted part marker only when another trusted
+// catalogue name confirms that part number. The remaining title must match
+// completely; year and reported-ID checks remain the resolver's responsibility.
+func MovieTitleMatches(parsed core.ReleaseInfo, names []string) bool {
+	for _, name := range names {
+		if TitleMatches(parsed, name) {
+			return true
+		}
+	}
+	strip := func(title string) (string, string) {
+		tokens := canonicalTokens(NormalizeTitle(title))
+		for i := 0; i+1 < len(tokens); i++ {
+			if tokens[i] != "pt" {
+				continue
+			}
+			n := tokens[i+1]
+			if n == "" || strings.Trim(n, "0123456789") != "" {
+				continue
+			}
+			rest := append(append([]string{}, tokens[:i]...), tokens[i+2:]...)
+			return strings.Join(rest, " "), n
+		}
+		return "", ""
+	}
+	base, part := strip(parsed.Title)
+	if part == "" {
+		return false
+	}
+	confirmed := false
+	for _, name := range names {
+		_, n := strip(name)
+		if n == part {
+			confirmed = true
+		}
+	}
+	if !confirmed {
+		return false
+	}
+	for _, name := range names {
+		stripped, n := strip(name)
+		if n != "" && n != part {
+			continue
+		}
+		if n == "" {
+			stripped = strings.Join(canonicalTokens(NormalizeTitle(name)), " ")
+		}
+		if stripped != "" && stripped == base {
+			return true
+		}
+	}
+	return false
 }

@@ -88,6 +88,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 - **Tri par date de sortie** : Films et Séries s’ouvrent du plus récent au plus ancien dans Plex, Jellyfin et Emby (réglage `PSE_LIBRARY_SORT`). Un tri choisi dans l’application reste prioritaire.
 - **VOSTFR à la demande** : ajoutez les titres souhaités ; chaque ajout lance une recherche prioritaire lorsque l’indexation est active. En option, SubMaker prépare leurs sous-titres français, et chaque titre affiche l’état de ses sous-titres.
 - **Animés** : créez leurs bibliothèques et collections à partir de TMDB, avec vos préférences FR/MULTi et les addons Stremio de votre choix.
+- **Identification des releases** : rapprochement des titres accentués, apostrophes et titres alternatifs ; les numéros de partie doivent être corroborés par le catalogue.
 
 <a id="nav-vos-videos-locales-films-et-videos-personnelles"></a>
 
@@ -104,6 +105,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 - **Console Remix** : réglages regroupés dans `/ether/remix`, blocs repliables fermés par défaut ; iBroadcast rejoint les fournisseurs musicaux et les informations Subsonic restent dans Contenus → Musique.
 - **Configuration commune à Ether et Remix** : addons Stremio, indexeurs, services Usenet, comptes debrid, sources musicales et IPTV réunis dans un même espace.
+- **Catalogues Stremio** : synchronisation manuelle en arrière-plan, état visible et conservation du dernier import en cas d’échec.
 - **Indexation en arrière-plan** : recherchez les releases via vos addons et indexeurs Prowlarr, Jackett ou NZBHydra2 avant le lancement d’une lecture.
 - **Panne temporaire d’un indexeur** : réutilisez ses résultats expirés depuis moins de 24 heures, sans prolonger leur validité ni contourner les vérifications de lecture. Les erreurs d’accès et les quotas restent respectés.
 - **Recherches maîtrisées** : budgets quotidiens par source, pause pendant la lecture, priorités par collection ou bibliothèque et recherche manuelle immédiate.
@@ -190,7 +192,7 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 - Comparez le catalogue local aux totaux TMDB et retrouvez les opérations dans le journal d’activité.
 - Les séries en cours restent dans « Continuer à regarder » même après plusieurs mois sans lecture, avec leur prochain épisode. Le tri suit le dernier visionnage ; Plex conserve une limite de 40 éléments et les masquages du spectateur.
 - L’import complet depuis Plex Media Server alimente aussi l’activité récente avec les dates d’origine, sans doublons. Relancez « Récupérer tout l’historique depuis ce serveur » pour compléter un ancien import ; les états locaux plus récents restent prioritaires.
-- Connectez Remix à **Scrob comme un serveur Jellyfin** et choisissez dans Scrob le sens et la fréquence des synchronisations : historique de visionnage et notes, dans un sens ou les deux. Le webhook pour les événements en temps réel (délai maximal de **60 secondes**) et les bibliothèques « Vus et notés » sont facultatifs.
+- Connectez Remix à **Scrob comme un serveur Jellyfin** et choisissez dans Scrob le sens et la fréquence des synchronisations : historique de visionnage et notes, dans un sens ou les deux. Le webhook pour les événements en temps réel (délai maximal de **60 secondes**) et les bibliothèques « Vus et notés » sont facultatifs. Les arrêts et changements de lecture sont relayés par session, sans doublons.
 - Associez **Last.fm** à chaque utilisateur pour ses écoutes musicales et retrouvez les statistiques dans la Vue d’ensemble.
 
 <a id="nav-une-interface-adaptee-a-vos-habitudes"></a>

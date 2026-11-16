@@ -8,6 +8,7 @@ package scrobpush
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -158,6 +159,7 @@ type Pusher struct {
 	Log     *slog.Logger
 	Now     func() time.Time
 
+	eventMu  sync.Mutex
 	mu       sync.Mutex
 	sessions map[sessionKey]*session
 	queue    chan job
@@ -167,6 +169,7 @@ type Pusher struct {
 type sessionKey struct {
 	viewer int64
 	key    core.RatingKey
+	origin string
 }
 
 type session struct {
@@ -174,6 +177,9 @@ type session struct {
 	started  bool
 	lastSent time.Time
 	paused   bool
+	stopped  bool
+	offset   time.Duration
+	duration time.Duration
 }
 
 type job struct {
@@ -216,9 +222,17 @@ func (p *Pusher) Run(ctx context.Context) {
 	}
 }
 
+// Stop closes the exact session using its last observed position. It does not
+// write watch state or fabricate a completion when a client disconnects.
+func (p *Pusher) Stop(viewer int64, key core.RatingKey, origin state.Origin) {
+	p.Handle(state.Event{Kind: state.EventProgress, UserID: viewer, Key: key, Origin: origin, State: "stopped", Offset: -1})
+}
+
 // Handle convertit un événement d'Ether en webhook Scrob.
 func (p *Pusher) Handle(ev state.Event) {
 	p.init()
+	p.eventMu.Lock()
+	defer p.eventMu.Unlock()
 	if p.Enabled != nil && !p.Enabled() {
 		return
 	}
@@ -232,25 +246,55 @@ func (p *Pusher) Handle(ev state.Event) {
 	var notification string
 	var position time.Duration
 	paused := false
-	sk := sessionKey{ev.UserID, ev.Key}
+	origin := string(ev.Origin.Surface) + ":" + ev.Origin.SessionID
+	if ev.Origin.SessionID == "" {
+		origin = string(ev.Origin.Surface) + ":" + ev.Origin.ClientID
+	}
+	sk := sessionKey{ev.UserID, ev.Key, origin}
 	now := p.Now()
 
 	p.mu.Lock()
 	s := p.sessions[sk]
 	switch ev.Kind {
 	case state.EventProgress:
+		if s != nil && s.stopped {
+			// Broker IDs identify a completed session, so late heartbeats cannot revive it.
+			if ev.Origin.SessionID != "" || ev.State == "stopped" {
+				p.mu.Unlock()
+				return
+			}
+			s = nil
+		}
 		if s == nil {
-			s = &session{id: fmt.Sprintf("pse-%d-%d-%d", ev.UserID, int64(ev.Key), now.Unix())}
+			if ev.State == "stopped" {
+				p.mu.Unlock()
+				return
+			}
+			hash := sha256.Sum256([]byte(origin))
+			s = &session{id: fmt.Sprintf("pse-%d-%d-%x-%d", ev.UserID, int64(ev.Key), hash[:8], now.UnixNano())}
 			p.sessions[sk] = s
 			if len(p.sessions) > 4096 {
-				p.sessions = map[sessionKey]*session{sk: s}
+				for key, old := range p.sessions {
+					if old.stopped {
+						delete(p.sessions, key)
+					}
+				}
 			}
 		}
 		position = ev.Offset
+		if position < 0 {
+			position = s.offset
+		}
+		s.offset = position
+		if ev.Duration > 0 {
+			s.duration = ev.Duration
+		} else {
+			ev.Duration = s.duration
+		}
 		switch ev.State {
 		case "stopped":
 			notification = "PlaybackStop"
-			delete(p.sessions, sk)
+			s.stopped = true
 		case "paused":
 			paused = true
 			if !s.started {
@@ -271,10 +315,8 @@ func (p *Pusher) Handle(ev state.Event) {
 		}
 	case state.EventScrobble:
 		notification = "MarkPlayed"
-		delete(p.sessions, sk)
 	case state.EventUnscrobble:
 		notification = "UserDataSaved"
-		delete(p.sessions, sk)
 	}
 	sid := fmt.Sprintf("pse-%d-%d", ev.UserID, int64(ev.Key))
 	if s != nil {

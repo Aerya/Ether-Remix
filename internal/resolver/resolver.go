@@ -2037,6 +2037,9 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 		matchesAlternativeTitle(rel.Info, sreq.AlternativeTitles) ||
 		(!isEpisode && matchesAlternativeTitle(rel.Info, t.AlternativeTitles)) ||
 		(isEpisode && matchesAlternativeTitle(rel.Info, t.ShowAlternativeTitles))
+	if !titleOK && !isEpisode {
+		titleOK = releaseparse.MovieTitleMatches(rel.Info, expectedTitlesFor(t, sreq))
+	}
 	if !titleOK {
 		if stripped, ok := releaseparse.StripTrailingLanguage(rel.Info.Title); ok {
 			for _, expected := range expectedTitlesFor(t, sreq) {

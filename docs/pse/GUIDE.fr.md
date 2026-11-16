@@ -103,6 +103,10 @@ Ether-Remix accepte toutes les variables d'environnement d'Ether (`ETHER_PORT`, 
 | `PSE_MUSIC_DISCOVER` | `on` | Playlist « Découvertes » par spectateur : une cinquantaine de titres d'artistes proches de ses écoutes et de ses playlists. |
 | `PSE_PLAYABLE_PENDING` | `hide` | `show` garde visibles les titres pas encore indexés (pratique pendant la première indexation). |
 
+**Catalogues Stremio** : le bouton de synchronisation lance un travail en arrière-plan et affiche son état jusqu’à la fin. Un échec conserve le dernier import ; les autres catalogues peuvent encore être synchronisés. `PSE_CATALOGUE_SYNC_TIMEOUT` règle le budget par catalogue en secondes (180 par défaut, de 30 à 900), après l’attente dans la file. Les journaux séparent récupération et enregistrement.
+
+**Titres des releases** : la comparaison tolère les accents et les apostrophes remplacées par des séparateurs. Une mention de partie ajoutée au titre français n’est acceptée que si un titre alternatif du catalogue confirme son numéro ; les contrôles d’année et d’identifiants restent appliqués.
+
 <a id="nav-connecter-scrob"></a>
 
 L’import complet depuis Plex Media Server alimente aussi l’activité récente avec les dates d’origine, sans doublons. Relancez « Récupérer tout l’historique depuis ce serveur » pour compléter un ancien import ; les états locaux plus récents restent prioritaires.
@@ -110,6 +114,9 @@ L’import complet depuis Plex Media Server alimente aussi l’activité récent
 Les séries en cours restent dans « Continuer à regarder » même après plusieurs mois sans lecture, avec leur prochain épisode. Le tri suit le dernier visionnage ; Plex conserve une limite de 40 éléments et les masquages du spectateur.
 
 ### Connecter Scrob
+
+Le webhook relaie les débuts, pauses et arrêts effectifs, y compris le remplacement d’une lecture et le nettoyage d’une session inactive. L’identifiant reste stable pour chaque session et spectateur ; un arrêt répété n’est pas renvoyé et ne modifie pas l’historique.
+
 
 1. Dans **Ether-Remix → Notifications et suivi → Scrob**, créez les identifiants Jellyfin du spectateur.
 2. Dans Scrob → **Connections → Media Players → Add Connection**, choisissez **Jellyfin** et copiez **Server URL**, **Token** et **User ID**. Cliquez sur **Test**, puis **Add**. Le jeton est limité à ce spectateur et révocable dans ses appareils.

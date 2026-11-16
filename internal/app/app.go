@@ -139,6 +139,7 @@ type Options struct {
 
 // App is a running Ether server.
 type App struct {
+	catalogueSync    catalogueSyncJobs
 	deployment       *deploymentRuntime
 	brokerPlayback   core.Playback
 	brokerTranscoder core.Transcoder
