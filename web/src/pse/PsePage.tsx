@@ -1,3 +1,4 @@
+import { XperienceImport } from "./XperienceImport";
 import { LocalMediaHealth } from "./LocalMediaHealth";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
@@ -363,6 +364,7 @@ function PseSettings() {
                 </p>
               ) : null}
               {content !== "musique" ? <JukeboxQuickSetup /> : null}
+              {content !== "musique" ? <XperienceImport /> : null}
               {content === "musique" ? (
                 musicPart("content")
               ) : (

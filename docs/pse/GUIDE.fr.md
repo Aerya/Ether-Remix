@@ -27,6 +27,7 @@
   - [Compte iBroadcast](#nav-compte-ibroadcast)
 - [Cache des recherches et pannes de sources](#nav-cache-des-recherches-et-pannes-de-sources)
   - [Navigation et configuration](#nav-navigation-et-configuration)
+- [Import Xperience](#import-xperience)
 - [Configuration rapide JukeBox](#nav-configuration-rapide-jukebox)
 
 <a id="nav-installation"></a>
@@ -392,6 +393,16 @@ Ce mécanisme ne masque pas une erreur d’identifiants, un quota épuisé, une 
 ### Navigation et configuration
 
 La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus et bibliothèques → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.
+
+## Import Xperience
+
+Dans **Ether-Remix → Contenus et bibliothèques** (`/ether/remix/contenus`), ouvrez **Importer un manifeste** dans le bloc **Importer Xperience**. Créez votre configuration sur [xperience-app.com](https://xperience-app.com/) et collez son lien personnel `manifest.json` (HTTPS ou `stremio://`). **Afficher les catalogues** prépare la sélection sans installer de source ni créer de bibliothèque.
+
+Choisissez jusqu’à **30 catalogues** par import : films et séries restent séparés, y compris les rubriques Animation. Recherchez une rubrique, renommez-la et réglez ses paramètres ; **Sans filtre supplémentaire** correspond à `genre=None` lorsqu’il est proposé par Xperience. Les catalogues de recherche sont exclus. Choisissez **Bibliothèques et collections**, **Collections seulement** ou **Bibliothèques seulement**. Ce dernier mode utilise des collections de gestion sans publication dans l’onglet Collections ni rangées d’accueil.
+
+Les nouvelles collections gardent le classement Xperience, sans rotation aléatoire, et se renouvellent quotidiennement. Le maximum est réglable de **1 à 2 000 titres par catalogue**, 500 par défaut ; ce n’est pas un import illimité. Les bibliothèques sont publiées dans les clients compatibles (Plex, Jellyfin, Emby, Stremio, Xtream et Silo). Le remplissage se fait en arrière-plan. Les identifiants sont rapprochés du catalogue Remix ; certains titres peuvent manquer. Les filtres de langue, de disponibilité et les accès des spectateurs restent appliqués. Cette actualisation ne fige pas les autres rangées de l’accueil.
+
+Xperience fournit des listes, pas des fichiers ni des sources de lecture : vos sources Remix restent nécessaires, sans fichiers `.strm`. Le manifeste personnel est enregistré dans la configuration privée du module Stremio ; les collections ne contiennent que sa référence et les paramètres choisis. Ne partagez pas ce lien. Un nouvel import des mêmes catalogues et paramètres réutilise les éléments existants, y compris après une création partielle, sans écraser les noms, limites, destinations ou autres personnalisations. Ajustez ces réglages depuis les collections et bibliothèques existantes. La limite choisie lors d’un réimport ne remplace donc pas celle d’une sélection déjà créée.
 
 <a id="nav-configuration-rapide-jukebox"></a>
 

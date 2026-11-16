@@ -26,6 +26,7 @@
   - [iBroadcast account](#nav-ibroadcast-account)
 - [Search caching and source outages](#nav-search-caching-and-source-outages)
   - [Navigation and configuration](#nav-navigation-and-configuration)
+- [Xperience import](#xperience-import)
 - [JukeBox quick setup](#nav-jukebox-quick-setup)
   - [Local media health](#nav-local-media-health)
 
@@ -382,6 +383,16 @@ This does not hide credential errors, exhausted quotas, cancellation or valid em
 ### Navigation and configuration
 
 The console uses `/ether/remix`. Old bookmarks redirect with their parameters preserved. Configuration sections start collapsed; opening or closing them preserves drafts. Sources → Music streaming groups Eclipse, DMM / Real-Debrid, iBroadcast and other providers. Subsonic address and library counts are under Content & libraries → Music. For Spotify, use `/ether/remix/contenus?content=musique` as the allowed callback path; callbacks already started with the old path remain accepted.
+
+## Xperience import
+
+In **Ether-Remix → Content and libraries** (`/ether/remix/contenus`), open **Import a manifest** in **Import Xperience**. Set up your catalogues on [xperience-app.com](https://xperience-app.com/) and paste the personal `manifest.json` link (HTTPS or `stremio://`). **Show catalogues** previews the choices without installing a source or creating libraries.
+
+Select up to **30 catalogues** per import: movies and shows stay separate, including Animation lists. Search for a catalogue, rename it and choose its parameters; **No additional filter** maps to `genre=None` when offered by Xperience. Search catalogues are excluded. Choose **Libraries and collections**, **Collections only** or **Libraries only**. Libraries-only uses backing collections without publishing them to the Collections tab or Home rows.
+
+New collections preserve Xperience ordering without random rotation and refresh daily. Set a limit of **1 to 2,000 titles per catalogue**, 500 by default; this is not an unlimited import. Libraries are published to compatible clients (Plex, Jellyfin, Emby, Stremio, Xtream and Silo). Filling happens in the background. IDs are matched against the Remix catalogue; some titles may be missing. Language, availability and viewer access filters still apply. This refresh does not freeze other Home rows.
+
+Xperience supplies lists, not files or playback sources: your Remix sources are still required, without `.strm` files. The personal manifest is saved in the Stremio add-on’s private configuration; collections only store its reference and selected parameters. Do not share the link. Reimporting the same catalogues and parameters reuses existing entries, including after partial creation, without overwriting names, limits, destinations or other customizations. Edit these settings in the existing collections and libraries. A new import limit therefore does not replace an existing selection’s limit.
 
 <a id="nav-jukebox-quick-setup"></a>
 
