@@ -26,8 +26,23 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-15-continue-old-series",
+    id: "2026-11-16-local-destinations",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "Dossiers locaux : bibliothèques et collections",
+      "Local folders: libraries and collections",
+    ],
+    items: [
+      [
+        "Depuis Sources → Fichiers locaux, rattachez vos dossiers vidéo aux bibliothèques et collections personnalisées. Les filtres et droits de partage sont conservés ; les scans respectent vos rattachements.",
+        "Under Sources → Local files, link video folders to libraries and custom collections. Filters and sharing permissions are preserved; scans respect your links.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-15-continue-old-series",
+    version: "0.2.37-remix.73.1",
     date: "2026-11-15",
     title: ["Reprendre les séries anciennes", "Resume older series"],
     items: [
