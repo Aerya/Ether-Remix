@@ -38,6 +38,22 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-16-xperience-import",
+    version: "0.2.37-remix.81.1",
+    date: "2026-11-16",
+    title: ["Importer les catalogues Xperience", "Import Xperience catalogues"],
+    items: [
+      [
+        "Dans Contenus et bibliothèques, importez votre manifeste Xperience pour choisir vos catalogues, leurs paramètres et créer des bibliothèques, des collections ou les deux.",
+        "In Content and libraries, import your Xperience manifest to choose catalogues and parameters and create libraries, collections or both.",
+      ],
+      [
+        "Classement Xperience et actualisation quotidienne ; filtres Remix conservés. Les réimportations réutilisent les sélections existantes sans écraser vos réglages.",
+        "Xperience ordering and daily refresh, with Remix filters preserved. Reimporting reuses existing selections without overwriting your settings.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-16-seedstrem-playback-only",
     version: "0.2.37-remix.80.1",
     date: "2026-11-16",
