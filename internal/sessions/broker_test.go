@@ -778,3 +778,25 @@ func TestBrokerReportItemProgressStoppedAndIdleSessionsVisibility(t *testing.T) 
 		t.Fatal("duplicate retirement callback")
 	}
 }
+
+func TestStoppedNotificationUsesProgressOrigin(t *testing.T) {
+	for _, protocol := range []frontend.Protocol{"plex", "jellyfin"} {
+		var got state.Origin
+		calls := 0
+		b := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, OnStopped: func(_ frontend.Session, origin state.Origin) { calls++; got = origin }}}
+		s := &brokerSession{public: frontend.Session{ID: "public", Protocol: protocol, Device: core.Device{ID: "device"}}, playbackID: "external"}
+		b.notifyStopped(s)
+		want := "public"
+		if protocol == "plex" {
+			want = "external"
+		}
+		if got.SessionID != want || got.Surface != protocol || got.ClientID != "device" {
+			t.Fatalf("%s: %+v", protocol, got)
+		}
+		s.public.Purpose = "preview"
+		b.notifyStopped(s)
+		if calls != 1 {
+			t.Fatal("preview generated a stop")
+		}
+	}
+}
