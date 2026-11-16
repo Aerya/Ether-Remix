@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-source-saved-visible",
+    id: "2026-11-16-seedstrem-playback-only",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "Seedstrem : téléchargement à la lecture uniquement",
+      "Seedstrem: download only on playback",
+    ],
+    items: [
+      [
+        "Les recherches et contrôles de disponibilité n’ouvrent jamais les liens Seedstrem. Le téléchargement ne démarre qu’à la lecture.",
+        "Searches and availability checks never open Seedstrem links. Downloads start only on playback.",
+      ],
+      [
+        "Chaque addon Stremio peut devenir une source de dernier recours à la lecture, tout en participant normalement à la recherche et à l’indexation.",
+        "Each Stremio addon can be a last-resort playback source while still participating in normal searches and indexing.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-source-saved-visible",
+    version: "0.2.37-remix.79.1",
     date: "2026-11-16",
     title: [
       "Sources Stremio visibles après enregistrement",

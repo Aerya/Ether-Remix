@@ -24,6 +24,14 @@ Les recherches et la lecture empruntent l’instance configurée. Remix conserve
 
 - Une recherche de sources ne lance pas le téléchargement.
 - Ouvrir un lien de lecture Seedstrem peut ajouter le torrent au client et attendre les premières données.
-- Les vérifications d’arrière-plan de Remix n’ouvrent pas ces liens à la demande. Pour réserver les téléchargements à la lecture, laissez également désactivée l’option qui autorise l’ouverture des flux d’addons pendant les contrôles de disponibilité des clients. Un test manuel ouvrant le flux peut déclencher un téléchargement.
+- Remix n’ouvre les liens Seedstrem qu’à la lecture : les recherches, tests et contrôles de disponibilité restent sans téléchargement, même si l’ouverture des flux d’autres addons est autorisée. Un outil externe ouvrant directement un lien Seedstrem peut toujours lancer son téléchargement.
 
 La vitesse de démarrage et les déplacements dans la vidéo dépendent des pairs et des morceaux déjà disponibles. Seedstrem reste une source à part du **Client torrent** intégré à Remix : inutile de configurer le même client dans les deux pour utiliser son manifeste.
+
+## Lecture uniquement et dernier recours
+
+Remix n’ouvre les liens Seedstrem qu’après une demande de lecture (ou sa reprise sur une autre release), jamais pour un diagnostic, un préchargement ou un contrôle de disponibilité, même si l’ouverture des autres flux d’addons est autorisée globalement. Un préchargement repris par une véritable lecture peut alors ouvrir le lien.
+
+Dans le formulaire de la source Stremio, activez **Source de dernier recours à la lecture** pour essayer ses résultats seulement après l’échec des sources normales, indépendamment de leur qualité ou priorité. L’option est désactivée par défaut et s’applique par source Stremio. Une version explicitement imposée ou une release épinglée reste prioritaire.
+
+La recherche et l’indexation continuent de consulter Seedstrem, sans téléchargement : ses releases restent des candidats, pas une preuve que le fichier est déjà téléchargé ou lisible. La recherche peut donc interroger Prowlarr via Seedstrem et directement si Prowlarr est également configuré dans Remix.

@@ -55,7 +55,7 @@ func TestSeedstremBackgroundChecksNeverOpenDownloadURL(t *testing.T) {
 	}
 	speculative, _ := core.WithSpeculative(context.Background())
 	background := core.WithBackgroundBudget(context.Background(), func(context.Context, string, string, int64) error { return nil })
-	for _, ctx := range []context.Context{speculative, background, core.WithoutOnDemandStreams(context.Background())} {
+	for _, ctx := range []context.Context{speculative, background, core.WithoutOnDemandStreams(context.Background()), core.WithOnDemandStreamsForAvailability(context.Background()), core.WithIndexerPurpose(context.Background(), core.IndexerPurposeConsole)} {
 		_, err := new(debrid.Service).DirectPayload(ctx, got.Releases[0])
 		if !errors.Is(err, core.ErrForegroundOnly) {
 			t.Fatalf("expected foreground-only, got %v", err)
