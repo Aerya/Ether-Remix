@@ -61,6 +61,7 @@ For **music**, bring together the Deezer catalogue, your audio files and your iB
 
 | Access | Apps |
 | --- | --- |
+| Stored releases, browsing and beta monitoring | [Release library](docs/pse/RELEASE_LIBRARY.en.md) |
 | **Plex** | Official apps: Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, smart TVs (LG, Samsung, VIDAA), desktop and Web. Kodi through Plex for Kodi (PM4K). |
 | **Jellyfin** | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin for Android TV, JellyCon (Kodi), Jellyfin for Roku. |
 | **Emby** | Emby apps (Android TV, iOS, Android, Roku, smart TVs) and Infuse. Emby for TV 2.x on Apple TV is not supported. |
@@ -111,7 +112,7 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
 - **Self-hosted Seedstrem**: add its manifest from Sources → Stremio; the addon list opens after saving so you can find and edit it. Prowlarr search and playback during download via qBittorrent or Deluge; files stay on the Seedstrem host, with no volume to mount in Remix. Downloads start only for playback; optional last-resort playback keeps searches available for indexing. [Setup and connection](docs/pse/SEEDSTREM.en.md).
 - **Stremio catalogues**: background manual synchronization, visible status and retention of the last import on failure.
-- **Quick start**: a permanent tab guides initial setup — sources, video indexing, languages and quality, statistics and clients. A reminder in statistics highlights disabled indexing.
+- **Quick start**: a permanent tab guides initial setup — sources, video indexing, languages and quality, statistics and clients. A reminder in statistics highlights disabled indexing. The release library beta can also be enabled and saved here.
 - **Remix console**: settings under `/ether/remix`, collapsible sections closed by default; iBroadcast sits alongside music providers, with Subsonic information under Content → Music.
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
 - **Temporary indexer outages**: reuse results expired for less than 24 hours without renewing their validity or bypassing playback checks. Access errors and quotas remain enforced.
@@ -123,6 +124,10 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 - **Optional XDCC source**: search movies and episodes from the XDCC bots your [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) follows, then play them during the transfer, download only, or both. Bot and transfer states, cache space reclaimed before a new transfer, limits enforced for simultaneous playback starts and kept files protected from cleanup. Grabscher stays a separate service, never exposed to the Internet. Off by default: files are written to disk. [Setup](docs/pse/XDCC.en.md)
 - **Optional FTP / SFTP source**: remote movies and episodes, local index and direct playback with seeking. SFTP, FTPS and FTP; optional complete download or streaming with a kept copy. Off by default; remote playback without a full copy is the default mode (Ether’s normal cache still applies). [Setup and storage](docs/pse/FTP.en.md)
 - **StreamFusion Reborn database**: import French, MULTi or VOSTFR releases and search movies, episodes and packs directly in your read-only database. Verified Alkolites files are imported and played through their AllDebrid file links without adding magnets; a configured AllDebrid account is still required. For ordinary torrents, debrid cache evidence expires; playback rechecks availability and retains other sources as fallbacks. Titles added to the catalogue later are also caught up. [Setup, in French](docs/pse/STREAMFUSION.fr.md).
+
+**Release library (Beta, disabled by default)**: enable encrypted reference retention under Remix → Indexing to reuse candidates during playback and fallback. Catalogue details show indexed releases sortable by resolution, size, codecs, source, languages and dates. Alkolites files retain their AllDebrid playback path without magnets. [Behavior and limits](docs/pse/RELEASE_LIBRARY.en.md).
+
+When enabled, the **Indexed releases** tab lets you browse content and releases and monitor active searches and recent results. Counters also appear in **Statistics**. Enable the option in **Quick start** or **Indexing**, then save.
 
 <a id="alldebrid-on-a-vps-mediaflow-and-gluetun"></a>
 <a id="nav-alldebrid-on-a-vps-mediaflow-and-gluetun"></a>
@@ -200,6 +205,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistics and tracking
 
+- **Release library**: when beta is enabled, statistics show stored references and their state; **Indexed releases** opens content and active searches.
 - Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
 - View history **by day, week, month or year**, as period or cumulative values, filtered by movies, shows, anime and sources.
 - Compare the local catalogue with TMDB totals and review operations in the activity log.
@@ -264,5 +270,3 @@ Thanks to **[JukeBox](https://mdblist.com/lists/jukebox8786/)** for the MDBList 
 Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclipsemusic.app/), [Monochrome](https://monochrome.st/), [Polyfin](https://github.com/moodiness/polyfin) and [Silo Server](https://github.com/Silo-Server/silo-server). Tracking integration: [Scrob](https://github.com/Aerya/scrob). XDCC source: [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) by CaptainEpix. FTP / SFTP source: [pkg/sftp](https://github.com/pkg/sftp), [jlaffaye/ftp](https://github.com/jlaffaye/ftp). Video metadata uses [TMDB](https://www.themoviedb.org/), without endorsement or certification by TMDB.
 
 [License](LICENSE) · [Legal information](LEGAL.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
-
-**Release library (Beta, disabled by default)**: enable encrypted reference retention under Remix → Indexing to reuse candidates during playback and fallback. Catalogue details show indexed releases sortable by resolution, size, codecs, source, languages and dates. Alkolites files retain their AllDebrid playback path without magnets. [Behavior and limits](docs/pse/RELEASE_LIBRARY.en.md).

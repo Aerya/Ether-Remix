@@ -63,3 +63,56 @@ func TestReleaseLibraryPlaybackGateAndPrivateProjection(t *testing.T) {
 		t.Fatal("disabled beta reused candidates")
 	}
 }
+
+func TestReleaseLibraryOverview(t *testing.T) {
+	cfg, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{db: store.OpenTest(t), cfg: cfg, log: slog.Default()}
+	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"}))
+	for i := int64(1); i <= 51; i++ {
+		a.rememberSearchReferences(context.Background(), core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: i}}, []core.Release{{ID: "private-id", Name: "Film", Indexer: "Source", StreamURL: "https://private.example/secret"}})
+	}
+	for i, change := range []string{"expires=0", "failed=1", "source_signature='old'"} {
+		if _, err = a.db.Exec("UPDATE pse_release_library SET "+change+" WHERE title_key=?", int64(core.MovieKey(int64(i+1)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	request := func(path string) map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		a.pseReleaseLibraryAPI(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		for _, secret := range []string{"private-id", "private.example", "payload", "source_signature"} {
+			if strings.Contains(w.Body.String(), secret) {
+				t.Fatal("secret exposed")
+			}
+		}
+		var out map[string]any
+		if err = json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	out := request("/release-library?overview=1")
+	for key, want := range map[string]float64{"references": 51, "titles": 51, "ready": 48, "expired": 1, "failed": 1, "sourceChanged": 1} {
+		if out[key] != want {
+			t.Fatalf("%s=%v want %v", key, out[key], want)
+		}
+	}
+	if len(out["items"].([]any)) != 50 {
+		t.Fatal("first page")
+	}
+	if len(request("/release-library?overview=1&page=1")["items"].([]any)) != 1 {
+		t.Fatal("second page")
+	}
+	restore := pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "off"})
+	defer restore()
+	if out = request("/release-library?overview=1"); out["enabled"] != false || out["items"] != nil {
+		t.Fatal(out)
+	}
+}

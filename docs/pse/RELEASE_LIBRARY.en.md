@@ -19,3 +19,9 @@ Publication comes from the source and is unknown when absent. First indexed and 
 Ordinary HTTP references expire after one hour; torrent/NZB references and AllDebrid file links after 24 hours. Source configuration changes invalidate previous references. Quality and language changes keep references available for local filtering. Entries remain inspectable and are pruned after 60 days without observation during a later collection. Inspection and reuse do not extend observation dates.
 
 Only results returned by sources can be retained; addon filtering cannot be undone. Old metadata cannot reconstruct missing links: another search or import is needed. Disabling beta stops reference collection and reuse without deleting existing metadata.
+
+## Console monitoring
+
+Enable the beta in **Quick start** or **Indexing**, then save. The **Indexed releases** tab appears after saving. It lists content and episodes by latest observation, in pages of 50; select content to inspect sortable releases. Active and recent searches show real activity. Collection is continuous, without an overall completion percentage.
+
+Counters also appear in **Statistics**, separating metadata from stored references: available, expired, failed or source changed. These sets overlap and must not be added. The display refreshes every 15 seconds while the page is visible. An available reference does not guarantee playback.

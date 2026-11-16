@@ -28,3 +28,9 @@ it("preserves native IPTV provider IDs when redirecting to Remix", () => {
   expect(url.searchParams.get("source")).toBe("iptv");
   expect(url.searchParams.get("iptvSource")).toBe("king-123");
 });
+
+it("shows the release library tab only when the saved beta setting is enabled", async () => {
+  const { visibleRemixTabs } = await import("./navigation");
+  expect(visibleRemixTabs(false).some((t) => t.key === "releases")).toBe(false);
+  expect(visibleRemixTabs(true).some((t) => t.key === "releases")).toBe(true);
+});

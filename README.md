@@ -61,6 +61,7 @@ La configuration rapide **JukeBox** aide à créer vos bibliothèques et collect
 
 | Accès | Applications |
 | --- | --- |
+| Releases conservées, consultation et suivi de la bêta | [Bibliothèque de releases](docs/pse/RELEASE_LIBRARY.fr.md) |
 | **Plex** | Applications officielles : Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, TV connectées (LG, Samsung, VIDAA), ordinateur et Web. Kodi via Plex for Kodi (PM4K). |
 | **Jellyfin** | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin pour Android TV, JellyCon (Kodi), Jellyfin pour Roku. |
 | **Emby** | Applications Emby (Android TV, iOS, Android, Roku, TV connectées) et Infuse. Emby for TV 2.x sur Apple TV n’est pas pris en charge. |
@@ -107,7 +108,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lire, configurez la voie adaptée : compte débrideur, client BitTorrent ou addon Stremio comme Seedstrem. Seedstrem utilise son propre client torrent. Pour Usenet, Remix lit via son moteur NNTP et vos fournisseurs Usenet ; SABnzbd/NZBGet ne sont pas des clients externes intégrés.
 
-- **Démarrage rapide** : un onglet permanent guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Un rappel dans les statistiques signale l’indexation désactivée.
+- **Démarrage rapide** : un onglet permanent guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Un rappel dans les statistiques signale l’indexation désactivée. La bibliothèque de releases en bêta peut aussi être activée ici, puis enregistrée.
 - **Console Remix** : réglages regroupés dans `/ether/remix`, blocs repliables fermés par défaut ; iBroadcast rejoint les fournisseurs musicaux et les informations Subsonic restent dans Contenus → Musique.
 - **IPTV et VOD Xtream** : chaînes en direct, guide EPG et import des films et séries du fournisseur.
 - **Configuration commune à Ether et Remix** : addons Stremio, indexeurs, services Usenet, comptes debrid, sources musicales et IPTV réunis dans un même espace.
@@ -123,6 +124,10 @@ Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lir
 - **Source XDCC en option** : cherchez films et épisodes chez les bots XDCC suivis par votre [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher), puis lisez-les pendant le transfert, en téléchargement seulement, ou les deux. États des bots et des transferts, cache libéré avant un nouveau transfert, limites respectées lors des lectures simultanées et fichiers gardés protégés du nettoyage. Grabscher reste un service à part, jamais exposé à Internet. Désactivé par défaut : les fichiers sont écrits sur le disque. [Mise en place](docs/pse/XDCC.fr.md)
 - **Source FTP / SFTP en option** : films et épisodes d’un serveur distant, index local et lecture directe avec déplacements dans la vidéo. SFTP, FTPS et FTP ; copie complète ou streaming avec copie gardée en option. Désactivée par défaut, lecture distante sans copie complète comme mode initial (cache habituel d’Ether conservé). [Configuration et stockage](docs/pse/FTP.fr.md)
 - **Base StreamFusion Reborn** : importez les releases françaises, MULTi ou VOSTFR et recherchez directement films, épisodes et packs dans votre base en lecture seule. Les fichiers Alkolites déjà vérifiés sont importés et lus via leurs liens AllDebrid, sans ajout de magnet ; un compte AllDebrid configuré reste nécessaire. Pour les torrents ordinaires, les preuves de cache debrid expirent ; la lecture revérifie la disponibilité et conserve le recours aux autres sources. Les titres ajoutés plus tard au catalogue sont aussi rattrapés. [Mise en place](docs/pse/STREAMFUSION.fr.md).
+
+**Bibliothèque de releases (Bêta, désactivée par défaut)** : dans Remix → Indexation, activez la conservation chiffrée des références pour les réutiliser à la lecture et en secours. Chaque fiche du catalogue propose les releases indexées, triables par résolution, taille, codecs, source, langues et dates. Les fichiers Alkolites gardent leur lecture AllDebrid sans magnet. [Fonctionnement et limites](docs/pse/RELEASE_LIBRARY.fr.md).
+
+Un onglet **Releases indexées**, visible lorsque la bêta est activée, permet de parcourir les contenus et leurs releases, de suivre les recherches en cours et les derniers résultats. Les compteurs sont aussi affichés dans **Statistiques**. Le réglage est accessible dans **Démarrage rapide** et **Indexation**, avec enregistrement explicite.
 
 <a id="alldebrid-sur-un-vps--mediaflow-et-gluetun"></a>
 <a id="nav-alldebrid-sur-un-vps-mediaflow-et-gluetun"></a>
@@ -200,6 +205,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistiques et suivi
 
+- **Bibliothèque de releases** : lorsque la bêta est activée, les statistiques affichent les références conservées et leur état ; l’onglet **Releases indexées** donne accès aux contenus et recherches en cours.
 - Remix s’ouvre sur les statistiques : anneaux de progression colorés, historique à barres fines, recherches, erreurs, quotas, durées et résultats par source en direct.
 - Consultez l’historique **par jour, semaine, mois ou année**, en valeurs par période ou cumulées, avec filtres films, séries, animés et sources.
 - Comparez le catalogue local aux totaux TMDB et retrouvez les opérations dans le journal d’activité.
@@ -264,5 +270,3 @@ Merci à **[JukeBox](https://mdblist.com/lists/jukebox8786/)** pour ses listes M
 Inspirations : [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclipsemusic.app/), [Monochrome](https://monochrome.st/), [Polyfin](https://github.com/moodiness/polyfin) et [Silo Server](https://github.com/Silo-Server/silo-server). Intégration de suivi : [Scrob](https://github.com/Aerya/scrob). Source XDCC : [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) de CaptainEpix. Source FTP / SFTP : [pkg/sftp](https://github.com/pkg/sftp), [jlaffaye/ftp](https://github.com/jlaffaye/ftp). Les métadonnées vidéo utilisent [TMDB](https://www.themoviedb.org/), sans approbation ni certification de TMDB.
 
 [Licence](LICENSE) · [Informations légales](LEGAL.md) · [Composants tiers](THIRD_PARTY_NOTICES.md)
-
-**Bibliothèque de releases (Bêta, désactivée par défaut)** : dans Remix → Indexation, activez la conservation chiffrée des références pour les réutiliser à la lecture et en secours. Chaque fiche du catalogue propose les releases indexées, triables par résolution, taille, codecs, source, langues et dates. Les fichiers Alkolites gardent leur lecture AllDebrid sans magnet. [Fonctionnement et limites](docs/pse/RELEASE_LIBRARY.fr.md).
