@@ -1,6 +1,7 @@
 import { Navigate, useLocation, useParams } from "react-router-dom";
 
 export const REMIX_TABS = [
+  { key: "demarrage", fr: "Démarrage rapide", en: "Quick start", features: [] },
   {
     key: "sources",
     fr: "Sources",

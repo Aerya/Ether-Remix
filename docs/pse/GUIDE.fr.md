@@ -4,6 +4,7 @@
 
 **Sommaire**
 
+- [Démarrage rapide](#nav-demarrage-rapide)
 - [Installation](#nav-installation)
   - [Régler Ether-Remix depuis la console](#nav-regler-ether-remix-depuis-la-console)
   - [Connecter Scrob](#nav-connecter-scrob)
@@ -29,6 +30,18 @@
   - [Navigation et configuration](#nav-navigation-et-configuration)
 - [Import Xperience](#import-xperience)
 - [Configuration rapide JukeBox](#nav-configuration-rapide-jukebox)
+
+<a id="nav-demarrage-rapide"></a>
+## Démarrage rapide
+
+Dans la console, ouvrez **Ether-Remix → Démarrage rapide**. Cet onglet reste accessible ; il ne modifie pas les réglages automatiquement.
+
+1. **Sources** : ajoutez, testez et activez vos fournisseurs. Un addon qui fournit ses propres liens de lecture n’exige pas une seconde clé débrideur pour les recherches.
+2. **Sources → Indexation** : activez et enregistrez l’indexation en arrière-plan pour préparer le catalogue vidéo. Sans sélection explicite, tous les addons Stremio activés sont utilisés ; les indexeurs Prowlarr/Jackett doivent être sélectionnés. Respectez les quotas des fournisseurs.
+3. **Langues et qualité** : vérifiez les critères et le seuil du catalogue lisible. Un catalogue vide peut simplement attendre des releases qui correspondent à vos réglages.
+4. **Statistiques → Indexation** : contrôlez les dernières recherches et le compteur de titres cherchés. L’indexation se met en pause pendant les lectures. Les statistiques d’utilisation sont distinctes.
+5. **Contenus et bibliothèques** : personnalisez les collections si besoin. Pour la musique et les fichiers locaux seuls, l’indexation vidéo n’est pas nécessaire ; configurez leurs sources et leur partage.
+6. **Applications** : activez le protocole du client, utilisez les accès du spectateur puis essayez une lecture. Les accès Subsonic se trouvent aussi dans **Contenus et bibliothèques → Musique**.
 
 <a id="nav-installation"></a>
 

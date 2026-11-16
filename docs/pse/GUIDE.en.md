@@ -4,6 +4,7 @@
 
 **Contents**
 
+- [Quick start](#nav-demarrage-rapide)
 - [Installation](#nav-installation)
   - [Configuring Ether-Remix from the console](#nav-configuring-ether-remix-from-the-console)
   - [Connecting Scrob](#nav-connecting-scrob)
@@ -29,6 +30,18 @@
 - [Xperience import](#xperience-import)
 - [JukeBox quick setup](#nav-jukebox-quick-setup)
   - [Local media health](#nav-local-media-health)
+
+<a id="nav-demarrage-rapide"></a>
+## Quick start
+
+In the console, open **Ether-Remix → Quick start**. This tab remains available and does not change settings automatically.
+
+1. **Sources**: add, test and enable your providers. An addon supplying its own playback links does not require a second debrid key for searches.
+2. **Sources → Indexing**: enable and save background indexing to prepare the video catalogue. With no explicit selection, all enabled Stremio addons are used; Prowlarr/Jackett indexers must be selected. Respect provider quotas.
+3. **Languages & quality**: check criteria and the playable catalogue threshold. An empty catalogue may simply be waiting for matching releases.
+4. **Statistics → Indexing**: check recent searches and searched-title counts. Indexing pauses during playback. Usage statistics are separate.
+5. **Content & libraries**: customize collections if needed. Music and local files alone do not require video indexing; configure their sources and sharing.
+6. **Apps**: enable the client protocol, use the viewer’s credentials and try playback. Subsonic access details are also under **Content & libraries → Music**.
 
 <a id="nav-installation"></a>
 
