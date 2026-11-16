@@ -63,7 +63,7 @@ func (l Library) Save(ctx context.Context, key core.RatingKey, rs []core.Release
 			return e
 		}
 		ttl := 24 * time.Hour
-		if r.Protocol == core.ProtocolHTTP {
+		if r.Protocol == core.ProtocolHTTP && r.StreamDebrid == "" {
 			ttl = time.Hour
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO pse_release_library(title_key,release_id,source_signature,payload,first_seen,last_seen,expires) VALUES(?,?,?,?,?,?,?) ON CONFLICT(title_key,release_id) DO UPDATE SET source_signature=excluded.source_signature,payload=excluded.payload,last_seen=excluded.last_seen,expires=excluded.expires,failed=0`, int64(key), r.ID, l.Signature, sealed, now.Unix(), now.Unix(), now.Add(ttl).Unix())
@@ -82,7 +82,7 @@ type LibraryEntry struct {
 }
 
 func (l Library) Entries(ctx context.Context, key core.RatingKey) ([]LibraryEntry, error) {
-	rows, err := l.Store.db.QueryContext(ctx, `SELECT payload,first_seen,last_seen,expires,failed,source_signature FROM pse_release_library WHERE title_key=? ORDER BY last_seen DESC LIMIT 2000`, int64(key))
+	rows, err := l.Store.db.QueryContext(ctx, `SELECT payload,first_seen,last_seen,expires,failed,source_signature FROM pse_release_library WHERE title_key=? ORDER BY last_seen DESC`, int64(key))
 	if err != nil {
 		return nil, err
 	}

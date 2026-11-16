@@ -90,7 +90,11 @@ export function TitleInspector({
           { key: "releases", label: t("Releases") },
           { key: "availability", label: t("Availability") },
         ];
-  if (title) tabs.push({ key: "indexed", label: getLocale().startsWith("fr") ? "Releases indexées · Bêta" : "Indexed releases · Beta" });
+  if (title)
+    tabs.push({
+      key: "indexed",
+      label: getLocale().startsWith("fr") ? "Releases indexées · Bêta" : "Indexed releases · Beta",
+    });
   const active = tabs.some((x) => x.key === tab) ? tab : "overview";
 
   const openEpisode = (e: Pick<ScheduleEpisode, "season" | "key">) => {

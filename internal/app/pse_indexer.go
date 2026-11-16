@@ -36,6 +36,13 @@ func (a *App) buildPSEIndexer() {
 func (a *App) newPSEIndexer() *releasedb.Service {
 	return releasedb.New(releasedb.Deps{
 		DB: a.db,
+		Remember: func(ctx context.Context, key core.RatingKey, rs []core.Release) {
+			for i := range rs {
+				rs[i].IndexerID = sfrSearchID
+				rs[i].Indexer = "StreamFusion Reborn (base)"
+			}
+			a.rememberReleases(ctx, &core.Title{Key: key}, rs)
+		},
 		Config: func() config.Config { // sources XDCC et FTP comprises, si actives
 			c := a.cfg.Read()
 			c.Indexers = ftpIndexers(xdccIndexers(c.Indexers))

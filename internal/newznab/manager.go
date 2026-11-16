@@ -191,6 +191,9 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 		return nil, nil
 	}
 	ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposeRescue)
+	m.mu.RLock()
+	observer := m.searchObserver
+	m.mu.RUnlock()
 	clients := m.Clients()
 	type slot struct {
 		results []core.Release
@@ -226,6 +229,13 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 		}(i, cl)
 	}
 	wg.Wait()
+	if observer != nil {
+		for _, slot := range slots {
+			if len(slot.results) > 0 {
+				observer(ctx, req, slot.results)
+			}
+		}
+	}
 	seen := map[string]bool{}
 	var merged []core.Release
 	for _, s := range slots {

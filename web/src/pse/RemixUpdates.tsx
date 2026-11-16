@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-sfr-alkolites-files",
+    id: "2026-11-16-release-library-beta",
     version: "current",
+    date: "2026-11-16",
+    title: ["Bibliothèque de releases en bêta", "Release library beta"],
+    items: [
+      [
+        "Option désactivée par défaut : références chiffrées réutilisées pour la lecture et les secours, y compris les liens fichiers Alkolites. Fiches du catalogue : releases indexées triables par qualité, taille, codecs, source, langues et dates, avec choix de l’épisode.",
+        "Disabled by default: encrypted references reused for playback and fallback, including Alkolites file links. Catalogue details show indexed releases sortable by quality, size, codecs, source, languages and dates, with episode selection.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-sfr-alkolites-files",
+    version: "0.2.37-remix.90.1",
     date: "2026-11-16",
     title: [
       "SFR : fichiers Alkolites sans ajout de magnet",
