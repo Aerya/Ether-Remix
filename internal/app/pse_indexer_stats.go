@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -114,7 +115,7 @@ func (a *App) pseIndexDetails(ctx context.Context) (pseIndexDetails, error) {
 	}
 	if th := a.pseThemes(); th != nil {
 		for _, l := range th.Libraries() {
-			lib := pseIndexLibrary{pseIndexRow: pseIndexRow{Name: l.Name, Type: l.Type}}
+			lib := pseIndexLibrary{pseIndexRow: pseIndexRow{ID: strconv.FormatInt(l.ID, 10), Name: l.Name, Type: l.Type}}
 			var all []core.RatingKey
 			for _, id := range l.Collections {
 				row, ok := rows[id]

@@ -282,6 +282,10 @@ type source struct {
 
 // sources liste les sources interrogées et leur limite quotidienne.
 func (s *Service) sources() []source {
+	// Explicit empty selection; an empty setting retains legacy Stremio auto mode.
+	if len(s.d.Settings.Sources) == 1 && s.d.Settings.Sources[0] == "__none__" {
+		return nil
+	}
 	cfg := s.d.Config()
 	explicit := map[string]bool{}
 	for _, id := range s.d.Settings.Sources {

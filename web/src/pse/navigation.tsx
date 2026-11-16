@@ -6,9 +6,10 @@ export const REMIX_TABS = [
     key: "sources",
     fr: "Sources",
     en: "Sources",
-    features: ["indexer", "sfr", "seerrcatalog", "torrent", "torrent2", "torrent3", "xdcc", "ftp"],
+    features: ["sfr", "seerrcatalog", "torrent", "torrent2", "torrent3", "xdcc", "ftp"],
   },
-  { key: "priorites", fr: "Priorités", en: "Priorities", features: [] },
+  { key: "indexation", fr: "Indexation", en: "Indexing", features: ["indexer"] },
+  { key: "lecture", fr: "Lecture et priorités", en: "Playback & priorities", features: [] },
   {
     key: "langues",
     fr: "Langues et qualité",
@@ -33,6 +34,7 @@ export const REMIX_TABS = [
 ] as const;
 
 export function legacyRemixRoute(tab?: string): string | null {
+  if (tab === "priorites") return "/remix/lecture";
   if (tab === "films") return "/remix/langues";
   if (tab === "animes") return "/remix/contenus?content=animes";
   if (tab === "musique") return "/remix/contenus?content=musique";

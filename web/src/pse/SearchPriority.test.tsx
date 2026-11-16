@@ -36,6 +36,11 @@ beforeEach(() => {
   apiFetch.mockReset();
   rebuild.mockReset();
   apiFetch.mockImplementation(async (path: string) => {
+    if (path === "/pse/indexer/details")
+      return {
+        libraries: [{ id: "4", titles: 5, indexed: 4, found: 3, playable: 2 }],
+        collections: [{ id: "1", titles: 3, indexed: 2, found: 1, playable: 0 }],
+      };
     if (path.endsWith("priority/search")) return { queued: 2 };
     return path.endsWith("priority") ? prio : themes;
   });
@@ -52,10 +57,14 @@ it("puts prioritized targets first and filters by name", () => {
 
 it("saves a level, searches now and refreshes every collection of a library", async () => {
   render(<SearchPriority />);
-  const summary = await screen.findByText("Search priority");
+  const summary = await screen.findByText("Titles to index first");
   expect(summary.closest("details")).not.toHaveAttribute("open");
   fireEvent.click(summary);
   await screen.findByText("2 priority title(s)");
+  expect(
+    await screen.findByText("5 in catalogue · 4 searched · 3 with releases · 2 shown"),
+  ).toBeTruthy();
+  expect(screen.getByText("3 in catalogue · 2 searched · 1 with releases · 0 shown")).toBeTruthy();
 
   fireEvent.click(screen.getByLabelText("Services priority"));
   fireEvent.click(await screen.findByRole("option", { name: /^High/ }));
@@ -97,4 +106,16 @@ it("recognizes the SeerrCatalog and RSS Catalog add-ons", () => {
     level: 1,
   });
   expect(addonPreset("Cinemeta", ["plugin:com.linvo.cinemeta/top"])).toBeNull();
+});
+
+it("keeps priority controls usable when coverage counts are unavailable", async () => {
+  apiFetch.mockImplementation(async (path: string) => {
+    if (path === "/pse/indexer/details") throw new Error("temporary statistics failure");
+    return path.endsWith("priority") ? prio : themes;
+  });
+  render(<SearchPriority />);
+  fireEvent.click(await screen.findByText("Titles to index first"));
+  expect(await screen.findByLabelText("Services priority")).toBeTruthy();
+  expect(screen.queryByText(/^0 in catalogue/)).toBeNull();
+  expect(screen.getAllByText(/Counts unavailable|loading/i).length).toBeGreaterThan(0);
 });

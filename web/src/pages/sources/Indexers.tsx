@@ -1,3 +1,4 @@
+import { indexerOrigin } from "../../pse/indexerOrigin";
 import { SourceProxyFields } from "../../pse/SourceProxyFields";
 import {
   Alert,
@@ -258,8 +259,10 @@ export function IndexerList({
   version = 0,
   addRequest,
   onSaved,
+  originKey,
   view = "all", // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
 }: {
+  originKey?: string;
   version?: number;
   onSaved?: (name: string) => void;
   addRequest?: {
@@ -290,7 +293,11 @@ export function IndexerList({
   const cfg = config.data;
   const indexers = cfg?.indexers ?? [];
   // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
-  const shown = indexers.map((ix, at) => ({ ix, at })).filter((r) => pseShowsIndexer(view, r.ix));
+  const shown = indexers
+    .map((ix, at) => ({ ix, at }))
+    .filter(
+      (r) => pseShowsIndexer(view, r.ix) && (!originKey || indexerOrigin(r.ix).key === originKey),
+    );
   const definitions = sites.data ?? null;
   // A definition installed a moment ago, until the reloaded list includes it.
   const [installed, setInstalled] = useState<SiteDefinition | null>(null);
@@ -571,6 +578,7 @@ export function IndexerList({
                   position={at + 1}
                   logo={isStremio(ix) ? <StremioMark /> : undefined}
                   description={[
+                    ix.kind !== "stremio" ? indexerOrigin(ix).label : "",
                     at === 0 ? t("Searched first") : t("Priority {number}", { number: at + 1 }),
                     site && ix.url ? hostOf(ix.url) : "",
                     site && def && def.name !== label

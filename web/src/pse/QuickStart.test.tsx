@@ -16,7 +16,7 @@ it("exposes the guide and directs users to the actual indexing settings", () => 
   expect(screen.getByText("Réglage enregistré : désactivée")).toBeVisible();
   expect(screen.getByRole("link", { name: "Régler l’indexation" })).toHaveAttribute(
     "href",
-    "/remix/sources?source=indexation#pse-pse_indexer",
+    "/remix/indexation#pse-pse_indexer",
   );
   expect(screen.getByRole("link", { name: "Connecter un client" })).toHaveAttribute(
     "href",

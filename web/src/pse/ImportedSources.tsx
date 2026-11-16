@@ -1,4 +1,5 @@
-import { Checkbox, Select } from "@braedonsaunders/appkit-ui";
+import { indexerOrigin } from "./indexerOrigin";
+import { Button, Checkbox, Select } from "@braedonsaunders/appkit-ui";
 import { useState } from "react";
 import { api } from "../lib/api";
 import { useAsync } from "../lib/hooks";
@@ -18,7 +19,8 @@ export function ImportedSources({
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState<"name" | "category" | "content">("category");
   const [content, setContent] = useState("all");
-  const selected = value.split(",").filter(Boolean);
+  const automatic = value.trim() === "";
+  const selected = value.split(",").filter((id) => id && id !== "__none__");
   const choices: Option[] = cfg.data?.indexers
     ? [
         ...cfg.data.indexers.map((ix) => ({
@@ -47,8 +49,20 @@ export function ImportedSources({
     const contentLabel =
       L("Films · Séries · Animes", "Movies · Shows · Anime") +
       (contents.includes("music") ? L(" · Albums via debrid", " · Albums via debrid") : "");
-    return { ...o, name, category, contents, contentLabel, enabled: ix?.enabled ?? true };
+    return {
+      ...o,
+      name,
+      category,
+      contents,
+      contentLabel,
+      origin: ix ? indexerOrigin(ix).label : "",
+      enabled: ix?.enabled ?? true,
+    };
   });
+  const effective = automatic
+    ? allRows.filter((r) => r.enabled && r.category === "Stremio").map((r) => r.value)
+    : selected;
+  const saveSelection = (ids: string[]) => onChange(ids.length ? ids.join(",") : "__none__");
   const rows = allRows
     .filter(
       (r) =>
@@ -65,6 +79,45 @@ export function ImportedSources({
     );
   return (
     <div className="w-full space-y-3">
+      <Select
+        aria-label={L("Mode de sélection", "Selection mode")}
+        value={automatic ? "auto" : "custom"}
+        onChange={(e) => (e.target.value === "auto" ? onChange("") : saveSelection(effective))}
+      >
+        <option value="auto">
+          {L("Automatique — addons Stremio activés", "Automatic — enabled Stremio addons")}
+        </option>
+        <option value="custom">
+          {L("Personnalisé — choisir mes sources", "Custom — choose my sources")}
+        </option>
+      </Select>
+      <p className="text-sm">
+        {L(
+          `${allRows.filter((r) => r.enabled && effective.includes(r.value)).length} source(s) active(s) utilisée(s) pour l’indexation`,
+          `${allRows.filter((r) => r.enabled && effective.includes(r.value)).length} enabled source(s) used for indexing`,
+        )}
+      </p>
+      {automatic ? (
+        <p className="text-xs text-fg-muted">
+          {L(
+            "Les cases montrent les addons utilisés automatiquement, y compris les futurs addons activés. Passez en mode Personnalisé pour sélectionner aussi Prowlarr, Jackett ou d’autres indexeurs.",
+            "The checkboxes show automatically used addons, including future enabled addons. Switch to Custom to also select Prowlarr, Jackett or other indexers.",
+          )}
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => saveSelection(allRows.filter((r) => r.enabled).map((r) => r.value))}
+          >
+            {L("Toutes les sources actuelles", "All current sources")}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => saveSelection([])}>
+            {L("Aucune source", "No sources")}
+          </Button>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <Select
           aria-label={L("Catégorie de source", "Source category")}
@@ -111,7 +164,7 @@ export function ImportedSources({
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-border">
-              <th className="p-2">{L("Sélection explicite", "Explicit selection")}</th>
+              <th className="p-2">{L("Utiliser pour l’indexation", "Use for indexing")}</th>
               <th className="p-2">{L("Catégorie", "Category")}</th>
               <th className="p-2">{L("Contenus concernés", "Content")}</th>
             </tr>
@@ -122,21 +175,20 @@ export function ImportedSources({
                 <td className="p-2">
                   <label className="flex items-center gap-2">
                     <Checkbox
-                      checked={selected.includes(row.value)}
+                      checked={effective.includes(row.value)}
+                      disabled={automatic || !row.enabled}
                       onChange={(event) => {
                         const next = event.currentTarget.checked
                           ? [...selected, row.value]
                           : selected.filter((id) => id !== row.value);
-                        onChange(
-                          choices
-                            .map((o) => o.value)
-                            .filter((id) => next.includes(id))
-                            .join(","),
+                        saveSelection(
+                          choices.map((o) => o.value).filter((id) => next.includes(id)),
                         );
                       }}
                     />
                     {row.name}
                   </label>
+                  <span className="text-xs text-fg-muted">{row.origin}</span>
                   {!row.enabled ? (
                     <span className="text-xs text-fg-muted">
                       {L("Désactivée dans les sources", "Disabled in sources")}
@@ -152,8 +204,8 @@ export function ImportedSources({
       </div>
       <p className="text-xs text-fg-muted">
         {L(
-          "Sans sélection explicite : tous les addons Stremio activés. Les indexeurs BitTorrent/Usenet nécessitent une sélection. Pour arrêter toutes les recherches, désactivez l’indexation. Les contenus disponibles dépendent de chaque source.",
-          "Without an explicit selection: every enabled Stremio addon. BitTorrent/Usenet indexers must be selected. Disable indexing to stop all searches. Available content depends on each source.",
+          "En mode personnalisé, aucune case cochée signifie aucune source interrogée. Les sources non choisies restent disponibles à la lecture. Pensez à enregistrer vos modifications.",
+          "In Custom mode, no checked boxes means no source is queried. Unselected sources remain available for playback. Remember to save your changes.",
         )}
       </p>
     </div>

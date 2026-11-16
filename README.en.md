@@ -202,7 +202,8 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) An interface that fits your habits
 
-- Eight tabs: **Sources**, **Priorities**, **Languages and quality**, **French subtitles on demand**, **Content and libraries**, **Local media**, **Statistics**, **Notifications and tracking**.
+- **Quick start** guides initial setup. **Sources** configures providers; **Indexing** selects those queried in the background; **Playback & priorities** sets playback preferences. Languages, on-demand subtitles, content, local media, statistics and tracking retain dedicated sections.
+- Automatic indexing of enabled Stremio addons or a custom selection, including none; Prowlarr/Jackett instance filters and catalogue, searched, with-release and shown counts for each prioritized library or collection.
 - Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
 - Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.
 

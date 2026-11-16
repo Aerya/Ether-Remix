@@ -103,8 +103,8 @@ var Features = communityFields([]Feature{
 		Fields: []Field{
 			{Key: "PSE_INDEXER", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
 				Help: tx("Mis en pause pendant les lectures. Changer un réglage redémarre l'indexation.", "Paused during playback. Changing a setting restarts indexing.")},
-			{Key: "PSE_INDEXER_SOURCES", Kind: KindMulti, Default: "", Label: tx("Sources importées", "Imported sources"),
-				Help: tx("Aucune sélection : tous les addons Stremio activés. Un indexeur Newznab/Torznab n'est interrogé que s'il est coché.", "No selection: every enabled Stremio addon. A Newznab/Torznab indexer is only queried when checked.")},
+			{Key: "PSE_INDEXER_SOURCES", Kind: KindMulti, Default: "", Label: tx("Sources utilisées pour l’indexation", "Sources used for indexing"),
+				Help: tx("Mode automatique : addons Stremio activés. Mode personnalisé : seules les sources cochées sont interrogées, y compris Prowlarr et Jackett. Ces choix ne changent pas les sources disponibles à la lecture.", "Automatic mode: enabled Stremio addons. Custom mode: only checked sources are queried, including Prowlarr and Jackett. These choices do not change sources available for playback.")},
 			{Key: "PSE_INDEXER_DAILY", Advanced: true, Kind: KindNumber, Default: "1000", Min: ptr(0), Max: ptr(100000), Label: tx("Requêtes par jour et par source", "Requests per day per source"),
 				Help: tx("Plafonné à 5 % de la limite déclarée d'un indexeur Newznab/Torznab.", "Capped at 5% of a Newznab/Torznab indexer's declared limit.")},
 			{Key: "PSE_INDEXER_PACE", Advanced: true, Kind: KindDuration, Default: "10s", Placeholder: "10s", Label: tx("Délai entre deux titres", "Delay between titles"),

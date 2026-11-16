@@ -208,3 +208,19 @@ func TestLocalVideosNeverReachRemoteIndexers(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 }
+
+func TestExplicitEmptySourcesDoesNotRestoreAutomaticAddons(t *testing.T) {
+	cfg := config.Config{Indexers: []config.Indexer{{ID: "addon", Enabled: true, Kind: config.IndexerKindStremio}}}
+	s := New(Deps{Config: func() config.Config { return cfg }, Settings: Settings{Daily: 10}})
+	if got := s.sources(); len(got) != 1 {
+		t.Fatalf("automatic sources: %v", got)
+	}
+	s.d.Settings.Sources = []string{"__none__"}
+	if got := s.sources(); len(got) != 0 {
+		t.Fatalf("empty selection restored addons: %v", got)
+	}
+	s.d.Settings.Sources = []string{"addon"}
+	if got := s.sources(); len(got) != 1 {
+		t.Fatalf("explicit source lost: %v", got)
+	}
+}

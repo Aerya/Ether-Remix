@@ -26,8 +26,31 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-quick-start",
+    id: "2026-11-16-settings-navigation",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "Sources, indexation et lecture mieux séparées",
+      "Clearer source, indexing and playback settings",
+    ],
+    items: [
+      [
+        "Sources configure les fournisseurs ; Indexation choisit les recherches en arrière-plan ; Lecture et priorités règle les préférences de lecture. Les anciens liens restent utilisables.",
+        "Sources configures providers; Indexing selects background searches; Playback & priorities controls playback preferences. Existing links remain usable.",
+      ],
+      [
+        "Choix explicite entre addons Stremio automatiques et sélection personnalisée, y compris aucune source. Les indexeurs sont filtrables par instance Prowlarr ou Jackett.",
+        "Explicit choice between automatic Stremio addons and a custom selection, including no sources. Indexers can be filtered by Prowlarr or Jackett instance.",
+      ],
+      [
+        "Les bibliothèques et collections prioritaires affichent leurs titres au catalogue, recherchés, avec release et affichés. Le démarrage rapide et les guides suivent cette organisation.",
+        "Priority libraries and collections show catalogue, searched, with-release and shown counts. Quick start and guides follow this organization.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-quick-start",
+    version: "0.2.37-remix.82.1",
     date: "2026-11-16",
     title: ["Démarrage rapide dans Remix", "Quick start in Remix"],
     items: [

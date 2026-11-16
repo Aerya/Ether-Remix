@@ -23,6 +23,7 @@ export interface SourceProxy {
   password?: string;
 }
 export interface Indexer {
+  prowlarrImport?: { dailyLimit: number; dailyGrabs: number; priority: number; enabled: boolean };
   playbackLastResort?: boolean;
   requestProxy?: SourceProxy;
   streamProxy?: SourceProxy;

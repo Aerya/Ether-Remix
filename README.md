@@ -202,7 +202,8 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) Une interface adaptée à vos habitudes
 
-- Huit onglets : **Sources**, **Priorités**, **Langues et qualité**, **VOSTFR à la demande**, **Contenus et bibliothèques**, **Médias locaux**, **Statistiques**, **Notifications et suivi**.
+- **Démarrage rapide** guide les premiers réglages. **Sources** configure les fournisseurs ; **Indexation** choisit ceux interrogés en arrière-plan ; **Lecture et priorités** règle les préférences de lecture. Langues, VOSTFR à la demande, contenus, médias locaux, statistiques et suivi gardent leurs espaces dédiés.
+- Indexation automatique des addons Stremio activés ou sélection personnalisée, même vide ; filtres par instance Prowlarr/Jackett et compteurs catalogue, recherchés, avec release et affichés pour chaque bibliothèque ou collection prioritaire.
 - Sources regroupées par famille, tri par catégorie ou contenu, clés debrid affichables ponctuellement et blocs repliables sans perdre la saisie. Réglez les palettes dans **Apparence**.
 - Six palettes : **Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine**, chacune en clair et sombre, avec aperçu immédiat et mémorisation par navigateur.
 
