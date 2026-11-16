@@ -255,3 +255,20 @@ func nzbFromURL(raw string) string {
 	}
 	return ""
 }
+
+// seedstremPlay identifies Seedstrem's resolve-on-play route, including a
+// private reverse-proxy prefix. Its magnet is an argument to the remote
+// torrent client, not a request to use Ether's debrid accounts.
+func seedstremPlay(raw, hash string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || hash == "" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	n := len(parts)
+	if n < 3 || parts[n-3] != "stremio" || parts[n-2] != "play" || hex40(parts[n-1]) != hash {
+		return false
+	}
+	magnetHash, ambiguous := hashFromMagnet(u.Query().Get("magnet"))
+	return !ambiguous && magnetHash == hash
+}

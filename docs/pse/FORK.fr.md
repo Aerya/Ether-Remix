@@ -157,3 +157,7 @@ Les collections Jellyfin/Emby utilisent le bit 60 pour leur vue virtuelle dans R
 ## Synchronisation du 15 novembre 2026
 
 Révision Ether intégrée : `13d21d35fd15980c13c2bca15a26ddb7e5b8734a`. Conserver le filtrage de découverte des collections, les messages de téléchargement local, les traductions des rangées Plex, la signature des profils de qualité, la priorité SubMaker et le routage MediaFlow lors des prochaines fusions. Les bibliothèques upstream utilisent désormais la source `catalogue` ; les bibliothèques issues des collections Remix restent disponibles. Le repère upstream avance avec cette résolution, sans changement des workflows de synchronisation.
+
+## Seedstrem
+
+`internal/stremio/backend.go` conserve les routes Seedstrem `/stremio/play/{hash}?magnet=…` comme flux HTTP à la demande, au lieu de les transformer en candidats pour les comptes débrideurs. Le helper `seedstremPlay` de `internal/stremio/links.go` vérifie la cohérence du hash et du magnet et accepte un préfixe privé. Conserver ce cas avant la branche torrent lors des synchronisations Ether. `seedstrem_test.go` couvre le manifeste distant, les autres routes et l’absence d’ouverture du flux pendant les contrôles d’arrière-plan. La console réutilise le formulaire Stremio natif, sans nouvelle configuration parallèle.

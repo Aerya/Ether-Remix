@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-continue-viewer-index",
+    id: "2026-11-16-seedstrem-sources",
     version: "current",
+    date: "2026-11-16",
+    title: ["Seedstrem dans les sources Stremio", "Seedstrem in Stremio sources"],
+    items: [
+      [
+        "Ajoutez votre instance Seedstrem pour lire les torrents pendant leur téléchargement sur son hôte. Les liens de lecture restent gérés par Seedstrem, sans les détourner vers un débrideur.",
+        "Add your Seedstrem instance to play torrents while they download on its host. Playback links stay managed by Seedstrem rather than being redirected to a debrid account.",
+      ],
+      [
+        "Les liens GitHub et d’auto-hébergement de Seedstrem et SeerrCatalog sont accessibles dans Sources → Stremio.",
+        "Seedstrem and SeerrCatalog GitHub/self-hosting links are available in Sources → Stremio.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-continue-viewer-index",
+    version: "0.2.37-remix.77.1",
     date: "2026-11-16",
     title: ["Historique de reprise optimisé", "Optimized resume history"],
     items: [

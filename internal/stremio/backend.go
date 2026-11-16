@@ -403,6 +403,12 @@ func convertWith(streams []stream, req core.SearchRequest, packs bool, opts conv
 		rel.Info = entryEpisodeIdentity(rel.Info, req, opts.entryEpisode)
 		rel.DebridCached, rel.DebridUncached = debridHints(s.Name)
 		switch {
+		// PSE-HOOK: Seedstrem garde son client torrent distant — voir docs/pse/FORK.fr.md
+		case streamURL != "" && seedstremPlay(streamURL, hash):
+			rel.GUID = "http:" + opts.instance + ":" + linkIdentity(name, size, streamURL, s, req)
+			rel.Protocol = core.ProtocolHTTP
+			rel.StreamURL, rel.StreamHeaders, rel.StreamOrigin = streamURL, s.requestHeaders(), opts.origin
+			rel.StreamOnDemand = true
 		case hash != "":
 			rel.GUID = "btih:" + hash + guidSuffix(s, req, packs)
 			rel.Protocol = core.ProtocolTorrent
