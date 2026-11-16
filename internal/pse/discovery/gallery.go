@@ -17,6 +17,7 @@ type galleryImage struct {
 	Name   string `json:"name"`
 	URL    string `json:"url"`
 	Source string `json:"source"`
+	Page   string `json:"page,omitempty"`
 }
 
 var galleryCache struct {
@@ -79,6 +80,20 @@ func (s *Service) gallery(w http.ResponseWriter, r *http.Request) {
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	if len(q) < 2 || len(q) > 180 {
 		http.Error(w, "Saisissez au moins deux caractères", 400)
+		return
+	}
+	provider := r.URL.Query().Get("provider")
+	if provider != "" && provider != "github" {
+		if provider != "ACdb" && provider != "ThePosterDB" && provider != "MediUX" {
+			http.Error(w, "Cette source ne fournit pas encore de recherche de cartes connectée dans Remix", http.StatusBadRequest)
+			return
+		}
+		images, err := loadPublicGallery(r.Context(), provider, q, r.URL.Query().Get("group"), r.URL.Query().Get("genreId"))
+		if err != nil {
+			http.Error(w, "La recherche de visuels est indisponible : "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"images": images})
 		return
 	}
 	images, err := loadGallery(r.Context())

@@ -75,13 +75,38 @@ export function DiscoveryCardsPicker() {
   const selected = choices ?? state.data?.choices ?? [];
   const starterCards = state.data?.cards ?? [];
   const [onlySelected, setOnlySelected] = useState(false);
-  // Query results belong to the explicit search that produced them. Switching
-  // country/category clears them, rather than relabelling old results.
+  // Load the complete regional service catalogue without requiring a hidden extra step.
   useEffect(() => {
     setResults(null);
     setQuery("");
+    if (family !== "services") return;
+    let cancelled = false;
+    setSearching(true);
+    setError("");
+    apiFetch<{ cards: NavigationCard[]; logos: Record<string, string> }>(
+      endpoint + "catalog?" + new URLSearchParams({ kind: "watchProvider", region, q: "" }),
+    )
+      .then((data) => {
+        if (!cancelled)
+          setResults(
+            data.cards.map((card) => ({
+              card,
+              region,
+              artwork: { mode: "auto", logo: data.logos?.[card.id], accent: card.accent },
+            })),
+          );
+      })
+      .catch((e) => {
+        if (!cancelled) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [family, region]);
-  const visible = onlySelected
+  const visible: Choice[] = onlySelected
     ? selected.filter(
         (c) => c.card.group === family && (family !== "services" || c.region === region),
       )
@@ -297,44 +322,60 @@ export function DiscoveryCardsPicker() {
           {filtered.map((c) => {
             const key = choiceKey(c);
             const installed = selected.find((x) => choiceKey(x) === key);
-            const displayed = installed ?? c;
+            const displayed = installed
+              ? { ...c, ...installed, artwork: installed.artwork ?? c.artwork }
+              : c;
             return (
-              <div key={key} className="overflow-hidden rounded-lg border border-border">
-                <label
-                  className="relative flex aspect-video items-center justify-center gap-2 p-3 text-center text-white font-medium"
-                  style={{
-                    background: `linear-gradient(135deg, ${c.card.accent || "#31566a"}, #10131d)`,
-                  }}
-                >
-                  <input
-                    aria-label={c.card.name}
-                    type="checkbox"
-                    className="absolute top-2 left-2 z-10"
-                    checked={!!installed}
-                    onChange={() => toggle(c)}
-                  />
-                  {picture(displayed) ? (
-                    <img
-                      src={picture(displayed)}
-                      alt={c.card.name}
-                      className="max-h-full max-w-full object-contain"
+              <div
+                key={key}
+                className={`min-w-0 overflow-hidden rounded-lg border border-border ${editing === key ? "col-span-full" : ""}`}
+              >
+                <div className={editing === key ? "max-w-xs" : ""}>
+                  <label
+                    className="relative flex aspect-video items-center justify-center gap-2 p-3 text-center text-white font-medium"
+                    style={{
+                      background: `linear-gradient(135deg, ${c.card.accent || "#31566a"}, #10131d)`,
+                    }}
+                  >
+                    <input
+                      aria-label={c.card.name}
+                      type="checkbox"
+                      className="absolute top-2 left-2 z-10"
+                      checked={!!installed}
+                      onChange={() => toggle(c)}
                     />
-                  ) : (
-                    c.card.name
-                  )}
-                </label>
-                <div className="p-2 text-sm">
-                  {c.card.name}
-                  {family === "services" && ` · ${c.region}`}
+                    {picture(displayed) ? (
+                      <img
+                        src={picture(displayed)}
+                        alt={c.card.name}
+                        className="max-h-full max-w-full object-contain"
+                      />
+                    ) : (
+                      c.card.name
+                    )}
+                  </label>
+                  <div className="p-2 text-sm">
+                    {c.card.name}
+                    {family === "services" && ` · ${c.region}`}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    disabled={!installed}
+                    className="w-full"
+                    aria-expanded={editing === key}
+                    onClick={() => setEditing(editing === key ? null : key)}
+                  >
+                    {L("Choisir le visuel", "Choose artwork")}
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  disabled={!installed}
-                  className="w-full"
-                  onClick={() => setEditing(key)}
-                >
-                  {L("Choisir le visuel", "Choose artwork")}
-                </Button>
+                {editing === key && editingChoice && (
+                  <ArtworkPicker
+                    key={editing}
+                    choice={editingChoice}
+                    onChange={(art) => changeArt(key, art)}
+                    onClose={() => setEditing(null)}
+                  />
+                )}
               </div>
             );
           })}
@@ -348,14 +389,6 @@ export function DiscoveryCardsPicker() {
           </p>
         )}
       </fieldset>
-      {editingChoice && (
-        <ArtworkPicker
-          key={editing}
-          choice={editingChoice}
-          onChange={(art) => changeArt(choiceKey(editingChoice), art)}
-          onClose={() => setEditing(null)}
-        />
-      )}
       <details className="rounded-lg border border-border p-3" open>
         <summary className="cursor-pointer font-medium">
           {L("Aperçu de mes cartes", "My cards preview")}
@@ -381,7 +414,13 @@ export function DiscoveryCardsPicker() {
                   key={choiceKey(c)}
                   aria-label={c.card.name}
                   className="rounded border border-border p-2 text-sm"
-                  onClick={() => setEditing(choiceKey(c))}
+                  onClick={() => {
+                    setFamily(c.card.group);
+                    setRegion(c.region);
+                    setQuery("");
+                    setOnlySelected(true);
+                    setEditing(choiceKey(c));
+                  }}
                 >
                   {picture(c) || c.collectionId ? (
                     <img
@@ -450,6 +489,7 @@ interface GalleryImage {
   name: string;
   url: string;
   source: string;
+  page?: string;
 }
 function ArtworkPicker({
   choice,
@@ -474,7 +514,17 @@ function ArtworkPicker({
     setError("");
     try {
       const data = await apiFetch<{ images: GalleryImage[] }>(
-        endpoint + "gallery?q=" + encodeURIComponent(query),
+        endpoint +
+          "gallery?" +
+          new URLSearchParams({
+            q: query,
+            provider: source,
+            group: choice.card.group,
+            genreId:
+              choice.card.group === "genres" && query === choice.card.name
+                ? String(choice.card.entity)
+                : "",
+          }),
       );
       setImages(data.images);
       if (!data.images.length)
@@ -538,8 +588,10 @@ function ArtworkPicker({
           aria-label={L("Source du visuel", "Artwork source")}
           className="ml-2 max-w-full rounded border border-border bg-surface p-2"
           value={source}
+          disabled={busy}
           onChange={(e) => {
             setSource(e.target.value);
+            setImages([]);
             setError("");
             if (e.target.value === "auto")
               onChange({ mode: "auto", accent: choice.card.accent, logo: choice.artwork?.logo });
@@ -549,10 +601,29 @@ function ArtworkPicker({
             {L("Automatique · TMDB / mosaïque", "Automatic · TMDB / mosaic")}
           </option>
           <option value="github">GitHub · kometa-config-images</option>
+          {["ThePosterDB", "ACdb", "MediUX"].map((name) => (
+            <option key={name} value={name}>
+              {name} · {L("galerie", "gallery")}
+            </option>
+          ))}
           <option value="import">{L("Importer · fichier ou URL", "Import · file or URL")}</option>
         </select>
       </label>
-      {source === "github" && (
+      {source === "MediUX" && (
+        <p className="text-sm">
+          {L(
+            "MediUX : galerie du genre sélectionné ; utilisez un nom anglais pour rechercher un autre genre. Les studios et services ne sont pas couverts par ce connecteur.",
+            "MediUX: selected genre gallery; use an English name to search another genre. This connector does not cover studios or services.",
+          )}
+        </p>
+      )}
+      <p className="text-xs text-fg-muted">
+        {L(
+          "Fanart.tv : recherche intégrée de cartes non disponible. L’import fichier/URL reste possible.",
+          "Fanart.tv: integrated navigation card search is unavailable. File/URL import remains available.",
+        )}
+      </p>
+      {["github", "ThePosterDB", "ACdb", "MediUX"].includes(source) && (
         <>
           <div className="flex flex-wrap gap-2">
             <Input
@@ -570,27 +641,46 @@ function ArtworkPicker({
           </div>
           <a
             className="text-sm underline"
-            href="https://github.com/nichtlegacy/kometa-config-images"
+            href={
+              source === "github"
+                ? "https://github.com/nichtlegacy/kometa-config-images"
+                : source === "ACdb"
+                  ? "https://acdb.tv/library-posters/"
+                  : source === "MediUX"
+                    ? "https://mediux.pro/genres"
+                    : "https://theposterdb.com/"
+            }
             target="_blank"
             rel="noreferrer"
           >
-            nichtlegacy · kometa-config-images
+            {source === "github" ? "nichtlegacy · kometa-config-images" : source}
           </a>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {images.map((image) => (
-              <button
-                key={image.url}
-                className="rounded border border-border p-2 text-xs"
-                onClick={() => onChange({ mode: "custom", url: image.url })}
-              >
-                <img
-                  src={image.url}
-                  alt={image.name}
-                  className="aspect-video w-full object-contain"
-                  loading="lazy"
-                />
-                <span className="break-words">{image.source}</span>
-              </button>
+              <div key={image.url}>
+                <button
+                  className="rounded border border-border p-2 text-xs"
+                  onClick={() => onChange({ mode: "custom", url: image.url })}
+                >
+                  <img
+                    src={image.url}
+                    alt={image.name}
+                    className="aspect-video w-full object-contain"
+                    loading="lazy"
+                  />
+                  <span className="break-words">{image.source}</span>
+                </button>
+                {image.page && (
+                  <a
+                    href={image.page}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block text-xs underline"
+                  >
+                    {L("Voir la source et le créateur", "View source and creator")}
+                  </a>
+                )}
+              </div>
             ))}
           </div>
         </>
@@ -599,8 +689,8 @@ function ArtworkPicker({
         <>
           <p className="text-xs text-fg-muted">
             {L(
-              "Choisissez une image sur le site, puis importez son fichier ou son URL directe. Ces sites ne sont pas des galeries intégrées à Remix.",
-              "Choose an image on the website, then import its file or direct URL. These websites are not integrated galleries in Remix.",
+              "Alternative aux galeries : choisissez une image sur le site, puis importez son fichier ou son URL directe.",
+              "Alternative to galleries: choose an image on the website, then import its file or direct URL.",
             )}
           </p>
           <div className="flex flex-wrap gap-3 text-sm">
@@ -609,11 +699,13 @@ function ArtworkPicker({
               ["MediUX", "https://mediux.pro/"],
               ["Fanart.tv", "https://fanart.tv/"],
               ["ACdb", "https://acdb.tv/art-department"],
-            ].map(([name, href]) => (
-              <a key={name} href={href} target="_blank" rel="noreferrer" className="underline">
-                {name}
-              </a>
-            ))}
+            ]
+              .filter(([name]) => source === "import" || name === source)
+              .map(([name, href]) => (
+                <a key={name} href={href} target="_blank" rel="noreferrer" className="underline">
+                  {name}
+                </a>
+              ))}
           </div>
           <div className="flex flex-wrap gap-2">
             <Input
