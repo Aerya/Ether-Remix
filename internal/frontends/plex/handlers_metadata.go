@@ -971,6 +971,9 @@ func (s *Server) collectionMetadata(c *frontend.Collection, contexts ...context.
 	if m.Art != "" {
 		m.Image = append(m.Image, model.Image{Alt: c.Title, Type: "background", URL: m.Art})
 	}
+	if c.NavigationGroup != "" {
+		m.TitleSort = fmt.Sprintf("000-%04d-%s", c.NavigationOrder, c.Title)
+	}
 	m.UltraBlurColors = s.ultraBlurFor(c.Key, c.BackdropPath)
 	if len(contexts) > 0 {
 		s.applyListWatch(contexts[0], &m, c.Key)

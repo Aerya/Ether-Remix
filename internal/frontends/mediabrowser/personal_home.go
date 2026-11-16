@@ -78,6 +78,9 @@ func personalHomeFrom(settings frontend.Settings) personalHomeConfig {
 }
 
 func (i *instance) personalConfig() personalHomeConfig {
+	if i.discoveryCardsEnabled() {
+		return personalHomeConfig{enabled: false}
+	}
 	if i.host.Config == nil {
 		return personalHomeFrom(nil)
 	}
@@ -1004,6 +1007,7 @@ func (i *instance) storedUserConfig(r *http.Request, v *frontend.Viewer) (map[st
 }
 
 func (i *instance) applyOrderedViews(r *http.Request, v *frontend.Viewer, configuration map[string]any) {
+	defer i.discoveryPreferences(r, v, configuration)
 	if stored, ok := i.storedUserConfig(r, v); ok {
 		for _, key := range []string{"OrderedViews", "LatestItemsExcludes", "MyMediaExcludes", "HidePlayedInLatest"} {
 			value, exists := stored[key]
@@ -1124,6 +1128,12 @@ func (i *instance) applyHomeSectionDefaults(r *http.Request, v *frontend.Viewer,
 	if prefs == nil {
 		prefs = map[string]any{}
 		object["CustomPrefs"] = prefs
+	}
+	if i.discoveryCardsEnabled() {
+		for n, value := range []string{"latestmedia", "resume", "nextup", "smalllibrarytiles", "none", "none", "none", "none", "none", "none"} {
+			prefs["homesection"+strconv.Itoa(n)] = value
+		}
+		return
 	}
 	for key := range prefs {
 		if strings.HasPrefix(strings.ToLower(key), "homesection") {

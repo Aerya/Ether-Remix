@@ -157,6 +157,8 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Personal libraries and collections
 
+**Nuvio-inspired navigation cards**: quick setup for Studios & labels, Services and Genres on Plex and Jellyfin/Emby home screens, with clickable collections, logos or mosaics, and restoration of the previous home. Rendering depends on the client. [Guide](docs/pse/GUIDE.en.md#nuvio-inspired-navigation-cards).
+
 - **Xperience import**: in Content and libraries, paste your [Xperience](https://xperience-app.com/) manifest, select catalogues and parameters, then create libraries, collections or both. Source ordering, daily refresh and Remix filters are preserved. [How to use it](docs/pse/GUIDE.en.md#xperience-import).
 - **French quick setup**: create Movies, Shows and Anime libraries from three suggested JukeBox lists, or choose other lists (documentaries, studios…). Collection-only mode, daily refresh and newest-release-first sorting. Libraries publish to Plex, Jellyfin and Emby; your sources and language settings still apply. [Instructions](docs/pse/GUIDE.en.md#jukebox-quick-setup).
 - Organize Plex libraries by **service, studio, anime, documentaries, concerts or live shows**. Concerts combine recorded-performance keywords with the Music genre to reduce fiction matches.

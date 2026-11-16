@@ -113,7 +113,7 @@ func (s *Service) UpdateSpec(ctx context.Context, id string, sp core.CollectionS
 
 func (s *Service) afterSave(ctx context.Context, row *specRow) (*core.CollectionSpec, error) {
 	if row.enabled {
-		if hasRemoteListSource(row.spec) {
+		if hasRemoteListSource(row.spec) || row.spec.NavigationGroup != "" {
 			go func() {
 				bctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
@@ -294,7 +294,7 @@ func (s *Service) CollectionArtwork(ctx context.Context, user *core.User, key co
 	switch element {
 	case "thumb", "poster", "composite":
 	case "art", "background":
-		if row.spec.Artwork.Mode != "custom" || strings.TrimSpace(row.spec.Artwork.URL) == "" {
+		if row.spec.NavigationGroup == "" && (row.spec.Artwork.Mode != "custom" || strings.TrimSpace(row.spec.Artwork.URL) == "") {
 			return nil, "", false, nil
 		}
 	default:
@@ -360,7 +360,7 @@ func (s *Service) artworkFor(ctx context.Context, row *specRow, keys []core.Rati
 	if s.art == nil {
 		return nil, "", time.Time{}, ErrNoArtwork
 	}
-	req := artwork.PosterRequest{Title: row.spec.Name, Mode: art.Mode, Accent: art.Accent, Width: w}
+	req := artwork.PosterRequest{Title: row.spec.Name, Mode: art.Mode, Accent: art.Accent, Width: w, Navigation: row.spec.NavigationGroup != "", Logo: art.Logo}
 	if req.Mode == "tmdb" || req.Mode == "custom" {
 		req.Mode = "auto"
 	}
@@ -380,6 +380,10 @@ func (s *Service) artworkFor(ctx context.Context, row *specRow, keys []core.Rati
 				break
 			}
 		}
+	}
+	if req.Navigation && row.spec.NavigationGroup != "genres" {
+		req.Posters = nil
+		req.Backdrops = nil
 	}
 	req.Subtitle = subtitleFor(row.spec, len(keys))
 	data, ct, err := s.art.Poster(ctx, req)

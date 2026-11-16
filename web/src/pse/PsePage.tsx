@@ -1,3 +1,4 @@
+import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStart, QuickStartHint } from "./QuickStart";
 import { XperienceImport } from "./XperienceImport";
 import { LocalMediaHealth } from "./LocalMediaHealth";
@@ -262,7 +263,12 @@ function PseSettings() {
     >
       <CollapsibleSections.Provider key={tab} value={tab !== "statistiques"}>
         <div className="space-y-6">
-          {tab === "demarrage" ? <QuickStart indexing={saved.PSE_INDEXER === "on"} /> : null}
+          {tab === "demarrage" ? (
+            <>
+              <QuickStart indexing={saved.PSE_INDEXER === "on"} />
+              <DiscoveryCardsSetup />
+            </>
+          ) : null}
           {tab === "statistiques" && saved.PSE_INDEXER === "off" ? <QuickStartHint /> : null}
           {tab === "sources" ? (
             <RemixSources
@@ -384,6 +390,7 @@ function PseSettings() {
                   </Link>
                 </p>
               ) : null}
+              {content !== "musique" ? <DiscoveryCardsSetup /> : null}
               {content !== "musique" ? <JukeboxQuickSetup /> : null}
               {content !== "musique" ? <XperienceImport /> : null}
               {content === "musique" ? (

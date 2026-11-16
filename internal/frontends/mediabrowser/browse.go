@@ -219,6 +219,9 @@ func (i *instance) writeCollectionFolder(w http.ResponseWriter, r *http.Request,
 	if i.pseWriteFolder(w, r, v, viewNum) {
 		return
 	}
+	if i.discoveryFolderDetail(w, r, viewNum) {
+		return
+	}
 	if viewNum == collectionsViewNumber {
 		if folder, ok := i.collectionsFolder(r, v); ok {
 			i.replyItems(w, r, folder)
@@ -303,6 +306,7 @@ func (i *instance) browseRoutes() error {
 			items = append(items, folder)
 		}
 		items = i.prependPersonalViews(r, v, items)
+		items = i.discoveryViews(items)
 		i.replyItems(w, r, i.queryResult(items, len(items), 0))
 	}
 	rowHandler := func(purpose frontend.RowPurpose, asArray bool) http.HandlerFunc {
@@ -529,6 +533,7 @@ func (i *instance) browseRoutes() error {
 				http.NotFound(w, r)
 				return
 			}
+			i.discoveryArtwork(r, v, &d)
 			d.Title.Key = key // Bind image capabilities to the authorized container.
 			tags, backdrops, imageMetadata := i.imageTags(r, d, token)
 			for name, value := range imageMetadata {
@@ -989,6 +994,9 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 	v, _, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.discoveryItems(w, r, v, false) {
 		return
 	}
 	if i.writeLiveSearchItems(w, r, v) {

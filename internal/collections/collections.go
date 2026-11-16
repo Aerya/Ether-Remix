@@ -731,7 +731,7 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 	if row.spec.MediaType == MediaMixed && t != "" {
 		keys = sectionKeys(keys, t)
 	}
-	c := core.Collection{PreviewOnFocus: row.spec.PreviewOnFocus, RankedTop10: row.spec.RankedTop10, Key: row.key(), Title: row.spec.Name, Summary: row.spec.Description, Kind: "smart",
+	c := core.Collection{NavigationGroup: row.spec.NavigationGroup, NavigationOrder: row.spec.NavigationOrder, PreviewOnFocus: row.spec.PreviewOnFocus, RankedTop10: row.spec.RankedTop10, Key: row.key(), Title: row.spec.Name, Summary: row.spec.Description, Kind: "smart",
 		OwnerUserID: row.owner, ChildCount: len(keys), Upcoming: row.spec.ReleaseMode == "upcoming" || row.spec.ReleaseMode == "mixed"}
 	if c.RankedTop10 {
 		c.ChildCount = min(c.ChildCount, 10)
@@ -811,7 +811,16 @@ func (s *Service) List(ctx context.Context, user *core.User, t core.MediaType) (
 	out := []core.Collection{}
 	deadline := time.Now().Add(2 * time.Second)
 	// Built-ins first, as Plex has always listed them.
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i].spec, rows[j].spec
+		if (a.NavigationGroup != "") != (b.NavigationGroup != "") {
+			return a.NavigationGroup != ""
+		}
+		if a.NavigationGroup != "" && a.NavigationOrder != b.NavigationOrder {
+			return a.NavigationOrder < b.NavigationOrder
+		}
+		return rows[i].builtin && !rows[j].builtin
+	})
 	for _, row := range rows {
 		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, t) {
 			continue

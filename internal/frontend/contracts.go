@@ -535,6 +535,8 @@ type ExternalRequest struct {
 // CollectionQuery requests viewer-scoped collection pagination. A nonpositive
 // Limit defaults to 50; larger requests are capped at 500.
 type CollectionQuery struct {
+	NavigationOnly  bool
+	NavigationGroup string
 	// ExistsOnly stops after the first visible collection; Total is then 0 or 1.
 	ExistsOnly    bool
 	Query         string
@@ -1025,3 +1027,6 @@ type QualitySessions interface {
 	QualityRungs(context.Context, SessionAccess, string) ([]HLSRung, error)
 	PrepareQuality(context.Context, SessionAccess, string, string, time.Duration) (string, time.Duration, error)
 }
+
+// NavigationGroups defines the shared ordering and labels of discovery collection shelves.
+var NavigationGroups = []struct{ ID, Name string }{{"studios", "Studios & labels"}, {"services", "Services"}, {"genres", "Genres"}}

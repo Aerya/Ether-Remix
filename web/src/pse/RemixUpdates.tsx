@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-music-shared-catalog-cache",
+    id: "2026-11-16-navigation-cards",
     version: "current",
+    date: "2026-11-16",
+    title: ["Des cartes pour parcourir vos collections", "Cards for browsing your collections"],
+    items: [
+      [
+        "Configuration rapide « Cartes inspirées de Nuvio » : Studios & labels, Services et Genres remplacent les recommandations Plex et Jellyfin/Emby. Chaque carte ouvre une collection ; le rendu reste propre au client.",
+        "Quick setup: Nuvio-inspired Studios & labels, Services and Genres cards replace Plex and Jellyfin/Emby recommendations. Each card opens a collection; rendering remains client-specific.",
+      ],
+      [
+        "Sélection des cartes, pays des services, logos ou mosaïques et restauration de l’accueil précédent. Les collections créées restent modifiables et figurent en tête des listes.",
+        "Select cards and service country, display logos or mosaics, and restore the previous home. Created collections stay editable and appear first in lists.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-music-shared-catalog-cache",
+    version: "0.2.37-remix.87.1",
     date: "2026-11-16",
     title: ["Musique : lecture entre Plex et Jellyfin", "Music: playback across Plex and Jellyfin"],
     items: [

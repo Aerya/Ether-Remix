@@ -288,6 +288,12 @@ func validateWith(reg *KindRegistry, s *core.CollectionSpec) error {
 			ve.add("rotate.every", `must be "daily" or "weekly"`)
 		}
 	}
+	if s.NavigationGroup != "" && s.NavigationGroup != "studios" && s.NavigationGroup != "services" && s.NavigationGroup != "genres" {
+		ve.add("navigationGroup", "unknown navigation group")
+	}
+	if s.Artwork.Logo != "" && (!strings.HasPrefix(s.Artwork.Logo, "/") || strings.HasPrefix(s.Artwork.Logo, "//") || strings.Contains(s.Artwork.Logo, "..")) {
+		ve.add("artwork.logo", "expected a TMDB image path")
+	}
 	if !artworkModes[s.Artwork.Mode] {
 		ve.add("artwork.mode", "unknown artwork mode "+strconv.Quote(s.Artwork.Mode))
 	}

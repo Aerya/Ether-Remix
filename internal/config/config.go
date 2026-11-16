@@ -22,6 +22,8 @@ import (
 )
 
 type Config struct {
+	// DiscoveryCards replaces home recommendations without modifying saved layouts.
+	DiscoveryCards bool `json:"discoveryCards,omitempty"`
 	// Frontends selects protocol listeners by their registered ID.
 	Frontends map[string]Frontend `json:"frontends,omitempty"`
 	// FrontendPorts are node-local listener port overrides.

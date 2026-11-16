@@ -1,3 +1,4 @@
+import { DiscoveryCardsNotice } from "../../pse/DiscoveryCardsSetup";
 import {
   Avatar,
   Badge,
@@ -165,6 +166,7 @@ export function HomeCanvas({
 
   return (
     <div className="space-y-4">
+      <DiscoveryCardsNotice />
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex min-w-0 items-center gap-2">
           {viewer ? (

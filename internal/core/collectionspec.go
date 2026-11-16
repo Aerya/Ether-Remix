@@ -10,14 +10,16 @@ import (
 // CollectionSpec is an owner-designed collection: candidates gathered from
 // Sources, filtered by Rules, sorted, limited and published to Plex.
 type CollectionSpec struct {
-	ID          string             `json:"id,omitempty"` // server-assigned
-	Name        string             `json:"name"`
-	Description string             `json:"description,omitempty"`
-	MediaType   string             `json:"mediaType"` // "movie" | "show" | "mixed"
-	Sources     []CollectionSource `json:"sources"`
-	Match       string             `json:"match"` // "all" | "any"
-	Rules       []CollectionRule   `json:"rules"`
-	Exclude     []CollectionRule   `json:"exclude"`
+	NavigationGroup string             `json:"navigationGroup,omitempty"` // studios | services | genres
+	NavigationOrder int                `json:"navigationOrder,omitempty"`
+	ID              string             `json:"id,omitempty"` // server-assigned
+	Name            string             `json:"name"`
+	Description     string             `json:"description,omitempty"`
+	MediaType       string             `json:"mediaType"` // "movie" | "show" | "mixed"
+	Sources         []CollectionSource `json:"sources"`
+	Match           string             `json:"match"` // "all" | "any"
+	Rules           []CollectionRule   `json:"rules"`
+	Exclude         []CollectionRule   `json:"exclude"`
 	// Sort: popularity | rating | released | title | added | random | personal | source.
 	RankedTop10    bool              `json:"rankedTop10,omitempty"`
 	Sort           string            `json:"sort"`
@@ -98,7 +100,8 @@ type CollectionRotate struct {
 
 // CollectionArtwork selects the poster Plex shows for the collection.
 type CollectionArtwork struct {
-	Mode   string `json:"mode"` // auto | collage | backdrop | tmdb | custom
+	Logo   string `json:"logo,omitempty"` // TMDB logo path for navigation cards
+	Mode   string `json:"mode"`           // auto | collage | backdrop | tmdb | custom
 	URL    string `json:"url,omitempty"`
 	Accent string `json:"accent,omitempty"` // "#rrggbb"
 }

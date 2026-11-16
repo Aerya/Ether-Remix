@@ -366,20 +366,22 @@ type Hub struct {
 }
 
 type Collection struct {
-	RankedTop10    bool      `json:"rankedTop10,omitempty"`
-	PreviewOnFocus bool      `json:"previewOnFocus,omitempty"`
-	Key            RatingKey `json:"key"`
-	Title          string    `json:"title"`
-	Summary        string    `json:"summary,omitempty"`
-	Kind           string    `json:"kind"` // "franchise", "trending", "smart", "user"
-	Type           MediaType `json:"type"`
-	Filter         *Filter   `json:"filter,omitempty"` // smart
-	Sort           SortOrder `json:"sort,omitempty"`
-	OwnerUserID    int64     `json:"ownerUserId,omitempty"` // 0 = server-wide
-	PosterPath     string    `json:"posterPath,omitempty"`
-	BackdropPath   string    `json:"backdropPath,omitempty"`
-	ChildCount     int       `json:"childCount"`
-	Upcoming       bool      `json:"upcoming,omitempty"` // admits scoped future placeholders
+	NavigationGroup string    `json:"navigationGroup,omitempty"`
+	NavigationOrder int       `json:"navigationOrder,omitempty"`
+	RankedTop10     bool      `json:"rankedTop10,omitempty"`
+	PreviewOnFocus  bool      `json:"previewOnFocus,omitempty"`
+	Key             RatingKey `json:"key"`
+	Title           string    `json:"title"`
+	Summary         string    `json:"summary,omitempty"`
+	Kind            string    `json:"kind"` // "franchise", "trending", "smart", "user"
+	Type            MediaType `json:"type"`
+	Filter          *Filter   `json:"filter,omitempty"` // smart
+	Sort            SortOrder `json:"sort,omitempty"`
+	OwnerUserID     int64     `json:"ownerUserId,omitempty"` // 0 = server-wide
+	PosterPath      string    `json:"posterPath,omitempty"`
+	BackdropPath    string    `json:"backdropPath,omitempty"`
+	ChildCount      int       `json:"childCount"`
+	Upcoming        bool      `json:"upcoming,omitempty"` // admits scoped future placeholders
 	// UpdatedAt changes when the collection's members or artwork change, so
 	// Plex clients refetch artwork (additive).
 	UpdatedAt time.Time `json:"updatedAt,omitempty"`
