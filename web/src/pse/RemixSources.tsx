@@ -3,7 +3,7 @@ import { CollapsibleSections, CollapsibleBlock } from "../components/Collapsible
 import { AddSourceGallery, type GalleryChoice } from "../pages/sources/cards";
 import type { DebridKind } from "../lib/types";
 import { Badge, Button } from "@braedonsaunders/appkit-ui";
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getLocale } from "../i18n";
 import { IndexerList } from "../pages/sources/Indexers";
@@ -51,6 +51,8 @@ export function RemixSources({
     type: "stremio" | "site" | "newznab";
     name?: string;
   } | null>(null);
+  const stremioList = useRef<HTMLDivElement>(null);
+  const [savedSource, setSavedSource] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [version, setVersion] = useState(0);
   const [gallery, setGallery] = useState(false);
@@ -156,7 +158,26 @@ export function RemixSources({
       <CollapsibleSections.Provider value={true}>
         {category === "stremio" ? (
           <>
-            <IndexerList view="stremio" addRequest={add} />
+            <div ref={stremioList}>
+              {savedSource ? (
+                <p role="status" className="mb-3 text-sm text-fg-muted">
+                  {L(
+                    `Source « ${savedSource} » enregistrée dans Modules Stremio.`,
+                    `Source “${savedSource}” saved in Stremio addons.`,
+                  )}
+                </p>
+              ) : null}
+              <IndexerList
+                view="stremio"
+                addRequest={add}
+                onSaved={(name) => {
+                  setSavedSource(name);
+                  const panel = stremioList.current?.querySelector("details");
+                  if (panel) panel.open = true;
+                  stremioList.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+                }}
+              />
+            </div>
             <CollapsibleBlock title="Seedstrem" id="seedstrem-integration">
               <div className="space-y-4 p-4 text-sm">
                 <p className="text-fg-muted">
@@ -167,8 +188,8 @@ export function RemixSources({
                 </p>
                 <p className="text-fg-muted">
                   {L(
-                    "Ajoutez le manifeste de votre instance, accessible depuis Remix. La recherche ne lance pas de téléchargement ; l’ouverture du flux peut en lancer un. Protégez cet accès et laissez désactivée l’ouverture des flux d’addons lors des contrôles de disponibilité si vous souhaitez réserver les téléchargements à la lecture.",
-                    "Add your instance’s manifest, reachable from Remix. Searching does not start downloads; opening a stream can. Protect this access and keep opening addon streams during availability checks disabled to reserve downloads for playback.",
+                    "Ajoutez le manifeste de votre instance, accessible depuis Remix. Une fois enregistrée, elle apparaît dans « Modules Stremio » ci-dessus, où vous pouvez la modifier. La recherche ne lance pas de téléchargement ; l’ouverture du flux peut en lancer un. Protégez cet accès et laissez désactivée l’ouverture des flux d’addons lors des contrôles de disponibilité si vous souhaitez réserver les téléchargements à la lecture.",
+                    "Add your instance’s manifest, reachable from Remix. Once saved, it appears in “Stremio addons” above, where you can edit it. Searching does not start downloads; opening a stream can. Protect this access and keep opening addon streams during availability checks disabled to reserve downloads for playback.",
                   )}
                 </p>
                 <div className="flex flex-wrap items-center gap-4">

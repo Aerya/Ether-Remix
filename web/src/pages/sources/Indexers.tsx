@@ -256,9 +256,11 @@ function SiteTestResults({ result }: { result: SiteTestResult }) {
 export function IndexerList({
   version = 0,
   addRequest,
+  onSaved,
   view = "all", // PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md
 }: {
   version?: number;
+  onSaved?: (name: string) => void;
   addRequest?: {
     nonce: number;
     type: "site" | "newznab" | "stremio" | "zilean";
@@ -372,6 +374,7 @@ export function IndexerList({
     try {
       await commit(list, index < indexers.length ? t("Indexer saved") : t("Indexer added"));
       setEditing(null);
+      onSaved?.(indexerName(draft, index));
     } catch (e) {
       setError(e);
       setErrors(recordErrors(e, `indexers[${index}].`));
