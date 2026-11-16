@@ -28,6 +28,7 @@ func (a *App) buildPSEIndexer() {
 	a.startPSEFTP()
 	if a.indexers != nil {
 		a.indexers.SetSearchObserver(a.rememberSearchReferences)
+		a.indexers.SetRetainedRefresh(releasedb.LibraryEnabled)
 	}
 	rt.restartIndexer(a)
 	a.closers = append(a.closers, rt.stopIndexer)

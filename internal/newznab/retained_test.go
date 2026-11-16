@@ -41,9 +41,25 @@ func TestSearchObserverRetainsPrimaryAndRescueReferences(t *testing.T) {
 	m.SetSearchObserver(func(_ context.Context, _ core.SearchRequest, rs []core.Release) { observed = append(observed, rs...) })
 	for _, search := range []func(context.Context, core.SearchRequest) ([]core.Release, error){m.Search, m.SearchRescue} {
 		before := len(observed)
-		rs, err := search(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "Sample", Year: 2026})
+		rs, err := search(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "Sample", Year: 2026, Season: 1, Episode: 1})
 		if err != nil || len(rs) != 1 || len(observed) != before+1 || observed[before].StreamURL == "" || observed[before].IndexerID != "source" {
 			t.Fatal(err, rs, observed)
 		}
+	}
+}
+
+func (libraryBackend) ResolveTorrent(_ context.Context, r core.Release, _ func(context.Context, string) error) (core.Release, error) {
+	return r, nil
+}
+
+func TestRetainedMovieRescueRefreshesAddon(t *testing.T) {
+	m := NewManager(nil, []config.Indexer{{ID: "source", Name: "Source", Kind: config.IndexerKindAddon, URL: "https://example.test", Enabled: true}}, Options{Backend: func(config.Indexer) (Backend, error) { return libraryBackend{}, nil }})
+	m.SetRetainedSearch(func(context.Context, core.SearchRequest) ([]core.Release, bool) {
+		return []core.Release{{ID: "old"}}, true
+	})
+	m.SetRetainedRefresh(func() bool { return true })
+	rs, err := m.SearchRescue(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "Sample"})
+	if err != nil || len(rs) != 1 || rs[0].ID != "sample" {
+		t.Fatal("rescue did not refresh addon", err, rs)
 	}
 }
