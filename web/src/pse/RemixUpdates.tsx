@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-settings-navigation",
+    id: "2026-11-16-source-names",
     version: "current",
+    date: "2026-11-16",
+    title: ["Des noms de sources plus précis", "Clearer source names"],
+    items: [
+      [
+        "Clients BitTorrent et Fournisseurs Usenet sont distingués. NZBHydra2 apparaît dans la catégorie Indexeurs, avec les indications de raccordement. Les guides distinguent recherche, débridage, Seedstrem et lecture Usenet native.",
+        "BitTorrent clients and Usenet providers are distinguished. NZBHydra2 appears in the Indexers category with connection guidance. Guides distinguish search, debrid, Seedstrem and native Usenet playback.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-settings-navigation",
+    version: "0.2.37-remix.83.1",
     date: "2026-11-16",
     title: [
       "Sources, indexation et lecture mieux séparées",

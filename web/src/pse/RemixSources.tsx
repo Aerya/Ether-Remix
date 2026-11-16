@@ -17,10 +17,14 @@ import { NewReleaseBudgetSection } from "../pages/libraries/browser/NewReleasesS
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const CATEGORIES = [
   ["stremio", "Stremio", "Stremio"],
-  ["indexeurs", "Indexeurs · Prowlarr / Jackett", "Indexers · Prowlarr / Jackett"],
-  ["usenet", "Usenet", "Usenet"],
+  [
+    "indexeurs",
+    "Indexeurs · Prowlarr / Jackett / NZBHydra2",
+    "Indexers · Prowlarr / Jackett / NZBHydra2",
+  ],
+  ["usenet", "Fournisseurs Usenet", "Usenet providers"],
   ["debrid", "Debrid", "Debrid"],
-  ["torrent", "Client torrent", "Torrent client"],
+  ["torrent", "Clients BitTorrent", "BitTorrent clients"],
   ["xdcc", "XDCC", "XDCC"],
   ["ftp", "FTP / SFTP", "FTP / SFTP"],
   ["musique", "Streaming musical", "Music streaming"],
@@ -233,7 +237,7 @@ export function RemixSources({
               {[
                 ["all", "Tous", "All"],
                 ["torrent", "BitTorrent", "BitTorrent"],
-                ["usenet", "Usenet", "Usenet"],
+                ["usenet", "Fournisseurs Usenet", "Usenet providers"],
               ].map(([id, fr, en]) => (
                 <Button
                   key={id}

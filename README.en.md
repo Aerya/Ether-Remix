@@ -103,6 +103,8 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Unified sources and searches ahead of playback
 
+Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate playback path: a debrid account, a BitTorrent client or a Stremio addon such as Seedstrem. Seedstrem uses its own torrent client. For Usenet, Remix reads through its NNTP engine and your Usenet providers; SABnzbd/NZBGet are not integrated external download clients.
+
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
 - **Self-hosted Seedstrem**: add its manifest from Sources → Stremio; the addon list opens after saving so you can find and edit it. Prowlarr search and playback during download via qBittorrent or Deluge; files stay on the Seedstrem host, with no volume to mount in Remix. Downloads start only for playback; optional last-resort playback keeps searches available for indexing. [Setup and connection](docs/pse/SEEDSTREM.en.md).
 - **Stremio catalogues**: background manual synchronization, visible status and retention of the last import on failure.

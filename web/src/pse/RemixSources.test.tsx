@@ -152,7 +152,7 @@ it("renders torrent clients in their own source category", () => {
   );
   expect(screen.getByText("Torrent clients fixture")).toBeTruthy();
   expect(screen.queryByText("Indexing fixture")).toBeNull();
-  expect(screen.getByRole("tab", { name: "Torrent client" }).getAttribute("aria-selected")).toBe(
+  expect(screen.getByRole("tab", { name: "BitTorrent clients" }).getAttribute("aria-selected")).toBe(
     "true",
   );
 });
