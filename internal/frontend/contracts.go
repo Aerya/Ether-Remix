@@ -1029,4 +1029,4 @@ type QualitySessions interface {
 }
 
 // NavigationGroups defines the shared ordering and labels of discovery collection shelves.
-var NavigationGroups = []struct{ ID, Name string }{{"studios", "Studios & labels"}, {"services", "Services"}, {"genres", "Genres"}}
+var NavigationGroups = navigationGroups()

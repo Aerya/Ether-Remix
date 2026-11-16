@@ -15,7 +15,8 @@ func (s *Server) discoveryCardHome(r *http.Request, include bool) homeBuild {
 		if err != nil {
 			s.log.Warn("navigation cards", "err", err)
 		} else {
-			for _, group := range frontend.NavigationGroups {
+			for _, index := range frontend.NavigationGroupOrder() {
+				group := frontend.NavigationGroups[index]
 				hub := model.Hub{HubIdentifier: "remix.navigation." + group.ID, Title: group.Name, Type: "collection", Context: "hub.collection", Style: "shelf", Promoted: model.Ptr(true)}
 				for _, c := range page.Items {
 					if c.NavigationGroup != group.ID {

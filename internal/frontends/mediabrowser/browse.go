@@ -306,7 +306,7 @@ func (i *instance) browseRoutes() error {
 			items = append(items, folder)
 		}
 		items = i.prependPersonalViews(r, v, items)
-		items = i.discoveryViews(items)
+		items = i.discoveryViews(r, v, items)
 		i.replyItems(w, r, i.queryResult(items, len(items), 0))
 	}
 	rowHandler := func(purpose frontend.RowPurpose, asArray bool) http.HandlerFunc {

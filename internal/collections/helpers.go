@@ -157,9 +157,6 @@ func (s *Service) Lookup(ctx context.Context, kind, q, region string) ([]core.Lo
 			if want == "" || strings.Contains(normName(p.Name), want) {
 				out = append(out, core.LookupResult{ID: p.ID, Name: p.Name, Subtitle: s.region(region), ImagePath: p.Logo})
 			}
-			if len(out) >= 60 {
-				break
-			}
 		}
 		return out, nil
 	case "person", "keyword", "company", "collection":
