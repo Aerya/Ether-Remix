@@ -102,6 +102,8 @@ type Options struct {
 	// background work starts. This resolves the scorer/row-source construction
 	// cycle without publishing a partially wired engine through setters.
 	Dependencies func(core.PersonalScorer) (core.Recommender, core.CollectionRows, error)
+	// PreviewContinue supplies the shared resume and next-episode selection.
+	PreviewContinue func(context.Context, *core.User, int) ([]core.Title, error)
 	// ExtraHomeRows supplies optional integration rows to owner previews.
 	ExtraHomeRows func(context.Context, *core.User, core.HubContext, string, int) []core.Hub
 	// Sections maps library section ids to their type, for per-user

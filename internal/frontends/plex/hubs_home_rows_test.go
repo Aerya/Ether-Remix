@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -290,5 +291,44 @@ func TestBrokenCollectionCannotStallOrEmptyHubs(t *testing.T) {
 	}
 	if got := broken.calls.Load(); got != callsAfterFirst {
 		t.Fatalf("HomeRowsFor called %d times on cached hubs, want %d", got, callsAfterFirst)
+	}
+}
+
+// Plex desktop fetches promoted Home once per pinned library. Concatenating
+// those responses must not append each library's Recommended page to Home.
+func TestPlexPartitionedHomeDoesNotAppendLibraryRecommendations(t *testing.T) {
+	f := newFixture()
+	defer f.srv.Close()
+	f.srv.setRecommender(&fakeRecommender{
+		home: []core.Hub{{ID: "home.trending", Title: "Trending", Promoted: true, Items: []core.Title{fightClub, breakingBad}}},
+		section: map[core.MediaType][]core.Hub{
+			core.TypeMovie: {{ID: "movie.toprated", Title: "Movies only", Promoted: true, Items: []core.Title{alien}}},
+			core.TypeShow:  {{ID: "tv.toprated", Title: "Shows only", Promoted: true, Items: []core.Title{breakingBad}}},
+		},
+	})
+	headers := []string{"Accept", "application/json", "X-Plex-Product", "Plex for Linux", "X-Plex-Platform", "Linux"}
+	global := hubRows(t, f.get(t, "/hubs/promoted?count=20", headers...).Body.Bytes())
+	expected := map[string]int{}
+	for _, r := range global {
+		expected[r.ID]++
+	}
+	actual := map[string]int{}
+	for _, directory := range []string{"1", "2", "playlists"} {
+		rows := hubRows(t, f.get(t, "/hubs/promoted?count=20&contentDirectoryID="+directory+"&pinnedContentDirectoryID=1,2", headers...).Body.Bytes())
+		for _, r := range rows {
+			actual[r.ID]++
+		}
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("partitioned Home = %v; global Home = %v", actual, expected)
+	}
+	for _, pair := range [][2]string{{"1", "movie.toprated"}, {"2", "tv.toprated"}} {
+		found := false
+		for _, r := range hubRows(t, f.get(t, "/hubs/sections/"+pair[0], headers...).Body.Bytes()) {
+			found = found || r.ID == pair[1]
+		}
+		if !found {
+			t.Fatalf("library %s lost its own recommendations", pair[0])
+		}
 	}
 }

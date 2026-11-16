@@ -71,6 +71,27 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 			p.Rows = append([]core.HomeRow{legacyRow("home.continue", "Continue Watching", KindContinue,
 				"Titles you're part-way through (Plex's own row).", items)}, p.Rows...)
 		}
+		if e.opts.PreviewContinue != nil {
+			if titles, err := e.opts.PreviewContinue(ctx, user, limit); err == nil {
+				for i := range p.Rows {
+					r := &p.Rows[i]
+					if r.Kind == KindContinue {
+						r.Items, r.Hub.Items = titles, titles
+						r.ItemReasons = nil
+					}
+					if r.HubID == "home.ondeck" {
+						episodes := make([]core.Title, 0, len(titles))
+						for _, title := range titles {
+							if title.Type == core.TypeEpisode {
+								episodes = append(episodes, title)
+							}
+						}
+						r.Items, r.Hub.Items = episodes, episodes
+						r.ItemReasons = nil
+					}
+				}
+			}
+		}
 		if row, ok := e.playlistsRow(ctx, user); ok {
 			p.Rows = insertBeforeHidden(p.Rows, row)
 		}
@@ -137,6 +158,33 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 	layoutDoc := e.layoutForContext(ctx)
 	p.Rows = arrangeLayout(p.Rows, layoutDoc, user.ID, hc, sectionName(section), def)
 	p.Rows = e.appendAbsentAlwaysRows(ctx, p.Rows, layoutDoc, user, hc, section, emptiedByRestrictions)
+	if section == "" && e.opts.PreviewContinue != nil {
+		// Plex folds On Deck into Continue Watching when both contain the
+		// same episodes. Keep it visible when Continue is disabled.
+		keys := map[core.RatingKey]bool{}
+		for _, row := range p.Rows {
+			if row.Kind == KindContinue && !row.Hidden {
+				for _, item := range row.Items {
+					keys[item.Key] = true
+				}
+			}
+		}
+		for i := range p.Rows {
+			row := &p.Rows[i]
+			if row.HubID != "home.ondeck" || row.Hidden || len(row.Items) == 0 {
+				continue
+			}
+			duplicate := true
+			for _, item := range row.Items {
+				duplicate = duplicate && keys[item.Key]
+			}
+			if duplicate {
+				row.Hidden = true
+				row.HiddenCode = "included_in_continue"
+				row.HiddenReason = "These episodes are already in Continue Watching"
+			}
+		}
+	}
 	return &p, nil
 }
 

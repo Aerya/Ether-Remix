@@ -19,6 +19,7 @@
 - [Organisation des réglages](#nav-organisation-des-reglages)
   - [Navigation et badges des affiches](#nav-navigation-et-badges-des-affiches)
 - [Playlists et apparence](#nav-playlists-et-apparence)
+- [Accueil Plex](#plex-home)
 - [Seedstrem](#nav-seedstrem)
 - [SubMaker](#nav-submaker)
   - [Historique commun et Écoute](#nav-historique-commun-et-ecoute)
@@ -434,3 +435,10 @@ Dans **Bibliothèques** ou **Ether-Remix → Contenus et bibliothèques**, ouvre
 Les collections s’actualisent chaque jour, ne retiennent que les titres sortis et les trient par date de sortie décroissante. Le tri général des bibliothèques doit rester sur **Date de sortie** (valeur par défaut) ; un tri explicitement enregistré dans un client reste prioritaire. Le remplissage initial se fait en arrière-plan. Les listes n’ajoutent aucune source de lecture, ne téléchargent pas les vidéos et ne garantissent pas une VF : vos sources, filtres de langue, droits des spectateurs et règles de disponibilité continuent de s’appliquer.
 
 Un nouvel essai réutilise les éléments déjà créés, y compris après une erreur partielle, sans écraser vos modifications. Vous pouvez ensuite renommer ou masquer les bibliothèques et modifier les sources, la fréquence, le tri et les destinations des collections. Une bibliothèque supprimée peut être recréée en relançant la sélection ; supprimer une bibliothèque ne supprime pas sa collection.
+
+<a id="plex-home"></a>
+## Accueil Plex
+
+Dans `/ether/home`, sélectionnez le même spectateur et le même type d’appareil que dans Plex : « Spectateur type » ne représente pas un compte personnalisé. Les réglages globaux et les remplacements du spectateur se cumulent. L’aperçu de « Reprendre » inclut les épisodes suivants ; « À suivre » est masqué lorsqu’il répète les mêmes épisodes. Les pages recommandées Films et Séries restent indépendantes de l’accueil.
+
+Plex Web et les applications peuvent présenter les cartes différemment et conserver une ancienne réponse en cache. Après une modification, rechargez l’accueil du client. Les requêtes par bibliothèque ne doivent pas ajouter toutes les rangées Films puis Séries à l’accueil. Infuse conserve sa présentation spécifique par collections.

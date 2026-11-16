@@ -54,11 +54,8 @@ func TestHomeDirectoryPartition(t *testing.T) {
 				t.Fatalf("pin=%s %s placed in %q", pin, id, seen[id])
 			}
 		}
-		if strings.Contains(pin, "1") && seen["movie.popular"] != "1" {
-			t.Fatalf("pin=%s movie placement: %v", pin, seen)
-		}
-		if seen["tv.popular"] != "2" {
-			t.Fatalf("pin=%s TV placement: %v", pin, seen)
+		if seen["movie.popular"] != "" || seen["tv.popular"] != "" {
+			t.Fatalf("pin=%s library recommendations leaked into Home: %v", pin, seen)
 		}
 		if strings.Contains(pin, "playlists") && seen["home.playlists"] != "playlists" {
 			t.Fatalf("pin=%s playlist placement: %v", pin, seen)

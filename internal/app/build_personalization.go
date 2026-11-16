@@ -150,7 +150,8 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		CatalogRulesRevision: a.catalog.ViewerRulesRevision,
 		UserPolicy:           a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
-		ExtraHomeRows: a.extraHomeRows,
+		ExtraHomeRows:   a.extraHomeRows,
+		PreviewContinue: a.previewContinue,
 		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {
 			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer))
 			var err error

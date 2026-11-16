@@ -74,7 +74,7 @@ func coldDiscoveryResponse(t *testing.T, immediate bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec.home = []core.Hub{{ID: "collection.local", Title: "Local", Type: core.TypeMovie, Items: titles}}
+	rec.home = []core.Hub{{ID: "collection.local", Title: "Local", Type: core.TypeMovie, Promoted: true, Items: titles}}
 	rec.section[core.TypeMovie] = rec.home
 	for _, target := range []struct{ name, path string }{
 		{"search", "/hubs/search?query=Local+Feature+00000&limit=30"},

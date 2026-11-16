@@ -19,6 +19,7 @@
 - [Settings organization](#nav-settings-organization)
   - [Browsing and poster badges](#nav-browsing-and-poster-badges)
 - [Playlists and appearance](#nav-playlists-and-appearance)
+- [Plex Home](#plex-home)
 - [Seedstrem](#nav-seedstrem)
 - [SubMaker](#nav-submaker)
   - [Unified history and Listening](#nav-unified-history-and-listening)
@@ -434,3 +435,10 @@ In **Remix → Local media**, refresh diagnostics for previously indexed files w
 Filter by folder, state, name or relative path. Unidentified videos remain valid local videos. Potential duplicates share a matched title or filename within a source folder; different editions may be flagged, and content equality is not verified. Files are sorted largest first, in pages of 50.
 
 Logical sizes are grouped by source folder (one video library per folder; audio folders join Music). Accessible sizes are checked now; known sizes are from the index and include missing files. Hardlinks may be counted more than once: these figures are neither allocated disk blocks nor free disk space. No files are modified or deleted. Missing entries remain until the source is explicitly removed; removing and adding the source rebuilds its index and requires sharing to be configured again.
+
+<a id="plex-home"></a>
+## Plex Home
+
+In `/ether/home`, select the same viewer and device type as in Plex: the typical viewer does not represent a personalized account. Global settings and viewer overrides both apply. The Continue Watching preview includes next episodes; On Deck is hidden when it repeats those episodes. Movie and TV recommendation pages remain separate from Home.
+
+Plex Web and apps may present cards differently and cache previous responses. Reload the client’s Home after changing settings. Per-library requests should not append entire Movie and TV recommendation pages to Home. Infuse retains its collection-shelf presentation.
