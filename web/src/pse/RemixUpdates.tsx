@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-plex-home-parity",
+    id: "2026-11-16-music-shared-catalog-cache",
     version: "current",
+    date: "2026-11-16",
+    title: ["Musique : lecture entre Plex et Jellyfin", "Music: playback across Plex and Jellyfin"],
+    items: [
+      [
+        "Correction d’une erreur de lecture lors du passage entre Plex et Jellyfin : les albums et artistes utilisent désormais le même cache sans conflit.",
+        "Fixed playback errors when switching between Plex and Jellyfin: albums and artists now use the same cache without conflicts.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-plex-home-parity",
+    version: "0.2.37-remix.86.1",
     date: "2026-11-16",
     title: ["Accueil Plex : rangées cohérentes", "Plex Home: consistent rows"],
     items: [

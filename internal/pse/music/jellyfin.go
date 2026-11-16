@@ -407,27 +407,11 @@ func (q *jfReq) star(ctx context.Context, kind int, id int64, on bool) error {
 // --- catalogue (avec mémoire courte) ---
 
 func (q *jfReq) album(ctx context.Context, id int64) (Album, []Track, error) {
-	type pair struct {
-		a Album
-		t []Track
-	}
-	p, err := memoizedFor(ctx, q.s.cache, "al:"+strconv.FormatInt(id, 10), q.s.clock(), func() (pair, error) {
-		a, t, err := q.s.o.Source.Album(ctx, id)
-		return pair{a, t}, err
-	})
-	return p.a, p.t, err
+	return q.s.AlbumTracks(ctx, id)
 }
 
 func (q *jfReq) artist(ctx context.Context, id int64) (Artist, []Album, error) {
-	type pair struct {
-		a  Artist
-		al []Album
-	}
-	p, err := memoizedFor(ctx, q.s.cache, "ar:"+strconv.FormatInt(id, 10), q.s.clock(), func() (pair, error) {
-		a, al, err := q.s.o.Source.Artist(ctx, id)
-		return pair{a, al}, err
-	})
-	return p.a, p.al, err
+	return q.s.ArtistAlbums(ctx, id)
 }
 
 func (q *jfReq) track(ctx context.Context, id int64) (Track, error) {
