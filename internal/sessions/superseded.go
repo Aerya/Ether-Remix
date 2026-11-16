@@ -65,6 +65,7 @@ func (b *Broker) finishSuperseded(ctx context.Context, entries []*brokerSession,
 			b.cluster.announceRetired(ctx, old)
 		}
 		b.cleanupSampleReceipt(ctx, old)
+		b.notifyStopped(old)
 		if old.live {
 			retired := true
 			if old.playID != newSource && b.deps.Live != nil {

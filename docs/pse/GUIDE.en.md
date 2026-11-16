@@ -103,6 +103,10 @@ Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_
 | `PSE_MUSIC_DISCOVER` | `on` | Per-viewer “Discoveries” playlist: about fifty tracks by artists close to their plays and playlists. |
 | `PSE_PLAYABLE_PENDING` | `hide` | `show` keeps titles not yet indexed visible (handy during the first indexing run). |
 
+**Stremio catalogues**: the sync button starts background work and displays its status until completion. Failures preserve the last import; other catalogues can still synchronize. `PSE_CATALOGUE_SYNC_TIMEOUT` sets the per-catalogue budget in seconds (180 by default, 30–900), after queue waiting. Logs distinguish fetching from persistence.
+
+**Release titles**: matching tolerates accents and apostrophes replaced with separators. A part marker inserted into a French title is accepted only when a catalogue alternative confirms its number; year and identifier checks remain enforced.
+
 <a id="nav-connecting-scrob"></a>
 
 Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.
@@ -110,6 +114,9 @@ Full Plex Media Server history import also fills recent activity using original 
 Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing; Plex retains its 40-item limit and viewer hide preferences.
 
 ### Connecting Scrob
+
+The webhook relays starts, pauses and actual stops, including playback replacement and inactive-session cleanup. Identity stays stable per session and viewer; repeated stops are not sent again and do not alter history.
+
 
 1. Under **Ether-Remix → Notifications and tracking → Scrob**, create the viewer’s Jellyfin credentials.
 2. In Scrob → **Connections → Media Players → Add Connection**, choose **Jellyfin** and copy **Server URL**, **Token** and **User ID**. Click **Test**, then **Add**. The token is scoped to that viewer and can be revoked in their devices.

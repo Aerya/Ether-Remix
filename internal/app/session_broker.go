@@ -148,6 +148,11 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 				a.prefetch.OnTimeline(v, key, pos, dur, playState)
 			}
 		},
+		OnStopped: func(s frontend.Session, origin state.Origin) {
+			if p := pseRuntimeOf(a).scrob.Load(); p != nil {
+				p.Stop(s.ViewerID, s.Item, origin)
+			}
+		},
 		Events:           events,
 		OpenSubtitle:     a.subtitles.OpenFormat,
 		OpenSubtitleFrom: a.subtitles.OpenFormatFrom,

@@ -10,6 +10,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/store"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -17,6 +19,7 @@ import (
 type demandCatalogueKind struct {
 	calls int
 	fail  bool
+	hook  func(context.Context)
 }
 
 func (*demandCatalogueKind) ID() string {
@@ -26,6 +29,9 @@ func (*demandCatalogueKind) Describe() collections.KindDescribe                 
 func (*demandCatalogueKind) Validate(*collections.ValidationError, string, core.CollectionSource) {}
 func (k *demandCatalogueKind) Gather(g *collections.Gather) {
 	k.calls++
+	if k.hook != nil {
+		k.hook(g.Ctx)
+	}
 	if k.fail {
 		g.Fail(errors.New("upstream unavailable"))
 		return
@@ -95,4 +101,56 @@ func TestCatalogueMaterializationDemandCacheAndFailure(t *testing.T) {
 	if err = db.QueryRow(`SELECT COUNT(*) FROM libraries_catalogue_members WHERE source_id=?`, id).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("old membership lost: %d %v", count, err)
 	}
+	// A manual retry bypasses the failure throttle but preserves the committed
+	// state when fetching fails; later sources are still attempted.
+	_, err = db.Exec(`UPDATE libraries_catalogue_state SET refreshed=123 WHERE source_id=?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forced := context.WithValue(ctx, catalogueForceKey{}, true)
+	if err = cat.BrowseSourceLibrary(forced, []string{"stremio:missing:movie", id}); err == nil {
+		t.Fatal("expected failure")
+	}
+	var refreshed int64
+	var savedCount int
+	if err = db.QueryRow(`SELECT refreshed,item_count FROM libraries_catalogue_state WHERE source_id=?`, id).Scan(&refreshed, &savedCount); err != nil || refreshed != 123 || savedCount != 1 || kind.calls != 3 {
+		t.Fatalf("manual retry lost state or skipped later source: refreshed=%d count=%d calls=%d err=%v", refreshed, savedCount, kind.calls, err)
+	}
+	kind.fail = false
+	if err = cat.BrowseSourceLibrary(forced, []string{id}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The HTTP request returns immediately; canceling it cannot kill the job.
+	entered, release := make(chan struct{}), make(chan struct{})
+	kind.hook = func(ctx context.Context) {
+		close(entered)
+		<-release
+		if ctx.Err() != nil {
+			t.Errorf("job inherited canceled request: %v", ctx.Err())
+		}
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 2*time.Minute {
+			t.Error("old 30-second budget still applies")
+		}
+	}
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(requestCtx)
+	req.SetPathValue("source", id)
+	recorder := httptest.NewRecorder()
+	console := &librariesConsole{app: a}
+	console.handleCatalogueSourceSync(recorder, req)
+	cancelRequest()
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	<-entered
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for a.catalogueSync.status(id).Running && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if status := a.catalogueSync.status(id); status.Running || status.Error != "" {
+		t.Fatalf("background sync=%+v", status)
+	}
+
 }

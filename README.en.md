@@ -88,6 +88,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 - **Release-date sorting**: Movies and Shows open newest first in Plex, Jellyfin and Emby (`PSE_LIBRARY_SORT` setting). A sort chosen in the app still wins.
 - **French subtitles on demand**: add the titles you want; each addition triggers a priority search when indexing is enabled. Optionally, SubMaker prepares their French subtitles, and each title shows its subtitle state.
 - **Anime**: create TMDB-based libraries and collections with your French/MULTi preferences and any Stremio addons you choose.
+- **Release matching**: recognizes accents, apostrophes and alternative titles; part numbers must be corroborated by the catalogue.
 
 <a id="nav-your-local-movies-and-personal-videos"></a>
 
@@ -103,6 +104,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Unified sources and searches ahead of playback
 
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
+- **Stremio catalogues**: background manual synchronization, visible status and retention of the last import on failure.
 - **Remix console**: settings under `/ether/remix`, collapsible sections closed by default; iBroadcast sits alongside music providers, with Subsonic information under Content → Music.
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
 - **Temporary indexer outages**: reuse results expired for less than 24 hours without renewing their validity or bypassing playback checks. Access errors and quotas remain enforced.
@@ -190,7 +192,7 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - Compare the local catalogue with TMDB totals and review operations in the activity log.
 - Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing; Plex retains its 40-item limit and viewer hide preferences.
 - Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.
-- Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook (**60-second** timeout) and history-only libraries are optional.
+- Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook (**60-second** timeout) and history-only libraries are optional. Stops and playback changes are relayed per session without duplicates.
 - Connect **Last.fm** per user for music scrobbling and find listening statistics in Overview.
 
 <a id="nav-an-interface-that-fits-your-habits"></a>

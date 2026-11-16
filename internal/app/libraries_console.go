@@ -454,6 +454,7 @@ func (c *librariesConsole) handler() http.Handler {
 	mux.HandleFunc("GET /collection-sources", c.handleCollectionSources)
 	mux.HandleFunc("GET /catalogue-sources", c.handleCatalogueSources)
 	mux.HandleFunc("POST /catalogue-sources/{source}/sync", c.handleCatalogueSourceSync)
+	mux.HandleFunc("GET /catalogue-sync", c.handleCatalogueSourceSyncStatus)
 	mux.HandleFunc("GET /{id}/facets/{field...}", c.handleFacets)
 	mux.HandleFunc("GET /{id}/item/{ref}/match", c.handleMatchGet)
 	mux.HandleFunc("PUT /{id}/item/{ref}/match", c.handleMatchPin)

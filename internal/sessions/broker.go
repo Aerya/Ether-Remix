@@ -81,6 +81,9 @@ type BrokerDeps struct {
 	OnTimeline         func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
 	Events             *EventBus
 	OnEventError       func(error)
+	// OnStopped observes actual retirement, including supersession and idle cleanup.
+	// It must remain bounded and must not change playback history.
+	OnStopped func(frontend.Session, state.Origin)
 	// OnProfileDiagnostic is an optional fixture hook. Values are closed enums
 	// only; the callback receives no media, identity or client-supplied data.
 	OnProfileDiagnostic func(ProfileDiagnostic)
@@ -1522,6 +1525,7 @@ func (b *Broker) stopLocked(ctx context.Context, s *brokerSession) error {
 		b.cluster.announceRetired(ctx, s)
 	}
 	b.cleanupSampleReceipt(ctx, s)
+	b.notifyStopped(s)
 
 	b.bindings.Remove(s.public.ID)
 	if s.live {
@@ -1547,6 +1551,17 @@ func (b *Broker) stopLocked(ctx context.Context, s *brokerSession) error {
 	}
 	b.publish(ctx, sessionEvent("SessionStopped", s.public, nil))
 	return nil
+}
+
+// notifyStopped runs only after this broker has retired the session.
+func (b *Broker) notifyStopped(s *brokerSession) {
+	if b.deps.OnStopped != nil && s.public.Purpose != "preview" {
+		origin := s.public.ID
+		if b.policy(s.public.Protocol).ExternalAdmission && s.playbackID != "" {
+			origin = s.playbackID
+		}
+		b.deps.OnStopped(s.public, state.Origin{Surface: s.public.Protocol, SessionID: origin, ClientID: s.public.Device.ID})
+	}
 }
 
 // StopPlayback stops every local broker session fed by a source ID.

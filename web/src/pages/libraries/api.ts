@@ -173,10 +173,20 @@ export interface PluginLibrarySource {
 }
 
 export const librariesApi = {
-  syncCatalogueSource: (id: string) =>
-    apiFetch<{ ok: boolean }>(`/libraries/catalogue-sources/${encodeURIComponent(id)}/sync`, {
-      method: "POST",
-    }),
+  syncCatalogueSource: async (id: string) => {
+    const path = `/libraries/catalogue-sources/${encodeURIComponent(id)}/sync`;
+    type Status = { running: boolean; error?: string };
+    let status = await apiFetch<Status>(path, { method: "POST" });
+    const deadline = Date.now() + 21 * 60 * 1000;
+    while (status.running && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      status = await apiFetch<Status>(`/libraries/catalogue-sync?source=${encodeURIComponent(id)}`);
+    }
+    if (status.error) throw new Error(status.error);
+    if (status.running)
+      throw new Error("Catalogue synchronization is still running; check again later.");
+    return { ok: true };
+  },
   catalogueSources: (signal?: AbortSignal) =>
     apiFetch<{ sources: CatalogueSource[] }>("/libraries/catalogue-sources", { signal }).then(
       (r) => r.sources,
