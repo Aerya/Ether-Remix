@@ -20,6 +20,6 @@ Pour une série, choisissez une saison puis un épisode. La vue initiale corresp
 
 ## Conservation
 
-Les URL HTTP ordinaires sont réutilisables pendant une heure ; les références torrent/NZB et liens fichiers AllDebrid pendant 24 heures. Une modification des sources ou des réglages Remix invalide les références précédentes. Les entrées restent consultables et sont supprimées après 60 jours sans observation lors d’une nouvelle collecte. La consultation et la lecture depuis la bibliothèque ne prolongent pas ces dates.
+Les URL HTTP ordinaires sont réutilisables pendant une heure ; les références torrent/NZB et liens fichiers AllDebrid pendant 24 heures. Une modification de configuration des sources invalide les références précédentes. Les changements de critères de qualité ou de langue conservent les références pour permettre un nouveau tri local. Les entrées restent consultables et sont supprimées après 60 jours sans observation lors d’une nouvelle collecte. La consultation et la lecture depuis la bibliothèque ne prolongent pas ces dates.
 
 Seules les releases renvoyées par les sources sont disponibles : les filtres appliqués par un addon ne peuvent pas être annulés dans Remix. Les anciennes métadonnées ne permettent pas de reconstruire rétroactivement les liens ; une nouvelle recherche ou un import est nécessaire. Désactiver la bêta arrête la collecte et la réutilisation de ces références, sans supprimer les métadonnées existantes.

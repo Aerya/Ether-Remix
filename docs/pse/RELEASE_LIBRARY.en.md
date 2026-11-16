@@ -16,6 +16,6 @@ Publication comes from the source and is unknown when absent. First indexed and 
 
 ## Retention
 
-Ordinary HTTP references expire after one hour; torrent/NZB references and AllDebrid file links after 24 hours. Source or Remix setting changes invalidate previous references. Entries remain inspectable and are pruned after 60 days without observation during a later collection. Inspection and reuse do not extend observation dates.
+Ordinary HTTP references expire after one hour; torrent/NZB references and AllDebrid file links after 24 hours. Source configuration changes invalidate previous references. Quality and language changes keep references available for local filtering. Entries remain inspectable and are pruned after 60 days without observation during a later collection. Inspection and reuse do not extend observation dates.
 
 Only results returned by sources can be retained; addon filtering cannot be undone. Old metadata cannot reconstruct missing links: another search or import is needed. Disabling beta stops reference collection and reuse without deleting existing metadata.

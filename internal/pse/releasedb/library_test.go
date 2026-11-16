@@ -96,3 +96,16 @@ func TestLibrarySFRImportPreservesVerifiedFile(t *testing.T) {
 		t.Fatal(err, got)
 	}
 }
+
+func TestLibraryPreservesSameHashAcrossSources(t *testing.T) {
+	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"}))
+	identity := func(s string) (string, error) { return s, nil }
+	l := Library{Store: NewStore(store.OpenTest(t)), Seal: identity, Open: identity, Signature: "sources"}
+	rs := []core.Release{{ID: "same-hash", IndexerID: "a", MagnetURL: "magnet:a"}, {ID: "same-hash", IndexerID: "b", MagnetURL: "magnet:b"}}
+	if err := l.Save(t.Context(), core.MovieKey(42), rs); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Candidates(t.Context(), core.MovieKey(42)); len(got) != 2 {
+		t.Fatal("source alternative lost", got)
+	}
+}

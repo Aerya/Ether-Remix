@@ -39,7 +39,7 @@ export const REMIX_UPDATES = [
   },
   {
     id: "2026-11-16-sfr-alkolites-files",
-    version: "0.2.37-remix.90.1",
+    version: "0.2.37-remix.93.1",
     date: "2026-11-16",
     title: [
       "SFR : fichiers Alkolites sans ajout de magnet",

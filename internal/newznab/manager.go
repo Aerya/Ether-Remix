@@ -270,11 +270,6 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 	return merged, nil
 }
 
-// SearchWith is Search, also handing each indexer's results to arrived as
-// soon as that indexer answers (concurrently, from its own goroutine), so
-// callers can start follow-up work, such as debrid cache checks, before
-// the slowest indexer is done.
-// SetRetainedSearch installs an optional local observation provider.
 // SetRetainedRefresh enables an ordinary source refresh before broad rescue.
 // A retained movie answer must not prevent addons being queried again.
 func (m *Manager) SetRetainedRefresh(enabled func() bool) {
@@ -283,19 +278,24 @@ func (m *Manager) SetRetainedRefresh(enabled func() bool) {
 	m.retainedRefresh = enabled
 }
 
-// SetSearchObserver receives only fresh network answers, never retained/cache hits.
+// SetSearchObserver receives source-search answers, never retained library hits.
 func (m *Manager) SetSearchObserver(fn func(context.Context, core.SearchRequest, []core.Release)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.searchObserver = fn
 }
 
+// SetRetainedSearch installs an optional local observation provider.
 func (m *Manager) SetRetainedSearch(fn func(context.Context, core.SearchRequest) ([]core.Release, bool)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.retained = fn
 }
 
+// SearchWith is Search, also handing each indexer's results to arrived as
+// soon as that indexer answers (concurrently, from its own goroutine), so
+// callers can start follow-up work, such as debrid cache checks, before
+// the slowest indexer is done.
 func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
 	m.mu.RLock()
 	retained := m.retained

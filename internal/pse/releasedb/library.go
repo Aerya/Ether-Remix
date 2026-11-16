@@ -12,10 +12,10 @@ import (
 
 func init() {
 	store.Register("pse_release_library", 1, `CREATE TABLE pse_release_library (
- title_key INTEGER NOT NULL, release_id TEXT NOT NULL, source_signature TEXT NOT NULL,
+ title_key INTEGER NOT NULL, release_id TEXT NOT NULL, source_id TEXT NOT NULL, source_signature TEXT NOT NULL,
  payload TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
  expires INTEGER NOT NULL, failed INTEGER NOT NULL DEFAULT 0,
- PRIMARY KEY(title_key,release_id)); CREATE INDEX pse_release_library_expiry ON pse_release_library(expires);`)
+ PRIMARY KEY(title_key,source_id,release_id)); CREATE INDEX pse_release_library_expiry ON pse_release_library(expires);`)
 }
 
 func LibraryEnabled() bool { return pseenv.Get("PSE_RELEASE_LIBRARY") == "on" }
@@ -66,7 +66,11 @@ func (l Library) Save(ctx context.Context, key core.RatingKey, rs []core.Release
 		if r.Protocol == core.ProtocolHTTP && r.StreamDebrid == "" {
 			ttl = time.Hour
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO pse_release_library(title_key,release_id,source_signature,payload,first_seen,last_seen,expires) VALUES(?,?,?,?,?,?,?) ON CONFLICT(title_key,release_id) DO UPDATE SET source_signature=excluded.source_signature,payload=excluded.payload,last_seen=excluded.last_seen,expires=excluded.expires,failed=0`, int64(key), r.ID, l.Signature, sealed, now.Unix(), now.Unix(), now.Add(ttl).Unix())
+		source := r.IndexerID
+		if source == "" {
+			source = r.Indexer
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO pse_release_library(title_key,release_id,source_id,source_signature,payload,first_seen,last_seen,expires) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(title_key,source_id,release_id) DO UPDATE SET source_signature=excluded.source_signature,payload=excluded.payload,last_seen=excluded.last_seen,expires=excluded.expires,failed=0`, int64(key), r.ID, source, l.Signature, sealed, now.Unix(), now.Unix(), now.Add(ttl).Unix())
 		if err != nil {
 			return err
 		}

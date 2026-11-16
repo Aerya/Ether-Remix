@@ -9,8 +9,9 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/pse/pseenv"
+	"github.com/braedonsaunders/ether/internal/pse/ftp"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
+	"github.com/braedonsaunders/ether/internal/pse/xdcc"
 )
 
 func (a *App) releaseLibrary() releasedb.Library {
@@ -18,8 +19,9 @@ func (a *App) releaseLibrary() releasedb.Library {
 	raw, _ := json.Marshal(struct {
 		Indexers any
 		SFR      any
-		Settings any
-	}{ftpIndexers(xdccIndexers(cfg.Indexers)), releasedb.LoadSFRSettings(), pseenv.Snapshot()})
+		FTP      any
+		XDCC     any
+	}{ftpIndexers(xdccIndexers(cfg.Indexers)), releasedb.LoadSFRSettings(), ftp.LoadSettings(), xdcc.LoadSettings()})
 	sum := sha256.Sum256(raw)
 	return releasedb.Library{Store: releasedb.NewStore(a.db), Signature: hex.EncodeToString(sum[:]),
 		Seal: func(s string) (string, error) { return a.cfg.Seal("pse-release-library", []byte(s)) },

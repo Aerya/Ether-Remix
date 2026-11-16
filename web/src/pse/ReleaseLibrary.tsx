@@ -25,8 +25,10 @@ export function sortReleases(rows: ReleaseRow[], key: SortKey, descending: boole
   return [...rows].sort((a, b) => {
     const av = a[key],
       bv = b[key];
+    const unknown = (v: ReleaseRow[SortKey]) =>
+      v == null || v === "" || v === 0 || (Array.isArray(v) && v.length === 0);
+    if (unknown(av) !== unknown(bv)) return unknown(av) ? 1 : -1;
     if (typeof av === "number" && typeof bv === "number") {
-      if (!av !== !bv) return av ? -1 : 1;
       return (av - bv) * (descending ? -1 : 1) || a.name.localeCompare(b.name);
     }
     return (
@@ -82,6 +84,7 @@ export function ReleaseLibrary({
     descending,
   );
   useEffect(() => setPage(0), [key, query, sort, descending]);
+  const currentPage = Math.min(page, Math.max(0, Math.ceil(rows.length / 50) - 1));
   const columns: [SortKey, string][] = [
     ["name", "Release"],
     ["height", L("Résolution", "Resolution")],
@@ -143,6 +146,15 @@ export function ReleaseLibrary({
             ))}
           </select>
         </label>
+      )}
+      {episodeState.loading && (
+        <p role="status">{L("Chargement des épisodes…", "Loading episodes…")}</p>
+      )}
+      {Boolean(episodeState.error) && (
+        <p role="alert">
+          {L("Impossible de charger les épisodes.", "Could not load episodes.")}{" "}
+          <Button onClick={() => void episodeState.reload()}>{L("Réessayer", "Retry")}</Button>
+        </p>
       )}
       {episodes.length > 0 && (
         <label className="block">
@@ -215,7 +227,7 @@ export function ReleaseLibrary({
               </tr>
             </thead>
             <tbody>
-              {rows.slice(page * 50, (page + 1) * 50).map((r, i) => (
+              {rows.slice(currentPage * 50, (currentPage + 1) * 50).map((r, i) => (
                 <tr key={`${r.name}-${r.source}-${i}`} className="border-t">
                   {columns.map(([k]) => (
                     <td
@@ -233,13 +245,16 @@ export function ReleaseLibrary({
       )}
       {rows.length > 50 && (
         <div className="flex items-center gap-3">
-          <Button disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+          <Button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>
             {L("Précédent", "Previous")}
           </Button>
           <span>
-            {page + 1} / {Math.ceil(rows.length / 50)}
+            {currentPage + 1} / {Math.ceil(rows.length / 50)}
           </span>
-          <Button disabled={(page + 1) * 50 >= rows.length} onClick={() => setPage((p) => p + 1)}>
+          <Button
+            disabled={(currentPage + 1) * 50 >= rows.length}
+            onClick={() => setPage(currentPage + 1)}
+          >
             {L("Suivant", "Next")}
           </Button>
         </div>

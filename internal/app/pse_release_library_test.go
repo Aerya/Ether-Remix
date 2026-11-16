@@ -52,6 +52,11 @@ func TestReleaseLibraryPlaybackGateAndPrivateProjection(t *testing.T) {
 	if json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.Releases) != 1 {
 		t.Fatal(w.Body.String())
 	}
+	qualityRestore := pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on", "PSE_PLAYABLE_FILTER": "height=720", "PSE_QUALITY": "on"})
+	if _, ok := a.retainedReleaseLibrary(play, req); !ok {
+		t.Fatal("quality changes must not discard source references")
+	}
+	qualityRestore()
 	restore := pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "off"})
 	defer restore()
 	if _, ok := a.retainedReleaseLibrary(play, req); ok {
