@@ -277,6 +277,14 @@ function PseSettings() {
                   </CollapsibleBlock>
                   <CollapsibleBlock title="SeerrCatalog" id="seerrcatalog-integration">
                     <div className="space-y-4 p-4">
+                      <a
+                        className="text-sm underline"
+                        href="https://github.com/Aerya/Stremio-Seerr-Catalog"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {L("GitHub / auto-hébergement", "GitHub / self-hosting")}
+                      </a>
                       <p className="text-sm text-fg-muted">
                         {L(
                           "Deux fonctions indépendantes, chacune avec sa propre clé. Configurez-les aussi dans SeerrCatalog → Paramètres → Intégration Ether Remix.",

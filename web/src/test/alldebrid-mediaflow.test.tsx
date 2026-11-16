@@ -14,14 +14,12 @@ describe("AllDebrid MediaFlow", () => {
       apiKey: "••••",
       priority: 0,
     } as const;
-    const get = vi
-      .spyOn(api, "getConfig")
-      .mockResolvedValue({
-        debrid: { providers: [account] },
-        outbound: {
-          allDebridMediaFlow: { enabled: true, url: "http://mediaflow:8888", password: "••••" },
-        },
-      } as EtherConfig);
+    const get = vi.spyOn(api, "getConfig").mockResolvedValue({
+      debrid: { providers: [account] },
+      outbound: {
+        allDebridMediaFlow: { enabled: true, url: "http://mediaflow:8888", password: "••••" },
+      },
+    } as EtherConfig);
     const test = vi.spyOn(api, "testDebrid").mockResolvedValue({ ok: true, durationMs: 30 });
     render(<AllDebridMediaFlow />);
     const button = await screen.findByRole("button", { name: "Test AllDebrid through MediaFlow" });

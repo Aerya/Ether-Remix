@@ -157,6 +157,40 @@ export function RemixSources({
         {category === "stremio" ? (
           <>
             <IndexerList view="stremio" addRequest={add} />
+            <CollapsibleBlock title="Seedstrem" id="seedstrem-integration">
+              <div className="space-y-4 p-4 text-sm">
+                <p className="text-fg-muted">
+                  {L(
+                    "Addon auto-hébergé pour les films, séries et animés : Seedstrem recherche via Prowlarr et diffuse les fichiers pendant leur téléchargement avec qBittorrent ou Deluge. Le client torrent et les fichiers restent sur l’hôte Seedstrem ; aucun volume de téléchargement à monter dans Remix.",
+                    "Self-hosted addon for movies, shows and anime: Seedstrem searches Prowlarr and streams files while qBittorrent or Deluge downloads them. The torrent client and files stay on the Seedstrem host; Remix needs no download volume.",
+                  )}
+                </p>
+                <p className="text-fg-muted">
+                  {L(
+                    "Ajoutez le manifeste de votre instance, accessible depuis Remix. La recherche ne lance pas de téléchargement ; l’ouverture du flux peut en lancer un. Protégez cet accès et laissez désactivée l’ouverture des flux d’addons lors des contrôles de disponibilité si vous souhaitez réserver les téléchargements à la lecture.",
+                    "Add your instance’s manifest, reachable from Remix. Searching does not start downloads; opening a stream can. Protect this access and keep opening addon streams during availability checks disabled to reserve downloads for playback.",
+                  )}
+                </p>
+                <div className="flex flex-wrap items-center gap-4">
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      setAdd({ nonce: Date.now(), type: "stremio", name: "Seedstrem" })
+                    }
+                  >
+                    {L("Ajouter mon instance Seedstrem", "Add my Seedstrem instance")}
+                  </Button>
+                  <a
+                    className="underline"
+                    href="https://github.com/kipsilabs/seedstrem"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {L("GitHub / auto-hébergement", "GitHub / self-hosting")}
+                  </a>
+                </div>
+              </div>
+            </CollapsibleBlock>
             {stremio}
           </>
         ) : null}

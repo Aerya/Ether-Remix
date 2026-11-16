@@ -18,6 +18,7 @@
 - [Organisation des réglages](#nav-organisation-des-reglages)
   - [Navigation et badges des affiches](#nav-navigation-et-badges-des-affiches)
 - [Playlists et apparence](#nav-playlists-et-apparence)
+- [Seedstrem](#nav-seedstrem)
 - [SubMaker](#nav-submaker)
   - [Historique commun et Écoute](#nav-historique-commun-et-ecoute)
 - [Médias locaux et iBroadcast](#nav-medias-locaux-et-ibroadcast)
@@ -295,6 +296,12 @@ Choisissez le spectateur, vérifiez l’aperçu, puis validez. Une copie personn
 **Spotify** : dans Découvrir → Spotify, saisissez le **Client ID** de votre application. Ajoutez dans le tableau de bord Spotify l’URI de redirection exacte affichée par Remix, puis connectez le compte pour le spectateur choisi. HTTPS est requis hors boucle locale. Aucun Client Secret n’est demandé : connexion OAuth avec PKCE, jetons chiffrés sur le serveur, accès en lecture seule et bouton de déconnexion. En mode développement, le propriétaire de l’application doit avoir Premium et autoriser les utilisateurs dans Spotify Developers. L’accès aux titres peut être refusé pour les playlists dont vous n’êtes ni propriétaire ni collaborateur ; un lien trouvé dans un annuaire ne contourne pas cette limite.
 
 **Apparence** : le bouton en forme de palette dans la barre supérieure propose Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine. Choisissez séparément le mode clair ou sombre ; l’aperçu est immédiat et le choix est conservé dans ce navigateur. Les autres utilisateurs gardent leurs propres préférences.
+
+<a id="nav-seedstrem"></a>
+
+## Seedstrem
+
+[Installer Seedstrem et connecter son manifeste à Remix](SEEDSTREM.fr.md) : Prowlarr, qBittorrent ou Deluge et lecture HTTP pendant le téléchargement.
 
 <a id="nav-submaker"></a>
 

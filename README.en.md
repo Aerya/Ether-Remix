@@ -104,6 +104,7 @@ Turn access on under **Console → Apps**. Each viewer finds their links and app
 ### ![](https://api.iconify.design/lucide/radar.svg?color=%2314b8a6&width=24&height=24) Unified sources and searches ahead of playback
 
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
+- **Self-hosted Seedstrem**: add its manifest from Sources → Stremio. Prowlarr search and playback during download via qBittorrent or Deluge; files stay on the Seedstrem host, with no volume to mount in Remix. [Setup and connection](docs/pse/SEEDSTREM.en.md).
 - **Stremio catalogues**: background manual synchronization, visible status and retention of the last import on failure.
 - **Remix console**: settings under `/ether/remix`, collapsible sections closed by default; iBroadcast sits alongside music providers, with Subsonic information under Content → Music.
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.

@@ -44,7 +44,18 @@ vi.mock("../components/Drawer", () => ({
     ) : null,
 }));
 vi.mock("../components/addons/AddAddonDrawer", () => ({ AddAddonDrawer: () => null }));
-vi.mock("../pages/sources/Indexers", () => ({ IndexerList: () => <p>Stremio fixtures</p> }));
+vi.mock("../pages/sources/Indexers", () => ({
+  IndexerList: ({ addRequest }: { addRequest?: { type: string; name?: string } | null }) => (
+    <>
+      <p>Stremio fixtures</p>
+      {addRequest ? (
+        <output data-testid="add-source">
+          {addRequest.type}:{addRequest.name}
+        </output>
+      ) : null}
+    </>
+  ),
+}));
 vi.mock("../pages/sources/Debrid", () => ({ DebridSources: () => null }));
 vi.mock("../pages/sources/Usenet", () => ({ UsenetProviders: () => null }));
 vi.mock("../components/ProwlarrImport", () => ({ ProwlarrImport: () => null }));
@@ -138,4 +149,18 @@ it("renders torrent clients in their own source category", () => {
   expect(screen.getByRole("tab", { name: "Torrent client" }).getAttribute("aria-selected")).toBe(
     "true",
   );
+});
+
+it("offers Seedstrem through the existing Stremio form without a public instance default", () => {
+  remix("?source=stremio");
+  const title = screen.getByText("Seedstrem", { selector: "h2" });
+  const block = title.closest("details")!;
+  expect(block.open).toBe(false);
+  fireEvent.click(title);
+  expect(screen.getByRole("link", { name: "GitHub / self-hosting" }).getAttribute("href")).toBe(
+    "https://github.com/kipsilabs/seedstrem",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Add my Seedstrem instance" }));
+  expect(screen.getByTestId("add-source").textContent).toBe("stremio:Seedstrem");
+  expect(screen.getByTestId("location").textContent).toBe("?source=stremio");
 });
