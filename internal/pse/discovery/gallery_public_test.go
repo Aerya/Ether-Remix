@@ -23,3 +23,10 @@ func TestMediuxOnlySelectedGenrePosters(t *testing.T) {
 		t.Fatalf("unexpected images: %+v", images)
 	}
 }
+
+func TestPosterDBStyleMetadata(t *testing.T) {
+	images := publicImages([]byte(`<div data-poster-id="123"><p>Netflix</p><p>Other</p><p class="uploaded-by">by <a href="https://theposterdb.com/user/Artist">Artist</a></p><a href="https://theposterdb.com/set/456">1</a></div>`), "ThePosterDB", "Netflix", "https://theposterdb.com/posters/1")
+	if len(images) != 1 || images[0].Name != "Netflix" || images[0].Creator != "Artist" || images[0].SetID != "456" {
+		t.Fatalf("unexpected metadata: %+v", images)
+	}
+}
