@@ -33,6 +33,8 @@ export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss(), themeScript, ...(mode === "mock" ? [mockWatch()] : [])],
   base: "/ether/",
   build: {
+    // Preserve the browser baseline used before the Vite 8 migration.
+    target: ["es2020", "edge88", "firefox78", "chrome87", "safari14"],
     outDir: "../internal/admin/dist",
     emptyOutDir: true,
     chunkSizeWarningLimit: 700,
