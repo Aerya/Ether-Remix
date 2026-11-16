@@ -68,7 +68,7 @@ describe("Catalog title drawer", () => {
       within(tabs)
         .getAllByRole("tab")
         .map((t) => t.textContent),
-    ).toEqual(["Overview", "Episodes", "Calendar", "Availability"]);
+    ).toEqual(["Overview", "Episodes", "Calendar", "Availability", "Indexed releases · Beta"]);
     expect(await within(drawer).findByText("Next episode")).toBeInTheDocument();
     expect(within(drawer).getByText("S2 · E3 · Part 3")).toBeInTheDocument();
     // Future synopses stay hidden on the overview.
@@ -102,7 +102,7 @@ describe("Catalog title drawer", () => {
       within(tabs)
         .getAllByRole("tab")
         .map((t) => t.textContent),
-    ).toEqual(["Overview", "Releases", "Availability"]);
+    ).toEqual(["Overview", "Releases", "Availability", "Indexed releases · Beta"]);
     fireEvent.click(within(tabs).getByRole("tab", { name: "Releases" }));
     expect(await within(drawer).findByText("PG-13")).toBeInTheDocument();
     // The owner's region first; the French premiere only under all countries.

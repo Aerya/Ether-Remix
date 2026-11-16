@@ -53,13 +53,13 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^5.2.0",
-    "ai": "^7.0.165",
+    "ai": "^7.0.166",
     "jsdom": "^31.0.0",
     "prettier": "3.9.10",
     "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2",
     "typescript-api": "npm:typescript@^5.9.3",
-    "vite": "^6.4.5",
+    "vite": "^8.3.7",
     "vitest": "^5.1.0"
   },
   "pnpm": {

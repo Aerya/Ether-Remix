@@ -15,7 +15,8 @@ func init() {
  title_key INTEGER NOT NULL, release_id TEXT NOT NULL, source_id TEXT NOT NULL, source_signature TEXT NOT NULL,
  payload TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
  expires INTEGER NOT NULL, failed INTEGER NOT NULL DEFAULT 0,
- PRIMARY KEY(title_key,source_id,release_id)); CREATE INDEX pse_release_library_expiry ON pse_release_library(expires);`)
+ PRIMARY KEY(title_key,source_id,release_id)); CREATE INDEX pse_release_library_expiry ON pse_release_library(expires);
+ CREATE INDEX pse_release_library_retention ON pse_release_library(last_seen);`)
 }
 
 func LibraryEnabled() bool { return pseenv.Get("PSE_RELEASE_LIBRARY") == "on" }
