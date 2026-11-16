@@ -45,8 +45,8 @@ export function IndexerGroups(props: ComponentProps<typeof IndexerList>) {
       </Select>
       <p className="text-xs text-fg-muted">
         {L(
-          "Prowlarr : importez ses indexeurs avec le bouton ci-dessus. Jackett : ajoutez l’URL Torznab et la clé de chaque indexeur via Ajouter une source → Torznab.",
-          "Prowlarr: import its indexers using the button above. Jackett: add each indexer’s Torznab URL and key via Add a source → Torznab.",
+          "Prowlarr : importez ses indexeurs avec le bouton ci-dessus. Jackett : ajoutez l’URL Torznab et la clé de chaque indexeur via Ajouter une source → Torznab. NZBHydra2 : ajoutez son URL API et sa clé comme indexeur Usenet/Newznab.",
+          "Prowlarr: import its indexers using the button above. Jackett: add each indexer’s Torznab URL and key via Add a source → Torznab. NZBHydra2: add its API URL and key as a Usenet/Newznab indexer.",
         )}
       </p>
       <IndexerList

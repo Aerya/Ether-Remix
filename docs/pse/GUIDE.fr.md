@@ -273,6 +273,8 @@ Les sources musicales identifient les instances publiques et proposent les liens
 
 ## Organisation des réglages
 
+Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lire, configurez la voie adaptée : compte débrideur, client BitTorrent ou addon Stremio comme Seedstrem. Seedstrem utilise son propre client torrent. Pour Usenet, Remix lit via son moteur NNTP et vos fournisseurs Usenet ; SABnzbd/NZBGet ne sont pas des clients externes intégrés.
+
 - **Sources** : accès unique aux comptes, addons Stremio, indexeurs BitTorrent/Usenet, fournisseurs Usenet, IPTV et sources musicales. Les composants et configurations Ether sont conservés. Les indexeurs peuvent être filtrés par instance Prowlarr/Jackett ou par provenance manuelle. Leur configuration reste unique.
 - **Indexation** : activation, quotas, rythme et choix des sources : Automatique pour les addons Stremio activés, ou Personnalisé, y compris aucune source. Ce choix ne désactive pas les sources à la lecture. Les titres à indexer en priorité présentent les compteurs catalogue, recherchés, avec release et affichés par bibliothèque ou collection ; les groupes peuvent se recouper.
 - **Lecture et priorités** : préférences entre sources à qualité équivalente. Ce classement n’impose pas des recherches réseau successives et ne classe pas universellement les fichiers locaux, clients torrent, XDCC et FTP. Le dernier recours se règle par addon Stremio dans Sources.

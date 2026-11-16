@@ -273,6 +273,8 @@ Music sources identify public instances and link to available self-hosting proje
 
 ## Settings organization
 
+Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate playback path: a debrid account, a BitTorrent client or a Stremio addon such as Seedstrem. Seedstrem uses its own torrent client. For Usenet, Remix reads through its NNTP engine and your Usenet providers; SABnzbd/NZBGet are not integrated external download clients.
+
 - **Sources**: one entry for accounts, Stremio addons, BitTorrent/Usenet indexers, Usenet providers, IPTV and music sources. Ether components and configurations are retained. Indexers can be filtered by Prowlarr/Jackett instance or manual origin, with one shared configuration.
 - **Indexing**: enablement, budgets, pace and source selection: Automatic for enabled Stremio addons, or Custom, including no sources. This does not disable playback sources. Priority titles show catalogue, searched, with-release and shown counts for each library or collection; groups can overlap.
 - **Playback & priorities**: preferences among equivalent-quality sources. This does not enforce sequential network searches or universally rank local files, torrent clients, XDCC and FTP. Last-resort behavior is configured per Stremio addon in Sources.
