@@ -1,3 +1,4 @@
+import { LocalDestinations } from "./LocalDestinations";
 import { Link } from "react-router-dom";
 import { useEffect, useId, useState } from "react";
 import { Button } from "@braedonsaunders/appkit-ui";
@@ -166,6 +167,7 @@ export function LocalMedia() {
               {r.kind === "audio" ? L("Musique", "Music") : L("Vidéos", "Videos")}
             </span>
             <p className="break-all text-sm text-fg-muted">{r.path}</p>
+            {r.kind === "video" && <LocalDestinations rootId={r.id} />}
             <Sharing
               source={"local:" + r.id}
               access={r.access}

@@ -112,7 +112,7 @@ type Service struct {
 	types   map[string]string         // type des collections (movie, show, mixed)
 	keys    map[string]core.RatingKey // clé Plex des collections
 	hooks   PriorityHooks
-	private map[string]string
+	private map[string][]string
 }
 
 // New charge les bibliothèques enregistrées.
@@ -148,14 +148,19 @@ func (s *Service) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	private := map[string]string{}
+	private := map[string][]string{}
 	titles, types, keys := map[string]string{}, map[string]string{}, map[string]core.RatingKey{}
 	if s.cols != nil {
 		if specs, err := s.cols.ListSpecs(ctx); err == nil {
 			for _, sp := range specs {
 				titles[sp.ID], types[sp.ID] = sp.Name, sp.MediaType
 				if strings.HasPrefix(sp.TemplateID, "remix-local-") {
-					private[sp.ID] = "local:" + strings.TrimPrefix(sp.TemplateID, "remix-local-")
+					private[sp.ID] = append(private[sp.ID], "local:"+strings.TrimPrefix(sp.TemplateID, "remix-local-"))
+				}
+				for _, src := range sp.Sources {
+					if src.Kind == "localFiles" {
+						private[sp.ID] = append(private[sp.ID], "local:"+src.Label)
+					}
 				}
 				if k, err := core.ParseRatingKey(sp.RatingKey); err == nil {
 					keys[sp.ID] = k
@@ -215,9 +220,7 @@ func (s *Service) theme(l Library, section int, title string, typ core.MediaType
 	th := frontend.PSETheme{Section: section, Title: title, Type: typ, AllLanguages: l.AllLanguages}
 	sources := []string{}
 	for _, id := range l.Collections {
-		if p := s.private[id]; p != "" {
-			sources = append(sources, p)
-		}
+		sources = append(sources, s.private[id]...)
 	}
 	if len(sources) > 0 {
 		th.VisibleTo = func(u *core.User) bool {
