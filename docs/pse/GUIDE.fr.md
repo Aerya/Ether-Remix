@@ -445,6 +445,9 @@ Les nouvelles collections gardent le classement Xperience, sans rotation aléato
 
 Xperience fournit des listes, pas des fichiers ni des sources de lecture : vos sources Remix restent nécessaires, sans fichiers `.strm`. Le manifeste personnel est enregistré dans la configuration privée du module Stremio ; les collections ne contiennent que sa référence et les paramètres choisis. Ne partagez pas ce lien. Un nouvel import des mêmes catalogues et paramètres réutilise les éléments existants, y compris après une création partielle, sans écraser les noms, limites, destinations ou autres personnalisations. Ajustez ces réglages depuis les collections et bibliothèques existantes. La limite choisie lors d’un réimport ne remplace donc pas celle d’une sélection déjà créée.
 
+Les ajouts, renommages, masquages et suppressions de bibliothèques sont transmis à Plex sans redémarrer Ether. Rechargez le client Plex si sa liste reste en cache. Masquer les bibliothèques générales Movies / TV Shows ne désactive pas les bibliothèques Xperience : celles-ci gardent leur propre publication et leurs droits d’accès. Une collection vide n’est pas forcément encore en chargement : vérifiez aussi ses paramètres, les filtres et l’état de sa source.
+
+
 <a id="nav-configuration-rapide-jukebox"></a>
 
 ## Configuration rapide JukeBox

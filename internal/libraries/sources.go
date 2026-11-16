@@ -33,7 +33,7 @@ func (s *Service) SetSources(ctx context.Context, id core.LibraryID, sources []s
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE libraries SET sources=?, updated_at=? WHERE id=?`, string(data), s.now().Unix(), int64(id))
 	if err == nil {
-		s.gen.Add(1)
+		s.changed()
 	}
 	return err
 }
@@ -88,7 +88,7 @@ func (s *Service) SetCollection(ctx context.Context, id core.LibraryID, collecti
 	data, _ := json.Marshal([]string{"collection:" + strconv.FormatInt(collectionID, 10)})
 	_, err = s.db.ExecContext(ctx, `UPDATE libraries SET collection_id=?, sources=?, updated_at=? WHERE id=?`, collectionID, string(data), s.now().Unix(), int64(id))
 	if err == nil {
-		s.gen.Add(1)
+		s.changed()
 	}
 	return err
 }
