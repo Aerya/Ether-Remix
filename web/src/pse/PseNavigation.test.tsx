@@ -68,7 +68,8 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   expect(tabs).toEqual([
     "Démarrage rapide",
     "Sources",
-    "Priorités",
+    "Indexation",
+    "Lecture et priorités",
     "Langues et qualité",
     "VOSTFR à la demande",
     "Contenus et bibliothèques",
@@ -77,6 +78,8 @@ it("orders tabs and lets vertically listed imported sources be selected and save
     "Notifications et suivi",
   ]);
   expect(screen.getByRole("table")).toBeTruthy();
+  fireEvent.click(screen.getByLabelText("Mode de sélection"));
+  fireEvent.click(await screen.findByRole("option", { name: /Personnalis/ }));
   fireEvent.click(screen.getByLabelText("Prowlarr"));
   fireEvent.click(screen.getByRole("button", { name: /Save|Enregistrer/ }));
   await waitFor(() =>

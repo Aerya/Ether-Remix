@@ -1,3 +1,4 @@
+import type { Counts } from "./IndexerDetails";
 import { Badge, Button, Input, Select, toast } from "@braedonsaunders/appkit-ui";
 import { useEffect, useMemo, useState } from "react";
 import { CollapsibleBlock } from "../components/CollapsibleSections";
@@ -95,6 +96,14 @@ export function buildTargets(themes: ThemeData, prio: PriorityData, query: strin
 }
 
 export function SearchPriority() {
+  const coverage = useAsync(
+    () =>
+      apiFetch<{
+        libraries: (Counts & { id: string })[] | null;
+        collections: (Counts & { id: string })[] | null;
+      }>("/pse/indexer/details"),
+    [],
+  );
   const themes = useAsync(() => apiFetch<ThemeData>(ENDPOINT), []);
   const prio = useAsync(() => apiFetch<PriorityData>(ENDPOINT + "priority"), []);
   const [query, setQuery] = useState("");
@@ -154,7 +163,7 @@ export function SearchPriority() {
   const total = prio.data.total ?? 0;
   const max = prio.data.max ?? 0;
   return (
-    <CollapsibleBlock title={L("Priorité de recherche", "Search priority")}>
+    <CollapsibleBlock title={L("Titres à indexer en priorité", "Titles to index first")}>
       <div className="p-4">
         <p className="mb-4 text-sm text-fg-muted">
           {L(
@@ -163,6 +172,15 @@ export function SearchPriority() {
           )}
         </p>
         <div className="space-y-3">
+          <p className="text-xs text-fg-muted">
+            {L(
+              "Recherchés = titres déjà interrogés, même sans résultat. Avec release = au moins un résultat ; Affichés = critères du catalogue respectés. Les collections peuvent partager des titres : ne pas additionner ces nombres.",
+              "Searched = queried titles, even without results. With releases = at least one result; Shown = catalogue criteria met. Collections can overlap: do not add these counts.",
+            )}
+          </p>
+          <Button size="sm" variant="outline" onClick={() => void coverage.reload()}>
+            {L("Actualiser les compteurs", "Refresh counts")}
+          </Button>
           <p className="text-sm">
             {L(`${total} titre(s) prioritaire(s)`, `${total} priority title(s)`)}
             {max > 0 && total > max
@@ -181,6 +199,9 @@ export function SearchPriority() {
           />
           {targets.slice(0, VISIBLE).map((t) => {
             const key = `${t.kind}:${t.id}`;
+            const counts = (
+              t.kind === "library" ? coverage.data?.libraries : coverage.data?.collections
+            )?.find((r) => String(r.id) === t.id);
             return (
               <div
                 key={key}
@@ -194,11 +215,17 @@ export function SearchPriority() {
                       ? L("Bibliothèque", "Library")
                       : L("Collection", "Collection")}
                   </Badge>
-                  {t.titles !== undefined ? (
-                    <span className="text-xs font-normal text-fg-muted">
-                      {L(`${t.titles} titre(s)`, `${t.titles} title(s)`)}
-                    </span>
-                  ) : null}
+                  <span className="w-full text-xs font-normal text-fg-muted">
+                    {counts
+                      ? L(
+                          `${counts.titles} au catalogue · ${counts.indexed} recherchés · ${counts.found} avec release · ${counts.playable} affichés`,
+                          `${counts.titles} in catalogue · ${counts.indexed} searched · ${counts.found} with releases · ${counts.playable} shown`,
+                        )
+                      : L(
+                          "Comptages indisponibles ou en cours de chargement",
+                          "Counts unavailable or loading",
+                        )}
+                  </span>
                 </span>
                 <span className="flex flex-wrap items-center gap-2">
                   <Select

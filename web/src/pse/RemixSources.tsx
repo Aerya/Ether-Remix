@@ -1,10 +1,11 @@
+import { IndexerGroups } from "./IndexerGroups";
 import { LocalMedia } from "./OwnedMedia";
 import { CollapsibleSections, CollapsibleBlock } from "../components/CollapsibleSections";
 import { AddSourceGallery, type GalleryChoice } from "../pages/sources/cards";
 import type { DebridKind } from "../lib/types";
 import { Badge, Button } from "@braedonsaunders/appkit-ui";
 import { useRef, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { getLocale } from "../i18n";
 import { IndexerList } from "../pages/sources/Indexers";
 import { DebridSources } from "../pages/sources/Debrid";
@@ -16,7 +17,7 @@ import { NewReleaseBudgetSection } from "../pages/libraries/browser/NewReleasesS
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const CATEGORIES = [
   ["stremio", "Stremio", "Stremio"],
-  ["indexeurs", "Indexeurs", "Indexers"],
+  ["indexeurs", "Indexeurs · Prowlarr / Jackett", "Indexers · Prowlarr / Jackett"],
   ["usenet", "Usenet", "Usenet"],
   ["debrid", "Debrid", "Debrid"],
   ["torrent", "Client torrent", "Torrent client"],
@@ -25,18 +26,15 @@ const CATEGORIES = [
   ["musique", "Streaming musical", "Music streaming"],
   ["local", "Fichiers locaux", "Local files"],
   ["iptv", "IPTV", "IPTV"],
-  ["indexation", "Indexation", "Indexing"],
 ] as const;
 export function RemixSources({
   music,
-  indexing,
   stremio,
   torrent,
   xdcc,
   ftp,
 }: {
   music: ReactNode;
-  indexing: ReactNode;
   stremio?: ReactNode;
   torrent?: ReactNode;
   xdcc?: ReactNode;
@@ -94,6 +92,14 @@ export function RemixSources({
             "One configuration shared by Ether and Remix. Accounts, manifests and priorities are shared with playback; background indexing is configured separately.",
           )}
         </p>
+      </div>
+      <div className="flex flex-wrap gap-4 text-sm">
+        <Link className="underline" to="/remix/indexation">
+          {L("Choisir les sources d’indexation", "Choose indexing sources")}
+        </Link>
+        <Link className="underline" to="/remix/lecture">
+          {L("Régler les priorités de lecture", "Set playback priorities")}
+        </Link>
       </div>
       <Button onClick={() => setGallery(true)}>{L("Ajouter une source", "Add a source")}</Button>
       <nav
@@ -244,7 +250,7 @@ export function RemixSources({
                 </Button>
               ))}
             </nav>
-            <IndexerList
+            <IndexerGroups
               key={protocol ?? "all"}
               view={
                 protocol === "torrent"
@@ -283,7 +289,6 @@ export function RemixSources({
             <LocalMedia />
           </CollapsibleBlock>
         ) : null}
-        {category === "indexation" ? indexing : null}
       </CollapsibleSections.Provider>
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />
       <Drawer

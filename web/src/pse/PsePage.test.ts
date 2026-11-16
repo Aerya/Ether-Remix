@@ -41,6 +41,8 @@ describe("onglets de la page Ether-Remix", () => {
     expect(featuresOfTab("langues", all).map((x) => x.id)).toEqual(["french", "playable"]);
     expect(featuresOfTab("contenus", all).map((x) => x.id)).toEqual(["music", "posters"]);
     expect(featuresOfTab("demande", all)).toEqual([]);
+    expect(featuresOfTab("indexation", all).map((x) => x.id)).toEqual(["indexer"]);
+    expect(featuresOfTab("sources", all)).toEqual([]);
     expect(featuresOfTab("statistiques", all)).toEqual([]);
   });
   it("met une section inconnue dans le dernier onglet", () => {

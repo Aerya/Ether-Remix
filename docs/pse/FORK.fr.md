@@ -165,3 +165,11 @@ Révision Ether intégrée : `13d21d35fd15980c13c2bca15a26ddb7e5b8734a`. Conserv
 ### Seedstrem et dernier recours à la lecture
 
 Les points d’accroche dans `internal/core/ondemand.go`, `internal/core/indexer_purpose.go` et `internal/debrid/direct.go` appellent `internal/core/pse_seedstrem.go` pour réserver l’ouverture des liens Seedstrem à une lecture réelle. `internal/resolver/resolver.go` conserve la configuration `Indexer.PlaybackLastResort`, sépare les vols de résolution et appelle `pse_last_resort.go` pour essayer les sources normales avant les secours. Les recherches d’indexation restent communes. Le réglage est exposé dans `web/src/pages/sources/Indexers.tsx` et `web/src/lib/types.ts`. Préserver ces accroches lors des synchronisations Ether.
+
+### Navigation et sélection d’indexation
+
+`web/src/pse/navigation.tsx` et `PsePage.tsx` séparent Sources, Indexation et Lecture et priorités. Les anciens liens `sources?source=indexation` et `priorites` redirigent sans dupliquer la configuration Ether. `IndexerGroups` filtre les composants Ether par provenance (`prowlarrImport` ou chemin API Jackett) ; `IndexerList.originKey` est facultatif pour préserver ses usages amont.
+
+`PSE_INDEXER_SOURCES` conserve sa sémantique historique : vide = addons Stremio activés, liste = sélection explicite. La valeur réservée `__none__` représente une sélection personnalisée vide, sans réactiver les addons automatiquement. Aucun appel de recherche ou téléchargement n’est déclenché par ce changement d’interface.
+
+Les compteurs de priorité utilisent une seule réponse `/pse/indexer/details`, avec l’identifiant des bibliothèques ajouté aux lignes existantes. Ils réutilisent les agrégats et le cache des statistiques, sans requête supplémentaire par collection.

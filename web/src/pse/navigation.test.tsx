@@ -19,6 +19,7 @@ it("keeps one source entry and maps legacy source addresses without losing param
   expect(links.some((i) => i.href === "/sources")).toBe(false);
   expect(sourcesHref("stremio", "?new=addon")).toBe("/remix/sources?new=addon&source=stremio");
   expect(sourcesHref("usage", "?days=30")).toBe("/remix/statistiques?days=30&view=usage");
+  expect(legacyRemixRoute("priorites")).toBe("/remix/lecture");
   expect(legacyRemixRoute("animes")).toBe("/remix/contenus?content=animes");
 });
 

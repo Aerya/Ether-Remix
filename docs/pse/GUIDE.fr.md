@@ -37,7 +37,7 @@
 Dans la console, ouvrez **Ether-Remix → Démarrage rapide**. Cet onglet reste accessible ; il ne modifie pas les réglages automatiquement.
 
 1. **Sources** : ajoutez, testez et activez vos fournisseurs. Un addon qui fournit ses propres liens de lecture n’exige pas une seconde clé débrideur pour les recherches.
-2. **Sources → Indexation** : activez et enregistrez l’indexation en arrière-plan pour préparer le catalogue vidéo. Sans sélection explicite, tous les addons Stremio activés sont utilisés ; les indexeurs Prowlarr/Jackett doivent être sélectionnés. Respectez les quotas des fournisseurs.
+2. **Indexation** : activez et enregistrez l’indexation en arrière-plan pour préparer le catalogue vidéo. Le mode Automatique utilise les addons Stremio activés ; passez en Personnalisé pour choisir vos sources, notamment les indexeurs Prowlarr/Jackett. Une sélection personnalisée vide ne lance aucune recherche. Respectez les quotas des fournisseurs.
 3. **Langues et qualité** : vérifiez les critères et le seuil du catalogue lisible. Un catalogue vide peut simplement attendre des releases qui correspondent à vos réglages.
 4. **Statistiques → Indexation** : contrôlez les dernières recherches et le compteur de titres cherchés. L’indexation se met en pause pendant les lectures. Les statistiques d’utilisation sont distinctes.
 5. **Contenus et bibliothèques** : personnalisez les collections si besoin. Pour la musique et les fichiers locaux seuls, l’indexation vidéo n’est pas nécessaire ; configurez leurs sources et leur partage.
@@ -245,7 +245,7 @@ Dans **Sources → Streaming musical**, les réglages sont regroupés par famill
 
 Dans **Sources → Debrid → Modifier**, **Afficher la clé API** révèle seulement celle du compte sélectionné au propriétaire connecté. **Masquer la clé API** ou la fermeture du formulaire retire cet affichage sans modifier la clé enregistrée.
 
-Dans **Sources → Indexation**, **Sources importées** se filtre et se trie par catégorie, nom ou contenus concernés. **Priorité de recherche** se déplie à la demande.
+Dans **Indexation**, **Sources importées** se filtre et se trie par catégorie, nom ou contenus concernés. **Titres à indexer en priorité** se déplie à la demande. « Recherchés » inclut les recherches sans résultat ; « Affichés » compte les titres respectant les critères du catalogue. Les compteurs sont actualisables et peuvent refléter le dernier instantané mis en cache.
 
 <a id="nav-animes"></a>
 
@@ -273,7 +273,9 @@ Les sources musicales identifient les instances publiques et proposent les liens
 
 ## Organisation des réglages
 
-- **Sources** : accès unique aux comptes, addons Stremio, indexeurs BitTorrent/Usenet, fournisseurs Usenet, IPTV et sources musicales. Les composants et configurations Ether sont conservés. La catégorie Indexation regroupe activation, quotas, rythme, sélection triable des sources et priorités des bibliothèques.
+- **Sources** : accès unique aux comptes, addons Stremio, indexeurs BitTorrent/Usenet, fournisseurs Usenet, IPTV et sources musicales. Les composants et configurations Ether sont conservés. Les indexeurs peuvent être filtrés par instance Prowlarr/Jackett ou par provenance manuelle. Leur configuration reste unique.
+- **Indexation** : activation, quotas, rythme et choix des sources : Automatique pour les addons Stremio activés, ou Personnalisé, y compris aucune source. Ce choix ne désactive pas les sources à la lecture. Les titres à indexer en priorité présentent les compteurs catalogue, recherchés, avec release et affichés par bibliothèque ou collection ; les groupes peuvent se recouper.
+- **Lecture et priorités** : préférences entre sources à qualité équivalente. Ce classement n’impose pas des recherches réseau successives et ne classe pas universellement les fichiers locaux, clients torrent, XDCC et FTP. Le dernier recours se règle par addon Stremio dans Sources.
 - **Langues et qualité** : catalogue français, langues de release, résolution, codecs, cache et exceptions par collection.
 - **VOSTFR à la demande** : sélection explicite de titres sans VF et recherche prioritaire.
 - **Contenus et bibliothèques** : films, séries, animés, musique, playlists et bibliothèques personnalisées. Les bibliothèques mixtes restent proposées dans Films et Séries.

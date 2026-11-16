@@ -89,7 +89,7 @@ beforeEach(() => {
 function remix(search = "?source=iptv") {
   return render(
     <MemoryRouter initialEntries={["/remix/sources" + search]}>
-      <RemixSources music={null} indexing={null} />
+      <RemixSources music={null} />
       <Location />
     </MemoryRouter>,
   );
@@ -147,11 +147,7 @@ it("retains the native Ether IPTV source query outside Remix", async () => {
 it("renders torrent clients in their own source category", () => {
   render(
     <MemoryRouter initialEntries={["/remix/sources?source=torrent"]}>
-      <RemixSources
-        music={null}
-        indexing={<p>Indexing fixture</p>}
-        torrent={<p>Torrent clients fixture</p>}
-      />
+      <RemixSources music={null} torrent={<p>Torrent clients fixture</p>} />
     </MemoryRouter>,
   );
   expect(screen.getByText("Torrent clients fixture")).toBeTruthy();
@@ -178,7 +174,7 @@ it("offers Seedstrem through the existing Stremio form without a public instance
 it("reveals the source list immediately after saving an addon", () => {
   render(
     <MemoryRouter initialEntries={["/ether/remix/sources?source=stremio"]}>
-      <RemixSources music={null} indexing={null} />
+      <RemixSources music={null} />
     </MemoryRouter>,
   );
   expect(screen.getByTestId("stremio-panel")).not.toHaveAttribute("open");

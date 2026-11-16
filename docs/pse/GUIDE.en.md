@@ -37,7 +37,7 @@
 In the console, open **Ether-Remix → Quick start**. This tab remains available and does not change settings automatically.
 
 1. **Sources**: add, test and enable your providers. An addon supplying its own playback links does not require a second debrid key for searches.
-2. **Sources → Indexing**: enable and save background indexing to prepare the video catalogue. With no explicit selection, all enabled Stremio addons are used; Prowlarr/Jackett indexers must be selected. Respect provider quotas.
+2. **Indexing**: enable and save background indexing to prepare the video catalogue. Automatic mode uses enabled Stremio addons; switch to Custom to choose sources, including Prowlarr/Jackett indexers. An empty custom selection performs no searches. Respect provider quotas.
 3. **Languages & quality**: check criteria and the playable catalogue threshold. An empty catalogue may simply be waiting for matching releases.
 4. **Statistics → Indexing**: check recent searches and searched-title counts. Indexing pauses during playback. Usage statistics are separate.
 5. **Content & libraries**: customize collections if needed. Music and local files alone do not require video indexing; configure their sources and sharing.
@@ -245,7 +245,7 @@ Under **Sources → Music streaming**, settings are grouped into **Eclipse** (ma
 
 Under **Sources → Debrid → Edit**, **Show API key** only reveals the selected account’s key to the signed-in owner. **Hide API key** or closing the editor removes the displayed value without changing the saved key.
 
-Under **Sources → Indexing**, **Imported sources** can be filtered and sorted by category, name or content. **Search priority** expands on demand.
+Under **Indexing**, **Imported sources** can be filtered and sorted by category, name or content. **Titles to index first** expands on demand. “Searched” includes searches without results; “Shown” counts titles meeting catalogue criteria. Counts can be refreshed and may reflect the latest cached snapshot.
 
 <a id="nav-anime"></a>
 
@@ -273,7 +273,9 @@ Music sources identify public instances and link to available self-hosting proje
 
 ## Settings organization
 
-- **Sources**: one entry for accounts, Stremio addons, BitTorrent/Usenet indexers, Usenet providers, IPTV and music sources. Ether components and configurations are retained. The Indexing category groups enablement, budgets, pace, sortable source selection and library priorities.
+- **Sources**: one entry for accounts, Stremio addons, BitTorrent/Usenet indexers, Usenet providers, IPTV and music sources. Ether components and configurations are retained. Indexers can be filtered by Prowlarr/Jackett instance or manual origin, with one shared configuration.
+- **Indexing**: enablement, budgets, pace and source selection: Automatic for enabled Stremio addons, or Custom, including no sources. This does not disable playback sources. Priority titles show catalogue, searched, with-release and shown counts for each library or collection; groups can overlap.
+- **Playback & priorities**: preferences among equivalent-quality sources. This does not enforce sequential network searches or universally rank local files, torrent clients, XDCC and FTP. Last-resort behavior is configured per Stremio addon in Sources.
 - **Languages & quality**: French catalogue, release languages, resolution, codecs, cache and collection exceptions.
 - **On-demand subtitles**: explicit non-dubbed title selection and priority searches.
 - **Content & libraries**: movies, shows, anime, music, playlists and custom libraries. Mixed libraries remain available under Movies and Shows.

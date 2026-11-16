@@ -45,3 +45,18 @@ it("filters and sorts by content while retaining selected sources outside the fi
   fireEvent.click(await screen.findByRole("option", { name: "Content then name" }));
   expect(screen.getByLabelText("Alpha")).toBeTruthy();
 });
+
+it("shows effective automatic addons as checked and makes the mode explicit", async () => {
+  render(<ImportedSources value="" options={[]} onChange={vi.fn()} />);
+  const addon = await screen.findByLabelText("Zeta");
+  expect(addon).toBeChecked();
+  expect(addon).toBeDisabled();
+  expect(screen.getByLabelText("Alpha")).not.toBeChecked();
+});
+
+it("keeps a custom empty selection empty instead of restoring automatic addons", async () => {
+  const change = vi.fn();
+  render(<ImportedSources value="a" options={[]} onChange={change} />);
+  fireEvent.click(await screen.findByLabelText("Zeta"));
+  expect(change).toHaveBeenLastCalledWith("__none__");
+});

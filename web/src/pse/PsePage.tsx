@@ -135,9 +135,11 @@ export default function PsePage() {
   if (!tab)
     return <Navigate replace to={"/remix/statistiques" + location.search + location.hash} />;
   let legacy = legacyRemixRoute(tab);
+  if (tab === "sources" && new URLSearchParams(location.search).get("source") === "indexation")
+    legacy = "/remix/indexation";
   const field = location.hash.match(/^#pse-(pse_[a-z_]+)$/i)?.[1]?.toUpperCase();
   if (tab === "films" && (field?.startsWith("PSE_INDEXER") || location.hash === "#pse-indexer"))
-    legacy = "/remix/sources?source=indexation";
+    legacy = "/remix/indexation";
   if (tab === "musique" && field)
     legacy =
       musicFieldPlacement(field) === "source"
@@ -302,29 +304,45 @@ function PseSettings() {
                   </CollapsibleBlock>
                 </>
               }
-              indexing={
-                <>
-                  {featuresOfTab(tab, current.features)
-                    .filter(
-                      (f) =>
-                        ![
-                          "sfr",
-                          "seerrcatalog",
-                          "seerrcatalog_search",
-                          "torrent",
-                          "torrent2",
-                          "torrent3",
-                          "xdcc",
-                          "ftp",
-                        ].includes(f.id),
-                    )
-                    .map((f) => renderFeature(f))}
-                  <SearchPriority />
-                </>
-              }
             />
           ) : null}
-          {tab === "priorites" ? <SourceOrder /> : null}
+          {tab === "indexation" ? (
+            <>
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Choisissez quelles sources interroger à l’avance, à quelle cadence et pour quels titres. Ces choix ne désactivent pas les sources à la lecture.",
+                  "Choose which sources to query in advance, how often and for which titles. These choices do not disable playback sources.",
+                )}
+              </p>
+              {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
+              <SearchPriority />
+            </>
+          ) : null}
+          {tab === "lecture" ? (
+            <>
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Réglez les préférences à qualité équivalente. L’ordre de priorité ne signifie pas que les recherches réseau sont exécutées l’une après l’autre. La sélection d’indexation se règle dans l’onglet Indexation.",
+                  "Set preferences among equivalent-quality releases. Priority order does not mean network searches run one after another. Indexing selection belongs in the Indexing tab.",
+                )}
+              </p>
+              <SourceOrder />
+              <div className="rounded-xl border border-border p-4 text-sm space-y-2">
+                <h2 className="font-semibold">
+                  {L("Secours et autres sources", "Fallback and other sources")}
+                </h2>
+                <p>
+                  {L(
+                    "L’option Dernier recours des addons Stremio agit après l’échec des sources normales à la lecture. Les fichiers locaux, clients torrent, XDCC et FTP gardent leurs réglages propres ; ce classement ne définit pas un ordre universel entre ces modes de lecture.",
+                    "The Stremio last-resort option applies after normal playback sources fail. Local files, torrent clients, XDCC and FTP retain their own settings; this ranking does not define a universal order between playback modes.",
+                  )}
+                </p>
+                <Link className="underline" to="/remix/sources">
+                  {L("Configurer les sources et leur secours", "Configure sources and fallback")}
+                </Link>
+              </div>
+            </>
+          ) : null}
           {tab === "contenus" ? (
             <>
               <nav
@@ -437,7 +455,7 @@ function PseSettings() {
               )}
             </>
           ) : null}
-          {tab !== "sources" && tab !== "contenus"
+          {tab !== "sources" && tab !== "contenus" && tab !== "indexation"
             ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
             : null}
           {tab === "suivi" ? musicPart("tracking") : null}

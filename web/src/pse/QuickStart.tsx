@@ -46,10 +46,10 @@ export function QuickStart({ indexing }: { indexing: boolean }) {
         "Open Background indexing, enable it and save. Without this, searches at playback time may work while background indexing counters remain at zero.",
       ),
       help: L(
-        "Sans sélection de sources, tous les addons Stremio activés sont interrogés. Sélectionnez explicitement les indexeurs Prowlarr/Jackett si vous voulez les inclure. Conservez une cadence et des quotas adaptés aux fournisseurs ; l’indexation se met en pause pendant les lectures.",
-        "With no source selection, all enabled Stremio addons are queried. Explicitly select Prowlarr/Jackett indexers to include them. Keep the pace and quotas appropriate for your providers; indexing pauses during playback.",
+        "Le mode Automatique utilise les addons Stremio activés. Passez en Personnalisé pour inclure Prowlarr/Jackett ou choisir aucune source. Conservez une cadence et des quotas adaptés aux fournisseurs ; l’indexation se met en pause pendant les lectures.",
+        "Automatic mode uses enabled Stremio addons. Switch to Custom to include Prowlarr/Jackett or choose no sources. Keep the pace and quotas appropriate for your providers; indexing pauses during playback.",
       ),
-      to: "/remix/sources?source=indexation#pse-pse_indexer",
+      to: "/remix/indexation#pse-pse_indexer",
       action: L("Régler l’indexation", "Configure indexing"),
       status: indexing
         ? L("Réglage enregistré : activée", "Saved setting: enabled")
