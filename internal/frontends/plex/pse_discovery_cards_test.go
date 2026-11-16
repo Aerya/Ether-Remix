@@ -56,3 +56,27 @@ func TestNavigationHomePublishesClickableCollectionsAndRestores(t *testing.T) {
 		t.Fatal("previous home not restored")
 	}
 }
+
+func TestNavigationHomeCountryGroups(t *testing.T) {
+	f := newFixture()
+	f.srv.Close()
+	d := f.srv.currentTestDeps()
+	cards := []core.Collection{}
+	for n, group := range []string{"services-FR", "services-US", "genres"} {
+		cards = append(cards, core.Collection{Key: core.SmartKey(int64(n + 101)), Title: group, NavigationGroup: group, Type: core.TypeMovie, ChildCount: 1})
+	}
+	d.Experience = navigationExperience{Experience: d.experienceService(), cards: cards}
+	setDepsConfig(&d, func() config.Config { return config.Config{DiscoveryCards: true} })
+	f.srv = newTestServer(d)
+	defer f.srv.Close()
+	rec := f.get(t, "/hubs", jsonAccept...)
+	body := rec.Body.String()
+	for _, id := range []string{"remix.navigation.services-FR", "remix.navigation.services-US", "remix.navigation.genres"} {
+		if !strings.Contains(body, id) {
+			t.Fatalf("missing country hub %s: %s", id, body)
+		}
+	}
+	if strings.Index(body, "remix.navigation.genres") < strings.Index(body, "remix.navigation.services-US") {
+		t.Fatal("genres precede services")
+	}
+}

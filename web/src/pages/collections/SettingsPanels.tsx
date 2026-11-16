@@ -646,6 +646,11 @@ export function AudiencePanel({ spec, update }: { spec: CollectionSpec; update: 
             <option value="">{getLocale().startsWith("fr") ? "Aucune carte" : "No card"}</option>
             <option value="studios">Studios &amp; labels</option>
             <option value="services">Services</option>
+            {spec.navigationGroup?.startsWith("services-") && (
+              <option value={spec.navigationGroup}>
+                Services · {spec.navigationGroup.slice(9)}
+              </option>
+            )}
             <option value="genres">Genres</option>
           </Select>
           <span className="block text-fg-muted">

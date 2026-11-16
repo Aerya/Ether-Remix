@@ -28,12 +28,12 @@ func discoveryFolder(n int) map[string]any {
 	id, _ := ids.GUID(ids.View, discoveryViewBase+int64(n)+1)
 	return map[string]any{"Id": id, "Name": frontend.NavigationGroups[n].Name, "Type": "CollectionFolder", "CollectionType": "", "IsFolder": true, "DisplayPreferencesId": id, "SortName": "00" + strconv.Itoa(n)}
 }
-func (i *instance) discoveryViews(items []any) []any {
+func (i *instance) discoveryViews(r *http.Request, v *frontend.Viewer, items []any) []any {
 	if !i.discoveryCardsEnabled() {
 		return items
 	}
 	out := []any{}
-	for n := range frontend.NavigationGroups {
+	for _, n := range i.activeDiscoveryGroups(r, v) {
 		item := discoveryFolder(n)
 		item["ServerId"] = i.info.ID
 		if i.protocol == "jellyfin" {
@@ -118,7 +118,7 @@ func (i *instance) discoveryPreferences(r *http.Request, v *frontend.Viewer, cfg
 		return
 	}
 	order := []string{}
-	for n := range frontend.NavigationGroups {
+	for _, n := range i.activeDiscoveryGroups(r, v) {
 		id, _ := discoveryFolder(n)["Id"].(string)
 		order = append(order, id)
 	}
@@ -147,4 +147,23 @@ func (i *instance) discoveryArtwork(r *http.Request, v *frontend.Viewer, detail 
 		detail.Images = images
 		detail.ImagesAuthoritative = complete
 	}
+}
+
+func (i *instance) activeDiscoveryGroups(r *http.Request, v *frontend.Viewer) []int {
+	groups := []int{}
+	page, err := i.host.Experience.Collections(r.Context(), v, device(r), frontend.CollectionQuery{NavigationOnly: true, Limit: 500})
+	if err != nil {
+		return groups
+	}
+	active := map[string]bool{}
+	for _, c := range page.Items {
+		active[c.NavigationGroup] = true
+	}
+	for _, n := range frontend.NavigationGroupOrder() {
+		g := frontend.NavigationGroups[n]
+		if active[g.ID] {
+			groups = append(groups, n)
+		}
+	}
+	return groups
 }

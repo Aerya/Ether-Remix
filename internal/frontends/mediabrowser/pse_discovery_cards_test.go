@@ -18,7 +18,7 @@ func TestDiscoveryViewsLatestAndRestore(t *testing.T) {
 		if q.ExistsOnly {
 			return frontend.CollectionPage{}, nil
 		}
-		if !q.NavigationOnly || q.NavigationGroup != "studios" || v.ID != 1 {
+		if !q.NavigationOnly || (q.NavigationGroup != "" && q.NavigationGroup != "studios") || v.ID != 1 {
 			t.Fatalf("unscoped navigation %+v", q)
 		}
 		return frontend.CollectionPage{Items: []frontend.Collection{{Key: 5, Title: "A24", NavigationGroup: "studios", ChildCount: 1}}, Total: 1}, nil

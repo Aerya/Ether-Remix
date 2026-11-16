@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -288,7 +289,7 @@ func validateWith(reg *KindRegistry, s *core.CollectionSpec) error {
 			ve.add("rotate.every", `must be "daily" or "weekly"`)
 		}
 	}
-	if s.NavigationGroup != "" && s.NavigationGroup != "studios" && s.NavigationGroup != "services" && s.NavigationGroup != "genres" {
+	if s.NavigationGroup != "" && s.NavigationGroup != "studios" && s.NavigationGroup != "services" && s.NavigationGroup != "genres" && !regexp.MustCompile(`^services-[A-Z]{2}$`).MatchString(s.NavigationGroup) {
 		ve.add("navigationGroup", "unknown navigation group")
 	}
 	if s.Artwork.Logo != "" && (!strings.HasPrefix(s.Artwork.Logo, "/") || strings.HasPrefix(s.Artwork.Logo, "//") || strings.Contains(s.Artwork.Logo, "..")) {
@@ -365,6 +366,10 @@ func validateSchedule(ve *ValidationError, prefix string, sc *core.CollectionSch
 }
 
 func validCustomArt(u string) bool {
+	if strings.HasPrefix(u, "data:") {
+		_, _, err := artwork.InlineImage(u)
+		return err == nil
+	}
 	u = strings.TrimSpace(u)
 	if u == "" {
 		return false

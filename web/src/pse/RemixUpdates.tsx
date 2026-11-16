@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-navigation-cards",
+    id: "2026-11-16-navigation-cards-beta-picker",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "Cartes de navigation : sélection étendue en bêta",
+      "Navigation cards: expanded beta picker",
+    ],
+    items: [
+      [
+        "Recherche de studios TMDB, services de plusieurs pays et genres étendus. Les services peuvent être regroupés par pays sur Plex et Jellyfin/Emby.",
+        "Search TMDB studios, services from multiple countries and additional genres. Services can be grouped by country on Plex and Jellyfin/Emby.",
+      ],
+      [
+        "Prévisualisation des visuels, galerie GitHub et import par fichier ou URL. Option facultative marquée Bêta ; les personnalisations existantes sont conservées sauf modification explicite du visuel.",
+        "Artwork preview, GitHub gallery and file/URL imports. Optional Beta feature; existing customizations are preserved unless artwork is explicitly edited.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-navigation-cards",
+    version: "0.2.37-remix.88.1",
     date: "2026-11-16",
     title: ["Des cartes pour parcourir vos collections", "Cards for browsing your collections"],
     items: [

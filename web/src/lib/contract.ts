@@ -181,7 +181,7 @@ export interface TargetSchedule {
 }
 
 export interface CollectionSpec {
-  navigationGroup?: "studios" | "services" | "genres";
+  navigationGroup?: "studios" | "services" | "genres" | `services-${string}`;
   navigationOrder?: number;
   previewOnFocus?: boolean;
   rankedTop10?: boolean;

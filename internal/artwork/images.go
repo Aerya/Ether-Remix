@@ -139,6 +139,9 @@ func (im *Images) Get(ctx context.Context, path string, w int) ([]byte, string, 
 // GetURL fetches an owner-supplied image URL (custom collection art). Only
 // http(s) URLs to images are accepted.
 func (im *Images) GetURL(ctx context.Context, rawURL string) ([]byte, string, error) {
+	if strings.HasPrefix(rawURL, "data:") {
+		return InlineImage(rawURL)
+	}
 	if !strings.HasPrefix(rawURL, "https://") && !strings.HasPrefix(rawURL, "http://") {
 		return nil, "", ErrInvalidPath
 	}
