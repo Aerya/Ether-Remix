@@ -48,28 +48,31 @@ type plexDiscovery interface {
 
 // frontendRuntime keeps the owner listener independent from protocol mounts.
 type frontendRuntime struct {
-	app            *App
-	registry       *frontend.Registry
-	plex           plex.Frontend
-	control        *frontendControl
-	events         *sessions.EventBus
-	broker         *sessions.Broker
-	stateUnsub     func()
-	artworkWait    func()
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.Mutex
-	lifecycleMu    sync.Mutex
-	lan            lanCheck
-	lanChecking    bool
-	lanGeneration  uint64
-	discoveryError string
-	runCtx         context.Context
-	mainAddr       net.Addr
-	gdmRunning     bool
-	discovery      plexDiscovery
-	newDiscovery   func() plexDiscovery
-	closed         bool
+	// Serialize snapshots with account publication so an older concurrent
+	// update cannot overwrite the latest library list on plex.tv.
+	libraryPublishMu sync.Mutex
+	app              *App
+	registry         *frontend.Registry
+	plex             plex.Frontend
+	control          *frontendControl
+	events           *sessions.EventBus
+	broker           *sessions.Broker
+	stateUnsub       func()
+	artworkWait      func()
+	ctx              context.Context
+	cancel           context.CancelFunc
+	mu               sync.Mutex
+	lifecycleMu      sync.Mutex
+	lan              lanCheck
+	lanChecking      bool
+	lanGeneration    uint64
+	discoveryError   string
+	runCtx           context.Context
+	mainAddr         net.Addr
+	gdmRunning       bool
+	discovery        plexDiscovery
+	newDiscovery     func() plexDiscovery
+	closed           bool
 }
 
 func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
@@ -715,6 +718,8 @@ func (r *frontendRuntime) publishLibrarySections() {
 	if r == nil || r.app == nil || r.registry == nil {
 		return
 	}
+	r.libraryPublishMu.Lock()
+	defer r.libraryPublishMu.Unlock()
 	inst, ok := r.registry.Instance("plex")
 	if !ok {
 		return
