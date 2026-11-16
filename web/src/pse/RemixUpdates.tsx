@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-source-names",
+    id: "2026-11-16-vod-audio-bounds",
     version: "current",
+    date: "2026-11-16",
+    title: ["Import VOD : analyse des langues sécurisée", "VOD import: safe audio tag parsing"],
+    items: [
+      [
+        "Correction d’un plantage lors de l’analyse des balises MULTI et DUAL en fin de titre, susceptible d’interrompre l’import VOD Xtream et de faire redémarrer le serveur.",
+        "Fixed a crash while parsing MULTI and DUAL tags at the end of a title, which could interrupt Xtream VOD imports and restart the server.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-source-names",
+    version: "0.2.37-remix.84.1",
     date: "2026-11-16",
     title: ["Des noms de sources plus précis", "Clearer source names"],
     items: [
