@@ -35,8 +35,8 @@ export const REMIX_UPDATES = [
     ],
     items: [
       [
-        "Services du pays chargés automatiquement, éditeur sous la carte et sources de visuels nommées pour l’import manuel.",
-        "Country services load automatically, with an editor beneath the card and named manual artwork sources.",
+        "Services du pays chargés automatiquement, éditeur sous la carte et recherche intégrée de visuels GitHub, ThePosterDB, ACdb et genres MediUX.",
+        "Country services load automatically, with an editor beneath the card and integrated GitHub, ThePosterDB, ACdb and MediUX genre artwork search.",
       ],
     ],
   },

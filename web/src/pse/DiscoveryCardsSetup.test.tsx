@@ -86,35 +86,42 @@ it("keeps country selections distinct and sends both to the server", async () =>
   expect(body.groupCountries).toBe(true);
   expect(body.choices.map((c: { region: string }) => c.region)).toEqual(["FR", "US"]);
 });
-it("previews chosen gallery artwork and explicitly saves that artwork", async () => {
-  fetch.mockImplementation(async (path: string) =>
-    path.includes("gallery?")
-      ? {
-          images: [
-            { name: "A24 art", url: "https://example.com/new.jpg", source: "posters/A24.jpg" },
-          ],
-        }
-      : { enabled: false, cards: [a24], choices: [{ card: a24, region: "FR" }] },
-  );
-  mount();
-  await screen.findByText(/1 \/ 200/);
-  fireEvent.click(screen.getByRole("button", { name: "A24" }));
-  const editor = await screen.findByRole("region", { name: /Choix du visuel|Artwork picker/ });
-  fireEvent.change(within(editor).getByLabelText(/Source du visuel|Artwork source/), {
-    target: { value: "github" },
-  });
-  fireEvent.click(
-    within(editor).getByRole("button", { name: /Chercher des visuels|Search artwork/ }),
-  );
-  fireEvent.click(await within(editor).findByRole("button", { name: /A24 art/ }));
-  expect(within(editor).getByAltText("A24")).toHaveAttribute("src", "https://example.com/new.jpg");
-  fireEvent.click(screen.getByRole("button", { name: /Appliquer les cartes|Apply cards/ }));
-  await waitFor(() => expect(fetch.mock.calls.some((c) => c[1]?.method === "POST")).toBe(true));
-  const body = JSON.parse(fetch.mock.calls.find((c) => c[1]?.method === "POST")![1].body);
-  expect(body.choices[0].artwork).toEqual({ mode: "custom", url: "https://example.com/new.jpg" });
-});
+it.each(["github", "ACdb", "ThePosterDB"])(
+  "previews %s gallery artwork and explicitly saves that artwork",
+  async (provider) => {
+    fetch.mockImplementation(async (path: string) =>
+      path.includes("gallery?")
+        ? {
+            images: [
+              { name: "A24 art", url: "https://example.com/new.jpg", source: "posters/A24.jpg" },
+            ],
+          }
+        : { enabled: false, cards: [a24], choices: [{ card: a24, region: "FR" }] },
+    );
+    mount();
+    await screen.findByText(/1 \/ 200/);
+    fireEvent.click(screen.getByRole("button", { name: "A24" }));
+    const editor = await screen.findByRole("region", { name: /Choix du visuel|Artwork picker/ });
+    fireEvent.change(within(editor).getByLabelText(/Source du visuel|Artwork source/), {
+      target: { value: provider },
+    });
+    fireEvent.click(
+      within(editor).getByRole("button", { name: /Chercher des visuels|Search artwork/ }),
+    );
+    fireEvent.click(await within(editor).findByRole("button", { name: /A24 art/ }));
+    expect(within(editor).getByAltText("A24")).toHaveAttribute(
+      "src",
+      "https://example.com/new.jpg",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Appliquer les cartes|Apply cards/ }));
+    await waitFor(() => expect(fetch.mock.calls.some((c) => c[1]?.method === "POST")).toBe(true));
+    expect(fetch.mock.calls.some((c) => c[0].includes("provider=" + provider))).toBe(true);
+    const body = JSON.parse(fetch.mock.calls.find((c) => c[1]?.method === "POST")![1].body);
+    expect(body.choices[0].artwork).toEqual({ mode: "custom", url: "https://example.com/new.jpg" });
+  },
+);
 
-it("offers manual art sources directly under the selected card", async () => {
+it("offers integrated galleries directly under the selected card", async () => {
   fetch.mockImplementation(async (path: string) =>
     path.includes("catalog?")
       ? { cards: [service], logos: {} }
@@ -127,10 +134,13 @@ it("offers manual art sources directly under the selected card", async () => {
   fireEvent.click(screen.getByRole("button", { name: /Choisir le visuel|Choose artwork/ }));
   const editor = screen.getByRole("region", { name: /Choix du visuel|Artwork picker/ });
   expect(editor.parentElement).toContainElement(check);
-  for (const name of ["ThePosterDB", "MediUX", "ACdb", "Fanart.tv"]) {
+  for (const name of ["ThePosterDB", "ACdb"]) {
     fireEvent.change(within(editor).getByLabelText(/Source du visuel|Artwork source/), {
       target: { value: name },
     });
     expect(within(editor).getByRole("link", { name })).toBeInTheDocument();
+    expect(
+      within(editor).getByRole("button", { name: /Chercher des visuels|Search artwork/ }),
+    ).toBeInTheDocument();
   }
 });

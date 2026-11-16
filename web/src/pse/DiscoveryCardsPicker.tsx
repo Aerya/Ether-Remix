@@ -489,6 +489,7 @@ interface GalleryImage {
   name: string;
   url: string;
   source: string;
+  page?: string;
 }
 function ArtworkPicker({
   choice,
@@ -513,7 +514,17 @@ function ArtworkPicker({
     setError("");
     try {
       const data = await apiFetch<{ images: GalleryImage[] }>(
-        endpoint + "gallery?q=" + encodeURIComponent(query),
+        endpoint +
+          "gallery?" +
+          new URLSearchParams({
+            q: query,
+            provider: source,
+            group: choice.card.group,
+            genreId:
+              choice.card.group === "genres" && query === choice.card.name
+                ? String(choice.card.entity)
+                : "",
+          }),
       );
       setImages(data.images);
       if (!data.images.length)
@@ -577,8 +588,10 @@ function ArtworkPicker({
           aria-label={L("Source du visuel", "Artwork source")}
           className="ml-2 max-w-full rounded border border-border bg-surface p-2"
           value={source}
+          disabled={busy}
           onChange={(e) => {
             setSource(e.target.value);
+            setImages([]);
             setError("");
             if (e.target.value === "auto")
               onChange({ mode: "auto", accent: choice.card.accent, logo: choice.artwork?.logo });
@@ -588,15 +601,29 @@ function ArtworkPicker({
             {L("Automatique · TMDB / mosaïque", "Automatic · TMDB / mosaic")}
           </option>
           <option value="github">GitHub · kometa-config-images</option>
-          {["ThePosterDB", "MediUX", "ACdb", "Fanart.tv"].map((name) => (
+          {["ThePosterDB", "ACdb", "MediUX"].map((name) => (
             <option key={name} value={name}>
-              {name} · {L("import manuel", "manual import")}
+              {name} · {L("galerie", "gallery")}
             </option>
           ))}
           <option value="import">{L("Importer · fichier ou URL", "Import · file or URL")}</option>
         </select>
       </label>
-      {source === "github" && (
+      {source === "MediUX" && (
+        <p className="text-sm">
+          {L(
+            "MediUX : galerie du genre sélectionné ; utilisez un nom anglais pour rechercher un autre genre. Les studios et services ne sont pas couverts par ce connecteur.",
+            "MediUX: selected genre gallery; use an English name to search another genre. This connector does not cover studios or services.",
+          )}
+        </p>
+      )}
+      <p className="text-xs text-fg-muted">
+        {L(
+          "Fanart.tv : recherche intégrée de cartes non disponible. L’import fichier/URL reste possible.",
+          "Fanart.tv: integrated navigation card search is unavailable. File/URL import remains available.",
+        )}
+      </p>
+      {["github", "ThePosterDB", "ACdb", "MediUX"].includes(source) && (
         <>
           <div className="flex flex-wrap gap-2">
             <Input
@@ -614,37 +641,56 @@ function ArtworkPicker({
           </div>
           <a
             className="text-sm underline"
-            href="https://github.com/nichtlegacy/kometa-config-images"
+            href={
+              source === "github"
+                ? "https://github.com/nichtlegacy/kometa-config-images"
+                : source === "ACdb"
+                  ? "https://acdb.tv/library-posters/"
+                  : source === "MediUX"
+                    ? "https://mediux.pro/genres"
+                    : "https://theposterdb.com/"
+            }
             target="_blank"
             rel="noreferrer"
           >
-            nichtlegacy · kometa-config-images
+            {source === "github" ? "nichtlegacy · kometa-config-images" : source}
           </a>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {images.map((image) => (
-              <button
-                key={image.url}
-                className="rounded border border-border p-2 text-xs"
-                onClick={() => onChange({ mode: "custom", url: image.url })}
-              >
-                <img
-                  src={image.url}
-                  alt={image.name}
-                  className="aspect-video w-full object-contain"
-                  loading="lazy"
-                />
-                <span className="break-words">{image.source}</span>
-              </button>
+              <div key={image.url}>
+                <button
+                  className="rounded border border-border p-2 text-xs"
+                  onClick={() => onChange({ mode: "custom", url: image.url })}
+                >
+                  <img
+                    src={image.url}
+                    alt={image.name}
+                    className="aspect-video w-full object-contain"
+                    loading="lazy"
+                  />
+                  <span className="break-words">{image.source}</span>
+                </button>
+                {image.page && (
+                  <a
+                    href={image.page}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block text-xs underline"
+                  >
+                    {L("Voir la source et le créateur", "View source and creator")}
+                  </a>
+                )}
+              </div>
             ))}
           </div>
         </>
       )}
-      {source !== "auto" && source !== "github" && (
+      {source === "import" && (
         <>
           <p className="text-xs text-fg-muted">
             {L(
-              "Choisissez une image sur le site, puis importez son fichier ou son URL directe. Ces sites ne sont pas des galeries intégrées à Remix.",
-              "Choose an image on the website, then import its file or direct URL. These websites are not integrated galleries in Remix.",
+              "Alternative aux galeries : choisissez une image sur le site, puis importez son fichier ou son URL directe.",
+              "Alternative to galleries: choose an image on the website, then import its file or direct URL.",
             )}
           </p>
           <div className="flex flex-wrap gap-3 text-sm">
