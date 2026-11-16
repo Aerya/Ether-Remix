@@ -38,6 +38,18 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-16-plex-live-libraries",
+    version: "0.2.37-remix.97.1",
+    date: "2026-11-16",
+    title: ["Bibliothèques Plex sans redémarrage", "Plex libraries without restarting"],
+    items: [
+      [
+        "Les imports Xperience et les changements de bibliothèques actualisent Plex sans redémarrer Ether. Les bibliothèques masquées restent masquées, sans désactiver les sélections Xperience.",
+        "Xperience imports and library changes update Plex without restarting Ether. Hidden libraries stay hidden without disabling Xperience selections.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-16-release-library-beta",
     version: "0.2.37-remix.96.1",
     date: "2026-11-16",

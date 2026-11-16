@@ -106,17 +106,20 @@ type PluginLibraryDecl struct {
 type Options struct {
 	Logger *slog.Logger
 	Now    func() time.Time
+	// OnChange runs after a committed mutation and snapshot invalidation.
+	OnChange func()
 }
 
 // Service is the libraries store. List/Get are plain indexed reads of
 // a table that holds one row per library, never per item, so no call
 // scales with library size.
 type Service struct {
-	db   *sql.DB
-	log  *slog.Logger
-	now  func() time.Time
-	gen  atomic.Uint64
-	snap atomic.Pointer[snapshot]
+	db       *sql.DB
+	log      *slog.Logger
+	now      func() time.Time
+	gen      atomic.Uint64
+	snap     atomic.Pointer[snapshot]
+	onChange func()
 }
 
 // New seeds the two built-in libraries idempotently (§1.3) and returns
@@ -149,6 +152,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 			return nil, err
 		}
 	}
+	s.onChange = o.OnChange
 	return s, nil
 }
 
@@ -205,4 +209,11 @@ func nextID(ctx context.Context, tx *sql.Tx) (core.LibraryID, error) {
 		return 0, err
 	}
 	return core.LibraryID(next - 1), nil
+}
+
+func (s *Service) changed() {
+	s.gen.Add(1)
+	if s.onChange != nil {
+		s.onChange()
+	}
 }

@@ -437,6 +437,9 @@ New collections preserve Xperience ordering without random rotation and refresh 
 
 Xperience supplies lists, not files or playback sources: your Remix sources are still required, without `.strm` files. The personal manifest is saved in the Stremio add-on’s private configuration; collections only store its reference and selected parameters. Do not share the link. Reimporting the same catalogues and parameters reuses existing entries, including after partial creation, without overwriting names, limits, destinations or other customizations. Edit these settings in the existing collections and libraries. A new import limit therefore does not replace an existing selection’s limit.
 
+Library additions, renames, hiding and deletions reach Plex without restarting Ether. Reload the Plex client if its list is still cached. Hiding the general Movies / TV Shows libraries does not disable Xperience libraries: they retain their own publication and access permissions. An empty collection is not necessarily still loading: also check its parameters, filters and source status.
+
+
 <a id="nav-jukebox-quick-setup"></a>
 
 ## JukeBox quick setup

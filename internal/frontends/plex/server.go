@@ -157,7 +157,8 @@ type Server struct {
 	log            *slog.Logger
 	router         chi.Router
 
-	sections []Section
+	sections          []Section
+	sectionsRefreshMu sync.Mutex
 
 	imageURL         frontend.ImageURLFunc
 	generatedPosters frontend.TitlePosterRenderer
@@ -638,8 +639,7 @@ func (s *Server) attachExperienceLocked(exp frontend.Experience, curSvc *hostSer
 			go s.homeRefresher()
 		}
 	}
-	secs := s.buildSections()
-	s.sectionsPtr.Store(&secs)
+	s.LibrarySections()
 }
 
 func (s *Server) policy() frontend.AccessPolicy {
@@ -932,10 +932,25 @@ func (s *Server) identity() Identity {
 // registration. Titles follow the live config so renames publish to plex.tv.
 // The copy prevents publishers from changing local libraries.
 func (s *Server) LibrarySections() []Section {
-	return s.withLibraryTitles(s.getSections())
+	if s.ctx == nil {
+		return s.withLibraryTitles(s.getSections())
+	}
+	s.sectionsRefreshMu.Lock()
+	defer s.sectionsRefreshMu.Unlock()
+	secs := s.buildSections()
+	s.sectionsPtr.Store(&secs)
+	return s.withLibraryTitles(secs)
 }
 
 func (s *Server) buildSections() []Section {
+	// A live store is authoritative, including an empty list when all libraries
+	// are hidden. Legacy hosts without a store retain the default sections.
+	if published := s.publishedKindSections(s.ctx); published != nil {
+		for i := range published {
+			published[i] = s.sectionDefaults(published[i])
+		}
+		return s.withLibraryTitles(published)
+	}
 	secs := s.d.Sections
 	if len(secs) == 0 {
 		secs = []Section{{ID: 1, Type: frontend.TypeMovie}}
@@ -950,13 +965,6 @@ func (s *Server) buildSections() []Section {
 		}
 		out[i] = s.sectionDefaults(sec)
 	}
-	// Published plugin and filter libraries join the same section list
-	// (spec §6.4). Each keeps its own stable UUID derived from its library id.
-	kindSecs := s.publishedKindSections(s.ctx)
-	for i := range kindSecs {
-		kindSecs[i] = s.sectionDefaults(kindSecs[i])
-	}
-	out = mergeKindSections(out, kindSecs)
 	return s.withLibraryTitles(out)
 }
 

@@ -101,7 +101,7 @@ func (s *Service) setColumn(ctx context.Context, id core.LibraryID, col string, 
 	if n, _ := res.RowsAffected(); n == 0 {
 		return core.ErrNotFound
 	}
-	s.gen.Add(1)
+	s.changed()
 	return nil
 }
 

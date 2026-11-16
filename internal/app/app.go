@@ -504,7 +504,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	}
 	// Libraries (v0.3.8 §1): seed Movies/TV Shows and move the retired
 	// config library names onto libraries 1/2 exactly once.
-	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log}); err != nil {
+	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log, OnChange: a.publishLibrarySections}); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("libraries: %w", err)
 	}
