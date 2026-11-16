@@ -1,0 +1,6 @@
+import{c as n,j as i,D as o,a as c}from"./index-BlfIIxmb.js";/**
+ * @license lucide-react v1.70.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const l={name:"maximize-2",size:24,node:[["path",{d:"M15 3h6v6",key:"1q9fwt"}],["path",{d:"m21 3-7 7",key:"1l2asr"}],["path",{d:"m3 21 7-7",key:"tjx5ai"}],["path",{d:"M9 21H3v-6",key:"wtvkvv"}]]};l.node;const b=n(l);function x({preview:a,roomyChat:r=!1,error:e,children:s,...t}){return i.jsxs(o,{...t,size:"xl",bodyClassName:"flex min-h-0 flex-col overflow-hidden p-0",children:[i.jsx("section",{className:r?"relative min-h-0 flex-[0.8] basis-0 overflow-auto border-b border-border":"relative min-h-0 flex-[2] basis-0 overflow-auto border-b border-border","aria-label":c("Live build"),children:a}),e?i.jsx("p",{role:"alert",className:"shrink-0 border-b border-border px-4 py-2 text-sm text-danger",children:e}):null,i.jsx("div",{className:`describe-chat flex min-h-0 flex-1 basis-0 flex-col ${r?"channel-describe-chat":""}`,children:s})]})}function f(a,r){var s,t;const e=a==null?void 0:a.querySelector("textarea");e&&((t=(s=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value"))==null?void 0:s.set)==null||t.call(e,r),e.dispatchEvent(new Event("input",{bubbles:!0})),e.focus())}export{x as D,b as M,f};

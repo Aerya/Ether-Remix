@@ -158,6 +158,8 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Clients Jellyfin et Plex** (Jellyfin web, Finamp, Findroid, Streamyfin, Plexamp, Plex Web…) : rien à régler, une bibliothèque **Musique** apparaît à côté des autres dès qu’une source musicale est activée. Elle montre vos favoris et écoutes, puis les classements Deezer ; la recherche couvre tout le catalogue et la lecture est directe. La recherche globale de Plex montre aussi artistes, albums et titres.
 
+**Lecture musicale Plex / Jellyfin** : le cache des albums et artistes est partagé sans erreur lors du passage d’un client à l’autre.
+
 **Playlists Deezer et Last.fm** : dans **Console → Ether-Remix → Sources → Streaming musical**, collez pour chaque spectateur le lien de son profil Deezer (ses playlists publiques, dont Coups de cœur) ou des liens de playlists Deezer, y compris les liens de partage de l'application (`link.deezer.com`), et/ou son nom d'utilisateur Last.fm (titres aimés, top du mois, top de tous les temps, avec la clé API Last.fm). Les playlists apparaissent dans Plexamp, Plex Web, Finamp, Jellyfin et les clients Subsonic, en lecture seule, et sont réimportées toutes les 6 heures (`PSE_MUSIC_PLAYLISTS_HOURS`). Rien n'est téléchargé : seules les références des titres sont gardées. Pour Spotify et les imports manuels, voir [Playlists et apparence](#playlists-et-apparence).
 
 **Playlists ListenBrainz** : même écran, nom d'utilisateur ListenBrainz (gratuit, sans clé API). Ether-Remix importe la dernière playlist de chaque série que ListenBrainz génère pour lui (Daily Jams, Weekly Jams, Weekly Exploration…) et ses playlists publiques, en respectant la limite de débit de ListenBrainz.

@@ -170,6 +170,7 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 
 ### ![](https://api.iconify.design/lucide/headphones.svg?color=%2314b8a6&width=24&height=24) La musique dans vos applications
 
+- **Lecture musicale Plex / Jellyfin** : le cache des albums et artistes est partagé sans erreur lors du passage d’un client à l’autre.
 - Parcourez le **catalogue Deezer public** depuis Plex/Plexamp, les clients Jellyfin ou une application Subsonic : Symfonium, Feishin, Supersonic, DSub…
 - Écoutez via **Audius, les addons Eclipse, DMM avec Real-Debrid ou vos comptes AllDebrid, Real-Debrid et TorBox**, selon les sources activées.
 - Instance DMM publique : [catalogue](https://debridmediamanager.com/albums). L’adresse est configurable dans Sources → Streaming musical → DMM / Real-Debrid pour utiliser une instance auto-hébergée disposant de son catalogue musical et de son API.
