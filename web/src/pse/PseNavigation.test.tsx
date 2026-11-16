@@ -66,6 +66,7 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   fireEvent.click(source.closest("details")!.querySelector("summary")!);
   const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
   expect(tabs).toEqual([
+    "Démarrage rapide",
     "Sources",
     "Priorités",
     "Langues et qualité",
