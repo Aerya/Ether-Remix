@@ -22,6 +22,8 @@ Ether est un serveur multimédia **à la demande**. Il présente tout le catalog
 
 Ether s’adapte à chaque application : c’est un serveur Plex pour les applications Plex, un serveur Jellyfin pour Infuse ou Swiftfin, et ainsi de suite. Chaque spectateur a son compte et son accueil personnalisé, et retrouve sa progression d’une application à l’autre. Les limites de flux et le contrôle parental s’appliquent partout.
 
+L’accueil Plex se personnalise dans `/ether/home` : choisissez le spectateur et le type d’appareil pour comparer l’aperçu au client. Les recommandations propres à Films et Séries restent dans leurs pages ; elles ne sont plus ajoutées en bloc à l’accueil par les requêtes par bibliothèque de Plex.
+
 ## Remix, en bref
 
 Ether-Remix reprend le serveur et les applications compatibles d’Ether, avec un catalogue orienté français et des réglages de langue et de qualité. Selon vos choix, l’accueil et les collections privilégient les titres en VF/MULTi ou disposant de releases correspondant à vos critères. L’indexation en arrière-plan recherche les sources à l’avance ; elle ne télécharge pas les vidéos.

@@ -28,3 +28,9 @@ func (a *App) extraHomeRows(ctx context.Context, u *core.User, hc core.HubContex
 	}
 	return rows.Rows(ctx, u, hc, section, limit)
 }
+
+// previewContinue shares the runtime resume selection, including next episodes
+// and viewer visibility, instead of looking only at partial watch progress.
+func (a *App) previewContinue(ctx context.Context, u *core.User, limit int) ([]core.Title, error) {
+	return a.experienceContinue(ctx, u, a.configuredLibraries(), experience.Visibility{}, limit)
+}

@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-vod-audio-bounds",
+    id: "2026-11-16-plex-home-parity",
     version: "current",
+    date: "2026-11-16",
+    title: ["Accueil Plex : rangées cohérentes", "Plex Home: consistent rows"],
+    items: [
+      [
+        "Les applications Plex n’ajoutent plus toutes les recommandations Films et Séries à l’accueil. L’aperçu Reprendre inclut les épisodes suivants et évite de répéter À suivre. La présentation spécifique d’Infuse est conservée.",
+        "Plex apps no longer append entire Movie and TV recommendation pages to Home. The Continue Watching preview includes next episodes and avoids a duplicate On Deck row. Infuse’s dedicated presentation is preserved.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-vod-audio-bounds",
+    version: "0.2.37-remix.85.1",
     date: "2026-11-16",
     title: ["Import VOD : analyse des langues sécurisée", "VOD import: safe audio tag parsing"],
     items: [

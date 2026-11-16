@@ -314,6 +314,13 @@ func TestSurfaceHomeRowsEnforceRestrictedCandidatePolicy(t *testing.T) {
 	oldAvailability := a.availability
 	a.availability = nil
 	t.Cleanup(func() { a.availability = oldAvailability })
+	previewItems, err := a.previewContinue(ctx, viewer, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previewItems) != 1 || previewItems[0].Key != visible.Key {
+		t.Fatalf("preview must preserve resume visibility: %+v", previewItems)
+	}
 	service, err := a.newSurfaceExperience("jellyfin")
 	if err != nil {
 		t.Fatal(err)

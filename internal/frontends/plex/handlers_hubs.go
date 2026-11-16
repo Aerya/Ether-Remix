@@ -528,12 +528,15 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 		},
 		Discovery: func() []frontend.Hub {
 			hubs := append([]frontend.Hub(nil), sharedDiscovery...)
-			if !perDirectory {
+			if !shelves {
 				for _, spec := range s.discoveryHubs(ctx, pr, count) {
 					hubs = append(hubs, spec.Hub)
 				}
 			}
-			if perDirectory && directorySection.ID != 0 {
+			// Only Infuse needs library recommendations projected as collection shelves.
+			// Plex assembles Home from these requests; adding section rows here
+			// bypasses the Home selection and repeats entire library pages.
+			if shelves && directorySection.ID != 0 {
 				if spec, err := s.recentlyAddedHubPage(ctx, pr, directorySection, count, true); err == nil {
 					hubs = append(hubs, spec.Hub)
 				}
