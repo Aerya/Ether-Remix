@@ -225,7 +225,11 @@ func (a *App) pseReleaseLibraryOverview(w http.ResponseWriter, r *http.Request) 
 			lookup = core.ShowKey(k.TMDB())
 		}
 		var name string
-		_ = a.db.QueryRowContext(ctx, `SELECT title FROM catalog_titles WHERE key=?`, int64(lookup)).Scan(&name)
+		if a.catalog != nil {
+			if title, err := a.catalog.StoredTitle(ctx, lookup); err == nil && title != nil {
+				name = title.Title
+			}
+		}
 		if name == "" {
 			name = "TMDB " + strconv.FormatInt(k.TMDB(), 10)
 		}

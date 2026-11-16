@@ -6,6 +6,8 @@ import { apiFetch, errorMessage } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { artworkPreviewURL } from "../pages/collections/artwork";
 
+import { DiscoveryCardStyles } from "./DiscoveryCardStyles";
+
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const endpoint = "/pse/discovery/";
 export interface NavigationCard {
@@ -389,6 +391,28 @@ export function DiscoveryCardsPicker() {
           </p>
         )}
       </fieldset>
+      <DiscoveryCardStyles
+        key={family}
+        disabled={busy}
+        targets={selected
+          .filter((c) => c.card.group === family)
+          .map((c) => ({
+            key: choiceKey(c),
+            name: c.card.name,
+            group: c.card.group,
+            entity: c.card.entity,
+          }))}
+        onApply={(images) => {
+          setChoices(
+            selected.map((c) =>
+              images[choiceKey(c)]
+                ? { ...c, artwork: { mode: "custom", url: images[choiceKey(c)] } }
+                : c,
+            ),
+          );
+          setDirtyArt(new Set([...dirtyArt, ...Object.keys(images)]));
+        }}
+      />
       <details className="rounded-lg border border-border p-3" open>
         <summary className="cursor-pointer font-medium">
           {L("Aperçu de mes cartes", "My cards preview")}

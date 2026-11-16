@@ -419,6 +419,8 @@ La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conser
 
 ## Cartes de navigation inspirées de Nuvio
 
+Un **style pour plusieurs cartes** peut être préparé depuis une même galerie : choisissez les cartes, recherchez leurs visuels, filtrez par créateur, ensemble ou dossier et sélectionnez les correspondances uniques en un clic. Vérifiez les variantes avant application groupée ; les cartes sans choix conservent leur visuel. Les métadonnées disponibles varient selon la source, et un même créateur ne garantit pas un style identique. Recherche limitée à 30 cartes par lot, sans enregistrement avant « Appliquer les cartes à mes accueils ».
+
 Cette option est une **BÊTA facultative**, désactivée tant que vous ne l’appliquez pas. Dans **Ether-Remix → Démarrage rapide** ou **Contenus et bibliothèques**, ouvrez **Cartes inspirées de Nuvio → Configuration rapide**.
 
 1. Partez de la **Sélection de démarrage**, ou composez votre sélection. **Studios et labels** recherche les sociétés de production TMDB par nom ou identifiant ; il ne s’agit pas d’un annuaire exhaustif des labels musicaux. **Genres** propose les genres de films TMDB, avec leur correspondance séries lorsqu’elle existe.

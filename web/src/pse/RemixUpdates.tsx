@@ -38,6 +38,18 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-16-navigation-cards-bulk-style",
+    version: "0.2.37-remix.98.1",
+    date: "2026-11-16",
+    title: ["Cartes bêta : styles groupés", "Beta cards: bulk styles"],
+    items: [
+      [
+        "Recherchez les visuels de plusieurs cartes dans une galerie, filtrez les styles et prévisualisez les choix avant application groupée. Les cartes sans correspondance conservent leur image.",
+        "Search artwork for several cards in one gallery, filter styles and preview choices before bulk application. Unmatched cards retain their artwork.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-16-plex-live-libraries",
     version: "0.2.37-remix.97.1",
     date: "2026-11-16",
