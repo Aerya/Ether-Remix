@@ -18,7 +18,7 @@ import (
 
 // SFRIdentity binds cached search results to the current database and privacy
 // choice, without exposing credentials in a generated indexer's URL.
-func SFRIdentity(c SFRSettings) string { return sfrSignature(c) }
+func SFRIdentity(c SFRSettings) string { return "alko-files-v1|" + sfrSignature(c) }
 
 // SearchSFR reads candidates directly. No StreamFusion HTTP warm-up, debrid
 // download or remote metadata lookup happens on this latency-sensitive path.
@@ -48,7 +48,12 @@ func SearchSFR(ctx context.Context, cfg SFRSettings, req core.SearchRequest) ([]
 	if err != nil {
 		return nil, sfrSearchError(err)
 	}
-	return sfrCandidates(rows, req), nil
+	out := sfrCandidates(rows, req)
+	alko, err := p.alkoRead(ctx, "", req, 200)
+	if err != nil {
+		return nil, sfrSearchError(err)
+	}
+	return append(sfrAlkoCandidates(alko), out...), nil
 }
 
 func sfrCandidates(rows []sfrRow, req core.SearchRequest) []core.Release {

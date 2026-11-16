@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-navigation-cards-inline-editor",
+    id: "2026-11-16-sfr-alkolites-files",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "SFR : fichiers Alkolites sans ajout de magnet",
+      "SFR: Alkolites files without adding magnets",
+    ],
+    items: [
+      [
+        "Import et recherche des fichiers Alkolites déjà vérifiés. Avec votre compte AllDebrid, la lecture débride le lien fichier sans ajouter de magnet, y compris au renouvellement. Les limites API habituelles restent applicables.",
+        "Import and search verified Alkolites files. With your AllDebrid account, playback unlocks the file link without adding magnets, including when refreshing it. Normal API limits still apply.",
+      ],
+    ],
+  },
+
+  {
+    id: "2026-11-16-navigation-cards-inline-editor",
+    version: "0.2.37-remix.90.1",
     date: "2026-11-16",
     title: [
       "Cartes bêta : choix des services et des visuels",

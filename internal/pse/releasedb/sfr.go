@@ -92,6 +92,8 @@ type sfrRow struct {
 	Size, TMDB, Stamp                        int64
 	Cached                                   []string
 	CacheUntil                               int64
+	AlkoURL                                  string
+	Alko                                     bool
 }
 
 type sfrReader interface {
@@ -119,6 +121,7 @@ ORDER BY id LIMIT $4`
 type pgxSFR struct {
 	conn           *pgx.Conn
 	cacheAvailable bool
+	alkoAvailable  bool
 }
 
 func openPgxSFR(ctx context.Context, url string) (sfrReader, error) {
@@ -136,6 +139,7 @@ func openPgxSFR(ctx context.Context, url string) (sfrReader, error) {
 	p := &pgxSFR{conn: conn}
 	// A deployment without this optional table remains searchable; no cache is assumed.
 	_ = conn.QueryRow(ctx, `SELECT COALESCE(has_table_privilege(to_regclass('public.debrid_cache'), 'SELECT'),false)`).Scan(&p.cacheAvailable)
+	_ = conn.QueryRow(ctx, `SELECT COALESCE(has_table_privilege(to_regclass('alko_integration.files'), 'SELECT'),false) AND COALESCE(has_table_privilege(to_regclass('alko_integration.source_links'), 'SELECT'),false)`).Scan(&p.alkoAvailable)
 	return p, nil
 }
 
@@ -353,6 +357,12 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 		}
 		rel := core.Release{ID: strings.ToLower(r.Hash), Name: r.Name, Size: r.Size, Indexer: sfrName,
 			Protocol: core.ProtocolTorrent, Info: releaseparse.Parse(r.Name)}
+		if r.Alko || r.AlkoURL != "" {
+			if !core.ValidAllDebridFileURL(r.AlkoURL) || !sfrAlkoLanguage(r.Name) {
+				continue
+			}
+			rel.ID, rel.Protocol, rel.Indexer = "sfr-alko:"+r.ID, core.ProtocolHTTP, "StreamFusion Reborn (Alkolites)"
+		}
 		saved := FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, r.Cached)
 		saved.CacheUntil = r.CacheUntil
 		batch = append(batch, saved)
@@ -598,6 +608,11 @@ func (s *Service) sfrCycle(ctx context.Context, cfg SFRSettings) error {
 			return ctx.Err()
 		}
 		s.d.Logger.Warn("pse streamfusion catch-up failed", "err", err)
+	}
+	if p, ok := reader.(*pgxSFR); ok && p.alkoAvailable {
+		if err := s.sfrImportAlko(ctx, p, cfg.Every); err != nil {
+			return err
+		}
 	}
 	// Une release toujours présente dans SFR ne doit pas expirer entre deux
 	// passages incrémentaux.

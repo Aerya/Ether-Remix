@@ -1328,6 +1328,13 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 			note(err)
 		}
 	}
+	// Standalone verified files must never fall back to torrent acquisition.
+	if p.VerifiedFile {
+		if len(errs) == 0 {
+			return p, ErrNoProvider
+		}
+		return p, errors.Join(errs...)
+	}
 	// Another provider may hold the same torrent.
 	for _, e := range s.active() {
 		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
@@ -1363,6 +1370,9 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 // a media host refuses connections. It never treats a different signed URL
 // on the same host as a change of route.
 func (s *Service) alternateProvider(ctx context.Context, p Payload) (Payload, error) {
+	if p.VerifiedFile {
+		return p, core.ErrSourceUnavailable
+	}
 	for _, e := range s.active() {
 		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
 			continue
@@ -1409,7 +1419,7 @@ func (s *Service) relink(ctx context.Context, e *entry, p Payload) (Payload, err
 		s.blockedFile(ctx, e, p.InfoHash, p.TorrentID, false, nil)
 		return p, err
 	}
-	if !errors.Is(err, ErrGone) {
+	if p.VerifiedFile || !errors.Is(err, ErrGone) {
 		return p, err
 	}
 	// The torrent was removed from the account: re-add it by magnet.
