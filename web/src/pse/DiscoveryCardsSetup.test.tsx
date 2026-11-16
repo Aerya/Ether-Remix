@@ -72,13 +72,11 @@ it("keeps country selections distinct and sends both to the server", async () =>
   );
   mount();
   await waitFor(() => expect(fetch).toHaveBeenCalled());
-  fireEvent.click(screen.getByRole("button", { name: /Charger les services|Load services/ }));
   await waitFor(() => expect(screen.getByRole("checkbox", { name: "Test Service" })).toBeEnabled());
   fireEvent.click(screen.getByRole("checkbox", { name: "Test Service" }));
   fireEvent.change(screen.getByLabelText(/Pays des services|Services country/), {
     target: { value: "US" },
   });
-  fireEvent.click(screen.getByRole("button", { name: /Charger les services|Load services/ }));
   await waitFor(() => expect(screen.getByRole("checkbox", { name: "Test Service" })).toBeEnabled());
   fireEvent.click(screen.getByRole("checkbox", { name: "Test Service" }));
   await screen.findByText(/2 \/ 200/);
@@ -101,7 +99,7 @@ it("previews chosen gallery artwork and explicitly saves that artwork", async ()
   mount();
   await screen.findByText(/1 \/ 200/);
   fireEvent.click(screen.getByRole("button", { name: "A24" }));
-  const editor = screen.getByRole("region", { name: /Choix du visuel|Artwork picker/ });
+  const editor = await screen.findByRole("region", { name: /Choix du visuel|Artwork picker/ });
   fireEvent.change(within(editor).getByLabelText(/Source du visuel|Artwork source/), {
     target: { value: "github" },
   });
@@ -114,4 +112,25 @@ it("previews chosen gallery artwork and explicitly saves that artwork", async ()
   await waitFor(() => expect(fetch.mock.calls.some((c) => c[1]?.method === "POST")).toBe(true));
   const body = JSON.parse(fetch.mock.calls.find((c) => c[1]?.method === "POST")![1].body);
   expect(body.choices[0].artwork).toEqual({ mode: "custom", url: "https://example.com/new.jpg" });
+});
+
+it("offers manual art sources directly under the selected card", async () => {
+  fetch.mockImplementation(async (path: string) =>
+    path.includes("catalog?")
+      ? { cards: [service], logos: {} }
+      : { enabled: false, cards: [], choices: [] },
+  );
+  mount();
+  const check = await screen.findByRole("checkbox", { name: "Test Service" });
+  await waitFor(() => expect(check).toBeEnabled());
+  fireEvent.click(check);
+  fireEvent.click(screen.getByRole("button", { name: /Choisir le visuel|Choose artwork/ }));
+  const editor = screen.getByRole("region", { name: /Choix du visuel|Artwork picker/ });
+  expect(editor.parentElement).toContainElement(check);
+  for (const name of ["ThePosterDB", "MediUX", "ACdb", "Fanart.tv"]) {
+    fireEvent.change(within(editor).getByLabelText(/Source du visuel|Artwork source/), {
+      target: { value: name },
+    });
+    expect(within(editor).getByRole("link", { name })).toBeInTheDocument();
+  }
 });

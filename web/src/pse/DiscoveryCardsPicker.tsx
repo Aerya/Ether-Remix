@@ -75,13 +75,38 @@ export function DiscoveryCardsPicker() {
   const selected = choices ?? state.data?.choices ?? [];
   const starterCards = state.data?.cards ?? [];
   const [onlySelected, setOnlySelected] = useState(false);
-  // Query results belong to the explicit search that produced them. Switching
-  // country/category clears them, rather than relabelling old results.
+  // Load the complete regional service catalogue without requiring a hidden extra step.
   useEffect(() => {
     setResults(null);
     setQuery("");
+    if (family !== "services") return;
+    let cancelled = false;
+    setSearching(true);
+    setError("");
+    apiFetch<{ cards: NavigationCard[]; logos: Record<string, string> }>(
+      endpoint + "catalog?" + new URLSearchParams({ kind: "watchProvider", region, q: "" }),
+    )
+      .then((data) => {
+        if (!cancelled)
+          setResults(
+            data.cards.map((card) => ({
+              card,
+              region,
+              artwork: { mode: "auto", logo: data.logos?.[card.id], accent: card.accent },
+            })),
+          );
+      })
+      .catch((e) => {
+        if (!cancelled) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [family, region]);
-  const visible = onlySelected
+  const visible: Choice[] = onlySelected
     ? selected.filter(
         (c) => c.card.group === family && (family !== "services" || c.region === region),
       )
@@ -297,44 +322,60 @@ export function DiscoveryCardsPicker() {
           {filtered.map((c) => {
             const key = choiceKey(c);
             const installed = selected.find((x) => choiceKey(x) === key);
-            const displayed = installed ?? c;
+            const displayed = installed
+              ? { ...c, ...installed, artwork: installed.artwork ?? c.artwork }
+              : c;
             return (
-              <div key={key} className="overflow-hidden rounded-lg border border-border">
-                <label
-                  className="relative flex aspect-video items-center justify-center gap-2 p-3 text-center text-white font-medium"
-                  style={{
-                    background: `linear-gradient(135deg, ${c.card.accent || "#31566a"}, #10131d)`,
-                  }}
-                >
-                  <input
-                    aria-label={c.card.name}
-                    type="checkbox"
-                    className="absolute top-2 left-2 z-10"
-                    checked={!!installed}
-                    onChange={() => toggle(c)}
-                  />
-                  {picture(displayed) ? (
-                    <img
-                      src={picture(displayed)}
-                      alt={c.card.name}
-                      className="max-h-full max-w-full object-contain"
+              <div
+                key={key}
+                className={`min-w-0 overflow-hidden rounded-lg border border-border ${editing === key ? "col-span-full" : ""}`}
+              >
+                <div className={editing === key ? "max-w-xs" : ""}>
+                  <label
+                    className="relative flex aspect-video items-center justify-center gap-2 p-3 text-center text-white font-medium"
+                    style={{
+                      background: `linear-gradient(135deg, ${c.card.accent || "#31566a"}, #10131d)`,
+                    }}
+                  >
+                    <input
+                      aria-label={c.card.name}
+                      type="checkbox"
+                      className="absolute top-2 left-2 z-10"
+                      checked={!!installed}
+                      onChange={() => toggle(c)}
                     />
-                  ) : (
-                    c.card.name
-                  )}
-                </label>
-                <div className="p-2 text-sm">
-                  {c.card.name}
-                  {family === "services" && ` · ${c.region}`}
+                    {picture(displayed) ? (
+                      <img
+                        src={picture(displayed)}
+                        alt={c.card.name}
+                        className="max-h-full max-w-full object-contain"
+                      />
+                    ) : (
+                      c.card.name
+                    )}
+                  </label>
+                  <div className="p-2 text-sm">
+                    {c.card.name}
+                    {family === "services" && ` · ${c.region}`}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    disabled={!installed}
+                    className="w-full"
+                    aria-expanded={editing === key}
+                    onClick={() => setEditing(editing === key ? null : key)}
+                  >
+                    {L("Choisir le visuel", "Choose artwork")}
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  disabled={!installed}
-                  className="w-full"
-                  onClick={() => setEditing(key)}
-                >
-                  {L("Choisir le visuel", "Choose artwork")}
-                </Button>
+                {editing === key && editingChoice && (
+                  <ArtworkPicker
+                    key={editing}
+                    choice={editingChoice}
+                    onChange={(art) => changeArt(key, art)}
+                    onClose={() => setEditing(null)}
+                  />
+                )}
               </div>
             );
           })}
@@ -348,14 +389,6 @@ export function DiscoveryCardsPicker() {
           </p>
         )}
       </fieldset>
-      {editingChoice && (
-        <ArtworkPicker
-          key={editing}
-          choice={editingChoice}
-          onChange={(art) => changeArt(choiceKey(editingChoice), art)}
-          onClose={() => setEditing(null)}
-        />
-      )}
       <details className="rounded-lg border border-border p-3" open>
         <summary className="cursor-pointer font-medium">
           {L("Aperçu de mes cartes", "My cards preview")}
@@ -381,7 +414,13 @@ export function DiscoveryCardsPicker() {
                   key={choiceKey(c)}
                   aria-label={c.card.name}
                   className="rounded border border-border p-2 text-sm"
-                  onClick={() => setEditing(choiceKey(c))}
+                  onClick={() => {
+                    setFamily(c.card.group);
+                    setRegion(c.region);
+                    setQuery("");
+                    setOnlySelected(true);
+                    setEditing(choiceKey(c));
+                  }}
                 >
                   {picture(c) || c.collectionId ? (
                     <img
@@ -549,6 +588,11 @@ function ArtworkPicker({
             {L("Automatique · TMDB / mosaïque", "Automatic · TMDB / mosaic")}
           </option>
           <option value="github">GitHub · kometa-config-images</option>
+          {["ThePosterDB", "MediUX", "ACdb", "Fanart.tv"].map((name) => (
+            <option key={name} value={name}>
+              {name} · {L("import manuel", "manual import")}
+            </option>
+          ))}
           <option value="import">{L("Importer · fichier ou URL", "Import · file or URL")}</option>
         </select>
       </label>
@@ -595,7 +639,7 @@ function ArtworkPicker({
           </div>
         </>
       )}
-      {source === "import" && (
+      {source !== "auto" && source !== "github" && (
         <>
           <p className="text-xs text-fg-muted">
             {L(
@@ -609,11 +653,13 @@ function ArtworkPicker({
               ["MediUX", "https://mediux.pro/"],
               ["Fanart.tv", "https://fanart.tv/"],
               ["ACdb", "https://acdb.tv/art-department"],
-            ].map(([name, href]) => (
-              <a key={name} href={href} target="_blank" rel="noreferrer" className="underline">
-                {name}
-              </a>
-            ))}
+            ]
+              .filter(([name]) => source === "import" || name === source)
+              .map(([name, href]) => (
+                <a key={name} href={href} target="_blank" rel="noreferrer" className="underline">
+                  {name}
+                </a>
+              ))}
           </div>
           <div className="flex flex-wrap gap-2">
             <Input

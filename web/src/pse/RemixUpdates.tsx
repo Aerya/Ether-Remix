@@ -26,8 +26,23 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-navigation-cards-beta-picker",
+    id: "2026-11-16-navigation-cards-inline-editor",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "Cartes bêta : choix des services et des visuels",
+      "Beta cards: services and artwork selection",
+    ],
+    items: [
+      [
+        "Services du pays chargés automatiquement, éditeur sous la carte et sources de visuels nommées pour l’import manuel.",
+        "Country services load automatically, with an editor beneath the card and named manual artwork sources.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-navigation-cards-beta-picker",
+    version: "0.2.37-remix.89.1",
     date: "2026-11-16",
     title: [
       "Cartes de navigation : sélection étendue en bêta",
