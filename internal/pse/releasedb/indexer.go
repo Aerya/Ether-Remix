@@ -77,11 +77,12 @@ func LoadSettings() Settings {
 
 // Deps relie l'indexeur à l'application.
 type Deps struct {
-	DB     *sql.DB
-	Config func() config.Config
-	Browse func(context.Context, core.BrowseQuery) (core.Page, error)
-	Search func(context.Context, core.SearchRequest) ([]core.Release, error)
-	Active func() bool // une lecture est en cours : l'indexation attend
+	DB       *sql.DB
+	Remember func(context.Context, core.RatingKey, []core.Release)
+	Config   func() config.Config
+	Browse   func(context.Context, core.BrowseQuery) (core.Page, error)
+	Search   func(context.Context, core.SearchRequest) ([]core.Release, error)
+	Active   func() bool // une lecture est en cours : l'indexation attend
 	// Priority renvoie les titres à indexer avant le reste du catalogue
 	// (bibliothèques à thème, priorités de la console) ; facultatif.
 	Priority func(context.Context, core.MediaType) []PriorityKey

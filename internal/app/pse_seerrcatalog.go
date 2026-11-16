@@ -39,7 +39,12 @@ func (a *App) startSeerrCatalog() {
 	}
 	rt.seerr = s
 	if a.indexers != nil {
-		a.indexers.SetRetainedSearch(s.Lookup)
+		a.indexers.SetRetainedSearch(func(ctx context.Context, req core.SearchRequest) ([]core.Release, bool) {
+			if rs, ok := a.retainedReleaseLibrary(ctx, req); ok {
+				return rs, true
+			}
+			return s.Lookup(ctx, req)
+		})
 		s.Search = a.indexers.Search
 	}
 	s.Start()

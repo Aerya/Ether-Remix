@@ -26,11 +26,13 @@ type Manager struct {
 	log    *slog.Logger
 	par    int
 
-	mu             sync.RWMutex
-	clients        []*Client
-	retained       func(context.Context, core.SearchRequest) ([]core.Release, bool)
-	searchTimingMu sync.RWMutex
-	searchTimings  []SearchTiming
+	mu              sync.RWMutex
+	clients         []*Client
+	retained        func(context.Context, core.SearchRequest) ([]core.Release, bool)
+	searchObserver  func(context.Context, core.SearchRequest, []core.Release)
+	retainedRefresh func() bool
+	searchTimingMu  sync.RWMutex
+	searchTimings   []SearchTiming
 }
 
 // SearchTiming records the most recent aggregate search's per-indexer cost.
@@ -190,6 +192,14 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 		return nil, nil
 	}
 	ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposeRescue)
+	m.mu.RLock()
+	observer := m.searchObserver
+	refresh := m.retainedRefresh
+	m.mu.RUnlock()
+	var fresh []core.Release
+	if refresh != nil && refresh() {
+		fresh, _ = m.SearchWith(ctx, req, arrived)
+	}
 	clients := m.Clients()
 	type slot struct {
 		results []core.Release
@@ -225,8 +235,16 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 		}(i, cl)
 	}
 	wg.Wait()
+	if observer != nil {
+		for _, slot := range slots {
+			if len(slot.results) > 0 {
+				observer(ctx, req, slot.results)
+			}
+		}
+	}
 	seen := map[string]bool{}
 	var merged []core.Release
+	slots = append([]slot{{results: fresh}}, slots...)
 	for _, s := range slots {
 		if missingAnswer(s.err) {
 			core.NoteSearchIncomplete(ctx)
@@ -252,10 +270,21 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 	return merged, nil
 }
 
-// SearchWith is Search, also handing each indexer's results to arrived as
-// soon as that indexer answers (concurrently, from its own goroutine), so
-// callers can start follow-up work, such as debrid cache checks, before
-// the slowest indexer is done.
+// SetRetainedRefresh enables an ordinary source refresh before broad rescue.
+// A retained movie answer must not prevent addons being queried again.
+func (m *Manager) SetRetainedRefresh(enabled func() bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.retainedRefresh = enabled
+}
+
+// SetSearchObserver receives source-search answers, never retained library hits.
+func (m *Manager) SetSearchObserver(fn func(context.Context, core.SearchRequest, []core.Release)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.searchObserver = fn
+}
+
 // SetRetainedSearch installs an optional local observation provider.
 func (m *Manager) SetRetainedSearch(fn func(context.Context, core.SearchRequest) ([]core.Release, bool)) {
 	m.mu.Lock()
@@ -263,9 +292,14 @@ func (m *Manager) SetRetainedSearch(fn func(context.Context, core.SearchRequest)
 	m.retained = fn
 }
 
+// SearchWith is Search, also handing each indexer's results to arrived as
+// soon as that indexer answers (concurrently, from its own goroutine), so
+// callers can start follow-up work, such as debrid cache checks, before
+// the slowest indexer is done.
 func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
 	m.mu.RLock()
 	retained := m.retained
+	observer := m.searchObserver
 	m.mu.RUnlock()
 	if retained != nil && core.IndexerPurpose(ctx) != core.IndexerPurposeRescue {
 		if rs, ok := retained(ctx, req); ok {
@@ -312,6 +346,13 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 		}(i, cl)
 	}
 	wg.Wait()
+	if observer != nil {
+		for _, slot := range slots {
+			if len(slot.results) > 0 {
+				observer(ctx, req, slot.results)
+			}
+		}
+	}
 	timings := make([]SearchTiming, 0, len(clients))
 	for i, s := range slots {
 		if missingAnswer(s.err) {

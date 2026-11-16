@@ -343,6 +343,7 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 		typ core.MediaType
 	}
 	found := map[target]int{}
+	references := map[core.RatingKey][]core.Release{}
 	for _, r := range rows {
 		typ, season, episode := core.TypeMovie, 0, 0
 		if r.Media == "tv" {
@@ -366,10 +367,28 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 		saved := FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, r.Cached)
 		saved.CacheUntil = r.CacheUntil
 		batch = append(batch, saved)
+		if s.d.Remember != nil && LibraryEnabled() {
+			request := core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: r.TMDB}, Season: season, Episode: episode}
+			referenceKey := key
+			if typ == core.TypeShow {
+				request.Type = core.TypeEpisode
+				referenceKey = core.EpisodeKey(key.TMDB(), season, episode)
+			}
+			var rs []core.Release
+			if r.Alko || r.AlkoURL != "" {
+				rs = sfrAlkoCandidates([]sfrRow{r})
+			} else {
+				rs = sfrCandidates([]sfrRow{r}, request)
+			}
+			references[referenceKey] = append(references[referenceKey], rs...)
+		}
 		found[target{key, typ}]++
 	}
 	if err := s.st.Save(ctx, batch, now); err != nil {
 		return 0, err
+	}
+	for key, rs := range references {
+		s.d.Remember(ctx, key, rs)
 	}
 	p := Playable()
 	for t := range found {
