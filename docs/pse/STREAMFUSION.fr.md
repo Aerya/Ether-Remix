@@ -33,7 +33,7 @@ Option de **Sources → Stremio**. Elle met à jour le catalogue et la détectio
 
 ## Fonctionnement
 
-- Le premier import lit la base par lots et reprend après un redémarrage. Les suivants ne lisent que les nouveautés, toutes les 6 heures par défaut (minimum 30 minutes).
+- Le premier import lit la base par lots et reprend après un redémarrage. Pour les torrents, les suivants ne lisent que les nouveautés, toutes les 6 heures par défaut (minimum 30 minutes).
 - Seules les releases françaises, MULTi ou VOSTFR de titres présents au catalogue sont gardées. Une série est représentée par son premier épisode ou un pack de la saison 1.
 - Un titre arrivé au catalogue après l'import de ses releases, par exemple via Tendances, est rattrapé : à chaque passage, Remix cherche dans SFR les titres sans release importée, par lots de 500 et avec les mêmes filtres. Chaque passage interroge au plus 10 000 titres et s'arrête après 2 minutes de lecture. Un titre vérifié sans résultat n'est redemandé qu'après 30 jours. Les nouveautés SFR de ce titre arrivent entre-temps par l'import habituel.
 - Le rattrapage fonctionne sans index sur `tmdb_id`, mais chaque lot parcourt alors toute la table. Le compte en lecture seule n'a rien à créer.
@@ -50,6 +50,22 @@ GRANT SELECT ON public.debrid_cache TO remix_lecture;
 
 Les anciennes indications AllDebrid supposées sont retirées à la migration. Les preuves expirées sont ignorées à la lecture des données et les compteurs du catalogue sont corrigés dans la minute. Les titres dont les preuves ont expiré sont relus par lots, au plus une fois toutes les six heures et dans le budget du rattrapage ; l’absence de preuve ne signifie pas que le torrent est indisponible.
 
-Quand cette intégration est activée, **StreamFusion Reborn (base)** rejoint automatiquement les sources de recherche. La recherche utilise l’identifiant TMDB et filtre les saisons/épisodes avant de limiter les résultats. Les packs de la saison demandée sont acceptés. Les requêtes sont bornées à quatre secondes et 200 lignes ; aucun appel de préchauffage à l’API StreamFusion n’est effectué. Les descripteurs bénéficient du cache de recherche de Remix, mais ne certifient pas une disponibilité debrid : celle-ci est revérifiée par les fournisseurs configurés avant lecture.
+Quand cette intégration est activée, **StreamFusion Reborn (base)** rejoint automatiquement les sources de recherche. La recherche utilise l’identifiant TMDB et filtre les saisons/épisodes avant de limiter les résultats. Les packs de la saison demandée sont acceptés. Les requêtes torrent sont bornées à quatre secondes et 200 lignes ; aucun appel de préchauffage à l’API StreamFusion n’est effectué. Les descripteurs bénéficient du cache de recherche de Remix, mais ne certifient pas une disponibilité debrid : celle-ci est revérifiée par les fournisseurs configurés avant lecture.
 
 L’option trackers privés s’applique aussi à cette recherche. Les candidats sont des magnets par empreinte : un torrent privé absent du cache debrid peut nécessiter une source authentifiée supplémentaire pour être téléchargé par un client torrent.
+
+
+## Fichiers Alkolites déjà vérifiés
+
+Remix détecte les tables optionnelles `alko_integration.files` et `alko_integration.source_links`. Pour un compte PostgreSQL dédié, accordez uniquement ces lectures, après l’installation d’Alkolites dans SFR :
+
+```sql
+GRANT USAGE ON SCHEMA alko_integration TO remix_lecture;
+GRANT SELECT ON alko_integration.files, alko_integration.source_links TO remix_lecture;
+```
+
+Ces tables complètent les torrents ordinaires : les fichiers français, MULTi ou VOSTFR sont importés pour les titres déjà au catalogue (S01E01 pour les séries), puis recherchés par TMDB et épisode. Le catalogue Alkolites est relu par lots à chaque cycle ; son indication de disponibilité expire après deux intervalles sans actualisation. Sans les tables ou les droits, l’intégration torrent continue de fonctionner.
+
+À la lecture, un compte **AllDebrid activé dans Remix** débride directement le lien fichier `https://alldebrid.com/f/...`. Aucun magnet n’est ajouté, listé ou revérifié pour ce résultat, y compris au renouvellement du lien. Un lien supprimé échoue normalement et laisse les autres candidats disponibles ; il ne déclenche pas une conversion en magnet. Les limites de requêtes API AllDebrid restent applicables et les contrôles habituels du fichier restent actifs.
+
+Les recherches lisent au maximum 200 torrents et 200 fichiers Alkolites, dans le même délai de quatre secondes. Les liens privés restent côté serveur. Les filtres de trackers privés concernent les torrents ; les Alkolites sont des fichiers déjà disponibles, sans téléchargement BitTorrent.

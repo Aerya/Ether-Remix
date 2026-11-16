@@ -292,6 +292,9 @@ func (x *Indexer) playable(r core.Release) (core.Release, bool) {
 		r.Protocol = core.ProtocolHTTP
 		fallthrough
 	case core.ProtocolHTTP:
+		if r.StreamDebrid != "" && !x.svc.hasFileProvider(r.StreamDebrid) {
+			return r, false
+		}
 		if r.StreamURL == "" {
 			return r, false
 		}
@@ -451,6 +454,9 @@ func (x *Indexer) SearchRescue(ctx context.Context, req core.SearchRequest) ([]c
 // season pack); for anything else, the inner indexer's NZB.
 func (x *Indexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
 	if r.Protocol == core.ProtocolHTTP {
+		if r.StreamDebrid != "" {
+			return x.flights.Do(ctx, "file\x00"+payloadKey(r)+"\x00"+r.StreamURL, func(ctx context.Context) ([]byte, error) { return x.svc.acquireFile(ctx, r) })
+		}
 		return x.svc.DirectPayload(ctx, r)
 	}
 	if r.Protocol != core.ProtocolTorrent {

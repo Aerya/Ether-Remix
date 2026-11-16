@@ -33,20 +33,21 @@ const payloadMagic = "ETHER-DEBRID/1\n"
 // fresh link can be generated after the last one expires. It never holds
 // an API key.
 type Payload struct {
-	AddonID   string    `json:"addonId,omitempty"`
-	Key       string    `json:"key,omitempty"`       // payload cache key (release + target)
-	ReleaseID string    `json:"releaseId,omitempty"` // core.Release.ID (segment cache key)
-	Provider  string    `json:"provider"`            // config.DebridProvider.ID
-	Kind      string    `json:"kind"`                // config.DebridKinds
-	InfoHash  string    `json:"infoHash"`            // lower-case hex v1 info hash
-	Magnet    string    `json:"magnet,omitempty"`    // magnet URI used to (re)add the torrent
-	TorrentID string    `json:"torrentId,omitempty"` // provider torrent / magnet id
-	FileID    string    `json:"fileId,omitempty"`    // provider file id
-	Path      string    `json:"path"`                // file path inside the torrent
-	Size      int64     `json:"size"`                // file size in bytes
-	Link      string    `json:"link,omitempty"`      // provider-side file link (RD/AllDebrid), unrestricted on demand
-	URL       string    `json:"url,omitempty"`       // last direct download URL
-	Expires   time.Time `json:"expires,omitempty"`   // when URL should be regenerated
+	VerifiedFile bool      `json:"verifiedFile,omitempty"` // standalone file: never add a magnet
+	AddonID      string    `json:"addonId,omitempty"`
+	Key          string    `json:"key,omitempty"`       // payload cache key (release + target)
+	ReleaseID    string    `json:"releaseId,omitempty"` // core.Release.ID (segment cache key)
+	Provider     string    `json:"provider"`            // config.DebridProvider.ID
+	Kind         string    `json:"kind"`                // config.DebridKinds
+	InfoHash     string    `json:"infoHash"`            // lower-case hex v1 info hash
+	Magnet       string    `json:"magnet,omitempty"`    // magnet URI used to (re)add the torrent
+	TorrentID    string    `json:"torrentId,omitempty"` // provider torrent / magnet id
+	FileID       string    `json:"fileId,omitempty"`    // provider file id
+	Path         string    `json:"path"`                // file path inside the torrent
+	Size         int64     `json:"size"`                // file size in bytes
+	Link         string    `json:"link,omitempty"`      // provider-side file link (RD/AllDebrid), unrestricted on demand
+	URL          string    `json:"url,omitempty"`       // last direct download URL
+	Expires      time.Time `json:"expires,omitempty"`   // when URL should be regenerated
 	// OnReplayEdge records that URL stands on a CDN edge the engine moved
 	// the link to (resumeOnAnotherEdge), not on the host the provider
 	// signed. Media reads on such a link refuse redirects: a followed hop
@@ -82,7 +83,7 @@ func DecodePayload(b []byte) (Payload, error) {
 	if err := json.Unmarshal(b[len(payloadMagic):], &p); err != nil {
 		return Payload{}, fmt.Errorf("debrid: corrupt payload: %w", err)
 	}
-	if p.Size <= 0 || (p.InfoHash == "" && !(p.IsDirect() && p.Link != "")) {
+	if p.Size <= 0 || (p.InfoHash == "" && !(p.IsDirect() && p.Link != "") && !(p.VerifiedFile && p.Kind == "alldebrid" && core.ValidAllDebridFileURL(p.Link))) {
 		return Payload{}, errors.New("debrid: incomplete payload")
 	}
 	return p, nil
