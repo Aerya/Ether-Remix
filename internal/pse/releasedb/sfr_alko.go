@@ -99,6 +99,7 @@ func (s *Service) sfrImportAlko(ctx context.Context, p *pgxSFR, every time.Durat
 }
 
 func sfrAlkoLanguage(name string) bool {
-	langs := releaseLanguages(name, releaseparse.Parse(name).Languages)
-	return slices.Contains(langs, "french") || slices.Contains(langs, "multi") || slices.Contains(langs, "vostfr")
+	info := releaseparse.Parse(name)
+	langs := releaseLanguages(name, info.Languages)
+	return slices.Contains(info.SubtitleLanguages, "french") || slices.Contains(langs, "french") || slices.Contains(langs, "multi") || slices.Contains(langs, "vostfr")
 }

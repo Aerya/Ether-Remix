@@ -40,3 +40,14 @@ func TestSFRAlkoImportExpiresAndKeepsTorrentSeparate(t *testing.T) {
 		t.Fatal("stale proof", got, err)
 	}
 }
+
+func TestSFRAlkoFrenchAudioAndSubtitles(t *testing.T) {
+	for _, name := range []string{"Film.2024.FRENCH.1080p.mkv", "Film.2024.MULTi.1080p.mkv", "Film.2024.VOSTFR.1080p.mkv", "Film.2024.SUBFRENCH.1080p.mkv"} {
+		if !sfrAlkoLanguage(name) {
+			t.Fatalf("French release excluded: %s", name)
+		}
+	}
+	if sfrAlkoLanguage("Film.2024.GERMAN.1080p.mkv") {
+		t.Fatal("unrelated language included")
+	}
+}
