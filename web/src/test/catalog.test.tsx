@@ -170,6 +170,11 @@ describe("Catalog workspace", () => {
       if (path === "/catalog/browse") return { items: [title], total: 1 };
     });
     await screen.findByRole("button", { name: "Inspect Seven" });
+    // Cards arrive before viewer membership. Wait for the individual action
+    // to be ready before exercising the bulk action for that same viewer.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add to Watchlist" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Select loaded titles" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Add to Watchlist" })[0]!);
     await screen.findByRole("button", { name: "Remove from Watchlist" });
