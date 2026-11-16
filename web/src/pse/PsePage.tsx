@@ -1,3 +1,4 @@
+import { QuickStart, QuickStartHint } from "./QuickStart";
 import { LocalMediaHealth } from "./LocalMediaHealth";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
@@ -258,6 +259,8 @@ function PseSettings() {
     >
       <CollapsibleSections.Provider key={tab} value={tab !== "statistiques"}>
         <div className="space-y-6">
+          {tab === "demarrage" ? <QuickStart indexing={saved.PSE_INDEXER === "on"} /> : null}
+          {tab === "statistiques" && saved.PSE_INDEXER === "off" ? <QuickStartHint /> : null}
           {tab === "sources" ? (
             <RemixSources
               music={musicPart("source")}

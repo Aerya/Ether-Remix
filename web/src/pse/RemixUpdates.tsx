@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-seedstrem-playback-only",
+    id: "2026-11-16-quick-start",
     version: "current",
+    date: "2026-11-16",
+    title: ["Démarrage rapide dans Remix", "Quick start in Remix"],
+    items: [
+      [
+        "Un onglet permanent présente les étapes essentielles : sources, activation de l’indexation, langues et qualité, suivi des recherches et connexion d’un client. Les statistiques signalent l’indexation désactivée et renvoient vers le guide.",
+        "A permanent tab presents the essential steps: sources, enabling indexing, languages and quality, monitoring searches and connecting a client. Statistics highlight disabled indexing and link to the guide.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-seedstrem-playback-only",
+    version: "0.2.37-remix.80.1",
     date: "2026-11-16",
     title: [
       "Seedstrem : téléchargement à la lecture uniquement",
