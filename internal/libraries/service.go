@@ -162,7 +162,7 @@ func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaT
 	if err := tx.Commit(); err != nil {
 		return core.Library{}, err
 	}
-	s.gen.Add(1)
+	s.changed()
 	return lib, nil
 }
 
@@ -209,7 +209,7 @@ func (s *Service) CreateCollection(ctx context.Context, name string, collectionI
 	if err := tx.Commit(); err != nil {
 		return core.Library{}, err
 	}
-	s.gen.Add(1)
+	s.changed()
 	return lib, nil
 }
 
@@ -279,7 +279,7 @@ func (s *Service) UpsertPluginLibrary(ctx context.Context, pluginID, kindKey str
 		}
 		return core.Library{}, err
 	}
-	s.gen.Add(1)
+	s.changed()
 	return lib, nil
 }
 
@@ -389,7 +389,7 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 	if n, _ := res.RowsAffected(); n == 0 {
 		return core.ErrNotFound
 	}
-	s.gen.Add(1)
+	s.changed()
 	return nil
 }
 
@@ -408,6 +408,6 @@ func (s *Service) Delete(ctx context.Context, id core.LibraryID) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = ?`, int64(id)); err != nil {
 		return err
 	}
-	s.gen.Add(1)
+	s.changed()
 	return nil
 }
