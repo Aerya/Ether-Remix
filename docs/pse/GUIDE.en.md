@@ -28,6 +28,7 @@
   - [iBroadcast account](#nav-ibroadcast-account)
 - [Search caching and source outages](#nav-search-caching-and-source-outages)
   - [Navigation and configuration](#nav-navigation-and-configuration)
+- [Nuvio-inspired navigation cards](#nuvio-inspired-navigation-cards)
 - [Xperience import](#xperience-import)
 - [JukeBox quick setup](#nav-jukebox-quick-setup)
   - [Local media health](#nav-local-media-health)
@@ -405,6 +406,18 @@ This does not hide credential errors, exhausted quotas, cancellation or valid em
 ### Navigation and configuration
 
 The console uses `/ether/remix`. Old bookmarks redirect with their parameters preserved. Configuration sections start collapsed; opening or closing them preserves drafts. Sources → Music streaming groups Eclipse, DMM / Real-Debrid, iBroadcast and other providers. Subsonic address and library counts are under Content & libraries → Music. For Spotify, use `/ether/remix/contenus?content=musique` as the allowed callback path; callbacks already started with the old path remain accepted.
+
+## Nuvio-inspired navigation cards
+
+In **Ether-Remix → Quick start** or **Content and libraries**, open **Nuvio-inspired cards → Quick setup**. Select studios, services and genres, and the services country (FR by default). **Apply cards to my home screens** creates collections and replaces Plex and Jellyfin/Emby home recommendations with three groups of cards. Each card opens its collection; movies and shows are separate. Cards also lead collection lists unless the client imposes its own sort.
+
+Collections fill in the background using TMDB metadata, refresh daily and contain up to 100 titles. Empty collections are hidden and viewer restrictions still apply. Remix playback sources remain required: setup never downloads media. Available TMDB logos illustrate studios and services; genres use poster mosaics. Missing logos fall back to readable names. Custom collection artwork remains editable in the collection editor.
+
+**Restore previous home** disables the replacement without deleting collections or changing saved layouts and preferences. Reapplying adds missing cards without deleting existing ones or overwriting edits. Disable or delete an existing collection in the editor to remove its card. Changing country creates another service selection and leaves the previous one intact.
+
+To use an existing collection, including one imported from Xperience, open its editor, then **Audience → Remix navigation card** and choose a group. Sources and content stay unchanged. **No card** removes it from the group without deleting the collection.
+
+This preset is independent of Nuvio and does not copy its files or settings. No Xperience manifest is required; the Xperience importer remains separate. Clients control the final presentation: Plex may retain portrait frames; Jellyfin may prefix rows with “Latest in…” and local preferences may require refreshing or signing in again. Collection browsing is the fallback when a client does not display all three home rows. Other protocols receive collections without a home replacement.
 
 ## Xperience import
 

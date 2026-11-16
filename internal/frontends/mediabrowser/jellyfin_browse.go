@@ -545,7 +545,16 @@ func (i *instance) writeBoxSets(w http.ResponseWriter, r *http.Request, viewer *
 	}
 	items := make([]any, 0, len(page.Items))
 	for _, collection := range page.Items {
-		items = append(items, i.boxSetDTO(collection))
+		item := i.boxSetDTO(collection)
+		if collection.NavigationGroup != "" {
+			detail := frontend.ItemDetail{Collection: &collection}
+			i.discoveryArtwork(r, viewer, &detail)
+			_, token, _ := i.viewer(r)
+			tags, backs, _ := i.imageTags(r, detail, token)
+			item["ImageTags"] = tags
+			item["BackdropImageTags"] = backs
+		}
+		items = append(items, item)
 	}
 	jsonReply(w, i.queryResult(items, page.Total, q.Offset))
 }
@@ -567,6 +576,10 @@ func (i *instance) boxSetDTO(collection frontend.Collection) map[string]any {
 	}
 	if i.protocol == "emby" {
 		i.embyItemDTO(item, frontend.Title{Key: collection.Key, Title: name, Summary: collection.Summary}, frontend.WatchStatus{})
+	}
+	if collection.NavigationGroup != "" {
+		item["PrimaryImageAspectRatio"] = float64(16) / 9
+		item["SortName"] = fmt.Sprintf("000-%04d-%s", collection.NavigationOrder, name)
 	}
 	return item
 }

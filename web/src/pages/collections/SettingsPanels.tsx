@@ -6,6 +6,7 @@ import {
   Input,
   MultiSelect,
   SearchSelect,
+  Select,
   Switch,
   cn,
   toast,
@@ -32,7 +33,7 @@ import type {
   TargetSchedule,
   TitleCard,
 } from "../../lib/contract";
-import { localized, t, tx } from "../../i18n";
+import { getLocale, localized, t, tx } from "../../i18n";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { WEEKDAYS, formatDateTime, formatHour, relativeTime } from "../../lib/format";
 import { PseRefreshField } from "../../pse/RefreshField"; // PSE-HOOK: voir docs/pse/FORK.fr.md
@@ -627,6 +628,32 @@ export function AudiencePanel({ spec, update }: { spec: CollectionSpec; update: 
             </Button>
           ))}
         </div>
+        <label className="block space-y-2 text-sm">
+          <span className="font-medium">
+            {getLocale().startsWith("fr") ? "Carte de navigation Remix" : "Remix navigation card"}
+          </span>
+          <Select
+            aria-label={getLocale().startsWith("fr") ? "Groupe de cartes" : "Card group"}
+            value={spec.navigationGroup ?? ""}
+            onChange={(e) => {
+              const navigationGroup = e.target.value as CollectionSpec["navigationGroup"];
+              update({
+                navigationGroup: navigationGroup || undefined,
+                targets: { ...tg, collectionsTab: navigationGroup ? true : tg.collectionsTab },
+              });
+            }}
+          >
+            <option value="">{getLocale().startsWith("fr") ? "Aucune carte" : "No card"}</option>
+            <option value="studios">Studios &amp; labels</option>
+            <option value="services">Services</option>
+            <option value="genres">Genres</option>
+          </Select>
+          <span className="block text-fg-muted">
+            {getLocale().startsWith("fr")
+              ? "Utilisez aussi vos collections Xperience ou personnalisées dans le préréglage Cartes inspirées de Nuvio. Le contenu et les sources de cette collection restent inchangés."
+              : "Use Xperience or custom collections in the Nuvio-inspired cards preset too. This collection's content and sources stay unchanged."}
+          </span>
+        </label>
         <ToggleRow
           title={t("Play trailer preview on focus")}
           description={

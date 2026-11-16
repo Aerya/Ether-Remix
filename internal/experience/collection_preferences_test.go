@@ -165,3 +165,28 @@ func TestCollectionsExistenceStopsEarly(t *testing.T) {
 		t.Fatalf("page %+v err %v visits %d reads %d", page, err, visits, reads)
 	}
 }
+
+type navigationSource struct{ completeCollections }
+
+func (f navigationSource) ListNavigation(ctx context.Context, u *core.User, typ core.MediaType) ([]core.Collection, error) {
+	return f.completeCollections.ListComplete(ctx, u, typ)
+}
+func (f navigationSource) ListComplete(context.Context, *core.User, core.MediaType) ([]core.Collection, error) {
+	panic("navigation must not enumerate all collections")
+}
+func TestNavigationFiltersBeforePagination(t *testing.T) {
+	viewer := &core.User{ID: 1, AllowedLibraries: []core.LibraryID{1}}
+	hidden := core.Title{Key: core.MovieKey(1), Type: core.TypeMovie, Adult: true}
+	allowed := core.Title{Key: core.MovieKey(2), Type: core.TypeMovie}
+	a, b, c := core.SmartKey(1), core.SmartKey(2), core.SmartKey(3)
+	src := navigationSource{completeCollections{lists: map[core.MediaType][]core.Collection{core.TypeMovie: {
+		{Key: a, Type: core.TypeMovie, NavigationGroup: "studios", NavigationOrder: 0},
+		{Key: b, Type: core.TypeMovie, NavigationGroup: "genres", NavigationOrder: 2},
+		{Key: c, Type: core.TypeMovie, NavigationGroup: "studios", NavigationOrder: 1},
+	}}, items: map[core.RatingKey][]core.Title{a: {hidden}, b: {allowed}, c: {allowed}}}}
+	s := &Service{d: ServiceDeps{Active: func(context.Context, int64) (*core.User, error) { return viewer, nil }, Libraries: []Library{{ID: 1, Type: core.TypeMovie}}, Collections: src, Visibility: Visibility{SectionFor: func(core.MediaType) (int, bool) { return 1, true }}}}
+	page, err := s.Collections(context.Background(), viewer, core.Device{}, frontend.CollectionQuery{NavigationOnly: true, NavigationGroup: "studios", Limit: 1})
+	if err != nil || page.Total != 1 || len(page.Items) != 1 || page.Items[0].Key != c {
+		t.Fatal(page, err)
+	}
+}

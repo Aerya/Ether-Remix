@@ -74,6 +74,9 @@ func (i *instance) libraryActivity(w http.ResponseWriter, r *http.Request, lates
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if latest && i.discoveryItems(w, r, viewer, true) {
+		return
+	}
 	view, isView, err := activityView(r)
 	if err != nil {
 		http.NotFound(w, r)

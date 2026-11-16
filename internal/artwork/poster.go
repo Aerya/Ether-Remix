@@ -33,11 +33,13 @@ import (
 
 // PosterRequest describes a collection poster.
 type PosterRequest struct {
-	Title    string   `json:"title"`
-	Subtitle string   `json:"subtitle,omitempty"` // small caps line above the title, e.g. "24 FILMS"
-	Mode     string   `json:"mode"`               // auto | collage | backdrop
-	Accent   string   `json:"accent,omitempty"`   // "#rrggbb"; derived from the artwork when empty
-	Posters  []string `json:"posters,omitempty"`  // member poster paths (up to 6 used)
+	Navigation bool     `json:"navigation,omitempty"`
+	Logo       string   `json:"logo,omitempty"`
+	Title      string   `json:"title"`
+	Subtitle   string   `json:"subtitle,omitempty"` // small caps line above the title, e.g. "24 FILMS"
+	Mode       string   `json:"mode"`               // auto | collage | backdrop
+	Accent     string   `json:"accent,omitempty"`   // "#rrggbb"; derived from the artwork when empty
+	Posters    []string `json:"posters,omitempty"`  // member poster paths (up to 6 used)
 	// Backdrops are member backdrop paths (the first that loads is used).
 	Backdrops []string `json:"backdrops,omitempty"`
 	Width     int      `json:"width"` // output width; height is 1.5×
@@ -176,6 +178,11 @@ func (r *Renderer) render(ctx context.Context, req PosterRequest) (data []byte, 
 			go load(&backdrops[i], p, w*3)
 		}
 	}
+	var logo loaded
+	if req.Navigation && req.Logo != "" {
+		wg.Add(1)
+		go load(&logo, req.Logo, w)
+	}
 	wg.Wait()
 	var ps, bs []image.Image
 	for _, p := range posters {
@@ -190,7 +197,17 @@ func (r *Renderer) render(ctx context.Context, req PosterRequest) (data []byte, 
 		}
 		transient = transient || b.transient
 	}
-	img := Compose(req, ps, bs)
+	var img *image.RGBA
+	if req.Navigation {
+		var logos []image.Image
+		if logo.ok {
+			logos = append(logos, logo.img)
+		}
+		transient = transient || logo.transient
+		img = composeNavigation(req, ps, logos)
+	} else {
+		img = Compose(req, ps, bs)
+	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 88}); err != nil {
 		return nil, false, err

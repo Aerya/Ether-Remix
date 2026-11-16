@@ -14,29 +14,44 @@ import (
 // List, it never suppresses refresh or franchise-list failures; consumers that
 // advertise an exact total must not use a partial result.
 func (s *Service) ListComplete(ctx context.Context, user *core.User, typ core.MediaType) ([]core.Collection, error) {
-	return s.listCompleteUntil(ctx, user, typ, nil)
+	return s.listCompleteUntil(ctx, user, typ, nil, false)
 }
 
 // FindVisible stops evaluating collections as soon as accept finds a visible
 // member. It never materializes the complete collection listing.
 func (s *Service) FindVisible(ctx context.Context, user *core.User, typ core.MediaType, accept func(core.Collection) (bool, error)) (bool, error) {
-	rows, err := s.listCompleteUntil(ctx, user, typ, accept)
+	rows, err := s.listCompleteUntil(ctx, user, typ, accept, false)
 	return len(rows) > 0, err
 }
 
-func (s *Service) listCompleteUntil(ctx context.Context, user *core.User, typ core.MediaType, accept func(core.Collection) (bool, error)) ([]core.Collection, error) {
+func (s *Service) listCompleteUntil(ctx context.Context, user *core.User, typ core.MediaType, accept func(core.Collection) (bool, error), navigation bool) ([]core.Collection, error) {
 	rows, err := s.loadRows(ctx)
 	if err != nil {
 		return nil, err
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i].spec, rows[j].spec
+		if (a.NavigationGroup != "") != (b.NavigationGroup != "") {
+			return a.NavigationGroup != ""
+		}
+		if a.NavigationGroup != "" && a.NavigationOrder != b.NavigationOrder {
+			return a.NavigationOrder < b.NavigationOrder
+		}
+		return rows[i].builtin && !rows[j].builtin
+	})
 	out := make([]core.Collection, 0)
 	for _, row := range rows {
+		if navigation && row.spec.NavigationGroup == "" {
+			continue
+		}
 		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, typ) {
 			continue
 		}
-		keys, err := s.serve(ctx, row, user, true)
+		keys, err := s.serve(ctx, row, user, !navigation)
 		if err != nil {
+			if navigation {
+				continue
+			}
 			return nil, fmt.Errorf("collections: complete list: %w", err)
 		}
 		if len(keys) > 0 && (row.spec.MediaType != MediaMixed || typ == "" || len(sectionKeys(keys, typ)) > 0) {
@@ -53,6 +68,9 @@ func (s *Service) listCompleteUntil(ctx context.Context, user *core.User, typ co
 				out = append(out, c)
 			}
 		}
+	}
+	if navigation {
+		return out, nil
 	}
 	for _, c := range s.listEphemeral(user, typ) {
 		if accept != nil {
@@ -96,4 +114,9 @@ func (s *Service) listCompleteUntil(ctx context.Context, user *core.User, typ co
 		out = append(out, franchises...)
 	}
 	return out, nil
+}
+
+// ListNavigation evaluates only navigation collections, never the whole collection library.
+func (s *Service) ListNavigation(ctx context.Context, user *core.User, typ core.MediaType) ([]core.Collection, error) {
+	return s.listCompleteUntil(ctx, user, typ, nil, true)
 }

@@ -420,6 +420,9 @@ func (s *Server) homeHubs(w http.ResponseWriter, r *http.Request, promotedOnly b
 	if promotedOnly {
 		route = "hubs/promoted"
 	}
+	if s.cfg().DiscoveryCards {
+		route += "/discovery-cards"
+	}
 	s.serveHome(w, r, route, func(_ context.Context, r *http.Request) homeBuild { return s.buildHomeHubs(r, promotedOnly) })
 }
 
@@ -433,7 +436,7 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 	perDirectory := directory != "" && !strings.Contains(directory, ",")
 	shelves := promotedOnly && perDirectory && directory != "playlists" && s.wantsCollectionShelves(pr)
 	pinned := q.Get("pinnedContentDirectoryID")
-	if shelves && strings.TrimSpace(pinned) == "" {
+	if (shelves || s.cfg().DiscoveryCards) && strings.TrimSpace(pinned) == "" {
 		pinned = s.defaultPinnedDirectories(pr.User)
 	}
 	first := strings.TrimSpace(strings.Split(pinned, ",")[0])
@@ -450,6 +453,9 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 		if !ok || !s.canSeeSection(pr.User, id) {
 			return homeBuild{mc: hubContainer()}
 		}
+	}
+	if s.cfg().DiscoveryCards {
+		return s.discoveryCardHome(r, !perDirectory || directory == first)
 	}
 	hc := s.hubContext(pr, 0)
 	mc := hubContainer()

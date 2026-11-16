@@ -29,6 +29,7 @@
   - [Compte iBroadcast](#nav-compte-ibroadcast)
 - [Cache des recherches et pannes de sources](#nav-cache-des-recherches-et-pannes-de-sources)
   - [Navigation et configuration](#nav-navigation-et-configuration)
+- [Cartes de navigation inspirées de Nuvio](#cartes-de-navigation-inspirées-de-nuvio)
 - [Import Xperience](#import-xperience)
 - [Configuration rapide JukeBox](#nav-configuration-rapide-jukebox)
 
@@ -415,6 +416,18 @@ Ce mécanisme ne masque pas une erreur d’identifiants, un quota épuisé, une 
 ### Navigation et configuration
 
 La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus et bibliothèques → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.
+
+## Cartes de navigation inspirées de Nuvio
+
+Dans **Ether-Remix → Démarrage rapide** ou **Contenus et bibliothèques**, ouvrez **Cartes inspirées de Nuvio → Configuration rapide**. Choisissez les studios, services et genres, puis le pays des services (FR par défaut). **Appliquer les cartes à mes accueils** crée des collections et remplace les recommandations d’accueil Plex et Jellyfin/Emby par trois groupes de cartes. Chaque carte ouvre sa collection ; films et séries sont séparés. Les cartes sont aussi prioritaires dans les listes de collections, sauf tri imposé par le client.
+
+Les collections se remplissent en arrière-plan via les métadonnées TMDB, se renouvellent quotidiennement et contiennent au maximum 100 titres. Les collections vides sont masquées et les restrictions du spectateur restent appliquées. Les sources de lecture Remix restent nécessaires : cette configuration ne lance aucun téléchargement de média. Les logos TMDB disponibles habillent les cartes des studios et services ; les genres montrent une mosaïque des affiches. Sans logo, le nom reste lisible. Les affiches personnalisées restent modifiables dans l’éditeur de collections.
+
+**Rétablir l’accueil précédent** désactive le remplacement sans effacer les collections ni modifier la disposition et les préférences enregistrées. Réappliquer complète les cartes manquantes sans supprimer les précédentes ni écraser leurs réglages. Pour retirer une carte déjà créée, désactivez ou supprimez sa collection dans l’éditeur. Changer de pays crée une autre sélection de services et ne supprime pas l’ancienne.
+
+Pour utiliser une collection déjà créée, notamment par l’import Xperience, ouvrez son éditeur puis **Public et destinations → Carte de navigation Remix** et choisissez le groupe. Ses sources et son contenu restent inchangés. **Aucune carte** la retire du groupe sans supprimer la collection.
+
+Le préréglage est indépendant de Nuvio : il n’en copie ni les fichiers ni les paramètres. Aucun manifeste Xperience n’est requis ; l’import Xperience reste disponible séparément. Les clients décident de la forme finale : Plex peut conserver un cadre vertical, Jellyfin peut afficher « Derniers ajouts dans… » et ses préférences locales peuvent nécessiter une actualisation ou une reconnexion. La navigation par collections reste le repli si un client ne présente pas les trois rangées sur son accueil. Les autres protocoles bénéficient des collections, sans remplacement de leur accueil.
 
 ## Import Xperience
 

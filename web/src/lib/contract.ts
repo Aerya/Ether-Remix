@@ -181,6 +181,8 @@ export interface TargetSchedule {
 }
 
 export interface CollectionSpec {
+  navigationGroup?: "studios" | "services" | "genres";
+  navigationOrder?: number;
   previewOnFocus?: boolean;
   rankedTop10?: boolean;
   localOnly?: boolean;
@@ -199,7 +201,7 @@ export interface CollectionSpec {
   limit: number;
   refresh: Refresh;
   rotate?: { size: number; every: "daily" | "weekly" } | null;
-  artwork: { mode: ArtworkMode; url?: string; accent?: string };
+  artwork: { mode: ArtworkMode; url?: string; accent?: string; logo?: string };
   targets: {
     collectionsTab: boolean;
     homeRow: boolean;

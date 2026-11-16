@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/scrobview"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/pse/console"
+	"github.com/braedonsaunders/ether/internal/pse/discovery"
 	"github.com/braedonsaunders/ether/internal/pse/frenchcat"
 	"github.com/braedonsaunders/ether/internal/pse/jukebox"
 	"github.com/braedonsaunders/ether/internal/pse/localmedia"
@@ -314,7 +315,17 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	if a.collections != nil && a.libraries != nil && a.pluginManager() != nil {
 		xperienceAPI = xperience.New(a.collections, a.libraries, xperienceBackend{app: a}).Handler()
 	}
+	var discoveryAPI http.Handler = http.NotFoundHandler()
+	if a.collections != nil && a.cfg != nil {
+		discoveryAPI = discovery.New(a.collections, func() bool { return a.cfg.Get().DiscoveryCards }, func(enabled bool) error {
+			return a.cfg.Update(func(c *config.Config) error { c.DiscoveryCards = enabled; return nil })
+		}).Handler()
+	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/discovery/") {
+			http.StripPrefix("/discovery", discoveryAPI).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/xperience/") {
 			http.StripPrefix("/xperience", xperienceAPI).ServeHTTP(w, r)
 			return

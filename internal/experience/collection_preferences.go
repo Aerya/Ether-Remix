@@ -3,6 +3,7 @@ package experience
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -96,11 +97,24 @@ func (s *Service) Collections(ctx context.Context, viewer *core.Viewer, _ core.D
 			}
 			continue
 		}
-		collections, e := complete.ListComplete(ctx, v, typ)
+		var collections []core.Collection
+		var e error
+		if q.NavigationOnly {
+			if nav, ok := s.d.Collections.(interface {
+				ListNavigation(context.Context, *core.User, core.MediaType) ([]core.Collection, error)
+			}); ok {
+				collections, e = nav.ListNavigation(ctx, v, typ)
+			}
+		} else {
+			collections, e = complete.ListComplete(ctx, v, typ)
+		}
 		if e != nil {
 			return frontend.CollectionPage{}, e
 		}
 		for _, c := range collections {
+			if q.NavigationGroup != "" && c.NavigationGroup != q.NavigationGroup {
+				continue
+			}
 			if (q.Query != "" && !strings.Contains(strings.ToLower(c.Title), strings.ToLower(q.Query))) || c.Type != typ || seenKeys[c.Key] || !s.d.Visibility.CollectionAllowed(v, &c) || (c.OwnerUserID != 0 && c.OwnerUserID != v.ID) {
 				continue
 			}
@@ -116,6 +130,13 @@ func (s *Service) Collections(ctx context.Context, viewer *core.Viewer, _ core.D
 			visible = append(visible, c)
 		}
 	}
+	sort.SliceStable(visible, func(i, j int) bool {
+		a, b := visible[i], visible[j]
+		if (a.NavigationGroup != "") != (b.NavigationGroup != "") {
+			return a.NavigationGroup != ""
+		}
+		return a.NavigationGroup != "" && a.NavigationOrder < b.NavigationOrder
+	})
 	start, end := sliceBounds(len(visible), q.Offset, q.Limit)
 	return frontend.CollectionPage{Items: visible[start:end], Total: len(visible)}, nil
 }
