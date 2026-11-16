@@ -33,6 +33,8 @@ func newKindExperience() *kindExperience {
 
 func (e *kindExperience) PublishedViews(context.Context) ([]frontend.View, error) {
 	return []frontend.View{
+		{ID: "1", LibraryID: 1, Name: "Movies", Type: core.TypeMovie, Native: plexBaseMovie},
+		{ID: "2", LibraryID: 2, Name: "TV Shows", Type: core.TypeShow, Native: plexBaseShow},
 		{ID: "7", LibraryID: 7, Name: "Field Recordings", Type: core.TypeShow, Virtual: true, KindKey: "recordings", PluginID: "fieldrec", Native: plexBaseArtist},
 		{ID: "8", LibraryID: 8, Name: "Snapshots", Type: core.TypeShow, Virtual: true, KindKey: "snapshots", PluginID: "fieldrec", Native: plexBasePhoto},
 	}, nil

@@ -84,7 +84,7 @@ func (s *Service) MigrateConfigNames(ctx context.Context, moviesName, showsName 
 		return err
 	}
 	if strings.TrimSpace(moviesName) != "" || strings.TrimSpace(showsName) != "" {
-		s.gen.Add(1)
+		s.changed()
 		s.log.Info("libraries: migrated config library names", "movies", strings.TrimSpace(moviesName), "shows", strings.TrimSpace(showsName))
 	}
 	return nil
@@ -168,7 +168,7 @@ func (s *Service) MigrateConfigRules(ctx context.Context, rules []core.LibraryEx
 		return err
 	}
 	if changed {
-		s.gen.Add(1)
+		s.changed()
 		s.log.Info("libraries: migrated global catalog rules", "movies", len(movieRules), "shows", len(showRules), "default", vis)
 	}
 	return nil

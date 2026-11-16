@@ -712,7 +712,7 @@ func (r *frontendRuntime) close() {
 }
 
 func (r *frontendRuntime) publishLibrarySections() {
-	if r == nil || r.app == nil || r.app.registrar == nil || r.registry == nil {
+	if r == nil || r.app == nil || r.registry == nil {
 		return
 	}
 	inst, ok := r.registry.Instance("plex")
@@ -724,6 +724,9 @@ func (r *frontendRuntime) publishLibrarySections() {
 		return
 	}
 	secs := provider.PublishedLibraries()
+	if r.app.registrar == nil {
+		return
+	}
 	libraries := make([]plextv.LibrarySection, 0, len(secs))
 	for _, sec := range secs {
 		libraries = append(libraries, plextv.LibrarySection{

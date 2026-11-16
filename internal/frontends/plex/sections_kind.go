@@ -28,10 +28,9 @@ const (
 	typeNumPhoto  = 13
 )
 
-// publishedKindSections returns one Section per Plex-published plugin or
-// filter library, from the protocol's published libraries. It is the only place a
-// plugin library becomes a Plex section (spec §6.4). Built-in libraries are
-// not returned here; buildSections keeps their existing identities.
+// publishedKindSections projects the live published libraries, including built-ins.
+// A nil result means the host has no library store; an empty non-nil result
+// means every library is hidden or unpublished.
 func (s *Server) publishedKindSections(ctx context.Context) []Section {
 	exp := s.exp()
 	if exp == nil {
@@ -39,6 +38,10 @@ func (s *Server) publishedKindSections(ctx context.Context) []Section {
 	}
 	views, err := exp.PublishedViews(ctx)
 	if err != nil {
+		// A failed refresh must not resurrect hidden built-in libraries.
+		return append([]Section{}, s.getSections()...)
+	}
+	if views == nil {
 		return nil
 	}
 	out := make([]Section, 0, len(views))
@@ -79,27 +82,6 @@ func plexBaseForView(v frontend.View) (string, bool) {
 		return plexBasePhoto, true
 	}
 	return "", false
-}
-
-// mergeKindSections appends the published plugin/filter sections to base,
-// skipping any id already present so a built-in identity is never replaced.
-func mergeKindSections(base []Section, extra []Section) []Section {
-	if len(extra) == 0 {
-		return base
-	}
-	seen := make(map[int]bool, len(base))
-	for _, sec := range base {
-		seen[sec.ID] = true
-	}
-	out := base
-	for _, sec := range extra {
-		if seen[sec.ID] {
-			continue
-		}
-		seen[sec.ID] = true
-		out = append(out, sec)
-	}
-	return out
 }
 
 // sectionForLibrary returns the section for a library id (spec §6.4).
