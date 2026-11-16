@@ -129,6 +129,10 @@ func prepareDirect(req *http.Request, p Payload) *http.Request {
 // A probe the add-on does not answer in time also wraps core.ErrPrepareSlow:
 // it may still be preparing the release.
 func (s *Service) DirectPayload(ctx context.Context, rel core.Release) ([]byte, error) {
+	// PSE-HOOK: Seedstrem playback-only and fallback — see docs/pse/FORK.fr.md
+	if core.SeedstremPlay(rel) && !core.PlaybackIntent(ctx) {
+		return nil, fmt.Errorf("Seedstrem opens only for playback: %w", core.ErrForegroundOnly)
+	}
 	link, err := url.Parse(rel.StreamURL)
 	if err != nil || (link.Scheme != "http" && link.Scheme != "https") || link.Host == "" {
 		return nil, fmt.Errorf("debrid: %q has no HTTP stream link: %w", rel.Name, core.ErrReleaseRejected)

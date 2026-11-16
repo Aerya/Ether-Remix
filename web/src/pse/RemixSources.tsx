@@ -188,8 +188,8 @@ export function RemixSources({
                 </p>
                 <p className="text-fg-muted">
                   {L(
-                    "Ajoutez le manifeste de votre instance, accessible depuis Remix. Une fois enregistrée, elle apparaît dans « Modules Stremio » ci-dessus, où vous pouvez la modifier. La recherche ne lance pas de téléchargement ; l’ouverture du flux peut en lancer un. Protégez cet accès et laissez désactivée l’ouverture des flux d’addons lors des contrôles de disponibilité si vous souhaitez réserver les téléchargements à la lecture.",
-                    "Add your instance’s manifest, reachable from Remix. Once saved, it appears in “Stremio addons” above, where you can edit it. Searching does not start downloads; opening a stream can. Protect this access and keep opening addon streams during availability checks disabled to reserve downloads for playback.",
+                    "Ajoutez le manifeste de votre instance, accessible depuis Remix. Une fois enregistrée, elle apparaît dans « Modules Stremio » ci-dessus, où vous pouvez la modifier. La recherche ne lance pas de téléchargement ; l’ouverture du flux peut en lancer un. Les liens Seedstrem ne sont ouverts qu’à la lecture, jamais pour les diagnostics ou contrôles de disponibilité. L’option « Source de dernier recours à la lecture » garde les recherches et l’indexation actives.",
+                    "Add your instance’s manifest, reachable from Remix. Once saved, it appears in “Stremio addons” above, where you can edit it. Searching does not start downloads; opening a stream can. Seedstrem links open only for playback, never for diagnostics or availability checks. The “Last-resort playback source” option keeps search and indexing enabled.",
                   )}
                 </p>
                 <div className="flex flex-wrap items-center gap-4">

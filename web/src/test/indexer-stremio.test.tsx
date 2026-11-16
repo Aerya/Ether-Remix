@@ -26,6 +26,9 @@ describe("Sources › Indexers Stremio addons", () => {
       target: { value: "  stremio://addon.example/opts=1/manifest.json " },
     });
     expect(within(drawer).queryByText(/includes a debrid API key/)).toBeNull();
+    const fallback = within(drawer).getByRole("switch", { name: "Last-resort playback source" });
+    expect(fallback).not.toBeChecked();
+    fireEvent.click(fallback);
 
     fireEvent.click(within(drawer).getByRole("button", { name: /Test/ }));
     await waitFor(() => expect(calls(fake, "POST", "/test/indexer")).toHaveLength(1));
@@ -43,6 +46,7 @@ describe("Sources › Indexers Stremio addons", () => {
       protocol: "torrent",
       url: "https://addon.example/opts=1/manifest.json",
       enabled: true,
+      playbackLastResort: true,
     });
     const list = screen.getByRole("region", { name: "Stremio addons" });
     await waitFor(() => expect(within(list).getAllByText("Stremio addon")).toHaveLength(2));

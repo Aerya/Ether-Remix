@@ -97,6 +97,10 @@ func OnDemandCached(r Release) bool {
 // OnDemandStreamsAllowed admits may; a WithOnDemandWarm warm-up may open the
 // one top-ranked, cached candidate its budgets admit; nothing else may.
 func OnDemandAllowedAt(ctx context.Context, r Release, rank int) bool {
+	// PSE-HOOK: Seedstrem playback-only and fallback — see docs/pse/FORK.fr.md
+	if SeedstremPlay(r) && !PlaybackIntent(ctx) {
+		return false
+	}
 	if OnDemandStreamsAllowed(ctx) {
 		return true
 	}

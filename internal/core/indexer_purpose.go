@@ -31,7 +31,8 @@ func WithIndexerPurpose(ctx context.Context, purpose string) context.Context {
 	if purpose == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, indexerPurposeKey{}, purpose)
+	// PSE-HOOK: retain actual playback intent through rescue searches.
+	return context.WithValue(PreservePlaybackIntent(ctx), indexerPurposeKey{}, purpose)
 }
 
 // IndexerPurpose returns ctx's purpose tag, or IndexerPurposeOther.

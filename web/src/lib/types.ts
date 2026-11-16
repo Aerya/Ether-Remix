@@ -23,6 +23,7 @@ export interface SourceProxy {
   password?: string;
 }
 export interface Indexer {
+  playbackLastResort?: boolean;
   requestProxy?: SourceProxy;
   streamProxy?: SourceProxy;
   id: string;

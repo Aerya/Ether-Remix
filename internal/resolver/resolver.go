@@ -243,16 +243,17 @@ type Service struct {
 	log            *slog.Logger
 	now            func() time.Time
 
-	cfgMu            sync.RWMutex
-	rcfg             config.Resolver
-	quality          config.Quality
-	catalogLang      string // catalogue metadata language ("en-US"): the server's language
-	debridCachedOnly bool
-	scorer           *FormatScorer
-	indexerPriority  map[string]int // indexer id → Priority (lower ranks first)
-	indexerFamily    map[string]string
-	scorerErr        error
-	sources          string // sourcesKey of the applied config
+	cfgMu             sync.RWMutex
+	rcfg              config.Resolver
+	quality           config.Quality
+	catalogLang       string // catalogue metadata language ("en-US"): the server's language
+	debridCachedOnly  bool
+	scorer            *FormatScorer
+	lastResortSources map[string]bool
+	indexerPriority   map[string]int // indexer id → Priority (lower ranks first)
+	indexerFamily     map[string]string
+	scorerErr         error
+	sources           string // sourcesKey of the applied config
 
 	mu            sync.RWMutex
 	bad           map[string]badMark // release id -> blocklist mark
@@ -343,9 +344,11 @@ func (s *Service) UpdateConfig(cfg config.Config) {
 	s.catalogLang = cfg.Catalog.Language
 	s.debridCachedOnly = cfg.Debrid.CachedOnly
 	s.scorer, s.scorerErr = NewFormatScorer(cfg.Resolver.CustomFormats)
+	s.lastResortSources = make(map[string]bool)
 	s.indexerPriority = make(map[string]int, len(cfg.Indexers))
 	s.indexerFamily = make(map[string]string, len(cfg.Indexers))
 	for _, ix := range cfg.Indexers {
+		s.lastResortSources[ix.ID] = ix.Enabled && ix.Kind == config.IndexerKindStremio && ix.PlaybackLastResort
 		s.indexerPriority[ix.ID] = ix.Priority
 		switch {
 		case ix.Kind == config.IndexerKindStremio:
@@ -369,7 +372,7 @@ func (s *Service) UpdateConfig(cfg config.Config) {
 func sourcesKey(cfg config.Config) string {
 	var b strings.Builder
 	for _, ix := range cfg.Indexers {
-		fmt.Fprintf(&b, "i|%s|%t|%s|%s|%s\n", ix.ID, ix.Enabled, ix.URL, ix.Kind, ix.Protocol)
+		fmt.Fprintf(&b, "i|%s|%t|%s|%s|%s|%t\n", ix.ID, ix.Enabled, ix.URL, ix.Kind, ix.Protocol, ix.PlaybackLastResort)
 	}
 	for _, p := range cfg.Usenet.Providers {
 		fmt.Fprintf(&b, "u|%s|%t\n", p.ID, p.Enabled)
@@ -661,6 +664,9 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
 	profile.SelectionKey += quality.Signature(s.db)
 	key := flightKey(req, profile) + "|pin:" + s.PinnedReleaseID(req)
+	if core.PlaybackIntent(ctx) {
+		key += "|play-intent"
+	}
 	if channelAvailabilityCheck(ctx) {
 		key += "/channel-availability"
 	}
@@ -692,7 +698,8 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 		s.flightMu.Unlock()
 
 		ctx = context.WithValue(ctx, observationTitleKey{}, req.Title)
-		res, err := s.resolve(ctx, req, profile)
+		// PSE-HOOK: Seedstrem playback-only and fallback — see docs/pse/FORK.fr.md
+		res, err := s.resolveWithLastResort(ctx, req, profile)
 		f.res, f.err, f.abandoned = res, err, err != nil && ctx.Err() != nil
 		s.flightMu.Lock()
 		delete(s.flights, key)
@@ -833,7 +840,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	// request that already knows about specific releases, the viewer
 	// picked a specific version, or the owner pinned a release.
 	forceFresh := false
-	if len(req.Exclude) == 0 && req.Prefer == "" && pin == nil && len(discovered) == 0 {
+	if !s.lastResortPlayback(ctx) && len(req.Exclude) == 0 && req.Prefer == "" && pin == nil && len(discovered) == 0 {
 		if e, ok := s.getAvailability(ctx, int64(t.Key)); ok && !e.available {
 			// With cached-only off, a remembered unavailable answer older
 			// than unavailableRecheck may predate a download that has since
@@ -1603,6 +1610,9 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		}
 	}
 	for ri, rel := range results {
+		if !s.sourceInPlaybackPhase(ctx, req, rel, pinID) {
+			continue
+		}
 		rel = withTarget(rel, sreq)
 		ct := CandidateTrace{ReleaseID: rel.ID, Name: rel.Name, Indexer: rel.Indexer, Size: rel.Size, Height: rel.Info.Height}
 		if !s.ChannelSourceAllowed(sizedForEpisode(rel), req.Client, t) {

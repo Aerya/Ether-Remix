@@ -24,6 +24,14 @@ Searches and playback use the configured instance. Remix preserves Seedstrem HTT
 
 - Searching for sources does not start a download.
 - Opening a Seedstrem playback link can add the torrent and wait for initial data.
-- Remix background checks do not open these on-demand links. To reserve downloads for playback, also leave the option allowing addon streams to be opened during client availability checks disabled. A manual test that opens the stream can start a download.
+- Remix opens Seedstrem links only for playback: searches, tests and availability checks never start downloads, even when opening other addon streams is allowed. An external tool opening a Seedstrem link directly can still start its download.
 
 Startup and seeking depend on peers and available pieces. Seedstrem is separate from Remix’s built-in **Torrent client** source: configuring the same client in both is unnecessary when using its manifest.
+
+## Playback only and last resort
+
+Remix opens Seedstrem links only for an actual playback request or playback failover, never for diagnostics, preloads or availability checks, even when opening other addon streams is globally allowed. A warm-up promoted to actual playback may then open the link.
+
+Enable **Last-resort playback source** in the Stremio source editor to try its results only after normal sources fail, independently of quality and priority. This per-source option defaults to off. An explicitly enforced version or pinned release still takes precedence.
+
+Search and indexing still query Seedstrem without downloading. Results remain candidates, not proof that files are downloaded or playable. Prowlarr can therefore be queried both through Seedstrem and directly if also configured in Remix.

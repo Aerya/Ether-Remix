@@ -9,6 +9,7 @@ import {
   SettingsSection,
   confirmDialog,
   toast,
+  Switch,
 } from "@braedonsaunders/appkit-ui";
 import { Globe, Link2, Plus, Puzzle, Search, Server } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -800,6 +801,28 @@ export function IndexerList({
           <>
             {stremio && (
               <>
+                <SettingsRow
+                  title={
+                    getLocale().startsWith("fr")
+                      ? "Source de dernier recours à la lecture"
+                      : "Last-resort playback source"
+                  }
+                  description={
+                    getLocale().startsWith("fr")
+                      ? "Les recherches et l’indexation continuent normalement. En lecture automatique, cette source est utilisée seulement après l’échec des autres sources. Un choix explicite de version reste prioritaire."
+                      : "Search and indexing remain enabled. Automatic playback uses this source only after other sources fail. An explicit version selection takes precedence."
+                  }
+                >
+                  <Switch
+                    checked={draft.playbackLastResort ?? false}
+                    onChange={(e) => set({ playbackLastResort: e.target.checked })}
+                    aria-label={
+                      getLocale().startsWith("fr")
+                        ? "Source de dernier recours à la lecture"
+                        : "Last-resort playback source"
+                    }
+                  />
+                </SettingsRow>
                 <SourceProxyFields
                   title={
                     getLocale().startsWith("fr")
