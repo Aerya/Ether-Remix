@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-scrob-titles-catalogues",
+    id: "2026-11-16-continue-viewer-index",
     version: "current",
+    date: "2026-11-16",
+    title: ["Historique de reprise optimisé", "Optimized resume history"],
+    items: [
+      [
+        "Continuer à regarder conserve les anciennes séries en cours sans parcourir l’historique des autres spectateurs. Films, épisodes en cours et épisodes suivants restent réunis sans doublons.",
+        "Continue Watching retains older unfinished series without scanning other viewers’ history. Movies, in-progress episodes and next episodes stay together without duplicates.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-scrob-titles-catalogues",
+    version: "0.2.37-remix.76.1",
     date: "2026-11-16",
     title: [
       "Lectures Scrob et catalogues fiabilisés",

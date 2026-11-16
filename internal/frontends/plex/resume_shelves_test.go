@@ -198,7 +198,7 @@ func (r *onDeckLayoutRecommender) FinalizeNeutralHome(_ context.Context, _ *core
 func TestHomeOnDeckParticipatesInHomeLayout(t *testing.T) {
 	f := newFixture()
 	defer f.srv.Close()
-	// Movie + episode in progress -> home.continue has 2 items while episode-only home.ondeck has 1.
+	// With Continue Watching omitted, On Deck still participates in layout.
 	f.state.set(ownerUser.ID, ws(fightClub.Key, 120000, 0))
 	f.state.set(ownerUser.ID, ws(bbE1.Key, 120000, 0))
 	rec := &onDeckLayoutRecommender{
@@ -207,7 +207,7 @@ func TestHomeOnDeckParticipatesInHomeLayout(t *testing.T) {
 	f.srv.setRecommender(rec)
 
 	idsOf := func() []string {
-		mc := decodeJSON(t, f.get(t, "/hubs", jsonAccept...))
+		mc := decodeJSON(t, f.get(t, "/hubs?identifier=home.ondeck,home.trending", jsonAccept...))
 		raw, _ := mc["Hub"].([]any)
 		out := make([]string, 0, len(raw))
 		for _, item := range raw {
@@ -217,12 +217,12 @@ func TestHomeOnDeckParticipatesInHomeLayout(t *testing.T) {
 	}
 
 	rec.always = true
-	if got := idsOf(); len(got) < 3 || got[0] != "home.continue" || got[1] != "home.ondeck" || got[2] != "home.trending" {
-		t.Fatalf("Always slot 2 order = %v", got)
+	if got := idsOf(); len(got) != 1 || got[0] != "home.ondeck" {
+		t.Fatalf("Always On Deck = %v", got)
 	}
 
 	rec.maxOne = true
-	if got := idsOf(); len(got) != 2 || got[1] != "home.ondeck" {
+	if got := idsOf(); len(got) != 1 || got[0] != "home.ondeck" {
 		t.Fatalf("Always On Deck dropped under MaxRows=1: %v", got)
 	}
 

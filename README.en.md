@@ -190,7 +190,7 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 - Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
 - View history **by day, week, month or year**, as period or cumulative values, filtered by movies, shows, anime and sources.
 - Compare the local catalogue with TMDB totals and review operations in the activity log.
-- Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing; Plex retains its 40-item limit and viewer hide preferences.
+- Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing; Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
 - Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.
 - Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook (**60-second** timeout) and history-only libraries are optional. Stops and playback changes are relayed per session without duplicates.
 - Connect **Last.fm** per user for music scrobbling and find listening statistics in Overview.
