@@ -1,3 +1,4 @@
+import { ReleaseLibrary } from "../../../pse/ReleaseLibrary";
 import { WarmingControls } from "../../cache/WarmingControls";
 import { PanelSlots, PluginActionMenu } from "../../../viewspec/slots/Slots";
 import { Badge, Button, Spinner, SubtabNav } from "@braedonsaunders/appkit-ui";
@@ -29,7 +30,7 @@ import {
 } from "./titleSchedule";
 import "./catalog.css";
 
-type InspectorTab = "overview" | "episodes" | "calendar" | "releases" | "availability";
+type InspectorTab = "indexed" | "overview" | "episodes" | "calendar" | "releases" | "availability";
 
 /** Where another tab asked the drawer to go: a season, and optionally one episode. */
 export interface EpisodeFocus {
@@ -89,6 +90,7 @@ export function TitleInspector({
           { key: "releases", label: t("Releases") },
           { key: "availability", label: t("Availability") },
         ];
+  if (title) tabs.push({ key: "indexed", label: getLocale().startsWith("fr") ? "Releases indexées · Bêta" : "Indexed releases · Beta" });
   const active = tabs.some((x) => x.key === tab) ? tab : "overview";
 
   const openEpisode = (e: Pick<ScheduleEpisode, "season" | "key">) => {
@@ -124,6 +126,8 @@ export function TitleInspector({
         <div className="grid min-h-64 place-items-center">
           <Spinner label={t("Loading title details")} />
         </div>
+      ) : active === "indexed" ? (
+        <ReleaseLibrary key={titleKey} titleKey={titleKey} seasons={schedule.data?.seasons ?? []} />
       ) : active === "episodes" ? (
         <TitleEpisodes title={title} schedule={schedule} focus={focus} onCheck={checkEpisode} />
       ) : active === "calendar" ? (

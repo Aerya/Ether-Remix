@@ -29,6 +29,7 @@ type Manager struct {
 	mu             sync.RWMutex
 	clients        []*Client
 	retained       func(context.Context, core.SearchRequest) ([]core.Release, bool)
+	searchObserver func(context.Context, core.SearchRequest, []core.Release)
 	searchTimingMu sync.RWMutex
 	searchTimings  []SearchTiming
 }
@@ -257,6 +258,13 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 // callers can start follow-up work, such as debrid cache checks, before
 // the slowest indexer is done.
 // SetRetainedSearch installs an optional local observation provider.
+// SetSearchObserver receives only fresh network answers, never retained/cache hits.
+func (m *Manager) SetSearchObserver(fn func(context.Context, core.SearchRequest, []core.Release)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.searchObserver = fn
+}
+
 func (m *Manager) SetRetainedSearch(fn func(context.Context, core.SearchRequest) ([]core.Release, bool)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -266,6 +274,7 @@ func (m *Manager) SetRetainedSearch(fn func(context.Context, core.SearchRequest)
 func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
 	m.mu.RLock()
 	retained := m.retained
+	observer := m.searchObserver
 	m.mu.RUnlock()
 	if retained != nil && core.IndexerPurpose(ctx) != core.IndexerPurposeRescue {
 		if rs, ok := retained(ctx, req); ok {
@@ -312,6 +321,13 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 		}(i, cl)
 	}
 	wg.Wait()
+	if observer != nil {
+		for _, slot := range slots {
+			if len(slot.results) > 0 {
+				observer(ctx, req, slot.results)
+			}
+		}
+	}
 	timings := make([]SearchTiming, 0, len(clients))
 	for i, s := range slots {
 		if missingAnswer(s.err) {

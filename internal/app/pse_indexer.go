@@ -26,6 +26,9 @@ func (a *App) buildPSEIndexer() {
 	a.startPSETorrent()
 	a.startPSEXdcc()
 	a.startPSEFTP()
+	if a.indexers != nil {
+		a.indexers.SetSearchObserver(a.rememberSearchReferences)
+	}
 	rt.restartIndexer(a)
 	a.closers = append(a.closers, rt.stopIndexer)
 }

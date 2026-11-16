@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/braedonsaunders/ether/internal/availability"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 	"time"
 )
 
@@ -67,10 +68,14 @@ func (a *App) buildAvailability() error {
 	return err
 }
 func (a *App) discoveredReleases(ctx context.Context, t *core.Title) []core.Release {
-	if a.availability == nil {
-		return nil
+	var out []core.Release
+	if releasedb.LibraryEnabled() && t != nil {
+		out = a.releaseLibrary().Candidates(ctx, t.Key)
 	}
-	return a.availability.Candidates(ctx, t)
+	if a.availability != nil {
+		out = append(out, a.availability.Candidates(ctx, t)...)
+	}
+	return out
 }
 func (a *App) observeRelease(ctx context.Context, t *core.Title, r core.Release) {
 	if a.availability != nil {
@@ -79,6 +84,9 @@ func (a *App) observeRelease(ctx context.Context, t *core.Title, r core.Release)
 }
 
 func (a *App) invalidateRelease(ctx context.Context, id string) {
+	if releasedb.LibraryEnabled() {
+		a.releaseLibrary().Invalidate(ctx, id)
+	}
 	if a.availability != nil {
 		a.availability.Invalidate(ctx, id)
 	}

@@ -322,6 +322,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		}).Handler()
 	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/release-library" {
+			a.pseReleaseLibraryAPI(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/discovery/") {
 			http.StripPrefix("/discovery", discoveryAPI).ServeHTTP(w, r)
 			return
