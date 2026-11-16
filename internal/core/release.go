@@ -125,6 +125,9 @@ type Release struct {
 	// addon requires) can carry the addon's credentials, so they never
 	// leave the server. StreamOrigin is the owner-configured addon origin
 	// (scheme://host:port), the only private address the URL may reach.
+	// StreamDebrid names the provider required to unlock StreamURL, a verified
+	// file link, without adding or checking a magnet. The URL stays server-side.
+	StreamDebrid   string            `json:"streamDebrid,omitempty"`
 	StreamProvider string            `json:"streamProvider,omitempty"` // stored provider connection budget
 	StreamURL      string            `json:"streamUrl,omitempty"`
 	StreamHeaders  map[string]string `json:"streamHeaders,omitempty"`
