@@ -26,8 +26,31 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-local-destinations",
+    id: "2026-11-16-scrob-titles-catalogues",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "Lectures Scrob et catalogues fiabilisés",
+      "More reliable Scrob sessions and catalogues",
+    ],
+    items: [
+      [
+        "Scrob reçoit les arrêts et changements de lecture avec la bonne session, sans doublons ni modification de l’historique.",
+        "Scrob receives stops and playback changes with the correct session, without duplicates or history changes.",
+      ],
+      [
+        "Les titres français avec apostrophes, accents et numéros de partie confirmés par le catalogue sont mieux reconnus, tout en conservant les contrôles d’année et d’identifiants.",
+        "French titles with apostrophes, accents and catalogue-confirmed part numbers match more reliably, while retaining year and identifier checks.",
+      ],
+      [
+        "La synchronisation des catalogues Stremio s’exécute en arrière-plan avec un délai réglable. Son résultat est affiché et le dernier import est conservé en cas d’échec.",
+        "Stremio catalogue synchronization runs in the background with an adjustable timeout. Its result is displayed and the previous import is preserved on failure.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-local-destinations",
+    version: "0.2.37-remix.75.1",
     date: "2026-11-16",
     title: [
       "Dossiers locaux : bibliothèques et collections",
