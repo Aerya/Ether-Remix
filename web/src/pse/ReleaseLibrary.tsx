@@ -49,8 +49,10 @@ const stateLabel = (s: string) =>
 export function ReleaseLibrary({
   titleKey,
   seasons = [],
+  refresh = 0,
 }: {
   titleKey: string;
+  refresh?: number;
   seasons?: { season: number; title: string }[];
 }) {
   const [season, setSeason] = useState<number | null>(null);
@@ -68,7 +70,7 @@ export function ReleaseLibrary({
         `/pse/release-library?key=${encodeURIComponent(key)}`,
         { signal },
       ),
-    [key],
+    [key, refresh],
   );
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<SortKey>("height");

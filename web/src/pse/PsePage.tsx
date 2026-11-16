@@ -1,3 +1,4 @@
+import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStart, QuickStartHint } from "./QuickStart";
 import { XperienceImport } from "./XperienceImport";
@@ -35,7 +36,7 @@ import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
 import { RemixSources } from "./RemixSources";
-import { REMIX_TABS, legacyRemixRoute } from "./navigation";
+import { REMIX_TABS, visibleRemixTabs, legacyRemixRoute } from "./navigation";
 import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { SourceStatistics, StatisticsPeriod } from "../pages/sources/statistics/Statistics";
 import { ImportedSources } from "./ImportedSources";
@@ -254,7 +255,10 @@ function PseSettings() {
     <DomainPage
       title="Ether-Remix"
       base={BASE}
-      tabs={TABS.map((t) => ({ key: t.key, label: L(t.fr, t.en) }))}
+      tabs={visibleRemixTabs(saved.PSE_RELEASE_LIBRARY === "on").map((t) => ({
+        key: t.key,
+        label: L(t.fr, t.en),
+      }))}
       active={tab}
       description={L(
         "Films, séries, animés et musique. Les réglages s'appliquent sans redémarrer.",
@@ -266,6 +270,20 @@ function PseSettings() {
           {tab === "demarrage" ? (
             <>
               <QuickStart indexing={saved.PSE_INDEXER === "on"} />
+              {current.features
+                .filter((f) => f.id === "indexer")
+                .map((f) =>
+                  renderFeature({
+                    ...f,
+                    id: "release-library",
+                    title: { fr: "Bibliothèque de releases · Bêta", en: "Release library · Beta" },
+                    description: {
+                      fr: "Facultatif : activez puis enregistrez pour afficher l’onglet Releases indexées.",
+                      en: "Optional: enable and save to show the Indexed releases tab.",
+                    },
+                    fields: f.fields.filter((fd) => fd.key === "PSE_RELEASE_LIBRARY"),
+                  }),
+                )}
               <DiscoveryCardsSetup />
             </>
           ) : null}
@@ -424,10 +442,12 @@ function PseSettings() {
               <ThemeLibraries exceptionsOnly />
             </>
           ) : null}
+          {tab === "releases" ? <ReleaseLibraryDashboard /> : null}
           {tab === "demande" ? <VostfrTitles /> : null}
           {tab === "medias-locaux" && <LocalMediaHealth />}
           {tab === "statistiques" ? (
             <>
+              {saved.PSE_RELEASE_LIBRARY === "on" && <ReleaseLibraryDashboard compact />}
               <nav
                 className="flex flex-wrap gap-2"
                 aria-label={L("Vues statistiques", "Statistics views")}

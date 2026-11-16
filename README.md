@@ -107,7 +107,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lire, configurez la voie adaptée : compte débrideur, client BitTorrent ou addon Stremio comme Seedstrem. Seedstrem utilise son propre client torrent. Pour Usenet, Remix lit via son moteur NNTP et vos fournisseurs Usenet ; SABnzbd/NZBGet ne sont pas des clients externes intégrés.
 
-- **Démarrage rapide** : un onglet permanent guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Un rappel dans les statistiques signale l’indexation désactivée.
+- **Démarrage rapide** : un onglet permanent guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Un rappel dans les statistiques signale l’indexation désactivée. La bibliothèque de releases en bêta peut aussi être activée ici, puis enregistrée.
 - **Console Remix** : réglages regroupés dans `/ether/remix`, blocs repliables fermés par défaut ; iBroadcast rejoint les fournisseurs musicaux et les informations Subsonic restent dans Contenus → Musique.
 - **IPTV et VOD Xtream** : chaînes en direct, guide EPG et import des films et séries du fournisseur.
 - **Configuration commune à Ether et Remix** : addons Stremio, indexeurs, services Usenet, comptes debrid, sources musicales et IPTV réunis dans un même espace.
@@ -264,3 +264,5 @@ Inspirations : [Remux](https://github.com/lostb1t/remux), [Eclipse](https://ecli
 [Licence](LICENSE) · [Informations légales](LEGAL.md) · [Composants tiers](THIRD_PARTY_NOTICES.md)
 
 **Bibliothèque de releases (Bêta, désactivée par défaut)** : dans Remix → Indexation, activez la conservation chiffrée des références pour les réutiliser à la lecture et en secours. Chaque fiche du catalogue propose les releases indexées, triables par résolution, taille, codecs, source, langues et dates. Les fichiers Alkolites gardent leur lecture AllDebrid sans magnet. [Fonctionnement et limites](docs/pse/RELEASE_LIBRARY.fr.md).
+
+Un onglet **Releases indexées**, visible lorsque la bêta est activée, permet de parcourir les contenus et leurs releases, de suivre les recherches en cours et les derniers résultats. Les compteurs sont aussi affichés dans **Statistiques**. Le réglage est accessible dans **Démarrage rapide** et **Indexation**, avec enregistrement explicite.

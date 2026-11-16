@@ -9,6 +9,7 @@ export const REMIX_TABS = [
     features: ["sfr", "seerrcatalog", "torrent", "torrent2", "torrent3", "xdcc", "ftp"],
   },
   { key: "indexation", fr: "Indexation", en: "Indexing", features: ["indexer"] },
+  { key: "releases", fr: "Releases indexées", en: "Indexed releases", features: [] },
   { key: "lecture", fr: "Lecture et priorités", en: "Playback & priorities", features: [] },
   {
     key: "langues",
@@ -64,4 +65,8 @@ export function RemixSourcesRedirect() {
   const { tab } = useParams();
   const location = useLocation();
   return <Navigate replace to={sourcesHref(tab, location.search) + location.hash} />;
+}
+
+export function visibleRemixTabs(releaseLibrary: boolean) {
+  return REMIX_TABS.filter((t) => t.key !== "releases" || releaseLibrary);
 }

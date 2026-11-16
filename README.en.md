@@ -111,7 +111,7 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
 - **Self-hosted Seedstrem**: add its manifest from Sources → Stremio; the addon list opens after saving so you can find and edit it. Prowlarr search and playback during download via qBittorrent or Deluge; files stay on the Seedstrem host, with no volume to mount in Remix. Downloads start only for playback; optional last-resort playback keeps searches available for indexing. [Setup and connection](docs/pse/SEEDSTREM.en.md).
 - **Stremio catalogues**: background manual synchronization, visible status and retention of the last import on failure.
-- **Quick start**: a permanent tab guides initial setup — sources, video indexing, languages and quality, statistics and clients. A reminder in statistics highlights disabled indexing.
+- **Quick start**: a permanent tab guides initial setup — sources, video indexing, languages and quality, statistics and clients. A reminder in statistics highlights disabled indexing. The release library beta can also be enabled and saved here.
 - **Remix console**: settings under `/ether/remix`, collapsible sections closed by default; iBroadcast sits alongside music providers, with Subsonic information under Content → Music.
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
 - **Temporary indexer outages**: reuse results expired for less than 24 hours without renewing their validity or bypassing playback checks. Access errors and quotas remain enforced.
@@ -264,3 +264,5 @@ Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclip
 [License](LICENSE) · [Legal information](LEGAL.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 **Release library (Beta, disabled by default)**: enable encrypted reference retention under Remix → Indexing to reuse candidates during playback and fallback. Catalogue details show indexed releases sortable by resolution, size, codecs, source, languages and dates. Alkolites files retain their AllDebrid playback path without magnets. [Behavior and limits](docs/pse/RELEASE_LIBRARY.en.md).
+
+When enabled, the **Indexed releases** tab lets you browse content and releases and monitor active searches and recent results. Counters also appear in **Statistics**. Enable the option in **Quick start** or **Indexing**, then save.

@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-release-library-beta",
+    id: "2026-11-16-release-library-dashboard",
     version: "current",
+    date: "2026-11-16",
+    title: ["Suivi des releases indexées", "Indexed release monitoring"],
+    items: [
+      [
+        "Onglet dédié lorsque la bêta est activée : contenus, releases triables et recherches en cours. Compteurs dans Statistiques et activation depuis Démarrage rapide.",
+        "Dedicated tab when beta is enabled: content, sortable releases and active searches. Counters in Statistics and activation from Quick start.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-release-library-beta",
+    version: "0.2.37-remix.96.1",
     date: "2026-11-16",
     title: ["Bibliothèque de releases en bêta", "Release library beta"],
     items: [
