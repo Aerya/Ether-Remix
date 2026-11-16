@@ -151,6 +151,7 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 
 ### ![](https://api.iconify.design/lucide/library.svg?color=%2314b8a6&width=24&height=24) Des bibliothèques et collections personnalisées
 
+- **Import Xperience** : dans Contenus et bibliothèques, collez votre manifeste [Xperience](https://xperience-app.com/), choisissez les catalogues et leurs paramètres, puis créez des bibliothèques, des collections ou les deux. Classement de la source, actualisation quotidienne et filtres Remix conservés. [Mode d’emploi](docs/pse/GUIDE.fr.md#import-xperience).
 - **Configuration rapide française** : créez en une action vos bibliothèques Films, Séries et Animes depuis les trois listes JukeBox proposées, ou choisissez ses autres listes (documentaires, studios…). Collections seules possibles, mise à jour quotidienne et tri par date de sortie décroissante. Bibliothèques publiées dans Plex, Jellyfin et Emby ; vos sources et critères de langue restent appliqués. [Mode d’emploi](docs/pse/GUIDE.fr.md#configuration-rapide-jukebox).
 - Organisez vos bibliothèques Plex par **service, studio, animés, documentaires, concerts ou spectacles**. Les concerts combinent des mots-clés de captation et le genre Musique pour limiter les fictions.
 - Composez leurs rangées avec des collections TMDB, des catalogues Stremio importés et des modèles prêts à l’emploi.

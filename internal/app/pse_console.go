@@ -31,6 +31,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/pse/statistics"
 	"github.com/braedonsaunders/ether/internal/pse/submaker"
 	"github.com/braedonsaunders/ether/internal/pse/themes"
+	"github.com/braedonsaunders/ether/internal/pse/xperience"
 )
 
 // pseRuntime regroupe l'état des ajouts PSE d'une instance d'App, sans
@@ -309,7 +310,15 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 	if a.collections != nil && a.libraries != nil {
 		jukeboxAPI = jukebox.New(a.collections, a.libraries).Handler()
 	}
+	var xperienceAPI http.Handler = http.NotFoundHandler()
+	if a.collections != nil && a.libraries != nil && a.pluginManager() != nil {
+		xperienceAPI = xperience.New(a.collections, a.libraries, xperienceBackend{app: a}).Handler()
+	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/xperience/") {
+			http.StripPrefix("/xperience", xperienceAPI).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/jukebox/") {
 			http.StripPrefix("/jukebox", jukeboxAPI).ServeHTTP(w, r)
 			return
