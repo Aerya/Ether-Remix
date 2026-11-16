@@ -166,9 +166,10 @@ var tierTouchSources = []touchSource{
 // the titles behind them would keep every title an Xtream client ever
 // listed, which is the whole mirror.
 var tierUntouchedTables = []string{
-	"remix_submaker_budget", // Daily counters, no title references.
-	"remix_submaker_scopes", // Library/collection identifiers, no title keys.
-	"remix_quality_config",  // Release policy configuration, no viewer title references.
+	"pse_local_destinations", // Folder routing marker only; memberships carry title references.
+	"remix_submaker_budget",  // Daily counters, no title references.
+	"remix_submaker_scopes",  // Library/collection identifiers, no title keys.
+	"remix_quality_config",   // Release policy configuration, no viewer title references.
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
 	// Startup upgrade markers (credential conversion progress).

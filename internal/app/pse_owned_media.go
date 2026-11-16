@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -154,6 +155,13 @@ func (a *App) publishLocalMedia(ctx context.Context, r localmedia.Root, files []
 	if err = th.Reload(ctx); err != nil {
 		return err
 	}
+	var configured int
+	if err = a.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pse_local_destinations WHERE root_id=?", r.ID).Scan(&configured); err != nil {
+		return err
+	}
+	if configured > 0 {
+		return nil
+	}
 	for _, lib := range th.Libraries() {
 		for _, id := range lib.Collections {
 			if id == saved.ID {
@@ -181,12 +189,28 @@ func (a *App) removeLocalMedia(ctx context.Context, id string) error {
 		}
 		for _, sp := range specs {
 			if sp.TemplateID != "remix-local-"+id {
+				if hasLocalSource(sp, id) {
+					sp.Sources = slices.DeleteFunc(sp.Sources, func(src core.CollectionSource) bool { return src.Kind == "localFiles" && src.Label == id })
+					if len(sp.Sources) == 0 {
+						sp.Enabled = false
+						sp.Sources = []core.CollectionSource{{Kind: "localFiles", Label: id}}
+					}
+					if _, err = a.collections.UpdateSpec(ctx, sp.ID, sp); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if th := a.pseThemes(); th != nil {
 				for _, lib := range th.Libraries() {
-					if len(lib.Collections) == 1 && lib.Collections[0] == sp.ID {
-						if err = th.Delete(ctx, lib.ID); err != nil {
+					if slices.Contains(lib.Collections, sp.ID) {
+						lib.Collections = slices.DeleteFunc(lib.Collections, func(cid string) bool { return cid == sp.ID })
+						if len(lib.Collections) == 0 {
+							err = th.Delete(ctx, lib.ID)
+						} else {
+							_, err = th.Update(ctx, lib)
+						}
+						if err != nil {
 							return err
 						}
 					}
@@ -195,6 +219,11 @@ func (a *App) removeLocalMedia(ctx context.Context, id string) error {
 			if err = a.collections.DeleteSpec(ctx, sp.ID); err != nil {
 				return err
 			}
+		}
+	}
+	if th := a.pseThemes(); th != nil {
+		if err := th.Reload(ctx); err != nil {
+			return err
 		}
 	}
 	a.reloadOwnedMusic()
@@ -300,6 +329,25 @@ func (a *App) ownedMediaAPI() http.Handler {
 			}
 			json.NewEncoder(w).Encode(out)
 			return
+		case "GET /local/destinations":
+			data, err := a.localDestinations(ctx, r.URL.Query().Get("id"))
+			if err != nil {
+				fail(err)
+				return
+			}
+			json.NewEncoder(w).Encode(data)
+			return
+		case "PUT /local/destinations":
+			var b localDestinationEdit
+			if err := decode(&b); err != nil {
+				fail(err)
+				return
+			}
+			if err := rt.local.Configure(ctx, b.RootID, func(root localmedia.Root) error { return a.editLocalDestination(ctx, root, b) }); err != nil {
+				fail(err)
+				return
+			}
+			a.pseLangExemptChanged()
 		case "GET /local/health":
 			health, err := rt.local.Health(ctx)
 			if err != nil {

@@ -97,7 +97,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 - **Santé des médias locaux** : onglet dédié aux diagnostics des dossiers, fichiers absents/non identifiés, doublons potentiels et tailles par dossier. Les entrées restent au catalogue si un montage devient vide ou inaccessible ; aucun fichier supprimé.
 - **Dossiers de l’hôte ou montages réseau** : exposez-les par des volumes Docker en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer vos fichiers.
 - **Rapprochement avec le catalogue** : recherche dans les fiches déjà présentes dans Remix, puis TMDB ; films et épisodes identifiés réutilisent leurs fiches. Sans correspondance fiable, les vidéos personnelles restent affichées telles quelles.
-- **Bibliothèques et collections par dossier**, privées par défaut ; partage facultatif avec certains spectateurs ou tous. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
+- **Bibliothèques et collections par dossier** : rattachez vos dossiers vidéo aux bibliothèques et collections personnalisées depuis Sources → Fichiers locaux. Privés par défaut, avec partage facultatif ; les destinations respectent les accès des dossiers. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
 
 <a id="nav-des-sources-reunies-et-une-recherche-anticipee"></a>
 

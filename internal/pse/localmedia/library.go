@@ -30,6 +30,7 @@ const AudioBase int64 = 4_000_000_000_000
 const Span int64 = 1_000_000_000_000
 
 func init() {
+	store.Register("pse_local_destinations", 1, `CREATE TABLE pse_local_destinations(root_id TEXT PRIMARY KEY);`)
 	store.Register("pse_local_media", 1, `
 CREATE TABLE pse_local_roots(id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, kind TEXT NOT NULL);
 CREATE TABLE pse_local_files(id INTEGER PRIMARY KEY, root_id TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL, modified INTEGER NOT NULL, data TEXT NOT NULL, title_key INTEGER NOT NULL DEFAULT 0, UNIQUE(root_id,path));
@@ -162,6 +163,22 @@ func (l *Library) Add(ctx context.Context, r Root) error {
 	}
 	return tx.Commit()
 }
+
+// Configure serializes destination edits with scans and source removal.
+func (l *Library) Configure(ctx context.Context, id string, fn func(Root) error) error {
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
+	roots, err := l.Roots(ctx)
+	if err != nil {
+		return err
+	}
+	for _, root := range roots {
+		if root.ID == id && root.Kind == "video" && root.Access.OwnerID == core.CatalogViewerID(ctx) {
+			return fn(root)
+		}
+	}
+	return errors.New("dossier vidéo introuvable ou appartenant à un autre spectateur")
+}
 func (l *Library) Remove(ctx context.Context, id string) error {
 	l.opMu.Lock()
 	defer l.opMu.Unlock()
@@ -171,6 +188,9 @@ func (l *Library) Remove(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_local_files WHERE root_id=?", id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_local_destinations WHERE root_id=?", id); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM pse_local_roots WHERE id=?", id); err != nil {
