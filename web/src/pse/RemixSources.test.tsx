@@ -45,9 +45,19 @@ vi.mock("../components/Drawer", () => ({
 }));
 vi.mock("../components/addons/AddAddonDrawer", () => ({ AddAddonDrawer: () => null }));
 vi.mock("../pages/sources/Indexers", () => ({
-  IndexerList: ({ addRequest }: { addRequest?: { type: string; name?: string } | null }) => (
+  IndexerList: ({
+    addRequest,
+    onSaved,
+  }: {
+    addRequest?: { type: string; name?: string } | null;
+    onSaved?: (name: string) => void;
+  }) => (
     <>
-      <p>Stremio fixtures</p>
+      <details data-testid="stremio-panel">
+        <summary>Stremio fixtures</summary>
+        <p>Saved sources</p>
+      </details>
+      <button onClick={() => onSaved?.("Seedstrem")}>Save addon fixture</button>
       {addRequest ? (
         <output data-testid="add-source">
           {addRequest.type}:{addRequest.name}
@@ -163,4 +173,16 @@ it("offers Seedstrem through the existing Stremio form without a public instance
   fireEvent.click(screen.getByRole("button", { name: "Add my Seedstrem instance" }));
   expect(screen.getByTestId("add-source").textContent).toBe("stremio:Seedstrem");
   expect(screen.getByTestId("location").textContent).toBe("?source=stremio");
+});
+
+it("reveals the source list immediately after saving an addon", () => {
+  render(
+    <MemoryRouter initialEntries={["/ether/remix/sources?source=stremio"]}>
+      <RemixSources music={null} indexing={null} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("stremio-panel")).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByRole("button", { name: "Save addon fixture" }));
+  expect(screen.getByTestId("stremio-panel")).toHaveAttribute("open");
+  expect(screen.getByRole("status")).toHaveTextContent("Seedstrem");
 });

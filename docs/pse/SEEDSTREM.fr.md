@@ -16,6 +16,8 @@ Le trafic BitTorrent sort du **client torrent**. Un VPN configuré uniquement de
 
 Dans **Sources → Stremio → Seedstrem**, cliquez sur **Ajouter mon instance Seedstrem**, puis collez son manifeste, par exemple `https://seedstrem.example/ACCES_PRIVE/stremio/manifest.json`. Enregistrez l’addon et réglez sa priorité comme pour les autres sources Stremio. Le manifeste peut aussi être ajouté au formulaire générique.
 
+Après enregistrement, **Modules Stremio** se déplie automatiquement et affiche la source. Le bloc **Seedstrem** reste une aide à l’ajout ; les modifications et suppressions se font dans la liste des modules.
+
 Les recherches et la lecture empruntent l’instance configurée. Remix conserve les liens Seedstrem en HTTP : il ne transforme pas le magnet contenu dans ces liens en une demande à ses comptes débrideurs. Aucun dossier Seedstrem n’a besoin d’être monté dans Remix ; le client qBittorrent/Deluge et les fichiers peuvent se trouver sur une autre machine.
 
 ## Quand le téléchargement démarre-t-il ?

@@ -16,6 +16,8 @@ BitTorrent traffic leaves through the **torrent client**. A VPN in front of Remi
 
 Under **Sources → Stremio → Seedstrem**, click **Add my Seedstrem instance** and paste its manifest, for example `https://seedstrem.example/PRIVATE_ACCESS/stremio/manifest.json`. Save the addon and adjust its priority like any other Stremio source. The generic addon form also works.
 
+After saving, **Stremio addons** expands automatically and displays the source. The **Seedstrem** block remains an addition guide; edit or remove the instance in the addon list.
+
 Searches and playback use the configured instance. Remix preserves Seedstrem HTTP links instead of converting their embedded magnet into a request to its debrid accounts. Remix needs no Seedstrem volume; qBittorrent/Deluge and the files can live on another machine.
 
 ## When does downloading start?

@@ -26,8 +26,23 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-16-seedstrem-sources",
+    id: "2026-11-16-source-saved-visible",
     version: "current",
+    date: "2026-11-16",
+    title: [
+      "Sources Stremio visibles après enregistrement",
+      "Stremio sources visible after saving",
+    ],
+    items: [
+      [
+        "Après l’ajout ou la modification d’un addon, la liste Modules Stremio s’ouvre et confirme la source enregistrée, sans recharger la page.",
+        "After adding or editing an addon, the Stremio addon list opens and confirms the saved source without reloading the page.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-16-seedstrem-sources",
+    version: "0.2.37-remix.78.1",
     date: "2026-11-16",
     title: ["Seedstrem dans les sources Stremio", "Seedstrem in Stremio sources"],
     items: [
