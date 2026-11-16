@@ -239,6 +239,8 @@ Chaque ajout dans **Titres en VOSTFR à la demande** place aussi le titre en tê
 
 Le bouton **Tester** de DMM utilise désormais un échantillon du catalogue DMM, indépendamment des classements Deezer. Il distingue les étapes catalogue, compte, cache et lien audio. Les logs `component=pse-music source=dmm` donnent les compteurs et les causes d’échec sans enregistrer de clé ni d’URL de lecture.
 
+Les sources Xtream peuvent aussi importer les films et séries VOD du fournisseur : activez l’option VOD de la source pour les inclure.
+
 Dans **Sources → IPTV**, le bouton **Modifier** ouvre le fournisseur sélectionné. La création, l’enregistrement et la fermeture de son formulaire conservent la catégorie IPTV. Les liens provenant de Télévision en direct ouvrent ce même éditeur.
 
 Dans **Sources → Streaming musical**, les réglages sont regroupés par famille : **Eclipse** (manifests et registre), **DMM / Real-Debrid** (catalogue DMM, recherche par indexeurs et comptes partagés), puis **Autres sources** (AllDebrid, TorBox, Audius et HiFi API). Le diagnostic audio teste toutes les familles depuis un bloc distinct.

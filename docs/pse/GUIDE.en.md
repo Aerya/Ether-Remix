@@ -239,6 +239,8 @@ Each addition under **On-demand subtitled titles** also queues a priority search
 
 The DMM **Test** button now samples DMM’s own catalogue instead of Deezer charts. It distinguishes catalogue, account, cache and audio-link stages. Logs tagged `component=pse-music source=dmm` report counts and failure categories without keys or playback URLs.
 
+Xtream sources can also import the provider’s VOD movies and series: enable the source’s VOD option to include them.
+
 Under **Sources → IPTV**, **Edit** opens the selected provider. Creating, saving and closing its form keeps the IPTV category selected. Links from Live TV open the same editor.
 
 Under **Sources → Music streaming**, settings are grouped into **Eclipse** (manifests and registry), **DMM / Real-Debrid** (DMM catalogue, indexer searches and shared accounts), and **Other sources** (AllDebrid, TorBox, Audius and HiFi API). A separate audio diagnostic tests all families.

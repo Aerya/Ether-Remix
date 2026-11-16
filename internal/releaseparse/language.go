@@ -266,6 +266,9 @@ func parseSubtitleLanguages(spaced string, floor int) []string {
 // multiAudioAfter reports a MULTI audio tag after floor. "Multi-Subs" and
 // "MULTi SUB" declare subtitles, not audio.
 func multiAudioAfter(spaced string, floor int) bool {
+	if floor >= len(spaced) {
+		return false
+	}
 	upper := upperASCII(spaced)
 	for from := max(floor+1, 0); ; {
 		i := tokenIndex(upper[from:], "MULTI")
@@ -290,6 +293,9 @@ func multiAudioAfter(spaced string, floor int) bool {
 // local dub + original language (LanguageDual) and does not imply English on
 // a non-English film.
 func dualAudioKindAfter(spaced string, floor int) string {
+	if floor >= len(spaced) {
+		return ""
+	}
 	upper := upperASCII(spaced)
 	hasBareDual := false
 	for from := max(floor+1, 0); ; {
