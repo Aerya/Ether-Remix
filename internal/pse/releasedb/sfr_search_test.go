@@ -65,7 +65,7 @@ func TestSFRExpiredProofSchedulesBoundedRefresh(t *testing.T) {
 	e := newFreshEnv(t)
 	key := core.MovieKey(42)
 	sfrCatalog(t, e, "movie", key)
-	row := sfrRow{ID: "a", Name: "Film.FRENCH.1080p", Hash: strings.Repeat("a", 40), Media: "movie", TMDB: 42, Cached: []string{"realdebrid"}, CacheUntil: e.now.Add(-time.Minute).Unix()}
+	row := sfrRow{ID: "a", Name: "Film.2020.FRENCH.1080p", Hash: strings.Repeat("a", 40), Media: "movie", TMDB: 42, Cached: []string{"realdebrid"}, CacheUntil: e.now.Add(-time.Minute).Unix()}
 	if _, err := e.s.sfrSave(e.ctx, []sfrRow{row}); err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ func TestLibraryEncryptedReferencesLifecycle(t *testing.T) {
 	l := Library{Store: NewStore(db), Signature: "source-a", Now: func() time.Time { return now }, Seal: func(s string) (string, error) { return cfg.Seal("test-library", []byte(s)) }, Open: func(s string) (string, error) { b, e := cfg.Unseal("test-library", s); return string(b), e }}
 	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "off"}))
 	key := core.EpisodeKey(42, 2, 3)
-	r := core.Release{ID: "one", Name: "Film.FRENCH.1080p", Protocol: core.ProtocolHTTP, StreamURL: "https://example.test/secret-file-token", StreamHeaders: map[string]string{"Authorization": "private-header"}, PubDate: now.Add(-24 * time.Hour), Info: core.ReleaseInfo{Height: 1080}}
+	r := core.Release{ID: "one", Name: "Film.2020.FRENCH.1080p", Protocol: core.ProtocolHTTP, StreamURL: "https://example.test/secret-file-token", StreamHeaders: map[string]string{"Authorization": "private-header"}, PubDate: now.Add(-24 * time.Hour), Info: core.ReleaseInfo{Height: 1080}}
 	if err = l.Save(ctx, key, []core.Release{r}); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestLibraryEncryptedReferencesLifecycle(t *testing.T) {
 	if err = l.Save(ctx, key, []core.Release{r}); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(2 * time.Hour)
+	now = now.Add(90 * 24 * time.Hour)
 	got = l.Candidates(ctx, key)
 	if len(got) != 1 || got[0].StreamDebrid != "alldebrid" || !got[0].StreamOnDemand {
 		t.Fatal("Alko routing lost")
@@ -91,7 +91,7 @@ func TestLibrarySFRImportPreservesVerifiedFile(t *testing.T) {
 		}
 		got = append(got, rs...)
 	}
-	_, err := e.s.sfrSave(e.ctx, []sfrRow{{ID: "file", Alko: true, Name: "Film.FRENCH.1080p", Size: 1000, TMDB: 42, Media: "movie", AlkoURL: "https://alldebrid.com/f/test"}})
+	_, err := e.s.sfrSave(e.ctx, []sfrRow{{ID: "file", Alko: true, Name: "Film.2020.FRENCH.1080p", Size: 1000, TMDB: 42, Media: "movie", AlkoURL: "https://alldebrid.com/f/test"}})
 	if err != nil || len(got) != 1 || got[0].StreamDebrid != "alldebrid" || got[0].MagnetURL != "" {
 		t.Fatal(err, got)
 	}
@@ -101,7 +101,7 @@ func TestLibraryPreservesSameHashAcrossSources(t *testing.T) {
 	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"}))
 	identity := func(s string) (string, error) { return s, nil }
 	l := Library{Store: NewStore(store.OpenTest(t)), Seal: identity, Open: identity, Signature: "sources"}
-	rs := []core.Release{{ID: "same-hash", IndexerID: "a", MagnetURL: "magnet:a"}, {ID: "same-hash", IndexerID: "b", MagnetURL: "magnet:b"}}
+	rs := []core.Release{{ID: "same-hash", IndexerID: "a", Protocol: core.ProtocolTorrent, InfoHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {ID: "same-hash", IndexerID: "b", Protocol: core.ProtocolTorrent, InfoHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	if err := l.Save(t.Context(), core.MovieKey(42), rs); err != nil {
 		t.Fatal(err)
 	}

@@ -193,7 +193,7 @@ func sfrFirstEpisode(seasons, episodes string) bool {
 
 func sfrSignature(s SFRSettings) string {
 	sum := sha256.Sum256([]byte(s.URL))
-	return "cache-proof-v2|" + strconv.FormatBool(s.Private) + "|" + hex.EncodeToString(sum[:8])
+	return "strict-reference-v3|" + strconv.FormatBool(s.Private) + "|" + hex.EncodeToString(sum[:8])
 }
 
 // État conservé dans pse_state, pour reprendre après un redémarrage.
@@ -370,15 +370,16 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 			continue
 		}
 		rel := core.Release{ID: strings.ToLower(r.Hash), Name: r.Name, Size: r.Size, Indexer: sfrName,
-			Protocol: core.ProtocolTorrent, TitleIDs: core.IDs{TMDB: r.TMDB}, Info: releaseparse.Parse(r.Name)}
+			Protocol: core.ProtocolTorrent, InfoHash: strings.ToLower(r.Hash), TitleIDs: core.IDs{TMDB: r.TMDB}, Info: releaseparse.Parse(r.Name)}
 		if r.Alko || r.AlkoURL != "" {
 			if !core.ValidAllDebridFileURL(r.AlkoURL) || !sfrAlkoLanguage(r.Name) {
 				continue
 			}
+			rel.StreamURL, rel.StreamDebrid = r.AlkoURL, "alldebrid"
 			rel.ID, rel.Protocol, rel.Indexer = "sfr-alko:"+r.ID, core.ProtocolHTTP, "StreamFusion Reborn (Alkolites)"
 		}
 		request, known := AssociationRequest(requests, key, season, episode)
-		if !known || releaseparse.AssociationReason(request, rel) != "" {
+		if !known || releaseparse.AssociationReason(request, rel) != "" || releaseparse.ReferenceReason(rel) != "" {
 			continue
 		}
 		saved := FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, r.Cached)

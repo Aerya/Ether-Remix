@@ -1,7 +1,12 @@
 package releaseparse
 
-import "slices"
+import (
+	"regexp"
+	"strings"
+)
 import "github.com/braedonsaunders/ether/internal/core"
+
+var associationYearRange = regexp.MustCompile(`(?:19|20)\d{2}[ ._-]*[-–][ ._-]*(?:19|20)\d{2}`)
 
 // AssociationReason validates the identity of a source answer before indexing.
 // Query identifiers (including identifiers echoed by addons) are not evidence.
@@ -19,6 +24,9 @@ func AssociationReason(req core.SearchRequest, r core.Release) string {
 		return "unknown_media"
 	}
 	if req.Type == core.TypeMovie {
+		if associationYearRange.MatchString(r.Name) {
+			return "ambiguous_collection"
+		}
 		if len(info.Episodes) > 0 || info.FullSeason || r.Category/1000 == 5 {
 			return "media_type_conflict"
 		}
@@ -28,36 +36,46 @@ func AssociationReason(req core.SearchRequest, r core.Release) string {
 	names := append([]string{req.Title, req.OriginalTitle}, req.AlternativeTitles...)
 	titleOK := false
 	for _, name := range names {
-		if name != "" && TitleMatches(info, name) {
+		if name != "" && associationTitleMatches(info.Title, name) {
 			titleOK = true
 			break
 		}
 	}
 	if req.Type == core.TypeMovie {
-		titleOK = titleOK || MovieTitleMatches(info, names)
+		// No fuzzy subtitle, region or pack fallback for persistent associations.
 		// Bilingual filenames may contain both complete catalogue titles.
 		if req.Title != "" && req.OriginalTitle != "" && !TitlesMatch(req.Title, req.OriginalTitle) {
-			titleOK = titleOK || TitleMatches(info, req.Title+" "+req.OriginalTitle) || TitleMatches(info, req.OriginalTitle+" "+req.Title)
+			titleOK = titleOK || associationTitleMatches(info.Title, req.Title+" "+req.OriginalTitle) || associationTitleMatches(info.Title, req.OriginalTitle+" "+req.Title)
 		}
 	}
-	if !same && !titleOK {
+	if !titleOK {
 		return "unconfirmed_title"
 	}
 	if req.Type == core.TypeMovie {
-		if !YearMatches(info.Year, req.Year) {
+		if info.Year != 0 && req.Year != 0 && info.Year != req.Year {
 			return "year_conflict"
 		}
-		if !same && (info.Year == 0 || req.Year == 0) {
+		if info.Year == 0 || req.Year == 0 {
 			return "unconfirmed_year"
 		}
 	} else {
 		if !SeriesYearMatches(EpisodeSeriesYear(r.Name, info.Year), req.Year) {
 			return "year_conflict"
 		}
-		pack := info.FullSeason && slices.Contains(info.Seasons, req.Season) && (len(info.Episodes) == 0 || slices.Contains(info.Episodes, req.Episode))
-		if req.Type == core.TypeEpisode && !pack && !EpisodeMatchesNumbering(info, req.Season, req.Episode, AnimeSearchEpisode(req)) {
+		if !same && (req.Year == 0 || EpisodeSeriesYear(r.Name, info.Year) == 0) {
+			return "unconfirmed_series_year"
+		}
+		if req.Type == core.TypeEpisode && (info.FullSeason || len(info.Episodes) != 1 || !EpisodeMatchesNumbering(info, req.Season, req.Episode, AnimeSearchEpisode(req))) {
 			return "episode_conflict"
 		}
 	}
 	return ""
+}
+
+// Keep all title words: a matching ID cannot authorize a different subtitle,
+// territory, sequel or collection. Punctuation and spacing are not identity.
+func associationTitleMatches(a, b string) bool {
+	a = strings.ReplaceAll(NormalizeTitle(a), " ", "")
+	b = strings.ReplaceAll(NormalizeTitle(b), " ", "")
+	return a != "" && a == b
 }

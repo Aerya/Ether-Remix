@@ -47,7 +47,7 @@ func TestActivityObservesRunningSearchAndSanitizesErrors(t *testing.T) {
 
 func TestSourceStatsSeparateRequestsOutcomesAndInventory(t *testing.T) {
 	e := newFreshEnv(t)
-	e.stub.rels["a"] = []core.Release{frRelease("Film.FRENCH.1080p-A")}
+	e.stub.rels["a"] = []core.Release{frRelease("Film.2020.FRENCH.1080p-A")}
 	e.stub.errs["a"] = errors.New("partial")
 	e.stub.errs["b"] = core.ErrBudgetExhausted
 	e.index(t, 1)

@@ -54,11 +54,16 @@ func (f *sfrFake) wasAsked(id int64) bool {
 
 func sfrCatalog(t *testing.T, e *freshEnv, typ string, keys ...core.RatingKey) {
 	t.Helper()
-	if _, err := e.s.st.db.Exec(`CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY,type TEXT,tmdb_id INTEGER,popularity REAL NOT NULL DEFAULT 0, imdb TEXT NOT NULL DEFAULT '',tvdb INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL DEFAULT 'Film',original_title TEXT NOT NULL DEFAULT '',year INTEGER NOT NULL DEFAULT 0,language TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS catalog_alt_titles(key INTEGER,title TEXT)`); err != nil {
+	if _, err := e.s.st.db.Exec(`CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY,type TEXT,tmdb_id INTEGER,popularity REAL NOT NULL DEFAULT 0, imdb TEXT NOT NULL DEFAULT '',tvdb INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL DEFAULT 'Film',original_title TEXT NOT NULL DEFAULT '',year INTEGER NOT NULL DEFAULT 2020,language TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS catalog_alt_titles(key INTEGER,title TEXT)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range keys {
 		if _, err := e.s.st.db.Exec(`INSERT INTO catalog_titles(key,type,tmdb_id) VALUES(?,?,?)`, int64(k), typ, int64(k)%sfrTestKeyBase); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if typ == "show" {
+		if _, err := e.s.st.db.Exec(`UPDATE catalog_titles SET title='Serie' WHERE type='show'`); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -89,8 +94,8 @@ func TestSFRCycle(t *testing.T) {
 	movie := core.MovieKey(42)
 	sfrCatalog(t, e, "movie", movie)
 	fake := &sfrFake{rows: []sfrRow{
-		{ID: "a", Name: "Film.2020.MULTi.VFF.1080p.WEB.x264-GRP", Hash: "ABC", Media: "movie", TMDB: 42, Stamp: 1000000},
-		{ID: "b", Name: "Inconnu.2020.FRENCH.1080p", Hash: "DEF", Media: "movie", TMDB: 7, Stamp: 2000000},
+		{ID: "a", Name: "Film.2020.MULTi.VFF.1080p.WEB.x264-GRP", Hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Media: "movie", TMDB: 42, Stamp: 1000000},
+		{ID: "b", Name: "Inconnu.2020.FRENCH.1080p", Hash: "dddddddddddddddddddddddddddddddddddddddd", Media: "movie", TMDB: 7, Stamp: 2000000},
 	}}
 	e.s.openSFR = func(context.Context, string) (sfrReader, error) { return fake, nil }
 	cfg := SFRSettings{Enabled: true, URL: "postgres://x"}
@@ -120,8 +125,8 @@ func TestSFRCatchesUpLateTitle(t *testing.T) {
 	early, late := core.MovieKey(42), core.MovieKey(7)
 	sfrCatalog(t, e, "movie", early)
 	fake := &sfrFake{rows: []sfrRow{
-		{ID: "a", Name: "Tardif.2020.MULTi.VFF.1080p.WEB.x264-GRP", Hash: "DEF", Media: "movie", TMDB: 7, Stamp: 1000000},
-		{ID: "b", Name: "Film.2020.MULTi.VFF.1080p.WEB.x264-GRP", Hash: "ABC", Media: "movie", TMDB: 42, Stamp: 2000000},
+		{ID: "a", Name: "Film.2020.MULTi.VFF.1080p.WEB.x264-GRP", Hash: "dddddddddddddddddddddddddddddddddddddddd", Media: "movie", TMDB: 7, Stamp: 1000000},
+		{ID: "b", Name: "Film.2020.MULTi.VFF.1080p.WEB.x264-GRP", Hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Media: "movie", TMDB: 42, Stamp: 2000000},
 	}}
 	cfg := sfrUse(e, fake)
 	if err := e.s.sfrCycle(e.ctx, cfg); err != nil {
@@ -181,17 +186,17 @@ func TestSFRCatchUpKeepsFirstEpisodeOnly(t *testing.T) {
 	show := core.ShowKey(9)
 	sfrCatalog(t, e, "show", show)
 	fake := &sfrFake{rows: []sfrRow{
-		{ID: "a", Name: "Serie.S02E03.MULTi.1080p.WEB.x264-GRP", Hash: "AAA", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[2]", Episodes: "[3]"},
-		{ID: "b", Name: "Serie.S01E01.MULTi.1080p.WEB.x264-GRP", Hash: "BBB", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[1]", Episodes: "[1]"},
-		{ID: "c", Name: "Serie.S01.MULTi.1080p.WEB.x264-GRP", Hash: "CCC", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[1]"},
-		{ID: "d", Name: "Serie.S01E02.MULTi.1080p.WEB.x264-GRP", Hash: "DDD", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[1]", Episodes: "[2]"},
+		{ID: "a", Name: "Serie.S02E03.MULTi.1080p.WEB.x264-GRP", Hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[2]", Episodes: "[3]"},
+		{ID: "b", Name: "Serie.S01E01.MULTi.1080p.WEB.x264-GRP", Hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[1]", Episodes: "[1]"},
+		{ID: "c", Name: "Serie.S01.MULTi.1080p.WEB.x264-GRP", Hash: "cccccccccccccccccccccccccccccccccccccccc", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[1]"},
+		{ID: "d", Name: "Serie.S01E02.MULTi.1080p.WEB.x264-GRP", Hash: "dddddddddddddddddddddddddddddddddddddddd", Media: "tv", TMDB: 9, Stamp: 1, Seasons: "[1]", Episodes: "[2]"},
 	}}
 	// Le passage incrémental ne voit rien : seul le rattrapage importe.
 	if err := e.s.sfrCatchUp(e.ctx, fake, SFRSettings{}); err != nil {
 		t.Fatal(err)
 	}
 	rels, err := e.s.st.Releases(e.ctx, show, Filter{})
-	if err != nil || len(rels) != 2 {
+	if err != nil || len(rels) != 1 {
 		t.Fatalf("releases %v %v", rels, err)
 	}
 	for _, r := range rels {
@@ -210,7 +215,7 @@ func TestSFRCatchUpReadsEveryPage(t *testing.T) {
 	for i := range sfrTitlesRows {
 		fake.rows = append(fake.rows, sfrRow{ID: fmt.Sprintf("a%06d", i), Name: "Serie.S02E03", Hash: "X", Media: "tv", TMDB: 9, Seasons: "[2]", Episodes: "[3]"})
 	}
-	fake.rows = append(fake.rows, sfrRow{ID: "b", Name: "Serie.S01E01.MULTi.1080p.WEB.x264-GRP", Hash: "BBB", Media: "tv", TMDB: 9, Seasons: "[1]", Episodes: "[1]"})
+	fake.rows = append(fake.rows, sfrRow{ID: "b", Name: "Serie.S01E01.MULTi.1080p.WEB.x264-GRP", Hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Media: "tv", TMDB: 9, Seasons: "[1]", Episodes: "[1]"})
 	if err := e.s.sfrCatchUp(e.ctx, fake, SFRSettings{}); err != nil {
 		t.Fatal(err)
 	}

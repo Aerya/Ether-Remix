@@ -39,7 +39,7 @@ func TestReleaseBrowse(t *testing.T) {
 		}
 	}
 	for _, key := range []core.RatingKey{core.MovieKey(1), core.EpisodeKey(2, 1, 1), core.EpisodeKey(2, 2, 5), core.EpisodeKey(3, 1, 1)} {
-		a.rememberReleases(ctx, &core.Title{Key: key}, []core.Release{{ID: "secret-id", Name: "Unique.1080p", Indexer: "Source", StreamURL: "https://private.test/secret", StreamHeaders: map[string]string{"Authorization": "secret-header"}}})
+		a.rememberReleases(ctx, &core.Title{Key: key}, []core.Release{{ID: "secret-id", Name: "Unique.1080p", Indexer: "Source", Protocol: core.ProtocolHTTP, StreamURL: "https://private.test/secret", StreamHeaders: map[string]string{"Authorization": "secret-header"}}})
 	}
 	// Exercise bounded backfill for pre-existing encrypted entries.
 	if _, err = db.Exec(`UPDATE pse_release_library SET browse=''`); err != nil {
@@ -148,7 +148,7 @@ func TestReleaseBrowse(t *testing.T) {
 	}
 	// Pagination is across the whole index, with stable order for equal timestamps.
 	for i := int64(10); i < 65; i++ {
-		a.rememberReleases(ctx, &core.Title{Key: core.MovieKey(i)}, []core.Release{{ID: "secret-id", Name: "Page", Indexer: "Source"}})
+		a.rememberReleases(ctx, &core.Title{Key: core.MovieKey(i)}, []core.Release{{ID: "secret-id", Name: "Page", Indexer: "Source", Protocol: core.ProtocolHTTP, StreamURL: "https://source.test/file"}})
 	}
 	first, second := request("mode=releases"), request("mode=releases&page=1")
 	if len(first.Items) != 50 || len(second.Items) != 9 || !first.HasMore || second.HasMore || first.Total != -1 {

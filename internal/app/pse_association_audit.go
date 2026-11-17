@@ -10,7 +10,7 @@ import (
 func (a *App) startAssociationAudit() {
 	rt := pseRuntimeOf(a)
 	var version int
-	if a.db.QueryRow(`SELECT version FROM pse_association_audit WHERE version=1`).Scan(&version) == nil {
+	if a.db.QueryRow(`SELECT version FROM pse_association_audit WHERE version=?`, releasedb.AssociationAuditVersion).Scan(&version) == nil {
 		rt.restartIndexer(a)
 		return
 	}
