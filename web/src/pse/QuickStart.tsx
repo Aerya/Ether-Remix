@@ -15,7 +15,7 @@ export function QuickStartHint() {
       </p>
       <Link
         className="inline-flex items-center gap-2 font-medium text-accent underline"
-        to="/remix/demarrage"
+        to="/remix/apercu?view=demarrage"
       >
         {L("Démarrage rapide", "Quick start")}
         <ArrowRight size={16} aria-hidden="true" />
@@ -65,27 +65,27 @@ export function QuickStart({ indexing }: { indexing: boolean }) {
         "Le catalogue « lisible uniquement » peut rester vide au départ : il faut attendre des résultats qui respectent vos filtres et le seuil de releases configuré. Les titres TMDB du catalogue local ne sont pas une preuve de disponibilité.",
         "The playable-only catalogue may initially be empty: wait for results matching your filters and configured release threshold. Local TMDB catalogue entries do not prove availability.",
       ),
-      to: "/remix/langues",
+      to: "/remix/lecture?view=qualite",
       action: L("Vérifier les critères", "Check criteria"),
     },
     {
       title: L("Vérifier que les recherches démarrent", "Check that searches start"),
       text: L(
-        "Dans Statistiques → Indexation, regardez Sources et activité, Dernières recherches et Titres cherchés. Le catalogue se remplit progressivement, pas immédiatement après l’installation.",
-        "In Statistics → Indexing, check Sources and activity, Recent searches and Searched titles. The catalogue fills progressively, not immediately after installation.",
+        "Dans Vue d’ensemble → Activité, regardez Sources et activité, Dernières recherches et Titres cherchés. Le catalogue se remplit progressivement, pas immédiatement après l’installation.",
+        "In Overview → Activity, check Sources and activity, Recent searches and Searched titles. The catalogue fills progressively, not immediately after installation.",
       ),
       help: L(
         "Si rien ne bouge : vérifiez l’activation, les sources sélectionnées, les quotas, une lecture en cours et les erreurs. Les statistiques d’utilisation et de lecture sont distinctes de celles de l’indexation.",
         "If nothing changes, check activation, selected sources, quotas, ongoing playback and errors. Usage and playback statistics are separate from background indexing.",
       ),
-      to: "/remix/statistiques",
+      to: "/remix/apercu?view=indexation",
       action: L("Voir l’activité", "View activity"),
     },
     {
       title: L("Organiser vos contenus, si besoin", "Organize content, if needed"),
       text: L(
-        "Les bibliothèques et collections personnalisées sont facultatives. Contenus et bibliothèques permet de préparer Films, Séries, Animes ou Musique ; la configuration JukeBox peut vous aider à démarrer.",
-        "Custom libraries and collections are optional. Content & libraries lets you prepare Movies, Shows, Anime or Music; JukeBox setup can help you get started.",
+        "Les bibliothèques et collections personnalisées sont facultatives. Contenus permet de préparer Films, Séries, Animes ou Musique ; la configuration JukeBox peut vous aider à démarrer.",
+        "Custom libraries and collections are optional. Content lets you prepare Movies, Shows, Anime or Music; JukeBox setup can help you get started.",
       ),
       help: L(
         "Pour la musique ou les fichiers locaux uniquement, l’indexation vidéo n’est pas un prérequis : configurez les sources correspondantes. Les dossiers locaux et comptes iBroadcast sont privés par défaut ; choisissez leur partage si nécessaire.",
@@ -100,8 +100,8 @@ export function QuickStart({ indexing }: { indexing: boolean }) {
         "Connect an app and try playback",
       ),
       text: L(
-        "Activez le protocole de votre client dans Applications, puis utilisez les accès du spectateur concerné. Pour un client musical Subsonic, retrouvez l’adresse et les accès dans Contenus et bibliothèques → Musique.",
-        "Enable your client’s protocol in Apps, then use the appropriate viewer’s credentials. For a Subsonic music client, find the address and access details in Content & libraries → Music.",
+        "Activez le protocole de votre client dans Applications, puis utilisez les accès du spectateur concerné. Pour un client musical Subsonic, retrouvez l’adresse et les accès dans Contenus → Musique.",
+        "Enable your client’s protocol in Apps, then use the appropriate viewer’s credentials. For a Subsonic music client, find the address and access details in Content → Music.",
       ),
       help: L(
         "Essayez un titre et contrôlez son lancement. Une source enregistrée ou un test de connexion réussi ne garantit pas la lecture de tous ses contenus. Scrob, notifications et sous-titres externes peuvent être configurés ensuite.",

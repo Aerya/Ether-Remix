@@ -152,9 +152,9 @@ it("renders torrent clients in their own source category", () => {
   );
   expect(screen.getByText("Torrent clients fixture")).toBeTruthy();
   expect(screen.queryByText("Indexing fixture")).toBeNull();
-  expect(screen.getByRole("tab", { name: "BitTorrent clients" }).getAttribute("aria-selected")).toBe(
-    "true",
-  );
+  expect(
+    screen.getByRole("tab", { name: "BitTorrent clients" }).getAttribute("aria-selected"),
+  ).toBe("true");
 });
 
 it("offers Seedstrem through the existing Stremio form without a public instance default", () => {

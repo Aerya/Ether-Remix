@@ -1,4 +1,5 @@
 import { IndexerGroups } from "./IndexerGroups";
+import { LocalMediaHealth } from "./LocalMediaHealth";
 import { LocalMedia } from "./OwnedMedia";
 import { CollapsibleSections, CollapsibleBlock } from "../components/CollapsibleSections";
 import { AddSourceGallery, type GalleryChoice } from "../pages/sources/cards";
@@ -289,9 +290,18 @@ export function RemixSources({
         {category === "ftp" ? ftp : null}
         {category === "musique" ? <>{music}</> : null}
         {category === "local" ? (
-          <CollapsibleBlock title={L("Fichiers locaux", "Local files")}>
-            <LocalMedia />
-          </CollapsibleBlock>
+          <>
+            <CollapsibleBlock title={L("Fichiers locaux", "Local files")}>
+              <LocalMedia />
+            </CollapsibleBlock>
+            <CollapsibleBlock
+              id="local-media-health"
+              lazy
+              title={L("Santé des médias locaux", "Local media health")}
+            >
+              <LocalMediaHealth />
+            </CollapsibleBlock>
+          </>
         ) : null}
       </CollapsibleSections.Provider>
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />

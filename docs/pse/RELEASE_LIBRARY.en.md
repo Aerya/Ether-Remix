@@ -22,6 +22,6 @@ Only results returned by sources can be retained; addon filtering cannot be undo
 
 ## Console monitoring
 
-Enable the beta in **Quick start** or **Indexing**, then save. The **Indexed releases** tab appears after saving. It lists content and episodes by latest observation, in pages of 50; select content to inspect sortable releases. Active and recent searches show real activity. Collection is continuous, without an overall completion percentage.
+Enable the beta in **Overview → Quick start** or **Indexing**, then save. The **Indexing → Releases** view appears after saving. It lists content and episodes by latest observation, in pages of 50; select content to inspect sortable releases. Active and recent searches show real activity. Collection is continuous, without an overall completion percentage.
 
-Counters also appear in **Statistics**, separating metadata from stored references: available, expired, failed or source changed. These sets overlap and must not be added. The display refreshes every 15 seconds while the page is visible. An available reference does not guarantee playback.
+Counters also appear in **Overview**, separating metadata from stored references: available, expired, failed or source changed. These sets overlap and must not be added. The display refreshes every 15 seconds while the page is visible. An available reference does not guarantee playback.

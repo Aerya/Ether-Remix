@@ -18,9 +18,15 @@ it("keeps one source entry and maps legacy source addresses without losing param
   expect(links.some((i) => i.href === "/remix")).toBe(true);
   expect(links.some((i) => i.href === "/sources")).toBe(false);
   expect(sourcesHref("stremio", "?new=addon")).toBe("/remix/sources?new=addon&source=stremio");
-  expect(sourcesHref("usage", "?days=30")).toBe("/remix/statistiques?days=30&view=usage");
+  expect(sourcesHref("usage", "?days=30")).toBe("/remix/apercu?days=30&view=usage");
   expect(legacyRemixRoute("priorites")).toBe("/remix/lecture");
   expect(legacyRemixRoute("animes")).toBe("/remix/contenus?content=animes");
+  expect(legacyRemixRoute("statistiques", "?days=7")).toBe("/remix/apercu?days=7");
+  expect(legacyRemixRoute("demarrage")).toBe("/remix/apercu?view=demarrage");
+  expect(legacyRemixRoute("releases")).toBe("/remix/indexation?view=releases");
+  expect(legacyRemixRoute("langues")).toBe("/remix/lecture?view=qualite");
+  expect(legacyRemixRoute("demande")).toBe("/remix/lecture?view=vostfr");
+  expect(legacyRemixRoute("medias-locaux")).toBe("/remix/sources?source=local#local-media-health");
 });
 
 it("preserves native IPTV provider IDs when redirecting to Remix", () => {
@@ -29,8 +35,8 @@ it("preserves native IPTV provider IDs when redirecting to Remix", () => {
   expect(url.searchParams.get("iptvSource")).toBe("king-123");
 });
 
-it("shows the release library tab only when the saved beta setting is enabled", async () => {
-  const { visibleRemixTabs } = await import("./navigation");
-  expect(visibleRemixTabs(false).some((t) => t.key === "releases")).toBe(false);
-  expect(visibleRemixTabs(true).some((t) => t.key === "releases")).toBe(true);
+it("shows the release library view only when the saved beta setting is enabled", async () => {
+  const { visibleRemixViews } = await import("./navigation");
+  expect(visibleRemixViews("indexation", false).some((v) => v.key === "releases")).toBe(false);
+  expect(visibleRemixViews("indexation", true).some((v) => v.key === "releases")).toBe(true);
 });

@@ -28,7 +28,7 @@ L’accueil Plex se personnalise dans `/ether/home` : choisissez le spectateur e
 
 Ether-Remix reprend le serveur et les applications compatibles d’Ether, avec un catalogue orienté français et des réglages de langue et de qualité. Selon vos choix, l’accueil et les collections privilégient les titres en VF/MULTi ou disposant de releases correspondant à vos critères. L’indexation en arrière-plan recherche les sources à l’avance ; elle ne télécharge pas les vidéos.
 
-Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent vos bibliothèques depuis des dossiers de l’hôte ou des montages réseau. Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient. L’onglet **Médias locaux** signale les fichiers absents, les problèmes de lecture et les doublons potentiels, sans supprimer vos médias.
+Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent vos bibliothèques depuis des dossiers de l’hôte ou des montages réseau. Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient. La vue **Sources → Fichiers locaux** signale les fichiers absents, les problèmes de lecture et les doublons potentiels, sans supprimer vos médias.
 
 Les **sources facultatives** complètent le debrid et Usenet : client torrent, XDCC via Grabscher et serveur FTP / SFTP. Torrent et XDCC écrivent des fichiers sur disque ; FTP / SFTP permet aussi une lecture distante sans copie complète, avec le cache habituel d’Ether. Ces sources sont désactivées par défaut.
 
@@ -59,19 +59,19 @@ La configuration rapide **JukeBox** aide à créer vos bibliothèques et collect
 
 ## Applications compatibles
 
-| Accès | Applications |
-| --- | --- |
-| Releases conservées, consultation et suivi de la bêta | [Bibliothèque de releases](docs/pse/RELEASE_LIBRARY.fr.md) |
-| **Plex** | Applications officielles : Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, TV connectées (LG, Samsung, VIDAA), ordinateur et Web. Kodi via Plex for Kodi (PM4K). |
-| **Jellyfin** | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin pour Android TV, JellyCon (Kodi), Jellyfin pour Roku. |
-| **Emby** | Applications Emby (Android TV, iOS, Android, Roku, TV connectées) et Infuse. Emby for TV 2.x sur Apple TV n’est pas pris en charge. |
-| **Silo** | Apple TV, iOS, macOS, Android, Android TV. |
-| **Stremio** | Toutes les applications Stremio, via une extension personnelle. Une adresse HTTPS est nécessaire. |
-| **Fichiers (WebDAV)** | Infuse, VLC, Kodi, rclone. |
-| **M3U & XMLTV** | Channels DVR, TiviMate et lecteurs IPTV. |
-| **Xtream** | TiviMate, Televizo, IPTV Smarters… Désactivé par défaut. |
-| **DLNA** | TV et lecteurs du réseau local. |
-| **Musique** *(Remix)* | Plex et Plexamp, clients Jellyfin (Finamp…), applications Subsonic : Symfonium, Feishin, Supersonic, DSub… |
+| Accès                                                 | Applications                                                                                                                                                                                    |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Releases conservées, consultation et suivi de la bêta | [Bibliothèque de releases](docs/pse/RELEASE_LIBRARY.fr.md)                                                                                                                                      |
+| **Plex**                                              | Applications officielles : Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, TV connectées (LG, Samsung, VIDAA), ordinateur et Web. Kodi via Plex for Kodi (PM4K). |
+| **Jellyfin**                                          | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin pour Android TV, JellyCon (Kodi), Jellyfin pour Roku.                                                                                          |
+| **Emby**                                              | Applications Emby (Android TV, iOS, Android, Roku, TV connectées) et Infuse. Emby for TV 2.x sur Apple TV n’est pas pris en charge.                                                             |
+| **Silo**                                              | Apple TV, iOS, macOS, Android, Android TV.                                                                                                                                                      |
+| **Stremio**                                           | Toutes les applications Stremio, via une extension personnelle. Une adresse HTTPS est nécessaire.                                                                                               |
+| **Fichiers (WebDAV)**                                 | Infuse, VLC, Kodi, rclone.                                                                                                                                                                      |
+| **M3U & XMLTV**                                       | Channels DVR, TiviMate et lecteurs IPTV.                                                                                                                                                        |
+| **Xtream**                                            | TiviMate, Televizo, IPTV Smarters… Désactivé par défaut.                                                                                                                                        |
+| **DLNA**                                              | TV et lecteurs du réseau local.                                                                                                                                                                 |
+| **Musique** _(Remix)_                                 | Plex et Plexamp, clients Jellyfin (Finamp…), applications Subsonic : Symfonium, Feishin, Supersonic, DSub…                                                                                      |
 
 Les accès s’activent dans **Console → Applications**. Chaque spectateur trouve ses liens et mots de passe d’application sur sa page **Votre compte**.
 
@@ -97,7 +97,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 ### ![](https://api.iconify.design/lucide/folder-open.svg?color=%2314b8a6&width=24&height=24) Vos vidéos locales, films et vidéos personnelles
 
-- **Santé des médias locaux** : onglet dédié aux diagnostics des dossiers, fichiers absents/non identifiés, doublons potentiels et tailles par dossier. Les entrées restent au catalogue si un montage devient vide ou inaccessible ; aucun fichier supprimé.
+- **Santé des médias locaux** : section dans **Sources → Fichiers locaux**, chargée à sa première ouverture, pour les diagnostics des dossiers, fichiers absents/non identifiés, doublons potentiels et tailles par dossier. Les entrées restent au catalogue si un montage devient vide ou inaccessible ; aucun fichier supprimé.
 - **Dossiers de l’hôte ou montages réseau** : exposez-les par des volumes Docker en lecture seule. Analyse à la demande et chaque heure, sans déplacer ni supprimer vos fichiers.
 - **Rapprochement avec le catalogue** : recherche dans les fiches déjà présentes dans Remix, puis TMDB ; films et épisodes identifiés réutilisent leurs fiches. Sans correspondance fiable, les vidéos personnelles restent affichées telles quelles.
 - **Bibliothèques et collections par dossier** : rattachez vos dossiers vidéo aux bibliothèques et collections personnalisées depuis Sources → Fichiers locaux. Privés par défaut, avec partage facultatif ; les destinations respectent les accès des dossiers. [Configuration et formats](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast).
@@ -108,7 +108,7 @@ Les accès s’activent dans **Console → Applications**. Chaque spectateur tro
 
 Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lire, configurez la voie adaptée : compte débrideur, client BitTorrent ou addon Stremio comme Seedstrem. Seedstrem utilise son propre client torrent. Pour Usenet, Remix lit via son moteur NNTP et vos fournisseurs Usenet ; SABnzbd/NZBGet ne sont pas des clients externes intégrés.
 
-- **Démarrage rapide** : un onglet permanent guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Un rappel dans les statistiques signale l’indexation désactivée. La bibliothèque de releases en bêta peut aussi être activée ici, puis enregistrée.
+- **Démarrage rapide** : la vue **Vue d’ensemble → Démarrage** guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Elle s’ouvre par défaut tant que l’indexation est désactivée ; un rappel la signale ensuite l’indexation désactivée. La bibliothèque de releases en bêta peut aussi être activée ici, puis enregistrée.
 - **Console Remix** : réglages regroupés dans `/ether/remix`, blocs repliables fermés par défaut ; iBroadcast rejoint les fournisseurs musicaux et les informations Subsonic restent dans Contenus → Musique.
 - **IPTV et VOD Xtream** : chaînes en direct, guide EPG et import des films et séries du fournisseur.
 - **Configuration commune à Ether et Remix** : addons Stremio, indexeurs, services Usenet, comptes debrid, sources musicales et IPTV réunis dans un même espace.
@@ -127,7 +127,7 @@ Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lir
 
 **Bibliothèque de releases (Bêta, désactivée par défaut)** : dans Remix → Indexation, activez la conservation chiffrée des références pour les réutiliser à la lecture et en secours. Chaque fiche du catalogue propose les releases indexées, triables par résolution, taille, codecs, source, langues et dates. Les fichiers Alkolites gardent leur lecture AllDebrid sans magnet. [Fonctionnement et limites](docs/pse/RELEASE_LIBRARY.fr.md).
 
-Un onglet **Releases indexées**, visible lorsque la bêta est activée, permet de parcourir les contenus et leurs releases, de suivre les recherches en cours et les derniers résultats. Les compteurs sont aussi affichés dans **Statistiques**. Le réglage est accessible dans **Démarrage rapide** et **Indexation**, avec enregistrement explicite.
+La vue **Indexation → Releases**, visible lorsque la bêta est activée, permet de parcourir les contenus et leurs releases, de suivre les recherches en cours et les derniers résultats. Les compteurs sont aussi affichés dans **Vue d’ensemble**. Le réglage est accessible dans **Vue d’ensemble → Démarrage** et **Indexation**, avec enregistrement explicite.
 
 <a id="alldebrid-sur-un-vps--mediaflow-et-gluetun"></a>
 <a id="nav-alldebrid-sur-un-vps-mediaflow-et-gluetun"></a>
@@ -166,7 +166,7 @@ Un proxy HTTP/HTTPS/SOCKS5 existant (par exemple SSDV2 Proxy Manager) peut aussi
 
 Un **style pour plusieurs cartes** peut être préparé depuis une même galerie : choisissez les cartes, recherchez leurs visuels, filtrez par créateur, ensemble ou dossier et sélectionnez les correspondances uniques en un clic. Vérifiez les variantes avant application groupée ; les cartes sans choix conservent leur visuel. Les métadonnées disponibles varient selon la source, et un même créateur ne garantit pas un style identique. Recherche limitée à 30 cartes par lot, sans enregistrement avant « Appliquer les cartes à mes accueils ».
 
-- **Import Xperience** : dans Contenus et bibliothèques, collez votre manifeste [Xperience](https://xperience-app.com/), choisissez les catalogues et leurs paramètres, puis créez des bibliothèques, des collections ou les deux. Classement de la source, actualisation quotidienne et filtres Remix conservés. Remplissage en arrière-plan ; les bibliothèques Plex se mettent à jour sans redémarrer Ether. [Mode d’emploi](docs/pse/GUIDE.fr.md#import-xperience).
+- **Import Xperience** : dans Contenus, collez votre manifeste [Xperience](https://xperience-app.com/), choisissez les catalogues et leurs paramètres, puis créez des bibliothèques, des collections ou les deux. Classement de la source, actualisation quotidienne et filtres Remix conservés. Remplissage en arrière-plan ; les bibliothèques Plex se mettent à jour sans redémarrer Ether. [Mode d’emploi](docs/pse/GUIDE.fr.md#import-xperience).
 - **Configuration rapide française** : créez en une action vos bibliothèques Films, Séries et Animes depuis les trois listes JukeBox proposées, ou choisissez ses autres listes (documentaires, studios…). Collections seules possibles, mise à jour quotidienne et tri par date de sortie décroissante. Bibliothèques publiées dans Plex, Jellyfin et Emby ; vos sources et critères de langue restent appliqués. [Mode d’emploi](docs/pse/GUIDE.fr.md#configuration-rapide-jukebox).
 - Organisez vos bibliothèques Plex par **service, studio, animés, documentaires, concerts ou spectacles**. Les concerts combinent des mots-clés de captation et le genre Musique pour limiter les fictions.
 - Composez leurs rangées avec des collections TMDB, des catalogues Stremio importés et des modèles prêts à l’emploi.
@@ -205,7 +205,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistiques et suivi
 
-- **Bibliothèque de releases** : lorsque la bêta est activée, les statistiques affichent les références conservées et leur état ; l’onglet **Releases indexées** donne accès aux contenus et recherches en cours.
+- **Bibliothèque de releases** : lorsque la bêta est activée, les statistiques affichent les références conservées et leur état ; la vue **Indexation → Releases** donne accès aux contenus et recherches en cours.
 - Remix s’ouvre sur les statistiques : anneaux de progression colorés, historique à barres fines, recherches, erreurs, quotas, durées et résultats par source en direct.
 - Consultez l’historique **par jour, semaine, mois ou année**, en valeurs par période ou cumulées, avec filtres films, séries, animés et sources.
 - Comparez le catalogue local aux totaux TMDB et retrouvez les opérations dans le journal d’activité.
@@ -218,7 +218,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) Une interface adaptée à vos habitudes
 
-- **Démarrage rapide** guide les premiers réglages. **Sources** configure les fournisseurs ; **Indexation** choisit ceux interrogés en arrière-plan ; **Lecture et priorités** règle les préférences de lecture. Langues, VOSTFR à la demande, contenus, médias locaux, statistiques et suivi gardent leurs espaces dédiés.
+- Six onglets : **Vue d’ensemble** (démarrage, activité, sources, utilisation), **Sources** (avec la santé des médias locaux), **Indexation** (réglages et releases), **Lecture** (priorités, qualité, VOSTFR), **Contenus** et **Suivi**. Les anciens liens et favoris sont redirigés.
 - Indexation automatique des addons Stremio activés ou sélection personnalisée, même vide ; filtres par instance Prowlarr/Jackett et compteurs catalogue, recherchés, avec release et affichés pour chaque bibliothèque ou collection prioritaire.
 - Sources regroupées par famille, tri par catégorie ou contenu, clés debrid affichables ponctuellement et blocs repliables sans perdre la saisie. Réglez les palettes dans **Apparence**.
 - Six palettes : **Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine**, chacune en clair et sombre, avec aperçu immédiat et mémorisation par navigateur.
@@ -238,7 +238,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 1. **Installer** `ghcr.io/aerya/ether-remix:latest` avec le [Compose fourni](docs/pse/GUIDE.fr.md#installation), via Dockge-Enhanced. L’image est publique, sans connexion à GHCR.
 2. **Ouvrir la console** sur `http://<hôte>:32400/ether/` et suivre l’assistant. Le port se règle avec `ETHER_PORT`.
 3. **Configurer les sources** debrid, Usenet, indexeurs et addons dans **Ether-Remix → Sources**, puis activer les sources facultatives souhaitées (torrent, XDCC, FTP / SFTP). Réglez vos langues, contenus et bibliothèques dans leurs onglets ; la configuration rapide JukeBox peut créer vos premières bibliothèques.
-4. **Connecter vos clients**. Pour Arpeggi et les clients Subsonic à jeton, créer un accès dans **Contenus et bibliothèques → Musique → Clients musicaux** : adresse du serveur, identifiant et mot de passe musicaux dédiés, révocables par spectateur. Les comptes locaux restent utilisables en mode **legacy**. Utiliser HTTPS à distance.
+4. **Connecter vos clients**. Pour Arpeggi et les clients Subsonic à jeton, créer un accès dans **Contenus → Musique → Clients musicaux** : adresse du serveur, identifiant et mot de passe musicaux dédiés, révocables par spectateur. Les comptes locaux restent utilisables en mode **legacy**. Utiliser HTTPS à distance.
 
 Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/config`, arrêtez l’ancien serveur et réutilisez ses volumes `/config` et `/cache`.
 
@@ -246,18 +246,18 @@ Vous migrez depuis Ether ? Le format de données est conservé : sauvegardez `/c
 
 ## Documentation
 
-| Besoin | Guide |
-| --- | --- |
-| AllDebrid sur VPS, MediaFlow + Gluetun et proxys par source | [Réseau et proxys](docs/alldebrid-mediaflow.md) |
-| Installation, réglages, sources musicales, playlists, Scrob et clients | [Guide de configuration](docs/pse/GUIDE.fr.md) |
-| Visibilité des titres, priorités et délais de recherche | [Catalogue et indexation](docs/pse/CATALOGUE.fr.md) |
-| Partage des disponibilités et recherches complémentaires | [Intégration SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) |
-| Import en lecture seule depuis une base StreamFusion Reborn | [StreamFusion Reborn](docs/pse/STREAMFUSION.fr.md) |
-| Instance publique ou auto-hébergée, langues et limites de traduction | [SubMaker](docs/pse/SUBMAKER.fr.md) |
-| Clients torrent et stockage des téléchargements | [Client torrent](docs/pse/TORRENT.fr.md) |
-| Vidéos, musique locale et comptes iBroadcast | [Médias locaux et iBroadcast](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast) |
-| Bots XDCC via XDCC Grabscher : Docker, VPN, streaming et limites | [Source XDCC](docs/pse/XDCC.fr.md) |
-| FTP / SFTP : connexion, lecture et stockage | [Source FTP / SFTP](docs/pse/FTP.fr.md) |
+| Besoin                                                                 | Guide                                                                           |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| AllDebrid sur VPS, MediaFlow + Gluetun et proxys par source            | [Réseau et proxys](docs/alldebrid-mediaflow.md)                                 |
+| Installation, réglages, sources musicales, playlists, Scrob et clients | [Guide de configuration](docs/pse/GUIDE.fr.md)                                  |
+| Visibilité des titres, priorités et délais de recherche                | [Catalogue et indexation](docs/pse/CATALOGUE.fr.md)                             |
+| Partage des disponibilités et recherches complémentaires               | [Intégration SeerrCatalog](docs/pse/SEERRCATALOG.fr.md)                         |
+| Import en lecture seule depuis une base StreamFusion Reborn            | [StreamFusion Reborn](docs/pse/STREAMFUSION.fr.md)                              |
+| Instance publique ou auto-hébergée, langues et limites de traduction   | [SubMaker](docs/pse/SUBMAKER.fr.md)                                             |
+| Clients torrent et stockage des téléchargements                        | [Client torrent](docs/pse/TORRENT.fr.md)                                        |
+| Vidéos, musique locale et comptes iBroadcast                           | [Médias locaux et iBroadcast](docs/pse/GUIDE.fr.md#médias-locaux-et-ibroadcast) |
+| Bots XDCC via XDCC Grabscher : Docker, VPN, streaming et limites       | [Source XDCC](docs/pse/XDCC.fr.md)                                              |
+| FTP / SFTP : connexion, lecture et stockage                            | [Source FTP / SFTP](docs/pse/FTP.fr.md)                                         |
 
 <a id="nav-origine-et-licence"></a>
 

@@ -2,7 +2,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import { QuickStart, QuickStartHint } from "./QuickStart";
-import { REMIX_TABS } from "./navigation";
+import { REMIX_VIEWS } from "./navigation";
 vi.mock("../i18n", () => ({ getLocale: () => "fr" }));
 afterEach(cleanup);
 it("exposes the guide and directs users to the actual indexing settings", () => {
@@ -11,7 +11,7 @@ it("exposes the guide and directs users to the actual indexing settings", () => 
       <QuickStart indexing={false} />
     </MemoryRouter>,
   );
-  expect(REMIX_TABS.some((t) => t.key === "demarrage")).toBe(true);
+  expect(REMIX_VIEWS.apercu.some((v) => v.key === "demarrage")).toBe(true);
   expect(screen.getAllByRole("listitem")).toHaveLength(6);
   expect(screen.getByText("Réglage enregistré : désactivée")).toBeVisible();
   expect(screen.getByRole("link", { name: "Régler l’indexation" })).toHaveAttribute(
@@ -40,6 +40,6 @@ it("links the disabled-indexing reminder to the guide", () => {
   );
   expect(screen.getByRole("link", { name: "Démarrage rapide" })).toHaveAttribute(
     "href",
-    "/remix/demarrage",
+    "/remix/apercu?view=demarrage",
   );
 });

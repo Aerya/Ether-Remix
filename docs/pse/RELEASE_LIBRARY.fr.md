@@ -26,6 +26,6 @@ Seules les releases renvoyées par les sources sont disponibles : les filtres ap
 
 ## Suivi dans la console
 
-Activez la bêta dans **Démarrage rapide** ou **Indexation**, puis enregistrez. L’onglet **Releases indexées** apparaît après enregistrement. Il liste les contenus et épisodes par dernière observation, par pages de 50 ; sélectionnez un contenu pour consulter ses releases triables. Les recherches en cours et récentes indiquent l’activité réelle. La collecte est continue, sans pourcentage global de complétion.
+Activez la bêta dans **Vue d’ensemble → Démarrage** ou **Indexation**, puis enregistrez. La vue **Indexation → Releases** apparaît après enregistrement. Il liste les contenus et épisodes par dernière observation, par pages de 50 ; sélectionnez un contenu pour consulter ses releases triables. Les recherches en cours et récentes indiquent l’activité réelle. La collecte est continue, sans pourcentage global de complétion.
 
-Les compteurs, également présents dans **Statistiques**, distinguent les métadonnées des références conservées : disponibles, à actualiser, en échec ou liées à une source modifiée. Ces ensembles se recoupent et ne doivent pas être additionnés. L’affichage se rafraîchit toutes les 15 secondes lorsque la page est visible. Une référence disponible ne garantit pas la lecture.
+Les compteurs, également présents dans **Vue d’ensemble**, distinguent les métadonnées des références conservées : disponibles, à actualiser, en échec ou liées à une source modifiée. Ces ensembles se recoupent et ne doivent pas être additionnés. L’affichage se rafraîchit toutes les 15 secondes lorsque la page est visible. Une référence disponible ne garantit pas la lecture.
