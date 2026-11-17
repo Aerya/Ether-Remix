@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Button } from "@braedonsaunders/appkit-ui";
+
 import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { getLocale } from "../i18n";
-import { ReleaseLibrary } from "./ReleaseLibrary";
+import { ReleaseBrowser } from "./ReleaseBrowser";
 import { IndexerActivity } from "./IndexerActivity";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 interface Overview {
@@ -20,13 +20,10 @@ interface Overview {
   items: { key: string; title: string; lastSeen: number }[];
 }
 export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean }) {
-  const [page, setPage] = useState(0);
   const [tick, setTick] = useState(0);
-  const [selected, setSelected] = useState("");
   const state = useAsync(
-    (signal) =>
-      apiFetch<Overview>(`/pse/release-library?overview=1&page=${compact ? 0 : page}`, { signal }),
-    [page, tick, compact],
+    (signal) => apiFetch<Overview>(`/pse/release-library?overview=1&page=0`, { signal }),
+    [tick, compact],
   );
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -50,7 +47,7 @@ export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean
       <p>{L("La bibliothèque de releases est désactivée.", "Release library is disabled.")}</p>
     );
   return (
-    <section className="space-y-4">
+    <section className="min-w-0 max-w-full space-y-4">
       <h2 className="text-lg font-semibold">
         {L("Bibliothèque de releases · Bêta", "Release library · Beta")}
       </h2>
@@ -89,44 +86,7 @@ export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean
       ) : (
         <>
           <IndexerActivity />
-          <h3 className="font-semibold">
-            {L(
-              "Contenus indexés, les plus récents en premier",
-              "Indexed content, most recent first",
-            )}
-          </h3>
-          {d.items.length === 0 && (
-            <p>
-              {L(
-                "Aucune release indexée. Les prochaines recherches et imports alimenteront cette liste.",
-                "No indexed releases. Upcoming searches and imports will populate this list.",
-              )}
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {d.items.map((item) => (
-              <Button
-                key={item.key}
-                variant={selected === item.key ? "default" : "outline"}
-                onClick={() => setSelected(item.key)}
-              >
-                {item.title}
-              </Button>
-            ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Button disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-              {L("Précédent", "Previous")}
-            </Button>
-            <span>
-              {L("Page", "Page")} {page + 1} / {Math.max(1, Math.ceil(d.titles / 50))}
-            </span>
-            <Button disabled={(page + 1) * 50 >= d.titles} onClick={() => setPage((p) => p + 1)}>
-              {L("Suivant", "Next")}
-            </Button>
-            <Button onClick={() => setTick((t) => t + 1)}>{L("Actualiser", "Refresh")}</Button>
-          </div>
-          {selected && <ReleaseLibrary key={selected} titleKey={selected} refresh={tick} />}
+          <ReleaseBrowser />
         </>
       )}
     </section>

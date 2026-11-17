@@ -8,7 +8,7 @@ Les recherches réelles alimentent la bibliothèque, ainsi que l’import SFR po
 
 ## Consulter les releases
 
-Ouvrez une fiche dans le catalogue de la console, puis **Releases indexées · Bêta**. La consultation est possible même lorsque la réutilisation est désactivée. Cliquez sur un en-tête pour inverser le tri : résolution, taille, codec vidéo/audio, source, protocole, langues, cache annoncé, état de la référence ou dates. Une recherche textuelle filtre le tableau sans interroger les sources. Le tri d’affichage ne modifie pas les critères de lecture.
+Ouvrez une fiche dans le catalogue de la console, puis **Releases indexées · Bêta**. La consultation est possible même lorsque la réutilisation est désactivée. Choisissez le champ et le sens du tri : résolution, taille, codec vidéo/audio, source, protocole, langues, cache annoncé, état de la référence ou dates. Une recherche textuelle filtre les releases sans interroger les sources. Le tri d’affichage ne modifie pas les critères de lecture.
 
 Pour une série, choisissez une saison puis un épisode. La vue initiale correspond à S01E01, utilisé par l’indexation du catalogue ; les autres épisodes sont alimentés par leurs recherches. Une série indexée ne signifie pas que tous ses épisodes sont disponibles.
 
@@ -18,6 +18,8 @@ Pour une série, choisissez une saison puis un épisode. La vue initiale corresp
 - **Référence disponible** : candidate réutilisable, pas une preuve de lecture réussie.
 - **À actualiser / échec / source modifiée** : référence écartée de la réutilisation.
 
+**Exploration de l’index** : dans **Indexation → Releases**, recherchez les médias (titre ou titre original) ou les releases (nom ou source) dans tout l’index. Filtrez par Films, Séries ou Animes, puis par aujourd’hui, cette semaine (depuis lundi), ce mois ou des dates personnalisées inclusives, dans votre fuseau horaire. Choisissez la première indexation ou la dernière observation. Les séries regroupent les épisodes ; un clic ouvre toutes leurs releases. Les animes utilisent les métadonnées du catalogue, lorsqu’elles sont connues. Les résultats sont paginés par 50 et triables par indexation ou observation. Les lignes compactes dévoilent codecs, langues et dates au clic, sans tableau horizontal. La recherche ne contacte aucune source. À la première ouverture, les anciennes références chiffrées sont préparées par lots ; seuls les champs affichables sont ajoutés à l’index de recherche.
+
 ## Conservation
 
 Les URL HTTP ordinaires sont réutilisables pendant une heure ; les références torrent/NZB et liens fichiers AllDebrid pendant 24 heures. Une modification de configuration des sources invalide les références précédentes. Les changements de critères de qualité ou de langue conservent les références pour permettre un nouveau tri local. Les entrées restent consultables et sont supprimées après 60 jours sans observation lors d’une nouvelle collecte. La consultation et la lecture depuis la bibliothèque ne prolongent pas ces dates.
@@ -26,6 +28,6 @@ Seules les releases renvoyées par les sources sont disponibles : les filtres ap
 
 ## Suivi dans la console
 
-Activez la bêta dans **Vue d’ensemble → Démarrage** ou **Indexation**, puis enregistrez. La vue **Indexation → Releases** apparaît après enregistrement. Il liste les contenus et épisodes par dernière observation, par pages de 50 ; sélectionnez un contenu pour consulter ses releases triables. Les recherches en cours et récentes indiquent l’activité réelle. La collecte est continue, sans pourcentage global de complétion.
+Activez la bêta dans **Vue d’ensemble → Démarrage** ou **Indexation**, puis enregistrez. La vue **Indexation → Releases** apparaît après enregistrement. Elle permet de rechercher et parcourir les médias et releases par catégorie et période. Les recherches en cours et récentes indiquent l’activité réelle. La collecte est continue, sans pourcentage global de complétion.
 
-Les compteurs, également présents dans **Vue d’ensemble**, distinguent les métadonnées des références conservées : disponibles, à actualiser, en échec ou liées à une source modifiée. Ces ensembles se recoupent et ne doivent pas être additionnés. L’affichage se rafraîchit toutes les 15 secondes lorsque la page est visible. Une référence disponible ne garantit pas la lecture.
+Les compteurs, également présents dans **Vue d’ensemble**, distinguent les métadonnées des références conservées : disponibles, à actualiser, en échec ou liées à une source modifiée. Ces ensembles se recoupent et ne doivent pas être additionnés. Les compteurs se rafraîchissent toutes les 15 secondes lorsque la page est visible. Une référence disponible ne garantit pas la lecture.
