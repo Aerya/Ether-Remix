@@ -266,9 +266,9 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 	for _, r := range recs {
 		if r.Enabled && r.Manifest.IsStremioOnly() && r.SourceKind == "url" && m.isLeader() {
 			// Stremio add-ons change catalogs and resources without a
-			// version bump; re-read the manifest hourly (cluster leader).
+			// version bump; re-read on the stored schedule (cluster leader).
 			key := "stremio-manifest|" + r.ID
-			if last, seen := lastHealth[key]; !seen || now.Sub(last) >= stremioManifestRefresh {
+			if last, seen := lastHealth[key]; !seen || now.Sub(last) >= manifestRefreshInterval(r) {
 				lastHealth[key] = now
 				if seen {
 					go func(id string) {

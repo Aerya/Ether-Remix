@@ -155,3 +155,54 @@ func TestAddonCatalogPagesWithSkipUntilTheEnd(t *testing.T) {
 		t.Fatalf("end of catalog recorded as a failure: %+v %v", health, err)
 	}
 }
+
+func TestXperienceDefaultsCreateValidSeriesCollection(t *testing.T) {
+	h := newListTestHarness(t)
+	ctx := context.Background()
+	raw := json.RawMessage(`{"id":"xperience.test","name":"Xperience","version":"1.0.0","resources":["catalog"],"types":["series"],"catalogs":[{"type":"series","id":"adventure","name":"Adventure","extra":[{"name":"genre","isRequired":true,"options":["None","Adventure"]},{"name":"skip"}]}]}`)
+	p, err := h.mgr.PreviewInstall(ctx, plugins.Source{Kind: "url", URL: "https://addon.example/private/manifest.json", Manifest: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := h.mgr.Install(ctx, p, plugins.InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind := addonCatalogKind(rec, "series", "adventure")
+	d, ok := h.reg.Get(extend.KindCollectionSource, kind)
+	if !ok {
+		t.Fatal("descriptor missing")
+	}
+	meta, err := extend.MetaOf[extend.CollectionSourceMeta](d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var src core.CollectionSource
+	if err := json.Unmarshal(meta.Defaults, &src); err != nil {
+		t.Fatal(err)
+	}
+	src.Kind = kind
+	if src.Params["genre"] != "None" || len(meta.MediaTypes) != 1 || meta.MediaTypes[0] != "show" {
+		t.Fatalf("bad defaults: %+v %+v", src, meta)
+	}
+	h.rt.routes["/catalog/series/adventure/genre=None.json"] = func(plugins.Request) (plugins.Response, error) {
+		return plugins.Response{Status: 200, Body: json.RawMessage(`{"metas":[]}`)}, nil
+	}
+	spec := core.CollectionSpec{Name: "Adventure", MediaType: "show", Sources: []core.CollectionSource{src}, Refresh: "daily", Sort: "source"}
+	if _, err := h.cols.Preview(ctx, spec, 10); err != nil {
+		t.Fatalf("preview rejected: %v", err)
+	}
+	created, err := h.cols.CreateSpec(ctx, spec)
+	if err != nil {
+		t.Fatalf("creation rejected: %v", err)
+	}
+	if err := h.mgr.Remove(ctx, rec.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.cols.GetSpec(ctx, created.ID); err != nil {
+		t.Fatalf("plugin removal deleted collection: %v", err)
+	}
+	if _, ok := h.reg.Get(extend.KindCollectionSource, kind); ok {
+		t.Fatal("removed source still advertised")
+	}
+}

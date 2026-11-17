@@ -88,6 +88,13 @@ func DescriptorsFor(man Manifest) []extend.Descriptor {
 			"collectionSource": pid,
 			"sections":         []string{"home", "movies", "shows"},
 		}
+		typ, _, _ := strings.Cut(ls.Catalog, "/")
+		switch typ {
+		case "movie":
+			meta["mediaTypes"] = []string{"movie"}
+		case "series":
+			meta["mediaTypes"] = []string{"show"}
+		}
 		dCol := extend.Descriptor{Kind: extend.KindCollectionSource, ID: pid, Owner: id, Label: textOf(id, ls.Label), Group: man.Name}
 		dRow := extend.Descriptor{Kind: extend.KindRowSource, ID: pid, Owner: id, Label: textOf(id, ls.Label), Group: man.Name}
 		if ls.Hint != "" {

@@ -639,6 +639,9 @@ export function errorMessage(err: unknown): string {
     if (err.code === "setup_incomplete") return t("You can finish now and add sources later.");
     if (err.code === "plex_required")
       return t("Create an owner account, or connect Plex, before finishing.");
+    if (err.code === "validation" && err.fields?.length) {
+      return err.fields.map((f) => `${f.field}: ${f.message}`).join(" · ");
+    }
     return err.message;
   }
   if (err instanceof Error) return err.message;

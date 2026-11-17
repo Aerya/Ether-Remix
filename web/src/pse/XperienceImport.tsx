@@ -61,6 +61,8 @@ export function XperienceImport({ onCreated }: { onCreated?: () => void }) {
   );
 }
 function Picker({ onCreated }: { onCreated?: () => void }) {
+  const [manifestRefreshHours, setManifestRefreshHours] = useState("1");
+  const [collectionRefreshHours, setCollectionRefreshHours] = useState("24");
   const [manifest, setManifest] = useState("");
   const [catalogs, setCatalogs] = useState<Catalog[] | null>(null);
   const [selected, setSelected] = useState<Record<string, Choice>>({});
@@ -105,7 +107,14 @@ function Picker({ onCreated }: { onCreated?: () => void }) {
       setResult(
         await apiFetch<Result>(endpoint, {
           method: "POST",
-          body: JSON.stringify({ manifest, catalogs: choices, mode, maxItems: Number(maxItems) }),
+          body: JSON.stringify({
+            manifest,
+            catalogs: choices,
+            mode,
+            maxItems: Number(maxItems),
+            manifestRefreshHours: Number(manifestRefreshHours),
+            collectionRefreshHours: Number(collectionRefreshHours),
+          }),
         }),
       );
       onCreated?.();
@@ -149,8 +158,47 @@ function Picker({ onCreated }: { onCreated?: () => void }) {
         <>
           <p className="text-sm text-fg-muted">
             {L(
-              "Actualisation quotidienne et classement Xperience conservé. Les filtres Remix de langue et de disponibilité restent appliqués : Xperience fournit des listes, pas des sources de lecture. Les catalogues de recherche sont exclus.",
-              "Daily refresh with Xperience ordering. Remix language and availability filters still apply: Xperience provides lists, not playback sources. Search catalogues are excluded.",
+              "Classement Xperience conservé. Les filtres Remix de langue et de disponibilité restent appliqués : Xperience fournit des listes, pas des sources de lecture. Les catalogues de recherche sont exclus.",
+              "Xperience ordering is preserved. Remix language and availability filters still apply: Xperience provides lists, not playback sources. Search catalogues are excluded.",
+            )}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-sm">
+              {L("Actualiser le manifeste (heures)", "Refresh manifest (hours)")}
+              <Input
+                type="number"
+                min={1}
+                max={168}
+                value={manifestRefreshHours}
+                disabled={busy}
+                onChange={(e) => {
+                  setManifestRefreshHours(e.target.value);
+                  setResult(null);
+                }}
+              />
+            </label>
+            <label className="text-sm">
+              {L(
+                "Actualiser les nouvelles collections (heures)",
+                "Refresh new collections (hours)",
+              )}
+              <Input
+                type="number"
+                min={1}
+                max={168}
+                value={collectionRefreshHours}
+                disabled={busy}
+                onChange={(e) => {
+                  setCollectionRefreshHours(e.target.value);
+                  setResult(null);
+                }}
+              />
+            </label>
+          </div>
+          <p className="text-xs text-fg-muted">
+            {L(
+              "De 1 à 168 heures. Le manifeste décrit les catalogues disponibles ; les collections actualisent leurs titres. L’import installe ou réutilise le plugin Xperience dans Ether. Un réimport règle l’intervalle du manifeste mais conserve celui des collections existantes, modifiable dans leur éditeur.",
+              "From 1 to 168 hours. The manifest describes available catalogues; collections refresh their titles. Import installs or reuses the Xperience plugin in Ether. Reimport changes the manifest interval but keeps existing collection schedules, editable in their editor.",
             )}
           </p>
           <Select
@@ -289,6 +337,9 @@ function Picker({ onCreated }: { onCreated?: () => void }) {
             disabled={
               busy ||
               !choices.length ||
+              [manifestRefreshHours, collectionRefreshHours].some(
+                (v) => !Number.isInteger(Number(v)) || Number(v) < 1 || Number(v) > 168,
+              ) ||
               incomplete ||
               choices.some((c) => !c.name.trim()) ||
               !Number.isInteger(Number(maxItems)) ||

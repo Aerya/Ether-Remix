@@ -772,3 +772,34 @@ func TestTop10RankedDefault(t *testing.T) {
 		})
 	}
 }
+
+func TestAvailableRowsDropsDeletedCollectionsAndUsesCurrentNames(t *testing.T) {
+	source := &specCollectionSource{specs: []core.CollectionSpec{{ID: "live", Name: "Renamed", MediaType: "show", Enabled: true}, {ID: "disabled", Name: "Disabled", Enabled: false}}}
+	h := newHarness(t, func(o *Options) { o.Collections = source })
+	ctx := context.Background()
+	for _, id := range []string{"live", "deleted", "disabled"} {
+		_, err := h.db.Exec(`INSERT INTO personalize_row_impressions(user_id,day,hub_id,kind,title,first_at,last_at) VALUES(1,1,?,?,?, ?,?)`, "collection:"+id, "collection:"+id, "Old name", testNow.Unix(), testNow.Unix())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := h.e.AvailableRows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.HubID == "collection:deleted" || row.HubID == "collection:disabled" {
+			t.Fatalf("ghost row: %+v", row)
+		}
+		if row.HubID == "collection:live" {
+			found = true
+			if row.Title != "Renamed" {
+				t.Fatal("historical name retained")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("live collection missing")
+	}
+}

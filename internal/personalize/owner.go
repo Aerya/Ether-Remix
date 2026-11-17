@@ -689,6 +689,21 @@ func (e *Engine) AvailableRows(ctx context.Context) ([]core.RowDescriptor, error
 		if err != nil {
 			return nil, err
 		}
+		// History is analytics, not the authority for collection existence or names.
+		live := map[string]core.CollectionSpec{}
+		for _, sp := range specs {
+			if sp.Enabled {
+				live[KindCollectionPrefix+sp.ID] = sp
+			}
+		}
+		kept := extra[:0]
+		for _, d := range extra {
+			if sp, exists := live[d.HubID]; exists {
+				d.Title = sp.Name
+				kept = append(kept, d)
+			}
+		}
+		extra = kept
 		index := map[string]int{}
 		for i, d := range extra {
 			index[d.HubID] = i

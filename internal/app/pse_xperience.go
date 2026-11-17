@@ -25,7 +25,7 @@ func (b xperienceBackend) Preview(ctx context.Context, link string) (stremio.Man
 	}
 	return p.Manifest.Stremio(), nil
 }
-func (b xperienceBackend) Install(ctx context.Context, link string) (string, stremio.Manifest, error) {
+func (b xperienceBackend) Install(ctx context.Context, link string, manifestRefreshHours int) (string, stremio.Manifest, error) {
 	mgr := b.app.pluginManager()
 	if mgr == nil {
 		return "", stremio.Manifest{}, fmt.Errorf("catalogues indisponibles")
@@ -63,6 +63,9 @@ func (b xperienceBackend) Install(ctx context.Context, link string) (string, str
 	rec, err = mgr.SetRoles(ctx, rec.ID, off)
 	if err != nil {
 		return "", stremio.Manifest{}, fmt.Errorf("source inaccessible")
+	}
+	if err := mgr.SetManifestRefresh(ctx, rec.ID, manifestRefreshHours); err != nil {
+		return "", stremio.Manifest{}, err
 	}
 	return rec.ID, rec.Manifest.Stremio(), nil
 }

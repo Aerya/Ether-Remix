@@ -7,11 +7,12 @@ import {
   ListPlus,
   Plus,
 } from "lucide-react";
+import { apiFetch, errorMessage } from "../../lib/api";
 import { useState } from "react";
 import { ActionMenu } from "../../components/ActionMenu";
 import { SectionHeading } from "../../components/feedback";
 import { ChipGroup, Field, NumberInput, Segmented } from "../../components/fields";
-import type { CollectionSpec, Rule, RuleField, Source } from "../../lib/contract";
+import type { CollectionSpec, Rule, RuleField } from "../../lib/contract";
 import { t, tx } from "../../i18n";
 import { isPluginDescriptor, textOf, useRegistry } from "../../lib/extend";
 import {
@@ -54,6 +55,7 @@ export function BuildPanel({
   /** Open the Stremio add-on catalog picker straight away. */
   pickAddonCatalog?: boolean;
 }) {
+  const [sourceError, setSourceError] = useState("");
   const [addonCatalogs, setAddonCatalogs] = useState(pickAddonCatalog);
   const setRules = (key: "rules" | "exclude", rules: Rule[]) => update({ [key]: rules });
   // Source kinds come from the descriptor registry (built-ins and plugins
@@ -71,17 +73,24 @@ export function BuildPanel({
     });
   };
   // A catalog added with its add-on may reach the registry after the pick,
-  // so it is added by kind; a new collection takes the catalog's media type.
-  const addAddonCatalog = (c: AddonCatalogChoice) => {
-    const d = sourceDescriptor(descriptors, c.kind);
-    const src = d
-      ? newSourceFromDescriptor(d, spec.mediaType, region)
-      : ({ kind: c.kind } as unknown as Source);
-    update({
-      sources: [...(loneCatalog ? [] : spec.sources), src],
-      localOnly: false,
-      ...(loneCatalog && c.mediaType ? { mediaType: c.mediaType } : {}),
-    });
+  // so reload its defaults before adding it; new collections take its media type.
+  const addAddonCatalog = async (c: AddonCatalogChoice) => {
+    setSourceError("");
+    try {
+      const { descriptors: fresh } = await apiFetch<{ descriptors: SourceDescriptor[] }>(
+        "/extend/registry?kinds=collectionSource",
+      );
+      const d = sourceDescriptor(fresh, c.kind);
+      if (!d) throw new Error(t("That source no longer exists."));
+      const src = newSourceFromDescriptor(d, c.mediaType ?? spec.mediaType, region);
+      update({
+        sources: [...(loneCatalog ? [] : spec.sources), src],
+        localOnly: false,
+        ...(loneCatalog && c.mediaType ? { mediaType: c.mediaType } : {}),
+      });
+    } catch (err) {
+      setSourceError(errorMessage(err));
+    }
   };
   const sourceItems: ContextMenuEntry[] = [
     ...descriptors
@@ -214,6 +223,11 @@ export function BuildPanel({
             />
           ))}
         </div>
+        {sourceError ? (
+          <p role="alert" className="text-danger">
+            {sourceError}
+          </p>
+        ) : null}
         <AddonCatalogDrawer
           open={addonCatalogs}
           onClose={() => setAddonCatalogs(false)}
