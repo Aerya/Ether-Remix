@@ -173,3 +173,7 @@ Les points d’accroche dans `internal/core/ondemand.go`, `internal/core/indexer
 `PSE_INDEXER_SOURCES` conserve sa sémantique historique : vide = addons Stremio activés, liste = sélection explicite. La valeur réservée `__none__` représente une sélection personnalisée vide, sans réactiver les addons automatiquement. Aucun appel de recherche ou téléchargement n’est déclenché par ce changement d’interface.
 
 Les compteurs de priorité utilisent une seule réponse `/pse/indexer/details`, avec l’identifiant des bibliothèques ajouté aux lignes existantes. Ils réutilisent les agrégats et le cache des statistiques, sans requête supplémentaire par collection.
+
+### Dispositions et partage par contribution
+
+`internal/pse/layouts` stocke les modèles nommés et le retour en arrière. Chaque composant fournit sa capture/restauration de présentation dans `layout_template.go` ; les quatre parties sont appliquées dans une transaction, puis les caches sont invalidés. Les ACL ne font pas partie du modèle. Les bibliothèques à thème ajoutent `users_json` avec accès historique « all » et conservation des droits lors des mises à jour anciennes. Les membres des collections locales conservent leur provenance ; les permissions actuelles sont vérifiées avant tri/limite, sans cacher le résultat d’un spectateur dans le cache commun. La source `releaseSource` lit les observations indexées. Voir [le guide](LAYOUTS.fr.md).

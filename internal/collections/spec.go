@@ -219,7 +219,7 @@ func validateWith(reg *KindRegistry, s *core.CollectionSpec) error {
 	}
 	if s.LocalOnly {
 		for _, src := range s.Sources {
-			if src.Kind != "catalog" && src.Kind != "localFiles" {
+			if src.Kind != "catalog" && src.Kind != "localFiles" && src.Kind != "releaseSource" {
 				ve.add("localOnly", "Local collections use only the catalogue source")
 			}
 		}

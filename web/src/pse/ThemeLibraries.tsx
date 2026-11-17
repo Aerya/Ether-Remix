@@ -5,6 +5,7 @@ import { useState } from "react";
 import { getLocale } from "../i18n";
 import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
+import { LayoutTemplates } from "./LayoutTemplates";
 import { PseAddonCatalogImport } from "./AddonCatalogImport";
 
 /**
@@ -15,6 +16,7 @@ import { PseAddonCatalogImport } from "./AddonCatalogImport";
 type Kind = "movie" | "show" | "mixed";
 
 export interface ThemeLibrary {
+  users?: "all" | number[];
   id: number;
   preset?: string;
   name: string;
@@ -43,7 +45,15 @@ interface Preset {
   allLanguages?: boolean;
 }
 
+interface LibrarySource {
+  id: string;
+  name: string;
+  kind: string;
+  collection?: string;
+}
+
 export interface ThemeData {
+  sources?: LibrarySource[];
   libraries: ThemeLibrary[];
   collections: ThemeCollection[];
   presets: Preset[];
@@ -77,6 +87,8 @@ const mixedHint = () =>
   );
 
 interface Draft {
+  sourceIds?: string[];
+  users?: "all" | number[];
   name: string;
   type: Kind;
   collections: string[];
@@ -87,10 +99,14 @@ function Editor({
   draft,
   setDraft,
   collections,
+  sources = [],
+  viewers = [],
 }: {
   draft: Draft;
   setDraft: (d: Draft) => void;
   collections: ThemeCollection[];
+  sources?: LibrarySource[];
+  viewers?: { id: number; name: string }[];
 }) {
   const byId = new Map(collections.map((c) => [c.id, c]));
   const choices = collectionsFor(collections, draft.type, draft.collections);
@@ -141,6 +157,84 @@ function Editor({
           )}
         </span>
       </label>
+      <fieldset className="space-y-2 rounded border border-border p-3">
+        <legend className="text-sm font-medium">
+          {L("Accès à la bibliothèque", "Library access")}
+        </legend>
+        <Select
+          aria-label={L("Partager la bibliothèque", "Share library")}
+          value={draft.users === undefined || draft.users === "all" ? "all" : "selected"}
+          onChange={(e) => setDraft({ ...draft, users: e.target.value === "all" ? "all" : [] })}
+        >
+          <option value="all">{L("Tous les utilisateurs", "All users")}</option>
+          <option value="selected">{L("Utilisateurs sélectionnés", "Selected users")}</option>
+        </Select>
+        {Array.isArray(draft.users) && (
+          <div className="flex flex-wrap gap-3">
+            {viewers.map((viewer) => (
+              <label key={viewer.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={Array.isArray(draft.users) && draft.users.includes(viewer.id)}
+                  onChange={(e) => {
+                    const ids = Array.isArray(draft.users) ? draft.users : [];
+                    setDraft({
+                      ...draft,
+                      users: e.target.checked
+                        ? [...ids, viewer.id]
+                        : ids.filter((id) => id !== viewer.id),
+                    });
+                  }}
+                />
+                {viewer.name}
+              </label>
+            ))}
+          </div>
+        )}
+        <p className="text-xs text-fg-muted">
+          {L(
+            "Chaque utilisateur voit uniquement les contenus autorisés. Partager cette bibliothèque ne partage pas les dossiers privés. La lecture conserve vos priorités et les sources autorisées de chaque utilisateur.",
+            "Each user sees only authorized content. Sharing this library does not share private folders. Playback keeps your priorities and each user's authorized sources.",
+          )}
+        </p>
+      </fieldset>
+      {sources.length > 0 && (
+        <fieldset className="space-y-2 rounded border border-border p-3">
+          <legend className="text-sm font-medium">{L("Ajouter des sources", "Add sources")}</legend>
+          <p className="text-xs text-fg-muted">
+            {L(
+              "Choisissez un ou plusieurs dossiers ou sources indexées. Vous pouvez aussi ajouter des collections ci-dessous. Les sources en ligne utilisent les résultats déjà indexés, sans téléchargement ; une source pas encore indexée peut être vide.",
+              "Choose one or more folders or indexed sources. You can also add collections below. Online sources use existing indexed results without downloading; a source not yet indexed may be empty.",
+            )}
+          </p>
+          <div className="flex flex-wrap gap-3">
+            {sources
+              .filter(
+                (source) => !source.collection || !draft.collections.includes(source.collection),
+              )
+              .map((source) => (
+                <label key={source.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={(draft.sourceIds ?? []).includes(source.id)}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        sourceIds: e.target.checked
+                          ? [...(draft.sourceIds ?? []), source.id]
+                          : (draft.sourceIds ?? []).filter((id) => id !== source.id),
+                      })
+                    }
+                  />
+                  {source.name} ·{" "}
+                  {source.kind === "local"
+                    ? L("Dossier local", "Local folder")
+                    : L("Source indexée", "Indexed source")}
+                </label>
+              ))}
+          </div>
+        </fieldset>
+      )}
       {draft.collections.length ? (
         <ol className="flex flex-wrap gap-1.5">
           {draft.collections.map((id, i) => (
@@ -205,6 +299,11 @@ export function ThemeLibraries({
   mediaType,
   exceptionsOnly = false,
 }: { preset?: string; mediaType?: "movie" | "show"; exceptionsOnly?: boolean } = {}) {
+  const viewerDoc = useAsync(
+    () => apiFetch<{ id: number; name: string }[]>("/pse/owned/viewers"),
+    [],
+  );
+  const viewers = Array.isArray(viewerDoc.data) ? viewerDoc.data : [];
   const doc = useAsync(() => apiFetch<ThemeData>(ENDPOINT), []);
   const [data, setData] = useState<ThemeData | null>(null);
   const [edits, setEdits] = useState<Record<number, Draft>>({});
@@ -267,6 +366,21 @@ export function ThemeLibraries({
 
   return (
     <div id="pse-themes">
+      <LayoutTemplates
+        dirty={Object.keys(edits).some((id) => {
+          const lib = current.libraries.find((l) => l.id === Number(id));
+          const d = edits[Number(id)];
+          return (
+            !!d &&
+            (!lib ||
+              d.name !== lib.name ||
+              d.type !== lib.type ||
+              JSON.stringify(d.collections) !== JSON.stringify(lib.collections) ||
+              JSON.stringify(d.users ?? "all") !== JSON.stringify(lib.users ?? "all") ||
+              !!d.sourceIds?.length)
+          );
+        })}
+      />
       <SettingsSection
         title={
           preset === "anime"
@@ -386,8 +500,11 @@ export function ThemeLibraries({
               type: lib.type,
               collections: lib.collections,
               allLanguages: !!lib.allLanguages,
+              users: lib.users ?? "all",
             };
             const changed =
+              JSON.stringify(draft.users ?? "all") !== JSON.stringify(lib.users ?? "all") ||
+              (draft.sourceIds?.length ?? 0) > 0 ||
               draft.name !== lib.name ||
               draft.type !== lib.type ||
               !!draft.allLanguages !== !!lib.allLanguages ||
@@ -468,6 +585,8 @@ export function ThemeLibraries({
                   draft={draft}
                   setDraft={(d) => setEdits({ ...edits, [lib.id]: d })}
                   collections={current.collections}
+                  sources={current.sources}
+                  viewers={viewers}
                 />
                 <Button
                   size="sm"
@@ -505,10 +624,21 @@ export function ThemeLibraries({
                 "First create the collections you want under Collections (MDBList or Trakt list, Stremio add-on catalog…), then add them here as rows.",
               )}
             </p>
-            <Editor draft={creating} setDraft={setCreating} collections={current.collections} />
+            <Editor
+              draft={creating}
+              setDraft={setCreating}
+              collections={current.collections}
+              sources={current.sources}
+              viewers={viewers}
+            />
             <Button
               size="sm"
-              disabled={busy || full || !creating.name.trim() || creating.collections.length === 0}
+              disabled={
+                busy ||
+                full ||
+                !creating.name.trim() ||
+                (creating.collections.length === 0 && !creating.sourceIds?.length)
+              }
               onClick={() =>
                 void send(
                   "",

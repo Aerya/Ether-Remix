@@ -26,6 +26,8 @@ const maxMembers = 5000
 
 // buildResult is one evaluation of a spec.
 type buildResult struct {
+	origins map[core.RatingKey][]string
+
 	keys      []core.RatingKey // sorted members, before the spec's limit
 	total     int              // matches (may exceed len(keys) when capped)
 	warnings  []string
@@ -152,6 +154,11 @@ func (s *Service) evaluate(ctx context.Context, spIn core.CollectionSpec, opt ev
 		}
 	}
 
+	// Remember catalog membership before private local sources add metadata.
+	catalogKeys := map[core.RatingKey]bool{}
+	for _, e := range snap.order {
+		catalogKeys[e.key] = true
+	}
 	// Join external titles to the browsable catalogue.
 	var external []core.Title
 	for _, r := range results {
@@ -252,10 +259,23 @@ func (s *Service) evaluate(ctx context.Context, spIn core.CollectionSpec, opt ev
 		snap = mergeEntries(snap, entries)
 	}
 
+	// Keep provenance independently of deduplication, so a public copy remains visible.
+	res.origins = map[core.RatingKey][]string{}
+	origin := ""
 	// Union candidates in source order.
 	cands := make([]*cand, 0, 256)
 	seen := map[core.RatingKey]*cand{}
 	addKey := func(k core.RatingKey) {
+		found := false
+		for _, prior := range res.origins[k] {
+			if prior == origin {
+				found = true
+				break
+			}
+		}
+		if !found {
+			res.origins[k] = append(res.origins[k], origin)
+		}
 		if c := seen[k]; c != nil {
 			return
 		}
@@ -267,11 +287,17 @@ func (s *Service) evaluate(ctx context.Context, spIn core.CollectionSpec, opt ev
 		seen[k] = c
 		cands = append(cands, c)
 	}
-	for _, r := range results {
+	for i, r := range results {
+		origin = ""
+		if sp.Sources[i].Kind == "localFiles" {
+			origin = "local:" + sp.Sources[i].Label
+		}
 		switch {
 		case r.all:
 			for _, e := range snap.order {
-				addKey(e.key)
+				if catalogKeys[e.key] {
+					addKey(e.key)
+				}
 			}
 			for _, t := range r.titles {
 				addKey(t.Key)

@@ -16,6 +16,9 @@ import (
 )
 
 func init() {
+	store.Register("collections", 9, `ALTER TABLE collections_members ADD COLUMN origins_json TEXT NOT NULL DEFAULT 'null';
+ UPDATE collections_specs SET build_hash='' WHERE spec_json LIKE '%localFiles%';`)
+
 	// Profile membership checks seek one title within a collection, independent of its size.
 	store.Register("collections", 8, `CREATE INDEX collections_members_profile_lookup ON collections_members(spec_id,key,shared);`)
 
@@ -367,7 +370,7 @@ func (s *Service) deleteRow(ctx context.Context, id int64) error {
 }
 
 // saveBuild persists a build's members and report.
-func (s *Service) saveBuild(ctx context.Context, id int64, expected, resolved string, keys []core.RatingKey, unshared map[core.RatingKey]bool, itemCount int, warnings []string, hash string, at time.Time) error {
+func (s *Service) saveBuild(ctx context.Context, id int64, expected, resolved string, keys []core.RatingKey, unshared map[core.RatingKey]bool, itemCount int, warnings []string, hash string, at time.Time, provenance ...map[core.RatingKey][]string) error {
 	wj, _ := json.Marshal(warnings)
 	if warnings == nil {
 		wj = []byte("[]")
@@ -389,13 +392,18 @@ func (s *Service) saveBuild(ctx context.Context, id int64, expected, resolved st
 	if _, err := tx.ExecContext(ctx, `DELETE FROM collections_members WHERE spec_id=?`, id); err != nil {
 		return err
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO collections_members(spec_id,pos,key,shared) VALUES(?,?,?,?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO collections_members(spec_id,pos,key,shared,origins_json) VALUES(?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for i, k := range keys {
-		if _, err := stmt.ExecContext(ctx, id, i, int64(k), store.BoolInt(!unshared[k])); err != nil {
+		origins := "null"
+		if len(provenance) > 0 {
+			raw, _ := json.Marshal(provenance[0][k])
+			origins = string(raw)
+		}
+		if _, err := stmt.ExecContext(ctx, id, i, int64(k), store.BoolInt(!unshared[k]), origins); err != nil {
 			return err
 		}
 	}

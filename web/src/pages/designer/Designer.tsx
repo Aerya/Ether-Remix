@@ -1,3 +1,4 @@
+import { LayoutTemplates } from "../../pse/LayoutTemplates";
 import { SubtabNav } from "../../components/layout";
 import { Badge, Button, EmptyState, Spinner, toast } from "@braedonsaunders/appkit-ui";
 import { RefreshCw, Save, Undo2, Users } from "lucide-react";
@@ -205,6 +206,7 @@ export default function Designer() {
             <div className="space-y-5 p-3 sm:p-4">
               {tools === "layout" && (
                 <>
+                  <LayoutTemplates dirty={dirty} />
                   <PageSettings {...editing} defaults={defaults} />
                   <AnchoredSlots {...editing} available={available} />
                 </>
