@@ -28,6 +28,7 @@ type Manager struct {
 
 	mu              sync.RWMutex
 	clients         []*Client
+	admission       func(context.Context, core.SearchRequest, []core.Release) []core.Release
 	retained        func(context.Context, core.SearchRequest) ([]core.Release, bool)
 	searchObserver  func(context.Context, core.SearchRequest, []core.Release)
 	retainedRefresh func() bool
@@ -194,6 +195,7 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 	ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposeRescue)
 	m.mu.RLock()
 	observer := m.searchObserver
+	admission := m.admission
 	refresh := m.retainedRefresh
 	m.mu.RUnlock()
 	var fresh []core.Release
@@ -228,6 +230,9 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 				return
 			}
 			res, err := cl.SearchRescue(ctx, req)
+			if admission != nil {
+				res = admission(ctx, req, res)
+			}
 			slots[i].results, slots[i].err = res, err
 			if arrived != nil && err == nil && len(res) > 0 {
 				arrived(res)
@@ -300,13 +305,19 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	m.mu.RLock()
 	retained := m.retained
 	observer := m.searchObserver
+	admission := m.admission
 	m.mu.RUnlock()
 	if retained != nil && core.IndexerPurpose(ctx) != core.IndexerPurposeRescue {
 		if rs, ok := retained(ctx, req); ok {
-			if arrived != nil && len(rs) > 0 {
-				arrived(rs)
+			if admission != nil {
+				rs = admission(ctx, req, rs)
 			}
-			return rs, nil
+			if len(rs) > 0 {
+				if arrived != nil && len(rs) > 0 {
+					arrived(rs)
+				}
+				return rs, nil
+			}
 		}
 	}
 	clients := m.Clients()
@@ -340,7 +351,18 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 				return
 			}
 			started := time.Now()
-			res, err := cl.SearchWith(ctx, req, arrived)
+			deliver := arrived
+			if admission != nil && arrived != nil {
+				deliver = func(rs []core.Release) {
+					if verified := admission(ctx, req, rs); len(verified) > 0 {
+						arrived(verified)
+					}
+				}
+			}
+			res, err := cl.SearchWith(ctx, req, deliver)
+			if admission != nil {
+				res = admission(ctx, req, res)
+			}
 			slots[i].duration = time.Since(started)
 			slots[i].results, slots[i].err = res, err
 		}(i, cl)
@@ -446,4 +468,12 @@ func (m *Manager) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) 
 // it was paused or did not answer, rather than because it found nothing.
 func missingAnswer(err error) bool {
 	return errors.Is(err, ErrIndexerPaused) || transientFailure(err)
+}
+
+// SetSearchAdmission applies the same identity rule before early delivery,
+// ordinary results, retained hits and rescue results reach playback.
+func (m *Manager) SetSearchAdmission(fn func(context.Context, core.SearchRequest, []core.Release) []core.Release) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.admission = fn
 }

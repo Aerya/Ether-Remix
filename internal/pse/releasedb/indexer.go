@@ -78,12 +78,13 @@ func LoadSettings() Settings {
 
 // Deps relie l'indexeur à l'application.
 type Deps struct {
-	DB       *sql.DB
-	Remember func(context.Context, core.RatingKey, []core.Release)
-	Config   func() config.Config
-	Browse   func(context.Context, core.BrowseQuery) (core.Page, error)
-	Search   func(context.Context, core.SearchRequest) ([]core.Release, error)
-	Active   func() bool // une lecture est en cours : l'indexation attend
+	DB             *sql.DB
+	Remember       func(context.Context, core.RatingKey, []core.Release)
+	ReferenceReady func(context.Context, core.RatingKey) bool
+	Config         func() config.Config
+	Browse         func(context.Context, core.BrowseQuery) (core.Page, error)
+	Search         func(context.Context, core.SearchRequest) ([]core.Release, error)
+	Active         func() bool // une lecture est en cours : l'indexation attend
 	// Priority renvoie les titres à indexer avant le reste du catalogue
 	// (bibliothèques à thème, priorités de la console) ; facultatif.
 	Priority func(context.Context, core.MediaType) []PriorityKey
@@ -330,6 +331,15 @@ func (s *Service) next(ctx context.Context) (core.Title, error) {
 	for range types {
 		typ := types[s.turn%len(types)]
 		s.turn++
+		// Alternate recovery with the normal catalogue so a large old index
+		// cannot indefinitely starve new titles or explicit priorities.
+		if (s.turn-1)/len(types)%2 == 0 {
+			if t, ok, err := s.nextReferenceBackfill(ctx, typ, now); err != nil {
+				return core.Title{}, err
+			} else if ok {
+				return t, nil
+			}
+		}
 		if t, ok, err := s.nextPriority(ctx, typ, now); err != nil {
 			return core.Title{}, err
 		} else if ok {
@@ -438,11 +448,15 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 		return nil
 	}
 	// A recent SeerrCatalog availability replaces this duplicate catalogue check.
-	if seerrcatalog.Trusted(ctx, s.st.db, t.Key) {
+	if !LibraryEnabled() && seerrcatalog.Trusted(ctx, s.st.db, t.Key) {
 		return nil
 	}
 	req := core.SearchRequest{Anime: t.IsAnime(), AbsoluteEpisode: t.AbsoluteEpisode, Type: t.Type, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, Year: t.Year, AlternativeTitles: t.AlternativeTitles, Released: t.Released}
 	season, episode := 0, 0
+	if t.Type == core.TypeEpisode {
+		season, episode = t.Season, t.Episode
+		req.Season, req.Episode = season, episode
+	}
 	if t.Type == core.TypeShow {
 		// Une série est représentée par son premier épisode.
 		season, episode = 1, 1
@@ -482,8 +496,9 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 			marks = marks || len(r.DebridCached) > 0 || len(r.DebridUncached) > 0
 		}
 		var batch []Release
+		var references []core.Release
 		for _, r := range rels {
-			if releaseparse.AssociationReason(req, r) != "" {
+			if releaseparse.AssociationReason(req, r) != "" || releaseparse.ReferenceReason(r) != "" {
 				continue
 			}
 			cached := r.DebridCached
@@ -497,6 +512,10 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 				cached = nil // copie complète avant lecture
 			}
 			batch = append(batch, FromCore(t, season, episode, src.id, r, cached))
+			if r.IndexerID == "" {
+				r.IndexerID = src.id
+			}
+			references = append(references, r)
 		}
 		if err != nil {
 			// Résultats partiels : on garde aussi les anciennes releases.
@@ -507,7 +526,23 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 		} else if _, err := s.st.Replace(ctx, Scope{SourceID: src.id, TitleKey: t.Key, Season: season, Episode: episode}, batch, now); err != nil {
 			return err
 		}
+		if s.d.Remember != nil && LibraryEnabled() && len(references) > 0 {
+			key := t.Key
+			if t.Type == core.TypeShow {
+				key = core.EpisodeKey(t.Key.TMDB(), season, episode)
+			}
+			s.d.Remember(ctx, key, references)
+		}
 		found += len(batch)
+	}
+	refkey := t.Key
+	if t.Type == core.TypeShow {
+		refkey = core.EpisodeKey(t.Key.TMDB(), 1, 1)
+	}
+	if LibraryEnabled() && asked > 0 && denied == 0 && failed == 0 && partial == 0 && s.d.ReferenceReady != nil && s.d.ReferenceReady(ctx, refkey) {
+		if _, err := s.st.db.ExecContext(ctx, `DELETE FROM pse_reference_backfill WHERE title_key=?`, t.Key); err != nil {
+			return err
+		}
 	}
 	if p := Playable(); p.Enabled {
 		if err := s.st.RefreshPlayable(ctx, t.Key, p); err != nil {

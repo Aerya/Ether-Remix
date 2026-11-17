@@ -46,6 +46,29 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-17-strict-source-references",
+    version: "0.2.37-remix.108.1",
+    date: "2026-11-17",
+    title: [
+      "Références de lecture : contrôle strict et reprise",
+      "Playback references: strict checks and recovery",
+    ],
+    items: [
+      [
+        "Le titre et l’année doivent correspondre, même si la source fournit le bon identifiant. Les épisodes ambigus et les références manquantes sont refusés avant indexation et lecture.",
+        "Title and year must agree even when the source reports the expected identifier. Ambiguous episodes and missing references are rejected before indexing and playback.",
+      ],
+      [
+        "Un nouvel audit isole les anciennes associations non confirmées. Les contenus déjà indexés sont repris progressivement pour récupérer leurs références de lecture ; le compteur indique ce qui reste à reprendre.",
+        "A new audit isolates unconfirmed old associations. Previously indexed titles are gradually revisited to collect playback references; a counter shows pending recovery.",
+      ],
+      [
+        "Les magnets et liens fichiers AllDebrid confirmés restent conservés ; les liens HTTP temporaires doivent toujours être actualisés après expiration.",
+        "Confirmed magnets and AllDebrid file links remain stored; temporary HTTP links still require refresh after expiry.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-17-layout-templates-library-sharing",
     version: "0.2.37-remix.107.1",
     date: "2026-11-17",

@@ -20,8 +20,8 @@ func TestReleaseLibraryPlaybackGateAndPrivateProjection(t *testing.T) {
 	}
 	a := &App{db: store.OpenTest(t), cfg: cfg, log: slog.Default()}
 	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"}))
-	req := core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 42}}
-	r := core.Release{ID: "private-id", Name: "Film.FRENCH.1080p", TitleIDs: core.IDs{TMDB: 42}, Indexer: "Source", IndexerID: "test", Protocol: core.ProtocolHTTP, StreamURL: "https://example.test/private-url", StreamHeaders: map[string]string{"Authorization": "private-header"}, GUID: "private-guid", StreamDebrid: "alldebrid"}
+	req := core.SearchRequest{Type: core.TypeMovie, Title: "Film", Year: 2020, IDs: core.IDs{TMDB: 42}}
+	r := core.Release{ID: "private-id", Name: "Film.2020.FRENCH.1080p", TitleIDs: core.IDs{TMDB: 42}, Indexer: "Source", IndexerID: "test", Protocol: core.ProtocolHTTP, StreamURL: "https://example.test/private-url", StreamHeaders: map[string]string{"Authorization": "private-header"}, GUID: "private-guid", StreamDebrid: "alldebrid"}
 	a.rememberSearchReferences(context.Background(), req, []core.Release{r})
 	play := core.WithIndexerPurpose(context.Background(), core.IndexerPurposePlayback)
 	if rs, ok := a.retainedReleaseLibrary(play, req); !ok || len(rs) != 1 || rs[0].StreamDebrid != "alldebrid" {
@@ -72,7 +72,7 @@ func TestReleaseLibraryOverview(t *testing.T) {
 	a := &App{db: store.OpenTest(t), cfg: cfg, log: slog.Default()}
 	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"}))
 	for i := int64(1); i <= 51; i++ {
-		a.rememberSearchReferences(context.Background(), core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: i}}, []core.Release{{ID: "private-id", Name: "Film", TitleIDs: core.IDs{TMDB: i}, Indexer: "Source", StreamURL: "https://private.example/secret"}})
+		a.rememberSearchReferences(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "Film", Year: 2020, IDs: core.IDs{TMDB: i}}, []core.Release{{ID: "private-id", Name: "Film.2020.1080p", Protocol: core.ProtocolHTTP, TitleIDs: core.IDs{TMDB: i}, Indexer: "Source", StreamURL: "https://private.example/secret"}})
 	}
 	for i, change := range []string{"expires=0", "failed=1", "source_signature='old'"} {
 		if _, err = a.db.Exec("UPDATE pse_release_library SET "+change+" WHERE title_key=?", int64(core.MovieKey(int64(i+1)))); err != nil {
@@ -125,8 +125,8 @@ func TestReleaseLibraryRefusesWrongSourceAnswersAndLegacyReuse(t *testing.T) {
 	a := &App{db: store.OpenTest(t), cfg: cfg, log: slog.Default()}
 	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"}))
 	req := core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 48463}, Title: "Incident au Loch Ness", OriginalTitle: "Incident at Loch Ness", Year: 2004}
-	good := core.Release{ID: "good", Name: "Incident.at.Loch.Ness.2004.1080p", Indexer: "source"}
-	bad := core.Release{ID: "bad", Name: "Superman.2025.1080p", Indexer: "source", TitleIDs: req.IDs, TitleIDsEchoed: true}
+	good := core.Release{ID: "good", Name: "Incident.at.Loch.Ness.2004.1080p", Indexer: "source", Protocol: core.ProtocolHTTP, StreamURL: "https://source.test/file"}
+	bad := core.Release{ID: "bad", Name: "Superman.2025.1080p", Indexer: "source", Protocol: core.ProtocolHTTP, StreamURL: "https://source.test/file", TitleIDs: req.IDs, TitleIDsEchoed: true}
 	a.rememberSearchReferences(context.Background(), req, []core.Release{good, bad, {ID: "none", Name: "aucun_flux"}})
 	entries, err := a.releaseLibrary().Entries(context.Background(), core.MovieKey(48463))
 	if err != nil || len(entries) != 1 {

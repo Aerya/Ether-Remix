@@ -63,3 +63,40 @@ func TestRetainedMovieRescueRefreshesAddon(t *testing.T) {
 		t.Fatal("rescue did not refresh addon", err, rs)
 	}
 }
+
+func TestAdmissionProtectsRetainedEarlyArrivalAndRescue(t *testing.T) {
+	m := NewManager(nil, []config.Indexer{{ID: "source", Name: "Source", Kind: config.IndexerKindAddon, URL: "https://example.test", Enabled: true}}, Options{Backend: func(config.Indexer) (Backend, error) { return libraryBackend{}, nil }})
+	m.SetRetainedSearch(func(context.Context, core.SearchRequest) ([]core.Release, bool) {
+		return []core.Release{{ID: "legacy-wrong"}}, true
+	})
+	m.SetSearchAdmission(func(_ context.Context, q core.SearchRequest, rs []core.Release) []core.Release {
+		var out []core.Release
+		for _, r := range rs {
+			if q.Title == "Sample" && r.ID == "sample" {
+				out = append(out, r)
+			}
+		}
+		return out
+	})
+	m.SetRetainedRefresh(func() bool { return true })
+	for _, title := range []string{"Other", "Sample"} {
+		for _, search := range []func(context.Context, core.SearchRequest, func([]core.Release)) ([]core.Release, error){m.SearchWith, m.SearchRescueWith} {
+			arrived := 0
+			rs, err := search(t.Context(), core.SearchRequest{Type: core.TypeMovie, Title: title, Year: 2026}, func(rs []core.Release) {
+				for _, r := range rs {
+					if r.ID != "sample" {
+						t.Error("wrong early arrival")
+					}
+				}
+				arrived += len(rs)
+			})
+			want := 0
+			if title == "Sample" {
+				want = 1
+			}
+			if err != nil || len(rs) != want || arrived != want {
+				t.Fatalf("%s: %d %d %v", title, len(rs), arrived, err)
+			}
+		}
+	}
+}

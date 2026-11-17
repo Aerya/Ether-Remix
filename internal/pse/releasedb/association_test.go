@@ -21,8 +21,8 @@ func TestAssociationAuditPreservesQuarantineAndVerifiedRows(t *testing.T) {
 	t.Cleanup(pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"}))
 	l := Library{Store: NewStore(db), Seal: func(s string) (string, error) { return "private:" + s, nil }, Open: func(s string) (string, error) { return strings.TrimPrefix(s, "private:"), nil }}
 	key := core.MovieKey(48463)
-	good := core.Release{ID: "good", Name: "Incident.at.Loch.Ness.2004.1080p", Indexer: "valid", StreamURL: "https://private.invalid/token"}
-	bad := core.Release{ID: "bad", Name: "Superman.2025.1080p", Indexer: "wrong", TitleIDs: core.IDs{TMDB: 48463}, TitleIDsEchoed: true}
+	good := core.Release{ID: "good", Name: "Incident.at.Loch.Ness.2004.1080p", Indexer: "valid", Protocol: core.ProtocolHTTP, StreamURL: "https://private.invalid/token"}
+	bad := core.Release{ID: "bad", Name: "Superman.2025.1080p", Indexer: "wrong", Protocol: core.ProtocolHTTP, StreamURL: "https://private.invalid/wrong", TitleIDs: core.IDs{TMDB: 48463}, TitleIDsEchoed: true}
 	if err = l.Save(ctx, key, []core.Release{good, bad}); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +37,10 @@ func TestAssociationAuditPreservesQuarantineAndVerifiedRows(t *testing.T) {
 	db.QueryRow(`SELECT COUNT(*) FROM pse_release_library`).Scan(&n)
 	if n != 2 {
 		t.Fatal("dry run mutated library")
+	}
+	// Version 1 is deliberately insufficient for the stricter audit.
+	if _, err = db.Exec(`CREATE TABLE pse_association_audit(version INTEGER PRIMARY KEY,checked INTEGER,quarantined INTEGER); INSERT INTO pse_association_audit VALUES(1,4,0)`); err != nil {
+		t.Fatal(err)
 	}
 	applied, err := AuditAssociations(ctx, db, l.Open, true)
 	if err != nil || applied.Quarantined != 2 {
@@ -55,7 +59,7 @@ func TestAssociationAuditPreservesQuarantineAndVerifiedRows(t *testing.T) {
 	if err != nil || again.Quarantined != 0 {
 		t.Fatalf("%+v %v", again, err)
 	}
-	if err = db.QueryRow(`SELECT quarantined FROM pse_association_audit WHERE version=1`).Scan(&n); err != nil || n != 2 {
+	if err = db.QueryRow(`SELECT quarantined FROM pse_association_audit WHERE version=2`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("resumed quarantine counter: %d %v", n, err)
 	}
 	raw, _ := json.Marshal(applied)

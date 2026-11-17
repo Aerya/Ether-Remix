@@ -45,7 +45,7 @@ func (m *operabilityMedia) Search(_ context.Context, q core.SearchRequest) ([]co
 		return nil, nil
 	}
 	info := core.ReleaseInfo{Title: q.Title, Year: q.Year, Height: 720, Source: core.SourceWEBDL, VideoCodec: "h264", AudioCodec: "aac", Container: "mp4"}
-	return []core.Release{{ID: m.relID, GUID: m.relID, Indexer: m.Name(), Name: q.Title + ".2000.720p.WEB-DL.H264.AAC", Size: 8 << 20, TitleIDs: q.IDs, Info: info}}, nil
+	return []core.Release{{ID: m.relID, GUID: m.relID, Protocol: core.ProtocolHTTP, StreamURL: "https://fixture.invalid/file", Indexer: m.Name(), Name: q.Title + ".2000.720p.WEB-DL.H264.AAC", Size: 8 << 20, TitleIDs: q.IDs, Info: info}}, nil
 }
 func (m *operabilityMedia) FetchNZB(_ context.Context, r core.Release) ([]byte, error) {
 	if r.ID != m.relID {

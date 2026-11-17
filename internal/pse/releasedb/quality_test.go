@@ -8,7 +8,7 @@ import (
 
 func TestQualityChangeRecountsWithoutLosingSearchResults(t *testing.T) {
 	e := newFreshEnv(t)
-	e.stub.rels["a"] = []core.Release{frRelease("Film.FRENCH.1080p-GOOD"), frRelease("Film.FRENCH.1080p-BAD")}
+	e.stub.rels["a"] = []core.Release{frRelease("Film.2020.FRENCH.1080p-GOOD"), frRelease("Film.2020.FRENCH.1080p-BAD")}
 	e.index(t, 1)
 	q, err := quality.New(e.ctx, e.s.Store().db)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestQualityChangeRecountsWithoutLosingSearchResults(t *testing.T) {
 
 func TestQualityModeReplacesLegacyCriteriaAndRestoresThem(t *testing.T) {
 	e := newFreshEnv(t)
-	e.stub.rels["a"] = []core.Release{frRelease("Film.FRENCH.1080p-GOOD")}
+	e.stub.rels["a"] = []core.Release{frRelease("Film.2020.FRENCH.1080p-GOOD")}
 	e.index(t, 1)
 	q, err := quality.New(e.ctx, e.s.Store().db)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestQualityOriginalAndCacheSurviveIndexing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, state := range []string{"cached", "uncached", "unknown"} {
-		r := core.Release{TitleIDs: core.IDs{IMDB: "tt1"}, ID: state, Name: "Film.JAPANESE.1080p.WEB-DL-" + state, Protocol: core.ProtocolHTTP, Info: core.ReleaseInfo{Height: 1080, Languages: []string{"japanese"}}}
+		r := core.Release{TitleIDs: core.IDs{IMDB: "tt1"}, ID: state, Name: "Film.2020.JAPANESE.1080p.WEB-DL-" + state, Protocol: core.ProtocolHTTP, StreamURL: "https://source.test/file", Info: core.ReleaseInfo{Height: 1080, Languages: []string{"japanese"}}}
 		if state == "cached" {
 			r.DebridCached = []string{"realdebrid"}
 		}

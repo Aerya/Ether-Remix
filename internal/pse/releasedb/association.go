@@ -9,6 +9,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
+const AssociationAuditVersion = 2
+
 // AssociationRequests uses only local catalogue facts, never remote searches.
 func AssociationRequests(ctx context.Context, db *sql.DB) (map[core.RatingKey]core.SearchRequest, error) {
 	return AssociationRequestsFor(ctx, db, nil)
@@ -97,6 +99,14 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 	if err != nil {
 		return report, err
 	}
+	if apply {
+		if _, err = db.ExecContext(ctx, referenceBackfillSchema); err != nil {
+			return report, err
+		}
+		if _, err = db.ExecContext(ctx, `INSERT OR IGNORE INTO pse_reference_backfill(title_key) SELECT title_key FROM pse_releases UNION SELECT title_key FROM pse_index_titles UNION SELECT title_key FROM pse_release_library`); err != nil {
+			return report, err
+		}
+	}
 	for _, table := range []string{"pse_release_library", "pse_releases"} {
 		if apply {
 			if _, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS `+table+`_quarantine AS SELECT *, '' AS association_reason FROM `+table+` WHERE 0`); err != nil {
@@ -118,6 +128,7 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 				reason string
 			}
 			var bad []rejected
+			var stable []int64
 			n := 0
 			for rows.Next() {
 				var id int64
@@ -141,14 +152,15 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 						reason = "invalid_descriptor"
 					}
 					label = rel.Indexer
-				} else if source == SFRSourceID {
-					rel.TitleIDs = core.IDs{TMDB: key.TMDB()}
 				}
 				if reason == "" {
 					if !known {
 						reason = "missing_catalogue"
 					} else {
 						reason = releaseparse.AssociationReason(q, rel)
+						if reason == "" && table == "pse_release_library" {
+							reason = releaseparse.ReferenceReason(rel)
+						}
 					}
 				}
 				if label == "" {
@@ -161,6 +173,9 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 				status := reason
 				if status == "" {
 					status = "confirmed"
+					if table == "pse_release_library" && releaseparse.StableReference(rel) {
+						stable = append(stable, id)
+					}
 				}
 				report.Sources[group][status]++
 				if reason != "" {
@@ -174,6 +189,12 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 			rows.Close()
 			if e != nil {
 				return report, e
+			}
+			if apply && len(stable) > 0 {
+				raw, _ := json.Marshal(stable)
+				if _, e = db.ExecContext(ctx, `UPDATE pse_release_library SET expires=? WHERE rowid IN (SELECT value FROM json_each(?))`, StableReferenceExpiry, string(raw)); e != nil {
+					return report, e
+				}
 			}
 			if apply && len(bad) > 0 {
 				tx, e := db.BeginTx(ctx, nil)
@@ -202,6 +223,18 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 		}
 	}
 	if apply {
+		// Old positive visibility evidence must be evaluated under the new rule.
+		for _, table := range []string{"resolver_availability", "availability_gate"} {
+			var exists bool
+			if e := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)`, table).Scan(&exists); e != nil {
+				return report, e
+			}
+			if exists {
+				if _, e := db.ExecContext(ctx, `DELETE FROM `+table); e != nil {
+					return report, e
+				}
+			}
+		}
 		// Derived availability must be rebuilt from the remaining confirmed rows.
 		if _, err = db.ExecContext(ctx, `DELETE FROM pse_playable; DELETE FROM pse_state WHERE k='playable_signature'; UPDATE pse_index_titles SET found=(SELECT COUNT(*) FROM pse_releases r WHERE r.title_key=pse_index_titles.title_key)`); err != nil {
 			return report, err
@@ -210,7 +243,7 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 		if err = db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM pse_releases_quarantine)+(SELECT COUNT(*) FROM pse_release_library_quarantine)`).Scan(&totalQuarantined); err != nil {
 			return report, err
 		}
-		_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS pse_association_audit(version INTEGER PRIMARY KEY,checked INTEGER NOT NULL,quarantined INTEGER NOT NULL); INSERT OR IGNORE INTO pse_association_audit VALUES(1,?,?)`, report.Checked+totalQuarantined-report.Quarantined, totalQuarantined)
+		_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS pse_association_audit(version INTEGER PRIMARY KEY,checked INTEGER NOT NULL,quarantined INTEGER NOT NULL); INSERT OR IGNORE INTO pse_association_audit VALUES(?, ?,?)`, AssociationAuditVersion, report.Checked+totalQuarantined-report.Quarantined, totalQuarantined)
 		if err != nil {
 			return report, fmt.Errorf("record association audit: %w", err)
 		}
