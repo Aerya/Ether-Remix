@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-release-browser-inline",
+    id: "2026-11-17-release-association-verification",
     version: "current",
+    date: "2026-11-17",
+    title: ["Associations des releases vérifiées", "Verified release associations"],
+    items: [
+      [
+        "L’index vérifie les identifiants réellement fournis par les sources, les titres, les années et les épisodes. Les anciennes associations non confirmées sont conservées en quarantaine et exclues de la bibliothèque utilisable.",
+        "The index checks source-reported identifiers, titles, years and episodes. Unconfirmed old associations are preserved in quarantine and excluded from the usable library.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-release-browser-inline",
+    version: "0.2.37-remix.104.1",
     date: "2026-11-17",
     title: ["Releases dépliables et chargement allégé", "Inline releases and lighter loading"],
     items: [

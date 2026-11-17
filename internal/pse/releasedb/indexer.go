@@ -16,6 +16,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/seerrcatalog"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
 // Settings règle l'indexeur (variables d'environnement PSE_INDEXER_*).
@@ -482,6 +483,9 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 		}
 		var batch []Release
 		for _, r := range rels {
+			if releaseparse.AssociationReason(req, r) != "" {
+				continue
+			}
 			cached := r.DebridCached
 			if !marks {
 				cached = cachedHints(r)

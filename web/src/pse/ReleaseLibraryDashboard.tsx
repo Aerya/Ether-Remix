@@ -8,6 +8,9 @@ import { ReleaseBrowser } from "./ReleaseBrowser";
 import { IndexerActivity } from "./IndexerActivity";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 interface Overview {
+  auditPending?: boolean;
+  auditFailed?: boolean;
+  quarantined?: number;
   enabled: boolean;
   references: number;
   ready: number;
@@ -43,6 +46,24 @@ function ReleaseOverview({ compact = false }: { compact?: boolean }) {
       </p>
     );
   if (!d) return <p role="status">{L("Chargement des releases…", "Loading releases…")}</p>;
+  if (d.auditFailed)
+    return (
+      <p role="alert">
+        {L(
+          "La vérification des associations a échoué. La bibliothèque reste isolée ; consulter les journaux du serveur.",
+          "Association verification failed. The library remains isolated; check server logs.",
+        )}
+      </p>
+    );
+  if (d.auditPending)
+    return (
+      <p role="status">
+        {L(
+          "Vérification des associations média/release en cours. Les anciennes entrées non confirmées sont mises à l’écart.",
+          "Media/release associations are being checked. Unconfirmed old entries are being quarantined.",
+        )}
+      </p>
+    );
   if (!d.enabled)
     return (
       <p>{L("La bibliothèque de releases est désactivée.", "Release library is disabled.")}</p>
@@ -66,6 +87,15 @@ function ReleaseOverview({ compact = false }: { compact?: boolean }) {
           "Collected continuously during searches and imports. Refreshed every 60 seconds. Metadata and references overlap: their counts must not be added. An available reference does not guarantee playback.",
         )}
       </p>
+      {Boolean(d.quarantined) && (
+        <p className="text-sm text-fg-muted">
+          {d.quarantined?.toLocaleString(getLocale())}{" "}
+          {L(
+            "associations anciennes non confirmées mises en quarantaine, exclues des résultats et de la réutilisation.",
+            "unconfirmed old associations quarantined, excluded from results and reuse.",
+          )}
+        </p>
+      )}
       <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {(
           [

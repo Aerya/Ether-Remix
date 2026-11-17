@@ -38,6 +38,9 @@ import (
 // pseRuntime regroupe l'état des ajouts PSE d'une instance d'App, sans
 // ajouter de champ à la structure d'Ether.
 type pseRuntime struct {
+	associationPending atomic.Bool
+	associationFailed  atomic.Bool
+
 	ownedOnce         sync.Once
 	local             *localmedia.Library
 	ib                *music.IBroadcast
@@ -137,7 +140,7 @@ func (rt *pseRuntime) stopIndexer() {
 }
 
 func (rt *pseRuntime) restartIndexer(a *App) {
-	if a.catalog == nil {
+	if a.catalog == nil || rt.associationPending.Load() {
 		return
 	}
 	rt.mu.Lock()
