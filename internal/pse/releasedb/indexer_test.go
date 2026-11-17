@@ -128,7 +128,8 @@ func TestIndexerWithStremioAddon(t *testing.T) {
 	if err := s.Step(ctx); err != nil {
 		t.Fatalf("lendemain : %v", err)
 	}
-	if n, _ := s.Store().Count(ctx, 102, Filter{}); n != 3 {
+	// The addon repeats the first movie for the second ID: never associate it.
+	if n, _ := s.Store().Count(ctx, 102, Filter{}); n != 0 {
 		t.Fatalf("second titre : %d releases", n)
 	}
 	if n := hits.Load(); n != 2 {

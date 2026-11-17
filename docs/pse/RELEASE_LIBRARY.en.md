@@ -29,3 +29,11 @@ Enable the beta in **Overview → Quick start** or **Indexing**, then save. The 
 Counters also appear in **Overview**, separating metadata from stored references: available, expired, failed or source changed. These sets overlap and must not be added. Counters refresh every 60 seconds while the page is visible. An available reference does not guarantee playback.
 
 Failed counter refreshes keep previous values and no longer close the explorer. A media loading failure displays a Retry button inside its block without clearing other results. Refreshes do not interrupt an ongoing request.
+
+## Media identity and index repair
+
+A TMDB/IMDb search alone is not proof: a source can ignore the request. Source-reported release IDs are checked against the requested media; echoed request IDs are not evidence. Without matching reported IDs, a matching title (including original/alternate titles) is required, plus a known compatible year for movies. Identifier, media type, year and episode conflicts and placeholders such as `aucun_flux` are excluded. Packs covering the requested season remain eligible, without guaranteeing playback.
+
+On the first startup after this fix, a local audit checks existing metadata and encrypted references. Indexing and retained library reuse wait for completion while the server stays available. Unconfirmed rows move intact to `pse_releases_quarantine` and `pse_release_library_quarantine` with a reason. Unconfirmed does not necessarily mean incorrect: missing metadata may prevent verification. Direct StreamFusion imports retain their typed TMDB association. Derived counters are rebuilt and the console shows the number of quarantined associations.
+
+`go run ./cmd/ether-release-audit -db /path/copy.db -config /path/copied-config` performs a read-only audit. Use a consistent SQLite backup and private copies of `config.json` and `.credentials-key` (loading may upgrade the copied configuration). `-apply` quarantines unconfirmed rows: stop indexing/the server first and keep a backup. Reports contain source/reason counts only, never playback URLs or secrets.

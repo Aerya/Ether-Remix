@@ -28,7 +28,7 @@ func (st *searchStub) search(ctx context.Context, _ core.SearchRequest) ([]core.
 }
 
 func frRelease(name string) core.Release {
-	return core.Release{ID: name, Name: name, Protocol: core.ProtocolHTTP, Info: core.ReleaseInfo{Height: 1080, Languages: []string{"french"}}}
+	return core.Release{TitleIDs: core.IDs{IMDB: "tt1"}, ID: name, Name: name, Protocol: core.ProtocolHTTP, Info: core.ReleaseInfo{Height: 1080, Languages: []string{"french"}}}
 }
 
 type freshEnv struct {

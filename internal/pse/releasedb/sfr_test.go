@@ -54,7 +54,7 @@ func (f *sfrFake) wasAsked(id int64) bool {
 
 func sfrCatalog(t *testing.T, e *freshEnv, typ string, keys ...core.RatingKey) {
 	t.Helper()
-	if _, err := e.s.st.db.Exec(`CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY,type TEXT,tmdb_id INTEGER,popularity REAL NOT NULL DEFAULT 0)`); err != nil {
+	if _, err := e.s.st.db.Exec(`CREATE TABLE IF NOT EXISTS catalog_titles(key INTEGER PRIMARY KEY,type TEXT,tmdb_id INTEGER,popularity REAL NOT NULL DEFAULT 0, imdb TEXT NOT NULL DEFAULT '',tvdb INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL DEFAULT 'Film',original_title TEXT NOT NULL DEFAULT '',year INTEGER NOT NULL DEFAULT 0,language TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS catalog_alt_titles(key INTEGER,title TEXT)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range keys {
@@ -317,3 +317,12 @@ func TestSFRErrorHidesDetails(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func TestSFRSaveEmptyPageDoesNotLoadCatalogue(t *testing.T) {
+	e := newFreshEnv(t)
+	// No catalogue tables exist: an empty import must return before looking up identities.
+	n, err := e.s.sfrSave(e.ctx, nil)
+	if err != nil || n != 0 {
+		t.Fatalf("empty import: %d %v", n, err)
+	}
+}

@@ -336,6 +336,19 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 		}
 		keys[typ] = m
 	}
+	var lookup []core.RatingKey
+	for _, byID := range keys {
+		for _, key := range byID {
+			lookup = append(lookup, key)
+		}
+	}
+	if len(lookup) == 0 {
+		return 0, nil
+	}
+	requests, err := AssociationRequestsFor(ctx, s.st.db, lookup)
+	if err != nil {
+		return 0, err
+	}
 	now := s.d.Now()
 	batch := make([]Release, 0, len(rows))
 	type target struct {
@@ -357,12 +370,16 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 			continue
 		}
 		rel := core.Release{ID: strings.ToLower(r.Hash), Name: r.Name, Size: r.Size, Indexer: sfrName,
-			Protocol: core.ProtocolTorrent, Info: releaseparse.Parse(r.Name)}
+			Protocol: core.ProtocolTorrent, TitleIDs: core.IDs{TMDB: r.TMDB}, Info: releaseparse.Parse(r.Name)}
 		if r.Alko || r.AlkoURL != "" {
 			if !core.ValidAllDebridFileURL(r.AlkoURL) || !sfrAlkoLanguage(r.Name) {
 				continue
 			}
 			rel.ID, rel.Protocol, rel.Indexer = "sfr-alko:"+r.ID, core.ProtocolHTTP, "StreamFusion Reborn (Alkolites)"
+		}
+		request, known := AssociationRequest(requests, key, season, episode)
+		if !known || releaseparse.AssociationReason(request, rel) != "" {
+			continue
 		}
 		saved := FromCore(core.Title{Key: key, Type: typ}, season, episode, SFRSourceID, rel, r.Cached)
 		saved.CacheUntil = r.CacheUntil

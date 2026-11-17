@@ -14,6 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/pse/ftp"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
 	"github.com/braedonsaunders/ether/internal/pse/xdcc"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
 func (a *App) releaseLibrary() releasedb.Library {
@@ -30,7 +31,7 @@ func (a *App) releaseLibrary() releasedb.Library {
 		Open: func(s string) (string, error) { b, e := a.cfg.Unseal("pse-release-library", s); return string(b), e }}
 }
 func (a *App) rememberReleases(ctx context.Context, t *core.Title, rs []core.Release) {
-	if !releasedb.LibraryEnabled() || t == nil || a.db == nil {
+	if pseRuntimeOf(a).associationPending.Load() || !releasedb.LibraryEnabled() || t == nil || a.db == nil {
 		return
 	}
 	if err := a.releaseLibrary().Save(ctx, t.Key, rs); err != nil {
@@ -63,6 +64,10 @@ func (a *App) pseReleaseLibraryAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	enabled := releasedb.LibraryEnabled()
+	if pseRuntimeOf(a).associationPending.Load() {
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": enabled, "auditPending": true, "auditFailed": pseRuntimeOf(a).associationFailed.Load(), "preparing": true, "items": []browseItem{}, "total": 0, "page": 0, "references": 0, "ready": 0, "expired": 0, "failed": 0, "sourceChanged": 0, "lastSeen": 0, "metadata": 0, "titles": 0})
+		return
+	}
 	if r.URL.Query().Get("browse") == "1" {
 		a.pseReleaseBrowse(w, r)
 		return
@@ -140,11 +145,17 @@ func (a *App) rememberSearchReferences(ctx context.Context, req core.SearchReque
 	} else if req.Type != core.TypeMovie {
 		return
 	}
-	a.rememberReleases(ctx, &core.Title{Key: key}, rs)
+	verified := make([]core.Release, 0, len(rs))
+	for _, r := range rs {
+		if releaseparse.AssociationReason(req, r) == "" {
+			verified = append(verified, r)
+		}
+	}
+	a.rememberReleases(ctx, &core.Title{Key: key}, verified)
 }
 
 func (a *App) retainedReleaseLibrary(ctx context.Context, req core.SearchRequest) ([]core.Release, bool) {
-	if !releasedb.LibraryEnabled() || core.IndexerPurpose(ctx) != core.IndexerPurposePlayback || core.IsUnattendedSearch(ctx) || req.IDs.TMDB <= 0 {
+	if pseRuntimeOf(a).associationPending.Load() || !releasedb.LibraryEnabled() || core.IndexerPurpose(ctx) != core.IndexerPurposePlayback || core.IsUnattendedSearch(ctx) || req.IDs.TMDB <= 0 {
 		return nil, false
 	}
 	key := core.MovieKey(req.IDs.TMDB)
@@ -155,6 +166,9 @@ func (a *App) retainedReleaseLibrary(ctx context.Context, req core.SearchRequest
 	}
 	var out []core.Release
 	for _, r := range a.releaseLibrary().Candidates(ctx, key) {
+		if releaseparse.AssociationReason(req, r) != "" {
+			continue
+		}
 		if core.IndexerSkipped(ctx, r.IndexerID) || (core.TorrentOnlySearch(ctx) && r.Protocol != core.ProtocolTorrent) {
 			continue
 		}
@@ -188,8 +202,10 @@ func (a *App) pseReleaseLibraryOverview(w http.ResponseWriter, r *http.Request) 
 		fail()
 		return
 	}
+	var quarantined int64
+	_ = a.db.QueryRowContext(ctx, `SELECT quarantined FROM pse_association_audit WHERE version=1`).Scan(&quarantined)
 	if r.URL.Query().Get("summary") == "1" {
-		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "references": references, "ready": ready, "expired": expired, "failed": failed, "sourceChanged": changed, "lastSeen": lastSeen, "metadata": metadata, "titles": titles})
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "references": references, "ready": ready, "expired": expired, "failed": failed, "sourceChanged": changed, "lastSeen": lastSeen, "metadata": metadata, "titles": titles, "quarantined": quarantined})
 		return
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))

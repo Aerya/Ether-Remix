@@ -6,6 +6,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
 // buildPSEIndexer charge les réglages PSE enregistrés depuis la console puis
@@ -30,7 +31,7 @@ func (a *App) buildPSEIndexer() {
 		a.indexers.SetSearchObserver(a.rememberSearchReferences)
 		a.indexers.SetRetainedRefresh(releasedb.LibraryEnabled)
 	}
-	rt.restartIndexer(a)
+	a.startAssociationAudit()
 	a.closers = append(a.closers, rt.stopIndexer)
 }
 
@@ -38,6 +39,25 @@ func (a *App) newPSEIndexer() *releasedb.Service {
 	return releasedb.New(releasedb.Deps{
 		DB: a.db,
 		Remember: func(ctx context.Context, key core.RatingKey, rs []core.Release) {
+			media := key
+			if key.Kind() == core.KindEpisode {
+				media = core.ShowKey(key.TMDB())
+			}
+			requests, err := releasedb.AssociationRequestsFor(ctx, a.db, []core.RatingKey{media})
+			if err != nil {
+				return
+			}
+			req, known := releasedb.AssociationRequest(requests, key, 0, 0)
+			if !known {
+				return
+			}
+			verified := make([]core.Release, 0, len(rs))
+			for _, r := range rs {
+				if releaseparse.AssociationReason(req, r) == "" {
+					verified = append(verified, r)
+				}
+			}
+			rs = verified
 			for i := range rs {
 				rs[i].IndexerID = sfrSearchID
 				rs[i].Indexer = "StreamFusion Reborn (base)"

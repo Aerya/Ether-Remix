@@ -85,3 +85,27 @@ it("shows the explorer even if the initial counters fail", async () => {
   await screen.findByRole("alert");
   expect(screen.getByText("Explorer l’index")).toBeVisible();
 });
+
+it("shows audit progress without requiring counters and keeps the explorer mounted", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({ enabled: true, auditPending: true });
+  render(
+    <MemoryRouter>
+      <ReleaseLibraryDashboard />
+    </MemoryRouter>,
+  );
+  expect(
+    await screen.findByText(/Vérification des associations média\/release en cours/),
+  ).toBeVisible();
+  expect(screen.getByText("Explorer l’index")).toBeVisible();
+});
+it("explains an audit failure instead of claiming progress", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({ enabled: true, auditPending: true, auditFailed: true });
+  render(
+    <MemoryRouter>
+      <ReleaseLibraryDashboard />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "La vérification des associations a échoué",
+  );
+});

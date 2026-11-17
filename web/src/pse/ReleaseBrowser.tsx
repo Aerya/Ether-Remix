@@ -17,6 +17,8 @@ type Item = {
 interface Result {
   enabled: boolean;
   preparing?: boolean;
+  auditPending?: boolean;
+  auditFailed?: boolean;
   items: Item[];
   total: number;
   page: number;
@@ -90,8 +92,8 @@ export function ReleaseBrowser() {
   );
   const d = state.data;
   useEffect(() => {
-    if (!d?.preparing || state.loading || state.error) return;
-    const timer = window.setTimeout(() => setTick((t) => t + 1), 500);
+    if (!d?.preparing || d.auditFailed || state.loading || state.error) return;
+    const timer = window.setTimeout(() => setTick((t) => t + 1), d.auditPending ? 5000 : 500);
     return () => window.clearTimeout(timer);
   }, [d, state.loading, state.error]);
   function change(fn: () => void) {
@@ -254,6 +256,20 @@ export function ReleaseBrowser() {
         </p>
       ) : state.loading ? (
         <p role="status">{L("Chargement…", "Loading…")}</p>
+      ) : d?.auditFailed ? (
+        <p role="alert">
+          {L(
+            "La vérification des associations a échoué. La bibliothèque reste isolée ; consulter les journaux du serveur.",
+            "Association verification failed. The library remains isolated; check server logs.",
+          )}
+        </p>
+      ) : d?.auditPending ? (
+        <p role="status">
+          {L(
+            "Vérification des associations média/release en cours…",
+            "Verifying media/release associations…",
+          )}
+        </p>
       ) : d?.preparing ? (
         <p role="status">
           {L(
@@ -359,7 +375,7 @@ function MediaReleaseResults({ item, params }: { item: Item; params: string }) {
   );
   const d = state.data;
   useEffect(() => {
-    if (!d?.preparing || state.loading || state.error) return;
+    if (!d?.preparing || d.auditFailed || state.loading || state.error) return;
     const timer = window.setTimeout(() => void state.reload(), 500);
     return () => window.clearTimeout(timer);
   }, [d, state.loading, state.error]);

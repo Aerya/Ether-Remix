@@ -41,7 +41,7 @@ func IsPlaceholderResult(name string) bool {
 		return false
 	}
 	lower := strings.ToLower(s)
-	placeholder := lower == "no results" ||
+	placeholder := lower == "aucun_flux" || lower == "aucun flux" || lower == "no streams found" || lower == "no results" ||
 		lower == "no results found" ||
 		strings.HasPrefix(lower, "no results!") ||
 		strings.Contains(lower, "make sure to use the imdb id")

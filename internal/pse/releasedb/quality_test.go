@@ -89,7 +89,7 @@ func TestQualityOriginalAndCacheSurviveIndexing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, state := range []string{"cached", "uncached", "unknown"} {
-		r := core.Release{ID: state, Name: "Film.JAPANESE.1080p.WEB-DL-" + state, Protocol: core.ProtocolHTTP, Info: core.ReleaseInfo{Height: 1080, Languages: []string{"japanese"}}}
+		r := core.Release{TitleIDs: core.IDs{IMDB: "tt1"}, ID: state, Name: "Film.JAPANESE.1080p.WEB-DL-" + state, Protocol: core.ProtocolHTTP, Info: core.ReleaseInfo{Height: 1080, Languages: []string{"japanese"}}}
 		if state == "cached" {
 			r.DebridCached = []string{"realdebrid"}
 		}

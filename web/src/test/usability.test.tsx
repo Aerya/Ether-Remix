@@ -50,6 +50,11 @@ describe("Owner usability", () => {
       // Wait for both initial reads before measuring drawer-only requests.
       await screen.findByRole("heading", { name: "Daily budgets" }, WAIT);
     }
+    if (path === "/sources/debrid") {
+      // The provider page and its MediaFlow section each load configuration.
+      // Both initial reads must start before measuring drawer-only requests.
+      await waitFor(() => expect(calls(fake, "GET", "/config")).toHaveLength(2), WAIT);
+    }
     const page = control.closest("main")!;
     const configReads = calls(fake, "GET", "/config").length;
     fireEvent.click(control);
