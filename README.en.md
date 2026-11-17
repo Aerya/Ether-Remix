@@ -127,6 +127,8 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 
 **Release library (Beta, disabled by default)**: enable encrypted reference retention under Remix → Indexing to reuse candidates during playback and fallback. Catalogue details show indexed releases sortable by resolution, size, codecs, source, languages and dates. Alkolites files retain their AllDebrid playback path without magnets. [Behavior and limits](docs/pse/RELEASE_LIBRARY.en.md).
 
+**Indexing → Releases**: global media and release search, Movies/Series/Anime categories, calendar periods and custom dates, grouped series and expandable details without a horizontal table. [Guide](docs/pse/RELEASE_LIBRARY.en.md).
+
 When enabled, the **Indexing → Releases** view lets you browse content and releases and monitor active searches and recent results. Counters also appear in **Overview**. Enable the option in **Overview → Quick start** or **Indexing**, then save.
 
 <a id="alldebrid-on-a-vps-mediaflow-and-gluetun"></a>

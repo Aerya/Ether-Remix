@@ -102,18 +102,8 @@ export function ReleaseLibrary({
     ["firstSeen", L("Première indexation", "First indexed")],
     ["lastSeen", L("Dernière observation", "Last observed")],
   ];
-  function cell(r: ReleaseRow, k: SortKey) {
-    if (k === "size")
-      return r.size
-        ? `${(r.size / 1024 ** 3).toLocaleString(getLocale(), { maximumFractionDigits: 2 })} GiB`
-        : "—";
-    if (k === "height") return r.height ? `${r.height}p` : "—";
-    if (k === "state") return stateLabel(r.state);
-    if (k === "published" || k === "firstSeen" || k === "lastSeen") return date(r[k]);
-    return Array.isArray(r[k]) ? (r[k] as string[]).join(", ") || "—" : String(r[k] || "—");
-  }
   return (
-    <section className="space-y-4 p-5">
+    <section className="min-w-0 max-w-full space-y-4 py-4">
       <h3 className="font-semibold">{L("Releases indexées — Bêta", "Indexed releases — Beta")}</h3>
       <p className="text-sm text-fg-muted">
         {L(
@@ -202,47 +192,27 @@ export function ReleaseLibrary({
           )}
         </p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">
-              {L("Releases indexées, colonnes triables", "Indexed releases, sortable columns")}
-            </caption>
-            <thead>
-              <tr>
-                {columns.map(([k, label]) => (
-                  <th
-                    key={k}
-                    className="whitespace-nowrap p-2 text-left"
-                    aria-sort={sort === k ? (descending ? "descending" : "ascending") : "none"}
-                  >
-                    <button
-                      onClick={() => {
-                        setDescending(sort === k ? !descending : false);
-                        setSort(k);
-                      }}
-                    >
-                      {label}
-                      {sort === k ? (descending ? " ↓" : " ↑") : " ↕"}
-                    </button>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(currentPage * 50, (currentPage + 1) * 50).map((r, i) => (
-                <tr key={`${r.name}-${r.source}-${i}`} className="border-t">
-                  {columns.map(([k]) => (
-                    <td
-                      key={k}
-                      className={`p-2 ${k === "name" ? "min-w-64 break-all" : "whitespace-nowrap"}`}
-                    >
-                      {cell(r, k)}
-                    </td>
-                  ))}
-                </tr>
+        <div className="space-y-2">
+          <label className="flex flex-wrap items-center gap-2">
+            {L("Trier par", "Sort by")}
+            <select
+              className="rounded border p-2"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
+            >
+              {columns.map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
               ))}
-            </tbody>
-          </table>
+            </select>
+            <Button onClick={() => setDescending(!descending)}>
+              {descending ? L("Décroissant", "Descending") : L("Croissant", "Ascending")}
+            </Button>
+          </label>
+          {rows.slice(currentPage * 50, (currentPage + 1) * 50).map((r, i) => (
+            <ReleaseCard key={`${r.name}-${r.source}-${i}`} row={r} />
+          ))}
         </div>
       )}
       {rows.length > 50 && (
@@ -268,5 +238,44 @@ export function ReleaseLibrary({
         )}
       </p>
     </section>
+  );
+}
+
+export function ReleaseCard({ row: r, title }: { row: ReleaseRow; title?: string }) {
+  const details = [
+    [L("Codec vidéo", "Video codec"), r.videoCodec],
+    [L("Codec audio", "Audio codec"), r.audioCodec],
+    [L("Langues", "Languages"), (r.languages ?? []).join(", ")],
+    [L("Cache annoncé", "Reported cache"), (r.cached ?? []).join(", ")],
+    [L("Publication", "Published"), date(r.published)],
+    [L("Première indexation", "First indexed"), date(r.firstSeen)],
+    [L("Dernière observation", "Last observed"), date(r.lastSeen)],
+  ];
+  return (
+    <details className="min-w-0 max-w-full rounded-lg border border-border p-3 text-sm">
+      <summary className="cursor-pointer break-words [overflow-wrap:anywhere]">
+        <span className="font-medium">{r.name || L("Release sans nom", "Unnamed release")}</span>
+        {title && <span className="block text-fg-muted">{title}</span>}
+        <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-fg-muted">
+          <span>{r.source}</span>
+          <span>{r.height ? `${r.height}p` : "—"}</span>
+          <span>
+            {r.size
+              ? `${(r.size / 1024 ** 3).toLocaleString(getLocale(), { maximumFractionDigits: 2 })} GiB`
+              : "—"}
+          </span>
+          <span>{r.protocol}</span>
+          <span>{stateLabel(r.state)}</span>
+        </span>
+      </summary>
+      <dl className="mt-3 grid min-w-0 gap-3 border-t border-border pt-3 sm:grid-cols-2 lg:grid-cols-3">
+        {details.map(([label, value]) => (
+          <div key={label} className="min-w-0 [overflow-wrap:anywhere]">
+            <dt className="text-fg-muted">{label}</dt>
+            <dd>{value || "—"}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
   );
 }

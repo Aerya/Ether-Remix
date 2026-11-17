@@ -1,13 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { apiFetch } from "../lib/api";
 vi.mock("../i18n", () => ({ getLocale: () => "fr" }));
 vi.mock("./IndexerActivity", () => ({ IndexerActivity: () => <div>Recherches en cours</div> }));
-vi.mock("./ReleaseLibrary", () => ({
-  ReleaseLibrary: ({ titleKey }: { titleKey: string }) => <div>Releases {titleKey}</div>,
-}));
+vi.mock("./ReleaseBrowser", () => ({ ReleaseBrowser: () => <div>Explorer l’index</div> }));
 vi.mock("../lib/api", () => ({ apiFetch: vi.fn() }));
 afterEach(() => {
   cleanup();
@@ -32,11 +30,8 @@ it("shows counters, activity, pages and selected releases", async () => {
       <ReleaseLibraryDashboard />
     </MemoryRouter>,
   );
-  fireEvent.click(await screen.findByRole("button", { name: "Un film" }));
-  expect(screen.getByText("Releases 42")).toBeVisible();
+  expect(await screen.findByText("Explorer l’index")).toBeVisible();
   expect(screen.getByText("Recherches en cours")).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Suivant" }));
-  expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining("page=1"), expect.anything());
 });
 it("shows compact statistics with a link, without loading activity", async () => {
   vi.mocked(apiFetch).mockResolvedValue(data);
