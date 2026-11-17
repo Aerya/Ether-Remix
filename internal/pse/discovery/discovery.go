@@ -246,6 +246,10 @@ func (s *Service) Handler() http.Handler {
 			s.catalog(w, r)
 			return
 		}
+		if r.URL.Path == "/pack" && r.Method == "POST" {
+			s.importPack(w, r)
+			return
+		}
 		if r.URL.Path == "/gallery" && r.Method == "GET" {
 			s.gallery(w, r)
 			return

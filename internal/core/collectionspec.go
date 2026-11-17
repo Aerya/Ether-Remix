@@ -100,10 +100,11 @@ type CollectionRotate struct {
 
 // CollectionArtwork selects the poster Plex shows for the collection.
 type CollectionArtwork struct {
-	Logo   string `json:"logo,omitempty"` // TMDB logo path for navigation cards
-	Mode   string `json:"mode"`           // auto | collage | backdrop | tmdb | custom
-	URL    string `json:"url,omitempty"`
-	Accent string `json:"accent,omitempty"` // "#rrggbb"
+	PublicOnly bool   `json:"publicOnly,omitempty"` // imported packs must never fetch private network images
+	Logo       string `json:"logo,omitempty"`       // TMDB logo path for navigation cards
+	Mode       string `json:"mode"`                 // auto | collage | backdrop | tmdb | custom
+	URL        string `json:"url,omitempty"`
+	Accent     string `json:"accent,omitempty"` // "#rrggbb"
 }
 
 // CollectionTargets says where and for whom the collection is published.

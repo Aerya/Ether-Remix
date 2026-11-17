@@ -164,3 +164,32 @@ func TestProviderRejectsRedirectAndNonRaster(t *testing.T) {
 		t.Fatal("followed redirect")
 	}
 }
+
+func TestPictoriumAndTopPostersTemplates(t *testing.T) {
+	for _, tc := range []struct {
+		source, template string
+		ids              core.IDs
+		kind             core.MediaType
+		want             string
+	}{
+		{"pictorium", "https://posters.example/api/poster/{type}/{tmdb_id|imdb_id|id}?api_key={api_key}", core.IDs{TMDB: 550, IMDB: "tt0137523"}, core.TypeMovie, "/api/poster/movie/550"},
+		{"pictorium", "https://posters.example/api/poster/{media_type}/{tmdb_id|imdb_id}", core.IDs{IMDB: "tt0903747"}, core.TypeShow, "/api/poster/series/tt0903747"},
+		{"topposters", "https://api.top-posters.com/{api_key}/tmdb/poster/{type}-{tmdb_id}.jpg", core.IDs{TMDB: 1396}, core.TypeShow, "/secret&value/tmdb/poster/series-1396.jpg"},
+	} {
+		p := config.Posters{Enabled: true, Source: tc.source, URLTemplate: tc.template, APIKey: "secret&value"}
+		if err := p.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		raw, ok := providerURL(p, &core.Title{Type: tc.kind, IDs: tc.ids})
+		if !ok {
+			t.Fatal(tc.source)
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Path != tc.want {
+			t.Fatal(raw)
+		}
+	}
+	if _, ok := providerURL(config.Posters{Source: "pictorium", URLTemplate: "https://example.com/{type}/{tmdb_id|imdb_id}"}, &core.Title{Type: core.TypeMovie}); ok {
+		t.Fatal("missing IDs accepted")
+	}
+}

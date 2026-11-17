@@ -3,7 +3,10 @@ package collections
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,5 +46,30 @@ func TestCustomCollectionArtworkAppliesToArtAndBackdrop(t *testing.T) {
 	}, nil, core.TypeMovie, []core.RatingKey{core.MovieKey(11)})
 	if c.PosterPath != "https://example.com/custom.jpg" || c.BackdropPath != "https://example.com/custom.jpg" {
 		t.Fatalf("custom collection paths: poster=%q backdrop=%q", c.PosterPath, c.BackdropPath)
+	}
+}
+
+func TestImportedCollectionArtworkCannotFetchPrivateImages(t *testing.T) {
+	var fetched atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetched.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("image"))
+	}))
+	defer server.Close()
+	s := &Service{log: slog.Default(), idx: &index{}, images: artwork.NewImages(artwork.ImagesOptions{})}
+	row := &specRow{id: 7, spec: core.CollectionSpec{Name: "Imported", MediaType: MediaMovie, Artwork: core.CollectionArtwork{Mode: "custom", URL: server.URL, PublicOnly: true}}}
+	_, _, _, _ = s.artworkFor(context.Background(), row, nil, 300)
+	if fetched.Load() != 0 {
+		t.Fatal("imported image reached a private server")
+	}
+	c := s.collectionFor(context.Background(), row, nil, core.TypeMovie, nil)
+	if c.PosterPath == server.URL || c.BackdropPath == server.URL {
+		t.Fatal("imported URL bypasses guarded artwork route")
+	}
+	row.spec.Artwork.PublicOnly = false
+	_, _, _, _ = s.artworkFor(context.Background(), row, nil, 300)
+	if fetched.Load() != 1 {
+		t.Fatal("owner-configured local artwork no longer works")
 	}
 }

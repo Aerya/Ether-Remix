@@ -6,6 +6,7 @@ import { apiFetch, errorMessage } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { artworkPreviewURL } from "../pages/collections/artwork";
 
+import { DiscoveryArtworkPacks } from "./DiscoveryArtworkPacks";
 import { DiscoveryCardStyles } from "./DiscoveryCardStyles";
 
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
@@ -19,6 +20,7 @@ export interface NavigationCard {
   accent: string;
 }
 interface Art {
+  publicOnly?: boolean;
   mode: string;
   url?: string;
   logo?: string;
@@ -367,7 +369,7 @@ export function DiscoveryCardsPicker() {
                     aria-expanded={editing === key}
                     onClick={() => setEditing(editing === key ? null : key)}
                   >
-                    {L("Choisir le visuel", "Choose artwork")}
+                    {L("Personnaliser une carte", "Customize a card")}
                   </Button>
                 </div>
                 {editing === key && editingChoice && (
@@ -391,6 +393,29 @@ export function DiscoveryCardsPicker() {
           </p>
         )}
       </fieldset>
+      <DiscoveryArtworkPacks
+        key={family}
+        disabled={busy}
+        targets={selected
+          .filter((c) => c.card.group === family)
+          .map((c) => ({
+            key: choiceKey(c),
+            name: c.card.name,
+            group: c.card.group,
+            entity: c.card.entity,
+            customized: !!c.artwork && c.artwork.mode !== "auto",
+          }))}
+        onApply={(images) => {
+          setChoices(
+            selected.map((c) =>
+              images[choiceKey(c)]
+                ? { ...c, artwork: { mode: "custom", url: images[choiceKey(c)], publicOnly: true } }
+                : c,
+            ),
+          );
+          setDirtyArt(new Set([...dirtyArt, ...Object.keys(images)]));
+        }}
+      />
       <DiscoveryCardStyles
         key={family}
         disabled={busy}

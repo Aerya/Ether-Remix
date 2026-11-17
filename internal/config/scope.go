@@ -28,6 +28,7 @@ var sectionScopes = map[string]Scope{
 	"frontends":      Shared,
 	"frontendPorts":  Local,
 	"posters":        Shared,
+	"discoveryCards": Shared,
 	"sharedCache":    Shared,
 	"availability":   Shared,
 	"usenet":         Shared,

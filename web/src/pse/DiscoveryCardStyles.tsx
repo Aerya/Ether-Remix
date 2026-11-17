@@ -210,26 +210,32 @@ export function DiscoveryCardStyles({
                 {results[target.key]
                   ?.filter((i) => styleMatches(i, filter))
                   .map((image) => (
-                    <label key={image.url} className="w-36 shrink-0 text-sm">
-                      <img
-                        src={artworkPreviewURL(image.url)}
-                        alt={image.name}
-                        className="h-24 w-36 object-contain"
-                        loading="lazy"
-                      />
-                      <input
-                        type="radio"
-                        name={"style-" + target.key}
-                        checked={picked[target.key] === image.url}
-                        onChange={() => setPicked({ ...picked, [target.key]: image.url })}
-                      />{" "}
-                      {image.name}
+                    <div
+                      key={image.url}
+                      className="flex w-36 shrink-0 flex-col gap-2 break-words text-sm"
+                    >
+                      <label className="block cursor-pointer">
+                        <img
+                          src={artworkPreviewURL(image.url)}
+                          alt={image.name}
+                          className="h-24 w-36 object-contain"
+                          loading="lazy"
+                        />
+                        <input
+                          type="radio"
+                          name={"style-" + target.key}
+                          checked={picked[target.key] === image.url}
+                          onChange={() => setPicked({ ...picked, [target.key]: image.url })}
+                        />{" "}
+                        {image.name}
+                      </label>
                       <span className="block">
                         {image.creator || image.source}
                         {image.setId ? " · " + image.setId : ""}
                       </span>
                       {(image.creator || (provider === "github" && image.source.includes("/"))) && (
                         <Button
+                          className="h-auto min-h-9 w-full whitespace-normal px-2 py-2 text-center leading-tight"
                           onClick={() => {
                             setFilter(
                               image.creator || image.source.slice(0, image.source.lastIndexOf("/")),
@@ -245,7 +251,7 @@ export function DiscoveryCardStyles({
                           {L("Voir la source", "View source")}
                         </a>
                       )}
-                    </label>
+                    </div>
                   ))}
               </div>
             </section>
