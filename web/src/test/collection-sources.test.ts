@@ -25,6 +25,7 @@ describe("collection source kinds from the registry", () => {
         "letterboxdList",
         "localFiles",
         "mdblist",
+        "releaseSource",
         "stevenlu",
         "titles",
         "tmdbCollection",

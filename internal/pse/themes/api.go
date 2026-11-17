@@ -272,16 +272,20 @@ func (s *Service) view(ctx context.Context) (map[string]any, error) {
 		}
 		sort.SliceStable(cols, func(i, j int) bool { return cols[i].Name < cols[j].Name })
 	}
+	sources, err := s.sources(ctx)
+	if err != nil {
+		return nil, err
+	}
 	libs := s.Libraries()
 	out := make([]map[string]any, 0, len(libs))
 	for _, l := range libs {
 		out = append(out, map[string]any{
 			"id": l.ID, "name": l.Name, "type": l.Type, "collections": l.Collections,
 			"position": l.Position, "section": l.Section(), "showSection": l.ShowSection(),
-			"allLanguages": l.AllLanguages, "preset": l.Preset,
+			"allLanguages": l.AllLanguages, "preset": l.Preset, "users": l.Users,
 		})
 	}
-	return map[string]any{"libraries": out, "collections": cols, "presets": Presets(), "max": MaxLibraries,
+	return map[string]any{"libraries": out, "sources": sources, "collections": cols, "presets": Presets(), "max": MaxLibraries,
 		"exceptions": s.Exceptions(), "maxExceptions": MaxExceptions}, nil
 }
 

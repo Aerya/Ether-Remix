@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/contentrating"
-	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -540,7 +539,7 @@ func (s *Service) buildNow(ctx context.Context, row *specRow) (*memberSet, error
 		}
 	}
 	at := s.now().UTC().Truncate(time.Second)
-	if err := s.saveBuild(ctx, row.id, row.rawSpec, resolved, res.keys, res.unshared, res.itemCount(), res.warnings, res.hash, at); err != nil {
+	if err := s.saveBuild(ctx, row.id, row.rawSpec, resolved, res.keys, res.unshared, res.itemCount(), res.warnings, res.hash, at, res.origins); err != nil {
 		return nil, err
 	}
 	s.promoteMembers(ctx, res.keys)
@@ -584,11 +583,6 @@ func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.Use
 	if user != nil {
 		viewer = user.ID
 	}
-	for _, src := range row.spec.Sources {
-		if src.Kind == "localFiles" && !mediaaccess.Allowed(ctx, s.db, "local:"+src.Label, viewer) {
-			return nil, nil
-		}
-	}
 
 	ms, err := s.membersFor(ctx, row, wait)
 	if err != nil {
@@ -599,8 +593,12 @@ func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.Use
 	if err != nil {
 		return nil, err
 	}
-	present := make([]core.RatingKey, 0, len(ms.keys))
-	for _, k := range ms.keys {
+	authorized, err := s.authorizedMembers(ctx, row, ms.keys, viewer)
+	if err != nil {
+		return nil, err
+	}
+	present := make([]core.RatingKey, 0, len(authorized))
+	for _, k := range authorized {
 		if snap.entries[k] != nil {
 			present = append(present, k)
 		}

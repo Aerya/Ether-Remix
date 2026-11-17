@@ -79,8 +79,8 @@ func TestLocalDestinationsPersistAndKeepPrivateVideos(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, th := range rt.themes.Themes() {
-		if th.Title == "Animation" && (th.VisibleTo == nil || th.VisibleTo(&core.User{ID: 2}) || !th.VisibleTo(&core.User{ID: 1})) {
-			t.Fatal("custom collection library lost folder privacy")
+		if th.Title == "Animation" && th.VisibleTo != nil && !th.VisibleTo(&core.User{ID: 2}) {
+			t.Fatal("private folder unexpectedly hid the whole library")
 		}
 	}
 	edit("library", strconv.FormatInt(dest.ID, 10), true)
