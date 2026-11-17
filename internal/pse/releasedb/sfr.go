@@ -342,6 +342,9 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 			lookup = append(lookup, key)
 		}
 	}
+	if len(lookup) == 0 {
+		return 0, nil
+	}
 	requests, err := AssociationRequestsFor(ctx, s.st.db, lookup)
 	if err != nil {
 		return 0, err

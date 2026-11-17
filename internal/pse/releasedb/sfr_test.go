@@ -317,3 +317,12 @@ func TestSFRErrorHidesDetails(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func TestSFRSaveEmptyPageDoesNotLoadCatalogue(t *testing.T) {
+	e := newFreshEnv(t)
+	// No catalogue tables exist: an empty import must return before looking up identities.
+	n, err := e.s.sfrSave(e.ctx, nil)
+	if err != nil || n != 0 {
+		t.Fatalf("empty import: %d %v", n, err)
+	}
+}
