@@ -523,7 +523,17 @@ func (s *Service) buildNow(ctx context.Context, row *specRow) (*memberSet, error
 			}
 		}
 	}
-	res, err := s.evaluate(ctx, row.spec, evalOptions{seed: row.spec.Name, persist: true, prior: prior})
+	buildCtx := ctx
+	for _, src := range row.spec.Sources {
+		if src.Kind == "localFiles" {
+			// Membership is shared. A viewer-triggered build must gather every
+			// contribution; serveMembers applies current ACLs for each caller.
+			// Studio previews retain their viewer context and its restrictions.
+			buildCtx = core.WithoutCatalogViewer(ctx)
+			break
+		}
+	}
+	res, err := s.evaluate(buildCtx, row.spec, evalOptions{seed: row.spec.Name, persist: true, prior: prior})
 	if err != nil {
 		return nil, err
 	}

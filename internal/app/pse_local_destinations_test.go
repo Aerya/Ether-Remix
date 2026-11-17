@@ -71,6 +71,20 @@ func TestLocalDestinationsPersistAndKeepPrivateVideos(t *testing.T) {
 	if keys := cols.PSEKeys(denied, target.ID, &core.User{ID: 2}); len(keys) != 0 {
 		t.Fatalf("private video leaked: %v", keys)
 	}
+	// A restricted first request must not poison the shared build for the owner.
+	fresh, err := cols.CreateSpec(denied, core.CollectionSpec{Name: "Restricted first", MediaType: "mixed", Sources: []core.CollectionSource{{Kind: "localFiles", Label: root.ID}}, Enabled: true, Refresh: "live", Sort: "title", LocalOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cols.PSEKeys(denied, fresh.ID, &core.User{ID: 2}); len(got) != 0 {
+		t.Fatalf("restricted first leaked: %v", got)
+	}
+	if got := cols.PSEKeys(ctx, fresh.ID, &core.User{ID: 1}); len(got) != 1 {
+		t.Fatalf("restricted viewer poisoned shared build: %v", got)
+	}
+	if err := cols.DeleteSpec(ctx, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := a.localDestinations(denied, root.ID); err == nil {
 		t.Fatal("foreign root editable")
 	}
