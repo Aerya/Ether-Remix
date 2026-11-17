@@ -39,7 +39,8 @@ describe("onglets de la page Ether-Remix", () => {
   ].map(f);
   it("range chaque section dans son onglet", () => {
     expect(featuresOfTab("lecture", all).map((x) => x.id)).toEqual(["french", "playable"]);
-    expect(featuresOfTab("contenus", all).map((x) => x.id)).toEqual(["music", "posters"]);
+    expect(featuresOfTab("contenus", all).map((x) => x.id)).toEqual(["music"]);
+    expect(featuresOfTab("visuels", all).map((x) => x.id)).toEqual(["posters"]);
     expect(featuresOfTab("indexation", all).map((x) => x.id)).toEqual(["indexer"]);
     expect(featuresOfTab("sources", all)).toEqual([]);
     expect(featuresOfTab("apercu", all)).toEqual([]);

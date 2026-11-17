@@ -224,7 +224,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) Une interface adaptée à vos habitudes
 
-- Six onglets : **Vue d’ensemble** (démarrage, activité, sources, utilisation), **Sources** (avec la santé des médias locaux), **Indexation** (réglages et releases), **Lecture** (priorités, qualité, VOSTFR), **Contenus** et **Suivi**. Les anciens liens et favoris sont redirigés.
+- Sept onglets : **Vue d’ensemble** (démarrage, activité, sources, utilisation), **Sources** (avec la santé des médias locaux), **Indexation** (réglages et releases), **Lecture** (priorités, qualité, VOSTFR), **Contenus**, **Visuels** (cartes Nuvio, packs, renouvellement des affiches) et **Suivi**. Les anciens liens et favoris sont redirigés.
 - Indexation automatique des addons Stremio activés ou sélection personnalisée, même vide ; filtres par instance Prowlarr/Jackett et compteurs catalogue, recherchés, avec release et affichés pour chaque bibliothèque ou collection prioritaire.
 - Sources regroupées par famille, tri par catégorie ou contenu, clés debrid affichables ponctuellement et blocs repliables sans perdre la saisie. Réglez les palettes dans **Apparence**.
 - Six palettes : **Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine**, chacune en clair et sombre, avec aperçu immédiat et mémorisation par navigateur.

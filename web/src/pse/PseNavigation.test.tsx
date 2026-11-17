@@ -65,7 +65,15 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   const source = await screen.findByLabelText("Prowlarr");
   fireEvent.click(source.closest("details")!.querySelector("summary")!);
   const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
-  expect(tabs).toEqual(["Vue d’ensemble", "Sources", "Indexation", "Lecture", "Contenus", "Suivi"]);
+  expect(tabs).toEqual([
+    "Vue d’ensemble",
+    "Sources",
+    "Indexation",
+    "Lecture",
+    "Contenus",
+    "Visuels",
+    "Suivi",
+  ]);
   expect(screen.getByRole("table")).toBeTruthy();
   fireEvent.click(screen.getByLabelText("Mode de sélection"));
   fireEvent.click(await screen.findByRole("option", { name: /Personnalis/ }));
@@ -175,4 +183,44 @@ it("réserve les informations Subsonic et bibliothèque aux contenus musicaux", 
   expect(await screen.findByText(/Adresse Subsonic/)).toBeTruthy();
   const library = screen.getByText(/2 artistes, 3 albums, 4 titres/);
   expect(library.closest("details")).not.toHaveAttribute("open");
+});
+
+it("regroupe cartes et affiches dans Visuels sans charger les cartes avant l’ouverture", async () => {
+  apiFetch.mockReset();
+  apiFetch.mockResolvedValue({
+    features: [
+      {
+        id: "posters",
+        title: txt("Affiches dans les applications"),
+        description: txt(""),
+        fields: [],
+      },
+    ],
+  });
+  const page = (path: string) => (
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/remix/:tab" element={<PsePage />} />
+      </Routes>
+    </MemoryRouter>
+  );
+  const cards = render(page("/remix/visuels"));
+  expect(await screen.findByText("Cartes inspirées de Nuvio")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Cartes" }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.queryByText("Affiches dans les applications")).toBeNull();
+  expect(apiFetch.mock.calls.some(([path]) => String(path).startsWith("/pse/discovery"))).toBe(
+    false,
+  );
+  cards.unmount();
+  const posters = render(page("/remix/visuels?view=affiches"));
+  expect(await screen.findByText("Affiches dans les applications")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Configurer les fournisseurs" })).toHaveAttribute(
+    "href",
+    "/services",
+  );
+  posters.unmount();
+  render(page("/remix/contenus"));
+  await screen.findByRole("tab", { name: "Contenus" });
+  expect(screen.queryByText("Cartes inspirées de Nuvio")).toBeNull();
+  expect(screen.queryByText("Affiches dans les applications")).toBeNull();
 });

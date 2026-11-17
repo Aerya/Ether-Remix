@@ -42,8 +42,8 @@ import { ImportedSources } from "./ImportedSources";
 import { VostfrTitles } from "./VostfrTitles";
 
 /**
- * Page « Ether-Remix » de la console (nom public du fork), en six onglets : Vue
- * d’ensemble, Sources, Indexation, Lecture, Contenus et Suivi, certains découpés
+ * Page « Ether-Remix » de la console (nom public du fork), en sept onglets : Vue
+ * d’ensemble, Sources, Indexation, Lecture, Contenus, Visuels et Suivi, certains découpés
  * en vues `?view=`. Réglages des ajouts du fork, enregistrés par
  * /ether/api/pse/ (internal/pse/console). Les textes viennent du serveur en
  * français et en anglais ; la page choisit selon la langue de la console.
@@ -254,7 +254,7 @@ function PseSettings() {
         )
       : null;
   const views =
-    tab === "apercu" || tab === "indexation" || tab === "lecture"
+    tab === "apercu" || tab === "indexation" || tab === "lecture" || tab === "visuels"
       ? visibleRemixViews(tab, saved.PSE_RELEASE_LIBRARY === "on")
       : [];
   const view =
@@ -324,7 +324,15 @@ function PseSettings() {
                     fields: f.fields.filter((fd) => fd.key === "PSE_RELEASE_LIBRARY"),
                   }),
                 )}
-              <DiscoveryCardsSetup />
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Cartes d’accueil, packs de visuels et affiches se règlent dans Visuels.",
+                  "Home cards, artwork packs and posters are set up in Visuals.",
+                )}{" "}
+                <Link className="underline" to="/remix/visuels">
+                  {L("Ouvrir Visuels", "Open Visuals")}
+                </Link>
+              </p>
             </>
           ) : null}
           {tab === "apercu" && view !== "demarrage" && saved.PSE_INDEXER === "off" ? (
@@ -424,7 +432,6 @@ function PseSettings() {
                 "content",
                 L("Types de contenus", "Content types"),
               )}
-              {current.features.filter((f) => f.id === "posters").map((f) => renderFeature(f))}
               {content === "animes" ? (
                 <p className="text-sm text-fg-muted">
                   {L(
@@ -436,7 +443,6 @@ function PseSettings() {
                   </Link>
                 </p>
               ) : null}
-              {content !== "musique" ? <DiscoveryCardsSetup /> : null}
               {content !== "musique" ? <JukeboxQuickSetup /> : null}
               {content !== "musique" ? <XperienceImport /> : null}
               {content === "musique" ? (
@@ -489,9 +495,22 @@ function PseSettings() {
           {tab !== "sources" &&
           tab !== "contenus" &&
           tab !== "indexation" &&
-          (tab !== "lecture" || view === "qualite")
+          (tab !== "lecture" || view === "qualite") &&
+          (tab !== "visuels" || view === "affiches")
             ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
             : null}
+          {tab === "visuels" && view === "cartes" ? <DiscoveryCardsSetup /> : null}
+          {tab === "visuels" && view === "affiches" ? (
+            <p className="text-sm text-fg-muted">
+              {L(
+                "Les fournisseurs d’affiches (PostersPlus, XRDB, RPDB, BetterPosters, Pictorium, TOP Posters…) se connectent dans Intégrations. Le thème de la console reste dans le bouton Apparence, en haut de l’écran.",
+                "Poster providers (PostersPlus, XRDB, RPDB, BetterPosters, Pictorium, TOP Posters…) are connected in Integrations. The console theme stays under the Appearance button at the top of the screen.",
+              )}{" "}
+              <Link className="underline" to="/services">
+                {L("Configurer les fournisseurs", "Configure providers")}
+              </Link>
+            </p>
+          ) : null}
           {tab === "suivi" ? musicPart("tracking") : null}
         </div>
       </CollapsibleSections.Provider>

@@ -168,7 +168,7 @@ Les points d’accroche dans `internal/core/ondemand.go`, `internal/core/indexer
 
 ### Navigation et sélection d’indexation
 
-`web/src/pse/navigation.tsx` et `PsePage.tsx` organisent six onglets (Vue d’ensemble, Sources, Indexation, Lecture, Contenus, Suivi), découpés en vues `?view=`. Les anciens liens (`sources?source=indexation`, `priorites`, `statistiques`, `demarrage`, `releases`, `langues`, `demande`, `medias-locaux`) redirigent sans dupliquer la configuration Ether. `IndexerGroups` filtre les composants Ether par provenance (`prowlarrImport` ou chemin API Jackett) ; `IndexerList.originKey` est facultatif pour préserver ses usages amont.
+`web/src/pse/navigation.tsx` et `PsePage.tsx` organisent sept onglets (Vue d’ensemble, Sources, Indexation, Lecture, Contenus, Visuels, Suivi), découpés en vues `?view=`. Les anciens liens (`sources?source=indexation`, `priorites`, `statistiques`, `demarrage`, `releases`, `langues`, `demande`, `medias-locaux`) redirigent sans dupliquer la configuration Ether. `IndexerGroups` filtre les composants Ether par provenance (`prowlarrImport` ou chemin API Jackett) ; `IndexerList.originKey` est facultatif pour préserver ses usages amont.
 
 `PSE_INDEXER_SOURCES` conserve sa sémantique historique : vide = addons Stremio activés, liste = sélection explicite. La valeur réservée `__none__` représente une sélection personnalisée vide, sans réactiver les addons automatiquement. Aucun appel de recherche ou téléchargement n’est déclenché par ce changement d’interface.
 
