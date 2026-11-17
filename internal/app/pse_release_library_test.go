@@ -148,3 +148,19 @@ func TestReleaseLibraryRefusesWrongSourceAnswersAndLegacyReuse(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 }
+
+func TestReleaseLibraryAuditKeepsLegacyCounterShape(t *testing.T) {
+	a := &App{}
+	pseRuntimeOf(a).associationPending.Store(true)
+	w := httptest.NewRecorder()
+	a.pseReleaseLibraryAPI(w, httptest.NewRequest("GET", "/release-library?overview=1&summary=1", nil))
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"references", "ready", "expired", "failed", "sourceChanged", "lastSeen", "metadata", "titles"} {
+		if _, ok := out[key].(float64); !ok {
+			t.Fatalf("missing numeric counter %s", key)
+		}
+	}
+}

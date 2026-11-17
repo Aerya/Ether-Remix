@@ -65,7 +65,7 @@ func (a *App) pseReleaseLibraryAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	enabled := releasedb.LibraryEnabled()
 	if pseRuntimeOf(a).associationPending.Load() {
-		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": enabled, "auditPending": true, "auditFailed": pseRuntimeOf(a).associationFailed.Load(), "preparing": true, "items": []browseItem{}, "total": 0, "page": 0})
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": enabled, "auditPending": true, "auditFailed": pseRuntimeOf(a).associationFailed.Load(), "preparing": true, "items": []browseItem{}, "total": 0, "page": 0, "references": 0, "ready": 0, "expired": 0, "failed": 0, "sourceChanged": 0, "lastSeen": 0, "metadata": 0, "titles": 0})
 		return
 	}
 	if r.URL.Query().Get("browse") == "1" {
