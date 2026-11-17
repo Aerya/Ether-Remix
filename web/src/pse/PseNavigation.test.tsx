@@ -27,6 +27,7 @@ vi.mock("./OwnedMedia", () => ({ IBroadcastSource: () => null }));
 vi.mock("./MusicAccess", () => ({ MusicAccess: () => null }));
 vi.mock("./MusicPlaylists", () => ({ MusicPlaylists: () => null }));
 vi.mock("./SourceOrder", () => ({ SourceOrder: () => null }));
+vi.mock("./ThemeLibraries", () => ({ ThemeLibraries: () => null }));
 const txt = (s: string) => ({ fr: s, en: s });
 
 it("orders tabs and lets vertically listed imported sources be selected and saved", async () => {

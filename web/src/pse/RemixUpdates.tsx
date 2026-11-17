@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-visuals-tab",
+    id: "2026-11-17-release-browser-inline",
     version: "current",
+    date: "2026-11-17",
+    title: ["Releases dépliables et chargement allégé", "Inline releases and lighter loading"],
+    items: [
+      [
+        "Les releases se déplient sous le film ou la série sans quitter la liste. Chargement limité au média ouvert, navigation globale sans recomptage complet et compteurs indépendants : une erreur ne fait plus disparaître l’explorateur.",
+        "Releases expand below a movie or series without leaving the list. Loading is scoped to the opened media, global paging avoids full recounts and independent counters no longer clear the explorer on error.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-visuals-tab",
+    version: "0.2.37-remix.103.1",
     date: "2026-11-17",
     title: ["Onglet Visuels", "Visuals tab"],
     items: [

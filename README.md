@@ -127,7 +127,7 @@ Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lir
 
 **Bibliothèque de releases (Bêta, désactivée par défaut)** : dans Remix → Indexation, activez la conservation chiffrée des références pour les réutiliser à la lecture et en secours. Chaque fiche du catalogue propose les releases indexées, triables par résolution, taille, codecs, source, langues et dates. Les fichiers Alkolites gardent leur lecture AllDebrid sans magnet. [Fonctionnement et limites](docs/pse/RELEASE_LIBRARY.fr.md).
 
-**Indexation → Releases** : recherche globale de médias et de releases, catégories Films/Séries/Animes, périodes et dates personnalisées, séries regroupées et détails dépliables sans tableau horizontal. [Guide](docs/pse/RELEASE_LIBRARY.fr.md).
+**Indexation → Releases** : recherche globale de médias et de releases, catégories Films/Séries/Animes, périodes et dates personnalisées, séries regroupées et releases dépliées sous chaque média, sans changer de vue. Chargement ciblé et conservation de la liste lors des rafraîchissements ou erreurs. [Guide](docs/pse/RELEASE_LIBRARY.fr.md).
 
 La vue **Indexation → Releases**, visible lorsque la bêta est activée, permet de parcourir les contenus et leurs releases, de suivre les recherches en cours et les derniers résultats. Les compteurs sont aussi affichés dans **Vue d’ensemble**. Le réglage est accessible dans **Vue d’ensemble → Démarrage** et **Indexation**, avec enregistrement explicite.
 

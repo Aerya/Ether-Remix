@@ -19,25 +19,26 @@ interface Overview {
   lastSeen: number;
   items: { key: string; title: string; lastSeen: number }[];
 }
-export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean }) {
+function ReleaseOverview({ compact = false }: { compact?: boolean }) {
   const [tick, setTick] = useState(0);
   const state = useAsync(
-    (signal) => apiFetch<Overview>(`/pse/release-library?overview=1&page=0`, { signal }),
+    (signal) => apiFetch<Overview>(`/pse/release-library?overview=1&summary=1`, { signal }),
     [tick, compact],
   );
   useEffect(() => {
+    if (state.loading) return;
     const timer = window.setInterval(() => {
       if (!document.hidden) setTick((t) => t + 1);
-    }, 15000);
+    }, 60000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [state.loading, tick]);
   const d = state.data;
-  if (state.error)
+  if (state.error && !d)
     return (
       <p role="alert">
         {L(
-          "Impossible de charger les releases. Nouvelle tentative toutes les 15 secondes.",
-          "Unable to load releases. Retrying every 15 seconds.",
+          "Compteurs momentanément indisponibles. Nouvelle tentative dans 60 secondes.",
+          "Counters temporarily unavailable. Retrying in 60 seconds.",
         )}
       </p>
     );
@@ -48,13 +49,21 @@ export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean
     );
   return (
     <section className="min-w-0 max-w-full space-y-4">
+      {Boolean(state.error) && (
+        <p role="alert">
+          {L(
+            "Compteurs momentanément indisponibles ; dernières valeurs conservées.",
+            "Counters temporarily unavailable; keeping previous values.",
+          )}
+        </p>
+      )}
       <h2 className="text-lg font-semibold">
         {L("Bibliothèque de releases · Bêta", "Release library · Beta")}
       </h2>
       <p className="text-sm text-fg-muted">
         {L(
-          "Collecte continue lors des recherches et imports. Actualisation toutes les 15 secondes. Métadonnées et références se recoupent : leurs compteurs ne s’additionnent pas. Une référence disponible ne garantit pas la lecture.",
-          "Collected continuously during searches and imports. Refreshed every 15 seconds. Metadata and references overlap: their counts must not be added. An available reference does not guarantee playback.",
+          "Collecte continue lors des recherches et imports. Actualisation toutes les 60 secondes. Métadonnées et références se recoupent : leurs compteurs ne s’additionnent pas. Une référence disponible ne garantit pas la lecture.",
+          "Collected continuously during searches and imports. Refreshed every 60 seconds. Metadata and references overlap: their counts must not be added. An available reference does not guarantee playback.",
         )}
       </p>
       <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -83,7 +92,16 @@ export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean
         <Link to="/remix/indexation?view=releases" className="text-accent underline">
           {L("Consulter les releases et suivre l’avancement", "Browse releases and track progress")}
         </Link>
-      ) : (
+      ) : null}
+    </section>
+  );
+}
+
+export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean }) {
+  return (
+    <section className="min-w-0 max-w-full space-y-4">
+      <ReleaseOverview compact={compact} />
+      {!compact && (
         <>
           <IndexerActivity />
           <ReleaseBrowser />
