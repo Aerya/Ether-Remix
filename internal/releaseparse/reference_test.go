@@ -14,6 +14,7 @@ func TestReferenceNeedsActualSourceLocator(t *testing.T) {
 	}{
 		{"identifier only", core.Release{ID: "source-search-result", Protocol: core.ProtocolTorrent}, false, false},
 		{"hash", core.Release{ID: "r", Protocol: core.ProtocolTorrent, InfoHash: strings.Repeat("a", 40)}, true, true},
+		{"contradictory hashes", core.Release{ID: "r", Protocol: core.ProtocolTorrent, InfoHash: strings.Repeat("a", 40), MagnetURL: "magnet:?xt=urn:btih:" + strings.Repeat("b", 40)}, false, false},
 		{"invalid hash", core.Release{ID: "r", Protocol: core.ProtocolTorrent, InfoHash: "abc"}, false, false},
 		{"magnet", core.Release{ID: "r", Protocol: core.ProtocolTorrent, MagnetURL: "magnet:?xt=urn:btih:" + strings.Repeat("b", 40)}, true, true},
 		{"signed HTTP", core.Release{ID: "r", Protocol: core.ProtocolHTTP, StreamURL: "https://source.invalid/file?expires=100"}, true, false},

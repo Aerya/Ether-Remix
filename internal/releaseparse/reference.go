@@ -17,15 +17,37 @@ func ReferenceReason(r core.Release) string {
 			return ""
 		}
 	} else if r.Protocol == core.ProtocolTorrent {
-		if validInfoHash(r.InfoHash) || referenceURL(r.NZBURL) {
-			return ""
+		if r.InfoHash != "" && !validInfoHash(r.InfoHash) {
+			return "invalid_info_hash"
 		}
-		if u, err := url.Parse(r.MagnetURL); err == nil && u.Scheme == "magnet" {
-			for _, xt := range u.Query()["xt"] {
-				if strings.HasPrefix(xt, "urn:btih:") && validInfoHash(strings.TrimPrefix(xt, "urn:btih:")) {
-					return ""
-				}
+		magnetHash := ""
+		if r.MagnetURL != "" {
+			u, err := url.Parse(r.MagnetURL)
+			if err != nil || u.Scheme != "magnet" {
+				return "invalid_magnet"
 			}
+			for _, xt := range u.Query()["xt"] {
+				if !strings.HasPrefix(xt, "urn:btih:") {
+					continue
+				}
+				h := strings.ToLower(strings.TrimPrefix(xt, "urn:btih:"))
+				if !validInfoHash(h) {
+					return "invalid_magnet"
+				}
+				if magnetHash != "" && magnetHash != h {
+					return "reference_conflict"
+				}
+				magnetHash = h
+			}
+			if magnetHash == "" {
+				return "invalid_magnet"
+			}
+		}
+		if r.InfoHash != "" && magnetHash != "" && !strings.EqualFold(r.InfoHash, magnetHash) {
+			return "reference_conflict"
+		}
+		if validInfoHash(r.InfoHash) || magnetHash != "" || referenceURL(r.NZBURL) {
+			return ""
 		}
 	} else if r.Protocol == core.ProtocolUsenet && referenceURL(r.NZBURL) {
 		return ""
