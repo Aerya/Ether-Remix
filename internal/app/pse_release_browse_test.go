@@ -164,6 +164,11 @@ func TestReleaseBrowse(t *testing.T) {
 		}
 	}
 
+	for _, filter := range []string{"category=show", "category=show&q=unique", "category=show&sort=indexed", "category=show&sort=oldest"} {
+		if got := request("mode=releases&" + filter); len(got.Items) != 2 {
+			t.Fatal("category filter must precede limit", filter, got)
+		}
+	}
 	if got := request("mode=releases&q=unique&sort=indexed"); len(got.Items) != 4 {
 		t.Fatal("search must precede limit", got)
 	}
@@ -211,7 +216,7 @@ func BenchmarkReleaseBrowseLargeIndex(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	for _, scenario := range []struct{ name, query string }{{"media", "mode=media"}, {"global", "mode=releases"}, {"single", "mode=releases&media=" + core.MovieKey(1).String()}, {"search", "mode=media&q=film"}} {
+	for _, scenario := range []struct{ name, query string }{{"media", "mode=media"}, {"global", "mode=releases"}, {"single", "mode=releases&media=" + core.MovieKey(1).String()}, {"search", "mode=media&q=film"}, {"release-search", "mode=releases&q=Film.1499999"}, {"category", "mode=releases&category=movie"}} {
 		b.Run(scenario.name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				w := httptest.NewRecorder()

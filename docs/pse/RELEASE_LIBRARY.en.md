@@ -37,3 +37,5 @@ A TMDB/IMDb search alone is not proof: a source can ignore the request. Source-r
 On the first startup after this fix, a local audit checks existing metadata and encrypted references. Indexing and retained library reuse wait for completion while the server stays available. Unconfirmed rows move intact to `pse_releases_quarantine` and `pse_release_library_quarantine` with a reason. Unconfirmed does not necessarily mean incorrect: missing metadata may prevent verification. Direct StreamFusion imports retain their typed TMDB association. Derived counters are rebuilt and the console shows the number of quarantined associations.
 
 `go run ./cmd/ether-release-audit -db /path/copy.db -config /path/copied-config` performs a read-only audit. Use a consistent SQLite backup and private copies of `config.json` and `.credentials-key` (loading may upgrade the copied configuration). `-apply` quarantines unconfirmed rows: stop indexing/the server first and keep a backup. Reports contain source/reason counts only, never playback URLs or secrets.
+
+Global release search scans names without forcing chronological reads; category browsing uses date order to limit the rows read.

@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-release-association-verification",
+    id: "2026-11-17-release-search-speed",
     version: "current",
+    date: "2026-11-17",
+    title: ["Recherche de releases accélérée", "Faster release search"],
+    items: [
+      [
+        "La recherche globale et le parcours par catégorie évitent les lectures et tris inutiles sur les grands index.",
+        "Global search and category browsing avoid unnecessary reads and sorting on large indexes.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-release-association-verification",
+    version: "0.2.37-remix.105.1",
     date: "2026-11-17",
     title: ["Associations des releases vérifiées", "Verified release associations"],
     items: [

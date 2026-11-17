@@ -70,12 +70,17 @@ func releaseBrowseSQL(media core.RatingKey, allowed []core.RatingKey, restricted
 			where += ")"
 		}
 		indexHint := ""
-		if media == 0 && !restricted && limit > 0 {
+		// Browse recent rows in date order, including category filters. A global
+		// substring search instead scans sequentially: a date-index walk fetches
+		// every table row randomly when only a few names match.
+		if media == 0 && limit > 0 && query == "" {
 			suffix := "_browse_last"
 			if strings.HasPrefix(sortOrder, "first_seen") {
 				suffix = "_browse_first"
 			}
 			indexHint = " INDEXED BY " + table + suffix
+		} else if media == 0 && !restricted && query != "" && from == 0 && to == 0 {
+			indexHint = " NOT INDEXED"
 		}
 		sql := `SELECT rowid AS rid,title_key AS sort_key,` + key + ` AS title_key,` + browseMediaKey + ` AS media_key,` + name + ` AS name,` + source + ` AS source,first_seen,last_seen,` + kind + ` AS retained FROM ` + table + ` m` + indexHint + ` WHERE ` + where
 		if limit > 0 {
