@@ -65,18 +65,7 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   const source = await screen.findByLabelText("Prowlarr");
   fireEvent.click(source.closest("details")!.querySelector("summary")!);
   const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
-  expect(tabs).toEqual([
-    "Démarrage rapide",
-    "Sources",
-    "Indexation",
-    "Lecture et priorités",
-    "Langues et qualité",
-    "VOSTFR à la demande",
-    "Contenus et bibliothèques",
-    "Médias locaux",
-    "Statistiques",
-    "Notifications et suivi",
-  ]);
+  expect(tabs).toEqual(["Vue d’ensemble", "Sources", "Indexation", "Lecture", "Contenus", "Suivi"]);
   expect(screen.getByRole("table")).toBeTruthy();
   fireEvent.click(screen.getByLabelText("Mode de sélection"));
   fireEvent.click(await screen.findByRole("option", { name: /Personnalis/ }));
@@ -94,7 +83,7 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   );
 });
 
-it("isolates VOSTFR exceptions in the on-demand tab", async () => {
+it("redirects the former on-demand tab to the Playback VOSTFR view", async () => {
   apiFetch.mockResolvedValue({ features: [] });
   render(
     <MemoryRouter initialEntries={["/remix/demande"]}>
@@ -104,6 +93,8 @@ it("isolates VOSTFR exceptions in the on-demand tab", async () => {
     </MemoryRouter>,
   );
   expect(await screen.findByText("Titres en VOSTFR à la demande")).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Lecture" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("button", { name: "VOSTFR" }).getAttribute("aria-pressed")).toBe("true");
 });
 
 it("redirects a legacy indexing anchor to its new source category", async () => {
@@ -120,7 +111,7 @@ it("redirects a legacy indexing anchor to its new source category", async () => 
   expect(await screen.findByRole("heading", { name: "Indexation" })).toBeTruthy();
 });
 
-it("opens statistics when entering Remix without a tab", async () => {
+it("opens the overview statistics when entering Remix without a tab", async () => {
   apiFetch.mockResolvedValue({ features: [] });
   render(
     <MemoryRouter initialEntries={["/remix"]}>
@@ -130,7 +121,7 @@ it("opens statistics when entering Remix without a tab", async () => {
     </MemoryRouter>,
   );
   expect(await screen.findByText("Tableau statistiques")).toBeTruthy();
-  expect(screen.getByRole("tab", { name: "Statistiques" }).getAttribute("aria-selected")).toBe(
+  expect(screen.getByRole("tab", { name: "Vue d’ensemble" }).getAttribute("aria-selected")).toBe(
     "true",
   );
 });

@@ -50,7 +50,7 @@ const fixture = {
     },
   ],
 };
-it("sorts by size, filters missing files and links to local sources", async () => {
+it("sorts by size and filters missing files inside the local sources view", async () => {
   apiFetch.mockResolvedValue(fixture);
   render(
     <MemoryRouter>
@@ -60,7 +60,7 @@ it("sorts by size, filters missing files and links to local sources", async () =
   await screen.findByText("Large");
   const rows = screen.getAllByRole("row");
   expect(rows[1]).toHaveTextContent("Large");
-  expect(screen.getByRole("link")).toHaveAttribute("href", "/remix/sources?source=local");
+  expect(screen.queryByRole("link")).toBeNull();
   fireEvent.change(screen.getByRole("combobox", { name: /État|State/ }), {
     target: { value: "missing" },
   });

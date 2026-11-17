@@ -83,7 +83,7 @@ export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean
         {d.lastSeen ? new Date(d.lastSeen * 1000).toLocaleString(getLocale()) : L("aucune", "none")}
       </p>
       {compact ? (
-        <Link to="/remix/releases" className="text-accent underline">
+        <Link to="/remix/indexation?view=releases" className="text-accent underline">
           {L("Consulter les releases et suivre l’avancement", "Browse releases and track progress")}
         </Link>
       ) : (

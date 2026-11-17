@@ -1561,7 +1561,7 @@ enforced per Ether process; they are not a cluster-wide account quota.
 
 ## Profils de qualité Remix
 
-Dans **Ether-Remix → Langues et qualité → Profils de qualité**, créez un profil global, Films/Séries, bibliothèque ou collection. Les règles imposent ou excluent des formats (WEB-DL, BluRay, Remux…), codecs, résolutions, HDR/Dolby Vision, tailles, langues, sous-titres, groupes, sources ou expressions régulières. Les raccourcis HDR10+, Atmos et canaux audio examinent le nom annoncé, sans analyser le fichier vidéo.
+Dans **Ether-Remix → Lecture → Qualité → Profils de qualité**, créez un profil global, Films/Séries, bibliothèque ou collection. Les règles imposent ou excluent des formats (WEB-DL, BluRay, Remux…), codecs, résolutions, HDR/Dolby Vision, tailles, langues, sous-titres, groupes, sources ou expressions régulières. Les raccourcis HDR10+, Atmos et canaux audio examinent le nom annoncé, sans analyser le fichier vidéo.
 
 Chaque règle combine ses conditions avec OU ou ET ; toutes les règles du profil s’appliquent. Une information absente ne satisfait pas une obligation, mais ne prouve pas une exclusion. Testez des noms de releases avant d’enregistrer (le test porte uniquement sur le profil affiché).
 

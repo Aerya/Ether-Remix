@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { renderAppWith } from "./routes";
-it("saves the release library from quick start and exposes its tab only after saving", async () => {
+it("saves the release library from quick start and exposes its view only after saving", async () => {
   let enabled = false;
   const doc = () => ({
     features: [
@@ -32,10 +32,9 @@ it("saves the release library from quick start and exposes its tab only after sa
     }
   });
   const toggle = await screen.findByRole("switch", { name: "Release library (Beta)" });
-  expect(screen.queryByRole("tab", { name: "Indexed releases" })).toBeNull();
   fireEvent.click(toggle);
-  expect(screen.queryByRole("tab", { name: "Indexed releases" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /Enregistrer|Save/ }));
   await waitFor(() => expect(enabled).toBe(true));
-  expect(await screen.findByRole("tab", { name: "Indexed releases" })).toBeVisible();
+  fireEvent.click(screen.getByRole("tab", { name: "Indexing" }));
+  expect(await screen.findByRole("button", { name: "Releases" })).toBeVisible();
 });

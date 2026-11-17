@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { apiFetch } from "../lib/api";
 import { getLocale } from "../i18n";
@@ -79,11 +78,8 @@ export function LocalMediaHealth() {
     )
     .sort((a, b) => b.size - a.size || a.path.localeCompare(b.path));
   return (
-    <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">
-          {L("Santé des médias locaux", "Local media health")}
-        </h2>
+    <section className="space-y-4 p-4">
+      <div className="flex flex-wrap items-center justify-end gap-3">
         <Button disabled={busy} onClick={() => void refresh()}>
           {busy
             ? L("Vérification…", "Checking…")
@@ -96,9 +92,6 @@ export function LocalMediaHealth() {
           "Missing entries stay in the catalogue, even when a mount becomes empty. No files are deleted. Unidentified videos may be home videos; duplicates are only candidates.",
         )}
       </p>
-      <Link className="underline" to="/remix/sources?source=local">
-        {L("Configurer les dossiers et lancer une analyse", "Configure folders and run a scan")}
-      </Link>
       {error && <p role="alert">{error}</p>}
       {data && (
         <>

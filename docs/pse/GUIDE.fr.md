@@ -36,14 +36,14 @@
 <a id="nav-demarrage-rapide"></a>
 ## Démarrage rapide
 
-Dans la console, ouvrez **Ether-Remix → Démarrage rapide**. Cet onglet reste accessible ; il ne modifie pas les réglages automatiquement.
+Dans la console, ouvrez **Ether-Remix → Vue d’ensemble → Démarrage**. Cette vue s’ouvre par défaut tant que l’indexation est désactivée et reste accessible ensuite ; elle ne modifie pas les réglages automatiquement.
 
 1. **Sources** : ajoutez, testez et activez vos fournisseurs. Un addon qui fournit ses propres liens de lecture n’exige pas une seconde clé débrideur pour les recherches.
 2. **Indexation** : activez et enregistrez l’indexation en arrière-plan pour préparer le catalogue vidéo. Le mode Automatique utilise les addons Stremio activés ; passez en Personnalisé pour choisir vos sources, notamment les indexeurs Prowlarr/Jackett. Une sélection personnalisée vide ne lance aucune recherche. Respectez les quotas des fournisseurs.
-3. **Langues et qualité** : vérifiez les critères et le seuil du catalogue lisible. Un catalogue vide peut simplement attendre des releases qui correspondent à vos réglages.
-4. **Statistiques → Indexation** : contrôlez les dernières recherches et le compteur de titres cherchés. L’indexation se met en pause pendant les lectures. Les statistiques d’utilisation sont distinctes.
-5. **Contenus et bibliothèques** : personnalisez les collections si besoin. Pour la musique et les fichiers locaux seuls, l’indexation vidéo n’est pas nécessaire ; configurez leurs sources et leur partage.
-6. **Applications** : activez le protocole du client, utilisez les accès du spectateur puis essayez une lecture. Les accès Subsonic se trouvent aussi dans **Contenus et bibliothèques → Musique**.
+3. **Lecture → Qualité** : vérifiez les critères et le seuil du catalogue lisible. Un catalogue vide peut simplement attendre des releases qui correspondent à vos réglages.
+4. **Vue d’ensemble → Activité** : contrôlez les dernières recherches et le compteur de titres cherchés. L’indexation se met en pause pendant les lectures. Les statistiques d’utilisation sont distinctes.
+5. **Contenus** : personnalisez les collections si besoin. Pour la musique et les fichiers locaux seuls, l’indexation vidéo n’est pas nécessaire ; configurez leurs sources et leur partage.
+6. **Applications** : activez le protocole du client, utilisez les accès du spectateur puis essayez une lecture. Les accès Subsonic se trouvent aussi dans **Contenus → Musique**.
 
 <a id="nav-installation"></a>
 
@@ -135,7 +135,7 @@ Les séries en cours restent dans « Continuer à regarder » même après plusi
 Le webhook relaie les débuts, pauses et arrêts effectifs, y compris le remplacement d’une lecture et le nettoyage d’une session inactive. L’identifiant reste stable pour chaque session et spectateur ; un arrêt répété n’est pas renvoyé et ne modifie pas l’historique.
 
 
-1. Dans **Ether-Remix → Notifications et suivi → Scrob**, créez les identifiants Jellyfin du spectateur.
+1. Dans **Ether-Remix → Suivi → Scrob**, créez les identifiants Jellyfin du spectateur.
 2. Dans Scrob → **Connections → Media Players → Add Connection**, choisissez **Jellyfin** et copiez **Server URL**, **Token** et **User ID**. Cliquez sur **Test**, puis **Add**. Le jeton est limité à ce spectateur et révocable dans ses appareils.
 3. Choisissez les bibliothèques à synchroniser dans cette connexion. **Films** et **Séries** fonctionnent directement. L’option avancée Remix « Proposer des bibliothèques limitées à l’historique » ajoute **Vus et notés — Films/Séries** pour limiter l’import aux titres de l’historique.
 4. Choisissez **SERVER → SCROB**, **SCROB → SERVER**, ou les deux, et les fréquences **Pull/Push** dans Scrob. Le retour vers Remix concerne les statuts vus/non vus et les notes, pas les positions de reprise. Il ne nécessite aucun interrupteur ni webhook dans Remix.
@@ -150,7 +150,7 @@ Le panneau actualise automatiquement le dernier accès Jellyfin du spectateur (S
 ### Connecter un client musique (Subsonic)
 
 1. Dans **Console → Ether-Remix → Sources → Streaming musical**, activez les comptes souhaités : **AllDebrid**, **Real-Debrid** et/ou **TorBox**, ou collez le lien manifest d’un addon Eclipse. Les clés et les indexeurs sont ceux déjà configurés dans Ether-Remix. **Tester** vérifie le compte puis cherche un lien (sans vérifier l’audio) ; **Tester les sources** ouvre les premiers octets audio pour constater le format. Avec plusieurs comptes d’un même service dans **Sources › Debrid**, ils sont essayés dans l’ordre de priorité.
-2. Dans **Contenus et bibliothèques → Musique → Clients musicaux**, l’administrateur crée un accès pour le spectateur. Recopiez l’adresse du serveur, l’identifiant `music-…` et le mot de passe musical dans **Subsonic / OpenSubsonic** dans Arpeggi ou votre client. Le mot de passe musical n’est affiché qu’à sa création ; il fonctionne avec l’authentification par jeton (`t`/`s`), y compris pour les spectateurs connectés à Remix par Plex.
+2. Dans **Contenus → Musique → Clients musicaux**, l’administrateur crée un accès pour le spectateur. Recopiez l’adresse du serveur, l’identifiant `music-…` et le mot de passe musical dans **Subsonic / OpenSubsonic** dans Arpeggi ou votre client. Le mot de passe musical n’est affiché qu’à sa création ; il fonctionne avec l’authentification par jeton (`t`/`s`), y compris pour les spectateurs connectés à Remix par Plex.
 3. Utilisez HTTPS hors du réseau local. Chaque spectateur dispose d’un accès musical, limité à ses droits ; le remplacer ou le révoquer coupe les prochaines requêtes de tous les clients qui l’utilisent. Le mot de passe principal reste indépendant. Les clients configurés avec un compte local peuvent continuer en mode **legacy**.
 
 Les services debrid sont essayés après Eclipse, selon leur priorité dans **Sources → Debrid** (le compte actif le plus prioritaire détermine le rang du service, puis tous ses comptes actifs sont essayés dans leur ordre de priorité). Les changements de comptes ou de priorité renouvellent automatiquement les résolveurs et leurs caches. Audius conserve son placement avant les sources ou en repli. Les fichiers sont relayés sans stockage local ni conversion : FLAC/Hi-Res seulement si le fichier disponible l’est réellement.
@@ -171,7 +171,7 @@ TorBox impose l’ajout uniquement si déjà en cache. Real-Debrid ne propose pl
 
 **Nouveautés et test des sources** : la playlist automatique **Nouveautés de vos artistes** réunit les albums sortis ces 4 derniers mois par les artistes favoris et les plus écoutés du spectateur (calculée en arrière-plan, mise à jour toutes les 6 h). Dans la console, Sources → Streaming musical, **Tester les sources audio** essaie chaque source réglée, seule, sur le même titre et affiche le format réellement envoyé (FLAC, MP3…), pas celui annoncé, ou la raison de l'échec. Il montre l'ordre réel de lecture, la raison de chaque source inactive et, pour chaque source, les étapes franchies : titre trouvé au catalogue, résultat de la source, lien obtenu, premiers octets vérifiés. La lecture complète n'est pas testée. **Réessayer cette source** relance une seule source, sans cache. Les liens d'addons ne sont affichés que par leur hôte ; aucune clé ni lien audio n'est affiché.
 
-**Titres en VOSTFR à la demande** : dans **Ether-Remix → VOSTFR à la demande**, cherchez un film ou une série et ajoutez-le. Il apparaît dans la bibliothèque **« VOSTFR »** de Plex (créée au premier ajout), mais pas dans Films ni Séries tant qu’aucune VF n’est trouvée.
+**Titres en VOSTFR à la demande** : dans **Ether-Remix → Lecture → VOSTFR**, cherchez un film ou une série et ajoutez-le. Il apparaît dans la bibliothèque **« VOSTFR »** de Plex (créée au premier ajout), mais pas dans Films ni Séries tant qu’aucune VF n’est trouvée.
 
 **Découvrir de la musique** : chaque spectateur reçoit les playlists **Top France**, **Top Monde**… (pays au choix dans Console → Ether-Remix → Sources → Streaming musical) et **Découvertes**, renouvelées toutes les 12 heures. Les **styles** (Pop, Rap/Hip Hop, Rock, Électro, Jazz…) se parcourent dans Plex (Musique › Par style), Jellyfin (Genres) et Feishin (Genres), avec les albums, artistes et titres du moment. Sur la page d'un artiste : **artistes similaires** et radio « Dans le même esprit » (Plex), **Mix instantané** (Jellyfin), titres populaires et similaires (Feishin).
 
@@ -257,7 +257,7 @@ Dans **Indexation**, **Sources importées** se filtre et se trie par catégorie,
 
 ## Animes
 
-Dans **Ether-Remix → Contenus et bibliothèques → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
+Dans **Ether-Remix → Contenus → Animes**, créez le modèle Animes pour obtenir les collections populaires et les mieux notées de TMDB, en films et séries. Une bibliothèque mixte apparaît dans Plex en deux sections Films et Séries. La catégorie Animes est conservée après renommage. Les bibliothèques Animes respectent vos filtres de langue, notamment FR/MULTi. La VO/VOSTFR reste un choix explicite, via les exceptions à la demande ou l’option Toutes langues.
 
 Dans **Sources → Stremio**, utilisez **Ajouter un addon**, puis collez le lien `manifest.json` généré chez le fournisseur de votre choix. Aucune sélection de fournisseurs n’est imposée ou suggérée. Les sources, leur activation et leur priorité sont partagées avec Films & Séries. Pour la découverte, utilisez les collections TMDB, les listes AniList ou un addon proposant des catalogues.
 
@@ -267,7 +267,7 @@ Le bouton **Nouveautés**, dans l’en-tête de la console, permet de rouvrir le
 
 ### Exceptions VOSTFR à la demande
 
-**Ether-Remix → VOSTFR à la demande → Titres en VOSTFR à la demande** regroupe les films, séries et animés explicitement autorisés sans VF. Chaque ajout lance une recherche prioritaire si l’indexation est active, dans les limites des quotas et des pauses de lecture. Ces titres figurent aussi dans la bibliothèque VOSTFR. Votre sélection existante est conservée.
+**Ether-Remix → Lecture → VOSTFR → Titres en VOSTFR à la demande** regroupe les films, séries et animés explicitement autorisés sans VF. Chaque ajout lance une recherche prioritaire si l’indexation est active, dans les limites des quotas et des pauses de lecture. Ces titres figurent aussi dans la bibliothèque VOSTFR. Votre sélection existante est conservée.
 
 <a id="nav-instances-publiques-ou-auto-hebergement"></a>
 
@@ -282,13 +282,13 @@ Les sources musicales identifient les instances publiques et proposent les liens
 Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lire, configurez la voie adaptée : compte débrideur, client BitTorrent ou addon Stremio comme Seedstrem. Seedstrem utilise son propre client torrent. Pour Usenet, Remix lit via son moteur NNTP et vos fournisseurs Usenet ; SABnzbd/NZBGet ne sont pas des clients externes intégrés.
 
 - **Sources** : accès unique aux comptes, addons Stremio, indexeurs BitTorrent/Usenet, fournisseurs Usenet, IPTV et sources musicales. Les composants et configurations Ether sont conservés. Les indexeurs peuvent être filtrés par instance Prowlarr/Jackett ou par provenance manuelle. Leur configuration reste unique.
-- **Indexation** : activation, quotas, rythme et choix des sources : Automatique pour les addons Stremio activés, ou Personnalisé, y compris aucune source. Ce choix ne désactive pas les sources à la lecture. Les titres à indexer en priorité présentent les compteurs catalogue, recherchés, avec release et affichés par bibliothèque ou collection ; les groupes peuvent se recouper.
-- **Lecture et priorités** : préférences entre sources à qualité équivalente. Ce classement n’impose pas des recherches réseau successives et ne classe pas universellement les fichiers locaux, clients torrent, XDCC et FTP. Le dernier recours se règle par addon Stremio dans Sources.
-- **Langues et qualité** : catalogue français, langues de release, résolution, codecs, cache et exceptions par collection.
-- **VOSTFR à la demande** : sélection explicite de titres sans VF et recherche prioritaire.
-- **Contenus et bibliothèques** : films, séries, animés, musique, playlists et bibliothèques personnalisées. Les bibliothèques mixtes restent proposées dans Films et Séries.
-- **Statistiques** : indexation Remix, tableaux de bord Sources et Utilisation hérités d’Ether.
-- **Notifications et suivi** : notifications, Scrob et identifiants Last.fm.
+- **Indexation → Réglages** : activation, quotas, rythme et choix des sources : Automatique pour les addons Stremio activés, ou Personnalisé, y compris aucune source. Ce choix ne désactive pas les sources à la lecture. Les titres à indexer en priorité présentent les compteurs catalogue, recherchés, avec release et affichés par bibliothèque ou collection ; les groupes peuvent se recouper.
+- **Vue d’ensemble** : démarrage rapide, activité de l’indexation Remix, tableaux de bord Sources et Utilisation hérités d’Ether.
+- **Lecture → Priorités** : préférences entre sources à qualité équivalente. Ce classement n’impose pas des recherches réseau successives et ne classe pas universellement les fichiers locaux, clients torrent, XDCC et FTP. Le dernier recours se règle par addon Stremio dans Sources.
+- **Lecture → Qualité** : catalogue français, langues de release, résolution, codecs, cache et exceptions par collection.
+- **Lecture → VOSTFR** : sélection explicite de titres sans VF et recherche prioritaire.
+- **Contenus** : films, séries, animés, musique, playlists et bibliothèques personnalisées. Les bibliothèques mixtes restent proposées dans Films et Séries.
+- **Suivi** : notifications, Scrob et identifiants Last.fm.
 
 Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent vers les nouveaux écrans. Il n’y a pas de copie des comptes ou manifests. Les catégories servent à organiser les sources ; elles ne garantissent pas qu’un titre précis existe chez un fournisseur.
 
@@ -298,7 +298,7 @@ Les anciennes adresses `/sources/...` et les anciens onglets Remix redirigent ve
 
 Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épisodes et les rotations de collections respectent l’état de chaque spectateur. Le catalogue « lisible uniquement » conserve des compteurs exacts, y compris les exceptions de langue.
 
-**Affiches plus rapides** : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche pendant un jour au lieu de la redemander au serveur à chaque affichage. Une affiche de repli TMDB, servie quand le fournisseur ne répond pas, reste revérifiée à chaque fois pour ne pas rester affichée après la panne. Les applications reprennent les affiches du fournisseur toutes les 24 heures ; ce délai se règle dans **Console → Ether-Remix → Contenus et bibliothèques → Affiches dans les applications** (`PSE_POSTER_REFRESH_HOURS`, de 1 à 168). Jellyfin et Emby reçoivent l’affiche à la taille demandée par l’application, et Jellyfin n’attend plus avant d’envoyer une image. Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.
+**Affiches plus rapides** : avec un fournisseur d’affiches (PostersPlus, XRDB, RPDB…), Plex garde chaque affiche pendant un jour au lieu de la redemander au serveur à chaque affichage. Une affiche de repli TMDB, servie quand le fournisseur ne répond pas, reste revérifiée à chaque fois pour ne pas rester affichée après la panne. Les applications reprennent les affiches du fournisseur toutes les 24 heures ; ce délai se règle dans **Console → Ether-Remix → Contenus → Affiches dans les applications** (`PSE_POSTER_REFRESH_HOURS`, de 1 à 168). Jellyfin et Emby reçoivent l’affiche à la taille demandée par l’application, et Jellyfin n’attend plus avant d’envoyer une image. Sans fournisseur, une télé qui demande une affiche de 600 px reçoit celle de 500 px plutôt que celle de 780 px, plus de deux fois plus lourde.
 
 **Tri par date de sortie** : Films et Séries s’ouvrent du plus récent au plus ancien. Plex applique ce tri tant que vous n’en avez pas choisi un autre dans l’application. Jellyfin et Emby l’appliquent quand l’application ne demande pas de tri ; Jellyfin Web et Infuse gardent le leur : changez-le une fois dans l’application, elle s’en souvient.
 
@@ -309,7 +309,7 @@ Plex et Jellyfin préparent les badges d’une page ensemble. Les nouveaux épis
 
 ## Playlists et apparence
 
-Dans **Contenus et bibliothèques → Musique → Playlists** :
+Dans **Contenus → Musique → Playlists** :
 
 - **Découvrir** : tendances et recherche Deezer ; connexion Spotify et liste de vos playlists ; liens vers ListenBrainz, Soundplate et DailyPlaylists pour découvrir d’autres sélections.
 - **Mes comptes** : profils Deezer publics, Last.fm et ListenBrainz synchronisés automatiquement (6 h par défaut). Les playlists Deezer privées ne sont pas accessibles par un simple lien de profil.
@@ -415,13 +415,13 @@ Ce mécanisme ne masque pas une erreur d’identifiants, un quota épuisé, une 
 
 ### Navigation et configuration
 
-La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus et bibliothèques → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.
+La console utilise `/ether/remix`. Les anciens favoris sont redirigés en conservant leurs paramètres. Les blocs de configuration sont repliés par défaut ; ouvrir ou fermer un bloc conserve les saisies. Sources → Streaming musical réunit Eclipse, DMM / Real-Debrid, iBroadcast et les autres fournisseurs. L’adresse Subsonic et les compteurs de bibliothèque sont dans Contenus → Musique. Pour Spotify, utilisez désormais `/ether/remix/contenus?content=musique` comme chemin de retour autorisé ; les retours déjà lancés avec l’ancien chemin restent acceptés.
 
 ## Cartes de navigation inspirées de Nuvio
 
 Un **style pour plusieurs cartes** peut être préparé depuis une même galerie : choisissez les cartes, recherchez leurs visuels, filtrez par créateur, ensemble ou dossier et sélectionnez les correspondances uniques en un clic. Vérifiez les variantes avant application groupée ; les cartes sans choix conservent leur visuel. Les métadonnées disponibles varient selon la source, et un même créateur ne garantit pas un style identique. Recherche limitée à 30 cartes par lot, sans enregistrement avant « Appliquer les cartes à mes accueils ».
 
-Cette option est une **BÊTA facultative**, désactivée tant que vous ne l’appliquez pas. Dans **Ether-Remix → Démarrage rapide** ou **Contenus et bibliothèques**, ouvrez **Cartes inspirées de Nuvio → Configuration rapide**.
+Cette option est une **BÊTA facultative**, désactivée tant que vous ne l’appliquez pas. Dans **Ether-Remix → Vue d’ensemble → Démarrage** ou **Contenus**, ouvrez **Cartes inspirées de Nuvio → Configuration rapide**.
 
 1. Partez de la **Sélection de démarrage**, ou composez votre sélection. **Studios et labels** recherche les sociétés de production TMDB par nom ou identifiant ; il ne s’agit pas d’un annuaire exhaustif des labels musicaux. **Genres** propose les genres de films TMDB, avec leur correspondance séries lorsqu’elle existe.
 2. Dans **Services**, choisissez un pays : les services se chargent automatiquement. Les fournisseurs disponibles proviennent des listes films et séries TMDB / JustWatch. Ajoutez vos services puis changez de pays : la sélection reste conservée. Un code ISO à deux lettres permet de choisir un autre pays. Le pays indique la disponibilité du catalogue, pas l’origine du studio, et n’accorde aucun accès à un abonnement.
@@ -439,7 +439,7 @@ Le préréglage est indépendant de Nuvio et ne copie ni ses fichiers ni ses par
 
 ## Import Xperience
 
-Dans **Ether-Remix → Contenus et bibliothèques** (`/ether/remix/contenus`), ouvrez **Importer un manifeste** dans le bloc **Importer Xperience**. Créez votre configuration sur [xperience-app.com](https://xperience-app.com/) et collez son lien personnel `manifest.json` (HTTPS ou `stremio://`). **Afficher les catalogues** prépare la sélection sans installer de source ni créer de bibliothèque.
+Dans **Ether-Remix → Contenus** (`/ether/remix/contenus`), ouvrez **Importer un manifeste** dans le bloc **Importer Xperience**. Créez votre configuration sur [xperience-app.com](https://xperience-app.com/) et collez son lien personnel `manifest.json` (HTTPS ou `stremio://`). **Afficher les catalogues** prépare la sélection sans installer de source ni créer de bibliothèque.
 
 Choisissez jusqu’à **30 catalogues** par import : films et séries restent séparés, y compris les rubriques Animation. Recherchez une rubrique, renommez-la et réglez ses paramètres ; **Sans filtre supplémentaire** correspond à `genre=None` lorsqu’il est proposé par Xperience. Les catalogues de recherche sont exclus. Choisissez **Bibliothèques et collections**, **Collections seulement** ou **Bibliothèques seulement**. Ce dernier mode utilise des collections de gestion sans publication dans l’onglet Collections ni rangées d’accueil.
 
@@ -454,7 +454,7 @@ Les ajouts, renommages, masquages et suppressions de bibliothèques sont transmi
 
 ## Configuration rapide JukeBox
 
-Dans **Bibliothèques** ou **Ether-Remix → Contenus et bibliothèques**, ouvrez **Configurer avec JukeBox**. Films, Séries et Animes sont précochés ; **Créer ma sélection** crée leurs collections et bibliothèques communes à Plex, Jellyfin, Emby, Stremio, Xtream et Silo. Pour des rangées automatiques sans nouvelle bibliothèque, choisissez **Collections / sélections automatiques seulement**. Les collections sont proposées dans l’onglet Collections, sur l’accueil et dans les sections compatibles avec ces rangées.
+Dans **Bibliothèques** ou **Ether-Remix → Contenus**, ouvrez **Configurer avec JukeBox**. Films, Séries et Animes sont précochés ; **Créer ma sélection** crée leurs collections et bibliothèques communes à Plex, Jellyfin, Emby, Stremio, Xtream et Silo. Pour des rangées automatiques sans nouvelle bibliothèque, choisissez **Collections / sélections automatiques seulement**. Les collections sont proposées dans l’onglet Collections, sur l’accueil et dans les sections compatibles avec ces rangées.
 
 **Choisir parmi toutes les listes JukeBox** charge les listes publiques de [son profil MDBList](https://mdblist.com/lists/jukebox8786/). Recherchez par exemple « Documentaire », cochez vos listes et ajustez le type Films / Séries / Films et séries. Les trois propositions restent utilisables si le catalogue distant est indisponible. Une liste mixte crée deux collections et deux bibliothèques, une par type ; la proposition Films ne conserve que les films de la liste « Les plus piratés ».
 

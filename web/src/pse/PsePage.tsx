@@ -2,7 +2,6 @@ import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStart, QuickStartHint } from "./QuickStart";
 import { XperienceImport } from "./XperienceImport";
-import { LocalMediaHealth } from "./LocalMediaHealth";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
 import { QualityProfiles } from "./QualityProfiles";
@@ -36,15 +35,16 @@ import { ScrobLinks } from "./ScrobLinks";
 import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
 import { RemixSources } from "./RemixSources";
-import { REMIX_TABS, visibleRemixTabs, legacyRemixRoute } from "./navigation";
+import { REMIX_TABS, visibleRemixViews, legacyRemixRoute } from "./navigation";
 import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { SourceStatistics, StatisticsPeriod } from "../pages/sources/statistics/Statistics";
 import { ImportedSources } from "./ImportedSources";
 import { VostfrTitles } from "./VostfrTitles";
 
 /**
- * Page « Ether-Remix » de la console (nom public du fork), en onglets : Films et
- * séries, Animes, Musique, Bibliothèques, Stats, Notifications et suivi. Réglages : réglages des ajouts du fork, enregistrés par
+ * Page « Ether-Remix » de la console (nom public du fork), en six onglets : Vue
+ * d’ensemble, Sources, Indexation, Lecture, Contenus et Suivi, certains découpés
+ * en vues `?view=`. Réglages des ajouts du fork, enregistrés par
  * /ether/api/pse/ (internal/pse/console). Les textes viennent du serveur en
  * français et en anglais ; la page choisit selon la langue de la console.
  * Voir docs/pse/FORK.fr.md.
@@ -134,9 +134,8 @@ export default function PsePage() {
         to={location.pathname.replace(/^\/accent/, "/remix") + location.search + location.hash}
       />
     );
-  if (!tab)
-    return <Navigate replace to={"/remix/statistiques" + location.search + location.hash} />;
-  let legacy = legacyRemixRoute(tab);
+  if (!tab) return <Navigate replace to={"/remix/apercu" + location.search + location.hash} />;
+  let legacy = legacyRemixRoute(tab, location.search);
   if (tab === "sources" && new URLSearchParams(location.search).get("source") === "indexation")
     legacy = "/remix/indexation";
   const field = location.hash.match(/^#pse-(pse_[a-z_]+)$/i)?.[1]?.toUpperCase();
@@ -149,7 +148,11 @@ export default function PsePage() {
         : musicFieldPlacement(field) === "tracking"
           ? "/remix/suivi"
           : "/remix/contenus?content=musique";
-  return legacy ? <Navigate replace to={legacy + location.hash} /> : <PseSettings />;
+  return legacy ? (
+    <Navigate replace to={legacy.includes("#") ? legacy : legacy + location.hash} />
+  ) : (
+    <PseSettings />
+  );
 }
 
 const MUSIC_CONTENT = new Set([
@@ -167,7 +170,6 @@ function PseSettings() {
   const [qualityActive, setQualityActive] = useState(false);
   const [params, setParams] = useSearchParams();
   const content = params.get("content") ?? "bibliotheques";
-  const stats = params.get("view") ?? "indexation";
   const tab = useRouteTab(TABS);
   const doc = useAsync(() => apiFetch<PseData>("/pse/"), []);
   const [data, setData] = useState<PseData | null>(null);
@@ -251,11 +253,45 @@ function PseSettings() {
           placement,
         )
       : null;
+  const views =
+    tab === "apercu" || tab === "indexation" || tab === "lecture"
+      ? visibleRemixViews(tab, saved.PSE_RELEASE_LIBRARY === "on")
+      : [];
+  const view =
+    views.find((v) => v.key === params.get("view"))?.key ??
+    (tab === "apercu" ? (saved.PSE_INDEXER === "off" ? "demarrage" : "indexation") : views[0]?.key);
+  const viewNav = (
+    items: readonly { key: string; fr: string; en: string }[],
+    active: string | undefined,
+    param: string,
+    label: string,
+  ) =>
+    items.length > 1 ? (
+      <nav className="flex flex-wrap gap-1.5" aria-label={label}>
+        {items.map((v) => (
+          <Button
+            key={v.key}
+            size="sm"
+            variant={active === v.key ? "default" : "outline"}
+            aria-pressed={active === v.key}
+            onClick={() =>
+              setParams((p) => {
+                const n = new URLSearchParams(p);
+                n.set(param, v.key);
+                return n;
+              })
+            }
+          >
+            {L(v.fr, v.en)}
+          </Button>
+        ))}
+      </nav>
+    ) : null;
   return (
     <DomainPage
       title="Ether-Remix"
       base={BASE}
-      tabs={visibleRemixTabs(saved.PSE_RELEASE_LIBRARY === "on").map((t) => ({
+      tabs={TABS.map((t) => ({
         key: t.key,
         label: L(t.fr, t.en),
       }))}
@@ -265,9 +301,13 @@ function PseSettings() {
         "Movies, shows, anime and music. Settings apply without a restart.",
       )}
     >
-      <CollapsibleSections.Provider key={tab} value={tab !== "statistiques"}>
+      <CollapsibleSections.Provider
+        key={tab + (view ?? "")}
+        value={tab !== "apercu" || view === "demarrage"}
+      >
         <div className="space-y-6">
-          {tab === "demarrage" ? (
+          {viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
+          {tab === "apercu" && view === "demarrage" ? (
             <>
               <QuickStart indexing={saved.PSE_INDEXER === "on"} />
               {current.features
@@ -278,8 +318,8 @@ function PseSettings() {
                     id: "release-library",
                     title: { fr: "Bibliothèque de releases · Bêta", en: "Release library · Beta" },
                     description: {
-                      fr: "Facultatif : activez puis enregistrez pour afficher l’onglet Releases indexées.",
-                      en: "Optional: enable and save to show the Indexed releases tab.",
+                      fr: "Facultatif : activez puis enregistrez pour afficher la vue Indexation → Releases.",
+                      en: "Optional: enable and save to show the Indexing → Releases view.",
                     },
                     fields: f.fields.filter((fd) => fd.key === "PSE_RELEASE_LIBRARY"),
                   }),
@@ -287,7 +327,9 @@ function PseSettings() {
               <DiscoveryCardsSetup />
             </>
           ) : null}
-          {tab === "statistiques" && saved.PSE_INDEXER === "off" ? <QuickStartHint /> : null}
+          {tab === "apercu" && view !== "demarrage" && saved.PSE_INDEXER === "off" ? (
+            <QuickStartHint />
+          ) : null}
           {tab === "sources" ? (
             <RemixSources
               music={musicPart("source")}
@@ -330,7 +372,8 @@ function PseSettings() {
               }
             />
           ) : null}
-          {tab === "indexation" ? (
+          {tab === "indexation" && view === "releases" ? <ReleaseLibraryDashboard /> : null}
+          {tab === "indexation" && view !== "releases" ? (
             <>
               <p className="text-sm text-fg-muted">
                 {L(
@@ -342,7 +385,7 @@ function PseSettings() {
               <SearchPriority />
             </>
           ) : null}
-          {tab === "lecture" ? (
+          {tab === "lecture" && view === "priorites" ? (
             <>
               <p className="text-sm text-fg-muted">
                 {L(
@@ -369,33 +412,18 @@ function PseSettings() {
           ) : null}
           {tab === "contenus" ? (
             <>
-              <nav
-                className="flex flex-wrap gap-2"
-                aria-label={L("Types de contenus", "Content types")}
-              >
-                {[
-                  ["films", "Films", "Movies"],
-                  ["series", "Séries", "Shows"],
-                  ["animes", "Animes", "Anime"],
-                  ["musique", "Musique", "Music"],
-                  ["bibliotheques", "Toutes les bibliothèques", "All libraries"],
-                ].map(([key, fr, en]) => (
-                  <Button
-                    key={key}
-                    variant={content === key ? "default" : "outline"}
-                    aria-pressed={content === key}
-                    onClick={() =>
-                      setParams((p) => {
-                        const n = new URLSearchParams(p);
-                        n.set("content", key!);
-                        return n;
-                      })
-                    }
-                  >
-                    {L(fr!, en!)}
-                  </Button>
-                ))}
-              </nav>
+              {viewNav(
+                [
+                  { key: "films", fr: "Films", en: "Movies" },
+                  { key: "series", fr: "Séries", en: "Shows" },
+                  { key: "animes", fr: "Animes", en: "Anime" },
+                  { key: "musique", fr: "Musique", en: "Music" },
+                  { key: "bibliotheques", fr: "Toutes les bibliothèques", en: "All libraries" },
+                ],
+                content,
+                "content",
+                L("Types de contenus", "Content types"),
+              )}
               {current.features.filter((f) => f.id === "posters").map((f) => renderFeature(f))}
               {content === "animes" ? (
                 <p className="text-sm text-fg-muted">
@@ -424,7 +452,8 @@ function PseSettings() {
               )}
             </>
           ) : null}
-          {tab === "langues" ? (
+          {tab === "lecture" && view === "vostfr" ? <VostfrTitles /> : null}
+          {tab === "lecture" && view === "qualite" ? (
             <>
               <CollapsibleBlock
                 title={L("Profils de qualité des releases", "Release quality profiles")}
@@ -442,47 +471,25 @@ function PseSettings() {
               <ThemeLibraries exceptionsOnly />
             </>
           ) : null}
-          {tab === "releases" ? <ReleaseLibraryDashboard /> : null}
-          {tab === "demande" ? <VostfrTitles /> : null}
-          {tab === "medias-locaux" && <LocalMediaHealth />}
-          {tab === "statistiques" ? (
+          {tab === "apercu" && view !== "demarrage" ? (
             <>
-              {saved.PSE_RELEASE_LIBRARY === "on" && <ReleaseLibraryDashboard compact />}
-              <nav
-                className="flex flex-wrap gap-2"
-                aria-label={L("Vues statistiques", "Statistics views")}
-              >
-                {[
-                  ["indexation", "Indexation", "Indexing"],
-                  ["sources", "Sources", "Sources"],
-                  ["usage", "Utilisation", "Usage"],
-                ].map(([key, fr, en]) => (
-                  <Button
-                    key={key}
-                    variant={stats === key ? "default" : "outline"}
-                    onClick={() =>
-                      setParams((p) => {
-                        const n = new URLSearchParams(p);
-                        n.set("view", key!);
-                        return n;
-                      })
-                    }
-                  >
-                    {L(fr!, en!)}
-                  </Button>
-                ))}
-              </nav>
-              {stats === "indexation" ? (
+              {view === "indexation" && saved.PSE_RELEASE_LIBRARY === "on" && (
+                <ReleaseLibraryDashboard compact />
+              )}
+              {view === "indexation" ? (
                 <IndexerDetails />
               ) : (
                 <>
                   <StatisticsPeriod />
-                  <SourceStatistics view={stats === "usage" ? "usage" : "statistics"} />
+                  <SourceStatistics view={view === "usage" ? "usage" : "statistics"} />
                 </>
               )}
             </>
           ) : null}
-          {tab !== "sources" && tab !== "contenus" && tab !== "indexation"
+          {tab !== "sources" &&
+          tab !== "contenus" &&
+          tab !== "indexation" &&
+          (tab !== "lecture" || view === "qualite")
             ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
             : null}
           {tab === "suivi" ? musicPart("tracking") : null}

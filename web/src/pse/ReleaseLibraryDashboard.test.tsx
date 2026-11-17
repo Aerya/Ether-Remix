@@ -45,7 +45,10 @@ it("shows compact statistics with a link, without loading activity", async () =>
       <ReleaseLibraryDashboard compact />
     </MemoryRouter>,
   );
-  expect(await screen.findByRole("link")).toHaveAttribute("href", "/remix/releases");
+  expect(await screen.findByRole("link")).toHaveAttribute(
+    "href",
+    "/remix/indexation?view=releases",
+  );
   expect(screen.queryByText("Recherches en cours")).toBeNull();
 });
 it("does not expose the browser when disabled", async () => {

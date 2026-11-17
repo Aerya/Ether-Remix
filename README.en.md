@@ -28,7 +28,7 @@ Customize Plex Home in `/ether/home`: select the viewer and device type when com
 
 Ether-Remix retains Ether’s server and compatible applications, adding a French-oriented catalogue and language and quality settings. Depending on your choices, Home and collections favour French/MULTi titles or releases matching your criteria. Background indexing finds sources ahead of playback; it does not download videos.
 
-Your **local videos**, movies, episodes and personal recordings join your libraries from host folders or network mounts. Remix looks for a match in its catalogue, then TMDB, and keeps a local presentation when there is no reliable match. The **Local media** tab reports missing files, readability problems and potential duplicates without deleting your media.
+Your **local videos**, movies, episodes and personal recordings join your libraries from host folders or network mounts. Remix looks for a match in its catalogue, then TMDB, and keeps a local presentation when there is no reliable match. The **Sources → Local files** view reports missing files, readability problems and potential duplicates without deleting your media.
 
 **Optional sources** extend debrid and Usenet: torrent clients, XDCC through Grabscher and FTP / SFTP servers. Torrent and XDCC write files to disk; FTP / SFTP also supports remote playback without a complete copy, with Ether’s normal cache. These sources are off by default.
 
@@ -112,7 +112,7 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
 - **Self-hosted Seedstrem**: add its manifest from Sources → Stremio; the addon list opens after saving so you can find and edit it. Prowlarr search and playback during download via qBittorrent or Deluge; files stay on the Seedstrem host, with no volume to mount in Remix. Downloads start only for playback; optional last-resort playback keeps searches available for indexing. [Setup and connection](docs/pse/SEEDSTREM.en.md).
 - **Stremio catalogues**: background manual synchronization, visible status and retention of the last import on failure.
-- **Quick start**: a permanent tab guides initial setup — sources, video indexing, languages and quality, statistics and clients. A reminder in statistics highlights disabled indexing. The release library beta can also be enabled and saved here.
+- **Quick start**: the **Overview → Quick start** view guides initial setup — sources, video indexing, languages and quality, statistics and clients. It opens by default while indexing is disabled; a reminder then points to it. The release library beta can also be enabled and saved here.
 - **Remix console**: settings under `/ether/remix`, collapsible sections closed by default; iBroadcast sits alongside music providers, with Subsonic information under Content → Music.
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
 - **Temporary indexer outages**: reuse results expired for less than 24 hours without renewing their validity or bypassing playback checks. Access errors and quotas remain enforced.
@@ -127,7 +127,7 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 
 **Release library (Beta, disabled by default)**: enable encrypted reference retention under Remix → Indexing to reuse candidates during playback and fallback. Catalogue details show indexed releases sortable by resolution, size, codecs, source, languages and dates. Alkolites files retain their AllDebrid playback path without magnets. [Behavior and limits](docs/pse/RELEASE_LIBRARY.en.md).
 
-When enabled, the **Indexed releases** tab lets you browse content and releases and monitor active searches and recent results. Counters also appear in **Statistics**. Enable the option in **Quick start** or **Indexing**, then save.
+When enabled, the **Indexing → Releases** view lets you browse content and releases and monitor active searches and recent results. Counters also appear in **Overview**. Enable the option in **Overview → Quick start** or **Indexing**, then save.
 
 <a id="alldebrid-on-a-vps-mediaflow-and-gluetun"></a>
 <a id="nav-alldebrid-on-a-vps-mediaflow-and-gluetun"></a>
@@ -166,7 +166,7 @@ An existing HTTP/HTTPS/SOCKS5 proxy (such as SSDV2 Proxy Manager) can also be us
 
 A **style for multiple cards** can be prepared from one gallery: choose cards, search their artwork, filter by creator, set or folder and select unique matches in one click. Review variants before bulk application; cards without a choice keep their artwork. Available metadata varies by source, and the same creator does not guarantee the same style. Searches are limited to 30 cards per batch; nothing is saved until “Apply cards to my home screens”.
 
-- **Xperience import**: in Content and libraries, paste your [Xperience](https://xperience-app.com/) manifest, select catalogues and parameters, then create libraries, collections or both. Source ordering, daily refresh and Remix filters are preserved. Libraries fill in the background; Plex libraries update without restarting Ether. [How to use it](docs/pse/GUIDE.en.md#xperience-import).
+- **Xperience import**: in Content, paste your [Xperience](https://xperience-app.com/) manifest, select catalogues and parameters, then create libraries, collections or both. Source ordering, daily refresh and Remix filters are preserved. Libraries fill in the background; Plex libraries update without restarting Ether. [How to use it](docs/pse/GUIDE.en.md#xperience-import).
 - **French quick setup**: create Movies, Shows and Anime libraries from three suggested JukeBox lists, or choose other lists (documentaries, studios…). Collection-only mode, daily refresh and newest-release-first sorting. Libraries publish to Plex, Jellyfin and Emby; your sources and language settings still apply. [Instructions](docs/pse/GUIDE.en.md#jukebox-quick-setup).
 - Organize Plex libraries by **service, studio, anime, documentaries, concerts or live shows**. Concerts combine recorded-performance keywords with the Music genre to reduce fiction matches.
 - Build their rows with TMDB collections, imported Stremio catalogues and ready-made presets.
@@ -205,7 +205,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 
 ### ![](https://api.iconify.design/lucide/chart-no-axes-combined.svg?color=%2314b8a6&width=24&height=24) Statistics and tracking
 
-- **Release library**: when beta is enabled, statistics show stored references and their state; **Indexed releases** opens content and active searches.
+- **Release library**: when beta is enabled, statistics show stored references and their state; **Indexing → Releases** opens content and active searches.
 - Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
 - View history **by day, week, month or year**, as period or cumulative values, filtered by movies, shows, anime and sources.
 - Compare the local catalogue with TMDB totals and review operations in the activity log.
@@ -218,7 +218,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) An interface that fits your habits
 
-- **Quick start** guides initial setup. **Sources** configures providers; **Indexing** selects those queried in the background; **Playback & priorities** sets playback preferences. Languages, on-demand subtitles, content, local media, statistics and tracking retain dedicated sections.
+- Six tabs: **Overview** (quick start, activity, sources, usage), **Sources** (including local media health), **Indexing** (settings and releases), **Playback** (priorities, quality, subtitles), **Content** and **Tracking**. Old links and bookmarks are redirected.
 - Automatic indexing of enabled Stremio addons or a custom selection, including none; Prowlarr/Jackett instance filters and catalogue, searched, with-release and shown counts for each prioritized library or collection.
 - Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
 - Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.
@@ -238,7 +238,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 1. **Install** `ghcr.io/aerya/ether-remix:latest` using the [provided Compose file](docs/pse/GUIDE.en.md#installation), through Dockge-Enhanced. The image is public; no GHCR login is required.
 2. **Open the console** at `http://<host>:32400/ether/` and follow the setup assistant. Set the port with `ETHER_PORT`.
 3. **Configure your sources**—debrid, Usenet, indexers and addons—under **Ether-Remix → Sources**, then enable any optional sources you need (torrent, XDCC, FTP / SFTP). Set languages, content and libraries in their tabs; JukeBox quick setup can create your first libraries.
-4. **Connect your clients**. For Arpeggi and token-authenticated Subsonic clients, create access under **Content & libraries → Music → Music clients**: server address, dedicated music username and password, revocable per viewer. Local accounts still work with **legacy** authentication. Use HTTPS remotely.
+4. **Connect your clients**. For Arpeggi and token-authenticated Subsonic clients, create access under **Content → Music → Music clients**: server address, dedicated music username and password, revocable per viewer. Local accounts still work with **legacy** authentication. Use HTTPS remotely.
 
 Migrating from Ether? The data format is preserved: back up `/config`, stop the old server and reuse its `/config` and `/cache` volumes.
 
