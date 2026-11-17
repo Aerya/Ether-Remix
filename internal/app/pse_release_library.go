@@ -63,6 +63,10 @@ func (a *App) pseReleaseLibraryAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	enabled := releasedb.LibraryEnabled()
+	if r.URL.Query().Get("browse") == "1" {
+		a.pseReleaseBrowse(w, r)
+		return
+	}
 	if r.URL.Query().Get("overview") == "1" {
 		a.pseReleaseLibraryOverview(w, r)
 		return

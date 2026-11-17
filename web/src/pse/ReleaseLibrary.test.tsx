@@ -41,6 +41,7 @@ describe("indexed releases", () => {
     fireEvent.change(input, { target: { value: "Small" } });
     expect(screen.queryByText("Large")).toBeNull();
     expect(screen.getByText("Small")).toBeTruthy();
-    expect(screen.getAllByRole("columnheader").length).toBe(13);
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText("Small").closest("details")).toBeTruthy();
   });
 });

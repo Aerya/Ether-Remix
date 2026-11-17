@@ -71,7 +71,7 @@ func (l Library) Save(ctx context.Context, key core.RatingKey, rs []core.Release
 		if source == "" {
 			source = r.Indexer
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO pse_release_library(title_key,release_id,source_id,source_signature,payload,first_seen,last_seen,expires) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(title_key,source_id,release_id) DO UPDATE SET source_signature=excluded.source_signature,payload=excluded.payload,last_seen=excluded.last_seen,expires=excluded.expires,failed=0`, int64(key), r.ID, source, l.Signature, sealed, now.Unix(), now.Unix(), now.Add(ttl).Unix())
+		_, err = tx.ExecContext(ctx, `INSERT INTO pse_release_library(title_key,release_id,source_id,source_signature,payload,first_seen,last_seen,expires,browse) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(title_key,source_id,release_id) DO UPDATE SET source_signature=excluded.source_signature,payload=excluded.payload,last_seen=excluded.last_seen,expires=excluded.expires,failed=0,browse=excluded.browse`, int64(key), r.ID, source, l.Signature, sealed, now.Unix(), now.Unix(), now.Add(ttl).Unix(), browseRelease(r))
 		if err != nil {
 			return err
 		}

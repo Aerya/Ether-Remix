@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-compact-remix-menu",
+    id: "2026-11-17-release-browser",
     version: "current",
+    date: "2026-11-17",
+    title: ["Explorer les médias et releases indexés", "Browse indexed media and releases"],
+    items: [
+      [
+        "Recherche globale par média ou release, catégories Films/Séries/Animes, périodes et dates personnalisées. Les séries regroupent leurs épisodes. Les détails des releases se déplient sans tableau horizontal ; la recherche utilise uniquement l’index local.",
+        "Global media and release search, Movies/Series/Anime categories, calendar periods and custom dates. Series group their episodes. Expandable release details replace the wide table; searching only reads the local index.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-compact-remix-menu",
+    version: "0.2.37-remix.100.1",
     date: "2026-11-17",
     title: ["Menu Remix resserré", "Compact Remix menu"],
     items: [
