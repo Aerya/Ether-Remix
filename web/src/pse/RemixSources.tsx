@@ -296,6 +296,7 @@ export function RemixSources({
             </CollapsibleBlock>
             <CollapsibleBlock
               id="local-media-health"
+              lazy
               title={L("Santé des médias locaux", "Local media health")}
             >
               <LocalMediaHealth />

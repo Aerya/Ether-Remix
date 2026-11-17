@@ -456,6 +456,8 @@ Retrying reuses entries already created, including after a partial error, withou
 
 ### Local media health
 
+The diagnostic loads when its section in **Sources → Local files** is first opened. Collapsing and reopening it preserves the result; use **Refresh diagnostics** to run the check again.
+
 In **Remix → Local media**, refresh diagnostics for previously indexed files without running `ffprobe`. Missing paths, permission failures and other access failures are distinguished. Files in an unavailable folder cannot be checked; missing files in a readable folder are marked missing. Size/date changes require another scan.
 
 Filter by folder, state, name or relative path. Unidentified videos remain valid local videos. Potential duplicates share a matched title or filename within a source folder; different editions may be flagged, and content equality is not verified. Files are sorted largest first, in pages of 50.

@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useRef,
+  useState,
   type ComponentProps,
   type ReactNode,
 } from "react";
@@ -18,6 +19,7 @@ export function CollapsibleBlock({
   className,
   id,
   open = false,
+  lazy = false,
 }: {
   title: ReactNode;
   description?: ReactNode;
@@ -25,12 +27,18 @@ export function CollapsibleBlock({
   className?: string;
   id?: string;
   open?: boolean;
+  /** Mount on first opening, then preserve child state while collapsed. */
+  lazy?: boolean;
 }) {
+  const [visited, setVisited] = useState(open);
   const root = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const reveal = () => {
       const target = document.getElementById(window.location.hash.slice(1));
-      if (target && root.current?.contains(target)) root.current.open = true;
+      if (target && root.current?.contains(target)) {
+        root.current.open = true;
+        setVisited(true);
+      }
     };
     reveal();
     window.addEventListener("hashchange", reveal);
@@ -41,6 +49,9 @@ export function CollapsibleBlock({
       ref={root}
       id={id}
       open={open}
+      onToggle={(event) => {
+        if (event.currentTarget.open) setVisited(true);
+      }}
       className={cn("rounded-xl border border-border bg-surface", className)}
     >
       <summary className="cursor-pointer select-none px-5 py-4 text-sm font-semibold text-fg focus-visible:outline-2 focus-visible:outline-offset-2">
@@ -48,7 +59,9 @@ export function CollapsibleBlock({
       </summary>
       <div className="border-t border-border">
         {description ? <p className="px-5 pt-4 text-sm text-fg-muted">{description}</p> : null}
-        <CollapsibleSections.Provider value={false}>{children}</CollapsibleSections.Provider>
+        <CollapsibleSections.Provider value={false}>
+          {!lazy || open || visited ? children : null}
+        </CollapsibleSections.Provider>
       </div>
     </details>
   );

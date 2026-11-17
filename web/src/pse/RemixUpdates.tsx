@@ -32,8 +32,8 @@ export const REMIX_UPDATES = [
     title: ["Menu Remix resserré", "Compact Remix menu"],
     items: [
       [
-        "Six onglets au lieu de onze : Vue d’ensemble (démarrage et statistiques), Sources (avec la santé des médias locaux), Indexation (réglages et releases), Lecture (priorités, qualité, VOSTFR), Contenus et Suivi. Les anciens liens et favoris sont redirigés.",
-        "Six tabs instead of eleven: Overview (quick start and statistics), Sources (including local media health), Indexing (settings and releases), Playback (priorities, quality, subtitles), Content and Tracking. Old links and bookmarks are redirected.",
+        "Six onglets au lieu de onze : Vue d’ensemble (démarrage et statistiques), Sources (avec la santé des médias locaux), Indexation (réglages et releases), Lecture (priorités, qualité, VOSTFR), Contenus et Suivi. Les anciens liens et favoris sont redirigés. Le diagnostic des médias locaux ne se charge qu’à l’ouverture de sa section.",
+        "Six tabs instead of eleven: Overview (quick start and statistics), Sources (including local media health), Indexing (settings and releases), Playback (priorities, quality, subtitles), Content and Tracking. Old links and bookmarks are redirected. Local media diagnostics only load when their section is opened.",
       ],
     ],
   },

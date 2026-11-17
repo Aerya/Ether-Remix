@@ -381,6 +381,8 @@ Formats analysés : MKV, MP4/M4V, AVI, MOV, WebM, TS/M2TS, MPEG/MPG, WMV, FLV, O
 
 ### Santé des médias locaux
 
+Le diagnostic se charge à la première ouverture de la section dans **Sources → Fichiers locaux**. Replier puis rouvrir la section conserve le résultat ; utilisez **Actualiser le diagnostic** pour relancer la vérification.
+
 Dans **Remix → Médias locaux**, actualisez le diagnostic pour vérifier les dossiers et fichiers déjà indexés, sans relancer `ffprobe`. Les erreurs distinguent chemin absent, permission refusée et autre indisponibilité. Un dossier indisponible rend ses fichiers non vérifiables ; un fichier absent dans un dossier lisible est signalé comme absent. Les modifications de taille/date demandent une nouvelle analyse.
 
 Filtrez par dossier, état, nom ou chemin. Les vidéos sans correspondance restent des vidéos locales valides. Les doublons potentiels partagent une fiche identifiée ou un nom de fichier dans le même dossier source : ce ne sont pas des doublons certifiés, et des éditions différentes peuvent être signalées. Les fichiers sont triés du plus lourd au plus léger, par pages de 50.
