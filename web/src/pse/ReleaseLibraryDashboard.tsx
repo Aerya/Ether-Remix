@@ -11,6 +11,7 @@ interface Overview {
   auditPending?: boolean;
   auditFailed?: boolean;
   quarantined?: number;
+  referenceBackfill?: number;
   enabled: boolean;
   references: number;
   ready: number;
@@ -106,6 +107,7 @@ function ReleaseOverview({ compact = false }: { compact?: boolean }) {
             [L("À actualiser", "Needs refresh"), d.expired],
             [L("Échecs de lecture", "Playback failures"), d.failed],
             [L("Source modifiée", "Source changed"), d.sourceChanged],
+            [L("Contenus à reprendre", "Titles pending recovery"), d.referenceBackfill ?? 0],
           ] as [string, number][]
         ).map(([label, value]) => (
           <div key={label} className="rounded-lg border border-border p-3">

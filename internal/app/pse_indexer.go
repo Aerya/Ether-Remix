@@ -6,7 +6,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
-	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
 // buildPSEIndexer charge les réglages PSE enregistrés depuis la console puis
@@ -28,6 +27,15 @@ func (a *App) buildPSEIndexer() {
 	a.startPSEXdcc()
 	a.startPSEFTP()
 	if a.indexers != nil {
+		a.indexers.SetSearchAdmission(func(ctx context.Context, req core.SearchRequest, rs []core.Release) []core.Release {
+			out := make([]core.Release, 0, len(rs))
+			for _, r := range rs {
+				if strictReferenceAdmission(req, r) == "" {
+					out = append(out, r)
+				}
+			}
+			return out
+		})
 		a.indexers.SetSearchObserver(a.rememberSearchReferences)
 		a.indexers.SetRetainedRefresh(releasedb.LibraryEnabled)
 	}
@@ -38,6 +46,9 @@ func (a *App) buildPSEIndexer() {
 func (a *App) newPSEIndexer() *releasedb.Service {
 	return releasedb.New(releasedb.Deps{
 		DB: a.db,
+		ReferenceReady: func(ctx context.Context, key core.RatingKey) bool {
+			return len(a.releaseLibrary().Candidates(ctx, key)) > 0
+		},
 		Remember: func(ctx context.Context, key core.RatingKey, rs []core.Release) {
 			media := key
 			if key.Kind() == core.KindEpisode {
@@ -53,14 +64,16 @@ func (a *App) newPSEIndexer() *releasedb.Service {
 			}
 			verified := make([]core.Release, 0, len(rs))
 			for _, r := range rs {
-				if releaseparse.AssociationReason(req, r) == "" {
+				if strictReferenceAdmission(req, r) == "" {
 					verified = append(verified, r)
 				}
 			}
 			rs = verified
 			for i := range rs {
-				rs[i].IndexerID = sfrSearchID
-				rs[i].Indexer = "StreamFusion Reborn (base)"
+				if rs[i].IndexerID == "" {
+					rs[i].IndexerID = sfrSearchID
+					rs[i].Indexer = "StreamFusion Reborn (base)"
+				}
 			}
 			a.rememberReleases(ctx, &core.Title{Key: key}, rs)
 		},

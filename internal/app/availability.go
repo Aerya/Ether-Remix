@@ -5,6 +5,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/availability"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"time"
 )
 
@@ -68,6 +69,9 @@ func (a *App) buildAvailability() error {
 	return err
 }
 func (a *App) discoveredReleases(ctx context.Context, t *core.Title) []core.Release {
+	if t == nil || pseRuntimeOf(a).associationPending.Load() {
+		return nil
+	}
 	var out []core.Release
 	if releasedb.LibraryEnabled() && t != nil {
 		out = a.releaseLibrary().Candidates(ctx, t.Key)
@@ -75,7 +79,31 @@ func (a *App) discoveredReleases(ctx context.Context, t *core.Title) []core.Rele
 	if a.availability != nil {
 		out = append(out, a.availability.Candidates(ctx, t)...)
 	}
-	return out
+
+	requests, err := releasedb.AssociationRequestsFor(ctx, a.db, []core.RatingKey{t.Key, core.ShowKey(t.Key.TMDB())})
+	if err != nil {
+		return nil
+	}
+	req, ok := releasedb.AssociationRequest(requests, t.Key, 0, 0)
+	if !ok {
+		return nil
+	}
+	verified := make([]core.Release, 0, len(out))
+	for _, r := range out {
+		if strictReferenceAdmission(req, r) == "" {
+			verified = append(verified, r)
+		}
+	}
+	return verified
+}
+func strictReferenceAdmission(req core.SearchRequest, r core.Release) string {
+	if req.Type != core.TypeMovie && req.Type != core.TypeEpisode && req.Type != core.TypeShow {
+		return ""
+	}
+	if reason := releaseparse.AssociationReason(req, r); reason != "" {
+		return reason
+	}
+	return releaseparse.ReferenceReason(r)
 }
 func (a *App) observeRelease(ctx context.Context, t *core.Title, r core.Release) {
 	if a.availability != nil {

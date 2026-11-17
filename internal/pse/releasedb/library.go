@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/pse/pseenv"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -18,6 +19,8 @@ func init() {
  PRIMARY KEY(title_key,source_id,release_id)); CREATE INDEX pse_release_library_expiry ON pse_release_library(expires);
  CREATE INDEX pse_release_library_retention ON pse_release_library(last_seen);`)
 }
+
+const StableReferenceExpiry int64 = 253402300799 // stable source descriptors do not expire by age
 
 func LibraryEnabled() bool { return pseenv.Get("PSE_RELEASE_LIBRARY") == "on" }
 
@@ -48,11 +51,11 @@ func (l Library) Save(ctx context.Context, key core.RatingKey, rs []core.Release
 	}
 	defer tx.Rollback()
 	// Bound retention even when no maintenance worker is active.
-	if _, err = tx.ExecContext(ctx, `DELETE FROM pse_release_library WHERE last_seen<?`, now.Add(-60*24*time.Hour).Unix()); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM pse_release_library WHERE last_seen<? AND expires<=?`, now.Add(-60*24*time.Hour).Unix(), now.Unix()); err != nil {
 		return err
 	}
 	for _, r := range rs {
-		if r.ID == "" {
+		if releaseparse.ReferenceReason(r) != "" {
 			continue
 		}
 		raw, e := json.Marshal(r)
@@ -67,11 +70,15 @@ func (l Library) Save(ctx context.Context, key core.RatingKey, rs []core.Release
 		if r.Protocol == core.ProtocolHTTP && r.StreamDebrid == "" {
 			ttl = time.Hour
 		}
+		expires := now.Add(ttl).Unix()
+		if releaseparse.StableReference(r) {
+			expires = StableReferenceExpiry
+		}
 		source := r.IndexerID
 		if source == "" {
 			source = r.Indexer
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO pse_release_library(title_key,release_id,source_id,source_signature,payload,first_seen,last_seen,expires,browse) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(title_key,source_id,release_id) DO UPDATE SET source_signature=excluded.source_signature,payload=excluded.payload,last_seen=excluded.last_seen,expires=excluded.expires,failed=0,browse=excluded.browse`, int64(key), r.ID, source, l.Signature, sealed, now.Unix(), now.Unix(), now.Add(ttl).Unix(), browseRelease(r))
+		_, err = tx.ExecContext(ctx, `INSERT INTO pse_release_library(title_key,release_id,source_id,source_signature,payload,first_seen,last_seen,expires,browse) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(title_key,source_id,release_id) DO UPDATE SET source_signature=excluded.source_signature,payload=excluded.payload,last_seen=excluded.last_seen,expires=excluded.expires,failed=0,browse=excluded.browse`, int64(key), r.ID, source, l.Signature, sealed, now.Unix(), now.Unix(), expires, browseRelease(r))
 		if err != nil {
 			return err
 		}

@@ -18,7 +18,7 @@ Publication comes from the source and is unknown when absent. First indexed and 
 
 ## Retention
 
-Ordinary HTTP references expire after one hour; torrent/NZB references and AllDebrid file links after 24 hours. Source configuration changes invalidate previous references. Quality and language changes keep references available for local filtering. Entries remain inspectable and are pruned after 60 days without observation during a later collection. Inspection and reuse do not extend observation dates.
+Ordinary HTTP URLs can be reused for one hour; torrent/NZB download links for 24 hours. Stable references (valid hash/magnet and AllDebrid file link) do not expire by age. Failures or source configuration changes exclude them from reuse. Playback checks still apply: a stored hash does not prove debrid cache availability. Quality/language changes allow local reranking. Expired references are removed after 60 days without observation during collection; browsing does not extend validity.
 
 Only results returned by sources can be retained; addon filtering cannot be undone. Old metadata cannot reconstruct missing links: another search or import is needed. Disabling beta stops reference collection and reuse without deleting existing metadata.
 
@@ -32,9 +32,11 @@ Failed counter refreshes keep previous values and no longer close the explorer. 
 
 ## Media identity and index repair
 
-A TMDB/IMDb search alone is not proof: a source can ignore the request. Source-reported release IDs are checked against the requested media; echoed request IDs are not evidence. Without matching reported IDs, a matching title (including original/alternate titles) is required, plus a known compatible year for movies. Identifier, media type, year and episode conflicts and placeholders such as `aucun_flux` are excluded. Packs covering the requested season remain eligible, without guaranteeing playback.
+A TMDB/IMDb query is not proof of a correct answer. Even a matching reported ID requires a complete catalogue title (original/alternate titles included) and exact movie year. Conflicting IDs reject the result. Episodes require matching series identity and one compatible episode number; without a matching reported ID, the series year is required too. Season packs, ambiguous names and results without an actual source locator are rejected. Normal searches, rescue searches and stored playback candidates share this rule.
 
-On the first startup after this fix, a local audit checks existing metadata and encrypted references. Indexing and retained library reuse wait for completion while the server stays available. Unconfirmed rows move intact to `pse_releases_quarantine` and `pse_release_library_quarantine` with a reason. Unconfirmed does not necessarily mean incorrect: missing metadata may prevent verification. Direct StreamFusion imports retain their typed TMDB association. Derived counters are rebuilt and the console shows the number of quarantined associations.
+Audit version 2 runs even if the previous audit completed. Existing metadata and encrypted references, including StreamFusion imports, are checked without treating their old TMDB association as its own proof. Unconfirmed rows are preserved privately in `pse_releases_quarantine` and `pse_release_library_quarantine`, excluded from browsing and reuse. Missing evidence does not necessarily mean an incorrect association. Indexing and library reuse wait for the audit; derived counters and old availability verdicts are recomputed.
+
+Previously indexed titles then enter gradual source-reference recovery, respecting existing source budgets and playback pauses. **Titles pending recovery** shows the queue; failures retry later and no link is fabricated from a name. Confirmed stable references are reused directly. StreamFusion import restarts under the new rule. Recovery depends on source answers and does not promise a reference for every title or every episode: general indexing represents shows with S01E01, while previously searched episodes are revisited individually.
 
 `go run ./cmd/ether-release-audit -db /path/copy.db -config /path/copied-config` performs a read-only audit. Use a consistent SQLite backup and private copies of `config.json` and `.credentials-key` (loading may upgrade the copied configuration). `-apply` quarantines unconfirmed rows: stop indexing/the server first and keep a backup. Reports contain source/reason counts only, never playback URLs or secrets.
 

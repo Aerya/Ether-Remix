@@ -79,6 +79,7 @@ type LibraryProfiles interface {
 
 // Options tunes a Service. Zero values get sensible defaults.
 type Options struct {
+	ReferenceAdmission func(core.SearchRequest, core.Release) string
 	// EpisodeIdentity must read only bounded local catalogue data; no upstream calls.
 	EpisodeIdentity func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	SpecialTitles   func(context.Context, int64) []string
@@ -229,19 +230,20 @@ type Service struct {
 	availabilityDeadlines     availabilityDeadlines
 	availabilityDeadlineByKey map[int64]*availabilityDeadline
 
-	subtitleChecks map[string]bool
-	subMiss        map[string]time.Time
-	subVerdicts    map[string]bool
-	rejections     map[core.RatingKey][]core.Release
-	searchObserved func(context.Context, *core.Title, []core.Release)
-	discovered     func(context.Context, *core.Title) []core.Release
-	observed       func(context.Context, *core.Title, core.Release)
-	invalidated    func(context.Context, string)
-	indexer        core.Indexer
-	health         core.HealthChecker
-	db             *sql.DB
-	log            *slog.Logger
-	now            func() time.Time
+	subtitleChecks     map[string]bool
+	subMiss            map[string]time.Time
+	subVerdicts        map[string]bool
+	rejections         map[core.RatingKey][]core.Release
+	referenceAdmission func(core.SearchRequest, core.Release) string
+	searchObserved     func(context.Context, *core.Title, []core.Release)
+	discovered         func(context.Context, *core.Title) []core.Release
+	observed           func(context.Context, *core.Title, core.Release)
+	invalidated        func(context.Context, string)
+	indexer            core.Indexer
+	health             core.HealthChecker
+	db                 *sql.DB
+	log                *slog.Logger
+	now                func() time.Time
 
 	cfgMu             sync.RWMutex
 	rcfg              config.Resolver
@@ -301,7 +303,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
+	s := &Service{referenceAdmission: opts.ReferenceAdmission, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, reps: map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
@@ -1615,6 +1617,15 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		}
 		rel = withTarget(rel, sreq)
 		ct := CandidateTrace{ReleaseID: rel.ID, Name: rel.Name, Indexer: rel.Indexer, Size: rel.Size, Height: rel.Info.Height}
+		if s.referenceAdmission != nil {
+			if reason := s.referenceAdmission(sreq, rel); reason != "" {
+				ct.Rejected, ct.Reason = true, "identity: "+reason
+				if trace != nil {
+					trace.Candidates = append(trace.Candidates, ct)
+				}
+				continue
+			}
+		}
 		if !s.ChannelSourceAllowed(sizedForEpisode(rel), req.Client, t) {
 			clientRejected = true
 			ct.Rejected, ct.Reason = true, "source exceeds channel delivery budget"

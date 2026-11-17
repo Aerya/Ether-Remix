@@ -147,7 +147,7 @@ func (a *App) rememberSearchReferences(ctx context.Context, req core.SearchReque
 	}
 	verified := make([]core.Release, 0, len(rs))
 	for _, r := range rs {
-		if releaseparse.AssociationReason(req, r) == "" {
+		if releaseparse.AssociationReason(req, r) == "" && releaseparse.ReferenceReason(r) == "" {
 			verified = append(verified, r)
 		}
 	}
@@ -166,7 +166,7 @@ func (a *App) retainedReleaseLibrary(ctx context.Context, req core.SearchRequest
 	}
 	var out []core.Release
 	for _, r := range a.releaseLibrary().Candidates(ctx, key) {
-		if releaseparse.AssociationReason(req, r) != "" {
+		if releaseparse.AssociationReason(req, r) != "" || releaseparse.ReferenceReason(r) != "" {
 			continue
 		}
 		if core.IndexerSkipped(ctx, r.IndexerID) || (core.TorrentOnlySearch(ctx) && r.Protocol != core.ProtocolTorrent) {
@@ -202,10 +202,11 @@ func (a *App) pseReleaseLibraryOverview(w http.ResponseWriter, r *http.Request) 
 		fail()
 		return
 	}
-	var quarantined int64
-	_ = a.db.QueryRowContext(ctx, `SELECT quarantined FROM pse_association_audit WHERE version=1`).Scan(&quarantined)
+	var quarantined, backfill int64
+	_ = a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pse_reference_backfill`).Scan(&backfill)
+	_ = a.db.QueryRowContext(ctx, `SELECT quarantined FROM pse_association_audit WHERE version=?`, releasedb.AssociationAuditVersion).Scan(&quarantined)
 	if r.URL.Query().Get("summary") == "1" {
-		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "references": references, "ready": ready, "expired": expired, "failed": failed, "sourceChanged": changed, "lastSeen": lastSeen, "metadata": metadata, "titles": titles, "quarantined": quarantined})
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "references": references, "ready": ready, "expired": expired, "failed": failed, "sourceChanged": changed, "lastSeen": lastSeen, "metadata": metadata, "titles": titles, "quarantined": quarantined, "referenceBackfill": backfill})
 		return
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
