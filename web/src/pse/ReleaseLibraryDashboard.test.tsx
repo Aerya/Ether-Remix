@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { apiFetch } from "../lib/api";
@@ -55,4 +55,33 @@ it("does not expose the browser when disabled", async () => {
   );
   expect(await screen.findByText("La bibliothèque de releases est désactivée.")).toBeVisible();
   expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("keeps the explorer mounted when a counter refresh fails", async () => {
+  const interval = vi.spyOn(window, "setInterval");
+  vi.mocked(apiFetch).mockResolvedValue(data);
+  render(
+    <MemoryRouter>
+      <ReleaseLibraryDashboard />
+    </MemoryRouter>,
+  );
+  const explorer = await screen.findByText("Explorer l’index");
+  await screen.findByText("10");
+  vi.mocked(apiFetch).mockRejectedValue(new Error("timeout"));
+  await act(async () => {
+    (interval.mock.calls.find((call) => call[1] === 60000)![0] as () => void)();
+  });
+  expect(await screen.findByRole("alert")).toHaveTextContent("dernières valeurs conservées");
+  expect(screen.getByText("Explorer l’index")).toBe(explorer);
+  interval.mockRestore();
+});
+it("shows the explorer even if the initial counters fail", async () => {
+  vi.mocked(apiFetch).mockRejectedValue(new Error("timeout"));
+  render(
+    <MemoryRouter>
+      <ReleaseLibraryDashboard />
+    </MemoryRouter>,
+  );
+  await screen.findByRole("alert");
+  expect(screen.getByText("Explorer l’index")).toBeVisible();
 });

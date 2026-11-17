@@ -51,9 +51,10 @@ func TestReleaseBrowse(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := func(query string) struct {
-		Items []browseItem
-		Total int
-		Page  int
+		Items   []browseItem
+		Total   int
+		Page    int
+		HasMore bool
 	} {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -67,9 +68,10 @@ func TestReleaseBrowse(t *testing.T) {
 			}
 		}
 		var out struct {
-			Items []browseItem
-			Total int
-			Page  int
+			Items   []browseItem
+			Total   int
+			Page    int
+			HasMore bool
 		}
 		if err = json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 			t.Fatal(err)
@@ -87,13 +89,22 @@ func TestReleaseBrowse(t *testing.T) {
 			t.Fatalf("%s %+v", category, got)
 		}
 	}
-	if got := request("mode=releases&q=unique"); got.Total != 4 {
+
+	var remaining int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM pse_release_library WHERE browse=''`).Scan(&remaining); err != nil || remaining != 4 {
+		t.Fatal("media listing must not prepare references", remaining, err)
+	}
+	request("mode=releases&media=" + core.ShowKey(2).String())
+	if err = db.QueryRow(`SELECT COUNT(*) FROM pse_release_library WHERE browse=''`).Scan(&remaining); err != nil || remaining != 2 {
+		t.Fatal("only the opened series should be prepared", remaining, err)
+	}
+	if got := request("mode=releases&q=unique"); len(got.Items) != 4 {
 		t.Fatalf("dedup %+v", got)
 	}
-	if got := request("mode=releases&media=" + core.ShowKey(2).String()); got.Total != 2 {
+	if got := request("mode=releases&media=" + core.ShowKey(2).String()); len(got.Items) != 2 {
 		t.Fatalf("all episodes %+v", got)
 	}
-	if got := request("mode=releases&q=absent"); got.Total != 0 {
+	if got := request("mode=releases&q=absent"); len(got.Items) != 0 {
 		t.Fatal(got)
 	}
 	if _, err = db.Exec(`UPDATE pse_release_library SET first_seen=100,last_seen=200 WHERE title_key=?`, int64(core.MovieKey(1))); err != nil {
@@ -115,7 +126,7 @@ func TestReleaseBrowse(t *testing.T) {
 	if _, err = db.Exec(`UPDATE pse_releases SET source_name='Metadata',languages='fr,en',debrid_cached='alldebrid' WHERE id=?`, meta.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := request("mode=releases&q=metadata"); got.Total != 1 || got.Items[0].Release.State != "metadata" || len(got.Items[0].Release.Languages) != 2 {
+	if got := request("mode=releases&q=metadata"); len(got.Items) != 1 || got.Items[0].Release.State != "metadata" || len(got.Items[0].Release.Languages) != 2 {
 		t.Fatal(got)
 	}
 	if _, err = db.Exec(`UPDATE pse_releases SET source_name='Source' WHERE id=?`, meta.ID); err != nil {
@@ -140,7 +151,7 @@ func TestReleaseBrowse(t *testing.T) {
 		a.rememberReleases(ctx, &core.Title{Key: core.MovieKey(i)}, []core.Release{{ID: "secret-id", Name: "Page", Indexer: "Source"}})
 	}
 	first, second := request("mode=releases"), request("mode=releases&page=1")
-	if len(first.Items) != 50 || len(second.Items) != 9 {
+	if len(first.Items) != 50 || len(second.Items) != 9 || !first.HasMore || second.HasMore || first.Total != -1 {
 		t.Fatal(len(first.Items), len(second.Items))
 	}
 	seen := map[string]bool{}
@@ -152,7 +163,22 @@ func TestReleaseBrowse(t *testing.T) {
 			t.Fatal("page overlap", item.Key)
 		}
 	}
-	if got := request("mode=releases&page=999"); got.Page != 1 {
+
+	if got := request("mode=releases&q=unique&sort=indexed"); len(got.Items) != 4 {
+		t.Fatal("search must precede limit", got)
+	}
+	if got := request("mode=releases&sort=oldest"); got.Items[0].Key != core.MovieKey(1).String() {
+		t.Fatal("oldest first", got.Items[0])
+	}
+	// A metadata observation in the requested period must not be hidden by a
+	// retained reference from a different period.
+	if _, err = db.Exec(`UPDATE pse_releases SET first_seen=100 WHERE id=?`, meta.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := request("mode=releases&from=100&to=101&media=" + core.ShowKey(2).String()); len(got.Items) != 1 || got.Items[0].Release.State != "metadata" {
+		t.Fatal(got)
+	}
+	if got := request("mode=releases&page=999"); got.Page != 999 || len(got.Items) != 0 {
 		t.Fatal(got.Page)
 	}
 }
@@ -172,12 +198,28 @@ func BenchmarkReleaseBrowseLargeIndex(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		a.pseReleaseLibraryAPI(w, httptest.NewRequest("GET", "/release-library?browse=1&mode=releases", nil))
-		if w.Code != 200 {
-			b.Fatal(w.Code, w.Body.String())
-		}
+	// Include retained references and the real catalogue-label path, not only metadata.
+	_, err = db.Exec(`INSERT INTO pse_release_library(title_key,release_id,source_id,source_signature,payload,first_seen,last_seen,expires,browse)
+ SELECT title_key,id,source_id,'signature','encrypted-not-read',first_seen,last_seen,last_seen+3600,json_object('name',name,'source',source_name) FROM pse_releases LIMIT 110000;
+ INSERT INTO catalog_titles(key,type,tmdb_id,title,original_title,language)
+ SELECT DISTINCT title_key,'movie',title_key%1000000000000000,'Film '||(title_key%1000000000000000),'Movie '||(title_key%1000000000000000),'fr' FROM pse_releases;`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	a.catalog, err = catalog.New(db, nil, config.Catalog{}, slog.Default())
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	for _, scenario := range []struct{ name, query string }{{"media", "mode=media"}, {"global", "mode=releases"}, {"single", "mode=releases&media=" + core.MovieKey(1).String()}, {"search", "mode=media&q=film"}} {
+		b.Run(scenario.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				w := httptest.NewRecorder()
+				a.pseReleaseLibraryAPI(w, httptest.NewRequest("GET", "/release-library?browse=1&"+scenario.query, nil))
+				if w.Code != 200 {
+					b.Fatal(w.Code, w.Body.String())
+				}
+			}
+		})
 	}
 }

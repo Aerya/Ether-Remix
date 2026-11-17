@@ -20,6 +20,8 @@ interface Result {
   items: Item[];
   total: number;
   page: number;
+  hasMore?: boolean;
+  requestParams?: string;
 }
 export function periodBounds(
   period: string,
@@ -56,7 +58,6 @@ export function ReleaseBrowser() {
   const [to, setTo] = useState("");
   const [date, setDate] = useState("firstSeen");
   const [sort, setSort] = useState("indexed");
-  const [media, setMedia] = useState<Item | null>(null);
   const [page, setPage] = useState(0);
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -75,14 +76,16 @@ export function ReleaseBrowser() {
     date,
     sort,
     page: String(page),
-    ...(media ? { media: media.key } : {}),
     ...periodBounds(period, from, to),
   }).toString();
   const state = useAsync(
     (signal) =>
       invalid
         ? Promise.resolve(null)
-        : apiFetch<Result>(`/pse/release-library?${params}`, { signal }),
+        : apiFetch<Result>(`/pse/release-library?${params}`, { signal }).then((result) => ({
+            ...result,
+            requestParams: params,
+          })),
     [params, tick, invalid],
   );
   const d = state.data;
@@ -119,7 +122,6 @@ export function ReleaseBrowser() {
             onClick={() =>
               change(() => {
                 setMode(key!);
-                setMedia(null);
                 setQuery("");
                 setSearch("");
               })
@@ -129,14 +131,6 @@ export function ReleaseBrowser() {
           </Button>
         ))}
       </div>
-      {media && (
-        <div className="flex flex-wrap items-center gap-2 [overflow-wrap:anywhere]">
-          <strong>{media.title}</strong>
-          <Button variant="outline" onClick={() => change(() => setMedia(null))}>
-            {L("Tous les médias", "All media")}
-          </Button>
-        </div>
-      )}
       <label className="block">
         {mode === "media"
           ? L("Chercher un média", "Search media")
@@ -163,7 +157,6 @@ export function ReleaseBrowser() {
             onChange={(e) =>
               change(() => {
                 setCategory(e.target.value);
-                setMedia(null);
               })
             }
           >
@@ -268,58 +261,157 @@ export function ReleaseBrowser() {
             "Preparing search for existing references… This step resumes automatically without querying sources.",
           )}
         </p>
-      ) : (
-        d?.enabled && (
-          <>
-            <p aria-live="polite">
-              {d.total.toLocaleString(getLocale())}{" "}
-              {mode === "media" ? L("médias", "media") : "releases"}
-            </p>
-            {!d.items.length && (
-              <p>{L("Aucun résultat pour ces filtres.", "No results match these filters.")}</p>
+      ) : null}
+      {!invalid && d?.enabled && !d.preparing && (
+        <>
+          <p aria-live="polite">
+            {d.total >= 0
+              ? `${d.total.toLocaleString(getLocale())} ${mode === "media" ? L("médias", "media") : "releases"}`
+              : L("Releases indexées", "Indexed releases")}
+          </p>
+          {!d.items.length && (
+            <p>{L("Aucun résultat pour ces filtres.", "No results match these filters.")}</p>
+          )}
+          <div className="grid min-w-0 gap-2">
+            {d.items.map((item, i) =>
+              item.release ? (
+                <ReleaseCard key={`${item.key}-${i}`} row={item.release} title={item.title} />
+              ) : (
+                <MediaReleases
+                  key={item.key}
+                  item={item}
+                  category={categories[item.category] ?? ""}
+                  params={d.requestParams ?? params}
+                />
+              ),
             )}
-            <div className="grid min-w-0 gap-2">
-              {d.items.map((item, i) =>
-                item.release ? (
-                  <ReleaseCard key={`${item.key}-${i}`} row={item.release} title={item.title} />
-                ) : (
-                  <button
-                    key={item.key}
-                    className="min-w-0 rounded-lg border border-border p-3 text-left hover:bg-accent/10 [overflow-wrap:anywhere]"
-                    onClick={() =>
-                      change(() => {
-                        setMedia(item);
-                        setMode("releases");
-                        setQuery("");
-                        setSearch("");
-                      })
-                    }
-                  >
-                    <span className="block font-medium">{item.title}</span>
-                    <span className="text-sm text-fg-muted">
-                      {categories[item.category]} · {item.count.toLocaleString(getLocale())}{" "}
-                      releases · {L("Observé le ", "Observed ")}
-                      {new Date(item.lastSeen * 1000).toLocaleDateString(getLocale())}
-                    </span>
-                  </button>
-                ),
-              )}
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Button disabled={d.page === 0} onClick={() => setPage(d.page - 1)}>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button disabled={d.page === 0} onClick={() => setPage(d.page - 1)}>
+              {L("Précédent", "Previous")}
+            </Button>
+            <span>
+              Page {d.page + 1}
+              {d.total >= 0 ? ` / ${Math.max(1, Math.ceil(d.total / 50))}` : ""}
+            </span>
+            <Button
+              disabled={d.hasMore !== undefined ? !d.hasMore : (d.page + 1) * 50 >= d.total}
+              onClick={() => setPage(d.page + 1)}
+            >
+              {L("Suivant", "Next")}
+            </Button>
+            <Button onClick={() => setTick((t) => t + 1)}>{L("Actualiser", "Refresh")}</Button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function MediaReleases({
+  item,
+  category,
+  params,
+}: {
+  item: Item;
+  category: string;
+  params: string;
+}) {
+  const [opened, setOpened] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const [loadedParams, setLoadedParams] = useState(params);
+  useEffect(() => {
+    if (isOpen) setLoadedParams(params);
+  }, [params, isOpen]);
+  return (
+    <details
+      className="min-w-0 rounded-lg border border-border p-3"
+      onToggle={(event) => {
+        setIsOpen(event.currentTarget.open);
+        if (event.currentTarget.open) {
+          setOpened(true);
+          setLoadedParams(params);
+        }
+      }}
+    >
+      <summary className="cursor-pointer [overflow-wrap:anywhere]">
+        <span className="font-medium">{item.title}</span>
+        <span className="ml-2 text-sm text-fg-muted">
+          {category} · {L("Observé le ", "Observed ")}
+          {new Date(item.lastSeen * 1000).toLocaleDateString(getLocale())}
+        </span>
+      </summary>
+      {opened && <MediaReleaseResults item={item} params={loadedParams} />}
+    </details>
+  );
+}
+function MediaReleaseResults({ item, params }: { item: Item; params: string }) {
+  const [page, setPage] = useState(0);
+  const query = new URLSearchParams(params);
+  query.set("mode", "releases");
+  query.set("media", item.key);
+  query.delete("q");
+  query.set("page", String(page));
+  const url = query.toString();
+  const state = useAsync(
+    (signal) => apiFetch<Result>(`/pse/release-library?${url}`, { signal }),
+    [url],
+  );
+  const d = state.data;
+  useEffect(() => {
+    if (!d?.preparing || state.loading || state.error) return;
+    const timer = window.setTimeout(() => void state.reload(), 500);
+    return () => window.clearTimeout(timer);
+  }, [d, state.loading, state.error]);
+  return (
+    <div
+      className="mt-3 space-y-3"
+      aria-label={L("Releases de ", "Releases for ") + item.title}
+      aria-busy={state.loading}
+    >
+      {state.loading && (
+        <p role="status">
+          {L("Chargement des releases de ce média…", "Loading releases for this media…")}
+        </p>
+      )}
+      {Boolean(state.error) && (
+        <p role="alert">
+          {L(
+            "Chargement impossible. La liste des médias reste disponible.",
+            "Unable to load releases. The media list remains available.",
+          )}{" "}
+          <Button onClick={() => void state.reload()}>{L("Réessayer", "Retry")}</Button>
+        </p>
+      )}
+      {d?.preparing && (
+        <p role="status">
+          {L("Préparation des anciennes références…", "Preparing existing references…")}
+        </p>
+      )}
+      {d && !d.preparing && (
+        <>
+          {!d.items.length && (
+            <p>{L("Aucune release pour ces filtres.", "No releases match these filters.")}</p>
+          )}
+          {d.items.map(
+            (entry, i) =>
+              entry.release && <ReleaseCard key={entry.key + "-" + i} row={entry.release} />,
+          )}
+          {d.total > 50 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button disabled={d.page === 0 || state.loading} onClick={() => setPage(d.page - 1)}>
                 {L("Précédent", "Previous")}
               </Button>
               <span>
-                Page {d.page + 1} / {Math.max(1, Math.ceil(d.total / 50))}
+                Page {d.page + 1} / {Math.ceil(d.total / 50)}
               </span>
-              <Button disabled={(d.page + 1) * 50 >= d.total} onClick={() => setPage(d.page + 1)}>
+              <Button disabled={!d.hasMore || state.loading} onClick={() => setPage(d.page + 1)}>
                 {L("Suivant", "Next")}
               </Button>
-              <Button onClick={() => setTick((t) => t + 1)}>{L("Actualiser", "Refresh")}</Button>
             </div>
-          </>
-        )
+          )}
+        </>
       )}
-    </section>
+    </div>
   );
 }

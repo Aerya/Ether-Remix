@@ -44,18 +44,50 @@ it("searches the server, combines filters and resets pagination", async () => {
   await waitFor(() => expect(String(vi.mocked(apiFetch).mock.lastCall?.[0])).toContain("from="));
   expect(String(vi.mocked(apiFetch).mock.lastCall?.[0])).toContain("category=anime");
 });
-it("opens every episode of a media and searches global releases", async () => {
-  vi.mocked(apiFetch).mockResolvedValue({ enabled: true, items: [item], total: 1, page: 0 });
+it("expands releases in place, loads only once, and preserves the media search", async () => {
+  let finish!: (value: unknown) => void;
+  vi.mocked(apiFetch).mockImplementation(async (url) => {
+    if (String(url).includes("media="))
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    return { enabled: true, items: [item], total: 1, page: 0 };
+  });
   render(<ReleaseBrowser />);
-  fireEvent.click(await screen.findByRole("button", { name: /Une série/ }));
-  await waitFor(() =>
-    expect(String(vi.mocked(apiFetch).mock.lastCall?.[0])).toContain("media=" + item.key),
+  const summary = (await screen.findByText("Une série")).closest("summary")!;
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+  fireEvent.click(summary);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  expect(screen.getByLabelText("Chercher un média")).toBeVisible();
+  expect(screen.getByText("Une série")).toBeVisible();
+  expect(screen.queryByLabelText("Chercher une release")).toBeNull();
+  expect(String(vi.mocked(apiFetch).mock.lastCall?.[0])).toContain("media=" + item.key);
+  await act(async () => finish({ enabled: true, items: [], total: 0, page: 0, hasMore: false }));
+  expect(await screen.findByText("Aucune release pour ces filtres.")).toBeVisible();
+  fireEvent.click(summary);
+  fireEvent.click(summary);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+});
+it("keeps the media list when release loading fails and retries only that media", async () => {
+  vi.mocked(apiFetch).mockImplementation(async (url) => {
+    if (String(url).includes("media=")) throw new Error("timeout");
+    return { enabled: true, items: [item], total: 1, page: 0 };
+  });
+  render(<ReleaseBrowser />);
+  const summary = (await screen.findByText("Une série")).closest("summary")!;
+  fireEvent.click(summary);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "La liste des médias reste disponible",
   );
-  expect(screen.getByLabelText("Chercher une release")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /^Releases$/ }));
-  await waitFor(() =>
-    expect(String(vi.mocked(apiFetch).mock.lastCall?.[0])).not.toContain("media="),
-  );
+  expect(screen.getByLabelText("Chercher un média")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Réessayer" }));
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(3));
+  expect(
+    vi.mocked(apiFetch).mock.calls.filter(([url]) => !String(url).includes("media=")).length,
+  ).toBe(1);
 });
 it("uses local calendar days, Monday weeks and inclusive custom end dates", () => {
   const now = new Date(2026, 10, 18, 12);

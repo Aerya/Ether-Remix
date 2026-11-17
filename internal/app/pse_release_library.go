@@ -188,6 +188,10 @@ func (a *App) pseReleaseLibraryOverview(w http.ResponseWriter, r *http.Request) 
 		fail()
 		return
 	}
+	if r.URL.Query().Get("summary") == "1" {
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "references": references, "ready": ready, "expired": expired, "failed": failed, "sourceChanged": changed, "lastSeen": lastSeen, "metadata": metadata, "titles": titles})
+		return
+	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 0 {
 		page = 0
