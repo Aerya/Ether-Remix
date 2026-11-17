@@ -24,7 +24,7 @@ const Site = "https://xperience-app.com/"
 
 type Backend interface {
 	Preview(context.Context, string) (stremio.Manifest, error)
-	Install(context.Context, string) (string, stremio.Manifest, error)
+	Install(context.Context, string, int) (string, stremio.Manifest, error)
 }
 type Service struct {
 	cols    jukebox.Collections
@@ -51,10 +51,12 @@ type Catalog struct {
 	Defaults map[string]string `json:"defaults"`
 }
 type Request struct {
-	Manifest string   `json:"manifest"`
-	Catalogs []Choice `json:"catalogs"`
-	Mode     string   `json:"mode"` // collections, libraries (hidden backing collections), both
-	MaxItems int      `json:"maxItems"`
+	Manifest               string   `json:"manifest"`
+	Catalogs               []Choice `json:"catalogs"`
+	Mode                   string   `json:"mode"` // collections, libraries (hidden backing collections), both
+	MaxItems               int      `json:"maxItems"`
+	ManifestRefreshHours   int      `json:"manifestRefreshHours"`
+	CollectionRefreshHours int      `json:"collectionRefreshHours"`
 }
 type Result struct {
 	Collections []string         `json:"collections"`
@@ -122,6 +124,9 @@ func (s *Service) Preview(ctx context.Context, raw string) ([]Catalog, error) {
 	return out, nil
 }
 func validate(req Request, man stremio.Manifest) error {
+	if req.ManifestRefreshHours < 1 || req.ManifestRefreshHours > 168 || req.CollectionRefreshHours < 1 || req.CollectionRefreshHours > 168 {
+		return fmt.Errorf("choisissez des intervalles de 1 à 168 heures")
+	}
 	if len(req.Catalogs) < 1 || len(req.Catalogs) > 30 {
 		return fmt.Errorf("choisissez entre 1 et 30 catalogues")
 	}
@@ -154,6 +159,12 @@ func validate(req Request, man stremio.Manifest) error {
 	return nil
 }
 func (s *Service) Apply(ctx context.Context, req Request) (Result, error) {
+	if req.ManifestRefreshHours == 0 {
+		req.ManifestRefreshHours = 1
+	}
+	if req.CollectionRefreshHours == 0 {
+		req.CollectionRefreshHours = 24
+	}
 	out := Result{Collections: []string{}, Libraries: []core.LibraryID{}}
 	link, err := Normalize(req.Manifest)
 	if err != nil {
@@ -168,7 +179,7 @@ func (s *Service) Apply(ctx context.Context, req Request) (Result, error) {
 	if err = validate(req, man); err != nil {
 		return out, err
 	}
-	id, installed, err := s.backend.Install(ctx, link)
+	id, installed, err := s.backend.Install(ctx, link, req.ManifestRefreshHours)
 	if err != nil {
 		return out, fmt.Errorf("impossible d’enregistrer la source Xperience")
 	}
@@ -216,7 +227,7 @@ func (s *Service) Apply(ctx context.Context, req Request) (Result, error) {
 		}
 		if found == nil {
 			visible := req.Mode != "libraries"
-			sp := core.CollectionSpec{Name: strings.TrimSpace(c.Name), Description: "Sélection Xperience", TemplateID: tid, MediaType: typ, Sources: []core.CollectionSource{src}, Match: "all", Rules: []core.CollectionRule{}, Exclude: []core.CollectionRule{}, Sort: "source", Refresh: "daily", ReleaseMode: "released", Enabled: true, Artwork: core.CollectionArtwork{Mode: "auto"}, Targets: core.CollectionTargets{CollectionsTab: visible, HomeRow: visible, SectionRow: visible, Users: core.AllUsers()}}
+			sp := core.CollectionSpec{Name: strings.TrimSpace(c.Name), Description: "Sélection Xperience", TemplateID: tid, MediaType: typ, Sources: []core.CollectionSource{src}, Match: "all", Rules: []core.CollectionRule{}, Exclude: []core.CollectionRule{}, Sort: "source", Refresh: refreshSchedule(req.CollectionRefreshHours), ReleaseMode: "released", Enabled: true, Artwork: core.CollectionArtwork{Mode: "auto"}, Targets: core.CollectionTargets{CollectionsTab: visible, HomeRow: visible, SectionRow: visible, Users: core.AllUsers()}}
 			found, err = s.cols.CreateSpec(ctx, sp)
 			if err != nil {
 				return out, fmt.Errorf("création de la collection impossible ; réessayez sans dupliquer les éléments déjà créés")
@@ -295,4 +306,17 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /preview", handle(true))
 	mux.HandleFunc("POST /{$}", handle(false))
 	return mux
+}
+
+func refreshSchedule(hours int) string {
+	if hours == 24 {
+		return "daily"
+	}
+	if hours == 1 {
+		return "hourly"
+	}
+	if hours == 168 {
+		return "weekly"
+	}
+	return fmt.Sprintf("%dh", hours)
 }

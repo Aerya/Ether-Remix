@@ -21,12 +21,14 @@ const fixture = `{"id":"xperience.fixture","name":"Xperience","version":"1.0.0",
 type fakeBackend struct {
 	man      stremio.Manifest
 	installs int
+	hours    int
 	err      error
 }
 
 func (b *fakeBackend) Preview(context.Context, string) (stremio.Manifest, error) { return b.man, b.err }
-func (b *fakeBackend) Install(context.Context, string) (string, stremio.Manifest, error) {
+func (b *fakeBackend) Install(_ context.Context, _ string, hours int) (string, stremio.Manifest, error) {
 	b.installs++
+	b.hours = hours
 	return "xperience-fixture", b.man, b.err
 }
 
@@ -208,5 +210,32 @@ func TestHandlerRedactsErrors(t *testing.T) {
 	s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/preview", nil))
 	if w.Code != 405 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestRefreshIntervals(t *testing.T) {
+	s, cols, _, b := setup(t)
+	req := request()
+	req.ManifestRefreshHours = 6
+	req.CollectionRefreshHours = 12
+	if _, err := s.Apply(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if b.hours != 6 || cols.specs[0].Refresh != "12h" {
+		t.Fatalf("schedules lost: %d %s", b.hours, cols.specs[0].Refresh)
+	}
+	req.CollectionRefreshHours = 48
+	if _, err := s.Apply(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(cols.specs) != 3 || cols.specs[0].Refresh != "12h" {
+		t.Fatal("reimport changed existing collection")
+	}
+	for _, hours := range []int{-1, 169} {
+		req.ManifestRefreshHours = hours
+		before := b.installs
+		if _, err := s.Apply(context.Background(), req); err == nil || b.installs != before {
+			t.Fatal("invalid interval installed")
+		}
 	}
 }

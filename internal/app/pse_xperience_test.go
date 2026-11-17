@@ -87,7 +87,7 @@ func TestXperienceImportThroughPluginAndCollections(t *testing.T) {
 	if len(before) != 0 {
 		t.Fatal("preview installed source")
 	}
-	req := xperience.Request{Manifest: link, Mode: "both", MaxItems: 100, Catalogs: []xperience.Choice{{ID: "animation", Type: "movie", Name: "Dessins animés", Params: map[string]string{"genre": "None"}}}}
+	req := xperience.Request{Manifest: link, Mode: "both", MaxItems: 100, ManifestRefreshHours: 6, CollectionRefreshHours: 12, Catalogs: []xperience.Choice{{ID: "animation", Type: "movie", Name: "Dessins animés", Params: map[string]string{"genre": "None"}}}}
 	out, err := service.Apply(ctx, req)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +107,9 @@ func TestXperienceImportThroughPluginAndCollections(t *testing.T) {
 	if err != nil || len(page.Items) != 2 || page.Items[0].Key != core.MovieKey(102) || page.Items[1].Key != core.MovieKey(101) {
 		t.Fatalf("source order: %+v %v", page, err)
 	}
+	if sp.Refresh != "12h" {
+		t.Fatalf("collection interval = %s", sp.Refresh)
+	}
 	raw, _ := json.Marshal(sp)
 	if strings.Contains(string(raw), "private-fixture") {
 		t.Fatal("private link in collection")
@@ -114,6 +117,9 @@ func TestXperienceImportThroughPluginAndCollections(t *testing.T) {
 	records, _ := mgr.List(ctx)
 	if len(records) != 1 || !records[0].Manifest.HasCapability(plugins.CapListSource) || records[0].Manifest.HasCapability(plugins.CapMetadata) {
 		t.Fatal("unexpected add-on roles")
+	}
+	if records[0].ManifestRefreshHours != 6 {
+		t.Fatal("manifest interval not stored")
 	}
 	var sourceURL string
 	if err = db.QueryRow(`SELECT source_url FROM plugins_installed WHERE id=?`, records[0].ID).Scan(&sourceURL); err != nil {
@@ -130,11 +136,20 @@ func TestXperienceImportThroughPluginAndCollections(t *testing.T) {
 	if _, err = db.Exec(`UPDATE plugins_installed SET roles_off=? WHERE id=?`, `["stream-source"]`, records[0].ID); err != nil {
 		t.Fatal(err)
 	}
+	req.ManifestRefreshHours = 48
+	req.CollectionRefreshHours = 24
 	again, err := service.Apply(ctx, req)
 	if err != nil || again.Collections[0] != out.Collections[0] || again.Libraries[0] != out.Libraries[0] {
 		t.Fatal("reimport", again, err)
 	}
 	rec, _ := mgr.Get(ctx, records[0].ID)
+	if rec.ManifestRefreshHours != 48 {
+		t.Fatal("manifest interval not updated")
+	}
+	kept, err := cols.GetSpec(ctx, out.Collections[0])
+	if err != nil || kept.Refresh != "12h" {
+		t.Fatal("existing collection interval overwritten", err)
+	}
 	if !rec.Manifest.HasCapability(plugins.CapMetadata) {
 		t.Fatal("existing roles overwritten")
 	}

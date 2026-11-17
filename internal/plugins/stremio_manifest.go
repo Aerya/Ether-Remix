@@ -146,6 +146,15 @@ func (m Manifest) derivedEther() *EtherBlock {
 				}
 				if len(field.Options) > 0 {
 					field.Kind = "select"
+					for _, option := range field.Options {
+						if option.Value == "None" {
+							field.Default = "None"
+							break
+						}
+					}
+					if field.Default == nil && field.Required {
+						field.Default = field.Options[0].Value
+					}
 				}
 				fields = append(fields, field)
 			}

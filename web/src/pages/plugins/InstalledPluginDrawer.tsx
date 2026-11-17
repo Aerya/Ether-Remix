@@ -26,7 +26,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel, LoadingRows, MutationError } from "../../components/feedback";
 import { StatusDot } from "../../components/status";
-import { t, tn } from "../../i18n";
+import { getLocale, t, tn } from "../../i18n";
 import { ApiError, apiFetch } from "../../lib/api";
 import { invalidateRegistry } from "../../lib/extend";
 import { PluginActivity } from "./drawer/PluginActivity";
@@ -537,7 +537,10 @@ export function InstalledPluginDrawer({
           >
             <div className="space-y-4">
               <p className="text-sm text-fg-muted">
-                {t("Its settings, storage and logs are deleted.")}
+                {t("Its settings, storage and logs are deleted.")}{" "}
+                {getLocale().startsWith("fr")
+                  ? "Les collections créées depuis ses catalogues restent enregistrées, mais ne peuvent plus être actualisées par cette source. Gérez leur suppression dans Collections."
+                  : "Collections created from its catalogues remain saved, but can no longer refresh from this source. Manage their deletion in Collections."}
               </p>
               {applied > 0 ? (
                 <label className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 text-sm">

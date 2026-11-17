@@ -35,7 +35,7 @@ import { Artwork } from "../../components/Artwork";
 import { ErrorPanel, PosterSkeletons } from "../../components/feedback";
 import { Segmented } from "../../components/fields";
 import { PosterGrid } from "../../components/Poster";
-import { api, ApiError, errorMessage, isAbort } from "../../lib/api";
+import { api, apiFetch, ApiError, errorMessage, isAbort } from "../../lib/api";
 import { t, tn } from "../../i18n";
 import type { CollectionPreview, CollectionSpec, Source } from "../../lib/contract";
 import { formatNumber, relativeTime } from "../../lib/format";
@@ -54,6 +54,7 @@ import {
   normalizeSpec,
   previewableSpec,
   specProblems,
+  type SourceDescriptor,
 } from "../../lib/rules";
 import { BuildPanel } from "./BuildPanel";
 import { DescribeDialog } from "./DescribeDialog";
@@ -138,7 +139,19 @@ export default function CollectionEditor() {
       });
     }
     if (pluginSource?.startsWith("plugin:")) {
-      return { ...blankSpec(), name: pluginName, sources: [{ kind: pluginSource } as Source] };
+      const { descriptors } = await apiFetch<{
+        descriptors: SourceDescriptor[];
+      }>("/extend/registry?kinds=collectionSource");
+      const d = descriptors.find((d) => d.id === pluginSource);
+      if (!d) throw new ApiError(404, "not_found", t("That source no longer exists."));
+      const type = d.meta?.mediaTypes?.length === 1 ? d.meta.mediaTypes[0] : undefined;
+      return {
+        ...blankSpec(),
+        name: pluginName,
+        mediaType: type === "show" ? ("show" as const) : ("movie" as const),
+        sort: "source" as const,
+        sources: [{ kind: pluginSource, ...d.meta?.defaults } as Source],
+      };
     }
     if (pickAddonCatalog) {
       // A Home row from an add-on catalog: the catalog is chosen in Build.

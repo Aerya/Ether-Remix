@@ -21,6 +21,8 @@ import (
 )
 
 func init() {
+	store.Register("plugins", 7, `ALTER TABLE plugins_installed ADD COLUMN manifest_refresh_hours INTEGER NOT NULL DEFAULT 1;`)
+
 	// Host-owned digests are separate from plugin KV quotas and cannot be forged by plugins.
 	store.Register("plugins", 6, `CREATE TABLE plugins_hash_cache(plugin TEXT NOT NULL,kkey TEXT NOT NULL,value BLOB NOT NULL,PRIMARY KEY(plugin,kkey));`)
 
@@ -119,7 +121,8 @@ type Record struct {
 	// RolesOff are the capabilities the owner switched off (a Stremio
 	// add-on's catalogs, streams, subtitles…). Manifest already reflects
 	// them: EffectiveEther leaves them out.
-	RolesOff []Capability
+	RolesOff             []Capability
+	ManifestRefreshHours int
 }
 
 // Health is one plugin's health and impact record.
@@ -184,8 +187,8 @@ func (s *storage) record(ctx context.Context, id string) (Record, error) {
 	var en, ver, sh, au int
 	var inst, upd int64
 	var rolesOff string
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,roles_off FROM plugins_installed WHERE id=?`, id).
-		Scan(&r.ID, &r.Name, &r.Version, &r.Kind, &man, &r.SourceKind, &r.SourceURL, &en, &ver, &sh, &au, &r.UpdateVersion, &updMan, &updFiles, &r.PrevVersion, &inst, &upd, &rolesOff)
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,version,kind,manifest,source_kind,source_url,enabled,verified,shadow,auto_update,update_version,update_manifest,update_files,prev_version,installed_at,updated_at,roles_off,manifest_refresh_hours FROM plugins_installed WHERE id=?`, id).
+		Scan(&r.ID, &r.Name, &r.Version, &r.Kind, &man, &r.SourceKind, &r.SourceURL, &en, &ver, &sh, &au, &r.UpdateVersion, &updMan, &updFiles, &r.PrevVersion, &inst, &upd, &rolesOff, &r.ManifestRefreshHours)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}

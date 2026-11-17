@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-layout-templates-library-sharing",
+    id: "2026-11-17-xperience-refresh-collections",
     version: "current",
+    date: "2026-11-17",
+    title: ["Xperience : actualisation et collections", "Xperience: refresh and collections"],
+    items: [
+      [
+        "Choisissez séparément les intervalles du manifeste et des nouvelles collections à l’import, de 1 à 168 heures.",
+        "Choose separate manifest and new-collection refresh intervals at import, from 1 to 168 hours.",
+      ],
+      [
+        "Les créations depuis les catalogues reprennent le type et les paramètres requis. Les erreurs indiquent le champ refusé.",
+        "Catalogue creation carries media type and required parameters. Errors identify the rejected field.",
+      ],
+      [
+        "Les rangées de collections supprimées ne reviennent plus depuis l’historique ; les noms actuels sont affichés.",
+        "Deleted collection rows no longer return from history; current names are displayed.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-layout-templates-library-sharing",
+    version: "0.2.37-remix.107.1",
     date: "2026-11-17",
     title: [
       "Dispositions réutilisables et bibliothèques partagées",
