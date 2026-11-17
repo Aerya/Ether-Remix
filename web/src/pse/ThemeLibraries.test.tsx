@@ -94,6 +94,7 @@ it("renames a library and turns it into a Movies & shows library", async () => {
   expect(put.path).toBe("/pse/themes/1");
   expect(JSON.parse(String(put.init!.body))).toEqual({
     name: "Plateformes",
+    users: "all",
     type: "mixed",
     collections: ["1", "2"],
     allLanguages: false,
@@ -159,4 +160,34 @@ it("keeps renamed anime libraries in the anime tab and excludes other libraries"
       ),
     ).toBe(true),
   );
+});
+
+it("creates a source-only library shared with selected viewers", async () => {
+  const calls: { path: string; init?: RequestInit }[] = [];
+  apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    if (path === "/pse/owned/viewers")
+      return [
+        { id: 7, name: "Alice" },
+        { id: 8, name: "Bob" },
+      ];
+    return {
+      libraries: [],
+      collections: cols,
+      presets: [],
+      max: 99,
+      sources: [{ id: "indexer:lumio", name: "Lumio", kind: "stremio" }],
+    };
+  });
+  render(<ThemeLibraries />);
+  fireEvent.change(await screen.findByLabelText("Library name"), { target: { value: "Films" } });
+  fireEvent.click(screen.getByLabelText(/Lumio/));
+  fireEvent.click(screen.getByLabelText("Share library"));
+  fireEvent.click(screen.getByRole("option", { name: "Selected users" }));
+  fireEvent.click(await screen.findByLabelText("Alice"));
+  fireEvent.click(screen.getByRole("button", { name: "Create library" }));
+  await waitFor(() => expect(calls.some((call) => call.init?.method === "POST")).toBe(true));
+  const body = JSON.parse(String(calls.find((call) => call.init?.method === "POST")!.init!.body));
+  expect(body.sourceIds).toEqual(["indexer:lumio"]);
+  expect(body.users).toEqual([7]);
 });

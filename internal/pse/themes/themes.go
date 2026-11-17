@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -45,6 +45,7 @@ CREATE TABLE pse_theme_langfree (
 }
 
 func init() {
+	store.Register("pse_themes", 5, `ALTER TABLE pse_theme_libraries ADD COLUMN users_json TEXT NOT NULL DEFAULT '"all"';`)
 	store.Register("pse_themes", 4, `ALTER TABLE pse_theme_libraries ADD COLUMN preset_id TEXT NOT NULL DEFAULT '';
 UPDATE pse_theme_libraries SET preset_id='anime' WHERE lower(trim(name)) IN ('anime','animes');`)
 }
@@ -61,6 +62,10 @@ const (
 
 // Library est une bibliothèque à thème.
 type Library struct {
+	SourceIDs []string `json:"sourceIds,omitempty"` // optional sources added by the console
+
+	Users *core.UserTargets `json:"users,omitempty"` // nil preserves legacy all-user access
+
 	Preset      string   `json:"preset,omitempty"` // modèle d’origine, conservé après renommage
 	ID          int64    `json:"id"`
 	Name        string   `json:"name"`
@@ -102,6 +107,8 @@ type Collections interface {
 
 // Service garde les bibliothèques en mémoire et sert le serveur Plex.
 type Service struct {
+	sourceChoices func(context.Context) ([]SourceChoice, error)
+
 	db   *sql.DB
 	cols Collections
 
@@ -112,6 +119,7 @@ type Service struct {
 	types   map[string]string         // type des collections (movie, show, mixed)
 	keys    map[string]core.RatingKey // clé Plex des collections
 	hooks   PriorityHooks
+	public  map[string]bool
 	private map[string][]string
 }
 
@@ -123,7 +131,7 @@ func New(ctx context.Context, db *sql.DB, cols Collections) (*Service, error) {
 
 // Reload relit les bibliothèques et le nom des collections.
 func (s *Service) Reload(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, collections, position, all_languages, preset_id FROM pse_theme_libraries ORDER BY position, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, collections, position, all_languages, preset_id, users_json FROM pse_theme_libraries ORDER BY position, id`)
 	if err != nil {
 		return err
 	}
@@ -131,9 +139,13 @@ func (s *Service) Reload(ctx context.Context) error {
 	var libs []Library
 	for rows.Next() {
 		var l Library
-		var raw string
+		var raw, users string
 		var all int
-		if err := rows.Scan(&l.ID, &l.Name, &l.Type, &raw, &l.Position, &all, &l.Preset); err != nil {
+		if err := rows.Scan(&l.ID, &l.Name, &l.Type, &raw, &l.Position, &all, &l.Preset, &users); err != nil {
+			return err
+		}
+		l.Users = new(core.UserTargets)
+		if err := json.Unmarshal([]byte(users), l.Users); err != nil {
 			return err
 		}
 		l.AllLanguages = all != 0
@@ -149,6 +161,7 @@ func (s *Service) Reload(ctx context.Context) error {
 		return err
 	}
 	private := map[string][]string{}
+	public := map[string]bool{}
 	titles, types, keys := map[string]string{}, map[string]string{}, map[string]core.RatingKey{}
 	if s.cols != nil {
 		if specs, err := s.cols.ListSpecs(ctx); err == nil {
@@ -160,6 +173,8 @@ func (s *Service) Reload(ctx context.Context) error {
 				for _, src := range sp.Sources {
 					if src.Kind == "localFiles" {
 						private[sp.ID] = append(private[sp.ID], "local:"+src.Label)
+					} else {
+						public[sp.ID] = true
 					}
 				}
 				if k, err := core.ParseRatingKey(sp.RatingKey); err == nil {
@@ -171,6 +186,7 @@ func (s *Service) Reload(ctx context.Context) error {
 	s.mu.Lock()
 	s.libs, s.free, s.titles, s.types, s.keys = libs, free, titles, types, keys
 	s.private = private
+	s.public = public
 	s.mu.Unlock()
 	return nil
 }
@@ -182,6 +198,11 @@ func (s *Service) Libraries() []Library {
 	out := make([]Library, len(s.libs))
 	for i, l := range s.libs {
 		l.Collections = append([]string(nil), l.Collections...)
+		if l.Users != nil {
+			p := *l.Users
+			p.IDs = append([]int64(nil), p.IDs...)
+			l.Users = &p
+		}
 		out[i] = l
 	}
 	return out
@@ -218,23 +239,40 @@ func (s *Service) Themes() []frontend.PSETheme {
 // du type (ou mixtes).
 func (s *Service) theme(l Library, section int, title string, typ core.MediaType, filter bool) frontend.PSETheme {
 	th := frontend.PSETheme{Section: section, Title: title, Type: typ, AllLanguages: l.AllLanguages}
-	sources := []string{}
-	for _, id := range l.Collections {
-		sources = append(sources, s.private[id]...)
+	policy := core.AllUsers()
+	if l.Users != nil {
+		policy = *l.Users
+		policy.IDs = append([]int64(nil), policy.IDs...)
 	}
-	if len(sources) > 0 {
-		th.VisibleTo = func(u *core.User) bool {
-			if u == nil {
-				return false
-			}
-			for _, p := range sources {
-				if !mediaaccess.Allowed(context.Background(), s.db, p, u.ID) {
-					return false
-				}
-			}
+	public := false
+	roots := []string{}
+	for _, id := range l.Collections {
+		if filter && s.types[id] != "" && s.types[id] != "mixed" && s.types[id] != string(typ) {
+			continue
+		}
+		if s.public[id] || len(s.private[id]) == 0 {
+			public = true
+		}
+		roots = append(roots, s.private[id]...)
+	}
+	th.VisibleTo = func(u *core.User) bool {
+		if !policy.Includes(u) {
+			return false
+		}
+		if public {
 			return true
 		}
+		if u == nil {
+			return false
+		}
+		for _, root := range roots {
+			if mediaaccess.Allowed(context.Background(), s.db, root, u.ID) {
+				return true
+			}
+		}
+		return false
 	}
+
 	for _, c := range l.Collections {
 		if ct := s.types[c]; filter && ct != "" && ct != "mixed" && ct != string(typ) {
 			continue
@@ -276,6 +314,13 @@ func (s *Service) AllKeys(ctx context.Context, typ core.MediaType) []core.Rating
 }
 
 func (s *Service) clean(ctx context.Context, l Library) (Library, error) {
+	if l.Users != nil {
+		for _, id := range l.Users.IDs {
+			if id <= 0 {
+				return l, invalid("spectateur invalide")
+			}
+		}
+	}
 	l.Name = strings.TrimSpace(l.Name)
 	if l.Preset != "" {
 		if _, ok := presetByID(l.Preset); !ok {
@@ -287,6 +332,11 @@ func (s *Service) clean(ctx context.Context, l Library) (Library, error) {
 	}
 	if l.Type != TypeMovie && l.Type != TypeShow && l.Type != TypeMixed {
 		return l, invalid("type « movie », « show » ou « mixed » attendu")
+	}
+	var err error
+	l, err = s.attachSources(ctx, l)
+	if err != nil {
+		return l, err
 	}
 	seen := map[string]bool{}
 	var cols []string
@@ -346,8 +396,13 @@ func (s *Service) Create(ctx context.Context, l Library) (Library, error) {
 	}
 	l.Position = pos
 	raw, _ := json.Marshal(l.Collections)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO pse_theme_libraries(id, name, type, collections, position, created_at, all_languages, preset_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.ID, l.Name, l.Type, string(raw), l.Position, time.Now().Unix(), boolInt(l.AllLanguages), l.Preset); err != nil {
+	users := `"all"`
+	if l.Users != nil {
+		b, _ := json.Marshal(l.Users)
+		users = string(b)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO pse_theme_libraries(id, name, type, collections, position, created_at, all_languages, preset_id, users_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, l.Name, l.Type, string(raw), l.Position, time.Now().Unix(), boolInt(l.AllLanguages), l.Preset, users); err != nil {
 		return l, err
 	}
 	return l, s.Reload(ctx)
@@ -360,7 +415,12 @@ func (s *Service) Update(ctx context.Context, l Library) (Library, error) {
 		return l, err
 	}
 	raw, _ := json.Marshal(l.Collections)
-	res, err := s.db.ExecContext(ctx, `UPDATE pse_theme_libraries SET name=?, type=?, collections=?, all_languages=? WHERE id=?`, l.Name, l.Type, string(raw), boolInt(l.AllLanguages), l.ID)
+	users := `"all"`
+	if l.Users != nil {
+		b, _ := json.Marshal(l.Users)
+		users = string(b)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE pse_theme_libraries SET name=?, type=?, collections=?, all_languages=?, users_json=CASE WHEN ? THEN ? ELSE users_json END WHERE id=?`, l.Name, l.Type, string(raw), boolInt(l.AllLanguages), l.Users != nil, users, l.ID)
 	if err != nil {
 		return l, err
 	}

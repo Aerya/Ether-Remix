@@ -22,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/pse/discovery"
 	"github.com/braedonsaunders/ether/internal/pse/frenchcat"
 	"github.com/braedonsaunders/ether/internal/pse/jukebox"
+	"github.com/braedonsaunders/ether/internal/pse/layouts"
 	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/pse/music"
 	"github.com/braedonsaunders/ether/internal/pse/notifyfr"
@@ -298,6 +299,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		th.SetPriorityHooks(a.psePriorityHooks(rt))
 		themeAPI = th.Handler(creator, a.pseLangExemptChanged)
 	}
+	var layoutAPI http.Handler = http.NotFoundHandler()
+	if th := a.pseThemes(); th != nil && a.personalize != nil && a.collections != nil && a.libraries != nil {
+		layoutAPI = layouts.New(a.db, a.personalize.LayoutTemplatePart(), th.LayoutTemplatePart(), a.libraries.LayoutTemplatePart(), a.collections.LayoutTemplatePart()).Handler()
+	}
 	indexActivity := a.pseIndexActivityHandler(false)
 	indexSources := a.pseIndexActivityHandler(true)
 	indexHistory := a.pseIndexHistoryHandler()
@@ -325,6 +330,10 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 		}).Handler()
 	}
 	m["pse"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/layouts" || strings.HasPrefix(r.URL.Path, "/layouts/") {
+			http.StripPrefix("/layouts", layoutAPI).ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/release-library" {
 			a.pseReleaseLibraryAPI(w, r)
 			return

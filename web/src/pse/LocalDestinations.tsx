@@ -61,8 +61,8 @@ export function LocalDestinations({ rootId }: { rootId: string }) {
         </p>
         <p>
           {L(
-            "Le partage du dossier ne change pas. Rattacher un dossier privé restreint aussi la destination : les spectateurs doivent avoir accès à tous les dossiers qui l’alimentent. Détacher la dernière collection d’une bibliothèque retire cette bibliothèque vide.",
-            "Folder sharing is unchanged. Linking a private folder also restricts the destination: viewers must be allowed on all folders feeding it. Removing a library’s final collection removes that empty library.",
+            "Le partage du dossier ne change pas. Chaque spectateur ne voit que les contenus des dossiers auxquels il a accès ; les autres contenus de la destination restent visibles. Détacher la dernière collection d’une bibliothèque retire cette bibliothèque vide.",
+            "Folder sharing is unchanged. Viewers only see content from folders they can access; other content in the destination stays visible. Removing a library’s final collection removes that empty library.",
           )}
         </p>
         {(["library", "collection"] as const).map((kind) => (

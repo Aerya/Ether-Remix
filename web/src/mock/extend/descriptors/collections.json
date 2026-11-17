@@ -230,6 +230,36 @@
   },
   {
     "kind": "collectionSource",
+    "id": "releaseSource",
+    "owner": "builtin",
+    "label": {
+      "source": "Indexed release source"
+    },
+    "hint": {
+      "source": "Titles already observed on this source; no playback or download"
+    },
+    "meta": {
+      "params": [
+        {
+          "name": "label",
+          "kind": "text",
+          "label": {
+            "source": "Entry"
+          },
+          "hint": {},
+          "required": true
+        }
+      ],
+      "defaults": {},
+      "mediaTypes": [
+        "movie",
+        "show",
+        "mixed"
+      ]
+    }
+  },
+  {
+    "kind": "collectionSource",
     "id": "friendsWatchlist",
     "owner": "builtin",
     "label": {

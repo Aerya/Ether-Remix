@@ -31,6 +31,9 @@ func (a *App) pseThemes() *themes.Service {
 			a.log.Warn("bibliothèques à thème Ether-Remix illisibles", "err", err)
 		}
 		rt.themes = svc
+		if svc != nil {
+			svc.SetSources(a.librarySourceChoices)
+		}
 		frontend.SetPSEThemes(svc)
 		if svc != nil {
 			ctx, cancel := context.WithCancel(context.Background())

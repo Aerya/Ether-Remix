@@ -49,6 +49,25 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-17-layout-templates-library-sharing",
+    version: "0.2.37-remix.107.1",
+    date: "2026-11-17",
+    title: [
+      "Dispositions réutilisables et bibliothèques partagées",
+      "Reusable layouts and shared libraries",
+    ],
+    items: [
+      [
+        "Enregistrez et dupliquez des modèles de l’accueil, des bibliothèques et des collections. Réappliquez une variante avec sauvegarde automatique de la disposition précédente ; les permissions restent inchangées.",
+        "Save and duplicate Home, library and collection layout templates. Reapply a variant with an automatic previous-layout snapshot; permissions remain unchanged.",
+      ],
+      [
+        "Les bibliothèques à thème Plex peuvent réunir dossiers locaux et sources indexées, pour tous ou certains utilisateurs. Dans une bibliothèque mixte, chaque spectateur voit uniquement les contributions auxquelles il a accès ; les priorités de lecture restent celles de ses sources autorisées.",
+        "Plex theme libraries can combine local folders and indexed sources for everyone or selected viewers. In a mixed library, each viewer sees only authorized contributions; playback retains their authorized source priorities.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-17-release-search-speed",
     version: "0.2.37-remix.106.1",
     date: "2026-11-17",
