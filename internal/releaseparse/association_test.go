@@ -61,3 +61,15 @@ func TestAssociationMatchingIDNeverOverridesFilename(t *testing.T) {
 		})
 	}
 }
+
+func TestAssociationSeriesMissingCatalogueYearNeedsReportedIdentity(t *testing.T) {
+	q := core.SearchRequest{Type: core.TypeEpisode, Title: "Selena", Season: 1, Episode: 1, IDs: core.IDs{TMDB: 100}}
+	r := core.Release{Name: "Selena.1997.S01E01.1080p"}
+	if AssociationReason(q, r) == "" {
+		t.Fatal("unknown catalogue year accepted without independent ID")
+	}
+	r.TitleIDs = q.IDs
+	if reason := AssociationReason(q, r); reason != "" {
+		t.Fatal(reason)
+	}
+}

@@ -62,7 +62,7 @@ func AssociationReason(req core.SearchRequest, r core.Release) string {
 		if !SeriesYearMatches(EpisodeSeriesYear(r.Name, info.Year), req.Year) {
 			return "year_conflict"
 		}
-		if !same && EpisodeSeriesYear(r.Name, info.Year) == 0 {
+		if !same && (req.Year == 0 || EpisodeSeriesYear(r.Name, info.Year) == 0) {
 			return "unconfirmed_series_year"
 		}
 		if req.Type == core.TypeEpisode && (info.FullSeason || len(info.Episodes) != 1 || !EpisodeMatchesNumbering(info, req.Season, req.Episode, AnimeSearchEpisode(req))) {
