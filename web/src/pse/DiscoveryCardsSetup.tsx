@@ -57,7 +57,7 @@ export function DiscoveryCardsNotice() {
         "Le préréglage Cartes inspirées de Nuvio remplace actuellement cet accueil sur Plex et Jellyfin/Emby. Cette page conserve votre disposition précédente.",
         "The Nuvio-inspired cards preset currently replaces this home on Plex and Jellyfin/Emby. This page retains your previous layout.",
       )}{" "}
-      <Link to="/remix/contenus" className="underline">
+      <Link to="/remix/visuels" className="underline">
         {L("Gérer les cartes ou rétablir cet accueil", "Manage cards or restore this home")}
       </Link>
     </div>

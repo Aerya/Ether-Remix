@@ -10,7 +10,8 @@ export const REMIX_TABS = [
   },
   { key: "indexation", fr: "Indexation", en: "Indexing", features: ["indexer"] },
   { key: "lecture", fr: "Lecture", en: "Playback", features: ["french", "playable"] },
-  { key: "contenus", fr: "Contenus", en: "Content", features: ["music", "posters"] },
+  { key: "contenus", fr: "Contenus", en: "Content", features: ["music"] },
+  { key: "visuels", fr: "Visuels", en: "Visuals", features: ["posters"] },
   { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob"] },
 ] as const;
 
@@ -30,6 +31,10 @@ export const REMIX_VIEWS = {
     { key: "priorites", fr: "Priorités", en: "Priorities" },
     { key: "qualite", fr: "Qualité", en: "Quality" },
     { key: "vostfr", fr: "VOSTFR", en: "Subtitles" },
+  ],
+  visuels: [
+    { key: "cartes", fr: "Cartes", en: "Cards" },
+    { key: "affiches", fr: "Affiches", en: "Posters" },
   ],
 } as const;
 

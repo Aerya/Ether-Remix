@@ -59,19 +59,19 @@ For **music**, bring together the Deezer catalogue, your audio files and your iB
 
 ## Compatible apps
 
-| Access | Apps |
-| --- | --- |
-| Stored releases, browsing and beta monitoring | [Release library](docs/pse/RELEASE_LIBRARY.en.md) |
-| **Plex** | Official apps: Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, smart TVs (LG, Samsung, VIDAA), desktop and Web. Kodi through Plex for Kodi (PM4K). |
-| **Jellyfin** | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin for Android TV, JellyCon (Kodi), Jellyfin for Roku. |
-| **Emby** | Emby apps (Android TV, iOS, Android, Roku, smart TVs) and Infuse. Emby for TV 2.x on Apple TV is not supported. |
-| **Silo** | Apple TV, iOS, macOS, Android, Android TV. |
-| **Stremio** | Any Stremio app, through a personal addon. An HTTPS address is required. |
-| **Files (WebDAV)** | Infuse, VLC, Kodi, rclone. |
-| **M3U & XMLTV** | Channels DVR, TiviMate and IPTV players. |
-| **Xtream** | TiviMate, Televizo, IPTV Smarters… Off by default. |
-| **DLNA** | TVs and players on the local network. |
-| **Music** *(Remix)* | Plex and Plexamp, Jellyfin clients (Finamp…), Subsonic apps: Symfonium, Feishin, Supersonic, DSub… |
+| Access                                        | Apps                                                                                                                                                                              |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stored releases, browsing and beta monitoring | [Release library](docs/pse/RELEASE_LIBRARY.en.md)                                                                                                                                 |
+| **Plex**                                      | Official apps: Apple TV, iOS, Android, Android TV / Shield, Fire TV, Roku, PlayStation, Xbox, smart TVs (LG, Samsung, VIDAA), desktop and Web. Kodi through Plex for Kodi (PM4K). |
+| **Jellyfin**                                  | Infuse, Swiftfin, Findroid, Streamyfin, Jellyfin for Android TV, JellyCon (Kodi), Jellyfin for Roku.                                                                              |
+| **Emby**                                      | Emby apps (Android TV, iOS, Android, Roku, smart TVs) and Infuse. Emby for TV 2.x on Apple TV is not supported.                                                                   |
+| **Silo**                                      | Apple TV, iOS, macOS, Android, Android TV.                                                                                                                                        |
+| **Stremio**                                   | Any Stremio app, through a personal addon. An HTTPS address is required.                                                                                                          |
+| **Files (WebDAV)**                            | Infuse, VLC, Kodi, rclone.                                                                                                                                                        |
+| **M3U & XMLTV**                               | Channels DVR, TiviMate and IPTV players.                                                                                                                                          |
+| **Xtream**                                    | TiviMate, Televizo, IPTV Smarters… Off by default.                                                                                                                                |
+| **DLNA**                                      | TVs and players on the local network.                                                                                                                                             |
+| **Music** _(Remix)_                           | Plex and Plexamp, Jellyfin clients (Finamp…), Subsonic apps: Symfonium, Feishin, Supersonic, DSub…                                                                                |
 
 Turn access on under **Console → Apps**. Each viewer finds their links and app passwords on their **Your account** page.
 
@@ -224,7 +224,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 
 ### ![](https://api.iconify.design/lucide/palette.svg?color=%2314b8a6&width=24&height=24) An interface that fits your habits
 
-- Six tabs: **Overview** (quick start, activity, sources, usage), **Sources** (including local media health), **Indexing** (settings and releases), **Playback** (priorities, quality, subtitles), **Content** and **Tracking**. Old links and bookmarks are redirected.
+- Seven tabs: **Overview** (quick start, activity, sources, usage), **Sources** (including local media health), **Indexing** (settings and releases), **Playback** (priorities, quality, subtitles), **Content**, **Visuals** (Nuvio cards, packs, poster refresh) and **Tracking**. Old links and bookmarks are redirected.
 - Automatic indexing of enabled Stremio addons or a custom selection, including none; Prowlarr/Jackett instance filters and catalogue, searched, with-release and shown counts for each prioritized library or collection.
 - Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
 - Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.
@@ -252,18 +252,18 @@ Migrating from Ether? The data format is preserved: back up `/config`, stop the 
 
 ## Documentation
 
-| Need | Guide |
-| --- | --- |
-| AllDebrid on a VPS, MediaFlow + Gluetun and per-source proxies | [Networking and proxies (French)](docs/alldebrid-mediaflow.md) |
-| Installation, settings, music sources, playlists, Scrob and clients | [Configuration guide](docs/pse/GUIDE.en.md) |
-| Title visibility, priorities and search intervals | [Catalogue and indexing](docs/pse/CATALOGUE.en.md) |
-| Availability sharing and complementary searches | [SeerrCatalog integration](docs/pse/SEERRCATALOG.en.md) |
-| Read-only import from a StreamFusion Reborn database | [StreamFusion Reborn, in French](docs/pse/STREAMFUSION.fr.md) |
-| Public or self-hosted instance, languages and translation limits | [SubMaker](docs/pse/SUBMAKER.en.md) |
-| Torrent clients and download storage | [Torrent client](docs/pse/TORRENT.en.md) |
-| Videos, local music and iBroadcast accounts | [Local media and iBroadcast](docs/pse/GUIDE.en.md#local-media-and-ibroadcast) |
-| XDCC bots via XDCC Grabscher: Docker, VPN, streaming and limits | [XDCC source](docs/pse/XDCC.en.md) |
-| FTP / SFTP: connection, playback and storage | [FTP / SFTP source](docs/pse/FTP.en.md) |
+| Need                                                                | Guide                                                                         |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| AllDebrid on a VPS, MediaFlow + Gluetun and per-source proxies      | [Networking and proxies (French)](docs/alldebrid-mediaflow.md)                |
+| Installation, settings, music sources, playlists, Scrob and clients | [Configuration guide](docs/pse/GUIDE.en.md)                                   |
+| Title visibility, priorities and search intervals                   | [Catalogue and indexing](docs/pse/CATALOGUE.en.md)                            |
+| Availability sharing and complementary searches                     | [SeerrCatalog integration](docs/pse/SEERRCATALOG.en.md)                       |
+| Read-only import from a StreamFusion Reborn database                | [StreamFusion Reborn, in French](docs/pse/STREAMFUSION.fr.md)                 |
+| Public or self-hosted instance, languages and translation limits    | [SubMaker](docs/pse/SUBMAKER.en.md)                                           |
+| Torrent clients and download storage                                | [Torrent client](docs/pse/TORRENT.en.md)                                      |
+| Videos, local music and iBroadcast accounts                         | [Local media and iBroadcast](docs/pse/GUIDE.en.md#local-media-and-ibroadcast) |
+| XDCC bots via XDCC Grabscher: Docker, VPN, streaming and limits     | [XDCC source](docs/pse/XDCC.en.md)                                            |
+| FTP / SFTP: connection, playback and storage                        | [FTP / SFTP source](docs/pse/FTP.en.md)                                       |
 
 <a id="nav-origin-and-license"></a>
 

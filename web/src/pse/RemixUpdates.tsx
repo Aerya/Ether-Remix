@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-artwork-packs-and-poster-services",
+    id: "2026-11-17-visuals-tab",
     version: "current",
+    date: "2026-11-17",
+    title: ["Onglet Visuels", "Visuals tab"],
+    items: [
+      [
+        "Cartes inspirées de Nuvio, packs de visuels et renouvellement des affiches sont réunis dans Visuels. Contenus se concentre sur les bibliothèques, collections et imports ; Démarrage renvoie vers Visuels.",
+        "Nuvio-inspired cards, artwork packs and poster refresh now live in Visuals. Content focuses on libraries, collections and imports; Quick start links to Visuals.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-artwork-packs-and-poster-services",
+    version: "0.2.37-remix.102.1",
     date: "2026-11-17",
     title: ["Packs de visuels et affiches", "Artwork packs and poster services"],
     items: [

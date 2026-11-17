@@ -298,7 +298,7 @@ Existing `/sources/...` addresses and old Remix tabs redirect to their new locat
 
 Plex and Jellyfin prepare a page’s badges together. New episodes and collection rotations respect each viewer’s state. The playable-only catalogue keeps exact counts, including language exceptions.
 
-**Faster posters**: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. A TMDB fallback poster, served when the provider does not answer, is still rechecked every time so it does not stay on screen after the outage. Apps fetch provider posters again every 24 hours; set that delay in **Console → Ether-Remix → Content → Posters in apps** (`PSE_POSTER_REFRESH_HOURS`, 1 to 168). Jellyfin and Emby receive the poster at the size the app asked for, and Jellyfin no longer waits before sending an image. Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.
+**Faster posters**: with a poster provider (PostersPlus, XRDB, RPDB…), Plex keeps each poster for a day instead of asking the server again on every screen. A TMDB fallback poster, served when the provider does not answer, is still rechecked every time so it does not stay on screen after the outage. Apps fetch provider posters again every 24 hours; set that delay in **Console → Ether-Remix → Visuals → Posters** (`PSE_POSTER_REFRESH_HOURS`, 1 to 168). Jellyfin and Emby receive the poster at the size the app asked for, and Jellyfin no longer waits before sending an image. Without a provider, a TV asking for a 600 px poster receives the 500 px one rather than the 780 px one, more than twice as heavy.
 
 **Release-date sorting**: Movies and Shows open newest first. Plex uses this sort until you pick another in the app. Jellyfin and Emby use it when the app does not ask for a sort; Jellyfin Web and Infuse keep their own: change it once in the app, which remembers it.
 
@@ -415,7 +415,7 @@ The console uses `/ether/remix`. Old bookmarks redirect with their parameters pr
 
 A **style for multiple cards** can be prepared from one gallery: choose cards, search their artwork, filter by creator, set or folder and select unique matches in one click. Review variants before bulk application; cards without a choice keep their artwork. Available metadata varies by source, and the same creator does not guarantee the same style. Searches are limited to 30 cards per batch; nothing is saved until “Apply cards to my home screens”.
 
-This is an **optional BETA**, disabled until you apply it. Open **Ether-Remix → Overview → Quick start** or **Content → Nuvio-inspired cards → Quick setup**.
+This is an **optional BETA**, disabled until you apply it. Open **Ether-Remix → Visuals → Cards → Nuvio-inspired cards → Quick setup**.
 
 1. Use **Starter selection** or build your own. **Studios and labels** searches TMDB production companies by name or ID; it is not a comprehensive music-label directory. **Genres** offers TMDB movie genres, with TV equivalents where available.
 2. Under **Services**, choose a country: services load automatically. Providers come from TMDB / JustWatch movie and TV lists. Select services, then change countries without losing your selection. Use a two-letter ISO code for other countries. Country means catalog availability, not studio origin, and grants no subscription access.
