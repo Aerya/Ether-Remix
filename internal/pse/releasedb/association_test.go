@@ -47,9 +47,16 @@ func TestAssociationAuditPreservesQuarantineAndVerifiedRows(t *testing.T) {
 			t.Fatalf("%s %d %v", table, n, err)
 		}
 	}
+	// Simulate a restart after quarantine transactions but before the final marker.
+	if _, err = db.Exec(`DELETE FROM pse_association_audit`); err != nil {
+		t.Fatal(err)
+	}
 	again, err := AuditAssociations(ctx, db, l.Open, true)
 	if err != nil || again.Quarantined != 0 {
 		t.Fatalf("%+v %v", again, err)
+	}
+	if err = db.QueryRow(`SELECT quarantined FROM pse_association_audit WHERE version=1`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("resumed quarantine counter: %d %v", n, err)
 	}
 	raw, _ := json.Marshal(applied)
 	if strings.Contains(string(raw), "token") || strings.Contains(string(raw), "private.invalid") {

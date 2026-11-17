@@ -206,7 +206,11 @@ func AuditAssociations(ctx context.Context, db *sql.DB, open func(string) (strin
 		if _, err = db.ExecContext(ctx, `DELETE FROM pse_playable; DELETE FROM pse_state WHERE k='playable_signature'; UPDATE pse_index_titles SET found=(SELECT COUNT(*) FROM pse_releases r WHERE r.title_key=pse_index_titles.title_key)`); err != nil {
 			return report, err
 		}
-		_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS pse_association_audit(version INTEGER PRIMARY KEY,checked INTEGER NOT NULL,quarantined INTEGER NOT NULL); INSERT OR IGNORE INTO pse_association_audit VALUES(1,?,?)`, report.Checked, report.Quarantined)
+		var totalQuarantined int
+		if err = db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM pse_releases_quarantine)+(SELECT COUNT(*) FROM pse_release_library_quarantine)`).Scan(&totalQuarantined); err != nil {
+			return report, err
+		}
+		_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS pse_association_audit(version INTEGER PRIMARY KEY,checked INTEGER NOT NULL,quarantined INTEGER NOT NULL); INSERT OR IGNORE INTO pse_association_audit VALUES(1,?,?)`, report.Checked+totalQuarantined-report.Quarantined, totalQuarantined)
 		if err != nil {
 			return report, fmt.Errorf("record association audit: %w", err)
 		}
