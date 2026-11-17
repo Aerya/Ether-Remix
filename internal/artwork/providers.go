@@ -132,8 +132,18 @@ func providerURL(p config.Posters, t *core.Title) (string, bool) {
 			kind = "series"
 		}
 		return "https://api.ratingposterdb.com/" + url.PathEscape(p.APIKey) + "/tmdb/poster-default/" + kind + "-" + strconv.FormatInt(id, 10) + ".jpg", true
-	case "betterposters", "custom":
+	case "betterposters", "custom", "pictorium", "topposters":
 		template := p.URLTemplate
+		if p.Source == "pictorium" {
+			token := "{imdb_id}"
+			if id > 0 {
+				token = "{tmdb_id}"
+			}
+			template = strings.NewReplacer("{tmdb_id|imdb_id|id}", token, "{tmdb_id|imdb_id}", token, "{media_type}", "{type}").Replace(template)
+		}
+		if (p.Source == "pictorium" || p.Source == "topposters") && kind == "tv" {
+			kind = "series"
+		}
 		if template == "" && p.Source == "betterposters" {
 			template = "https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg"
 		}

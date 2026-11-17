@@ -48,7 +48,12 @@ func TestIndependentPosterAccountSecrets(t *testing.T) {
 	c.Posters = config.Posters{Version: 1, Source: "tmdb"}
 	c.Posters.Accounts.RPDB = config.PosterAccount{Enabled: true, APIKey: "rpdb-secret"}
 	c.Posters.Accounts.Custom = config.PosterAccount{Enabled: true, APIKey: "custom-secret", URLTemplate: "https://example.com/{type}/{tmdb_id}?key={api_key}"}
+	c.Posters.Accounts.Pictorium = config.PosterAccount{Enabled: true, URLTemplate: "https://example.com/api/poster/{type}/{imdb_id}?api_key=pictorium-secret"}
+	c.Posters.Accounts.TopPosters = config.PosterAccount{Enabled: true, APIKey: "top-secret", URLTemplate: "https://api.top-posters.com/{api_key}/imdb/poster/{imdb_id}.jpg"}
 	redacted := RedactConfig(c)
+	if redacted.Posters.Accounts.Pictorium.URLTemplate != RedactedSecret || redacted.Posters.Accounts.TopPosters.APIKey != RedactedSecret {
+		t.Fatal("new provider secret leaked")
+	}
 	if redacted.Posters.Accounts.RPDB.APIKey != RedactedSecret || redacted.Posters.Accounts.Custom.URLTemplate != RedactedSecret {
 		t.Fatal("account secret leaked")
 	}

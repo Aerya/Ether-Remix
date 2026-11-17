@@ -750,7 +750,7 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 	default:
 		c.Type = t
 	}
-	if row.spec.Artwork.Mode == "custom" && row.spec.Artwork.URL != "" {
+	if row.spec.Artwork.Mode == "custom" && row.spec.Artwork.URL != "" && !row.spec.Artwork.PublicOnly {
 		u := row.spec.Artwork.URL
 		c.PosterPath = u
 		c.BackdropPath = u

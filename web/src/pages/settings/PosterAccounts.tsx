@@ -9,7 +9,7 @@ import { IntegrationAppCard } from "../../components/IntegrationAppCard";
 import { IntegrationTab } from "../../components/IntegrationTab";
 import { IntegrationMark } from "../../components/integration-brands";
 import { SaveBar } from "../../components/SaveBar";
-import { localized, t } from "../../i18n";
+import { getLocale, localized, t } from "../../i18n";
 import { api, apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { PosterProviderConfig as Posters } from "../../lib/types";
@@ -49,6 +49,24 @@ export const POSTER_SERVICES = localized(() => [
     description: t("Rating posters from Rating Poster Database."),
     key: true,
     template: false,
+  },
+  {
+    id: "pictorium",
+    name: "Pictorium",
+    description: getLocale().startsWith("fr")
+      ? "Affiches personnalisées depuis une instance Pictorium."
+      : "Custom posters from a Pictorium instance.",
+    key: false,
+    template: true,
+  },
+  {
+    id: "topposters",
+    name: "TOP Posters",
+    description: getLocale().startsWith("fr")
+      ? "Affiches et notes depuis votre compte TOP Posters."
+      : "Posters and ratings from your TOP Posters account.",
+    key: false,
+    template: true,
   },
   {
     id: "custom",
@@ -123,6 +141,47 @@ function PosterAccountForm({
               onChange={(urlTemplate) => onChange({ ...value, urlTemplate })}
             />
           </Field>
+        )}
+        {["betterposters", "pictorium", "topposters", "custom"].includes(value.source) && (
+          <p className="text-sm text-fg-muted">
+            {getLocale().startsWith("fr")
+              ? "Collez le modèle d’URL d’affiche fourni par le service, en conservant ses paramètres. Variables : {imdb_id}, {tmdb_id}, {type}, {api_key}. Pictorium accepte aussi {tmdb_id|imdb_id|id}. Sans identifiant compatible ou en cas d’échec, Remix conserve l’affiche TMDB."
+              : "Paste the service’s poster URL template, keeping its parameters. Variables: {imdb_id}, {tmdb_id}, {type}, {api_key}. Pictorium also supports {tmdb_id|imdb_id|id}. Missing IDs or provider failures fall back to TMDB."}
+          </p>
+        )}
+        {value.source === "betterposters" && (
+          <a
+            className="underline"
+            href="https://btttr.cc/configure"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {getLocale().startsWith("fr")
+              ? "Configurer BetterPosters (AIOMetadata / Other Addon). Modèle vide : style par défaut."
+              : "Configure BetterPosters (AIOMetadata / Other Addon). Empty template: default style."}
+          </a>
+        )}
+        {value.source === "pictorium" && (
+          <a
+            className="underline"
+            href="https://github.com/Eful97/Pictorium"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {getLocale().startsWith("fr")
+              ? "Pictorium : instance publique ou personnelle, puis copier l’URL d’affiche"
+              : "Pictorium: public or personal instance, then copy the poster URL"}
+          </a>
+        )}
+        {value.source === "topposters" && (
+          <a
+            className="underline"
+            href="https://top-posters.com/api"
+            target="_blank"
+            rel="noreferrer"
+          >
+            TOP Posters · API / URL
+          </a>
         )}
       </div>
     </SettingsSection>

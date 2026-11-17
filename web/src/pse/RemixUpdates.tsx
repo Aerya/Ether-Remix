@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-release-browser",
+    id: "2026-11-17-artwork-packs-and-poster-services",
     version: "current",
+    date: "2026-11-17",
+    title: ["Packs de visuels et affiches", "Artwork packs and poster services"],
+    items: [
+      [
+        "Packs Nuvio, Kometa, Kaptain, FR-Badges et collections importées : aperçu, protection des personnalisations, choix des variantes et application groupée. La personnalisation à l’unité reste disponible et les boutons de référence ne débordent plus.",
+        "Nuvio, Kometa, Kaptain, FR-Badges and imported collection packs: previews, custom artwork protection, variant selection and bulk application. Individual editing stays available and reference buttons no longer overflow.",
+      ],
+      [
+        "Pictorium et TOP Posters rejoignent les fournisseurs d’affiches facultatifs. Le configurateur BetterPosters est accessible depuis son compte. Les erreurs conservent le repli TMDB.",
+        "Pictorium and TOP Posters join the optional poster providers. The BetterPosters configurator is linked from its account. Errors retain the TMDB fallback.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-release-browser",
+    version: "0.2.37-remix.101.1",
     date: "2026-11-17",
     title: ["Explorer les médias et releases indexés", "Browse indexed media and releases"],
     items: [

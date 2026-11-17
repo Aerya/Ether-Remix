@@ -18,6 +18,8 @@ type PosterAccount struct {
 	Profile     string `json:"profile"`
 }
 type PosterAccounts struct {
+	Pictorium     PosterAccount `json:"pictorium"`
+	TopPosters    PosterAccount `json:"topposters"`
 	PostersPlus   PosterAccount `json:"postersplus"`
 	XRDB          PosterAccount `json:"xrdb"`
 	BetterPosters PosterAccount `json:"betterposters"`
@@ -26,7 +28,7 @@ type PosterAccounts struct {
 }
 
 func (p *PosterAccounts) Entries() map[string]*PosterAccount {
-	return map[string]*PosterAccount{"postersplus": &p.PostersPlus, "xrdb": &p.XRDB, "betterposters": &p.BetterPosters, "rpdb": &p.RPDB, "custom": &p.Custom}
+	return map[string]*PosterAccount{"pictorium": &p.Pictorium, "topposters": &p.TopPosters, "postersplus": &p.PostersPlus, "xrdb": &p.XRDB, "betterposters": &p.BetterPosters, "rpdb": &p.RPDB, "custom": &p.Custom}
 }
 
 type Posters struct {
@@ -111,10 +113,13 @@ func (p Posters) Validate() error {
 		if e != nil || !posterURL(u) || u.RawQuery != "" || strings.ContainsAny(p.BaseURL, "{}") {
 			return errors.New("poster provider requires an HTTP(S) base URL without credentials or query")
 		}
-	case "betterposters", "custom":
+	case "betterposters", "custom", "pictorium", "topposters":
 		template := p.URLTemplate
 		if template == "" && p.Source == "betterposters" {
 			return nil
+		}
+		if p.Source == "pictorium" {
+			template = strings.NewReplacer("{tmdb_id|imdb_id|id}", "{tmdb_id}", "{tmdb_id|imdb_id}", "{tmdb_id}", "{media_type}", "{type}").Replace(template)
 		}
 		u, e := url.Parse(template)
 		if e != nil || !posterURL(u) || strings.ContainsAny(u.Host, "{}") {
@@ -134,7 +139,7 @@ func (p Posters) Validate() error {
 		if !hasID || strings.ContainsAny(template, "{}") {
 			return errors.New("use {imdb_id}, or {tmdb_id} with {type}; optional {api_key}")
 		}
-		if strings.Contains(p.URLTemplate, "{tmdb_id}") && !strings.Contains(p.URLTemplate, "{type}") {
+		if (strings.Contains(p.URLTemplate, "{tmdb_id}") || strings.Contains(p.URLTemplate, "{tmdb_id|")) && !strings.Contains(p.URLTemplate, "{type}") && !strings.Contains(p.URLTemplate, "{media_type}") {
 			return errors.New("TMDB templates require {type} to distinguish movie and TV IDs")
 		}
 	default:

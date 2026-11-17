@@ -56,6 +56,8 @@ type Obj = Record<string, unknown>;
 export type ServiceTab =
   | "postersplus"
   | "xrdb"
+  | "pictorium"
+  | "topposters"
   | "betterposters"
   | "rpdb"
   | "custom"
@@ -75,6 +77,8 @@ const TAB_ORDER: ServiceTab[] = [
   "overview",
   "postersplus",
   "xrdb",
+  "pictorium",
+  "topposters",
   "betterposters",
   "rpdb",
   "custom",
@@ -96,6 +100,8 @@ export function integrationTabs(
   const labels: Record<ServiceTab, string> = {
     postersplus: "PostersPlus",
     xrdb: "XRDB",
+    pictorium: "Pictorium",
+    topposters: "TOP Posters",
     betterposters: "BetterPosters",
     rpdb: "RPDB",
     custom: t("Custom posters"),

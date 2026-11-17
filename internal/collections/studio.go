@@ -340,7 +340,9 @@ func (s *Service) artworkFor(ctx context.Context, row *specRow, keys []core.Rati
 			var data []byte
 			var ct string
 			var err error
-			if strings.HasPrefix(art.URL, "/") {
+			if art.PublicOnly {
+				data, ct, err = s.images.GetUntrustedURL(ctx, art.URL)
+			} else if strings.HasPrefix(art.URL, "/") {
 				data, ct, err = s.images.Get(ctx, art.URL, w)
 			} else {
 				data, ct, err = s.images.GetURL(ctx, art.URL)

@@ -110,6 +110,8 @@ func TestPosterAccountsMigrationAndIndependentCredentials(t *testing.T) {
 func TestPosterAccountsSealedRoundtrip(t *testing.T) {
 	p := (Posters{Enabled: true, Source: "rpdb", APIKey: "rpdb-account-secret"}).Normalize()
 	p.Accounts.Custom = PosterAccount{Enabled: true, URLTemplate: "https://example.com/{imdb_id}?key=custom-account-secret"}
+	p.Accounts.Pictorium = PosterAccount{Enabled: true, URLTemplate: "https://example.com/api/poster/{type}/{tmdb_id|imdb_id}?api_key=pictorium-account-secret"}
+	p.Accounts.TopPosters = PosterAccount{Enabled: true, APIKey: "top-account-secret", URLTemplate: "https://example.com/{api_key}/{imdb_id}"}
 	dir := t.TempDir()
 	s, err := Open(dir)
 	if err != nil {

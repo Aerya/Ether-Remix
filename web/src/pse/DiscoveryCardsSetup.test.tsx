@@ -131,7 +131,7 @@ it("offers integrated galleries directly under the selected card", async () => {
   const check = await screen.findByRole("checkbox", { name: "Test Service" });
   await waitFor(() => expect(check).toBeEnabled());
   fireEvent.click(check);
-  fireEvent.click(screen.getByRole("button", { name: /Choisir le visuel|Choose artwork/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Personnaliser une carte|Customize a card/ }));
   const editor = screen.getByRole("region", { name: /Choix du visuel|Artwork picker/ });
   expect(editor.parentElement).toContainElement(check);
   for (const name of ["ThePosterDB", "ACdb"]) {
