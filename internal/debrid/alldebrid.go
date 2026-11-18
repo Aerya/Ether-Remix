@@ -109,6 +109,10 @@ func adError(status int, code, msg string) error {
 	case code == "MAGNET_TOO_MANY_ACTIVE":
 		// The account's active-magnet slots are full: nothing new is added.
 		return fmt.Errorf("alldebrid: %s: %w", msg, ErrDownloadLimit)
+	case code == "MAGNET_TOO_MANY":
+		// The account refuses new magnets, but existing torrents and file
+		// links remain readable. Pause adds only, never the whole provider.
+		return fmt.Errorf("alldebrid: %s: %w: %w", msg, ErrAddRefused, ErrDownloadLimit)
 	case strings.Contains(code, "TOO_MANY") || strings.Contains(code, "RATE"):
 		return fmt.Errorf("alldebrid: %s: %w", msg, ErrRateLimited)
 	case code == "MAGNET_INVALID_URI" || code == "MAGNET_NO_URI" || code == "MAGNET_PROCESSING_FAILED":

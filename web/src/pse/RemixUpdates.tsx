@@ -26,8 +26,18 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-xperience-refresh-collections",
+    id: "2026-11-17-alldebrid-add-quota",
     version: "current",
+    date: "2026-11-17",
+    title: ["AllDebrid : préserver la lecture quand les ajouts sont refusés", "AllDebrid: keep playback available when additions are refused"],
+    items: [
+      ["Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.", "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents."],
+      ["Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.", "Stored references still require playback checks; a hash alone does not replace a file link."],
+    ],
+  },
+  {
+    id: "2026-11-17-xperience-refresh-collections",
+    version: "0.2.37-remix.109.1",
     date: "2026-11-17",
     title: ["Xperience : actualisation et collections", "Xperience: refresh and collections"],
     items: [
