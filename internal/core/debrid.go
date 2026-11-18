@@ -123,6 +123,13 @@ var ErrNoTorrentSources = fmt.Errorf("debrid has no torrent indexer to search: %
 // release failure.
 var ErrDebridAuth = errors.New("debrid: authentication failed")
 
+// ErrDebridQuota is a debrid account that reached its daily quota or
+// traffic allowance (AllDebrid "daily download limit", Real-Debrid traffic
+// exhausted or fair-usage limit). Like ErrDebridAuth it concerns the whole
+// account: no other release of that provider can play until the quota
+// resets, so a failover stops trying that provider.
+var ErrDebridQuota = errors.New("debrid: account quota reached")
+
 // TargetReleaseID derives a stable release ID for one episode of a
 // multi-file release, so health, pins, cache and bad marks apply to the
 // episode file rather than the whole pack.

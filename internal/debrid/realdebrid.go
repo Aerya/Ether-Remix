@@ -97,10 +97,14 @@ func (p *realDebrid) classify(status int, e rdError) error {
 	}
 	switch e.ErrorCode {
 	// Codes from the Real-Debrid API documentation.
-	case 8, 9, 10, 11, 12, 13, 14, 15, 20, 22, 23, 36:
+	case 23, 36:
+		// Traffic exhausted, fair-usage limit: the account's quota, which
+		// resets by itself (not a key problem).
+		return fmt.Errorf("real-debrid: %s: %w", msg, ErrQuotaExceeded)
+	case 8, 9, 10, 11, 12, 13, 14, 15, 20, 22:
 		// Bad token, permission denied, two-factor, invalid login, account
-		// locked or not activated, premium only, IP not allowed, traffic
-		// exhausted, fair-usage limit: the account, not the release.
+		// locked or not activated, premium only, IP not allowed: the
+		// account, not the release.
 		return fmt.Errorf("real-debrid: %s: %w", msg, ErrAuth)
 	case 21: // too many active downloads: no new torrent until one finishes
 		return fmt.Errorf("real-debrid: %s: %w", msg, ErrDownloadLimit)

@@ -162,6 +162,8 @@ func TestPlaybackMessageNamesTheCause(t *testing.T) {
 		{"debrid key rejected through failover",
 			fmt.Errorf("%w: 3 releases failed (last: real-debrid: bad_token): %w", core.ErrNotAvailable, core.ErrDebridAuth), msgDebridAuth},
 		{"debrid key rejected in validation", errors.Join(fmt.Errorf("Real-Debrid: %w", core.ErrDebridAuth)), msgDebridAuth},
+		{"debrid quota reached through failover",
+			fmt.Errorf("%w: 1 releases failed (last: alldebrid: daily limit): %w", core.ErrNotAvailable, core.ErrDebridQuota), msgDebridQuota},
 		{"every candidate uncached", errors.Join(errors.Join(notCached("a")), notCached("b")), msgNotCached},
 		{"uncached after failover", fmt.Errorf("%w: 2 releases failed (last: x)", core.ErrNotCached), msgNotCached},
 		{"uncached and a timeout", errors.Join(notCached("a"), errors.New("timeout")), msgNotAvailable},

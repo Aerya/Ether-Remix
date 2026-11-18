@@ -77,12 +77,13 @@ func TestRealDebridErrorCodes(t *testing.T) {
 		35: ErrBlocked, // infringing_file: not cached on this account
 		24: ErrGone,
 		22: ErrAuth,
-		36: ErrAuth,
+		36: ErrQuotaExceeded, // fair-usage limit: the account's quota, paused then probed
+		23: ErrQuotaExceeded,
 		5:  ErrRateLimited,
 		30: core.ErrReleaseRejected,
 	} {
 		err := p.classify(http.StatusServiceUnavailable, rdError{Error: "x", ErrorCode: code})
-		for _, sentinel := range []error{ErrGone, ErrBlocked, ErrAuth, ErrRateLimited, core.ErrReleaseRejected} {
+		for _, sentinel := range []error{ErrGone, ErrBlocked, ErrAuth, ErrQuotaExceeded, ErrRateLimited, core.ErrReleaseRejected} {
 			if errors.Is(err, sentinel) != (sentinel == want) {
 				t.Errorf("code %d: %v (is %v = %v)", code, err, sentinel, errors.Is(err, sentinel))
 			}

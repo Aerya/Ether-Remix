@@ -47,6 +47,7 @@ const (
 	msgNoSources        = "Ether has no sources to search: add a Stremio addon or Torznab indexer under Sources › Indexers."
 	msgNoTorrentSources = "Ether streams through your debrid account but has no torrent indexer to search: add a Stremio addon or Torznab indexer under Sources › Indexers."
 	msgDebridAuth       = "Your debrid service rejected Ether's API key: check the account under Sources › Debrid."
+	msgDebridQuota      = "Your debrid account reached its daily download quota. Ether will try again later; other sources are tried meanwhile."
 	msgNotCached        = "No cached release is available on your debrid service."
 	msgDownloadQueued   = "Not cached yet. Sent to your debrid service to download; try again later."
 	// Every release is a torrent no debrid account holds, with the owner's
@@ -75,6 +76,8 @@ func playbackMessage(err error) string {
 		return "This title has not been released yet. Playback is unavailable."
 	case errors.Is(err, frontend.ErrDebridAuth):
 		return msgDebridAuth
+	case errors.Is(err, frontend.ErrDebridQuota):
+		return msgDebridQuota
 	case errors.Is(err, frontend.ErrNoTorrentSources):
 		return msgNoTorrentSources
 	case errors.Is(err, frontend.ErrNoSources):

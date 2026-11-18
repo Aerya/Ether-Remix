@@ -157,7 +157,7 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		send(w, 503, object{"error": object{"class": "capacity", "code": "preparation_pending", "message": "preparation pending", "retry": object{"allowed": true, "afterSeconds": 2, "maxAttempts": 3}}})
 	case errors.Is(err, frontend.ErrBudgetExhausted):
 		problem(w, 429, "capacity", "indexer_budget_exhausted")
-	case errors.Is(err, frontend.ErrDownloadLimit), errors.Is(err, frontend.ErrDownloadPaused):
+	case errors.Is(err, frontend.ErrDownloadLimit), errors.Is(err, frontend.ErrDownloadPaused), errors.Is(err, frontend.ErrDebridQuota):
 		problem(w, 503, "capacity", "source_capacity")
 	case errors.Is(err, frontend.ErrDebridAuth):
 		problem(w, 502, "source", "source_authentication_failed")

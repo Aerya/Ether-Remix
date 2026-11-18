@@ -79,6 +79,7 @@ var (
 	ErrArticleMissing    = core.ErrArticleMissing
 	ErrBudgetExhausted   = core.ErrBudgetExhausted
 	ErrDebridAuth        = core.ErrDebridAuth
+	ErrDebridQuota       = core.ErrDebridQuota
 	ErrDownloadLimit     = core.ErrDownloadLimit
 	ErrDownloadPaused    = core.ErrDownloadPaused
 	ErrDownloadQueued    = core.ErrDownloadQueued
