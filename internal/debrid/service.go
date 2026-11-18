@@ -876,7 +876,16 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	var errs []error
 	notCached := 0
 	var downloading error // a local BitTorrent client is downloading it
+	// A debrid service's cache is shared by all its accounts: once one
+	// account answered "not cached" for this release, another account of the
+	// same service would answer the same. Account errors (quota, sign-in,
+	// refusal, download limit, outage) still move on to the next account.
+	uncached := map[string]bool{} // service kind → answered "not cached"
 	for _, e := range entries {
+		if uncached[e.cfg.Kind] {
+			notCached++
+			continue
+		}
 		if err := e.blocked(s.now()); err != nil {
 			errs = append(errs, err)
 			continue
@@ -909,6 +918,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			}
 		case errors.Is(err, core.ErrNotCached):
 			notCached++
+			if sharedCache(e) && !refusal(err) {
+				uncached[e.cfg.Kind] = true
+			}
 		case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
 			return nil, err // release-level outcome; another account cannot fix it
 		default:
@@ -1549,6 +1561,13 @@ func (s *Service) blockedFile(ctx context.Context, e *entry, hash, torrentID str
 // provider: it refused the torrent or its file, or its adds are paused.
 func refusal(err error) bool {
 	return errors.Is(err, ErrAddRefused) || errors.Is(err, ErrBlocked) || errors.Is(err, errAddsPaused)
+}
+
+// sharedCache reports a provider whose "not cached" answer holds for every
+// account of its service: a debrid service, not a local BitTorrent client
+// or a plugin.
+func sharedCache(e *entry) bool {
+	return !isLocalProvider(e.p) && !strings.HasPrefix(e.cfg.Kind, "plugin:")
 }
 
 // markRefused remembers, in memory, that the provider refused this hash.
