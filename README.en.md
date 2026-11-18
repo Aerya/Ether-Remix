@@ -281,3 +281,5 @@ Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclip
 
 
 AllDebrid `MAGNET_TOO_MANY` refusals pause only new additions after repeated refusals; existing torrents and file links remain usable. The release library cannot turn an unknown hash into a file link.
+
+**Link renewal during playback**: by default, when a debrid's media server fails during a read (5xx, cut connection, 429), Remix asks for a new link, or for another provider. On a shared account these requests use up the link quota and can block other users. In **Sources → Debrid**, choose **Keep the link and retry** (`debrid.playbackRelink` = `"replay"`): a file that was started reads to the end on its link, with no call to the provider API. A link that is really dead (401, 403, 404, 410, redirect) is still renewed; in this mode, at most once every 30 seconds per file. The change applies without a restart.

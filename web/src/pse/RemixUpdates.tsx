@@ -33,6 +33,7 @@ export const REMIX_UPDATES = [
     items: [
       ["Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.", "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents."],
       ["Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.", "Stored references still require playback checks; a hash alone does not replace a file link."],
+      ["Sources → Debrid : « Garder le lien et réessayer » évite de redemander un lien ou un autre fournisseur quand le serveur média tombe en panne pendant une lecture, et épargne le quota de liens d’un compte partagé. Le comportement actuel reste le choix par défaut. Dans ce mode, un lien réellement mort est renouvelé au plus toutes les 30 secondes par fichier.", "Sources → Debrid: “Keep the link and retry” avoids asking for a new link or another provider when the media server fails during playback, sparing a shared account's link quota. The current behaviour stays the default. In that mode, a really dead link is renewed at most every 30 seconds per file."],
     ],
   },
   {
