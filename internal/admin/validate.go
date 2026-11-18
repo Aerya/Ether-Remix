@@ -423,6 +423,11 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	default:
 		v.add("resolver.sourcePreference", `must be "auto", "usenet" or "debrid"`)
 	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Resolver.VerifiedFiles)) {
+	case "", "off", "tie", "first":
+	default:
+		v.add("resolver.verifiedFiles", `must be "off", "tie" or "first"`)
+	}
 	seenFamily := map[string]bool{}
 	for _, family := range cfg.Resolver.SourceOrder.Families {
 		if (family != "stremio" && family != "usenet" && family != "torrent") || seenFamily[family] {

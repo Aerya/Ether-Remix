@@ -1595,6 +1595,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 	now := s.now()
 	rc := s.rankContext(profile, t, rcfg, now)
 	var cands []candidate
+	vfMode := verifiedFilesMode(rcfg.VerifiedFiles)
 	clientRejected := false
 	// For a known catalogue namesake, a corroborated result makes name-only
 	// results ambiguous. Other series keep their ordinary quality fallbacks.
@@ -1794,6 +1795,10 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, sreq), identityConflict: namesake && episodeRegionConflict(rel, t), fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, yearGuessed: yearGuessed, cf: sc.total, keys: keysFor(rel, starved, rc)})
+		markVerifiedFile(&cands[len(cands)-1], vfMode)
+		if trace != nil && tr >= 0 && cands[len(cands)-1].vfFirst {
+			trace.Candidates[tr].Route = "verified file (Alkodiques): ahead of other sources"
+		}
 	}
 	if hot != nil && len(cands) > 0 {
 		s.addPluginScores(hot, profile, cands, trace)

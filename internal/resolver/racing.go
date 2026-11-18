@@ -33,6 +33,8 @@ type candidate struct {
 	keys             rankKeys        // the Radarr/Sonarr comparer keys (ranking.go)
 	prepared         *candidateCheck // validation overlapped with descriptor discovery
 	graceStart       time.Time       // discovery start, set only when preparation overran the grace
+	vfFirst          bool            // verified AllDebrid file promoted ahead of every source (resolver.verifiedFiles "first")
+	vfTie            bool            // verified AllDebrid file ordered first among equal quality ("tie")
 	subtitled        bool            // Remix: SubMaker already prepared its subtitles (pse_subtitled.go)
 }
 type validation struct {

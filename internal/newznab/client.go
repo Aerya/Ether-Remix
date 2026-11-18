@@ -1796,7 +1796,12 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 		name, id := c.Name(), c.indexerID()
 		for i := range results {
 			r := &results[i]
-			r.Indexer = name
+			// A verified file keeps its own label (Alkodiques) so the
+			// resolver trace and the owner see where it comes from. The
+			// IndexerID is still bound: it carries trust and statistics.
+			if !core.IsVerifiedFile(*r) {
+				r.Indexer = name
+			}
 			r.IndexerID = id
 			if r.ID == "" {
 				r.ID = releaseID(id, r.GUID, r.NZBURL+r.MagnetURL+r.Name)
