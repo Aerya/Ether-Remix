@@ -122,7 +122,8 @@ type Options struct {
 	// ConnectionsPerStream derives the server-wide stream cap from the total
 	// Usenet connections when Server.MaxStreams is 0 (default 8).
 	ConnectionsPerStream int
-	// MaxAttempts is how many releases one Prepare or failover tries (default 4).
+	// MaxAttempts is how many releases one Prepare or failover tries when
+	// resolver.failoverAttempts is 0 (default 4; failover_cap.go).
 	MaxAttempts int
 	// MaxFailovers per session before giving up (default 6).
 	MaxFailovers int

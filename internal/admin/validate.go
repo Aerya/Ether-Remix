@@ -428,6 +428,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	default:
 		v.add("resolver.verifiedFiles", `must be "off", "tie" or "first"`)
 	}
+	if cfg.Resolver.FailoverAttempts < 0 || cfg.Resolver.FailoverAttempts > 10 {
+		v.add("resolver.failoverAttempts", "must be between 1 and 10 (0 = default 4); it is the exact cap on releases tried per playback")
+	}
 	seenFamily := map[string]bool{}
 	for _, family := range cfg.Resolver.SourceOrder.Families {
 		if (family != "stremio" && family != "usenet" && family != "torrent") || seenFamily[family] {

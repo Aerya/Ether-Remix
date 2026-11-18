@@ -450,6 +450,11 @@ type Resolver struct {
 	// only orders them first among releases of equal quality; "off" leaves
 	// the ranking untouched. A failing file falls back to the next candidate.
 	VerifiedFiles string `json:"verifiedFiles,omitempty"`
+	// FailoverAttempts caps how many releases one playback tries when its
+	// source fails (at opening and in each failover): 1 to 10, default 4
+	// (0 or empty). A debrid account error (quota, key, blocked account)
+	// stops the attempts that depend on that account at once.
+	FailoverAttempts int `json:"failoverAttempts,omitempty"`
 	// SourceOrder orders releases of equivalent quality by source family and
 	// by indexer for each kind of content. Empty keeps the behaviour above.
 	SourceOrder SourceOrder `json:"sourceOrder,omitzero"`

@@ -71,6 +71,7 @@ func Defaults(dataDir string) Config {
 			MaxCandidates:           3,
 			SameQualityAlternatives: 1,
 			VerifiedFiles:           "first",
+			FailoverAttempts:        4,
 		},
 		Quality: DefaultQuality(),
 		Transcode: Transcode{

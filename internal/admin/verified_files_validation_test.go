@@ -28,3 +28,25 @@ func TestVerifiedFilesValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestFailoverAttemptsValidation(t *testing.T) {
+	if got := config.Defaults(t.TempDir()).Resolver.FailoverAttempts; got != 4 {
+		t.Fatalf("défaut failoverAttempts = %d, attendu 4", got)
+	}
+	for _, tc := range []struct {
+		value int
+		valid bool
+	}{{0, true}, {1, true}, {4, true}, {10, true}, {-1, false}, {11, false}} {
+		cfg := config.Defaults(t.TempDir())
+		cfg.Resolver.FailoverAttempts = tc.value
+		rejected := false
+		for _, e := range admin.ValidateConfig(cfg) {
+			if e.Field == "resolver.failoverAttempts" {
+				rejected = true
+			}
+		}
+		if rejected == tc.valid {
+			t.Errorf("failoverAttempts %d : rejeté=%v, attendu valide=%v", tc.value, rejected, tc.valid)
+		}
+	}
+}
