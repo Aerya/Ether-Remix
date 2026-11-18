@@ -223,7 +223,8 @@ export interface DebridProviderStatus {
   kind: string;
   enabled: boolean;
   priority: number;
-  state: "ok" | "backoff" | "auth_failed" | "disabled" | string;
+  state: "ok" | "backoff" | "auth_failed" | "quota_exceeded" | "disabled" | string;
+  /** Cleared by the server at the account's next success. */
   lastError?: string;
   backoffUntil?: string;
   requests?: number;
@@ -385,6 +386,7 @@ export interface EtherConfig {
     healthRace?: number;
     sourcePreference?: string;
     verifiedFiles?: string;
+    failoverAttempts?: number;
     sourceOrder?: { families?: string[]; content?: Record<string, string[]> };
     sourceAlwaysFirst?: boolean;
     customFormats?: CustomFormatDefinition[] | null;
