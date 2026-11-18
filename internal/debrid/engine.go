@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/lru"
@@ -570,6 +571,7 @@ type remoteFile struct {
 	pl             Payload
 	gen            int
 	linkFails      int                  // link generations that failed in a row
+	relinkAt       time.Time            // earliest next dead-link refresh
 	failedGen      int                  // last generation counted in linkFails (-1 = none)
 	replayAt       time.Time            // replay probes have their own pacing, independent of API backoff
 	edgeProbeAfter map[string]time.Time // failed probes are specific to this file and signed URL
@@ -822,7 +824,7 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 	if p, g := f.payload(); g != gen && usable(p.URL) {
 		return true
 	}
-	replay := func() bool {
+	replay := func() (moved, ran bool) {
 		p, _ := f.payload()
 		f.mu.Lock()
 		replayKey := p.Provider + "|" + p.URL
@@ -833,7 +835,7 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 		}
 		f.mu.Unlock()
 		if !due || ctx.Err() != nil {
-			return false
+			return false, false
 		}
 		rctx, cancel := context.WithTimeout(ctx, rerouteBudget)
 		moved, replayed := f.resumeOnAnotherEdge(rctx, failed, usable, start)
@@ -847,11 +849,25 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 			f.e.log.Info("debrid media link replayed on an approved edge", "release", f.id,
 				"failedHost", urlHost(failed), "host", urlHost(np.URL))
 		}
-		return moved
+		return moved, true
 	}
 	// This is deliberately above the API cooldown, with its own context.
-	if replay() {
+	moved, ran := replay()
+	if moved {
 		return true
+	}
+	if f.replayOnly() {
+		// playbackRelink=replay: a launched file reads to the end on its
+		// link. A media host failure never asks the provider API for a new
+		// link or another provider; only the same signed link is replayed,
+		// paced by rerouteSpacing (replayAt). Dead links take the separate
+		// refresh path (HTTP 401/403/404/410, ErrGone).
+		if ran {
+			p, _ := f.payload()
+			f.e.log.Warn("debrid media host failed and no other route was found", "release", f.id,
+				"provider", p.Provider, "host", urlHost(failed), "retryAfter", rerouteSpacing)
+		}
+		return false
 	}
 	f.mu.Lock()
 	apiDue := !f.e.now().Before(f.rerouteAt)
@@ -861,7 +877,7 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 	}
 	wctx, cancel := context.WithTimeout(ctx, rerouteBudget)
 	p, _ := f.payload()
-	moved := false
+	moved = false
 	for i := 1; i <= rerouteLinks && !moved; i++ {
 		lp, g, err := f.link(wctx, true, gen)
 		if err != nil {
@@ -886,11 +902,12 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 	// A refresh may have supplied a new token on the same pinned host.
 	// Probe it with the replay budget, never with the exhausted API budget.
 	if !moved {
-		moved = replay()
+		moved, ran = replay()
 	}
 	wait := rerouteSpacing
 	if !moved {
 		wait = rerouteCooldown
+		// The API wave ran above, so a route was genuinely sought.
 		f.e.log.Warn("debrid media host failed and no other route was found", "release", f.id,
 			"provider", p.Provider, "host", urlHost(failed), "retryAfter", wait)
 	}
@@ -898,6 +915,30 @@ func (f *remoteFile) reroute(ctx context.Context, failed string, gen int, start 
 	f.rerouteAt = f.e.now().Add(wait)
 	f.mu.Unlock()
 	return moved
+}
+
+// relinkFloor spaces two forced dead-link refreshes of one file in replay
+// mode. It is a variable so tests can shorten it.
+var relinkFloor = 30 * time.Second
+
+// relinkWait books the next forced dead-link refresh slot and returns how
+// long to wait for it: zero when relinkFloor has elapsed since the last one.
+func (f *remoteFile) relinkWait() time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := f.e.now()
+	at := now
+	if f.relinkAt.After(now) {
+		at = f.relinkAt
+	}
+	f.relinkAt = at.Add(relinkFloor)
+	return at.Sub(now)
+}
+
+// replayOnly reports whether debrid.playbackRelink is "replay". It is read
+// at each decision, so a configuration change applies without a restart.
+func (f *remoteFile) replayOnly() bool {
+	return f.e != nil && f.e.svc != nil && config.PlaybackRelinkIsReplay(f.e.svc.Config().PlaybackRelink)
 }
 
 // kickDiscovery starts one bounded hunt for a flowing route if the file
@@ -1331,7 +1372,7 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 				// Route a stalled body through the same bounded recovery as a
 				// failed connection, preserving the first incomplete offset.
 				f.reroute(reqCtx, p.URL, gen, idx*f.e.block)
-			} else if bodyRetries == 1 {
+			} else if bodyRetries == 1 && !f.replayOnly() {
 				f.moveFromHost(reqCtx, gen)
 			}
 			body, tm, served, err = f.rangeGet(httpCtx, idx*f.e.block, end, mode == fetchUrgent || mode == fetchDurable)
@@ -1677,6 +1718,15 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			if fails > maxLinkFailures {
 				return nil, tm, servedBy{}, directMediaError(payload, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrArticleMissing))
 			}
+			if f.replayOnly() {
+				// playbackRelink=replay: at most one fresh link per
+				// relinkFloor. A refusal just after a renewal waits for the
+				// slot (bounded by ctx) instead of counting as one more
+				// dead link, then renews.
+				if err := sleep(ctx, f.relinkWait()); err != nil {
+					return nil, tm, servedBy{}, err
+				}
+			}
 			if _, _, err := f.link(ctx, true, gen); err != nil {
 				return nil, tm, servedBy{}, err
 			}
@@ -1716,7 +1766,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 				// Share its pause across this account's files, return promptly
 				// to source selection, and preserve transient classification.
 				pauseErr := f.pauseMedia(payload.Provider, u, resp.StatusCode, ra)
-				if resp.StatusCode == http.StatusTooManyRequests && attempt == 0 && urgent && !payload.IsDirect() && f.e != nil && f.e.svc != nil && len(f.e.svc.active()) > 1 {
+				if resp.StatusCode == http.StatusTooManyRequests && attempt == 0 && urgent && !payload.IsDirect() && !f.replayOnly() && f.e != nil && f.e.svc != nil && len(f.e.svc.active()) > 1 {
 					if _, _, rerr := f.link(ctx, true, gen); rerr == nil {
 						if np, _ := f.payload(); np.Provider != "" && np.Provider != payload.Provider {
 							continue
@@ -1749,6 +1799,15 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			f.mu.Unlock()
 			if fails > maxLinkFailures {
 				return nil, tm, servedBy{}, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrArticleMissing)
+			}
+			if f.replayOnly() {
+				// playbackRelink=replay: at most one fresh link per
+				// relinkFloor. A refusal just after a renewal waits for the
+				// slot (bounded by ctx) instead of counting as one more
+				// dead link, then renews.
+				if err := sleep(ctx, f.relinkWait()); err != nil {
+					return nil, tm, servedBy{}, err
+				}
 			}
 			if _, _, err := f.link(ctx, true, gen); err != nil {
 				return nil, tm, servedBy{}, err

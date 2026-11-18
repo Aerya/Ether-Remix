@@ -314,6 +314,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			seenDebrid[p.ID] = true
 		}
 	}
+	v.oneOf("debrid.playbackRelink", strings.ToLower(strings.TrimSpace(cfg.Debrid.PlaybackRelink)), "", config.PlaybackRelinkRefresh, config.PlaybackRelinkReplay)
 	if cfg.Debrid.ChunkBytes != 0 && (cfg.Debrid.ChunkBytes < 256<<10 || cfg.Debrid.ChunkBytes > 64<<20) {
 		v.add("debrid.chunkBytes", "must be between 256 KiB and 64 MiB")
 	}

@@ -191,6 +191,7 @@ var mixedSections = map[string]map[string]Scope{
 		"providers":      Shared,
 		"cachedOnly":     Shared,
 		"removeUncached": Shared,
+		"playbackRelink": Shared,
 		// Range-request tuning follows this node's network.
 		"chunkBytes":      Local,
 		"readAheadChunks": Local,
