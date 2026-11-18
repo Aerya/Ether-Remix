@@ -41,6 +41,22 @@ export const REMIX_UPDATES = [
       ],
       ["Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.", "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents."],
       ["Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.", "Stored references still require playback checks; a hash alone does not replace a file link."],
+      [
+        "Quota journalier AllDebrid (ou équivalent) : le compte est mis en pause 1 heure, puis une seule requête de test (une par nœud en cluster) décide de la reprise. Pendant la pause, la source suivante est utilisée sans solliciter le compte, et le lecteur voit un message clair.",
+        "AllDebrid daily quota (or equivalent): the account is paused for 1 hour, then a single test request (one per node in a cluster) decides whether to resume. Meanwhile the next source is used without calling the account, and the player shows a clear message.",
+      ],
+      [
+        "Lecture : quand aucun compte debrid n’est utilisable (quota ou clé refusée sur tous les fournisseurs), les secours qui dépendent du debrid sont écartés au profit des autres sources ; les tentatives par lecture sont plafonnées (resolver.failoverAttempts, de 1 à 10, 4 par défaut) et les relances du client dans les 5 secondes réutilisent le dernier échec au lieu de relancer une résolution.",
+        "Playback: when no debrid account is usable (quota or rejected key on every provider), debrid-dependent fallbacks are dropped in favour of other sources; attempts per playback are capped (resolver.failoverAttempts, 1 to 10, default 4) and client retries within 5 seconds reuse the last failure instead of resolving again.",
+      ],
+      [
+        "Page Debrid : un compte en pause pour quota affiche « Quota atteint » avec l’heure du prochain essai, et la dernière erreur disparaît dès que le compte refonctionne.",
+        "Debrid page: an account paused for quota shows “Quota reached” with the time of the next try, and the last error goes away as soon as the account works again.",
+      ],
+      [
+        "Après « version choisie indisponible », un fichier vérifié passe de nouveau devant un flux d’add-on mémorisé, et dans l’ordre de secours.",
+        "After “picked version unavailable”, a verified file again goes ahead of a remembered add-on stream, and in the fallback order.",
+      ],
     ],
   },
   {
