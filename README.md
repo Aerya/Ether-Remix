@@ -136,6 +136,9 @@ La vue **Indexation → Releases**, visible lorsque la bêta est activée, perme
 <a id="alldebrid-sur-un-vps--mediaflow-et-gluetun"></a>
 <a id="nav-alldebrid-sur-un-vps-mediaflow-et-gluetun"></a>
 
+
+Les refus AllDebrid `MAGNET_TOO_MANY` suspendent uniquement les nouveaux ajouts après des refus répétés : les torrents déjà présents et les liens fichiers restent utilisables. La bibliothèque de releases ne transforme pas un hash inconnu en lien de fichier.
+
 ### ![](https://api.iconify.design/lucide/network.svg?color=%2314b8a6&width=24&height=24) AllDebrid sur un VPS : MediaFlow et Gluetun
 
 AllDebrid peut bloquer les IP de VPS/serveurs, de datacenters et certaines sorties VPN, notamment **Cloudflare WARP**. Des accès depuis plusieurs pays ou assimilés à du partage peuvent entraîner une suspension, voire un bannissement du compte.

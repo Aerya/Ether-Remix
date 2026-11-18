@@ -45,3 +45,10 @@ Les contenus déjà indexés sont ensuite repris progressivement pour récupére
 L’outil `go run ./cmd/ether-release-audit -db /chemin/copie.db -config /chemin/config-copie` fournit un audit en lecture seule. Utilisez une sauvegarde SQLite cohérente et une copie privée de `config.json` et `.credentials-key` (le chargement de configuration peut mettre à niveau cette copie). `-apply` met les entrées non confirmées en quarantaine : arrêter l’indexation/le serveur et conserver une sauvegarde préalable. Le rapport contient uniquement des compteurs par source et motif, jamais les URL de lecture ni les secrets.
 
 La recherche globale de releases parcourt les noms sans imposer le tri chronologique à chaque lecture ; le parcours par catégorie utilise l’ordre des dates pour limiter les lignes lues.
+
+
+## AllDebrid : références et quota d’ajout
+
+Les liens fichiers AllDebrid identifiés sont débridés sans ajout de magnet. Les torrents déjà présents dans le compte sont retrouvés par leur hash puis réutilisés. Une référence torrent absente du compte nécessite encore un ajout : conserver son hash dans la bibliothèque ne suffit pas à produire un lien fichier. Le refus `MAGNET_TOO_MANY` ne suspend que les ajouts répétés, pas la lecture des fichiers déjà accessibles.
+
+L’indexeur Remix conserve des références sans lancer lui-même de téléchargement ni débrider les fichiers. Une recherche auprès d’un addon distant reste toutefois exécutée par cet addon : celui-ci peut appeler AllDebrid pour vérifier son propre cache. Les budgets Remix ne contrôlent pas ces appels internes. L’import direct de la base StreamFusion et de ses liens Alkolites évite cette recherche distante.
