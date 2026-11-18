@@ -796,6 +796,18 @@ export const DEBRID: FieldGroup[] = localized(() => [
           "Remove torrents Ether added that turned out not to be cached. Cached torrents stay on your account so the next play starts instantly and they are reused instead of re-added.",
         ),
       },
+      {
+        key: "playbackRelink",
+        label: t("Link renewal during playback"),
+        kind: "select",
+        help: t(
+          "What a media server failure during playback triggers. Renew asks your debrid service for a new link, or another service, which uses its link quota. Keep the link only retries the same link; a link that is really dead (expired or refused) is still renewed, at most every 30 seconds.",
+        ),
+        options: [
+          { value: "", label: t("Renew the link") },
+          { value: "replay", label: t("Keep the link and retry") },
+        ],
+      },
     ],
   },
   {

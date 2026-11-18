@@ -177,6 +177,8 @@ export interface DebridConfig {
   providers: DebridProvider[] | null;
   cachedOnly: boolean;
   removeUncached: boolean;
+  /** Media server failure during playback: "" or "refresh" renews the link, "replay" only retries the same link. */
+  playbackRelink?: "" | "refresh" | "replay";
   /** Largest HTTP range request; requests start at 512 KiB and grow. 0 = 8 MiB; max 64 MiB. */
   chunkBytes?: number;
   /** Fixed read-ahead window in chunks; 0 = adaptive to throughput, negative disables; max 32. */

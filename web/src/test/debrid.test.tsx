@@ -229,4 +229,29 @@ describe("debrid status summaries", () => {
       "0 open files · 0 cache hits (0 memory, 0 disk) vs 0 fetched · 2 errors",
     );
   });
+
+  it("chooses to keep the link on a media server failure", async () => {
+    const { fake } = renderApp("/sources/debrid");
+    await screen.findByRole("switch", { name: "Cached torrents only" }, WAIT);
+    await choose("Link renewal during playback", "Keep the link and retry");
+    fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/debrid")).toHaveLength(1));
+    const body = calls(fake, "PUT", "/config/debrid")[0]!.body as DebridConfig;
+    expect(body.playbackRelink).toBe("replay");
+    expect(body.providers?.map((p) => p.id)).toEqual(["rd-1", "tb-1"]);
+  });
+
+  it("shows a configuration written as refresh as the default choice", async () => {
+    renderApp("/sources/debrid", {}, (fake) => {
+      fake.state.config.debrid = {
+        providers: [],
+        cachedOnly: true,
+        removeUncached: true,
+        playbackRelink: "refresh",
+      };
+    });
+    expect(
+      await screen.findByRole("button", { name: "Link renewal during playback" }, WAIT),
+    ).toHaveTextContent("Renew the link");
+  });
 });
