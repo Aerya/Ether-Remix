@@ -57,6 +57,7 @@ export const REMIX_UPDATES = [
         "Après « version choisie indisponible », un fichier vérifié passe de nouveau devant un flux d’add-on mémorisé, et dans l’ordre de secours.",
         "After “picked version unavailable”, a verified file again goes ahead of a remembered add-on stream, and in the fallback order.",
       ],
+      ["Sources → Debrid : « Garder le lien et réessayer » évite de redemander un lien ou un autre fournisseur quand le serveur média tombe en panne pendant une lecture, et épargne le quota de liens d’un compte partagé. Le comportement actuel reste le choix par défaut. Dans ce mode, un lien réellement mort est renouvelé au plus toutes les 30 secondes par fichier.", "Sources → Debrid: “Keep the link and retry” avoids asking for a new link or another provider when the media server fails during playback, sparing a shared account's link quota. The current behaviour stays the default. In that mode, a really dead link is renewed at most every 30 seconds per file."],
     ],
   },
   {

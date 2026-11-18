@@ -139,6 +139,8 @@ La vue **Indexation → Releases**, visible lorsque la bêta est activée, perme
 
 Les refus AllDebrid `MAGNET_TOO_MANY` suspendent uniquement les nouveaux ajouts après des refus répétés : les torrents déjà présents et les liens fichiers restent utilisables. La bibliothèque de releases ne transforme pas un hash inconnu en lien de fichier.
 
+**Renouvellement du lien pendant la lecture** : par défaut, quand le serveur média d’un debrid tombe en panne pendant une lecture (5xx, coupure, 429), Remix demande un nouveau lien, voire un autre fournisseur. Sur un compte partagé, ces demandes entament le quota de liens et peuvent bloquer les autres utilisateurs. Dans **Sources → Debrid**, choisissez **Garder le lien et réessayer** (`debrid.playbackRelink` = `"replay"`) : un fichier lancé se lit jusqu’au bout sur son lien, sans aucun appel à l’API du fournisseur. Un lien réellement mort (401, 403, 404, 410, redirection) reste renouvelé ; dans ce mode, au plus une fois toutes les 30 secondes par fichier. Le changement s’applique sans redémarrage.
+
 ### ![](https://api.iconify.design/lucide/network.svg?color=%2314b8a6&width=24&height=24) AllDebrid sur un VPS : MediaFlow et Gluetun
 
 AllDebrid peut bloquer les IP de VPS/serveurs, de datacenters et certaines sorties VPN, notamment **Cloudflare WARP**. Des accès depuis plusieurs pays ou assimilés à du partage peuvent entraîner une suspension, voire un bannissement du compte.
