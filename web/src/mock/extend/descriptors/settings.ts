@@ -1483,6 +1483,21 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 kind: "bool",
               },
+              {
+                key: "playbackRelink",
+                label: {
+                  source: "Link renewal during playback",
+                },
+                help: {
+                  source:
+                    "What a media server failure during playback triggers. Renew asks your debrid service for a new link, or another service, which uses its link quota. Keep the link only retries the same link; a link that is really dead (expired or refused) is still renewed, at most every 30 seconds.",
+                },
+                kind: "select",
+                options: [
+                  { value: "", label: { source: "Renew the link" } },
+                  { value: "replay", label: { source: "Keep the link and retry" } },
+                ],
+              },
             ],
           },
           {

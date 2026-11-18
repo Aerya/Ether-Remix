@@ -629,6 +629,8 @@ function DebridSettings({
       readAheadChunks: 0,
       maxConnections: 0,
       ...rest,
+      // "refresh" is the default, spelled out: show it as the empty choice.
+      playbackRelink: rest.playbackRelink?.trim().toLowerCase() === "replay" ? "replay" : "",
     };
   }, [debrid]);
   const { draft, setDraft, dirty, reset } = useDraft<Obj>(saved);
