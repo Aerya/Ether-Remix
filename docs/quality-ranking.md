@@ -28,6 +28,7 @@ Releases that pass every filter are sorted by the first key that differs:
 | --- | --- | --- | --- |
 | G1 | Only-play fallback tier | Ether rule | An "Only play … otherwise" rule's fallback releases come after its primary ones. |
 | G2 | Audio language is acceptable | Ether, viewer | A release that declares only languages nobody asked for comes last. |
+| G2b | Verified AllDebrid file (`resolver.verifiedFiles`) | Remix | With `first` (default), a verified file (Alkodiques) that passed every hard gate comes before every other source; `tie` places it first only among releases at the same quality position (S1); `off` disables it. |
 | G3 | Fits the viewer's connection | Ether, session | A release the connection can't carry comes after one it can. |
 | S1 | Quality: position in the profile's quality order | Radarr/Sonarr `CompareQuality` | Qualities in one group tie. Ether grades the quality first (below). |
 | S2 | Revision (Repack/Proper) | `CompareQuality` | Only when the profile scores no Repack/Proper format: Radarr's "Prefer and upgrade". A profile that scores one (TRaSH, and Ether's defaults) gets "Do not prefer", as TRaSH instructs. |

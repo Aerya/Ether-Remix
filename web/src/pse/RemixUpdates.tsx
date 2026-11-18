@@ -31,6 +31,14 @@ export const REMIX_UPDATES = [
     date: "2026-11-17",
     title: ["AllDebrid : préserver la lecture quand les ajouts sont refusés", "AllDebrid: keep playback available when additions are refused"],
     items: [
+      [
+        "Un fichier AllDebrid vérifié (un seul appel, sans magnet) passe devant les autres sources dès qu’il respecte la langue, la résolution du profil, les règles et la santé connue, même si un torrent est de meilleure résolution. En cas d’échec, la source suivante est essayée. Réglage resolver.verifiedFiles : off, tie (à qualité égale) ou first (défaut).",
+        "A verified AllDebrid file (a single call, no magnet) goes ahead of other sources whenever it fits the language, profile resolution, rules and known health, even when a torrent has a higher resolution. If it fails, the next source is tried. Setting resolver.verifiedFiles: off, tie (equal quality) or first (default).",
+      ],
+      [
+        "Les fichiers « Alkolites » s’appellent désormais « Alkodiques » et gardent leur étiquette dans les traces.",
+        "The “Alkolites” files are now called “Alkodiques” and keep their label in traces.",
+      ],
       ["Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.", "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents."],
       ["Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.", "Stored references still require playback checks; a hash alone does not replace a file link."],
     ],
