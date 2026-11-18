@@ -279,8 +279,9 @@ type Manager struct {
 	// by warm-ups (onDemandWarmAdmit); lazily created under mu.
 	onDemandWarmAt      map[int64]time.Time
 	onDemandWarmByAddon map[string][]time.Time
-	stalePrefers        map[stalePreferKey]time.Time // picked releases that fell back (stalePreferTTL)
-	namesake            map[core.RatingKey]bool      // cached namesake lookups (namesake.go)
+	stalePrefers        map[stalePreferKey]time.Time     // picked releases that fell back (stalePreferTTL)
+	prepareFailures     map[prepareFailKey]recentFailure // failed preparations, answered for retryFailureWindow
+	namesake            map[core.RatingKey]bool          // cached namesake lookups (namesake.go)
 
 	pinMu        sync.Mutex
 	livePins     map[string]int
@@ -682,6 +683,9 @@ func (m *Manager) SetConfig(cfg config.Config) {
 	m.reserveConfigVersion.Add(1)
 	m.cfgMu.Unlock()
 	m.mu.Lock()
+	m.forgetPrepareFailuresLocked(0, true) // new settings may make a title playable
+	m.mu.Unlock()
+	m.mu.Lock()
 	m.warm = map[identity]*warmEntry{}
 	var sessions []*session
 	if cfg.Cache.Mode == "off" || cfg.Cache.PlaybackReadAhead() < previousReadAhead || cfg.Debrid.ReadAheadChunks != previousDebridReadAhead || cfg.Debrid.ChunkBytes != previousDebridChunk {
@@ -966,6 +970,13 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 		}
 	}
 	if f == nil {
+		if err := m.recentPrepareFailureLocked(fk); err != nil {
+			// The same request just failed: answer it again rather than
+			// repeating a whole resolution (retry_window.go).
+			m.mu.Unlock()
+			m.log.Debug("repeated play request answered from the recent failure", "key", key, "err", err)
+			return nil, nil, err
+		}
 		parent := context.WithoutCancel(ctx)
 		if core.IsBackgroundAnalysis(ctx) || caps.BroadcastBitrateKbps > 0 {
 			parent = ctx
@@ -1077,6 +1088,9 @@ func (m *Manager) runFlight(ctx context.Context, f *flight, fk flightKey, user *
 	}
 	if err != nil && m.byIdent[fk.id] == nil {
 		delete(m.channelGroups, fk.id)
+	}
+	if err != nil {
+		m.notePrepareFailureLocked(fk, err)
 	}
 	playAt := f.playAt
 	m.mu.Unlock()

@@ -1002,6 +1002,16 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	if failovers >= m.opts.MaxFailovers {
 		return nil, fmt.Errorf("%w: session %s gave up after %d failovers", core.ErrNotAvailable, s.id, failovers)
 	}
+	if err := s.recentFailoverFailure(observed, m.now()); err != nil {
+		// The same source failed again moments after a failover found
+		// nothing: repeat the answer, not the search (retry_window.go).
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil && ctx.Err() == nil {
+			s.noteFailoverFailure(observed, retErr, m.now())
+		}
+	}()
 	log := m.log.With("session", s.id, "key", s.ident.key, "at", at)
 	log.Warn("failing over", "release", cur.res.Release.Name, "reason", fo.reason, "down", fo.down)
 	// A provider outage is not evidence that the release itself is invalid.
