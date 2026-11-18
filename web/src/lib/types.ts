@@ -384,6 +384,7 @@ export interface EtherConfig {
     optimisticStart?: boolean;
     healthRace?: number;
     sourcePreference?: string;
+    verifiedFiles?: string;
     sourceOrder?: { families?: string[]; content?: Record<string, string[]> };
     sourceAlwaysFirst?: boolean;
     customFormats?: CustomFormatDefinition[] | null;
