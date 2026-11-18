@@ -281,3 +281,5 @@ Inspirations: [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclip
 
 
 AllDebrid `MAGNET_TOO_MANY` refusals pause only new additions after repeated refusals; existing torrents and file links remain usable. The release library cannot turn an unknown hash into a file link.
+
+Accounts of the same debrid service share one cache: once an account answers “not cached” for a release, the service’s other accounts are not asked about it. Account errors (quota, key, refusal, limit) still move on to the next account.

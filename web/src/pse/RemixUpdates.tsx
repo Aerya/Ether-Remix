@@ -33,6 +33,7 @@ export const REMIX_UPDATES = [
     items: [
       ["Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.", "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents."],
       ["Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.", "Stored references still require playback checks; a hash alone does not replace a file link."],
+      ["Plusieurs comptes d’un même service partagent le même cache : après un « pas en cache », les autres comptes ne sont plus interrogés pour cette release. Quota, clé, refus et limite passent toujours au compte suivant.", "Accounts of the same service share one cache: after a “not cached” answer, the other accounts are not asked about that release. Quota, key, refusal and limit still move on to the next account."],
     ],
   },
   {

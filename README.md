@@ -139,6 +139,8 @@ La vue **Indexation → Releases**, visible lorsque la bêta est activée, perme
 
 Les refus AllDebrid `MAGNET_TOO_MANY` suspendent uniquement les nouveaux ajouts après des refus répétés : les torrents déjà présents et les liens fichiers restent utilisables. La bibliothèque de releases ne transforme pas un hash inconnu en lien de fichier.
 
+Plusieurs comptes d’un même service debrid partagent le même cache : une fois qu’un compte a répondu « pas en cache » pour une release, les autres comptes de ce service ne sont plus interrogés pour elle. Les erreurs propres au compte (quota, clé, refus, limite) passent toujours au compte suivant.
+
 ### ![](https://api.iconify.design/lucide/network.svg?color=%2314b8a6&width=24&height=24) AllDebrid sur un VPS : MediaFlow et Gluetun
 
 AllDebrid peut bloquer les IP de VPS/serveurs, de datacenters et certaines sorties VPN, notamment **Cloudflare WARP**. Des accès depuis plusieurs pays ou assimilés à du partage peuvent entraîner une suspension, voire un bannissement du compte.
