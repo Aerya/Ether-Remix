@@ -84,6 +84,12 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		original = s.title.Language
 	}
 	res, cached, fromResume := m.preparedResolution(ctx, s, profile, original, s.prefer)
+	if res != nil && s.prefer == "" && m.verifiedFilesFirst() && isAddonStream(res.Release) {
+		// A warm-up or resume on an add-on stream was made without the
+		// verified file that may lead now: rank afresh (verified_first.go).
+		m.log.Info("remembered choice is an add-on stream; ranking afresh for a verified file", "key", s.ident.key, "release", res.Release.ID)
+		res, cached, fromResume = nil, nil, false
+	}
 	if res == nil && s.prefer != "" && !s.exact {
 		if auto, facts, remembered := m.preparedResolution(ctx, s, profile, original, ""); auto != nil {
 			// Resolve only the explicit pick. Resolving a fresh automatic
@@ -96,8 +102,15 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			if err == nil && pick != nil && pick.MatchesVersion(s.prefer) {
 				res = pick
 			} else if err == nil || errors.Is(err, core.ErrNotAvailable) {
-				res, cached, fromResume = auto, facts, remembered
-				m.notePreferenceStale(s.ident.key, s.prefer, auto.Release.ID)
+				if m.verifiedFilesFirst() && isAddonStream(auto.Release) {
+					// The remembered choice (warm-up or resume) is an add-on
+					// stream, made before a verified file could lead: rank
+					// afresh below instead of replaying it (verified_first.go).
+					m.log.Info("remembered choice is an add-on stream; ranking afresh for a verified file", "key", s.ident.key, "release", auto.Release.ID)
+				} else {
+					res, cached, fromResume = auto, facts, remembered
+					m.notePreferenceStale(s.ident.key, s.prefer, auto.Release.ID)
+				}
 			} else {
 				return nil, err
 			}
@@ -139,7 +152,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				// the opening prefetch is not wasted on another release, and
 				// stop asking for the pick on every open.
 				m.notePreferenceStale(s.ident.key, s.prefer, res.Release.ID)
-				if auto, autoCached, autoResume := m.preparedResolution(ctx, s, profile, original, ""); auto != nil {
+				if auto, autoCached, autoResume := m.preparedResolution(ctx, s, profile, original, ""); auto != nil && !m.verifiedFileOutranks(res.Release, auto.Release) {
 					res, cached, fromResume = auto, autoCached, autoResume
 				}
 			}

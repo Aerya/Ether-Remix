@@ -114,10 +114,21 @@ func (s *Service) resolutionSkipping(key core.RatingKey, cands []candidate, winn
 	for _, same := range []bool{true, false} {
 		// Keep a cached equivalent inside the bounded alternate list even
 		// when source preference put many Usenet releases ahead of it.
-		for _, ready := range []bool{true, false} {
+		// Tiers: verified files (resolver.verifiedFiles "first") lead the
+		// failover order as they lead the ranking, then cached equivalents,
+		// then the rest. A cached torrent or an add-on stream never goes
+		// ahead of a verified file that is still untried.
+		for tier := 0; tier < 3; tier++ {
 			for i, c := range cands {
 				cachedPeer := s.readyPeer([]candidate{cands[winner], c}) == 1
-				if i == winner || skip(c) || cachedPeer != ready || len(res.Alternates) >= s.maxCandidates() {
+				t := 2
+				switch {
+				case c.vfFirst:
+					t = 0
+				case cachedPeer:
+					t = 1
+				}
+				if i == winner || skip(c) || t != tier || len(res.Alternates) >= s.maxCandidates() {
 					continue
 				}
 				if (c.rel.Info.Edition == edition) == same {
