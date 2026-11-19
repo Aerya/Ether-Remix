@@ -16,6 +16,12 @@ import (
 )
 
 // connectProxy is a minimal HTTP CONNECT proxy.
+func (c *connCap) openCount(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.open[key]
+}
+
 func connectProxy(t *testing.T) *httptest.Server {
 	t.Helper()
 	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +76,7 @@ func newProxyRig(t *testing.T) *proxyRig {
 	tr.Proxy = http.ProxyURL(pu)
 	tr.ForceAttemptHTTP2 = false
 	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	r.client = &http.Client{Transport: tr}
+	r.client = &http.Client{Transport: capKeyTransport{tr}}
 	t.Cleanup(tr.CloseIdleConnections)
 	// Handlers must be released before the servers close.
 	t.Cleanup(func() {
@@ -83,9 +89,9 @@ func newProxyRig(t *testing.T) *proxyRig {
 	return r
 }
 
-// get issues a request capped by the real host, as Engine.send does.
+// get issues a request; capKeyTransport keys the cap on the real host.
 func (r *proxyRig) get(ctx context.Context, u string) error {
-	req, err := http.NewRequestWithContext(withCapKey(ctx, dialAddr(u)), http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
@@ -199,20 +205,65 @@ func TestConnCapKeyReachesDialContext(t *testing.T) {
 	if gotAddr != "proxy.example:3128" {
 		t.Fatalf("dialed %q, want the proxy", gotAddr)
 	}
-	if limit.open["media.example:443"] != 1 || limit.open["proxy.example:3128"] != 0 {
-		t.Fatalf("open = %v", limit.open)
+	if n := limit.openCount("media.example:443"); n != 1 {
+		t.Fatalf("media host open = %d", n)
+	}
+	if n := limit.openCount("proxy.example:3128"); n != 0 {
+		t.Fatalf("proxy open = %d", n)
 	}
 	conn.Close()
-	if len(limit.open) != 0 {
-		t.Fatalf("open after close = %v", limit.open)
+	if n := limit.openCount("media.example:443"); n != 0 {
+		t.Fatalf("open after close = %d", n)
 	}
 	// Without a key the dial address is the key.
 	conn, err = limit.wrap(next)(context.Background(), "tcp", "direct.example:443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if limit.open["direct.example:443"] != 1 {
-		t.Fatalf("open = %v", limit.open)
+	if n := limit.openCount("direct.example:443"); n != 1 {
+		t.Fatalf("direct open = %d", n)
 	}
 	conn.Close()
+}
+
+func TestConnCapFollowsRedirectToOtherHost(t *testing.T) {
+	r := newProxyRig(t)
+	// urls[0] redirects to urls[1]; urls[1] holds the connection.
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, r.urls[1], http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+	errs := make(chan error, 1)
+	go func() { errs <- r.get(context.Background(), redirector.URL) }()
+	r.waitStarted(t, 1)
+	if n := r.limit.openCount(dialAddr(r.urls[1])); n != 1 {
+		t.Fatalf("target host open = %d, want 1", n)
+	}
+	// The redirector's tunnel stays idle in the pool; only the target is
+	// counted for the held request.
+	if n := r.limit.openCount(r.proxy); n != 0 {
+		t.Fatalf("proxy open = %d, want 0", n)
+	}
+	r.finish(t, errs)
+}
+
+func TestCapKeyTransportOnlyKeysHTTPS(t *testing.T) {
+	var keyed bool
+	rt := capKeyTransport{t: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		_, keyed = capKey(ctx)
+		return nil, errors.New("stop")
+	}}}
+	for _, c := range []struct {
+		url  string
+		want bool
+	}{{"http://media.example/x", false}, {"https://media.example/x", true}} {
+		keyed = false
+		req, _ := http.NewRequest(http.MethodGet, c.url, nil)
+		if _, err := rt.RoundTrip(req); err == nil {
+			t.Fatal("expected the stub dial error")
+		}
+		if keyed != c.want {
+			t.Fatalf("%s: keyed = %v, want %v", c.url, keyed, c.want)
+		}
+	}
 }
