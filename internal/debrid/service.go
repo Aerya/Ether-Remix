@@ -876,10 +876,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	var errs []error
 	notCached := 0
 	var downloading error // a local BitTorrent client is downloading it
-	// A debrid service's cache is shared by all its accounts: once one
-	// account answered "not cached" for this release, another account of the
-	// same service would answer the same. Account errors (quota, sign-in,
-	// refusal, download limit, outage) still move on to the next account.
+	// Only an explicit service-wide cache miss skips sibling accounts.
+	// ErrNotCached alone can describe an incomplete account-local torrent.
+	// Account errors and refusals always move on to the next account.
 	uncached := map[string]bool{} // service kind → answered "not cached"
 	for _, e := range entries {
 		if uncached[e.cfg.Kind] {
@@ -918,7 +917,7 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			}
 		case errors.Is(err, core.ErrNotCached):
 			notCached++
-			if sharedCache(e) && !refusal(err) {
+			if sharedCache(e) && errors.Is(err, errSharedCacheMiss) && !refusal(err) {
 				uncached[e.cfg.Kind] = true
 			}
 		case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
@@ -1207,7 +1206,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 			torrentID = id
 		} else if !errors.Is(err, ErrUnsupported) {
 			observe(err)
-			if errors.Is(err, ErrAuth) {
+			if accountError(err) {
 				return Payload{}, err
 			}
 		}
@@ -1230,7 +1229,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 				return Payload{}, errBackgroundUndecided
 			}
 			observe(err)
-			if errors.Is(err, ErrAuth) {
+			if accountError(err) {
 				return Payload{}, err
 			}
 			return Payload{}, errBackgroundUndecided // availability stays unknown
@@ -1295,7 +1294,11 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		// Skipped without a provider call: says nothing about the torrent.
 		return Payload{}, err
 	}
-	observe(err)
+	// A successful acquisition is not yet a successful quota probe: the
+	// account can still refuse the subsequent link unlock.
+	if err != nil {
+		observe(err)
+	}
 	if errors.Is(err, ErrAddRefused) {
 		// Not evidence about the torrent (it may be the account's add
 		// throttle): skip it briefly, in memory only, and do not queue it

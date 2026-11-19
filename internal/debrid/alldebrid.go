@@ -273,7 +273,11 @@ func (p *allDebrid) Acquire(ctx context.Context, req AcquireRequest) (*Acquired,
 		}
 	}
 	if !ready {
-		err := fmt.Errorf("alldebrid: magnet is not ready: %w", core.ErrNotCached)
+		cause := core.ErrNotCached
+		if added {
+			cause = errSharedCacheMiss
+		}
+		err := fmt.Errorf("alldebrid: magnet is not ready: %w", cause)
 		if req.CachedOnly && cleanup() {
 			return nil, err
 		}

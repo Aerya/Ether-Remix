@@ -196,23 +196,6 @@ func TestReplayModeRelinkFloorWaitsThenRenews(t *testing.T) {
 	}
 }
 
-// relinkWait books slots relinkFloor apart.
-func TestRelinkWaitSpacesSlots(t *testing.T) {
-	now := time.Date(2026, 11, 18, 20, 0, 0, 0, time.UTC)
-	f := &remoteFile{e: &Engine{now: func() time.Time { return now }}}
-	if w := f.relinkWait(); w != 0 {
-		t.Fatalf("first wait %v, want 0", w)
-	}
-	now = now.Add(10 * time.Second)
-	if w := f.relinkWait(); w != relinkFloor-10*time.Second {
-		t.Fatalf("second wait %v", w)
-	}
-	now = now.Add(relinkFloor * 2)
-	if w := f.relinkWait(); w != 0 {
-		t.Fatalf("wait after the floor %v, want 0", w)
-	}
-}
-
 // debrid.playbackRelink ignores case and spaces.
 func TestReplayModeValueIsNormalised(t *testing.T) {
 	for v, want := range map[string]bool{"replay": true, "Replay": true, " REPLAY ": true, "": false, "refresh": false, "bogus": false} {

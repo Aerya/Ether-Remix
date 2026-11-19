@@ -26,38 +26,53 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-alldebrid-add-quota",
+    id: "2026-11-19-debrid-playback-controls",
     version: "current",
-    date: "2026-11-17",
-    title: ["AllDebrid : préserver la lecture quand les ajouts sont refusés", "AllDebrid: keep playback available when additions are refused"],
+    date: "2026-11-19",
+    title: [
+      "Debrid : priorité, quotas et reprises de lecture",
+      "Debrid: priority, quotas and playback recovery",
+    ],
     items: [
       [
-        "Un fichier AllDebrid vérifié (un seul appel, sans magnet) passe devant les autres sources dès qu’il respecte la langue, la résolution du profil, les règles et la santé connue, même si un torrent est de meilleure résolution. En cas d’échec, la source suivante est essayée. Réglage resolver.verifiedFiles : off, tie (à qualité égale) ou first (défaut).",
-        "A verified AllDebrid file (a single call, no magnet) goes ahead of other sources whenever it fits the language, profile resolution, rules and known health, even when a torrent has a higher resolution. If it fails, the next source is tried. Setting resolver.verifiedFiles: off, tie (equal quality) or first (default).",
+        "Les fichiers Alkodiques vérifiés sont prioritaires lorsqu’ils respectent le profil. resolver.verifiedFiles permet de choisir first, tie ou off.",
+        "Verified Alkodiques files take priority when they meet the profile. resolver.verifiedFiles accepts first, tie or off.",
       ],
       [
-        "Les fichiers « Alkolites » s’appellent désormais « Alkodiques » et gardent leur étiquette dans les traces.",
-        "The “Alkolites” files are now called “Alkodiques” and keep their label in traces.",
-      ],
-      ["Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.", "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents."],
-      ["Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.", "Stored references still require playback checks; a hash alone does not replace a file link."],
-      [
-        "Quota journalier AllDebrid (ou équivalent) : le compte est mis en pause 1 heure, puis une seule requête de test (une par nœud en cluster) décide de la reprise. Pendant la pause, la source suivante est utilisée sans solliciter le compte, et le lecteur voit un message clair.",
-        "AllDebrid daily quota (or equivalent): the account is paused for 1 hour, then a single test request (one per node in a cluster) decides whether to resume. Meanwhile the next source is used without calling the account, and the player shows a clear message.",
+        "Un quota journalier suspend le compte pendant une heure. Le test de reprise reste exclusif jusqu’au débridage du lien ; les comptes de secours restent utilisables.",
+        "A daily quota pauses the account for one hour. The recovery probe stays exclusive until link unlocking finishes; backup accounts remain available.",
       ],
       [
-        "Lecture : quand aucun compte debrid n’est utilisable (quota ou clé refusée sur tous les fournisseurs), les secours qui dépendent du debrid sont écartés au profit des autres sources ; les tentatives par lecture sont plafonnées (resolver.failoverAttempts, de 1 à 10, 4 par défaut) et les relances du client dans les 5 secondes réutilisent le dernier échec au lieu de relancer une résolution.",
-        "Playback: when no debrid account is usable (quota or rejected key on every provider), debrid-dependent fallbacks are dropped in favour of other sources; attempts per playback are capped (resolver.failoverAttempts, 1 to 10, default 4) and client retries within 5 seconds reuse the last failure instead of resolving again.",
+        "Une absence de cache explicitement constatée sur un nouvel ajout AllDebrid évite les demandes identiques aux autres comptes. Un ancien torrent incomplet ou une erreur propre au compte ne les écarte pas.",
+        "An explicit cache miss on a new AllDebrid addition avoids duplicate requests to other accounts. An incomplete existing torrent or an account-specific error does not exclude them.",
       ],
       [
-        "Page Debrid : un compte en pause pour quota affiche « Quota atteint » avec l’heure du prochain essai, et la dernière erreur disparaît dès que le compte refonctionne.",
-        "Debrid page: an account paused for quota shows “Quota reached” with the time of the next try, and the last error goes away as soon as the account works again.",
+        "Sources → Debrid : le mode Garder le lien et réessayer évite les renouvellements sur panne du serveur média. Les liens morts sont renouvelés au plus toutes les 30 secondes, sans repousser ce délai quand une lecture est annulée.",
+        "Sources → Debrid: Keep the link and retry avoids renewals on media-server failures. Dead links are renewed at most every 30 seconds, without postponing the cooldown when a read is cancelled.",
       ],
       [
-        "Après « version choisie indisponible », un fichier vérifié passe de nouveau devant un flux d’add-on mémorisé, et dans l’ordre de secours.",
-        "After “picked version unavailable”, a verified file again goes ahead of a remembered add-on stream, and in the fallback order.",
+        "resolver.failoverAttempts plafonne les essais de lecture de 1 à 10 (4 par défaut). Les relances identiques dans les 5 secondes réutilisent le dernier échec.",
+        "resolver.failoverAttempts caps playback attempts from 1 to 10 (default 4). Identical retries within 5 seconds reuse the last failure.",
       ],
-      ["Sources → Debrid : « Garder le lien et réessayer » évite de redemander un lien ou un autre fournisseur quand le serveur média tombe en panne pendant une lecture, et épargne le quota de liens d’un compte partagé. Le comportement actuel reste le choix par défaut. Dans ce mode, un lien réellement mort est renouvelé au plus toutes les 30 secondes par fichier.", "Sources → Debrid: “Keep the link and retry” avoids asking for a new link or another provider when the media server fails during playback, sparing a shared account's link quota. The current behaviour stays the default. In that mode, a really dead link is renewed at most every 30 seconds per file."],
+    ],
+  },
+  {
+    id: "2026-11-17-alldebrid-add-quota",
+    version: "0.2.37-remix.110.1",
+    date: "2026-11-17",
+    title: [
+      "AllDebrid : préserver la lecture quand les ajouts sont refusés",
+      "AllDebrid: keep playback available when additions are refused",
+    ],
+    items: [
+      [
+        "Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.",
+        "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents.",
+      ],
+      [
+        "Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.",
+        "Stored references still require playback checks; a hash alone does not replace a file link.",
+      ],
     ],
   },
   {

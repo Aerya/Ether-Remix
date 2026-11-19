@@ -29,6 +29,9 @@ import (
 
 // Provider errors. Callers classify with errors.Is.
 var (
+	// Only an explicit fresh cache miss may be shared across accounts.
+	// ErrNotCached alone can describe a broken or incomplete account item.
+	errSharedCacheMiss  = fmt.Errorf("shared service cache miss: %w", core.ErrNotCached)
 	errDuplicateTorrent = errors.New("debrid: torrent already exists")
 	// ErrAuth is a rejected API key or an account that cannot use the API
 	// (expired premium). A configuration problem: never a release failure.

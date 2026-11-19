@@ -112,3 +112,30 @@ func TestSkippedDebridReleasesDoNotSpendAttempts(t *testing.T) {
 
 // With verifiedFiles "first", a warm-up or resume on an add-on stream gives
 // way to a fresh ranking even without a picked version.
+
+func TestRaceSkippedDebridDoesNotSpendAttempts(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	cfg := h.cfg
+	cfg.Resolver.FailoverAttempts = 2
+	h.m.SetConfig(cfg)
+	s := &session{title: h.catalog.titles[movieKey], caps: defaultCaps("race-cap")}
+	var fetched []string
+	h.m.deps.FetchNZB = func(_ context.Context, r core.Release) ([]byte, error) {
+		fetched = append(fetched, r.ID)
+		if r.Protocol == core.ProtocolTorrent {
+			return nil, core.ErrDebridQuota
+		}
+		return nil, core.ErrSourceUnavailable
+	}
+	alts := []core.Release{
+		{ID: "t1", Protocol: core.ProtocolTorrent},
+		{ID: "t2", Protocol: core.ProtocolTorrent},
+		{ID: "t3", Protocol: core.ProtocolTorrent},
+		{ID: "u1", Protocol: core.ProtocolUsenet},
+		{ID: "u2", Protocol: core.ProtocolUsenet},
+	}
+	_, _, _ = h.m.raceAlternates(t.Context(), s, nil, alts, nil, 1, nil, nil)
+	if len(fetched) != 2 || fetched[0] != "t1" || fetched[1] != "u1" {
+		t.Fatalf("expected t1 then u1 within two actual attempts, got %v", fetched)
+	}
+}

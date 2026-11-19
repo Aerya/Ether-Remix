@@ -40,11 +40,12 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 	}
 	rctx, cancel := context.WithCancel(ctx)
 	results := make(chan raceResult, len(cands))
-	next, running := 0, 0
+	next, running, launched := 0, 0, 0
 	launch := func() {
 		alt := cands[next]
 		next++
 		running++
+		launched++
 		go func() {
 			nzb, err := m.deps.FetchNZB(rctx, alt)
 			if err != nil {
@@ -80,7 +81,7 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 	}
 	canLaunch := func() bool {
 		skipDown()
-		return next < len(cands) && next < attempts && ctx.Err() == nil
+		return next < len(cands) && launched < attempts && ctx.Err() == nil
 	}
 	// A cancelled caller (a stopped session) starts no provider requests.
 	for running < width && canLaunch() {

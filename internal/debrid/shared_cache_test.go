@@ -72,7 +72,7 @@ func sharedCacheService(t *testing.T, kinds ...string) (*Service, map[string]*fa
 // first AllDebrid account is not asked again of the second.
 func TestNotCachedNotAskedAgainOfSameService(t *testing.T) {
 	s, provs := sharedCacheService(t, "alldebrid", "alldebrid")
-	delete(provs["alldebrid-0"].cached, testHash)
+	provs["alldebrid-0"].err = errSharedCacheMiss
 	_, err := s.Acquire(context.Background(), torrentRelease("a"))
 	if !errors.Is(err, core.ErrNotCached) {
 		t.Fatalf("want ErrNotCached, got %v", err)
@@ -106,7 +106,7 @@ func TestAccountErrorStillTriesSameServiceAccount(t *testing.T) {
 // Another service has its own cache: it is still asked.
 func TestNotCachedStillAsksOtherService(t *testing.T) {
 	s, provs := sharedCacheService(t, "alldebrid", "torbox")
-	delete(provs["alldebrid-0"].cached, testHash)
+	provs["alldebrid-0"].err = errSharedCacheMiss
 	if _, err := s.Acquire(context.Background(), torrentRelease("a")); err != nil {
 		t.Fatalf("other service not used: %v", err)
 	}
@@ -151,5 +151,21 @@ func TestNotCachedStillAsksDuplicatePluginAndLocal(t *testing.T) {
 		if n := provs[id1].callCount("acquire"); n != 1 {
 			t.Fatalf("%s: second account asked %d times, want 1", kind, n)
 		}
+	}
+}
+
+// An account-local error is not evidence that every account lacks the file.
+func TestAccountNotCachedStillTriesSameService(t *testing.T) {
+	for _, kind := range []string{"alldebrid", "realdebrid", "torbox"} {
+		t.Run(kind, func(t *testing.T) {
+			s, provs := sharedCacheService(t, kind, kind)
+			provs[kind+"-0"].err = core.ErrNotCached
+			if _, err := s.Acquire(context.Background(), torrentRelease("a")); err != nil {
+				t.Fatal(err)
+			}
+			if n := provs[kind+"-1"].callCount("acquire"); n != 1 {
+				t.Fatalf("backup calls = %d", n)
+			}
+		})
 	}
 }
