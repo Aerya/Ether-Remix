@@ -29,6 +29,7 @@ func LibraryEnabled() bool { return true }
 // Library keeps encrypted source descriptors, never resolved playback payloads.
 // The complete Release preserves provider-specific routing (including verified files).
 type Library struct {
+	Accept    func(context.Context, core.RatingKey, core.Release) (bool, error)
 	Store     *Store
 	Seal      func(string) (string, error)
 	Open      func(string) (string, error)
@@ -46,6 +47,21 @@ func (l Library) Save(ctx context.Context, key core.RatingKey, rs []core.Release
 	if !LibraryEnabled() || key == 0 {
 		return nil
 	}
+	// Evaluate before opening a write transaction: selection can read the catalogue.
+	selected := make([]core.Release, 0, len(rs))
+	for _, r := range rs {
+		if l.Accept != nil {
+			ok, err := l.Accept(ctx, key, r)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+		}
+		selected = append(selected, r)
+	}
+	rs = selected
 	now := l.now()
 	tx, err := l.Store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -118,7 +134,24 @@ func (l Library) Entries(ctx context.Context, key core.RatingKey) ([]LibraryEntr
 		e.Current = sig == l.Signature
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if l.Accept != nil {
+		filtered := out[:0]
+		for _, e := range out {
+			ok, err := l.Accept(ctx, key, e.Release)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				filtered = append(filtered, e)
+			}
+		}
+		out = filtered
+	}
+	return out, nil
 }
 func (l Library) Candidates(ctx context.Context, key core.RatingKey) []core.Release {
 	if !LibraryEnabled() {

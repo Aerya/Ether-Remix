@@ -262,7 +262,7 @@ func (a *App) pseReleaseBrowse(w http.ResponseWriter, r *http.Request) {
 	sqlRows, args := releaseBrowseSQL(prepareKey, allowed, category != "", query, dateField, order, from, to, (page+1)*50+1)
 	selectSQL := `SELECT p.media_key,p.title_key,CASE WHEN p.retained=1 THEN l.browse ELSE
  json_object('name',m.name,'source',m.source_name,'protocol',m.protocol,'size',m.size,'height',m.height,'videoCodec',m.video_codec,'audioCodec',m.audio_codec,'languages',m.languages,'cached',m.debrid_cached,'published',0) END,
- p.first_seen,p.last_seen,COALESCE(l.expires,0),COALESCE(l.failed,0),COALESCE(l.source_signature,''),p.retained
+ p.first_seen,p.last_seen,COALESCE(l.expires,0),COALESCE(l.failed,0),COALESCE(l.source_signature,''),p.retained,COALESCE(l.payload,'')
  FROM (SELECT * FROM matched ORDER BY ` + order + `,sort_key,rid,retained LIMIT 51 OFFSET ?) p
  LEFT JOIN pse_release_library l ON p.retained=1 AND l.rowid=p.rid
  LEFT JOIN pse_releases m ON p.retained=0 AND m.rowid=p.rid`
@@ -272,14 +272,16 @@ func (a *App) pseReleaseBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := []browseItem{}
-	signature := a.releaseLibrary().Signature
+	payloads := []string{}
+	library := a.releaseLibrary()
+	signature := library.Signature
 	for rows.Next() {
 		var item browseItem
 		var media, key core.RatingKey
-		var raw, sig string
+		var raw, sig, payload string
 		var expires int64
 		var failed, retained bool
-		err = rows.Scan(&media, &key, &raw, &item.FirstSeen, &item.LastSeen, &expires, &failed, &sig, &retained)
+		err = rows.Scan(&media, &key, &raw, &item.FirstSeen, &item.LastSeen, &expires, &failed, &sig, &retained, &payload)
 		if err != nil {
 			break
 		}
@@ -320,6 +322,7 @@ func (a *App) pseReleaseBrowse(w http.ResponseWriter, r *http.Request) {
 		item.Title = mediaLabel(media, labels[media])
 		item.Category = categories[media]
 		items = append(items, item)
+		payloads = append(payloads, payload)
 	}
 	if err == nil {
 		err = rows.Err()
@@ -328,6 +331,31 @@ func (a *App) pseReleaseBrowse(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fail()
 		return
+	}
+	// Selection may read catalogue tables; close the browse cursor first.
+	for i, payload := range payloads {
+		if payload == "" {
+			continue
+		}
+		raw, e := library.Open(payload)
+		if e != nil {
+			fail()
+			return
+		}
+		var rel core.Release
+		if e = json.Unmarshal([]byte(raw), &rel); e != nil {
+			fail()
+			return
+		}
+		key, _ := core.ParseRatingKey(items[i].Key)
+		accepted, e := a.acceptReference(ctx, key, rel)
+		if e != nil {
+			fail()
+			return
+		}
+		if !accepted {
+			items[i].Release.State = "excluded"
+		}
 	}
 	hasMore := len(items) > 50
 	if hasMore {

@@ -191,6 +191,7 @@ func (rt *pseRuntime) apply(a *App) {
 	rt.reloadFTP(a)
 	rt.reloadMusic(a)
 	a.reapplyAddonIndexers()
+	a.pseLangExemptChanged()
 	go rt.restartIndexer(a) // Close attend la fin du titre en cours
 }
 

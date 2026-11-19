@@ -72,10 +72,21 @@ func (a *App) runPSELangExempt(ctx context.Context, svc *themes.Service, kick <-
 		if err := a.syncPSESeerrCollections(run, svc); err != nil && ctx.Err() == nil {
 			a.log.Warn("collections SeerrCatalog Ether-Remix non mises à jour", "err", err)
 		}
-		if err := st.SetLangExempt(run, svc.ExemptKeys(run)); err != nil && ctx.Err() == nil {
+		selectionReady := true
+		if err := st.SetLangExempt(run, svc.ExemptKeys(run)); err != nil {
+			selectionReady = false
 			a.log.Warn("exceptions de langue Ether-Remix non enregistrées", "err", err)
 		}
-		a.refreshPSEQuality(run, svc)
+		if err := a.refreshPSEQuality(run, svc); err != nil {
+			selectionReady = false
+			a.log.Warn("profils qualité non actualisés", "err", err)
+		}
+		// Run after language exemptions and scoped profiles have been refreshed.
+		if selectionReady {
+			if _, err := a.releaseLibrary().PruneSelection(ctx); err != nil && ctx.Err() == nil {
+				a.log.Warn("nettoyage des références hors critères interrompu", "err", err)
+			}
+		}
 		cancel()
 		select {
 		case <-ctx.Done():
