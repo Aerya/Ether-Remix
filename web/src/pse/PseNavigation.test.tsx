@@ -22,6 +22,7 @@ vi.mock("./RemixSources", () => ({
   ),
 }));
 vi.mock("./IndexerDetails", () => ({ IndexerDetails: () => <div>Tableau statistiques</div> }));
+vi.mock("./IndexerActivity", () => ({ IndexerActivity: () => null }));
 vi.mock("./SearchPriority", () => ({ SearchPriority: () => null }));
 vi.mock("./OwnedMedia", () => ({ IBroadcastSource: () => null }));
 vi.mock("./MusicAccess", () => ({ MusicAccess: () => null }));

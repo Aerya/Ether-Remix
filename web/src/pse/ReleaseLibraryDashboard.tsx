@@ -66,9 +66,7 @@ function ReleaseOverview({ compact = false }: { compact?: boolean }) {
       </p>
     );
   if (!d.enabled)
-    return (
-      <p>{L("La bibliothèque de releases est désactivée.", "Release library is disabled.")}</p>
-    );
+    return <p>{L("L’index des releases est indisponible.", "Release index is unavailable.")}</p>;
   return (
     <section className="min-w-0 max-w-full space-y-4">
       {Boolean(state.error) && (
@@ -79,9 +77,7 @@ function ReleaseOverview({ compact = false }: { compact?: boolean }) {
           )}
         </p>
       )}
-      <h2 className="text-lg font-semibold">
-        {L("Bibliothèque de releases · Bêta", "Release library · Beta")}
-      </h2>
+      <h2 className="text-lg font-semibold">{L("Index des releases", "Release index")}</h2>
       <p className="text-sm text-fg-muted">
         {L(
           "Collecte continue lors des recherches et imports. Actualisation toutes les 60 secondes. Métadonnées et références se recoupent : leurs compteurs ne s’additionnent pas. Une référence disponible ne garantit pas la lecture.",

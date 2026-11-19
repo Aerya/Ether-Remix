@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-19-debrid-playback-controls",
+    id: "2026-11-19-unified-release-index",
     version: "current",
+    date: "2026-11-19",
+    title: ["Un seul index de releases", "One release index"],
+    items: [
+      [
+        "Les recherches et imports conservent automatiquement leurs références. Le second interrupteur bêta disparaît ; l’index reste consultable et réutilisable à la lecture.",
+        "Searches and imports automatically retain their references. The second beta switch is removed; the index remains available for browsing and playback.",
+      ],
+      [
+        "Indexation regroupe les sources, l’activité et un seul réglage : Rechercher automatiquement des releases. Son arrêt conserve les références et laisse les recherches à la lecture actives.",
+        "Indexing brings together sources, activity and one setting: Automatically search for releases. Turning it off keeps references and playback searches available.",
+      ],
+      [
+        "Pour les séries, la recherche initiale porte sur S01E01 ; les autres épisodes sont conservés au fil des recherches. Les README français et anglais ont été réécrits et les guides actualisés.",
+        "For shows, the initial search covers S01E01; other episodes are retained as they are searched. French and English READMEs have been rewritten and guides updated.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-19-debrid-playback-controls",
+    version: "0.2.37-remix.111.1",
     date: "2026-11-19",
     title: [
       "Debrid : priorité, quotas et reprises de lecture",

@@ -238,8 +238,8 @@ export function ReleaseBrowser() {
       )}
       <p className="text-sm text-fg-muted">
         {L(
-          "Dates dans votre fuseau horaire. Les séries regroupent leurs épisodes. Animes : classification du catalogue, lorsque disponible. Cette recherche consulte uniquement l’index enregistré.",
-          "Dates use your time zone. Series group their episodes. Anime uses catalogue classification when available. This search only reads the stored index.",
+          "Dates dans votre fuseau horaire. Les séries regroupent les épisodes présents dans l’index, sans garantir une saison complète. Animes : classification du catalogue, lorsque disponible. Cette recherche consulte uniquement l’index enregistré.",
+          "Dates use your time zone. Series group episodes present in the index, without implying a complete season. Anime uses catalogue classification when available. This search only reads the stored index.",
         )}
       </p>
       {invalid ? (

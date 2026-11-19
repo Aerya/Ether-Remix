@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -22,7 +21,10 @@ func init() {
 
 const StableReferenceExpiry int64 = 253402300799 // stable source descriptors do not expire by age
 
-func LibraryEnabled() bool { return pseenv.Get("PSE_RELEASE_LIBRARY") == "on" }
+// LibraryEnabled remains for callers of the retained-reference API. References
+// are now always collected and reused; PSE_INDEXER only controls background searches.
+// The legacy PSE_RELEASE_LIBRARY setting is intentionally ignored.
+func LibraryEnabled() bool { return true }
 
 // Library keeps encrypted source descriptors, never resolved playback payloads.
 // The complete Release preserves provider-specific routing (including verified files).

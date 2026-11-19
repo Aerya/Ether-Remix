@@ -34,7 +34,7 @@ describe("indexed releases", () => {
     ]);
     expect(rows[0]?.name).toBe("Large");
   });
-  it("shows stored metadata while beta is off and filters without searching", async () => {
+  it("shows stored metadata and filters without searching", async () => {
     render(<ReleaseLibrary titleKey="42" />);
     await screen.findByText("Large");
     const input = screen.getByRole("textbox");

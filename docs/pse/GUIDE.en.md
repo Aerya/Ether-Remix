@@ -85,10 +85,12 @@ Every addition is configured in the console, under **Ether-Remix** (`/ether/remi
 
 Ether-Remix accepts every Ether environment variable (`ETHER_PORT`, `ETHER_DATA_DIR`, `PUID`/`PGID`…): see [docs/install.md](../install.md). Ether-Remix-specific variables:
 
+References from searches and imports are automatically stored in a shared index, available under **Indexing → Releases**. **Automatically search for releases** adds background searches, disabled by default. The old `PSE_RELEASE_LIBRARY` setting is ignored; turning it off no longer hides references.
+
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `PSE_NOTIFY_LANGUAGE` | `fr` | Language of owner notifications. `en` keeps Ether's English text. |
-| `PSE_INDEXER` | `off` | `on` enables background release indexing. |
+| `PSE_INDEXER` | `off` | `on` automatically searches for releases. `off` keeps the index and its use during playback. |
 | `PSE_INDEXER_SOURCES` | *(all enabled Stremio addons)* | Comma-separated indexer IDs to query. The only way to include a Prowlarr/Jackett/NZBHydra2 indexer. |
 | `PSE_INDEXER_DAILY` | `1000` | Maximum requests per source per day (UTC). |
 | `PSE_INDEXER_PACE` | `10s` | Minimum delay between two titles (at least `2s`). |

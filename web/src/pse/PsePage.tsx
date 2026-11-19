@@ -1,3 +1,4 @@
+import { IndexerActivity } from "./IndexerActivity";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStart, QuickStartHint } from "./QuickStart";
@@ -255,7 +256,7 @@ function PseSettings() {
       : null;
   const views =
     tab === "apercu" || tab === "indexation" || tab === "lecture" || tab === "visuels"
-      ? visibleRemixViews(tab, saved.PSE_RELEASE_LIBRARY === "on")
+      ? visibleRemixViews(tab)
       : [];
   const view =
     views.find((v) => v.key === params.get("view"))?.key ??
@@ -310,20 +311,6 @@ function PseSettings() {
           {tab === "apercu" && view === "demarrage" ? (
             <>
               <QuickStart indexing={saved.PSE_INDEXER === "on"} />
-              {current.features
-                .filter((f) => f.id === "indexer")
-                .map((f) =>
-                  renderFeature({
-                    ...f,
-                    id: "release-library",
-                    title: { fr: "Bibliothèque de releases · Bêta", en: "Release library · Beta" },
-                    description: {
-                      fr: "Facultatif : activez puis enregistrez pour afficher la vue Indexation → Releases.",
-                      en: "Optional: enable and save to show the Indexing → Releases view.",
-                    },
-                    fields: f.fields.filter((fd) => fd.key === "PSE_RELEASE_LIBRARY"),
-                  }),
-                )}
               <p className="text-sm text-fg-muted">
                 {L(
                   "Cartes d’accueil, packs de visuels et affiches se règlent dans Visuels.",
@@ -391,6 +378,7 @@ function PseSettings() {
               </p>
               {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
               <SearchPriority />
+              <IndexerActivity />
             </>
           ) : null}
           {tab === "lecture" && view === "priorites" ? (
@@ -479,9 +467,7 @@ function PseSettings() {
           ) : null}
           {tab === "apercu" && view !== "demarrage" ? (
             <>
-              {view === "indexation" && saved.PSE_RELEASE_LIBRARY === "on" && (
-                <ReleaseLibraryDashboard compact />
-              )}
+              {view === "indexation" && <ReleaseLibraryDashboard compact />}
               {view === "indexation" ? (
                 <IndexerDetails />
               ) : (

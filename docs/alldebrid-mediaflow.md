@@ -86,3 +86,20 @@ Les identifiants sont chiffrés dans la configuration et les mots de passe masqu
 La musique qui réutilise ces comptes natifs (dont DMM / Real-Debrid) suit également leur proxy.
 
 Ces réglages concernent les comptes natifs et les manifestes ajoutés dans **Sources → Stremio**. Les plugins installés séparément, les comptes propres aux connecteurs musicaux et les appels exécutés par un addon distant ne sont pas reconfigurés. Le VPN reste géré par SSDV2, Gluetun ou votre service externe ; Remix n’installe pas de tunnel. Une URL de proxy HTTP/SOCKS5 et une URL d’API MediaFlow ne sont pas interchangeables.
+
+
+## Priorité, quotas et reprises de lecture
+
+Les références de fichiers Alkodiques vérifiées restent soumises au profil de lecture. `resolver.verifiedFiles` choisit leur priorité : `first` (par défaut), `tie` ou `off`. `resolver.failoverAttempts` limite les essais de lecture de 1 à 10 (4 par défaut).
+
+Un quota journalier suspend le compte concerné pendant une heure ; les comptes de secours restent utilisables. Les refus AllDebrid `MAGNET_TOO_MANY` répétés suspendent seulement les nouveaux ajouts : les torrents existants et liens fichiers restent utilisables. Un hash inconnu ne devient pas un lien fichier.
+
+Dans **Sources → Debrid**, **Garder le lien et réessayer** (`debrid.playbackRelink: "replay"`) conserve le lien lors des erreurs du serveur média. Les liens morts sont toujours renouvelés, au plus une fois toutes les 30 secondes par fichier dans ce mode. Le réglage s’applique sans redémarrage.
+
+### Priority, quotas and playback recovery
+
+Verified Alkodiques file references must still meet the playback profile. `resolver.verifiedFiles` selects their priority: `first` (default), `tie` or `off`. `resolver.failoverAttempts` caps playback attempts from 1 to 10 (default 4).
+
+A daily quota pauses the affected account for one hour; backup accounts remain available. Repeated AllDebrid `MAGNET_TOO_MANY` refusals only pause new additions: existing torrents and file links remain usable. An unknown hash does not become a file link.
+
+Under **Sources → Debrid**, **Keep the link and retry** (`debrid.playbackRelink: "replay"`) keeps the link during media-server errors. Dead links are still renewed, at most once every 30 seconds per file in this mode. The setting applies without a restart.

@@ -9,8 +9,8 @@ export function QuickStartHint() {
     <aside className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4">
       <p className="text-sm text-fg-muted">
         {L(
-          "L’indexation en arrière-plan est désactivée. Pour préparer votre catalogue vidéo, suivez le démarrage rapide.",
-          "Background indexing is disabled. Follow the quick start to prepare your video catalogue.",
+          "La recherche automatique est désactivée. Les recherches à la lecture continuent d’alimenter l’index.",
+          "Automatic search is disabled. Playback searches still populate the index.",
         )}
       </p>
       <Link
@@ -40,10 +40,10 @@ export function QuickStart({ indexing }: { indexing: boolean }) {
       action: L("Configurer les sources", "Configure sources"),
     },
     {
-      title: L("Activer l’indexation du catalogue vidéo", "Enable video catalogue indexing"),
+      title: L("Préparer les releases automatiquement", "Prepare releases automatically"),
       text: L(
-        "Ouvrez Indexation en arrière-plan, activez-la puis enregistrez. Sans cette activation, les recherches au lancement d’une lecture peuvent fonctionner, mais les compteurs de l’indexation restent à zéro.",
-        "Open Background indexing, enable it and save. Without this, searches at playback time may work while background indexing counters remain at zero.",
+        "Dans Indexation, activez Rechercher automatiquement des releases puis enregistrez. Les résultats sont conservés et réutilisés sans second réglage.",
+        "Under Indexing, enable Automatically search for releases and save. Results are stored and reused without a second setting.",
       ),
       help: L(
         "Le mode Automatique utilise les addons Stremio activés. Passez en Personnalisé pour inclure Prowlarr/Jackett ou choisir aucune source. Conservez une cadence et des quotas adaptés aux fournisseurs ; l’indexation se met en pause pendant les lectures.",

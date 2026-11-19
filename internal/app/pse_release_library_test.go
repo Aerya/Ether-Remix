@@ -59,8 +59,8 @@ func TestReleaseLibraryPlaybackGateAndPrivateProjection(t *testing.T) {
 	qualityRestore()
 	restore := pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "off"})
 	defer restore()
-	if _, ok := a.retainedReleaseLibrary(play, req); ok {
-		t.Fatal("disabled beta reused candidates")
+	if _, ok := a.retainedReleaseLibrary(play, req); !ok {
+		t.Fatal("legacy off setting must not disable reference reuse")
 	}
 }
 
@@ -112,7 +112,7 @@ func TestReleaseLibraryOverview(t *testing.T) {
 	}
 	restore := pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "off"})
 	defer restore()
-	if out = request("/release-library?overview=1"); out["enabled"] != false || out["items"] != nil {
+	if out = request("/release-library?overview=1"); out["enabled"] != true || len(out["items"].([]any)) != 50 {
 		t.Fatal(out)
 	}
 }

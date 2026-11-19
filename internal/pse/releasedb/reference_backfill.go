@@ -16,8 +16,15 @@ func init() { store.Register("pse_reference_backfill", 1, referenceBackfillSchem
 // Revisit old metadata through normal, budgeted searches. Never fabricate a
 // locator from its name. Failed/missing sources remain queued for a later pass.
 func (s *Service) nextReferenceBackfill(ctx context.Context, typ core.MediaType, now time.Time) (core.Title, bool, error) {
-	if !LibraryEnabled() {
+	// An empty/not-due queue needs no catalogue lookup. This also keeps
+	// metadata-only indexer integrations independent from the catalogue.
+	var due int
+	err := s.st.db.QueryRowContext(ctx, `SELECT 1 FROM pse_reference_backfill WHERE next_due<=? LIMIT 1`, now.Unix()).Scan(&due)
+	if errors.Is(err, sql.ErrNoRows) {
 		return core.Title{}, false, nil
+	}
+	if err != nil {
+		return core.Title{}, false, err
 	}
 	for range 8 {
 		var key core.RatingKey

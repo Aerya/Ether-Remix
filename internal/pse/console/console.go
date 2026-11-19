@@ -190,6 +190,12 @@ func (h *handler) put(w http.ResponseWriter, r *http.Request) {
 	values := pseenv.Snapshot()
 	errs := map[string]string{}
 	for key, raw := range body.Values {
+		// Accept requests from an older open console without restoring a
+		// second switch. Existing saved values are harmless and ignored.
+		if key == "PSE_RELEASE_LIBRARY" {
+			delete(values, key)
+			continue
+		}
 		fd, ok := fieldByKey[key]
 		if !ok {
 			errs[key] = "Réglage inconnu"
