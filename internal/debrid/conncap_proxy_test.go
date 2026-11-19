@@ -15,13 +15,14 @@ import (
 	"github.com/braedonsaunders/ether/internal/egress"
 )
 
-// connectProxy is a minimal HTTP CONNECT proxy.
+// openCount reads the open-connection count for key under the lock.
 func (c *connCap) openCount(key string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.open[key]
 }
 
+// connectProxy is a minimal HTTP CONNECT proxy.
 func connectProxy(t *testing.T) *httptest.Server {
 	t.Helper()
 	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
