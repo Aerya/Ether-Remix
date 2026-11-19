@@ -70,6 +70,8 @@ func Defaults(dataDir string) Config {
 			UnavailableCooloff:      Duration(24 * time.Hour),
 			MaxCandidates:           3,
 			SameQualityAlternatives: 1,
+			VerifiedFiles:           "first",
+			FailoverAttempts:        4,
 		},
 		Quality: DefaultQuality(),
 		Transcode: Transcode{

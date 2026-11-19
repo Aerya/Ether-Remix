@@ -29,11 +29,19 @@ import (
 
 // Provider errors. Callers classify with errors.Is.
 var (
+	// Only an explicit fresh cache miss may be shared across accounts.
+	// ErrNotCached alone can describe a broken or incomplete account item.
+	errSharedCacheMiss  = fmt.Errorf("shared service cache miss: %w", core.ErrNotCached)
 	errDuplicateTorrent = errors.New("debrid: torrent already exists")
 	// ErrAuth is a rejected API key or an account that cannot use the API
 	// (expired premium). A configuration problem: never a release failure.
 	// It is core.ErrDebridAuth so a playback error can name the cause.
 	ErrAuth = core.ErrDebridAuth
+	// ErrQuotaExceeded is the account's daily quota or traffic allowance
+	// (AllDebrid "daily download limit"). It is core.ErrDebridQuota so a
+	// playback error can name the cause; the provider is paused for
+	// quotaPause, then probed with a single request.
+	ErrQuotaExceeded = core.ErrDebridQuota
 	// ErrRateLimited is HTTP 429 or the provider's equivalent.
 	ErrRateLimited = errors.New("debrid: rate limited")
 	// ErrGone is a torrent, file or link the provider no longer has; the
@@ -444,6 +452,9 @@ func statusError(kind string, status int, msg string) error {
 		msg = http.StatusText(status)
 	}
 	switch {
+	case isQuotaMessage(msg):
+		// Before the status switch: a quota answer arrives as 502, 403 or 429.
+		return fmt.Errorf("%s: HTTP %d: %s: %w", kind, status, msg, ErrQuotaExceeded)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return fmt.Errorf("%s: %s: %w", kind, msg, ErrAuth)
 	case status == http.StatusNotFound || status == http.StatusGone:
@@ -452,6 +463,14 @@ func statusError(kind string, status int, msg string) error {
 		return fmt.Errorf("%s: %s: %w", kind, msg, ErrRateLimited)
 	}
 	return fmt.Errorf("%s: HTTP %d: %s", kind, status, msg)
+}
+
+// isQuotaMessage recognises a provider's account quota answer
+// ("You have reached your daily download limit").
+func isQuotaMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	return (strings.Contains(lower, "daily") && (strings.Contains(lower, "limit") || strings.Contains(lower, "quota"))) ||
+		strings.Contains(lower, "quota exceeded") || strings.Contains(lower, "quota reached")
 }
 
 func decodeJSON(kind string, data []byte, out any) error {

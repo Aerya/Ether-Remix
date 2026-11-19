@@ -69,6 +69,7 @@ func (m *Manager) notePreferenceStale(key core.RatingKey, release, played string
 // forgetStalePrefersLocked drops a title's stale picks (InvalidateTitle:
 // the owner pinned, blocked or re-searched it). The caller holds m.mu.
 func (m *Manager) forgetStalePrefersLocked(key core.RatingKey) {
+	m.forgetPrepareFailuresLocked(key, false)
 	for k := range m.stalePrefers {
 		if titleIncludes(key, k.key) {
 			delete(m.stalePrefers, k)

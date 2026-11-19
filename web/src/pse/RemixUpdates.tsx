@@ -26,13 +26,53 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-17-alldebrid-add-quota",
+    id: "2026-11-19-debrid-playback-controls",
     version: "current",
-    date: "2026-11-17",
-    title: ["AllDebrid : préserver la lecture quand les ajouts sont refusés", "AllDebrid: keep playback available when additions are refused"],
+    date: "2026-11-19",
+    title: [
+      "Debrid : priorité, quotas et reprises de lecture",
+      "Debrid: priority, quotas and playback recovery",
+    ],
     items: [
-      ["Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.", "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents."],
-      ["Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.", "Stored references still require playback checks; a hash alone does not replace a file link."],
+      [
+        "Les fichiers Alkodiques vérifiés sont prioritaires lorsqu’ils respectent le profil. resolver.verifiedFiles permet de choisir first, tie ou off.",
+        "Verified Alkodiques files take priority when they meet the profile. resolver.verifiedFiles accepts first, tie or off.",
+      ],
+      [
+        "Un quota journalier suspend le compte pendant une heure. Le test de reprise reste exclusif jusqu’au débridage du lien ; les comptes de secours restent utilisables.",
+        "A daily quota pauses the account for one hour. The recovery probe stays exclusive until link unlocking finishes; backup accounts remain available.",
+      ],
+      [
+        "Une absence de cache explicitement constatée sur un nouvel ajout AllDebrid évite les demandes identiques aux autres comptes. Un ancien torrent incomplet ou une erreur propre au compte ne les écarte pas.",
+        "An explicit cache miss on a new AllDebrid addition avoids duplicate requests to other accounts. An incomplete existing torrent or an account-specific error does not exclude them.",
+      ],
+      [
+        "Sources → Debrid : le mode Garder le lien et réessayer évite les renouvellements sur panne du serveur média. Les liens morts sont renouvelés au plus toutes les 30 secondes, sans repousser ce délai quand une lecture est annulée.",
+        "Sources → Debrid: Keep the link and retry avoids renewals on media-server failures. Dead links are renewed at most every 30 seconds, without postponing the cooldown when a read is cancelled.",
+      ],
+      [
+        "resolver.failoverAttempts plafonne les essais de lecture de 1 à 10 (4 par défaut). Les relances identiques dans les 5 secondes réutilisent le dernier échec.",
+        "resolver.failoverAttempts caps playback attempts from 1 to 10 (default 4). Identical retries within 5 seconds reuse the last failure.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-17-alldebrid-add-quota",
+    version: "0.2.37-remix.110.1",
+    date: "2026-11-17",
+    title: [
+      "AllDebrid : préserver la lecture quand les ajouts sont refusés",
+      "AllDebrid: keep playback available when additions are refused",
+    ],
+    items: [
+      [
+        "Un quota de magnets atteint suspend les nouveaux ajouts répétés, sans mettre en pause les liens fichiers et torrents déjà accessibles.",
+        "A full magnet quota pauses repeated new additions without pausing accessible file links and existing torrents.",
+      ],
+      [
+        "Les références conservées restent soumises aux vérifications de lecture ; un hash seul ne remplace pas un lien fichier.",
+        "Stored references still require playback checks; a hash alone does not replace a file link.",
+      ],
     ],
   },
   {

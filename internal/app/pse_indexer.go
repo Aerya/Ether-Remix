@@ -72,7 +72,9 @@ func (a *App) newPSEIndexer() *releasedb.Service {
 			for i := range rs {
 				if rs[i].IndexerID == "" {
 					rs[i].IndexerID = sfrSearchID
-					rs[i].Indexer = "StreamFusion Reborn (base)"
+					if !core.IsVerifiedFile(rs[i]) {
+						rs[i].Indexer = "StreamFusion Reborn (base)"
+					}
 				}
 			}
 			a.rememberReleases(ctx, &core.Title{Key: key}, rs)

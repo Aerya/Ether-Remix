@@ -265,7 +265,10 @@ type session struct {
 	// glitch escalates as before. A per-outage reset would need sustained
 	// healthy progress plus a cumulative starvation cap (issue #169), not
 	// merely a new request. Guarded by mu; see takeStallContinue.
-	stallContinues   int
+	stallContinues int
+	// failoverFailure is the latest failover that found no working release
+	// (retry_window.go).
+	failoverFailure  recentFailoverFailure
 	requiresRemux    bool
 	prefer           string // release ID the viewer picked (PrepareVariant); read-only after creation
 	exact            bool   // exact selection must never switch releases

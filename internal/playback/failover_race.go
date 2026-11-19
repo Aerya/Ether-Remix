@@ -40,11 +40,12 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 	}
 	rctx, cancel := context.WithCancel(ctx)
 	results := make(chan raceResult, len(cands))
-	next, running := 0, 0
+	next, running, launched := 0, 0, 0
 	launch := func() {
 		alt := cands[next]
 		next++
 		running++
+		launched++
 		go func() {
 			nzb, err := m.deps.FetchNZB(rctx, alt)
 			if err != nil {
@@ -69,8 +70,21 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 			results <- raceResult{alt: alt, g: g, err: err}
 		}()
 	}
+	attempts := m.failoverAttempts()
+	// A debrid account error (quota, key) makes every other debrid release
+	// pointless: skip them and keep only what does not depend on the account.
+	debridDown := false
+	skipDown := func() {
+		for debridDown && next < len(cands) && dependsOnDebrid(cands[next]) {
+			next++
+		}
+	}
+	canLaunch := func() bool {
+		skipDown()
+		return next < len(cands) && launched < attempts && ctx.Err() == nil
+	}
 	// A cancelled caller (a stopped session) starts no provider requests.
-	for running < width && next < len(cands) && ctx.Err() == nil {
+	for running < width && canLaunch() {
 		launch()
 	}
 	var failed []string
@@ -109,7 +123,7 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 				} else {
 					m.dropGeneration(r.g)
 				}
-				if next < len(cands) && next < m.opts.MaxAttempts && ctx.Err() == nil {
+				if canLaunch() {
 					launch()
 				}
 				continue
@@ -134,7 +148,10 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 		failed = append(failed, r.alt.ID)
 		lastErr = r.err
 		m.log.Warn("failover candidate failed", "session", s.id, "release", r.alt.Name, "err", r.err)
-		if next < len(cands) && (held == nil || next < m.opts.MaxAttempts) {
+		if accountError(r.err) {
+			debridDown = true
+		}
+		if canLaunch() {
 			launch()
 		}
 	}

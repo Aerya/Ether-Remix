@@ -55,17 +55,27 @@ Quand cette intégration est activée, **StreamFusion Reborn (base)** rejoint au
 L’option trackers privés s’applique aussi à cette recherche. Les candidats sont des magnets par empreinte : un torrent privé absent du cache debrid peut nécessiter une source authentifiée supplémentaire pour être téléchargé par un client torrent.
 
 
-## Fichiers Alkolites déjà vérifiés
+## Fichiers Alkodiques déjà vérifiés
 
-Remix détecte les tables optionnelles `alko_integration.files` et `alko_integration.source_links`. Pour un compte PostgreSQL dédié, accordez uniquement ces lectures, après l’installation d’Alkolites dans SFR :
+Remix détecte les tables optionnelles `alko_integration.files` et `alko_integration.source_links`. Pour un compte PostgreSQL dédié, accordez uniquement ces lectures, après l’installation d’Alkodiques dans SFR :
 
 ```sql
 GRANT USAGE ON SCHEMA alko_integration TO remix_lecture;
 GRANT SELECT ON alko_integration.files, alko_integration.source_links TO remix_lecture;
 ```
 
-Ces tables complètent les torrents ordinaires : les fichiers français, MULTi ou VOSTFR sont importés pour les titres déjà au catalogue (S01E01 pour les séries), puis recherchés par TMDB et épisode. Le catalogue Alkolites est relu par lots à chaque cycle ; son indication de disponibilité expire après deux intervalles sans actualisation. Sans les tables ou les droits, l’intégration torrent continue de fonctionner.
+Ces tables complètent les torrents ordinaires : les fichiers français, MULTi ou VOSTFR sont importés pour les titres déjà au catalogue (S01E01 pour les séries), puis recherchés par TMDB et épisode. Le catalogue Alkodiques est relu par lots à chaque cycle ; son indication de disponibilité expire après deux intervalles sans actualisation. Sans les tables ou les droits, l’intégration torrent continue de fonctionner.
 
 À la lecture, un compte **AllDebrid activé dans Remix** débride directement le lien fichier `https://alldebrid.com/f/...`. Aucun magnet n’est ajouté, listé ou revérifié pour ce résultat, y compris au renouvellement du lien. Un lien supprimé échoue normalement et laisse les autres candidats disponibles ; il ne déclenche pas une conversion en magnet. Les limites de requêtes API AllDebrid restent applicables et les contrôles habituels du fichier restent actifs.
 
-Les recherches lisent au maximum 200 torrents et 200 fichiers Alkolites, dans le même délai de quatre secondes. Les liens privés restent côté serveur. Les filtres de trackers privés concernent les torrents ; les Alkolites sont des fichiers déjà disponibles, sans téléchargement BitTorrent.
+Les recherches lisent au maximum 200 torrents et 200 fichiers Alkodiques, dans le même délai de quatre secondes. Les liens privés restent côté serveur. Les filtres de trackers privés concernent les torrents ; les Alkodiques sont des fichiers déjà disponibles, sans téléchargement BitTorrent.
+
+### Priorité des fichiers vérifiés (`resolver.verifiedFiles`)
+
+Un fichier Alkodique ne coûte qu'un appel AllDebrid (`link/unlock`), sans magnet. Le réglage `resolver.verifiedFiles` de `config.json` (section `resolver`, modifiable par `PUT /api/config/resolver`) décide de sa place dans le classement :
+
+- `first` (**défaut**, aussi pour une valeur vide ou inconnue) : un fichier vérifié passe devant toutes les autres sources, même de résolution supérieure, tant qu'il respecte les barrières dures : langue acceptée, résolution minimale et maximale du profil, règles à exiger ou à éviter, blocages, santé connue, débit du client. Il ne passe jamais devant s'il est hors profil. S'il échoue, le candidat suivant est essayé comme d'habitude ;
+- `tie` : à rang de qualité égal (même position dans l'ordre de qualité du profil), un fichier vérifié passe devant ;
+- `off` : classement inchangé.
+
+Effet sur les menus de versions (**Play Version**) avec `alternativesPerResolution` : Auto et le créneau de la résolution du fichier deviennent des Alkodiques ; un créneau 4K explicitement choisi reste le 2160p. Les préchargements ne préparent pas de torrent devant un fichier vérifié : la lecture ouvre directement le fichier.

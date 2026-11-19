@@ -314,6 +314,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			seenDebrid[p.ID] = true
 		}
 	}
+	v.oneOf("debrid.playbackRelink", strings.ToLower(strings.TrimSpace(cfg.Debrid.PlaybackRelink)), "", config.PlaybackRelinkRefresh, config.PlaybackRelinkReplay)
 	if cfg.Debrid.ChunkBytes != 0 && (cfg.Debrid.ChunkBytes < 256<<10 || cfg.Debrid.ChunkBytes > 64<<20) {
 		v.add("debrid.chunkBytes", "must be between 256 KiB and 64 MiB")
 	}
@@ -422,6 +423,14 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	case "", "auto", "usenet", "debrid":
 	default:
 		v.add("resolver.sourcePreference", `must be "auto", "usenet" or "debrid"`)
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Resolver.VerifiedFiles)) {
+	case "", "off", "tie", "first":
+	default:
+		v.add("resolver.verifiedFiles", `must be "off", "tie" or "first"`)
+	}
+	if cfg.Resolver.FailoverAttempts < 0 || cfg.Resolver.FailoverAttempts > 10 {
+		v.add("resolver.failoverAttempts", "must be between 1 and 10 (0 = default 4); it is the exact cap on releases tried per playback")
 	}
 	seenFamily := map[string]bool{}
 	for _, family := range cfg.Resolver.SourceOrder.Families {

@@ -173,7 +173,19 @@ export function engineSummary(e: DebridEngineStatus | undefined): string | null 
   return out.join(" · ");
 }
 
-function StateBadge({ p, s }: { p: DebridProvider; s?: DebridProviderStatus }) {
+/** Local hour and minute of a timestamp, or "" when it is missing or invalid. */
+function localClock(iso: string | undefined): string {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** The last error is shown only while the account is not back to normal. */
+export function visibleLastError(s?: DebridProviderStatus): string {
+  return s && s.state !== "ok" ? (s.lastError ?? "") : "";
+}
+
+export function StateBadge({ p, s }: { p: DebridProvider; s?: DebridProviderStatus }) {
   if (!p.enabled) return <Badge variant="secondary">{t("Disabled")}</Badge>;
   if (!s) return null;
   switch (s.state) {
@@ -187,6 +199,14 @@ function StateBadge({ p, s }: { p: DebridProvider; s?: DebridProviderStatus }) {
             : t("Paused")}
         </Badge>
       );
+    case "quota_exceeded": {
+      const at = localClock(s.backoffUntil);
+      return (
+        <Badge variant="warning">
+          {at ? t("Quota reached · new try at {time}", { time: at }) : t("Quota reached")}
+        </Badge>
+      );
+    }
     case "auth_failed":
       return <Badge variant="destructive">{t("Key rejected")}</Badge>;
     case "disabled":
@@ -385,9 +405,9 @@ export function DebridSources({
                 <>
                   {[role(i), ...(s ? activity(s) : [])].join(" · ")}
                   {latency ? <span className="block tabular-nums">{latency}</span> : null}
-                  {s?.lastError ? (
-                    <span className="block truncate text-danger" title={s.lastError}>
-                      {s.lastError}
+                  {visibleLastError(s) ? (
+                    <span className="block truncate text-danger" title={visibleLastError(s)}>
+                      {visibleLastError(s)}
                     </span>
                   ) : null}
                 </>
@@ -609,6 +629,8 @@ function DebridSettings({
       readAheadChunks: 0,
       maxConnections: 0,
       ...rest,
+      // "refresh" is the default, spelled out: show it as the empty choice.
+      playbackRelink: rest.playbackRelink?.trim().toLowerCase() === "replay" ? "replay" : "",
     };
   }, [debrid]);
   const { draft, setDraft, dirty, reset } = useDraft<Obj>(saved);

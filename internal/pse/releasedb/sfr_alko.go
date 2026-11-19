@@ -10,7 +10,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
-// Alkolites are individual verified files, separate from torrent_items.
+// Alkodiques are individual verified files, separate from torrent_items.
 // Read only the AD file link; neither import nor search calls the AD API.
 const sfrAlkoSQL = `SELECT f.playback_id::text,f.filename,COALESCE(f.filesize,0),f.tmdb,
  f.kind,COALESCE(f.season,0),COALESCE(f.episode,0),l.source_url
@@ -64,7 +64,7 @@ func sfrAlkoCandidates(rows []sfrRow) []core.Release {
 			continue
 		}
 		out = append(out, core.Release{ID: "sfr-alko:" + r.ID, GUID: "sfr-alko:" + r.ID, Name: r.Name, Size: r.Size,
-			Protocol: core.ProtocolHTTP, Indexer: "StreamFusion Reborn (Alkolites)", TitleIDs: core.IDs{TMDB: r.TMDB},
+			Protocol: core.ProtocolHTTP, Indexer: "StreamFusion Reborn (Alkodiques)", TitleIDs: core.IDs{TMDB: r.TMDB},
 			Info: info, StreamURL: r.AlkoURL, StreamDebrid: "alldebrid", StreamOnDemand: true, DebridCached: []string{"alldebrid"}})
 	}
 	return out

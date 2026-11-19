@@ -45,6 +45,13 @@ const (
 	providerParallel   = 4
 	authBackoff        = 15 * time.Minute
 	maxBackoff         = 5 * time.Minute
+	// quotaPause is how long a provider whose account reached its daily
+	// quota is left alone before a single test request.
+	quotaPause = time.Hour
+	// quotaProbeLease bounds a half-open test whose caller never reported a
+	// result (a filter check that made no call): another test may then run.
+	quotaProbeLease = providerOpTimeout + 15*time.Second
+	stateQuota      = "quota_exceeded"
 	// linkMargin is how long before expiry a link counts as stale.
 	linkMargin = 2 * time.Minute
 )
@@ -123,10 +130,13 @@ type entry struct {
 	err error // construction error (missing key, unknown kind)
 	sem *limiter
 
-	mu        sync.Mutex
-	failures  int
-	until     time.Time
-	state     string // "", "backoff", "auth_failed"
+	mu       sync.Mutex
+	failures int
+	until    time.Time
+	state    string // "", "backoff", "auth_failed", "quota_exceeded"
+	// probeAt is when the single half-open test after a quota pause was
+	// let through (zero: none running).
+	probeAt   time.Time
 	lastError string
 	stats     ProviderStats
 	// Add refusals (ErrAddRefused): consecutive count, the latest, and the
@@ -192,7 +202,7 @@ type ProviderStats struct {
 	Kind           string     `json:"kind"`
 	Enabled        bool       `json:"enabled"`
 	Priority       int        `json:"priority"`
-	State          string     `json:"state"` // ok, backoff, auth_failed, disabled
+	State          string     `json:"state"` // ok, backoff, auth_failed, quota_exceeded, disabled
 	LastError      string     `json:"lastError,omitempty"`
 	BackoffUntil   *time.Time `json:"backoffUntil,omitempty"`
 	Requests       int64      `json:"requests"`
@@ -355,6 +365,18 @@ func (s *Service) Enabled() bool { return len(s.active()) > 0 }
 func (e *entry) blocked(now time.Time) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.state == stateQuota {
+		if now.Before(e.until) {
+			return fmt.Errorf("debrid provider %q: daily quota reached, new try at %s (%s): %w", displayName(e.cfg), e.until.Format("15:04"), e.lastError, ErrQuotaExceeded)
+		}
+		// Half-open: the single test request is reserved by begin, right
+		// before the real call. blocked only reads, so filters that never
+		// call the provider (cache checks, listings) cannot use it up.
+		if !e.probeAt.IsZero() && now.Sub(e.probeAt) < quotaProbeLease {
+			return fmt.Errorf("debrid provider %q: daily quota reached, one test request is checking it: %w", displayName(e.cfg), ErrQuotaExceeded)
+		}
+		return nil
+	}
 	if now.Before(e.until) {
 		if e.state == "auth_failed" {
 			// Keep the cause classifiable: playback tells the viewer the
@@ -370,6 +392,46 @@ func (e *entry) acquire(ctx context.Context) error { return e.sem.acquire(ctx) }
 
 func (e *entry) release() { e.sem.release() }
 
+// begin takes a concurrency slot for a real provider call and, after a quota
+// pause, reserves the single test request (probe=true). The reservation is
+// made once the slot is held, so waiting for a slot cannot outlast its lease.
+// Every successful begin is paired with finish.
+func (e *entry) begin(ctx context.Context, now time.Time) (probe bool, err error) {
+	if err := e.sem.acquire(ctx); err != nil {
+		return false, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.state != stateQuota {
+		return false, nil
+	}
+	if now.Before(e.until) || (!e.probeAt.IsZero() && now.Sub(e.probeAt) < quotaProbeLease) {
+		e.sem.release()
+		return false, fmt.Errorf("debrid provider %q: daily quota reached, new try at %s: %w", displayName(e.cfg), e.until.Format("15:04"), ErrQuotaExceeded)
+	}
+	e.probeAt = now
+	return true, nil
+}
+
+// quotaPending reports a provider paused for its daily quota whose single
+// test request has not succeeded yet.
+func (e *entry) quotaPending() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.state == stateQuota
+}
+
+// finish ends a call started by begin. A test request that reported nothing
+// (an unsupported operation, a cancelled caller) frees the reservation.
+func (e *entry) finish(probe bool) {
+	if probe {
+		e.mu.Lock()
+		e.probeAt = time.Time{}
+		e.mu.Unlock()
+	}
+	e.sem.release()
+}
+
 // observe updates the breaker after a provider call. It returns the new
 // pause when the call put the provider into back-off, a clear event when a
 // success ended an earlier pause, and nil otherwise (cluster.go broadcasts
@@ -384,6 +446,7 @@ func (e *entry) observe(now time.Time, err error) *backoffEvent {
 		// server under maintenance) are not outages.
 		was := e.state
 		e.failures = 0
+		e.probeAt = time.Time{}
 		if !now.Before(e.until) {
 			// A call that was already in flight when a pause began does not
 			// end it (nor blank its reported state) early.
@@ -392,6 +455,11 @@ func (e *entry) observe(now time.Time, err error) *backoffEvent {
 		if err == nil {
 			t := now
 			e.stats.LastSuccess = &t
+			if !now.Before(e.until) {
+				// A success after the last pause: the earlier failure is
+				// no longer the account's current state.
+				e.lastError = ""
+			}
 		}
 		if was != "" && !now.Before(e.until) {
 			return &backoffEvent{Provider: e.cfg.ID}
@@ -404,7 +472,19 @@ func (e *entry) observe(now time.Time, err error) *backoffEvent {
 	e.stats.Failures++
 	e.lastError = err.Error()
 	var rl *rateLimitError
+	wasQuota := e.state == stateQuota
+	e.probeAt = time.Time{}
 	switch {
+	case errors.Is(err, ErrQuotaExceeded):
+		if !now.Before(e.until) || !wasQuota {
+			// A new pause from the first quota answer or a failed test; a
+			// late answer of a call that began before the pause adds none.
+			e.state, e.until = stateQuota, now.Add(quotaPause)
+		}
+	case wasQuota && now.Before(e.until):
+		// A call in flight before the pause failed otherwise: the quota
+		// pause stays as it is.
+		return nil
 	case errors.Is(err, ErrAuth):
 		e.state, e.until = "auth_failed", now.Add(authBackoff)
 	case errors.As(err, &rl) || errors.Is(err, ErrRateLimited):
@@ -653,7 +733,9 @@ func (s *Service) CheckCached(ctx context.Context, hashes []string) (map[string]
 	}
 	definitive := true
 	for _, e := range s.active() {
-		if e.blocked(s.now()) != nil {
+		if e.blocked(s.now()) != nil || e.quotaPending() {
+			// A provider waiting for its quota test is left to a real
+			// unlock: a cache check must not hold (or spend) that one test.
 			definitive = false
 			continue
 		}
@@ -668,23 +750,30 @@ func (s *Service) CheckCached(ctx context.Context, hashes []string) (map[string]
 		if len(ask) == 0 {
 			continue
 		}
-		if err := e.acquire(ctx); err != nil {
-			return out, false
+		probe, err := e.begin(ctx, s.now())
+		if err != nil {
+			definitive = false
+			if ctx.Err() != nil {
+				return out, false
+			}
+			continue
 		}
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		res, err := e.p.CheckCached(cctx, ask)
 		cancel()
-		e.release()
 		if errors.Is(err, ErrUnsupported) {
+			e.finish(probe) // no call was made: a quota test is not spent
 			definitive = false
 			continue
 		}
 		if err != nil && ctx.Err() != nil {
 			// A caller's short discovery budget says nothing about the
 			// provider's availability. Do not open its circuit for that.
+			e.finish(probe)
 			return out, false
 		}
 		s.observe(e, err)
+		e.finish(probe)
 		if err != nil {
 			definitive = false
 			continue
@@ -787,7 +876,15 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	var errs []error
 	notCached := 0
 	var downloading error // a local BitTorrent client is downloading it
+	// Only an explicit service-wide cache miss skips sibling accounts.
+	// ErrNotCached alone can describe an incomplete account-local torrent.
+	// Account errors and refusals always move on to the next account.
+	uncached := map[string]bool{} // service kind → answered "not cached"
 	for _, e := range entries {
+		if uncached[e.cfg.Kind] {
+			notCached++
+			continue
+		}
 		if err := e.blocked(s.now()); err != nil {
 			errs = append(errs, err)
 			continue
@@ -820,6 +917,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			}
 		case errors.Is(err, core.ErrNotCached):
 			notCached++
+			if sharedCache(e) && errors.Is(err, errSharedCacheMiss) && !refusal(err) {
+				uncached[e.cfg.Kind] = true
+			}
 		case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
 			return nil, err // release-level outcome; another account cannot fix it
 		default:
@@ -841,7 +941,7 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 		}
 		return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrNotCached, errors.Join(errs...))
 	}
-	return nil, errors.Join(errs...)
+	return nil, s.joinProviderErrors(errs)
 }
 
 // queuedTTL is how long a title's queued download stands for the title: other
@@ -1037,7 +1137,7 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 		errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
 	}
 	s.forgetQueued(rel, hash)
-	joined := errors.Join(errs...)
+	joined := s.joinProviderErrors(errs)
 	s.log.Info("uncached torrent not sent to download", "release", rel.Name, "err", joined)
 	for _, err := range errs {
 		if errors.Is(err, core.ErrDownloadLimit) {
@@ -1064,11 +1164,12 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 			"queue", queueDuration, "find", findDuration, "ready", readyDuration,
 			"link", linkDuration, "took", time.Since(wallStarted))
 	}()
-	if err := e.acquire(ctx); err != nil {
+	probe, err := e.begin(ctx, s.now())
+	if err != nil {
 		return Payload{}, err
 	}
 	queueDuration = time.Since(wallStarted)
-	defer e.release()
+	defer e.finish(probe)
 	// A caller's own budget (a resolver candidate check, say) ending says
 	// nothing about the provider; only the provider's outcomes, including
 	// its own providerOpTimeout, move the breaker.
@@ -1105,7 +1206,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 			torrentID = id
 		} else if !errors.Is(err, ErrUnsupported) {
 			observe(err)
-			if errors.Is(err, ErrAuth) {
+			if accountError(err) {
 				return Payload{}, err
 			}
 		}
@@ -1128,7 +1229,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 				return Payload{}, errBackgroundUndecided
 			}
 			observe(err)
-			if errors.Is(err, ErrAuth) {
+			if accountError(err) {
 				return Payload{}, err
 			}
 			return Payload{}, errBackgroundUndecided // availability stays unknown
@@ -1193,7 +1294,11 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		// Skipped without a provider call: says nothing about the torrent.
 		return Payload{}, err
 	}
-	observe(err)
+	// A successful acquisition is not yet a successful quota probe: the
+	// account can still refuse the subsequent link unlock.
+	if err != nil {
+		observe(err)
+	}
 	if errors.Is(err, ErrAddRefused) {
 		// Not evidence about the torrent (it may be the account's add
 		// throttle): skip it briefly, in memory only, and do not queue it
@@ -1333,7 +1438,7 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		if len(errs) == 0 {
 			return p, ErrNoProvider
 		}
-		return p, errors.Join(errs...)
+		return p, s.joinProviderErrors(errs)
 	}
 	// Another provider may hold the same torrent.
 	for _, e := range s.active() {
@@ -1353,7 +1458,7 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		}
 		note(err)
 	}
-	joined := errors.Join(errs...)
+	joined := s.joinProviderErrors(errs)
 	if joined == nil {
 		joined = ErrNoProvider
 	}
@@ -1392,7 +1497,8 @@ func (s *Service) alternateProvider(ctx context.Context, p Payload) (Payload, er
 
 // relink regenerates a link on the payload's own provider.
 func (s *Service) relink(ctx context.Context, e *entry, p Payload) (Payload, error) {
-	if err := e.acquire(ctx); err != nil {
+	probe, err := e.begin(ctx, s.now())
+	if err != nil {
 		return p, err
 	}
 	lctx, cancel := context.WithTimeout(ctx, providerOpTimeout)
@@ -1403,7 +1509,7 @@ func (s *Service) relink(ctx context.Context, e *entry, p Payload) (Payload, err
 		s.observe(e, err)
 	}
 	cancel()
-	e.release()
+	e.finish(probe)
 	if err == nil {
 		s.noteLatency(e.cfg.ID, func(l *Latency) { l.LinkMs = ewma(l.LinkMs, ms(s.now().Sub(start)), l.Samples == 0) })
 		// The provider re-signed the link: it stands on the host the
@@ -1458,6 +1564,13 @@ func (s *Service) blockedFile(ctx context.Context, e *entry, hash, torrentID str
 // provider: it refused the torrent or its file, or its adds are paused.
 func refusal(err error) bool {
 	return errors.Is(err, ErrAddRefused) || errors.Is(err, ErrBlocked) || errors.Is(err, errAddsPaused)
+}
+
+// sharedCache reports a provider whose "not cached" answer holds for every
+// account of its service: a debrid service, not a local BitTorrent client
+// or a plugin.
+func sharedCache(e *entry) bool {
+	return !isLocalProvider(e.p) && !strings.HasPrefix(e.cfg.Kind, "plugin:")
 }
 
 // markRefused remembers, in memory, that the provider refused this hash.

@@ -194,7 +194,7 @@ func (l *limiter) signalLocked() {
 // ---------------------------------------------------------------------------
 // Back-off broadcast.
 
-// backoffEvent is a provider pause (State "backoff" or "auth_failed", Until
+// backoffEvent is a provider pause (State "backoff", "auth_failed" or "quota_exceeded", Until
 // in Unix milliseconds) or, with State empty, the end of one.
 type backoffEvent struct {
 	Provider string `json:"provider"`
@@ -271,11 +271,15 @@ func (e *entry) applyRemote(now time.Time, ev backoffEvent) {
 	case "":
 		if e.state != "" || now.Before(e.until) {
 			e.failures, e.state, e.until = 0, "", time.Time{}
+			e.lastError = ""
 		}
-	case "backoff", "auth_failed":
+	case "backoff", "auth_failed", stateQuota:
 		limit := maxBackoff
-		if ev.State == "auth_failed" {
+		switch ev.State {
+		case "auth_failed":
 			limit = authBackoff
+		case stateQuota:
+			limit = quotaPause
 		}
 		until := time.UnixMilli(ev.Until)
 		if until.After(now.Add(limit)) {

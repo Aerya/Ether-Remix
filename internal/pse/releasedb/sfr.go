@@ -376,7 +376,7 @@ func (s *Service) sfrSave(ctx context.Context, rows []sfrRow) (int, error) {
 				continue
 			}
 			rel.StreamURL, rel.StreamDebrid = r.AlkoURL, "alldebrid"
-			rel.ID, rel.Protocol, rel.Indexer = "sfr-alko:"+r.ID, core.ProtocolHTTP, "StreamFusion Reborn (Alkolites)"
+			rel.ID, rel.Protocol, rel.Indexer = "sfr-alko:"+r.ID, core.ProtocolHTTP, "StreamFusion Reborn (Alkodiques)"
 		}
 		request, known := AssociationRequest(requests, key, season, episode)
 		if !known || releaseparse.AssociationReason(request, rel) != "" || releaseparse.ReferenceReason(rel) != "" {

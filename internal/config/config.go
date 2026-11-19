@@ -442,6 +442,19 @@ type Resolver struct {
 	// sources have measurements; "usenet" or "debrid" always prefer one.
 	// Quality is never traded for speed (see resolver/routing.go).
 	SourcePreference string `json:"sourcePreference,omitempty"`
+	// VerifiedFiles places the verified AllDebrid files ("Alkodiques", one
+	// link unlock, no magnet) in the ranking: "first" (or empty, the
+	// default) puts every verified file that passes the hard gates (audio
+	// language, profile resolution bounds, release rules, blocks, known
+	// health) ahead of all other sources, whatever their resolution; "tie"
+	// only orders them first among releases of equal quality; "off" leaves
+	// the ranking untouched. A failing file falls back to the next candidate.
+	VerifiedFiles string `json:"verifiedFiles,omitempty"`
+	// FailoverAttempts caps how many releases one playback tries when its
+	// source fails (at opening and in each failover): 1 to 10, default 4
+	// (0 or empty). A debrid account error (quota, key, blocked account)
+	// stops the attempts that depend on that account at once.
+	FailoverAttempts int `json:"failoverAttempts,omitempty"`
 	// SourceOrder orders releases of equivalent quality by source family and
 	// by indexer for each kind of content. Empty keeps the behaviour above.
 	SourceOrder SourceOrder `json:"sourceOrder,omitzero"`

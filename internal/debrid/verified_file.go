@@ -2,7 +2,6 @@ package debrid
 
 import (
 	"context"
-	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -56,5 +55,5 @@ func (s *Service) acquireFile(ctx context.Context, r core.Release) ([]byte, erro
 	if len(errs) == 0 {
 		return nil, ErrNoProvider
 	}
-	return nil, errors.Join(errs...)
+	return nil, s.joinProviderErrors(errs)
 }

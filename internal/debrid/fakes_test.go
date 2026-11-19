@@ -286,7 +286,9 @@ type fakeProvider struct {
 	cached    map[string]bool
 	bulk      bool
 	authFail  bool
-	gone      bool // Link answers ErrGone until re-acquired
+	quotaFail bool  // Acquire answers the account quota (ErrQuotaExceeded)
+	failErr   error // Acquire fails with this error (a transient outage)
+	gone      bool  // Link answers ErrGone until re-acquired
 	torrents  map[string]string
 	calls     map[string]int
 	tokens    int
@@ -363,6 +365,15 @@ func (p *fakeProvider) Acquire(_ context.Context, req AcquireRequest) (*Acquired
 	p.count("acquire")
 	p.wait(p.acqDelay)
 	p.mu.Lock()
+	if p.quotaFail {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("fake: HTTP 502: You have reached your daily download limit: %w", ErrQuotaExceeded)
+	}
+	if p.failErr != nil {
+		err := p.failErr
+		p.mu.Unlock()
+		return nil, err
+	}
 	if p.authFail {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("fake: %w", ErrAuth)

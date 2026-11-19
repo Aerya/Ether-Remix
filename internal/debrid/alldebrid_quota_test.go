@@ -61,3 +61,42 @@ func TestAllDebridFullAccountStillReadsExistingAndVerifiedFiles(t *testing.T) {
 		t.Fatal("real rate limit lost")
 	}
 }
+
+// MAGNET_TOO_MANY pauses new additions only: even when its message mentions
+// a daily limit it is never a provider quota (HTTP 502 "daily download
+// limit"), which would pause every read.
+func TestAllDebridMagnetTooManyIsNotAQuota(t *testing.T) {
+	for _, msg := range []string{"Magnets limit reached", "Daily magnets limit reached", "You have reached your daily download limit"} {
+		err := adError(200, "MAGNET_TOO_MANY", msg)
+		if errors.Is(err, ErrQuotaExceeded) || !errors.Is(err, ErrAddRefused) || !errors.Is(err, ErrDownloadLimit) {
+			t.Fatalf("%q: wrong class: %v", msg, err)
+		}
+	}
+	if err := adError(502, "", "You have reached your daily download limit"); !errors.Is(err, ErrQuotaExceeded) || errors.Is(err, ErrAddRefused) {
+		t.Fatalf("daily limit not a quota: %v", err)
+	}
+
+	fake := (&fakeAD{ready: true}).handler(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v4/magnet/upload" {
+			fmt.Fprint(w, `{"status":"error","error":{"code":"MAGNET_TOO_MANY","message":"Daily magnets limit reached"}}`)
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	svc := NewService(config.Debrid{CachedOnly: true, Providers: []config.DebridProvider{{ID: "ad", Kind: "alldebrid", APIKey: testKey, Enabled: true}}}, Options{ProviderOptions: fastOpts(srv.URL)})
+	ctx := context.Background()
+	rel := torrentRelease("missing-q")
+	rel.InfoHash = strings.Repeat("e", 40)
+	rel.MagnetURL = "magnet:?xt=urn:btih:" + rel.InfoHash
+	if _, err := svc.Acquire(ctx, rel); !errors.Is(err, core.ErrDownloadLimit) || errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("add refusal: %v", err)
+	}
+	if st := svc.Stats()[0]; st.State == stateQuota || st.State == "backoff" {
+		t.Fatalf("provider paused: %+v", st)
+	}
+	if _, err := svc.Acquire(ctx, torrentRelease("existing")); err != nil {
+		t.Fatalf("existing torrent blocked: %v", err)
+	}
+}

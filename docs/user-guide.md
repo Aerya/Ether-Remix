@@ -178,6 +178,11 @@ never downloads a whole file.
 - **Remove uncached torrents** (on by default): torrents Ether added that turn
   out not to be cached are removed again. Cached torrents stay on your account,
   so the next play of that title starts straight away.
+- **Link renewal during playback** (renew by default): when a debrid's media
+  server fails during a read, Ether asks for a new link, or another provider.
+  Choose **Keep the link and retry** to spare a shared account's link quota: the
+  file reads to the end on its link and never calls the provider API. A link
+  that is really dead is still renewed, at most every 30 seconds per file in that mode.
 - **Season packs:** for an episode, Ether streams that episode's file from a
   torrent season pack. Pins, blocks and health checks apply to the episode.
 

@@ -75,6 +75,12 @@ func compareCandidates(a, b candidate) bool {
 	if a.langOK != b.langOK {
 		return a.langOK
 	}
+	// Verified AllDebrid files (resolver.verifiedFiles "first"): one link
+	// unlock and no magnet, so a file that passed every hard gate leads.
+	// Candidates are marked only when they pass them (verifiedFileMode).
+	if a.vfFirst != b.vfFirst {
+		return a.vfFirst
+	}
 	if a.bandwidth != b.bandwidth {
 		return a.bandwidth > b.bandwidth
 	}
@@ -82,6 +88,11 @@ func compareCandidates(a, b candidate) bool {
 	x, y := a.keys, b.keys
 	if x.position != y.position {
 		return x.position > y.position
+	}
+	// "tie": among releases at the same quality position, a verified file
+	// leads (before revision and custom format score).
+	if a.vfTie != b.vfTie {
+		return a.vfTie
 	}
 	if x.revision != y.revision {
 		return x.revision > y.revision
@@ -318,4 +329,43 @@ func preferredSource(mode string) string {
 func samePreferenceTier(a, b candidate) bool {
 	return a.belowScore == b.belowScore && a.fallback == b.fallback &&
 		(!a.belowScore || a.counted == b.counted) && (!a.fallback || a.keys.height == b.keys.height)
+}
+
+// Values of config.Resolver.VerifiedFiles. Empty or unknown means "first".
+const (
+	verifiedFilesOff   = "off"
+	verifiedFilesTie   = "tie"
+	verifiedFilesFirst = "first"
+)
+
+// verifiedFilesMode normalises the owner's setting.
+func verifiedFilesMode(v string) string {
+	switch m := strings.ToLower(strings.TrimSpace(v)); m {
+	case verifiedFilesOff, verifiedFilesTie:
+		return m
+	}
+	return verifiedFilesFirst
+}
+
+// markVerifiedFile sets the verified-file promotion on c. Only a candidate
+// that already passed the hard gates (it reached ranking, so language and
+// resolution bounds of the profile, release rules, blocks and known health
+// held) and is not a soft fallback qualifies: no weak identity, no score or
+// quality shortfall, accepted audio, no avoided release rule, and a delivery
+// size the client's connection carries. Speculative work (warm-ups,
+// availability checks) promotes too: the on-demand link stops an unattended
+// search at the file (ErrForegroundOnly), so no torrent is prepared and warmed
+// ahead of it, and Play resolves again and opens the file.
+func markVerifiedFile(c *candidate, mode string) {
+	if mode == verifiedFilesOff || !core.IsVerifiedFile(c.rel) {
+		return
+	}
+	if c.identityWeak || c.identityConflict || c.belowScore || c.fallback || !c.langOK || c.policy.Fallback != 0 || c.bandwidth < 0 {
+		return
+	}
+	if mode == verifiedFilesTie {
+		c.vfTie = true
+		return
+	}
+	c.vfFirst = true
 }

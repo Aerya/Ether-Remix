@@ -107,3 +107,37 @@ func TestBuiltinTVSearchDoesNotReuseOldYearKeywordAnswers(t *testing.T) {
 		t.Fatal("corrected TV answer was not cached")
 	}
 }
+
+type alkoBackend struct{ fakeBackend }
+
+func (alkoBackend) Search(ctx context.Context, req core.SearchRequest, reserve func(context.Context, string) error) ([]core.Release, error) {
+	if err := reserve(ctx, "hit"); err != nil {
+		return nil, err
+	}
+	return []core.Release{
+		{ID: "sfr-alko:9", GUID: "sfr-alko:9", Name: "Film.2020.1080p.WEB-DL", Protocol: core.ProtocolHTTP, Indexer: "StreamFusion Reborn (Alkodiques)",
+			StreamURL: "https://alldebrid.com/f/abc9", StreamDebrid: "alldebrid", StreamOnDemand: true},
+		{ID: "t1", GUID: "t1", Name: "Film.2020.1080p.BluRay", Protocol: core.ProtocolTorrent, Indexer: "Autre", InfoHash: "0123456789abcdef0123456789abcdef01234567"},
+	}, nil
+}
+
+func TestBackendStampKeepsVerifiedFileLabel(t *testing.T) {
+	cfg := config.Indexer{ID: "sfr", Name: "StreamFusion Reborn (base)", URL: "https://site.invalid", Kind: config.IndexerKindCardigann, Definition: "fake", Enabled: true}
+	m := NewManager(nil, []config.Indexer{cfg}, Options{NZBDir: t.TempDir(), Backend: func(config.Indexer) (Backend, error) { return &alkoBackend{}, nil }})
+	rels, err := m.Search(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "Film", Year: 2020})
+	if err != nil || len(rels) != 2 {
+		t.Fatalf("search: %v %v", rels, err)
+	}
+	for _, r := range rels {
+		wantLabel := "StreamFusion Reborn (base)"
+		if core.IsVerifiedFile(r) {
+			wantLabel = "StreamFusion Reborn (Alkodiques)"
+		}
+		if r.Indexer != wantLabel {
+			t.Errorf("%s: libellé %q, attendu %q", r.ID, r.Indexer, wantLabel)
+		}
+		if r.IndexerID == "" {
+			t.Errorf("%s: IndexerID perdu", r.ID)
+		}
+	}
+}

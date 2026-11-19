@@ -1,0 +1,1 @@
+import{u as e}from"./i18n-Djn-SKi9.js";function t(t){if(!t)return``;let n=/^Played in (.+): no acceptable (\d+p) or better release was found\.$/.exec(t);return n?e(`Played in {quality}: no acceptable {minimum} or better release was found.`,{quality:n[1],minimum:n[2]}):t}export{t};
