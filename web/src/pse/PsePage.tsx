@@ -1,3 +1,4 @@
+import "./navigation.css";
 import { IndexerActivity } from "./IndexerActivity";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
@@ -290,6 +291,7 @@ function PseSettings() {
     ) : null;
   return (
     <DomainPage
+      className="remix-navigation"
       title="Ether-Remix"
       base={BASE}
       tabs={TABS.map((t) => ({
@@ -385,11 +387,11 @@ function PseSettings() {
             <>
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Réglez les préférences à qualité équivalente. L’ordre de priorité ne signifie pas que les recherches réseau sont exécutées l’une après l’autre. La sélection d’indexation se règle dans l’onglet Indexation.",
-                  "Set preferences among equivalent-quality releases. Priority order does not mean network searches run one after another. Indexing selection belongs in the Indexing tab.",
+                  "Le mode rapide essaie les sources sélectionnées dans l’ordre. Les réglages avancés ci-dessous s’appliquent lorsque ce mode est désactivé. La sélection d’indexation se règle dans l’onglet Indexation.",
+                  "Quick mode tries selected sources in order. Advanced settings below apply when quick mode is off. Indexing selection belongs in the Indexing tab.",
                 )}
               </p>
-              <SourceOrder />
+              <SourceOrder values={saved ?? {}} />
               <div className="rounded-xl border border-border p-4 text-sm space-y-2">
                 <h2 className="font-semibold">
                   {L("Secours et autres sources", "Fallback and other sources")}

@@ -79,3 +79,8 @@ Un fichier Alkodique ne coûte qu'un appel AllDebrid (`link/unlock`), sans magne
 - `off` : classement inchangé.
 
 Effet sur les menus de versions (**Play Version**) avec `alternativesPerResolution` : Auto et le créneau de la résolution du fichier deviennent des Alkodiques ; un créneau 4K explicitement choisi reste le 2160p. Les préchargements ne préparent pas de torrent devant un fichier vérifié : la lecture ouvre directement le fichier.
+
+
+## Alkodiques uniquement à la lecture
+
+Le [mode rapide](QUICK_SOURCES.fr.md) utilise les fichiers `sfr-alko:` vérifiés, via `sfr_alko.go` et `core.IsVerifiedFile`. Il ne lit pas les torrents ordinaires, ne transforme aucun lien en magnet et ne recherche pas leur cache. Les tables Alkodiques restent facultatives : droits de lecture absents, source vide ou échec de lecture font passer à la source suivante, sans créer de droits PostgreSQL.

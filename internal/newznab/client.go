@@ -1070,6 +1070,9 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 		return nil, nil
 	}
 	key := cacheKey(c, req)
+	if core.QuickSource(ctx) == "alko" {
+		key += "|alko-only"
+	}
 	defer func() {
 		if resultErr != nil && len(out) == 0 {
 			if stale, ok := c.staleFallback(ctx, key, resultErr); ok {

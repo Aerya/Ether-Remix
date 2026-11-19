@@ -58,3 +58,6 @@ L’indexeur Remix conserve des références sans lancer lui-même de téléchar
 Les liens doivent respecter les critères Remix actifs avant enregistrement et réutilisation : profils globaux ou spécifiques en mode profils ; filtres simples et langues du catalogue français en mode simple. Les exceptions explicites de langue restent appliquées sans annuler les critères de qualité. Une langue inconnue ne satisfait pas une exigence VF/MULTi/VOSTFR.
 
 Le nettoyage des anciens liens démarre après actualisation des profils et exceptions, au démarrage, après modification et lors du passage périodique. Il ne supprime aucun fichier vidéo. Les observations sans lien restent des métadonnées de diagnostic ; elles ne prouvent pas la conformité ni la possibilité de lecture. Élargir les critères nécessite de nouvelles recherches pour retrouver les liens rejetés. « Référence retenue » ne remplace pas les contrôles du client et du profil de lecture.
+
+
+Le [mode rapide](QUICK_SOURCES.fr.md) conserve les recherches et les références dans les mécanismes existants. Une référence déjà indexée ne passe jamais devant une source sélectionnée plus haut ; l’ordre est appliqué avant validation à la lecture.

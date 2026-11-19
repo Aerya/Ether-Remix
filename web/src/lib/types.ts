@@ -389,7 +389,11 @@ export interface EtherConfig {
     sourcePreference?: string;
     verifiedFiles?: string;
     failoverAttempts?: number;
-    sourceOrder?: { families?: string[]; content?: Record<string, string[]> };
+    sourceOrder?: {
+      quick?: { enabled: boolean; order?: string[]; seedstremId?: string };
+      families?: string[];
+      content?: Record<string, string[]>;
+    };
     sourceAlwaysFirst?: boolean;
     customFormats?: CustomFormatDefinition[] | null;
     /** Let a detail page's file-availability check open on-demand add-on streams. */

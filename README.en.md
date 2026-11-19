@@ -52,6 +52,8 @@ For **music**, bring together the Deezer catalogue, your audio files and your iB
 <a id="nav-an-interface-that-fits-your-habits"></a>
 <a id="nav-ether-extended-by-remix"></a>
 
+**Quick source setup**: under **Remix → Playback → Priorities**, enable quick mode, select Alkodiques only, Usenet, the Ether-Remix torrent client and/or Seedstrem, then order them. After mandatory filters, Remix tries usable releases from each source before moving on; other Stremio addons (including Debrider) are the last resort. [Guide](docs/pse/QUICK_SOURCES.en.md).
+
 ## What Remix does
 
 The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources and limits for each use.

@@ -1,3 +1,4 @@
+import { QuickSources } from "./QuickSources";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { SettingsSection } from "../components/CollapsibleSections";
 import { useEffect, useMemo, useState } from "react";
@@ -126,8 +127,11 @@ function FamilyLists({
   );
 }
 
-export function SourceOrder() {
+export function SourceOrder({ values = {} }: { values?: Record<string, string> }) {
   const config = useAsync(() => api.getConfig(), []);
+  const [quick, setQuick] = useState<{ enabled: boolean; order?: string[]; seedstremId?: string }>({
+    enabled: false,
+  });
   const [families, setFamilies] = useState<string[]>([]);
   const [content, setContent] = useState<Record<string, string[]>>({});
   const [globalIds, setGlobalIds] = useState<string[] | null>(null);
@@ -136,6 +140,7 @@ export function SourceOrder() {
 
   useEffect(() => {
     const order = config.data?.resolver?.sourceOrder;
+    setQuick(order?.quick ?? { enabled: false });
     setFamilies(order?.families ?? []);
     setContent(order?.content ?? {});
   }, [config.data]);
@@ -168,7 +173,10 @@ export function SourceOrder() {
           globalIds && latest.indexers
             ? applyPriorities(latest.indexers, globalIds)
             : latest.indexers,
-        resolver: { ...latest.resolver, sourceOrder: { families, content } },
+        resolver: {
+          ...latest.resolver,
+          sourceOrder: { ...latest.resolver?.sourceOrder, quick, families, content },
+        },
       } as typeof latest);
       setState("saved");
     } catch {
@@ -192,6 +200,7 @@ export function SourceOrder() {
         <p className="p-4 text-sm">{L("Chargement…", "Loading…")}</p>
       ) : (
         <div className="space-y-5 p-4">
+          <QuickSources value={quick} onChange={setQuick} config={config.data} values={values} />
           <section className="space-y-2">
             <h3 className="text-sm font-medium">
               {L("Par famille de sources", "By source family")}
