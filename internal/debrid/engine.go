@@ -203,6 +203,22 @@ func streamingTransport(limit *connCap, cap egress.Capability) *http.Transport {
 	}
 }
 
+// capKeyTransport keys the connection cap on the real host of every HTTPS
+// request, redirect hops included (the transport sees each hop's URL).
+// Behind a proxy, HTTPS media rides a CONNECT tunnel per host, so the dial
+// address is the proxy shared by every host: cap by the real host, like
+// hostGate, reduce and hedgeAllowed. Plain HTTP keeps the dial-address cap.
+type capKeyTransport struct{ t *http.Transport }
+
+func (c capKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme == "https" {
+		req = req.WithContext(withCapKey(req.Context(), dialAddr(req.URL.String())))
+	}
+	return c.t.RoundTrip(req)
+}
+
+func (c capKeyTransport) CloseIdleConnections() { c.t.CloseIdleConnections() }
+
 // NewEngine wraps inner with debrid streaming.
 func NewEngine(svc *Service, opts EngineOptions) *Engine {
 	e := &Engine{svc: svc, inner: opts.Inner, inHC: opts.Health, cache: opts.Cache, hc: opts.HTTPClient, hedge: opts.HedgeClient,
@@ -216,7 +232,7 @@ func NewEngine(svc *Service, opts EngineOptions) *Engine {
 	limit.dialGap = 250 * time.Millisecond
 	var owned []*http.Client
 	client := func(t *http.Transport) *http.Client {
-		var transport http.RoundTripper = t
+		var transport http.RoundTripper = capKeyTransport{t}
 		if opts.WrapMediaTransport != nil {
 			transport = opts.WrapMediaTransport(transport)
 		}

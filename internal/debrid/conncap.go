@@ -70,19 +70,37 @@ func (c *connCap) reduce(addr string) {
 	}
 }
 
+type capKeyCtx struct{}
+
+// withCapKey makes dials made for this request count against key instead of
+// the dial address. Behind a proxy the dial address is the proxy, which every
+// media host shares; the cap must follow the real host.
+func withCapKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, capKeyCtx{}, key)
+}
+
+func capKey(ctx context.Context) (string, bool) {
+	k, ok := ctx.Value(capKeyCtx{}).(string)
+	return k, ok && k != ""
+}
+
 type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 func (c *connCap) wrap(next dialFunc) dialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if err := c.acquire(ctx, addr); err != nil {
+		key := addr
+		if k, ok := capKey(ctx); ok {
+			key = k
+		}
+		if err := c.acquire(ctx, key); err != nil {
 			return nil, err
 		}
 		conn, err := next(ctx, network, addr)
 		if err != nil {
-			c.release(addr)
+			c.release(key)
 			return nil, err
 		}
-		return &cappedConn{Conn: conn, release: func() { c.release(addr) }}, nil
+		return &cappedConn{Conn: conn, release: func() { c.release(key) }}, nil
 	}
 }
 
