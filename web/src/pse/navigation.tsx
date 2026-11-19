@@ -85,7 +85,6 @@ export function RemixSourcesRedirect() {
 
 export function visibleRemixViews(
   tab: keyof typeof REMIX_VIEWS,
-  releaseLibrary: boolean,
 ): readonly { key: string; fr: string; en: string }[] {
-  return REMIX_VIEWS[tab].filter((v) => v.key !== "releases" || releaseLibrary);
+  return REMIX_VIEWS[tab];
 }

@@ -27,8 +27,8 @@ func TestLibraryEncryptedReferencesLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries, _ := l.Entries(ctx, key)
-	if len(entries) != 0 {
-		t.Fatal("disabled beta wrote references")
+	if len(entries) != 1 {
+		t.Fatal("legacy off setting must not disable reference collection")
 	}
 	restore := pseenv.Replace(map[string]string{"PSE_RELEASE_LIBRARY": "on"})
 	defer restore()
@@ -107,5 +107,20 @@ func TestLibraryPreservesSameHashAcrossSources(t *testing.T) {
 	}
 	if got := l.Candidates(t.Context(), core.MovieKey(42)); len(got) != 2 {
 		t.Fatal("source alternative lost", got)
+	}
+}
+
+func TestIndexReferencesIgnoreLegacySwitch(t *testing.T) {
+	for _, value := range []string{"", "off", "on"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("PSE_RELEASE_LIBRARY", value)
+			t.Cleanup(pseenv.Replace(map[string]string{"PSE_INDEXER": "off", "PSE_RELEASE_LIBRARY": value}))
+			if !LibraryEnabled() {
+				t.Fatal("reference retention must remain enabled")
+			}
+			if LoadSettings().Enabled {
+				t.Fatal("migration must not start background searches")
+			}
+		})
 	}
 }

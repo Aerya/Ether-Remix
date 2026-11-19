@@ -1,40 +1,56 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { renderAppWith } from "./routes";
-it("saves the release library from quick start and exposes its view only after saving", async () => {
-  let enabled = false;
-  const doc = () => ({
-    features: [
-      {
-        id: "indexer",
-        title: { fr: "Indexation", en: "Indexing" },
-        description: { fr: "", en: "" },
-        fields: [
+
+it("exposes stored releases with automatic search off and no beta switch", async () => {
+  renderAppWith("/remix/indexation", (_method, path) => {
+    if (path === "/pse/release-library")
+      return {
+        enabled: true,
+        references: 0,
+        ready: 0,
+        expired: 0,
+        failed: 0,
+        sourceChanged: 0,
+        metadata: 0,
+        titles: 0,
+        lastSeen: 0,
+        items: [],
+        total: 0,
+        page: 0,
+      };
+    if (path === "/pse/")
+      return {
+        features: [
           {
-            key: "PSE_RELEASE_LIBRARY",
-            kind: "toggle",
-            value: enabled ? "on" : "off",
-            default: "off",
-            label: { fr: "Bibliothèque de releases (Bêta)", en: "Release library (Beta)" },
-            help: { fr: "", en: "" },
+            id: "indexer",
+            title: { fr: "Indexation", en: "Indexing" },
+            description: { fr: "", en: "" },
+            fields: [
+              {
+                key: "PSE_INDEXER",
+                kind: "toggle",
+                value: "off",
+                default: "off",
+                label: {
+                  fr: "Rechercher automatiquement des releases",
+                  en: "Automatically search for releases",
+                },
+                help: { fr: "", en: "" },
+              },
+            ],
           },
         ],
-      },
-    ],
+      };
   });
-  renderAppWith("/remix/demarrage", (method, path, body) => {
-    if (path === "/pse/") {
-      if (method === "PUT") {
-        expect(body).toEqual({ values: { PSE_RELEASE_LIBRARY: "on" } });
-        enabled = true;
-      }
-      return doc();
-    }
-  });
-  const toggle = await screen.findByRole("switch", { name: "Release library (Beta)" });
-  fireEvent.click(toggle);
-  fireEvent.click(screen.getByRole("button", { name: /Enregistrer|Save/ }));
-  await waitFor(() => expect(enabled).toBe(true));
-  fireEvent.click(screen.getByRole("tab", { name: "Indexing" }));
-  expect(await screen.findByRole("button", { name: "Releases" })).toBeVisible();
+  expect(
+    await screen.findByRole("switch", { name: "Automatically search for releases" }),
+  ).not.toBeChecked();
+  expect(
+    screen.queryByRole("switch", { name: /Release library|Bibliothèque de releases/ }),
+  ).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Releases" }));
+  expect(
+    await screen.findByRole("heading", { name: /Release index|Index des releases/ }),
+  ).toBeVisible();
 });

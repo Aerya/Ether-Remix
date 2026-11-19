@@ -1,6 +1,6 @@
-# Bibliothèque de releases — Bêta
+# Index des releases
 
-Activez **Remix → Indexation → Bibliothèque de releases (Bêta)** pour conserver les références exploitables des résultats de recherche. L’option `PSE_RELEASE_LIBRARY` est **désactivée par défaut**. Elle ne lance pas automatiquement l’indexation : celle-ci conserve ses sources, budgets et pauses habituels.
+Les recherches et imports conservent automatiquement leurs références dans un index commun, réutilisé à la lecture. Dans **Remix → Indexation**, le seul interrupteur **Rechercher automatiquement des releases** (`PSE_INDEXER`) contrôle les recherches de fond. Il reste désactivé par défaut ; l’arrêter n’efface pas l’index et ne désactive ni sa consultation ni sa réutilisation. L’ancien réglage `PSE_RELEASE_LIBRARY` est ignoré, quelle que soit sa valeur. Les sources, budgets et pauses déjà configurés sont conservés.
 
 Les recherches réelles alimentent la bibliothèque, ainsi que l’import SFR pour les titres du catalogue. Les liens fichiers Alkodiques conservent le chemin AllDebrid vérifié, sans ajout de magnet. Les références et éventuels en-têtes privés sont chiffrés avec la clé de configuration de Remix et ne sont jamais envoyés au navigateur.
 
@@ -8,7 +8,7 @@ Les recherches réelles alimentent la bibliothèque, ainsi que l’import SFR po
 
 ## Consulter les releases
 
-Ouvrez une fiche dans le catalogue de la console, puis **Releases indexées · Bêta**. La consultation est possible même lorsque la réutilisation est désactivée. Choisissez le champ et le sens du tri : résolution, taille, codec vidéo/audio, source, protocole, langues, cache annoncé, état de la référence ou dates. Une recherche textuelle filtre les releases sans interroger les sources. Le tri d’affichage ne modifie pas les critères de lecture.
+Ouvrez une fiche dans le catalogue de la console, puis **Releases indexées**. La consultation reste possible lorsque la recherche automatique est arrêtée. Choisissez le champ et le sens du tri : résolution, taille, codec vidéo/audio, source, protocole, langues, cache annoncé, état de la référence ou dates. Une recherche textuelle filtre les releases sans interroger les sources. Le tri d’affichage ne modifie pas les critères de lecture.
 
 Pour une série, choisissez une saison puis un épisode. La vue initiale correspond à S01E01, utilisé par l’indexation du catalogue ; les autres épisodes sont alimentés par leurs recherches. Une série indexée ne signifie pas que tous ses épisodes sont disponibles.
 
@@ -24,11 +24,11 @@ Pour une série, choisissez une saison puis un épisode. La vue initiale corresp
 
 Les URL HTTP ordinaires sont réutilisables pendant une heure ; les liens de téléchargement torrent/NZB pendant 24 heures. Les références stables (hash/magnet valide et lien fichier AllDebrid) sont conservées sans expiration d’âge, jusqu’à un échec ou un changement de configuration des sources. Elles passent toujours par les contrôles de lecture ; un hash conservé n’affirme pas que le fichier est en cache. Les changements de qualité ou de langue permettent un nouveau tri local. Les références expirées sont supprimées après 60 jours sans observation lors d’une nouvelle collecte. La consultation ne prolonge pas leur validité.
 
-Seules les releases renvoyées par les sources sont disponibles : les filtres appliqués par un addon ne peuvent pas être annulés dans Remix. Les anciennes métadonnées ne permettent pas de reconstruire rétroactivement les liens ; une nouvelle recherche ou un import est nécessaire. Désactiver la bêta arrête la collecte et la réutilisation de ces références, sans supprimer les métadonnées existantes.
+Seules les releases renvoyées par les sources sont disponibles : les filtres appliqués par un addon ne peuvent pas être annulés dans Remix. Les anciennes métadonnées ne permettent pas de reconstruire rétroactivement les liens ; une nouvelle recherche ou un import est nécessaire. Arrêter la recherche automatique conserve la collecte lors des recherches à la lecture et des imports, ainsi que la réutilisation des références existantes.
 
 ## Suivi dans la console
 
-Activez la bêta dans **Vue d’ensemble → Démarrage** ou **Indexation**, puis enregistrez. La vue **Indexation → Releases** apparaît après enregistrement. Elle permet de rechercher et parcourir les médias et releases par catégorie et période. Les recherches en cours et récentes indiquent l’activité réelle. La collecte est continue, sans pourcentage global de complétion.
+La vue **Indexation → Releases** est toujours accessible. Les réglages, les sources et l’activité des recherches se trouvent dans **Indexation**. La collecte est continue, sans pourcentage global de complétion. Pour une série, seuls les épisodes réellement présents dans l’index sont affichés ; une recherche initiale S01E01 ne représente pas une saison complète.
 
 Les compteurs, également présents dans **Vue d’ensemble**, distinguent les métadonnées des références conservées : disponibles, à actualiser, en échec ou liées à une source modifiée. Ces ensembles se recoupent et ne doivent pas être additionnés. Les compteurs se rafraîchissent toutes les 60 secondes lorsque la page est visible. Une référence disponible ne garantit pas la lecture.
 

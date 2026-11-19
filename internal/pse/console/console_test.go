@@ -235,3 +235,28 @@ func TestLoadOverrides(t *testing.T) {
 		t.Fatal("un réglage inconnu ne doit pas être chargé")
 	}
 }
+
+func TestConsoleRetiresLibrarySwitchWithoutStartingSearch(t *testing.T) {
+	h, _, stored := newHandler(t)
+	code, out := do(t, h, "GET", "/", "")
+	if code != 200 {
+		t.Fatal(code)
+	}
+	for _, feature := range out["features"].([]any) {
+		for _, f := range feature.(map[string]any)["fields"].([]any) {
+			if f.(map[string]any)["key"] == "PSE_RELEASE_LIBRARY" {
+				t.Fatal("legacy toggle exposed")
+			}
+		}
+	}
+	code, _ = do(t, h, "PUT", "/", `{"values":{"PSE_RELEASE_LIBRARY":"off","PSE_INDEXER":"off"}}`)
+	if code != 200 {
+		t.Fatal(code)
+	}
+	if _, ok := stored()["PSE_RELEASE_LIBRARY"]; ok {
+		t.Fatal("legacy toggle saved")
+	}
+	if stored()["PSE_INDEXER"] != "off" {
+		t.Fatal("background search changed")
+	}
+}

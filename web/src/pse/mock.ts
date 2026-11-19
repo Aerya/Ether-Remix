@@ -67,9 +67,16 @@ const demoFeatures = [
   },
   {
     id: "indexer",
-    title: text("Indexation en arrière-plan", "Background indexing"),
+    title: text("Indexation des releases", "Release indexing"),
     description: text(""),
     fields: [
+      demoField(
+        "PSE_INDEXER",
+        "Rechercher automatiquement des releases",
+        "Automatically search for releases",
+        "toggle",
+        { value: "off", default: "off" },
+      ),
       demoField("PSE_INDEXER_SOURCES", "Sources importées", "Imported sources", "multi", {
         options: [],
       }),

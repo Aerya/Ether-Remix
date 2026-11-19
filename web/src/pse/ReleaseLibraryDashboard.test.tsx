@@ -46,14 +46,14 @@ it("shows compact statistics with a link, without loading activity", async () =>
   );
   expect(screen.queryByText("Recherches en cours")).toBeNull();
 });
-it("does not expose the browser when disabled", async () => {
+it("handles an unavailable index response from an older server", async () => {
   vi.mocked(apiFetch).mockResolvedValue({ enabled: false });
   render(
     <MemoryRouter>
       <ReleaseLibraryDashboard />
     </MemoryRouter>,
   );
-  expect(await screen.findByText("La bibliothèque de releases est désactivée.")).toBeVisible();
+  expect(await screen.findByText("L’index des releases est indisponible.")).toBeVisible();
   expect(screen.queryByRole("button")).toBeNull();
 });
 

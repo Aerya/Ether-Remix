@@ -104,18 +104,18 @@ export function ReleaseLibrary({
   ];
   return (
     <section className="min-w-0 max-w-full space-y-4 py-4">
-      <h3 className="font-semibold">{L("Releases indexées — Bêta", "Indexed releases — Beta")}</h3>
+      <h3 className="font-semibold">{L("Releases indexées", "Indexed releases")}</h3>
       <p className="text-sm text-fg-muted">
         {L(
-          "Activez la bêta dans Remix → Indexation pour réutiliser les références à la lecture. Une référence disponible ou un cache annoncé ne garantit pas la lecture. Les liens privés restent sur le serveur.",
-          "Enable beta in Remix → Indexing to reuse references during playback. An available reference or reported cache does not guarantee playback. Private links stay on the server.",
+          "Les références sont conservées et réutilisées automatiquement à la lecture. Une référence disponible ou un cache annoncé ne garantit pas la lecture. Les liens privés restent sur le serveur.",
+          "References are automatically retained and reused during playback. An available reference or reported cache does not guarantee playback. Private links stay on the server.",
         )}
       </p>
       {state.data && (
         <p>
           {state.data.enabled
-            ? L("Bêta activée", "Beta enabled")
-            : L("Bêta désactivée", "Beta disabled")}{" "}
+            ? L("Index disponible", "Index available")
+            : L("Index indisponible", "Index unavailable")}{" "}
           · {rows.length} releases
         </p>
       )}
@@ -130,7 +130,7 @@ export function ReleaseLibrary({
               setEpisode("");
             }}
           >
-            <option value="">{L("Vue série (S01E01)", "Series view (S01E01)")}</option>
+            <option value="">{L("Premier épisode (S01E01)", "First episode (S01E01)")}</option>
             {seasons.map((s) => (
               <option key={s.season} value={s.season}>
                 {s.title || `S${s.season}`}
@@ -157,7 +157,10 @@ export function ReleaseLibrary({
             onChange={(e) => setEpisode(e.target.value)}
           >
             <option value="">
-              {L("Vue série (indexation initiale S01E01)", "Series view (initial S01E01 indexing)")}
+              {L(
+                "Premier épisode (indexation initiale S01E01)",
+                "First episode (initial S01E01 indexing)",
+              )}
             </option>
             {episodes.map((e) => (
               <option key={e.key} value={e.key}>
