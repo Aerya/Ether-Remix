@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -2156,7 +2157,15 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 		},
 		GotFirstResponseByte: func() { ttfb.Store(int64(time.Since(began))) },
 	}
-	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, u, nil)
+	rctx := ctx
+	if pu, perr := url.Parse(u); perr == nil && pu.Scheme == "https" {
+		// Through a proxy, HTTPS media rides a CONNECT tunnel per host, so
+		// the dial address is the proxy shared by every host: cap by the
+		// real host, like hostGate, reduce and hedgeAllowed. Plain HTTP
+		// keeps the dial-address cap.
+		rctx = withCapKey(ctx, dialAddr(u))
+	}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(rctx, trace), http.MethodGet, u, nil)
 	if err != nil {
 		return nil, timing{}, fmt.Errorf("debrid: bad media URL: %w", core.ErrSourceUnavailable)
 	}
