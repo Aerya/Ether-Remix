@@ -93,6 +93,8 @@ git push origin sync/manuel
 # Ouvrir une PR et attendre les contrôles avant fusion.
 ```
 
+La CI du fork vérifie que `internal/admin/dist` correspond exactement à la compilation Linux. En cas d'écart, elle conserve pendant sept jours l'artefact `embedded-web-dist`, produit par le même commit, pour comparer les fichiers ou récupérer le bundle attendu depuis un poste Windows. Vérifier le SHA de la PR avant de remplacer le dist ; le contrôle reste obligatoire après cette correction.
+
 ## Workflows d'Ether désactivés
 
 `ci.yml`, `api-drift.yml`, `plex-parity.yml`, `reference-drift.yml`, `refresh-update-feed.yml` et `release.yml` restent présents (pour éviter les conflits) mais sont désactivés dans les réglages Actions du dépôt : ils publient les releases d'Ether ou consomment beaucoup de minutes (matrice Windows/macOS) sur un dépôt privé.
