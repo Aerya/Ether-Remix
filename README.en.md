@@ -15,6 +15,28 @@ Ether-Remix is an on-demand media server based on [Ether](https://github.com/bra
 
 [Installation](#get-started) · [Features](#features) · [Apps](#apps) · [Documentation](#documentation)
 
+## Ether at a glance
+
+Ether is an **on-demand** media server. It shows a TMDB-based catalogue inside the apps you already use, without downloading anything in advance. Its scope depends on server settings. When you play a title, it picks the best release from your debrid accounts and Usenet providers, checks that it works, then streams it. This workflow needs no Sonarr, Radarr, download client or mount to scan. It can run alongside an existing Plex, Jellyfin or Emby server.
+
+Ether adapts to each app: it is a Plex server to Plex apps, a Jellyfin server to Infuse or Swiftfin, and so on. Every viewer has their own account and personal Home, and resumes where they left off from one app to another. Stream limits and parental controls apply everywhere.
+
+Customize Plex Home in `/ether/home`: select the viewer and device type when comparing the preview with a client. Movie and TV library recommendations stay on their own pages instead of being appended wholesale to Home by Plex’s per-library requests.
+
+## Remix at a glance
+
+**Layout templates** save Home, libraries and collection presentation: capture your current setup, duplicate A/B/C variants and reapply them with undo. Plex theme libraries can combine local folders and indexed sources for everyone or selected viewers; private content remains filtered per viewer. [Layouts and sharing guide](docs/pse/FEATURES.en.md#nav-personal-libraries-and-collections).
+
+Ether-Remix retains Ether’s server and compatible applications, adding a French-oriented catalogue and language and quality settings. Depending on your choices, Home and collections favour French/MULTi titles or releases matching your criteria. Automatic search prepares releases ahead of playback without downloading videos; searches and imports populate the same index, reused during playback.
+
+Your **local videos**, movies, episodes and personal recordings join your libraries from host folders or network mounts. Remix looks for a match in its catalogue, then TMDB, and keeps a local presentation when there is no reliable match. The **Sources → Local files** view reports missing files, readability problems and potential duplicates without deleting your media.
+
+**Optional sources** extend debrid and Usenet: torrent clients, XDCC through Grabscher and FTP / SFTP servers. Torrent and XDCC write files to disk; FTP / SFTP also supports remote playback without a complete copy, with Ether’s normal cache. These sources are off by default.
+
+For **music**, bring together the Deezer catalogue, your audio files and your iBroadcast accounts in Plexamp, Jellyfin clients or Subsonic apps. Enabled music sources and debrid accounts provide playback; playlists can be browsed, imported and managed per user. Local folders and iBroadcast accounts are private by default, with optional sharing.
+
+**JukeBox** quick setup helps create libraries and collections. SubMaker subtitles, Scrob and Last.fm tracking, statistics and the French console round out these features.
+
 <a id="nav-remix-features"></a>
 <a id="features"></a>
 
@@ -31,6 +53,8 @@ Ether-Remix is an on-demand media server based on [Ether](https://github.com/bra
 <a id="nav-ether-extended-by-remix"></a>
 
 ## What Remix does
+
+The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources and limits for each use.
 
 | Use | Features |
 | --- | --- |
@@ -93,7 +117,7 @@ When migrating from Ether, back up `/config`, stop the previous server and reuse
 | Installation and configuration | [User guide](docs/pse/GUIDE.en.md) |
 | Catalogue, filters and priorities | [Catalogue](docs/pse/CATALOGUE.en.md) |
 | References, retention and indexed episodes | [Release index](docs/pse/RELEASE_LIBRARY.en.md) |
-| Libraries, home and sharing | [Layouts](docs/pse/GUIDE.en.md) |
+| Libraries, home and sharing | [Layouts](docs/pse/FEATURES.en.md#nav-personal-libraries-and-collections) |
 | StreamFusion Reborn imports | [StreamFusion](docs/pse/STREAMFUSION.fr.md) (French) |
 | SeerrCatalog availability | [SeerrCatalog](docs/pse/SEERRCATALOG.en.md) |
 | AllDebrid, MediaFlow and proxies | [Networking](docs/alldebrid-mediaflow.md) |

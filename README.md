@@ -15,6 +15,28 @@ Ether-Remix est un serveur multimédia à la demande, basé sur [Ether](https://
 
 [Installation](#demarrer) · [Fonctionnalités](#fonctionnalites) · [Applications](#applications) · [Documentation](#documentation)
 
+## Ether, en bref
+
+Ether est un serveur multimédia **à la demande**. Il présente un catalogue issu de TMDB dans les applications que vous utilisez déjà, sans rien télécharger à l’avance. Son étendue dépend des réglages du serveur. Quand vous lancez un titre, il choisit la meilleure release sur vos comptes debrid et vos fournisseurs Usenet, vérifie qu’elle fonctionne, puis la lit en flux. Ce fonctionnement ne nécessite ni Sonarr, ni Radarr, ni client de téléchargement, ni montage à scanner. Il peut tourner à côté d’un Plex, Jellyfin ou Emby existant.
+
+Ether s’adapte à chaque application : c’est un serveur Plex pour les applications Plex, un serveur Jellyfin pour Infuse ou Swiftfin, et ainsi de suite. Chaque spectateur a son compte et son accueil personnalisé, et retrouve sa progression d’une application à l’autre. Les limites de flux et le contrôle parental s’appliquent partout.
+
+L’accueil Plex se personnalise dans `/ether/home` : choisissez le spectateur et le type d’appareil pour comparer l’aperçu au client. Les recommandations propres à Films et Séries restent dans leurs pages ; elles ne sont plus ajoutées en bloc à l’accueil par les requêtes par bibliothèque de Plex.
+
+## Remix, en bref
+
+Les **modèles de disposition** enregistrent l’accueil, les bibliothèques et la présentation des collections : sauvegardez l’existant, dupliquez A/B/C et réappliquez une variante avec retour en arrière. Les bibliothèques à thème Plex peuvent combiner dossiers locaux et sources indexées et cibler tous les utilisateurs ou une sélection ; les contenus privés restent filtrés par spectateur. [Guide des dispositions et du partage](docs/pse/FEATURES.fr.md#nav-des-bibliotheques-et-collections-personnalisees).
+
+Ether-Remix reprend le serveur et les applications compatibles d’Ether, avec un catalogue orienté français et des réglages de langue et de qualité. Selon vos choix, l’accueil et les collections privilégient les titres en VF/MULTi ou disposant de releases correspondant à vos critères. La recherche automatique prépare les releases à l’avance sans télécharger les vidéos ; les recherches et imports alimentent le même index, réutilisé à la lecture.
+
+Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent vos bibliothèques depuis des dossiers de l’hôte ou des montages réseau. Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient. La vue **Sources → Fichiers locaux** signale les fichiers absents, les problèmes de lecture et les doublons potentiels, sans supprimer vos médias.
+
+Les **sources facultatives** complètent le debrid et Usenet : client torrent, XDCC via Grabscher et serveur FTP / SFTP. Torrent et XDCC écrivent des fichiers sur disque ; FTP / SFTP permet aussi une lecture distante sans copie complète, avec le cache habituel d’Ether. Ces sources sont désactivées par défaut.
+
+Côté **musique**, réunissez le catalogue Deezer, vos fichiers audio et vos comptes iBroadcast dans Plexamp, les clients Jellyfin ou les applications Subsonic. Les sources musicales et les comptes debrid activés assurent la lecture ; les playlists se parcourent, s’importent et se gèrent par utilisateur. Dossiers locaux et comptes iBroadcast sont privés par défaut, avec partage facultatif.
+
+La configuration rapide **JukeBox** aide à créer vos bibliothèques et collections. Les sous-titres avec SubMaker, le suivi Scrob et Last.fm, les statistiques et la console en français complètent ces usages.
+
 <a id="nav-fonctionnalites-remix"></a>
 <a id="fonctionnalites"></a>
 
@@ -31,6 +53,8 @@ Ether-Remix est un serveur multimédia à la demande, basé sur [Ether](https://
 <a id="nav-la-base-ether-enrichie-par-remix"></a>
 
 ## Ce que fait Remix
+
+Le [détail des fonctionnalités](docs/pse/FEATURES.fr.md) précise les options, les sources et les limites de chaque usage.
 
 | Usage | Fonctionnalités |
 | --- | --- |
@@ -93,7 +117,7 @@ Pour migrer depuis Ether, sauvegardez `/config`, arrêtez l’ancien serveur et 
 | Installation et configuration | [Guide utilisateur](docs/pse/GUIDE.fr.md) |
 | Catalogue, filtres et priorités | [Catalogue](docs/pse/CATALOGUE.fr.md) |
 | Références, conservation et épisodes indexés | [Index des releases](docs/pse/RELEASE_LIBRARY.fr.md) |
-| Bibliothèques, accueil et partage | [Dispositions](docs/pse/GUIDE.fr.md) |
+| Bibliothèques, accueil et partage | [Dispositions](docs/pse/FEATURES.fr.md#nav-des-bibliotheques-et-collections-personnalisees) |
 | Import StreamFusion Reborn | [StreamFusion](docs/pse/STREAMFUSION.fr.md) |
 | Disponibilités SeerrCatalog | [SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) |
 | AllDebrid, MediaFlow et proxys | [Réseau](docs/alldebrid-mediaflow.md) |

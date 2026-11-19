@@ -52,3 +52,7 @@ __pycache__/
 !/docs/pse/FTP.fr.md
 !/docs/pse/FTP.en.md
 !/internal/pse/ftp/testdata/lab/README.md
+
+# Inventaire public des fonctionnalités déplacé depuis les README.
+!/docs/pse/FEATURES.fr.md
+!/docs/pse/FEATURES.en.md
