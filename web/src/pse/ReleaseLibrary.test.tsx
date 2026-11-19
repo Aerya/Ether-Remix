@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ReleaseLibrary, sortReleases, type ReleaseRow } from "./ReleaseLibrary";
+import { ReleaseCard, ReleaseLibrary, sortReleases, type ReleaseRow } from "./ReleaseLibrary";
 vi.mock("../lib/api", () => ({
   apiFetch: vi.fn(async () => ({ enabled: false, releases: rows })),
 }));
@@ -44,4 +44,10 @@ describe("indexed releases", () => {
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.getByText("Small").closest("details")).toBeTruthy();
   });
+});
+
+it("does not present a stored but rejected link as available", () => {
+  render(<ReleaseCard row={{ ...row("Son.Yemek.2026.1080p", 1080, 100), state: "excluded" }} />);
+  expect(screen.getByText("Outside criteria · removal pending")).toBeVisible();
+  expect(screen.queryByText("Reference available")).toBeNull();
 });

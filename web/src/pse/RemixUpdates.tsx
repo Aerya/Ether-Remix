@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-19-unified-release-index",
+    id: "2026-11-19-reference-selection",
     version: "current",
+    date: "2026-11-19",
+    title: [
+      "Conserver uniquement les liens conformes aux critères",
+      "Retain only links meeting selection criteria",
+    ],
+    items: [
+      [
+        "Les critères Remix sont vérifiés avant conservation et réutilisation des liens. Les anciens liens hors critères sont nettoyés après actualisation des profils et exceptions.",
+        "Remix criteria are checked before retaining and reusing links. Old links outside criteria are cleaned up after profiles and exceptions are refreshed.",
+      ],
+      [
+        "Une langue inconnue ne satisfait pas une exigence VF/MULTi/VOSTFR. Les exceptions explicites restent respectées. Le libellé Référence disponible devient Référence retenue : les contrôles de lecture restent nécessaires.",
+        "Unknown language cannot satisfy a French/MULTi/VOSTFR requirement. Explicit exceptions are respected. Reference available becomes Retained reference: playback checks still apply.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-19-unified-release-index",
+    version: "0.2.37-remix.112.1",
     date: "2026-11-19",
     title: ["Un seul index de releases", "One release index"],
     items: [

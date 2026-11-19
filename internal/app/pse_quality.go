@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -29,10 +30,10 @@ func (a *App) pseQuality() *quality.Service {
 	})
 	return rt.quality
 }
-func (a *App) refreshPSEQuality(ctx context.Context, th *themes.Service) {
+func (a *App) refreshPSEQuality(ctx context.Context, th *themes.Service) error {
 	s := a.pseQuality()
 	if s == nil || a.collections == nil {
-		return
+		return fmt.Errorf("scoped quality context unavailable")
 	}
 	m := map[string][]core.RatingKey{}
 	c := s.Config()
@@ -53,6 +54,7 @@ func (a *App) refreshPSEQuality(ctx context.Context, th *themes.Service) {
 	s.SetMembers(m)
 	st := releasedb.NewStore(a.db)
 	if _, err := st.SyncPlayable(ctx, releasedb.Playable()); err != nil && ctx.Err() == nil {
-		a.log.Warn("recalcul des profils qualité", "err", err)
+		return err
 	}
+	return ctx.Err()
 }

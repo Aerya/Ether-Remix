@@ -40,7 +40,8 @@ export function sortReleases(rows: ReleaseRow[], key: SortKey, descending: boole
 const date = (n: number) => (n ? new Date(n * 1000).toLocaleString(getLocale()) : "—");
 const stateLabel = (s: string) =>
   ({
-    ready: L("Référence disponible", "Reference available"),
+    ready: L("Référence retenue", "Retained reference"),
+    excluded: L("Hors critères · suppression en cours", "Outside criteria · removal pending"),
     metadata: L("Métadonnées seules", "Metadata only"),
     expired: L("À actualiser", "Needs refresh"),
     failed: L("Échec de lecture", "Playback failed"),
@@ -107,8 +108,8 @@ export function ReleaseLibrary({
       <h3 className="font-semibold">{L("Releases indexées", "Indexed releases")}</h3>
       <p className="text-sm text-fg-muted">
         {L(
-          "Les références sont conservées et réutilisées automatiquement à la lecture. Une référence disponible ou un cache annoncé ne garantit pas la lecture. Les liens privés restent sur le serveur.",
-          "References are automatically retained and reused during playback. An available reference or reported cache does not guarantee playback. Private links stay on the server.",
+          "Seules les références conformes aux critères Remix sont conservées. Les contrôles du profil de lecture et du client restent nécessaires ; un cache annoncé ne garantit pas la lecture. Les liens privés restent sur le serveur.",
+          "Only references meeting Remix criteria are retained. Playback profile and client checks still apply; reported cache does not guarantee playback. Private links stay on the server.",
         )}
       </p>
       {state.data && (
@@ -248,7 +249,10 @@ export function ReleaseCard({ row: r, title }: { row: ReleaseRow; title?: string
   const details = [
     [L("Codec vidéo", "Video codec"), r.videoCodec],
     [L("Codec audio", "Audio codec"), r.audioCodec],
-    [L("Langues", "Languages"), (r.languages ?? []).join(", ")],
+    [
+      L("Langues", "Languages"),
+      (r.languages ?? []).join(", ") || L("Non indiquées", "Not reported"),
+    ],
     [L("Cache annoncé", "Reported cache"), (r.cached ?? []).join(", ")],
     [L("Publication", "Published"), date(r.published)],
     [L("Première indexation", "First indexed"), date(r.firstSeen)],

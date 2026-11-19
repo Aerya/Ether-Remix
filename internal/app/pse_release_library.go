@@ -26,7 +26,7 @@ func (a *App) releaseLibrary() releasedb.Library {
 		XDCC     any
 	}{ftpIndexers(xdccIndexers(cfg.Indexers)), releasedb.LoadSFRSettings(), ftp.LoadSettings(), xdcc.LoadSettings()})
 	sum := sha256.Sum256(raw)
-	return releasedb.Library{Store: releasedb.NewStore(a.db), Signature: hex.EncodeToString(sum[:]),
+	return releasedb.Library{Accept: a.acceptReference, Store: releasedb.NewStore(a.db), Signature: hex.EncodeToString(sum[:]),
 		Seal: func(s string) (string, error) { return a.cfg.Seal("pse-release-library", []byte(s)) },
 		Open: func(s string) (string, error) { b, e := a.cfg.Unseal("pse-release-library", s); return string(b), e }}
 }
