@@ -93,7 +93,7 @@ git push origin sync/manuel
 # Ouvrir une PR et attendre les contrôles avant fusion.
 ```
 
-La CI du fork vérifie que `internal/admin/dist` correspond exactement à la compilation Linux. En cas d'écart, elle conserve pendant sept jours l'artefact `embedded-web-dist`, produit par le même commit, pour comparer les fichiers ou récupérer le bundle attendu depuis un poste Windows. Vérifier le SHA de la PR avant de remplacer le dist ; le contrôle reste obligatoire après cette correction.
+La CI du fork vérifie que `internal/admin/dist` correspond exactement à la compilation Linux. En cas d'écart, elle conserve pendant sept jours l'artefact `embedded-web-dist`, produit par le même commit, pour comparer les fichiers ou récupérer le bundle attendu. Vérifier le SHA de la PR avant de remplacer le dist ; le contrôle reste obligatoire après cette correction.
 
 ## Workflows d'Ether désactivés
 
