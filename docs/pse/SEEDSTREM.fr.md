@@ -35,3 +35,8 @@ Remix n’ouvre les liens Seedstrem qu’après une demande de lecture (ou sa re
 Dans le formulaire de la source Stremio, activez **Source de dernier recours à la lecture** pour essayer ses résultats seulement après l’échec des sources normales, indépendamment de leur qualité ou priorité. L’option est désactivée par défaut et s’applique par source Stremio. Une version explicitement imposée ou une release épinglée reste prioritaire.
 
 La recherche et l’indexation continuent de consulter Seedstrem, sans téléchargement : ses releases restent des candidats, pas une preuve que le fichier est déjà téléchargé ou lisible. La recherche peut donc interroger Prowlarr via Seedstrem et directement si Prowlarr est également configuré dans Remix.
+
+
+## Mode rapide
+
+Dans **Remix → Lecture → Priorités**, le [mode rapide](QUICK_SOURCES.fr.md) place cette source dans un ordre strict. Il conserve les réglages existants et reste désactivé par défaut. Les recherches et contrôles de disponibilité ne déclenchent aucun téléchargement Seedstrem.

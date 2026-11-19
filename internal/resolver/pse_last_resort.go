@@ -25,6 +25,9 @@ func (s *Service) lastResortPlayback(ctx context.Context) bool {
 // Indexation still sees every source. Only automatic playback separates the
 // candidates into two passes, independently of quality and source priority.
 func (s *Service) sourceInPlaybackPhase(ctx context.Context, req core.ResolveRequest, rel core.Release, pinID string) bool {
+	if core.QuickSource(ctx) != "" {
+		return true
+	}
 	if !s.lastResortPlayback(ctx) || req.PreferredOnly || pinID != "" {
 		return true
 	}
@@ -36,6 +39,10 @@ func (s *Service) sourceInPlaybackPhase(ctx context.Context, req core.ResolveReq
 }
 
 func (s *Service) resolveWithLastResort(ctx context.Context, req core.ResolveRequest, profile core.QualityProfile) (*core.Resolution, error) {
+	// PSE-HOOK: opt-in quick source order — see docs/pse/FORK.fr.md.
+	if s.resolverCfg().SourceOrder.Quick.Enabled && (req.Title.Type == core.TypeMovie || req.Title.Type == core.TypeEpisode || req.Title.Type == core.TypeShow) {
+		return s.resolveQuick(ctx, req, profile)
+	}
 	res, err := s.resolve(ctx, req, profile)
 	if err == nil || ctx.Err() != nil || req.PreferredOnly || s.PinnedReleaseID(req) != "" || !s.lastResortPlayback(ctx) {
 		return res, err

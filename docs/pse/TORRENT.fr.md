@@ -93,3 +93,8 @@ Client principal (`PSE_TORRENT_…`) ; clients 2 et 3 dans leurs propres blocs (
 - Le plafond d'ajouts par jour est remis à zéro au redémarrage de Remix.
 
 Un album en cours de téléchargement est revérifié au prochain essai de lecture, après un délai minimal de 5 secondes. Les diagnostics musicaux ne lancent aucun téléchargement.
+
+
+## Mode rapide
+
+Dans **Remix → Lecture → Priorités**, le [mode rapide](QUICK_SOURCES.fr.md) place cette source dans un ordre strict. Il conserve les réglages existants et reste désactivé par défaut. Les recherches et contrôles de disponibilité ne déclenchent aucun téléchargement Seedstrem.

@@ -96,6 +96,10 @@ func (x *Indexer) Search(ctx context.Context, req core.SearchRequest) ([]core.Re
 // SearchWith exposes arrivals from both sources while cache discovery continues.
 // The resolver targets and validates speculative torrents before selecting one.
 func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
+	// PSE-HOOK: sequential source scope — see docs/pse/FORK.fr.md.
+	if core.QuickSource(ctx) != "" && core.QuickSource(ctx) != "addons" {
+		return x.inner.Search(ctx, req)
+	}
 	started := time.Now()
 	early := x.earlyCacheChecks(ctx, arrived)
 	if early != nil {

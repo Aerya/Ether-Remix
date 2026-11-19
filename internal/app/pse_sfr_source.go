@@ -28,6 +28,10 @@ func (sfrBackend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 	if err := reserve(ctx, "hit"); err != nil {
 		return nil, err
 	}
+	// PSE-HOOK: sequential source scope — see docs/pse/FORK.fr.md.
+	if core.QuickSource(ctx) == "alko" {
+		return releasedb.SearchSFRAlko(ctx, releasedb.LoadSFRSettings(), req)
+	}
 	return releasedb.SearchSFR(ctx, releasedb.LoadSFRSettings(), req)
 }
 func (sfrBackend) FetchNZB(context.Context, core.Release, func(context.Context, string) error) ([]byte, error) {

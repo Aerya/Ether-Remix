@@ -547,6 +547,13 @@ func (v *VODIndexer) Search(ctx context.Context, r core.SearchRequest) ([]core.R
 	return v.SearchWith(ctx, r, nil)
 }
 func (v *VODIndexer) SearchWith(ctx context.Context, r core.SearchRequest, arrived func([]core.Release)) ([]core.Release, error) {
+	// PSE-HOOK: sequential source scope — see docs/pse/FORK.fr.md.
+	if core.QuickSource(ctx) != "" {
+		if streaming, ok := v.Inner.(core.StreamingIndexer); ok {
+			return streaming.SearchWith(ctx, r, arrived)
+		}
+		return v.Inner.Search(ctx, r)
+	}
 	type result struct {
 		releases []core.Release
 		err      error

@@ -26,8 +26,28 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-19-reference-selection",
+    id: "2026-11-19-quick-source-setup",
     version: "current",
+    date: "2026-11-19",
+    title: ["Configuration rapide des sources", "Quick source setup"],
+    items: [
+      [
+        "Un mode facultatif dans Lecture → Priorités : Alkodiques uniquement, Usenet, client torrent Ether-Remix et Seedstrem, activables et ordonnables séparément.",
+        "An optional mode in Playback → Priorities: Alkodiques only, Usenet, Ether-Remix torrent client and Seedstrem, independently enabled and ordered.",
+      ],
+      [
+        "Les filtres restent obligatoires. Une source vide ou inutilisable laisse la place à la suivante ; les autres addons Stremio sont le dernier recours. Les liens Seedstrem restent HTTP et ne sont ouverts qu’à la lecture.",
+        "Mandatory filters stay enforced. Empty or unusable sources give way to the next; other Stremio addons are the last resort. Seedstrem links remain HTTP and open only for playback.",
+      ],
+      [
+        "Désactivé par défaut, ce mode conserve les réglages avancés et ne modifie ni les médias locaux ni la musique.",
+        "Off by default, this mode preserves advanced settings and does not change local media or music.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-19-reference-selection",
+    version: "0.2.37-remix.114.1",
     date: "2026-11-19",
     title: [
       "Conserver uniquement les liens conformes aux critères",

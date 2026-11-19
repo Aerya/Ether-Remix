@@ -853,6 +853,16 @@ ON CONFLICT (release_key) DO UPDATE SET payload = excluded.payload, updated_at =
 // follows, by torrent id, until it plays: core.ErrDownloadQueued meanwhile.
 func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error) {
 	entries := s.active()
+	// PSE-HOOK: sequential source scope — see docs/pse/FORK.fr.md.
+	if core.QuickSource(ctx) == "torrent" {
+		filtered := entries[:0:0]
+		for _, e := range entries {
+			if e.cfg.Kind == "plugin:remix-torrent" {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
 	if len(entries) == 0 {
 		return nil, ErrNoProvider
 	}
@@ -868,7 +878,7 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	if magnet == "" {
 		magnet = "magnet:?xt=urn:btih:" + hash
 	}
-	base := Payload{Key: key, ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Target: rel.Target, Release: rel.Name}
+	base := Payload{Key: key, ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Target: rel.Target, Release: rel.Name, NativeTorrentOnly: core.QuickSource(ctx) == "torrent"}
 	choose := func(files []File) (File, error) { return ChooseFile(files, rel.Target) }
 	if b, err, ok := s.followQueued(ctx, rel, entries, base, choose); ok {
 		return b, err
@@ -1062,6 +1072,9 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 		return nil, fmt.Errorf("debrid: %q is not a torrent with an info hash: %w", rel.Name, core.ErrReleaseRejected)
 	}
 	entries := s.active()
+	if core.QuickSource(ctx) == "torrent" {
+		entries = slices.DeleteFunc(entries, func(e *entry) bool { return e.cfg.Kind != "plugin:remix-torrent" || !localDownloads(e.p) })
+	}
 	if cachedOnly {
 		entries = slices.DeleteFunc(entries, func(e *entry) bool { return !localDownloads(e.p) })
 	}
@@ -1090,7 +1103,7 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 	if magnet == "" {
 		magnet = "magnet:?xt=urn:btih:" + hash
 	}
-	base := Payload{Key: payloadKey(rel), ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Target: rel.Target, Release: rel.Name}
+	base := Payload{Key: payloadKey(rel), ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Target: rel.Target, Release: rel.Name, NativeTorrentOnly: core.QuickSource(ctx) == "torrent"}
 	choose := func(files []File) (File, error) { return ChooseFile(files, rel.Target) }
 	var errs []error
 	for _, e := range entries {
@@ -1399,7 +1412,7 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		return p, nil
 	}
 	if !force {
-		if stored, ok := s.storedPayload(ctx, p.Key); ok && s.fresh(stored) && stored.Path == p.Path && stored.Size == p.Size {
+		if stored, ok := s.storedPayload(ctx, p.Key); ok && s.fresh(stored) && (!p.NativeTorrentOnly || stored.Kind == "plugin:remix-torrent") && stored.NativeTorrentOnly == p.NativeTorrentOnly && stored.Path == p.Path && stored.Size == p.Size {
 			return stored, nil
 		}
 		if s.fresh(p) {
@@ -1434,7 +1447,7 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		}
 	}
 	// Standalone verified files must never fall back to torrent acquisition.
-	if p.VerifiedFile {
+	if p.VerifiedFile || p.NativeTorrentOnly {
 		if len(errs) == 0 {
 			return p, ErrNoProvider
 		}
@@ -1445,7 +1458,7 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
 			continue
 		}
-		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release}
+		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release, NativeTorrentOnly: p.NativeTorrentOnly}
 		out, err := s.acquireOn(ctx, e, base, sameFile(p), false)
 		if err == nil {
 			e.count(func(st *ProviderStats) { st.LinksRefreshed++ })
@@ -1475,14 +1488,14 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 // a media host refuses connections. It never treats a different signed URL
 // on the same host as a change of route.
 func (s *Service) alternateProvider(ctx context.Context, p Payload) (Payload, error) {
-	if p.VerifiedFile {
+	if p.VerifiedFile || p.NativeTorrentOnly {
 		return p, core.ErrSourceUnavailable
 	}
 	for _, e := range s.active() {
 		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
 			continue
 		}
-		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release}
+		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release, NativeTorrentOnly: p.NativeTorrentOnly}
 		out, err := s.acquireOn(ctx, e, base, sameFile(p), false)
 		if err == nil && dialAddr(out.URL) != "" && dialAddr(out.URL) != dialAddr(p.URL) {
 			s.savePayload(ctx, out)
@@ -1529,7 +1542,7 @@ func (s *Service) relink(ctx context.Context, e *entry, p Payload) (Payload, err
 		return p, err
 	}
 	// The torrent was removed from the account: re-add it by magnet.
-	base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release}
+	base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release, NativeTorrentOnly: p.NativeTorrentOnly}
 	s.forgetTorrent(ctx, e.cfg.ID, p.InfoHash)
 	out, err := s.acquireOn(ctx, e, base, sameFile(p), false)
 	if err != nil {

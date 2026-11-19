@@ -21,6 +21,26 @@ const sfrAlkoSQL = `SELECT f.playback_id::text,f.filename,COALESCE(f.filesize,0)
  OR (f.tmdb=$2 AND f.kind=$3 AND ($4::int=0 OR f.season=$4) AND ($5::int=0 OR f.episode=$5)))
  ORDER BY f.playback_id LIMIT $6`
 
+// SearchSFRAlko reads only verified files. It never reads torrent_items or
+// asks a debrid service to discover cache availability.
+func SearchSFRAlko(ctx context.Context, cfg SFRSettings, req core.SearchRequest) ([]core.Release, error) {
+	if !cfg.Enabled || req.IDs.TMDB <= 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	reader, err := openPgxSFR(ctx, cfg.URL)
+	if err != nil {
+		return nil, sfrSearchError(err)
+	}
+	defer reader.close()
+	rows, err := reader.(*pgxSFR).alkoRead(ctx, "", req, 200)
+	if err != nil {
+		return nil, sfrSearchError(err)
+	}
+	return sfrAlkoCandidates(rows), nil
+}
+
 func (p *pgxSFR) alkoRead(ctx context.Context, after string, req core.SearchRequest, limit int) ([]sfrRow, error) {
 	if !p.alkoAvailable {
 		return nil, nil

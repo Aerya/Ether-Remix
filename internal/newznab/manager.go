@@ -216,7 +216,7 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 	var wg sync.WaitGroup
 	for i, cl := range clients {
 		cfg := cl.Config()
-		if !cfg.Enabled || core.IndexerSkipped(ctx, cl.indexerID()) || (core.TorrentOnlySearch(ctx) && !cfg.IsTorrent()) {
+		if !cfg.Enabled || !core.QuickIndexerAllowed(ctx, cfg.ID) || core.IndexerSkipped(ctx, cl.indexerID()) || (core.TorrentOnlySearch(ctx) && !cfg.IsTorrent()) {
 			continue
 		}
 		wg.Add(1)
@@ -336,7 +336,7 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	var wg sync.WaitGroup
 	for i, cl := range clients {
 		cfg := cl.Config()
-		if !cfg.Enabled || core.IndexerSkipped(ctx, cl.indexerID()) || (core.TorrentOnlySearch(ctx) && !cfg.IsTorrent()) {
+		if !cfg.Enabled || !core.QuickIndexerAllowed(ctx, cfg.ID) || core.IndexerSkipped(ctx, cl.indexerID()) || (core.TorrentOnlySearch(ctx) && !cfg.IsTorrent()) {
 			slots[i].skipped = true
 			continue
 		}

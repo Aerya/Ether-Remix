@@ -272,3 +272,14 @@ func seedstremPlay(raw, hash string) bool {
 	magnetHash, ambiguous := hashFromMagnet(u.Query().Get("magnet"))
 	return !ambiguous && magnetHash == hash
 }
+
+// IsSeedstremStream reuses the resolve-on-play route recognition, including
+// private reverse-proxy prefixes, without opening the remote download link.
+func IsSeedstremStream(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	hash, ambiguous := hashFromMagnet(u.Query().Get("magnet"))
+	return !ambiguous && seedstremPlay(raw, hash)
+}

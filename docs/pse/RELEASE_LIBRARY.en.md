@@ -47,3 +47,6 @@ Global release search scans names without forcing chronological reads; category 
 Links must meet active Remix criteria before storage and reuse: global or scoped profiles in profile mode; simple filters and French catalogue languages in simple mode. Explicit language exceptions remain active without bypassing quality requirements. Unknown language cannot satisfy a French/MULTi/VOSTFR requirement.
 
 Old links are cleaned up after profiles and exceptions are refreshed, on startup, after changes and during periodic maintenance. No video files are deleted. Observations without links remain diagnostic metadata; they do not prove compliance or playback availability. Broadening criteria requires fresh searches to recover rejected links. “Retained reference” does not replace client and playback profile checks.
+
+
+[Quick mode](QUICK_SOURCES.en.md) retains the existing search and reference mechanisms. An indexed reference never jumps ahead of a higher selected source; source order applies before playback validation.

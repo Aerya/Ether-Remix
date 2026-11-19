@@ -93,6 +93,8 @@ git push origin sync/manuel
 # Ouvrir une PR et attendre les contrôles avant fusion.
 ```
 
+La CI du fork vérifie que `internal/admin/dist` correspond exactement à la compilation Linux. En cas d'écart, elle conserve pendant sept jours l'artefact `embedded-web-dist`, produit par le même commit, pour comparer les fichiers ou récupérer le bundle attendu. Vérifier le SHA de la PR avant de remplacer le dist ; le contrôle reste obligatoire après cette correction.
+
 ## Workflows d'Ether désactivés
 
 `ci.yml`, `api-drift.yml`, `plex-parity.yml`, `reference-drift.yml`, `refresh-update-feed.yml` et `release.yml` restent présents (pour éviter les conflits) mais sont désactivés dans les réglages Actions du dépôt : ils publient les releases d'Ether ou consomment beaucoup de minutes (matrice Windows/macOS) sur un dépôt privé.
@@ -177,3 +179,8 @@ Les compteurs de priorité utilisent une seule réponse `/pse/indexer/details`, 
 ### Dispositions et partage par contribution
 
 `internal/pse/layouts` stocke les modèles nommés et le retour en arrière. Chaque composant fournit sa capture/restauration de présentation dans `layout_template.go` ; les quatre parties sont appliquées dans une transaction, puis les caches sont invalidés. Les ACL ne font pas partie du modèle. Les bibliothèques à thème ajoutent `users_json` avec accès historique « all » et conservation des droits lors des mises à jour anciennes. Les membres des collections locales conservent leur provenance ; les permissions actuelles sont vérifiées avant tri/limite, sans cacher le résultat d’un spectateur dans le cache commun. La source `releaseSource` lit les observations indexées. Voir [le guide](LAYOUTS.fr.md).
+
+
+### Configuration rapide des sources
+
+`resolver.SourceOrder.Quick` persiste le mode, l’ordre et l’identifiant de l’instance Seedstrem. `internal/resolver/quick_sources.go` réutilise classement, filtres, validation et secours ; `internal/app/pse_quick_sources.go` borne les recherches du gestionnaire existant. Le contexte `core.WithQuickSource` limite le fan-out et empêche la VOD de rejoindre ces étapes. Le cache de recherche Alkodiques est séparé du cache SFR ordinaire. Les payloads torrent natifs gardent leur restriction de fournisseur durant le renouvellement. Aucun changement au parcours désactivé, à la musique ou à la résolution locale. Interface et guide : `QuickSources.tsx`, [FR](QUICK_SOURCES.fr.md) / [EN](QUICK_SOURCES.en.md).

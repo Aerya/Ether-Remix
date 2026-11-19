@@ -1,0 +1,44 @@
+.remix-navigation [role="tab"] {
+  appearance: none;
+  -moz-appearance: none;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  padding: 0.55rem 0.9rem;
+  margin-bottom: 0.5rem;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    color 150ms;
+}
+
+.remix-navigation [role="tab"]:hover {
+  color: var(--color-fg);
+  background: var(--color-bg-subtle);
+}
+
+.remix-navigation [role="tab"][aria-selected="true"] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface));
+}
+
+.remix-navigation [role="tab"]:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remix-navigation [role="tab"] {
+    transition: none;
+  }
+}
+
+.remix-navigation [role="tab"] > [aria-hidden="true"] {
+  display: none;
+}
