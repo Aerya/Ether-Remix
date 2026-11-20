@@ -2,7 +2,7 @@
 
 [Remix guide](GUIDE.en.md) · [Français](QUICK_SOURCES.fr.md)
 
-Under **Remix → Playback → Priorities**, enable **Quick mode**, which is off by default. Select one or more sources, order them with **↑ / ↓**, then **Save**. The selection and Seedstrem instance survive restarts. Turning the mode off restores advanced behavior without deleting its settings.
+Under **Remix → Playback → Priorities**, enable **Quick setup**, which is off by default. Select one or more sources, then order them freely with **↑ / ↓** or drag and drop: every source can be moved, checked or not, and a checked source keeps the position it is in. Checked sources are tried from top to bottom. Click **Save**. The selection, full order and Seedstrem instance survive restarts. Turning quick setup off restores advanced behavior without deleting its settings.
 
 | Source | Existing configuration |
 | --- | --- |
@@ -23,4 +23,4 @@ The existing manager keeps its caches, budgets, timeouts and pauses. Each stage 
 
 Indexing and browsing never start Seedstrem downloads. The native torrent client retains its safeguards and only queues a download for requested playback when its download setting allows it. A pending download does not block other sources. Network routes, MediaFlow, AllDebrid quotas and PostgreSQL permissions remain as configured.
 
-Local media and music retain their usual paths. XDCC, FTP and IPTV are not additional quick-mode stages. Turn quick mode off for these sources and advanced preferences.
+Local media and music retain their usual paths. XDCC, FTP and IPTV are not additional quick-setup stages. Turn quick setup off for these sources and advanced preferences.

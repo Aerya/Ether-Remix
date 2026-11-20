@@ -1,4 +1,5 @@
 import { Button, Switch } from "@braedonsaunders/appkit-ui";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { getLocale } from "../i18n";
 import type { EtherConfig } from "../lib/types";
@@ -9,7 +10,20 @@ export const QUICK_SOURCES = ["alko", "usenet", "torrent", "seedstrem"];
 export interface QuickSourceSettings {
   enabled: boolean;
   order?: string[];
+  /** Ordre d’affichage complet, sources cochées ou non. */
+  rank?: string[];
   seedstremId?: string;
+}
+
+/** Ordre complet des quatre sources : rang mémorisé, sinon sélection puis reste. */
+export function quickRows(value: QuickSourceSettings): string[] {
+  const order = value.order ?? [];
+  const rank = value.rank ?? [];
+  const known = (list: string[]) =>
+    list.filter((id, i) => QUICK_SOURCES.includes(id) && list.indexOf(id) === i);
+  const base = rank.length ? [...known(rank), ...known(order)] : known(order);
+  const head = known(base);
+  return [...head, ...QUICK_SOURCES.filter((id) => !head.includes(id))];
 }
 
 export function QuickSources({
@@ -24,10 +38,17 @@ export function QuickSources({
   values: Record<string, string>;
 }) {
   const order = value.order ?? [];
-  const rows = [
-    ...order.filter((id) => QUICK_SOURCES.includes(id)),
-    ...QUICK_SOURCES.filter((id) => !order.includes(id)),
-  ];
+  const rows = quickRows(value);
+  const [dragged, setDragged] = useState<number | null>(null);
+  // Réordonne la liste complète ; l’ordre de lecture suit l’ordre affiché des sources cochées.
+  const reorder = (next: string[], selected: string[] = order) =>
+    onChange({ ...value, rank: next, order: next.filter((id) => selected.includes(id)) });
+  const moveTo = (from: number, to: number) => {
+    if (from === to || to < 0 || to >= rows.length) return;
+    const next = [...rows];
+    next.splice(to, 0, next.splice(from, 1)[0] as string);
+    reorder(next);
+  };
   const indexers = (config.indexers ?? []).filter((ix) => ix.enabled);
   const addons = indexers.filter((ix) => ix.kind === "stremio");
   const labels: Record<string, string> = {
@@ -65,29 +86,52 @@ export function QuickSources({
           checked={value.enabled}
           onChange={(e) => onChange({ ...value, enabled: e.currentTarget.checked })}
         />
-        {L("Mode rapide", "Quick mode")}
+        {L("Configuration rapide", "Quick setup")}
       </label>
       {value.enabled && (
         <>
           <p className="text-sm text-fg-muted">
             {L(
-              "Après les filtres obligatoires, chaque source est essayée dans cet ordre. Si elle ne peut pas lire le titre, Remix passe à la suivante. Les autres addons Stremio, dont Debrider, sont le dernier recours.",
-              "After mandatory filters, each source is tried in this order. If it cannot play the title, Remix moves to the next. Other Stremio addons, including Debrider, are the last resort.",
+              "Après les filtres obligatoires, les sources cochées sont essayées de haut en bas. Si l’une ne peut pas lire le titre, Remix passe à la suivante. Les autres addons Stremio, dont Debrider, sont le dernier recours. Réordonnez avec ↑ / ↓ ou par glisser-déposer.",
+              "After mandatory filters, checked sources are tried from top to bottom. If one cannot play the title, Remix moves to the next. Other Stremio addons, including Debrider, are the last resort. Reorder with ↑ / ↓ or drag and drop.",
             )}
           </p>
           <ol className="space-y-2">
-            {rows.map((id) => (
-              <li key={id} className="rounded border border-border p-2">
+            {rows.map((id, at) => (
+              <li
+                key={id}
+                draggable
+                onDragStart={(e) => {
+                  setDragged(at);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragOver={(e) => {
+                  if (dragged !== null) e.preventDefault();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragged !== null) moveTo(dragged, at);
+                  setDragged(null);
+                }}
+                onDragEnd={() => setDragged(null)}
+                className={`rounded border border-border p-2 ${dragged === at ? "opacity-50" : ""} ${order.includes(id) ? "" : "opacity-70"}`}
+              >
                 <div className="flex items-center gap-2">
+                  <span className="cursor-grab select-none text-fg-muted" aria-hidden="true">
+                    ⠿
+                  </span>
+                  <span className="w-5 text-sm text-fg-muted">
+                    {order.includes(id) ? order.indexOf(id) + 1 : "–"}
+                  </span>
                   <label className="flex flex-1 items-center gap-2">
                     <input
                       type="checkbox"
                       checked={order.includes(id)}
                       onChange={(e) =>
-                        onChange({
-                          ...value,
-                          order: e.target.checked ? [...order, id] : order.filter((x) => x !== id),
-                        })
+                        reorder(
+                          rows,
+                          e.target.checked ? [...order, id] : order.filter((x) => x !== id),
+                        )
                       }
                     />
                     {labels[id]}
@@ -96,10 +140,8 @@ export function QuickSources({
                     size="sm"
                     variant="ghost"
                     aria-label={L(`Monter ${labels[id]}`, `Move ${labels[id]} up`)}
-                    disabled={!order.includes(id) || order.indexOf(id) === 0}
-                    onClick={() =>
-                      onChange({ ...value, order: moved(order, order.indexOf(id), -1) })
-                    }
+                    disabled={at === 0}
+                    onClick={() => reorder(moved(rows, at, -1))}
                   >
                     ↑
                   </Button>
@@ -107,10 +149,8 @@ export function QuickSources({
                     size="sm"
                     variant="ghost"
                     aria-label={L(`Descendre ${labels[id]}`, `Move ${labels[id]} down`)}
-                    disabled={!order.includes(id) || order.indexOf(id) === order.length - 1}
-                    onClick={() =>
-                      onChange({ ...value, order: moved(order, order.indexOf(id), 1) })
-                    }
+                    disabled={at === rows.length - 1}
+                    onClick={() => reorder(moved(rows, at, 1))}
                   >
                     ↓
                   </Button>

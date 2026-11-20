@@ -399,8 +399,10 @@ func (c Catalog) Bars() (minPopularity float64, minVotes int) {
 
 // QuickSources is the opt-in sequential playback policy. An empty order selects only the final addon fallback.
 type QuickSources struct {
-	Enabled     bool     `json:"enabled"`
-	Order       []string `json:"order,omitempty"`
+	Enabled bool     `json:"enabled"`
+	Order   []string `json:"order,omitempty"`
+	// Rank keeps the owner's display order of every quick source, selected or not.
+	Rank        []string `json:"rank,omitempty"`
 	SeedstremID string   `json:"seedstremId,omitempty"`
 }
 

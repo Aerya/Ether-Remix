@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-20-yearless-episodes",
+    id: "2026-11-20-quick-setup-free-order",
     version: "current",
+    date: "2026-11-20",
+    title: ["Configuration rapide : ordre libre", "Quick setup: free ordering"],
+    items: [
+      [
+        "« Mode rapide » devient « Configuration rapide ». Les quatre sources se déplacent librement avec ↑ / ↓ ou par glisser-déposer, cochées ou non ; les sources cochées sont essayées de haut en bas.",
+        "“Quick mode” becomes “Quick setup”. All four sources can be moved freely with ↑ / ↓ or drag and drop, checked or not; checked sources are tried from top to bottom.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-20-yearless-episodes",
+    version: "0.2.37-remix.117.1",
     date: "2026-11-20",
     title: ["Épisodes sans année dans le nom", "Episodes without a year in the filename"],
     items: [

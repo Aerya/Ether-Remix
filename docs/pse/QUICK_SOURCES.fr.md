@@ -2,7 +2,7 @@
 
 [Guide Remix](GUIDE.fr.md) · [English](QUICK_SOURCES.en.md)
 
-Dans **Remix → Lecture → Priorités**, activez **Mode rapide**, désactivé par défaut. Cochez une ou plusieurs sources, utilisez **↑ / ↓** pour les ordonner, puis **Enregistrer**. Les choix et l’instance Seedstrem sont conservés après redémarrage. Désactiver le mode retrouve le fonctionnement avancé sans effacer ses réglages.
+Dans **Remix → Lecture → Priorités**, activez **Configuration rapide**, désactivée par défaut. Cochez une ou plusieurs sources, puis ordonnez-les librement avec **↑ / ↓** ou par glisser-déposer : toutes les sources peuvent être déplacées, cochées ou non, et une source cochée prend la place où elle se trouve. Les sources cochées sont essayées de haut en bas. Cliquez sur **Enregistrer**. Les choix, l’ordre complet et l’instance Seedstrem sont conservés après redémarrage. Désactiver la configuration rapide retrouve le fonctionnement avancé sans effacer ses réglages.
 
 | Source | Configuration réutilisée |
 | --- | --- |
@@ -19,8 +19,8 @@ Films, épisodes de séries et animés suivent le même ordre. Remix recherche d
 
 Après l’échec des sources sélectionnées, les autres addons Stremio activés sont consultés, dont Debrider s’il est configuré. Leurs mécanismes habituels de recherche et secours sont réutilisés. Sans source cochée, seuls ces autres addons sont consultés. L’instance choisie comme Seedstrem n’est pas interrogée une deuxième fois en dernier recours.
 
-Le gestionnaire conserve ses caches, budgets, délais et pauses. La validation reste bornée par ses limites existantes à chaque étape ; les résultats déjà examinés ne sont pas retentés pendant la même résolution. Une reprise après échec exclut les releases déjà échouées. Une référence indexée, un choix de version ou une épingle ne passe pas devant l’ordre rapide ; ces réglages sont conservés pour le mode avancé.
+Le gestionnaire conserve ses caches, budgets, délais et pauses. La validation reste bornée par ses limites existantes à chaque étape ; les résultats déjà examinés ne sont pas retentés pendant la même résolution. Une reprise après échec exclut les releases déjà échouées. Une référence indexée, un choix de version ou une épingle ne passe pas devant l’ordre de la configuration rapide ; ces réglages sont conservés pour le mode avancé.
 
 Les recherches d’indexation et la navigation n’ajoutent aucun téléchargement Seedstrem. Le client torrent natif conserve ses protections et n’ajoute un téléchargement que lors d’une lecture demandée, si son réglage l’autorise. Un téléchargement en attente ne bloque pas les autres sources. Les chemins réseau, MediaFlow, quotas AllDebrid et droits PostgreSQL restent ceux configurés.
 
-Les médias locaux et la musique gardent leurs parcours habituels. Ce mode ne propose pas XDCC, FTP ou IPTV comme étapes supplémentaires. Pour ces usages et les préférences avancées, désactivez le mode rapide.
+Les médias locaux et la musique gardent leurs parcours habituels. La configuration rapide ne propose pas XDCC, FTP ou IPTV comme étapes supplémentaires. Pour ces usages et les préférences avancées, désactivez la configuration rapide.

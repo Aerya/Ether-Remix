@@ -37,6 +37,6 @@ Dans le formulaire de la source Stremio, activez **Source de dernier recours à 
 La recherche et l’indexation continuent de consulter Seedstrem, sans téléchargement : ses releases restent des candidats, pas une preuve que le fichier est déjà téléchargé ou lisible. La recherche peut donc interroger Prowlarr via Seedstrem et directement si Prowlarr est également configuré dans Remix.
 
 
-## Mode rapide
+## Configuration rapide
 
-Dans **Remix → Lecture → Priorités**, le [mode rapide](QUICK_SOURCES.fr.md) place cette source dans un ordre strict. Il conserve les réglages existants et reste désactivé par défaut. Les recherches et contrôles de disponibilité ne déclenchent aucun téléchargement Seedstrem.
+Dans **Remix → Lecture → Priorités**, la [configuration rapide](QUICK_SOURCES.fr.md) place cette source dans un ordre strict. Elle conserve les réglages existants et reste désactivée par défaut. Les recherches et contrôles de disponibilité ne déclenchent aucun téléchargement Seedstrem.
