@@ -390,7 +390,7 @@ export interface EtherConfig {
     verifiedFiles?: string;
     failoverAttempts?: number;
     sourceOrder?: {
-      quick?: { enabled: boolean; order?: string[]; seedstremId?: string };
+      quick?: { enabled: boolean; order?: string[]; rank?: string[]; seedstremId?: string };
       families?: string[];
       content?: Record<string, string[]>;
     };

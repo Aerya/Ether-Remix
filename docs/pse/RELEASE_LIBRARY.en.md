@@ -53,4 +53,4 @@ Links must meet active Remix criteria before storage and reuse: global or scoped
 Old links are cleaned up after profiles and exceptions are refreshed, on startup, after changes and during periodic maintenance. No video files are deleted. Observations without links remain diagnostic metadata; they do not prove compliance or playback availability. Broadening criteria requires fresh searches to recover rejected links. “Retained reference” does not replace client and playback profile checks.
 
 
-[Quick mode](QUICK_SOURCES.en.md) retains the existing search and reference mechanisms. An indexed reference never jumps ahead of a higher selected source; source order applies before playback validation.
+[Quick setup](QUICK_SOURCES.en.md) retains the existing search and reference mechanisms. An indexed reference never jumps ahead of a higher selected source; source order applies before playback validation.

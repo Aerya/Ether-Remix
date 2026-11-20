@@ -286,7 +286,7 @@ Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lir
 - **Sources** : accès unique aux comptes, addons Stremio, indexeurs BitTorrent/Usenet, fournisseurs Usenet, IPTV et sources musicales. Les composants et configurations Ether sont conservés. Les indexeurs peuvent être filtrés par instance Prowlarr/Jackett ou par provenance manuelle. Leur configuration reste unique.
 - **Indexation → Réglages** : activation, quotas, rythme et choix des sources : Automatique pour les addons Stremio activés, ou Personnalisé, y compris aucune source. Ce choix ne désactive pas les sources à la lecture. Les titres à indexer en priorité présentent les compteurs catalogue, recherchés, avec release et affichés par bibliothèque ou collection ; les groupes peuvent se recouper.
 - **Vue d’ensemble** : démarrage rapide, activité de l’indexation Remix, tableaux de bord Sources et Utilisation hérités d’Ether.
-- **Lecture → Priorités** : mode rapide facultatif à ordre strict ([guide](QUICK_SOURCES.fr.md)). Désactivé, les préférences avancées restent à qualité équivalente et ne rendent pas les recherches successives.
+- **Lecture → Priorités** : configuration rapide facultative à ordre strict et librement modifiable ([guide](QUICK_SOURCES.fr.md)). Désactivé, les préférences avancées restent à qualité équivalente et ne rendent pas les recherches successives.
 - **Lecture → Qualité** : catalogue français, langues de release, résolution, codecs, cache et exceptions par collection.
 - **Lecture → VOSTFR** : sélection explicite de titres sans VF et recherche prioritaire.
 - **Contenus** : films, séries, animés, musique, playlists et bibliothèques personnalisées. Les bibliothèques mixtes restent proposées dans Films et Séries.

@@ -387,8 +387,8 @@ function PseSettings() {
             <>
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Le mode rapide essaie les sources sélectionnées dans l’ordre. Les réglages avancés ci-dessous s’appliquent lorsque ce mode est désactivé. La sélection d’indexation se règle dans l’onglet Indexation.",
-                  "Quick mode tries selected sources in order. Advanced settings below apply when quick mode is off. Indexing selection belongs in the Indexing tab.",
+                  "La configuration rapide essaie les sources sélectionnées dans l’ordre. Les réglages avancés ci-dessous s’appliquent lorsqu’elle est désactivée. La sélection d’indexation se règle dans l’onglet Indexation.",
+                  "Quick setup tries selected sources in order. Advanced settings below apply when quick setup is off. Indexing selection belongs in the Indexing tab.",
                 )}
               </p>
               <SourceOrder values={saved ?? {}} />

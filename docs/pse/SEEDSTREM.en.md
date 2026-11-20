@@ -37,6 +37,6 @@ Enable **Last-resort playback source** in the Stremio source editor to try its r
 Search and indexing still query Seedstrem without downloading. Results remain candidates, not proof that files are downloaded or playable. Prowlarr can therefore be queried both through Seedstrem and directly if also configured in Remix.
 
 
-## Quick mode
+## Quick setup
 
-Under **Remix → Playback → Priorities**, [quick mode](QUICK_SOURCES.en.md) places this source in a strict order. Existing settings are preserved and the mode is off by default. Searches and availability checks never trigger Seedstrem downloads.
+Under **Remix → Playback → Priorities**, [quick setup](QUICK_SOURCES.en.md) places this source in a strict order. Existing settings are preserved and it is off by default. Searches and availability checks never trigger Seedstrem downloads.

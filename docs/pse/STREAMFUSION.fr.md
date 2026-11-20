@@ -83,4 +83,4 @@ Effet sur les menus de versions (**Play Version**) avec `alternativesPerResoluti
 
 ## Alkodiques uniquement à la lecture
 
-Le [mode rapide](QUICK_SOURCES.fr.md) utilise les fichiers `sfr-alko:` vérifiés, via `sfr_alko.go` et `core.IsVerifiedFile`. Il ne lit pas les torrents ordinaires, ne transforme aucun lien en magnet et ne recherche pas leur cache. Les tables Alkodiques restent facultatives : droits de lecture absents, source vide ou échec de lecture font passer à la source suivante, sans créer de droits PostgreSQL.
+La [configuration rapide](QUICK_SOURCES.fr.md) utilise les fichiers `sfr-alko:` vérifiés, via `sfr_alko.go` et `core.IsVerifiedFile`. Elle ne lit pas les torrents ordinaires, ne transforme aucun lien en magnet et ne recherche pas leur cache. Les tables Alkodiques restent facultatives : droits de lecture absents, source vide ou échec de lecture font passer à la source suivante, sans créer de droits PostgreSQL.

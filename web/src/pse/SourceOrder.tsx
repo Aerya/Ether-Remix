@@ -1,4 +1,4 @@
-import { QuickSources } from "./QuickSources";
+import { QuickSources, type QuickSourceSettings } from "./QuickSources";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { SettingsSection } from "../components/CollapsibleSections";
 import { useEffect, useMemo, useState } from "react";
@@ -129,7 +129,7 @@ function FamilyLists({
 
 export function SourceOrder({ values = {} }: { values?: Record<string, string> }) {
   const config = useAsync(() => api.getConfig(), []);
-  const [quick, setQuick] = useState<{ enabled: boolean; order?: string[]; seedstremId?: string }>({
+  const [quick, setQuick] = useState<QuickSourceSettings>({
     enabled: false,
   });
   const [families, setFamilies] = useState<string[]>([]);
