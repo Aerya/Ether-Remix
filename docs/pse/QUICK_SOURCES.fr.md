@@ -1,4 +1,4 @@
-# Configuration rapide des sources
+# Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet
 
 [Guide Remix](GUIDE.fr.md) · [English](QUICK_SOURCES.en.md)
 

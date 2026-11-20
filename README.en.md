@@ -54,7 +54,7 @@ For **music**, bring together the Deezer catalogue, your audio files and your iB
 <a id="nav-an-interface-that-fits-your-habits"></a>
 <a id="nav-ether-extended-by-remix"></a>
 
-**Quick source setup**: under **Remix → Playback → Priorities**, enable **Quick setup**, select Alkodiques only, Usenet, the Ether-Remix torrent client and/or Seedstrem, then order them freely (↑ / ↓ or drag and drop). After mandatory filters, Remix tries usable releases from each source before moving on; other Stremio addons (including Debrider) are the last resort. [Guide](docs/pse/QUICK_SOURCES.en.md).
+**Limit debrid usage, or even prefer BitTorrent/Usenet download & streaming**: under **Remix → Playback → Priorities**, enable **Quick setup**, select Alkodiques only, Usenet, the Ether-Remix torrent client and/or Seedstrem, then order them freely (↑ / ↓ or drag and drop). After mandatory filters, Remix tries usable releases from each source before moving on; other Stremio addons (including Debrider) are the last resort. [Guide](docs/pse/QUICK_SOURCES.en.md).
 
 ## What Remix does
 

@@ -1,4 +1,4 @@
-# Quick source setup
+# Limit debrid usage, or even prefer BitTorrent/Usenet download & streaming
 
 [Remix guide](GUIDE.en.md) · [Français](QUICK_SOURCES.fr.md)
 

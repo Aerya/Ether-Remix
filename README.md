@@ -54,7 +54,7 @@ La configuration rapide **JukeBox** aide à créer vos bibliothèques et collect
 <a id="nav-une-interface-adaptee-a-vos-habitudes"></a>
 <a id="nav-la-base-ether-enrichie-par-remix"></a>
 
-**Configuration rapide des sources** : dans **Remix → Lecture → Priorités**, activez **Configuration rapide**, cochez Alkodiques uniquement, Usenet, client torrent Ether-Remix et/ou Seedstrem, puis ordonnez-les librement (↑ / ↓ ou glisser-déposer). Après les filtres obligatoires, Remix épuise les releases utilisables d’une source avant la suivante ; les autres addons Stremio (dont Debrider) interviennent en dernier recours. [Guide](docs/pse/QUICK_SOURCES.fr.md).
+**Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet** : dans **Remix → Lecture → Priorités**, activez **Configuration rapide**, cochez Alkodiques uniquement, Usenet, client torrent Ether-Remix et/ou Seedstrem, puis ordonnez-les librement (↑ / ↓ ou glisser-déposer). Après les filtres obligatoires, Remix épuise les releases utilisables d’une source avant la suivante ; les autres addons Stremio (dont Debrider) interviennent en dernier recours. [Guide](docs/pse/QUICK_SOURCES.fr.md).
 
 ## Ce que fait Remix
 

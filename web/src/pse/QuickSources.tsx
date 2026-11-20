@@ -80,7 +80,12 @@ export function QuickSources({
   };
   return (
     <section className="space-y-3 rounded border border-border p-3">
-      <h3 className="font-medium">{L("Configuration rapide des sources", "Quick source setup")}</h3>
+      <h3 className="font-medium">
+        {L(
+          "Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet",
+          "Limit debrid usage, or even prefer BitTorrent/Usenet download & streaming",
+        )}
+      </h3>
       <label className="flex items-center gap-2">
         <Switch
           checked={value.enabled}

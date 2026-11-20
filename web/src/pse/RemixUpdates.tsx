@@ -26,8 +26,23 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-20-quick-setup-free-order",
+    id: "2026-11-20-limit-debrid",
     version: "current",
+    date: "2026-11-20",
+    title: [
+      "Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet",
+      "Limit debrid usage, or even prefer BitTorrent/Usenet download & streaming",
+    ],
+    items: [
+      [
+        "La section « Configuration rapide des sources » de Lecture → Priorités s’intitule désormais « Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet ». Son fonctionnement est inchangé.",
+        "The “Quick source setup” section in Playback → Priorities is now titled “Limit debrid usage, or even prefer BitTorrent/Usenet download & streaming”. Its behavior is unchanged.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-20-quick-setup-free-order",
+    version: "0.2.37-remix.118.1",
     date: "2026-11-20",
     title: ["Configuration rapide : ordre libre", "Quick setup: free ordering"],
     items: [
