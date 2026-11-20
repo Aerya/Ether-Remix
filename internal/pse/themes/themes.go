@@ -188,6 +188,7 @@ func (s *Service) Reload(ctx context.Context) error {
 	s.private = private
 	s.public = public
 	s.mu.Unlock()
+	frontend.BumpPSEThemesGeneration()
 	return nil
 }
 

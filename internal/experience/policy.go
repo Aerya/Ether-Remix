@@ -41,6 +41,6 @@ func LibrarySection(libraries []Library, kind core.MediaType) (int, bool) {
 // BindVisibility is the shared library, policy and availability port.
 // Frontends supply sources; they do not decide which library a media type uses.
 func BindVisibility(policy AccessPolicy, get func(context.Context, core.RatingKey) (*core.Title, error), available func(context.Context, []core.Title) []core.Title, sessions func() []*core.PlaySession, libraries []Library) Visibility {
-	return Visibility{Policy: policy, GetTitle: get, FilterAvailable: available, Sessions: sessions,
+	return Visibility{Policy: policy, GetTitle: get, FilterAvailable: available, Sessions: sessions, ThemeGrant: frontend.PSEThemeGrant,
 		SectionFor: func(kind core.MediaType) (int, bool) { return LibrarySection(libraries, kind) }}
 }

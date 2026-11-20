@@ -67,7 +67,7 @@ func (s *Server) titleAllowed(u *frontend.User, t *frontend.Title) bool {
 }
 
 func (s *Server) visibility() frontend.Visibility {
-	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(),
+	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(), ThemeGrant: frontend.PSEThemeGrant,
 		SectionFor: func(t frontend.MediaType) (int, bool) { sec, ok := s.untitledSectionFor(t); return sec.ID, ok }}
 	if s.catalog() != nil {
 		v.GetTitle = s.seriesTitle

@@ -115,7 +115,6 @@ export function ViewerLibraries({
   const unrestricted = current.length === 0;
   const checkedThemes = remixChecked(current, themes, all);
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(allowed ?? []);
-  const baseOn = (th: ThemeLibrary) => baseLibraryIds(th, all).some((id) => current.includes(id));
   // La liste enregistrée : bibliothèques d'Ether, plus les Remix cochées (5100+ID).
   // Sans bibliothèque Remix, la liste reste telle quelle (aucun marqueur ajouté).
   const withRemix = (ids: number[], on: Set<number>) =>
@@ -190,12 +189,10 @@ export function ViewerLibraries({
                 <SettingsRow
                   key={`remix-${th.id}`}
                   title={th.name}
-                  description={baseOn(th) ? undefined : t("Needs the Movies or Shows library")}
                   control={
                     <Switch
                       aria-label={th.name}
                       checked={checkedThemes.has(remixSection(th))}
-                      disabled={!baseOn(th)}
                       onChange={(e) => toggleRemix(remixSection(th), e.target.checked)}
                     />
                   }

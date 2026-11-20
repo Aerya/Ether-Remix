@@ -286,7 +286,7 @@ func (s *ImageGrantService) pageImages(ctx context.Context, viewer *core.Viewer,
 	s.pageMu.Unlock()
 	gen := uint64(0)
 	if genFn != nil {
-		gen = genFn()
+		gen = genFn() + frontend.PSEThemesGeneration()
 	}
 	cacheKey := pageArtKey{viewer: viewer.ID, item: key, language: device.Language, rating: viewer.MaxContentRating, sections: sectionsKey(viewer.AllowedLibraries)}
 	if genFn != nil {

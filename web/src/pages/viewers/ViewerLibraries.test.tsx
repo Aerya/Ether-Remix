@@ -63,4 +63,13 @@ describe("Remix libraries in viewer access", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith(7, { allowedLibraries: [1] }));
   });
+  it("keeps the Remix switch enabled without a base library ticked", async () => {
+    render(<ViewerLibraries userId={7} allowed={[5100, 5101]} onSaved={() => {}} />);
+    const sw = (await screen.findByRole("switch", { name: "Concerts" })) as HTMLInputElement;
+    expect(sw.disabled).toBe(false);
+    expect(sw.checked).toBe(true);
+    expect((screen.getByRole("switch", { name: "Anime" }) as HTMLInputElement).disabled).toBe(
+      false,
+    );
+  });
 });

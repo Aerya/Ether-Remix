@@ -35,6 +35,9 @@ func (a *App) pseThemes() *themes.Service {
 			svc.SetSources(a.librarySourceChoices)
 		}
 		frontend.SetPSEThemes(svc)
+		if a.collections != nil {
+			a.collections.SetBuiltHook(frontend.BumpPSEThemesGeneration)
+		}
 		if svc != nil {
 			ctx, cancel := context.WithCancel(context.Background())
 			a.closers = append(a.closers, cancel)
