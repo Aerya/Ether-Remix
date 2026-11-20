@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 )
 
 // Liaison entre le serveur Plex et les bibliothèques à thème de PSE
@@ -23,6 +24,21 @@ const (
 	PSEThemeShowOffset  = 100
 	PSEThemeSectionMax  = 5299
 )
+
+// PSEThemeJellyfinRowBase réserve le bit 59 aux collections des vues Remix.
+// Les vues Collections, Scrob et personnalisées utilisent les bits 60 à 62.
+const PSEThemeJellyfinRowBase int64 = 1 << 59
+
+// IsPSEThemeJellyfinRow indique si l'identifiant appartient à une collection Remix.
+func IsPSEThemeJellyfinRow(id int64) bool {
+	return id >= PSEThemeJellyfinRowBase && id < 2*PSEThemeJellyfinRowBase
+}
+
+// IsPSEThemeJellyfinView indique si l'identifiant est réservé pour une
+// bibliothèque Remix ou l'une de ses collections, même si elle n'existe plus.
+func IsPSEThemeJellyfinView(id int64) bool {
+	return id >= PSEThemeSectionBase && id <= PSEThemeSectionMax || IsPSEThemeJellyfinRow(id)
+}
 
 // PSEThemeRow est une rangée d'une bibliothèque à thème : une collection
 // d'Ether.
@@ -40,8 +56,10 @@ type PSETheme struct {
 	VisibleTo func(*core.User) bool
 	Section   int
 	Title     string
-	Type      core.MediaType // movie ou show
-	Rows      []PSEThemeRow
+	// LibraryTitle is the configured name, without Plex's media type suffix.
+	LibraryTitle string
+	Type         core.MediaType // movie ou show
+	Rows         []PSEThemeRow
 	// AllLanguages : bibliothèque « toutes langues » (VOSTFR, concerts…).
 	// Ses titres sans VF n'apparaissent que là, jamais dans Films et Séries.
 	AllLanguages bool
@@ -77,7 +95,7 @@ func BumpPSEThemesGeneration() { pseThemesGen.Add(1) }
 
 // PSEThemesGeneration identifie l'état courant des bibliothèques à thème, pour
 // les clés de cache qui dépendent des droits de bibliothèque d'un spectateur.
-func PSEThemesGeneration() uint64 { return pseThemesGen.Load() }
+func PSEThemesGeneration() uint64 { return pseThemesGen.Load() + mediaaccess.Revision() }
 
 // CurrentPSEThemes renvoie le service actif, ou nil.
 func CurrentPSEThemes() PSEThemes {

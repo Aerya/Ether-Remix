@@ -108,6 +108,7 @@ type Collections interface {
 // Service garde les bibliothèques en mémoire et sert le serveur Plex.
 type Service struct {
 	sourceChoices func(context.Context) ([]SourceChoice, error)
+	sectionsInUse func(context.Context, *sql.Tx) ([]core.LibraryID, error)
 
 	db   *sql.DB
 	cols Collections
@@ -127,6 +128,12 @@ type Service struct {
 func New(ctx context.Context, db *sql.DB, cols Collections) (*Service, error) {
 	s := &Service{db: db, cols: cols, titles: map[string]string{}, types: map[string]string{}}
 	return s, s.Reload(ctx)
+}
+
+// SetSectionReservations reserves sections referenced by saved viewer limits,
+// including deleted themes. The app wires this before publishing the service.
+func (s *Service) SetSectionReservations(read func(context.Context, *sql.Tx) ([]core.LibraryID, error)) {
+	s.sectionsInUse = read
 }
 
 // Reload relit les bibliothèques et le nom des collections.
@@ -239,7 +246,7 @@ func (s *Service) Themes() []frontend.PSETheme {
 // theme décrit une bibliothèque Plex ; filter ne garde que les collections
 // du type (ou mixtes).
 func (s *Service) theme(l Library, section int, title string, typ core.MediaType, filter bool) frontend.PSETheme {
-	th := frontend.PSETheme{Section: section, Title: title, Type: typ, AllLanguages: l.AllLanguages}
+	th := frontend.PSETheme{Section: section, Title: title, LibraryTitle: l.Name, Type: typ, AllLanguages: l.AllLanguages}
 	policy := core.AllUsers()
 	if l.Users != nil {
 		policy = *l.Users
@@ -385,6 +392,22 @@ func (s *Service) Create(ctx context.Context, l Library) (Library, error) {
 		used[x.ID] = true
 		pos = max(pos, x.Position+1)
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return l, err
+	}
+	defer tx.Rollback()
+	if s.sectionsInUse != nil {
+		sections, err := s.sectionsInUse(ctx, tx)
+		if err != nil {
+			return l, err
+		}
+		for _, section := range frontend.NormalizeAllowedLibraries(sections) {
+			if id := int64(section) - frontend.PSEThemeSectionBase; id > 0 && id <= MaxLibraries {
+				used[id] = true
+			}
+		}
+	}
 	l.ID = 0
 	for id := int64(1); id <= MaxLibraries; id++ {
 		if !used[id] {
@@ -402,8 +425,11 @@ func (s *Service) Create(ctx context.Context, l Library) (Library, error) {
 		b, _ := json.Marshal(l.Users)
 		users = string(b)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO pse_theme_libraries(id, name, type, collections, position, created_at, all_languages, preset_id, users_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO pse_theme_libraries(id, name, type, collections, position, created_at, all_languages, preset_id, users_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.ID, l.Name, l.Type, string(raw), l.Position, time.Now().Unix(), boolInt(l.AllLanguages), l.Preset, users); err != nil {
+		return l, err
+	}
+	if err := tx.Commit(); err != nil {
 		return l, err
 	}
 	return l, s.Reload(ctx)

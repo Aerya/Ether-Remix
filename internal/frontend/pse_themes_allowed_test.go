@@ -2,10 +2,13 @@ package frontend
 
 import (
 	"context"
+	"database/sql"
 	"slices"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func TestThemeAllowed(t *testing.T) {
@@ -128,5 +131,42 @@ func TestPSEThemeGrantNotBuilt(t *testing.T) {
 	g.rows["a"] = []core.RatingKey{core.MovieKey(1)}
 	if !PSEThemeGrant(kid, movie) {
 		t.Fatal("un résultat vide a été mis en cache")
+	}
+}
+
+type localGrantThemes struct {
+	grantThemes
+	db *sql.DB
+}
+
+func (g *localGrantThemes) RowKeys(ctx context.Context, row string, viewer *core.User) []core.RatingKey {
+	if !mediaaccess.Allowed(ctx, g.db, "local:family", viewer.ID) {
+		return []core.RatingKey{}
+	}
+	return g.grantThemes.RowKeys(ctx, row, viewer)
+}
+
+func TestPSEThemeGrantRechecksRevokedFolderShare(t *testing.T) {
+	db := store.OpenTest(t)
+	ctx := t.Context()
+	kid := &core.User{ID: 21, AllowedLibraries: []core.LibraryID{5100, 5101}}
+	movie := &core.Title{Key: core.MovieKey(1)}
+	if err := mediaaccess.Create(ctx, db, "local:family", 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := mediaaccess.Update(ctx, db, "local:family", 7, mediaaccess.Policy{Viewers: []int64{kid.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	themes := &localGrantThemes{db: db, grantThemes: grantThemes{rows: map[string][]core.RatingKey{"a": {movie.Key}}}}
+	SetPSEThemes(themes)
+	t.Cleanup(func() { SetPSEThemes(nil) })
+	if !PSEThemeGrant(kid, movie) || !PSEThemeGrant(kid, movie) || themes.calls != 1 {
+		t.Fatal("shared TMDB title did not enter the theme grant cache")
+	}
+	if err := mediaaccess.Update(ctx, db, "local:family", 7, mediaaccess.Policy{}); err != nil {
+		t.Fatal(err)
+	}
+	if PSEThemeGrant(kid, movie) {
+		t.Fatal("stale cached grant allowed a title after revocation")
 	}
 }

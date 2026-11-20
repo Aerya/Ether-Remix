@@ -113,7 +113,8 @@ func browseCacheKey(f frontend.PageFreshness, r *http.Request) string {
 		r.Header.Get("X-Emby-Device-Id"),
 		r.Header.Get("X-Emby-Authorization"),
 	}, "\n")))
-	return fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s", f.Catalog, f.Config, f.Watch, f.Favorite, f.Hidden, f.Listed, f.Images, f.Grants, f.Accounts, f.Safety, f.ArtBucket, r.URL.RequestURI(), hex.EncodeToString(sum[:8]), r.Header.Get("Accept-Language"))
+	// PSE-HOOK: invalider les réponses mises en cache après un changement de thème — voir docs/pse/FORK.fr.md
+	return fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s", f.Catalog, f.Config, f.Watch, f.Favorite, f.Hidden, f.Listed, f.Images, f.Grants, f.Accounts, f.Safety, f.ArtBucket, frontend.PSEThemesGeneration(), r.URL.RequestURI(), hex.EncodeToString(sum[:8]), r.Header.Get("Accept-Language"))
 }
 
 type bodyCapture struct {

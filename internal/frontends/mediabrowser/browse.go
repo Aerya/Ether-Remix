@@ -192,6 +192,10 @@ func (i *instance) collectionFolder(r *http.Request, v *frontend.Viewer, view fr
 		i.embyViewDTO(item)
 	}
 	if i.protocol == "jellyfin" {
+		// PSE-HOOK: valeur Jellyfin native des bibliothèques Remix mixtes — voir docs/pse/FORK.fr.md
+		if i.pseJellyfinMixedTheme(view, viewNum) {
+			item["CollectionType"] = nil
+		}
 		i.jellyfinCollectionFolder(item, viewID)
 		// Every library sits under the same user root. The id is stable so
 		// ParentId does not change between responses.
@@ -200,7 +204,10 @@ func (i *instance) collectionFolder(r *http.Request, v *frontend.Viewer, view fr
 		// A failed count stays absent rather than a fabricated zero. Counts and
 		// the two library dates are cached for the catalogue generation so a
 		// warm view list does not walk the library.
-		i.fillJellyfinViewFacts(r, v, view.ID, item)
+		// PSE-HOOK: éviter de charger les titres Remix pour lister les vues — voir docs/pse/FORK.fr.md
+		if !frontend.IsPSEThemeJellyfinView(viewNum) {
+			i.fillJellyfinViewFacts(r, v, view.ID, item)
+		}
 		i.attachLibraryCollage(r, v, viewNum, viewID, item)
 	}
 	return item, true
@@ -213,6 +220,10 @@ func (i *instance) writeCollectionFolder(w http.ResponseWriter, r *http.Request,
 	}
 	if i.protocol == "jellyfin" && viewNum == 0 {
 		i.writeUserRoot(w, r, v)
+		return
+	}
+	// PSE-HOOK: détail d'une rangée Remix — voir docs/pse/FORK.fr.md
+	if i.pseJellyfinThemeRowDetail(w, r, v, viewNum) {
 		return
 	}
 	// PSE-HOOK: bibliothèques Vus et notés (Scrob) — voir docs/pse/FORK.fr.md
@@ -933,18 +944,31 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := itemQuery(r)
-	_, token, _ := i.viewer(r)
-	live, e := i.liveSearchItems(r, v, token, terms[0])
-	if e != nil {
-		http.Error(w, "Unavailable", 503)
+	// PSE-HOOK: recherche limitée à la vue Remix demandée — voir docs/pse/FORK.fr.md
+	themeView, err := i.pseJellyfinThemeParent(r)
+	if err != nil {
+		http.Error(w, "Invalid ParentId", http.StatusBadRequest)
 		return
+	}
+	var live []any
+	if themeView == 0 {
+		_, token, _ := i.viewer(r)
+		live, err = i.liveSearchItems(r, v, token, terms[0])
+		if err != nil {
+			http.Error(w, "Unavailable", 503)
+			return
+		}
 	}
 	extra := paging.Slice(live, q.Offset, q.Limit)
 	catalogQuery := q
 	catalogQuery.Offset = max(0, q.Offset-len(live))
 	catalogQuery.Limit = max(1, q.Limit-len(extra))
-	result, err := i.searchPage(r, v, terms[0], catalogQuery)
+	result, err := i.pseJellyfinThemeSearchPage(r, v, themeView, terms[0], catalogQuery) // PSE-HOOK: recherche dans une vue Remix — voir docs/pse/FORK.fr.md
 	if err != nil {
+		if errors.Is(err, frontend.ErrNotFound) && themeView != 0 {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "Unavailable", 503)
 		return
 	}
@@ -994,6 +1018,10 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 	v, _, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	// PSE-HOOK: navigation et collections d'une vue Remix — voir docs/pse/FORK.fr.md
+	if i.pseJellyfinThemeItems(w, r, v) {
 		return
 	}
 	if i.discoveryItems(w, r, v, false) {

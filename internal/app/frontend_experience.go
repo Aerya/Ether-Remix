@@ -581,6 +581,10 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
 		}
 	}
+	// PSE-HOOK: filtre VF et disponibilité dans les vues Remix de Jellyfin — voir docs/pse/FORK.fr.md
+	if protocol == "jellyfin" {
+		deps.PSEThemeDiscoveryKeys = a.catalog.PSEDiscoveryKeys
+	}
 	service, err := experience.NewService(deps)
 	if err != nil {
 		return nil, err

@@ -594,13 +594,18 @@ func (i *instance) attachLibraryParent(r *http.Request, viewer *frontend.Viewer,
 	if _, ok := item["ParentId"]; ok {
 		return
 	}
+	// PSE-HOOK: associer les titres à leur vue Remix autorisée — voir docs/pse/FORK.fr.md
+	if parent := pseJellyfinScopedParent(r); parent != "" {
+		item["ParentId"] = parent
+		return
+	}
 	views, err := i.host.Experience.Views(r.Context(), viewer)
 	if err != nil {
 		return
 	}
 	var libraryID string
 	for _, view := range views {
-		if view.Type != viewType {
+		if view.Type != viewType || pseJellyfinIsThemeViewID(view.ID) { // PSE-HOOK: ne pas déduire un thème d'après le seul type — voir docs/pse/FORK.fr.md
 			continue
 		}
 		if libraryID != "" {
@@ -1209,7 +1214,10 @@ func (i *instance) virtualFolders(w http.ResponseWriter, r *http.Request) {
 		if i.protocol == "jellyfin" && view.Virtual {
 			entry["Locations"] = []string{}
 		}
-		if ct := mediaBrowserCollectionType(view); ct != "" {
+		// PSE-HOOK: valeur Jellyfin native des bibliothèques Remix mixtes — voir docs/pse/FORK.fr.md
+		if i.pseJellyfinMixedTheme(view, viewNum) {
+			entry["CollectionType"] = nil
+		} else if ct := mediaBrowserCollectionType(view); ct != "" {
 			entry["CollectionType"] = ct
 		}
 		result = append(result, entry)
@@ -1585,6 +1593,10 @@ func (i *instance) attachViewParentArtwork(r *http.Request, viewer *frontend.Vie
 
 func (i *instance) libraryCollageGrant(r *http.Request, viewer *frontend.Viewer, viewNum int64, viewID string) (string, frontend.Image, bool) {
 	if i == nil || i.protocol != "jellyfin" || r == nil || viewer == nil || viewNum == 0 || viewID == "" || i.host.Experience == nil || i.host.ImageGrants == nil {
+		return "", frontend.Image{}, false
+	}
+	// PSE-HOOK: éviter les affiches de titres étrangers à une bibliothèque Remix — voir docs/pse/FORK.fr.md
+	if frontend.IsPSEThemeJellyfinView(viewNum) {
 		return "", frontend.Image{}, false
 	}
 	if cache, _ := r.Context().Value(libraryCollageCacheKey{}).(map[string]libraryCollageHit); cache != nil {

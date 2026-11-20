@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/pse/releasedb"
@@ -33,6 +34,7 @@ func (a *App) pseThemes() *themes.Service {
 		rt.themes = svc
 		if svc != nil {
 			svc.SetSources(a.librarySourceChoices)
+			svc.SetSectionReservations(auth.RemixLibraryReservations)
 		}
 		frontend.SetPSEThemes(svc)
 		if a.collections != nil {

@@ -30,6 +30,10 @@ func (s *Service) servedItemKinds(ctx context.Context, v *core.User) map[string]
 			out["show"], out["series"], out["season"], out["episode"] = true, true, true, true
 		}
 	}
+	// PSE-HOOK: types des bibliothèques Remix Jellyfin — voir docs/pse/FORK.fr.md
+	for _, mt := range s.pseJellyfinSearchTypes(ctx, v, nil) {
+		builtin(mt)
+	}
 	if s.d.PluginLibraries == nil {
 		for _, lib := range s.libraries() {
 			if v.AllowsLibrary(core.LibraryID(lib.ID)) {
