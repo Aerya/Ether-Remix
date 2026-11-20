@@ -142,3 +142,5 @@ Merci à **[JukeBox](https://mdblist.com/lists/jukebox8786/)** pour ses listes M
 Inspirations : [Remux](https://github.com/lostb1t/remux), [Eclipse](https://eclipsemusic.app/), [Monochrome](https://monochrome.st/), [Polyfin](https://github.com/moodiness/polyfin) et [Silo Server](https://github.com/Silo-Server/silo-server). Intégration de suivi : [Scrob](https://github.com/Aerya/scrob). Source XDCC : [XDCC Grabscher](https://github.com/CaptainEpix/xdcc-grabscher) de CaptainEpix. Source FTP / SFTP : [pkg/sftp](https://github.com/pkg/sftp), [jlaffaye/ftp](https://github.com/jlaffaye/ftp). Les métadonnées vidéo utilisent [TMDB](https://www.themoviedb.org/), sans approbation ni certification de TMDB.
 
 [Licence](LICENSE) · [Informations légales](LEGAL.md) · [Composants tiers](THIRD_PARTY_NOTICES.md)
+
+Les contributions passent par une PR vers `main`, avec CI et détection des secrets obligatoires. Les PR de `kesurof/Ether-Remix` ouvertes par `kesurof` fusionnent automatiquement après validation. [Règles de contribution et synchronisation](docs/pse/FORK.fr.md).

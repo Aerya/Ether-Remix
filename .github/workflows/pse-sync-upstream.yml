@@ -139,39 +139,26 @@ jobs:
       ref: ${{ needs.merge.outputs.candidate }}
 
   promote:
-    name: Intégrer dans main
+    name: Signaler la synchronisation validée
     needs: [merge, verify]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Avance rapide de main
+      - name: Préparer une intégration par PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE: ${{ needs.merge.outputs.candidate }}
         run: |
-          git fetch origin "$SYNC_BRANCH"
-          candidate="${{ needs.merge.outputs.candidate }}"
-          test "$(git rev-parse "origin/$SYNC_BRANCH")" = "$candidate"
-          if git merge-base --is-ancestor origin/main "$candidate"; then
-            git push origin "$candidate:refs/heads/main"
+          # main requires a PR. Actions are intentionally not allowed to create
+          # or approve PRs in this repository: keep the validated branch and
+          # notify the owner rather than pushing directly or bypassing rules.
+          title="Synchronisation Ether upstream prête à intégrer"
+          body="La branche $SYNC_BRANCH ($CANDIDATE) a passé les contrôles Go et web. Créer une PR vers main : https://github.com/$GH_REPO/compare/main...$SYNC_BRANCH?expand=1 . GitHub attendra également le contrôle Secrets. Aucun push direct ni déploiement n'a été effectué."
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
           else
-            echo "::error::main a avancé pendant la synchronisation ; relancer le workflow."
-            exit 1
+            gh issue create --title "$title" --body "$body"
           fi
-          for title in "Synchronisation Ether upstream bloquée" "Synchronisation Ether upstream : contrôles en échec" "Synchronisation Ether upstream en échec"; do
-            gh issue list --state open --search "in:title \"$title\"" --json number,title --jq '.[] | [.number,.title] | @tsv' |
-            while IFS=$'\t' read -r number actual; do
-              if [ "$actual" = "$title" ]; then
-                gh issue close "$number" --comment "Synchronisation rétablie après intégration contrôlée."
-              fi
-            done
-          done
-          # Ferme la PR éventuellement laissée ouverte par un échec précédent.
-          for n in $(gh pr list --head "$SYNC_BRANCH" --state open --json number --jq '.[].number'); do
-            gh pr close "$n" --comment "Intégrée automatiquement après contrôles verts." || true
-          done
 
   review:
     name: Signaler si les contrôles échouent
@@ -210,8 +197,8 @@ jobs:
 
   image:
     name: Publier l'image
-    needs: [merge, promote]
-    if: always() && (needs.promote.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.force_build && needs.merge.outputs.pending == 'false'))
+    needs: merge
+    if: github.event_name == 'workflow_dispatch' && inputs.force_build && needs.merge.outputs.pending == 'false'
     uses: ./.github/workflows/pse-docker.yml
     with:
       ref: main
