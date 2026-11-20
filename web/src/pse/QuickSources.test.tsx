@@ -7,7 +7,7 @@ import type { EtherConfig } from "../lib/types";
 
 vi.mock("../i18n", () => ({ getLocale: () => "fr" }));
 
-describe("Configuration rapide des sources", () => {
+describe("Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet", () => {
   it("reste désactivée par défaut et sauvegarde sélection, ordre et instance sans effacer les priorités", async () => {
     const cfg = {
       indexers: [
