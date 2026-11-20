@@ -247,3 +247,12 @@ it("range SubMaker, la recherche SeerrCatalog et le tri chacun à un seul endroi
   expect(where("seerrcatalog_search")).toEqual(["sources"]);
   expect(where("librarysort")).toEqual(["contenus"]);
 });
+
+it("réserve la place des Pre-rolls dans Lecture et renvoie vers la page Lecture d’Ether", async () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  render(page("/remix/lecture?view=prerolls"));
+  expect(await screen.findByRole("button", { name: "Pre-rolls" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Ouvrir les Pre-rolls" }).getAttribute("href")).toBe(
+    "/playback/prerolls",
+  );
+});

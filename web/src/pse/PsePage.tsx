@@ -560,6 +560,20 @@ function PseSettings() {
             </>
           ) : null}
           {tab === "lecture" && view === "vostfr" ? <VostfrTitles /> : null}
+          {tab === "lecture" && view === "prerolls" ? (
+            <div className="space-y-2 rounded-xl border border-border p-4 text-sm">
+              <h2 className="font-semibold">Pre-rolls</h2>
+              <p className="text-fg-muted">
+                {L(
+                  "Les pre-rolls (vidéos lues avant un titre) se règlent dans la page Lecture d’Ether, qui reste leur unique emplacement de réglage. Cette vue réserve leur place dans le menu Remix et y renvoie.",
+                  "Pre-rolls (videos played before a title) are set in Ether’s Playback page, which stays their single place for settings. This view reserves their place in the Remix menu and links there.",
+                )}
+              </p>
+              <Link className="underline" to="/playback/prerolls">
+                {L("Ouvrir les Pre-rolls", "Open Pre-rolls")}
+              </Link>
+            </div>
+          ) : null}
           {tab === "lecture" && view === "soustitres" ? (
             <CollapsibleBlock title="SubMaker" id="submaker-integration">
               {current.features.filter((f) => f.id === "submaker").map((f) => renderFeature(f))}

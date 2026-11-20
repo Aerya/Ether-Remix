@@ -81,6 +81,7 @@ export const REMIX_VIEWS = {
     { key: "qualite", fr: "Qualité", en: "Quality" },
     { key: "vostfr", fr: "VOSTFR", en: "Non-dubbed titles" },
     { key: "soustitres", fr: "Sous-titres", en: "Subtitles" },
+    { key: "prerolls", fr: "Pre-rolls", en: "Pre-rolls" },
   ],
   visuels: [
     { key: "cartes", fr: "Cartes", en: "Cards" },
