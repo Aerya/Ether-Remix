@@ -1,0 +1,35 @@
+name: Ether-Remix · Fusion automatique
+
+on:
+  # Metadata only: never check out or execute the fork in this context.
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_run:
+    workflows: ["Ether-Remix · CI", "Ether-Remix · Secrets"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: pse-automerge-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    if: github.repository == 'Aerya/Ether-Remix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # native auto-merge; no bypass
+      pull-requests: write
+      actions: write # explicit Docker dispatch after a confirmed merge
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            await require('./.github/pse/automerge.cjs').run({github, context, core});

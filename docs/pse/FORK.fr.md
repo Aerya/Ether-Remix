@@ -55,7 +55,7 @@ Les fichiers d'Ether ne sont modifiés que pour des **points d'accroche** : quel
 | `internal/app/pse_seerrcatalog.go` (`Changed`), `internal/app/pse_themes.go` (`runPSELangExempt`) | collections SeerrCatalog et SeerrCatalog · VOSTFR (`internal/pse/themes/seerr.go`) |
 | `internal/debrid/direct.go` (`DirectPayload`, après le contrôle « lecture seulement »), `internal/core/local_download.go` (`LocalDownloadMessage`), `internal/app/build_sources.go` (`Backend` du gestionnaire d'indexeurs), `internal/app/stremio_addons.go` (`addonIndexers`) | source XDCC via XDCC Grabscher : préparation de la release avant la sonde (`internal/debrid/pse_xdcc.go`), messages au spectateur et contrôle de disponibilité (`internal/core/pse_ondemand.go`), indexeur virtuel et API de la console (`internal/app/pse_xdcc.go`, `internal/pse/xdcc`) |
 | `internal/app/build_sources.go`, `internal/app/stremio_addons.go`, `internal/debrid/pse_xdcc.go`, `internal/pse/releasedb/{freshness,indexer}.go`, `internal/catalog/pse_tier_sources.go` | Source FTP / SFTP : indexeur virtuel, registre de préparation avant sonde partagé avec XDCC, disponibilité après copie et conservation des tables du fork. Configuration et API : `internal/app/pse_ftp.go`, `internal/pse/ftp`, `internal/pse/console/fields_ftp.go`. |
-| `.github/workflows/pr-image-build.yml` (`paths-ignore`) | pas d'image d'aperçu pour une PR qui ne touche que la documentation (`*.md`, `docs/`, `LICENSE`) ; `pr-image-publish.yml` ne tourne qu'après un build réussi, il est donc ignoré aussi |
+| `.github/workflows/pr-image-build.yml` (`paths-ignore`) | pas d'image d'aperçu pour une PR qui ne touche que la documentation (`*.md`, `docs/`, `LICENSE`) ou la configuration GitHub (`.github/`) ; `pr-image-publish.yml` ne tourne qu'après un build réussi, il est donc ignoré aussi |
 
 Les réglages PSE passent tous par `internal/pse/pseenv` : la valeur enregistrée dans la console (table `pse_settings`) l'emporte sur la variable d'environnement. Un nouvel ajout lit ses réglages avec `pseenv.Get` et les déclare dans `internal/pse/console/fields.go`.
 
@@ -65,9 +65,9 @@ Chaque jour à 05:17 UTC, le workflow compare Ether à la révision publique enr
 
 Les trois README, `.github/`, `docs/pse/`, `internal/pse/` et `web/src/pse/` restent propres à Ether-Remix. Les changements des workflows Ether nécessitent une revue manuelle. L'interface embarquée est reconstruite depuis les sources fusionnées.
 
-En cas de conflit, une issue est ouverte et main reste inchangée. Elle liste les fichiers en conflit, le type de chaque conflit (contenu, fichier supprimé par Ether mais modifié par Remix, etc.) et le lien vers l'exécution. Sinon, une branche temporaire est publiée, puis les contrôles Go et web s'exécutent sur son commit exact. Seul ce commit validé peut être intégré ; si main a avancé entre-temps, la publication est refusée. Les images amd64 et arm64 sont ensuite reconstruites.
+En cas de conflit, une issue est ouverte et main reste inchangée. Elle liste les fichiers en conflit, le type de chaque conflit (contenu, fichier supprimé par Ether mais modifié par Remix, etc.) et le lien vers l'exécution. Sinon, une branche temporaire est publiée et les contrôles Go et web s'exécutent sur son commit exact. Une issue fournit le lien permettant de créer une PR vers main. La création et l'approbation de PR par les Actions restent désactivées, par choix du propriétaire. Une fois la PR créée manuellement, GitHub attend les contrôles obligatoires, dont Secrets, avant son intégration, sans push direct ni contournement. Les images amd64 et arm64 sont ensuite reconstruites.
 
-Le `GITHUB_TOKEN` suffit : aucun jeton personnel ni secret de synchronisation n'est requis, car les workflows upstream sont exclus du delta.
+Le `GITHUB_TOKEN` suffit pour préparer et vérifier la branche : aucun jeton personnel ni secret de synchronisation n'est requis, car les workflows upstream sont exclus du delta. La création de la PR et sa fusion restent manuelles pour la synchronisation upstream.
 
 ## Résolution manuelle d'un conflit
 
@@ -184,3 +184,11 @@ Les compteurs de priorité utilisent une seule réponse `/pse/indexer/details`, 
 ### Configuration rapide des sources
 
 `resolver.SourceOrder.Quick` persiste le mode, l’ordre et l’identifiant de l’instance Seedstrem. `internal/resolver/quick_sources.go` réutilise classement, filtres, validation et secours ; `internal/app/pse_quick_sources.go` borne les recherches du gestionnaire existant. Le contexte `core.WithQuickSource` limite le fan-out et empêche la VOD de rejoindre ces étapes. Le cache de recherche Alkodiques est séparé du cache SFR ordinaire. Les payloads torrent natifs gardent leur restriction de fournisseur durant le renouvellement. Aucun changement au parcours désactivé, à la musique ou à la résolution locale. Interface et guide : `QuickSources.tsx`, [FR](QUICK_SOURCES.fr.md) / [EN](QUICK_SOURCES.en.md).
+
+## Fusion des contributions et secrets
+
+`main` exige une PR, sans approbation humaine, et les contrôles **Ether-Remix CI** et **Secrets**. Les push directs, force pushes, suppressions et contournements sont interdits, administrateurs compris. Aucune signature ni revue CODEOWNERS n'est exigée.
+
+Seules les PR non brouillon de `kesurof`, provenant exactement de `kesurof/Ether-Remix` et ciblant `main`, activent automatiquement la fusion squash. Les autres contributions conservent leur fonctionnement habituel. L'Action privilégiée ne lit que les métadonnées GitHub et son propre script sur `main` ; elle n'exécute jamais le code du fork. Un conflit, un contrôle absent ou une CI en échec bloque la fusion native GitHub. Après confirmation de la fusion, la publication Docker habituelle est déclenchée explicitement pour les changements applicatifs, sans déploiement de service. Une PR limitée à la documentation et à `.github/` ne construit ni ne publie d'image, avant ou après fusion.
+
+Gitleaks examine les nouveaux commits de chaque PR, y compris les forks et la documentation. Les anciennes détections hors de ces commits ne bloquent pas la PR ; la configuration et les listes d'exclusion fournies par la PR sont ignorées. Aucun résultat contenant une valeur secrète n'est publié dans les logs ou les artefacts. Le secret scanning GitHub et sa push protection complètent ce contrôle ; les notifications de sécurité se règlent dans les préférences du compte GitHub.

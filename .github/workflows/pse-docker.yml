@@ -10,7 +10,7 @@ name: Ether-Remix · Images Docker
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "release-notes/**", ".github/workflows/pse-sync-upstream.yml"]
+    paths-ignore: ["**.md", "docs/**", "release-notes/**", ".github/**"]
   workflow_dispatch:
   workflow_call:
     inputs:

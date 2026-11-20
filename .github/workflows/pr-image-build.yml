@@ -6,12 +6,13 @@ name: PR image build
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    # PSE-HOOK: pas d'image d'aperçu pour une PR de documentation seule —
+    # PSE-HOOK: pas d'image pour la documentation ou la configuration GitHub seule —
     # voir docs/pse/FORK.fr.md. Publish PR image ne tourne qu'après ce build.
     paths-ignore:
       - "**/*.md"
       - "docs/**"
       - "LICENSE"
+      - ".github/**"
 
 permissions:
   contents: read
