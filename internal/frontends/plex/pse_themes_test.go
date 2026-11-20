@@ -140,10 +140,12 @@ func TestPSEThemeAllowedLibraries(t *testing.T) {
 	users["explicit"] = core.User{ID: 41, Username: "explicit", AllowedLibraries: []core.LibraryID{1, 2, 5101}}
 	users["other"] = core.User{ID: 42, Username: "other", AllowedLibraries: []core.LibraryID{1, 2, 5102}}
 	users["legacy"] = core.User{ID: 43, Username: "legacy", AllowedLibraries: []core.LibraryID{1, 2}}
+	users["none"] = core.User{ID: 44, Username: "none", AllowedLibraries: []core.LibraryID{1, 2, 5100}}
 	cases := []struct {
 		token string
 		want  map[string]bool
 	}{
+		{"none", map[string]bool{"5101": false, "5102": false, "5201": false}},
 		{"explicit", map[string]bool{"5101": true, "5102": false, "5201": true}},
 		{"other", map[string]bool{"5101": false, "5102": true, "5201": false}},
 		{"legacy", map[string]bool{"5101": true, "5102": true, "5201": true}},

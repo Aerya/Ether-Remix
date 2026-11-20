@@ -124,23 +124,27 @@ func NormalizeAllowedLibraries(ids []core.LibraryID) []core.LibraryID {
 
 // ThemeAllowed applique les restrictions de bibliothèques d'un spectateur à
 // une bibliothèque à thème, identifiée par son numéro principal 5100+ID (la
-// moitié Séries 5200+ID suit le même droit). Une liste vide ouvre tout ; une
-// liste sans aucun numéro de thème (réglage antérieur aux bibliothèques
-// Remix) conserve la visibilité d'origine, qui suit la section de base.
+// moitié Séries 5200+ID suit le même droit). Une liste vide ouvre tout.
+// Le marqueur 5100 (PSEThemeSectionBase, jamais un vrai thème) signifie « choix
+// Remix explicite » : seuls les thèmes listés sont ouverts, aucun si 5100 est
+// seul. Une liste sans aucun numéro de 5100 à 5299 (réglage antérieur aux
+// bibliothèques Remix) conserve la visibilité d'origine, qui suit la section
+// de base.
 func ThemeAllowed(viewer *core.User, themeSection int) bool {
 	if viewer == nil || viewer.IsOwner || len(viewer.AllowedLibraries) == 0 {
 		return true
 	}
 	main := themeMainSection(themeSection)
-	hasTheme := false
+	explicit := false
 	for _, allowed := range viewer.AllowedLibraries {
-		if !IsThemeSection(int(allowed)) {
+		n := int(allowed)
+		if n < PSEThemeSectionBase || n > PSEThemeSectionMax {
 			continue
 		}
-		hasTheme = true
-		if themeMainSection(int(allowed)) == main {
+		explicit = true
+		if n > PSEThemeSectionBase && themeMainSection(n) == main {
 			return true
 		}
 	}
-	return !hasTheme
+	return !explicit
 }

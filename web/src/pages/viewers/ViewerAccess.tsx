@@ -62,7 +62,12 @@ function TimeZoneSelect({
 /** Numéro de section Plex de la bibliothèque Remix : 5100 + son identifiant. */
 export const remixSection = (theme: ThemeLibrary) => 5100 + theme.id;
 
-const isRemixSection = (id: number) => id > 5100 && id <= 5299;
+/**
+ * 5100 n'est jamais un vrai thème : sa présence marque un choix Remix explicite
+ * (tout décocher = aucun thème). Il n'est jamais affiché comme case.
+ */
+export const REMIX_MARKER = 5100;
+const inRemixRange = (id: number) => id >= REMIX_MARKER && id <= 5299;
 
 /** Bibliothèque d'Ether (Films / Séries) dont dépend la visibilité d'une bibliothèque Remix. */
 function baseLibraryIds(theme: ThemeLibrary, libs: Library[]): number[] {
@@ -77,7 +82,7 @@ function baseLibraryIds(theme: ThemeLibrary, libs: Library[]): number[] {
  * orphelin n'a pas de case et est simplement ignoré).
  */
 export function remixChecked(current: number[], themes: ThemeLibrary[], libs: Library[]) {
-  const legacy = !current.some(isRemixSection);
+  const legacy = !current.some(inRemixRange);
   const out = new Set<number>();
   for (const th of themes) {
     const on = legacy
@@ -113,7 +118,7 @@ export function ViewerLibraries({
   const baseOn = (th: ThemeLibrary) => baseLibraryIds(th, all).some((id) => current.includes(id));
   // La liste enregistrée : bibliothèques d'Ether, plus les Remix cochées (5100+ID).
   const withRemix = (ids: number[], on: Set<number>) =>
-    [...ids.filter((x) => !isRemixSection(x)), ...on].sort((a, b) => a - b);
+    [...ids.filter((x) => !inRemixRange(x)), REMIX_MARKER, ...on].sort((a, b) => a - b);
   const toggleLibrary = (id: number, on: boolean) =>
     setDraft((prev) => {
       const base = prev ?? allowed ?? [];
@@ -150,7 +155,7 @@ export function ViewerLibraries({
                   setDraft(
                     e.target.checked
                       ? []
-                      : [...all.map((l) => l.id), ...themes.map(remixSection)].sort(
+                      : [REMIX_MARKER, ...all.map((l) => l.id), ...themes.map(remixSection)].sort(
                           (a, b) => a - b,
                         ),
                   )

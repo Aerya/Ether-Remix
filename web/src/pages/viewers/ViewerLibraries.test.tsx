@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { api } from "../../lib/api";
 import { ViewerLibraries, remixChecked, remixSection } from "./ViewerAccess";
 import type { Library } from "../libraries/api";
 import type { ThemeLibrary } from "../../pse/ThemeLibraries";
@@ -35,5 +36,12 @@ describe("Remix libraries in viewer access", () => {
     expect(await screen.findByText("Concerts")).toBeTruthy();
     expect(screen.getByText("Anime")).toBeTruthy();
     expect(screen.getByText("Remix libraries")).toBeTruthy();
+  });
+  it("saves the Remix marker when everything is unticked", async () => {
+    const spy = vi.spyOn(api, "updateUser").mockResolvedValue({} as never);
+    render(<ViewerLibraries userId={7} allowed={[1, 5100, 5102]} onSaved={() => {}} />);
+    fireEvent.click(await screen.findByRole("switch", { name: "Anime" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(7, { allowedLibraries: [1, 5100] }));
   });
 });
