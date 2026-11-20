@@ -70,3 +70,17 @@ test('publication après fusion confirmée ; aucun doublon si déjà construite'
   h.github.rest.actions.listWorkflowRuns = async () => ({data: {workflow_runs: [{}]}});
   await run(h); assert.deepEqual(h.calls, []);
 });
+
+test('si tout est déjà vert, fusion native protégée et publication, sans bypass', async () => {
+  const pr = fixture(); const h = harness(pr);
+  h.github.graphql = async () => { throw new Error('Pull request is in clean status'); };
+  h.github.rest.pulls.merge = async value => {
+    assert.deepEqual(value, {owner: 'Aerya', repo: 'Ether-Remix', pull_number: 1, sha: 'abc', merge_method: 'squash'});
+    Object.assign(pr, {merged: true, state: 'closed', merge_commit_sha: 'merged'});
+  };
+  await run(h); assert.equal(h.calls[0][0], 'dispatch');
+  const rejected = harness(fixture());
+  rejected.github.graphql = async () => { throw new Error('Required status check is missing'); };
+  await assert.rejects(run(rejected), /Required status check/);
+  assert.deepEqual(rejected.calls, []);
+});

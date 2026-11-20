@@ -30,6 +30,7 @@ async function run({github, context, core, sleep = ms => new Promise(r => setTim
     if (!isKesurof(pr)) continue;
     const sha = source?.head_sha || context.payload.pull_request.head.sha;
     if (pr.head.sha !== sha) continue;
+    let mergedNow = false;
     if (canEnable(pr)) {
       const permission = (await github.rest.repos.getCollaboratorPermissionLevel({
         ...repo, username: 'kesurof'
@@ -38,20 +39,29 @@ async function run({github, context, core, sleep = ms => new Promise(r => setTim
         core.info('Accès écriture non actif : aucune fusion demandée.');
         continue;
       }
-      // Native auto-merge respects all protection rules. Never call mergePullRequest
-      // or pass an administrator/bypass option. Pin the live head against races.
+      // Native auto-merge respects all protection rules. Pin the live head
+      // against races; no administrator or bypass option is ever used.
       if (!pr.auto_merge) {
-        await github.graphql(`mutation($id: ID!, $head: GitObjectID!) {
-          enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: SQUASH}) {
-            pullRequest { number }
-          }
-        }`, {id: pr.node_id, head: sha});
+        try {
+          await github.graphql(`mutation($id: ID!, $head: GitObjectID!) {
+            enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: SQUASH}) {
+              pullRequest { number }
+            }
+          }`, {id: pr.node_id, head: sha});
+        } catch (error) {
+          // Like gh pr merge --auto: GitHub refuses to enable auto-merge if
+          // all requirements already passed. A normal merge still enforces
+          // every branch rule and the expected head SHA; it cannot bypass CI.
+          if (!error.message.includes('clean status')) throw error;
+          await github.rest.pulls.merge({...repo, pull_number, sha, merge_method: 'squash'});
+          mergedNow = true;
+        }
       }
     }
     // GITHUB_TOKEN merges do not emit ordinary workflow triggers. workflow_run
     // still arrives for both required checks; explicitly dispatch Docker only
     // after GitHub confirms a protected merge. No fork content is executed here.
-    if (!source) continue;
+    if (!source && !mergedNow) continue;
     for (let attempt = 0; attempt < 15; attempt++) {
       pr = await read();
       if (pr.merged || pr.state !== 'open' || pr.head.sha !== sha) break;
