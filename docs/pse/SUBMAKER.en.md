@@ -2,13 +2,13 @@
 
 Disabled by default. Use a [public instance](https://submaker.elfhosted.com/configure) or [self-host SubMaker](https://github.com/xtremexq/StremioSubMaker). Configure subtitle providers and a translation engine in SubMaker, then copy its personal `https://submaker.example/addon/<configuration>/manifest.json` URL. A `/configure` URL is insufficient. Keep this manifest private.
 
-In **Sources → Stremio → SubMaker**, enable the feature, enter the manifest and source/target languages (English/French by default), and save the page settings. Test the saved manifest without starting translation. Separately save the global scope and library/collection overrides. Collection overrides take precedence over libraries, then global; the first matching rule wins ties. Unknown SeerrCatalog membership uses global scope.
+In **Remix → Playback → Subtitles → SubMaker**, enable the feature, enter the manifest and source/target languages (English/French by default), and save the page settings. Test the saved manifest without starting translation. Separately save the global scope and library/collection overrides. Collection overrides take precedence over libraries, then global; the first matching rule wins ties. Unknown SeerrCatalog membership uses global scope.
 
 For [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), configure authenticated search via Remix, enable external subtitles in the user's source filters and select the same target language. Availability sharing retains its own switch and token.
 
 ## VOSTFR on demand
 
-In **Remix → French subtitles on demand**, the **Prepare French subtitles with SubMaker** option (off by default) puts the chosen titles in SubMaker’s scope, even when the global scope is off. It is only offered when SubMaker is enabled with a valid manifest. An explicit collection rule in SubMaker’s scope still wins; a library rule does not.
+In **Remix → Playback → Non-dubbed titles**, the **Prepare French subtitles with SubMaker** option (off by default) puts the chosen titles in SubMaker’s scope, even when the global scope is off. It is only offered when SubMaker is enabled with a valid manifest. An explicit collection rule in SubMaker’s scope still wins; a library rule does not.
 
 When it is turned on, titles without known French subtitles are searched again; SubMaker then prepares the releases found, within the daily budget. Each title shows a state: French audio, French subtitles announced, French SRT ready, translated SRT (AI), preparing, failed (retried later), no French subtitles, or no release indexed. For a show, the state reflects the episode prepared during indexing; other episodes are prepared at playback.
 

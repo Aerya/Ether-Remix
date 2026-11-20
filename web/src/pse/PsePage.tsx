@@ -1,5 +1,4 @@
 import "./navigation.css";
-import { IndexerActivity } from "./IndexerActivity";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStart, QuickStartHint } from "./QuickStart";
@@ -115,13 +114,14 @@ const BASE = "/remix";
 const TABS = REMIX_TABS;
 type TabKey = (typeof TABS)[number]["key"];
 
+/**
+ * Fonctions d’un onglet, d’après la table `REMIX_TABS`. Chaque fonction a un seul
+ * emplacement : une fonction absente de la table n’est affichée nulle part, et le
+ * test de navigation échoue tant qu’elle n’a pas d’onglet.
+ */
 export function featuresOfTab(tab: TabKey, features: Feature[]): Feature[] {
-  const known = new Set<string>(TABS.flatMap((t) => [...t.features]));
   const def = TABS.find((t) => t.key === tab)!;
-  const own = [...def.features].flatMap((id) => features.filter((f) => f.id === id));
-  return tab === TABS[TABS.length - 1]!.key
-    ? [...own, ...features.filter((f) => !known.has(f.id))]
-    : own;
+  return [...def.features].flatMap((id) => features.filter((f) => f.id === id));
 }
 
 function valuesOf(data: PseData | null): Record<string, string> | null {
@@ -199,6 +199,64 @@ const MUSIC_CONTENT = new Set([
 const MUSIC_TRACKING = new Set(["PSE_LASTFM_API_KEY", "PSE_LASTFM_SECRET"]);
 export function musicFieldPlacement(key: string) {
   return MUSIC_TRACKING.has(key) ? "tracking" : MUSIC_CONTENT.has(key) ? "content" : "source";
+}
+
+/** La musique se règle à quatre endroits ; ce plan dit lequel sert à quoi. */
+const MUSIC_MAP = [
+  {
+    title: ["Sources › Streaming musical", "Sources › Music streaming"],
+    text: [
+      "Comptes et services qui fournissent la musique (debrid, Deezer, Audius…).",
+      "Accounts and services that supply music (debrid, Deezer, Audius…).",
+    ],
+    to: "/remix/sources?source=musique",
+  },
+  {
+    title: ["Sources › Fichiers locaux, BitTorrent", "Sources › Local files, BitTorrent"],
+    text: [
+      "Vos dossiers audio, vos comptes iBroadcast et le téléchargement de musique.",
+      "Your audio folders, iBroadcast accounts and music downloads.",
+    ],
+    to: "/remix/sources?source=local",
+  },
+  {
+    title: ["Contenus › Musique (cette page)", "Content › Music (this page)"],
+    text: [
+      "Accès Subsonic, playlists, classements et découvertes.",
+      "Subsonic access, playlists, charts and discoveries.",
+    ],
+    to: "",
+  },
+  {
+    title: ["Suivi", "Tracking"],
+    text: ["Liaison Last.fm et envoi des écoutes.", "Last.fm link and play reporting."],
+    to: "/remix/suivi",
+  },
+] as const;
+
+function MusicMap() {
+  return (
+    <aside className="rounded-xl border border-border p-4 text-sm">
+      <h2 className="font-semibold">{L("Musique : où régler quoi", "Music: where to set what")}</h2>
+      <ul className="mt-2 space-y-1">
+        {MUSIC_MAP.map((row) => (
+          <li key={row.title[0]}>
+            {row.to ? (
+              <Link className="underline" to={row.to}>
+                {L(row.title[0], row.title[1])}
+              </Link>
+            ) : (
+              <strong>{L(row.title[0], row.title[1])}</strong>
+            )}
+            <span className="text-fg-muted">
+              {" — "}
+              {L(row.text[0], row.text[1])}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
 }
 
 function PseSettings() {
@@ -335,7 +393,26 @@ function PseSettings() {
             : viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
           {tab === "apercu" && view === "demarrage" ? (
             <>
-              <QuickStart indexing={saved.PSE_INDEXER === "on"} />
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Le parcours guidé se trouve dans l’Accueil et l’assistant, comme en mode Simple.",
+                  "The guided path is in Home and the assistant, as in Simple mode.",
+                )}{" "}
+                <Link className="underline" to="/remix/accueil">
+                  {L("Ouvrir l’Accueil", "Open Home")}
+                </Link>
+                {" · "}
+                <Link className="underline" to="/remix/assistant">
+                  {L("Lancer l’assistant", "Run the assistant")}
+                </Link>
+              </p>
+              <CollapsibleBlock
+                title={L("Guide détaillé pas à pas", "Detailed step-by-step guide")}
+              >
+                <div className="p-4">
+                  <QuickStart indexing={saved.PSE_INDEXER === "on"} />
+                </div>
+              </CollapsibleBlock>
               <p className="text-sm text-fg-muted">
                 {L(
                   "Cartes d’accueil, packs de visuels et affiches se règlent dans Visuels.",
@@ -362,12 +439,6 @@ function PseSettings() {
               stremio={
                 <>
                   {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
-                  <CollapsibleBlock title="SubMaker" id="submaker-integration">
-                    {current.features
-                      .filter((f) => f.id === "submaker")
-                      .map((f) => renderFeature(f))}
-                    <Submaker />
-                  </CollapsibleBlock>
                   <CollapsibleBlock title="SeerrCatalog" id="seerrcatalog-integration">
                     <div className="space-y-4 p-4">
                       <a
@@ -404,7 +475,15 @@ function PseSettings() {
               </p>
               {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
               <SearchPriority />
-              <IndexerActivity />
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Les recherches en cours et récentes se suivent dans Vue d’ensemble → Activité.",
+                  "Ongoing and recent searches are tracked in Overview → Activity.",
+                )}{" "}
+                <Link className="underline" to="/remix/apercu?view=indexation">
+                  {L("Voir l’activité", "View activity")}
+                </Link>
+              </p>
             </>
           ) : null}
           {tab === "lecture" && view === "priorites" ? (
@@ -458,9 +537,17 @@ function PseSettings() {
                 </p>
               ) : null}
               {content !== "musique" ? <JukeboxQuickSetup /> : null}
+              {content !== "musique"
+                ? current.features
+                    .filter((f) => f.id === "librarysort")
+                    .map((f) => renderFeature(f))
+                : null}
               {content !== "musique" && mode === "expert" ? <XperienceImport /> : null}
               {content === "musique" ? (
-                musicPart("content")
+                <>
+                  <MusicMap />
+                  {musicPart("content")}
+                </>
               ) : (
                 <ThemeLibraries
                   key={content}
@@ -473,6 +560,12 @@ function PseSettings() {
             </>
           ) : null}
           {tab === "lecture" && view === "vostfr" ? <VostfrTitles /> : null}
+          {tab === "lecture" && view === "soustitres" ? (
+            <CollapsibleBlock title="SubMaker" id="submaker-integration">
+              {current.features.filter((f) => f.id === "submaker").map((f) => renderFeature(f))}
+              <Submaker />
+            </CollapsibleBlock>
+          ) : null}
           {tab === "lecture" && view === "qualite" ? (
             <>
               <div hidden={mode !== "expert"}>
@@ -511,9 +604,24 @@ function PseSettings() {
           tab !== "indexation" &&
           (tab !== "lecture" || view === "qualite") &&
           (tab !== "visuels" || view === "affiches")
-            ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
+            ? featuresOfTab(tab, current.features)
+                .filter((f) => !(tab === "lecture" && f.id === "submaker"))
+                .map((f) => renderFeature(f))
             : null}
-          {tab === "visuels" && view === "cartes" ? <DiscoveryCardsSetup /> : null}
+          {tab === "visuels" && view === "cartes" ? (
+            <>
+              <DiscoveryCardsSetup />
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Les modèles de disposition (accueil, bibliothèques, collections) se gèrent avec les bibliothèques, dans Contenus.",
+                  "Layout templates (home, libraries, collections) are managed with libraries, in Content.",
+                )}{" "}
+                <Link className="underline" to="/remix/contenus?content=bibliotheques#pse-themes">
+                  {L("Ouvrir les modèles de disposition", "Open layout templates")}
+                </Link>
+              </p>
+            </>
+          ) : null}
           {tab === "visuels" && view === "affiches" ? (
             <p className="text-sm text-fg-muted">
               {L(

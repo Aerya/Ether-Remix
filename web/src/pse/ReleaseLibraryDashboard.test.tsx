@@ -31,7 +31,8 @@ it("shows counters, activity, pages and selected releases", async () => {
     </MemoryRouter>,
   );
   expect(await screen.findByText("Explorer l’index")).toBeVisible();
-  expect(screen.getByText("Recherches en cours")).toBeVisible();
+  // L’activité des recherches n’est affichée qu’à un endroit : Vue d’ensemble → Activité.
+  expect(screen.queryByText("Recherches en cours")).toBeNull();
 });
 it("shows compact statistics with a link, without loading activity", async () => {
   vi.mocked(apiFetch).mockResolvedValue(data);

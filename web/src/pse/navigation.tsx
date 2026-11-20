@@ -6,11 +6,25 @@ export const REMIX_TABS = [
     key: "sources",
     fr: "Sources",
     en: "Sources",
-    features: ["sfr", "seerrcatalog", "torrent", "torrent2", "torrent3", "xdcc", "ftp"],
+    features: [
+      "sfr",
+      "seerrcatalog",
+      "seerrcatalog_search",
+      "torrent",
+      "torrent2",
+      "torrent3",
+      "xdcc",
+      "ftp",
+    ],
   },
   { key: "indexation", fr: "Indexation", en: "Indexing", features: ["indexer"] },
-  { key: "lecture", fr: "Lecture", en: "Playback", features: ["french", "playable"] },
-  { key: "contenus", fr: "Contenus", en: "Content", features: ["music"] },
+  {
+    key: "lecture",
+    fr: "Lecture",
+    en: "Playback",
+    features: ["french", "playable", "submaker"],
+  },
+  { key: "contenus", fr: "Contenus", en: "Content", features: ["music", "librarysort"] },
   { key: "visuels", fr: "Visuels", en: "Visuals", features: ["posters"] },
   { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob"] },
 ] as const;
@@ -65,7 +79,8 @@ export const REMIX_VIEWS = {
   lecture: [
     { key: "priorites", fr: "Priorités", en: "Priorities" },
     { key: "qualite", fr: "Qualité", en: "Quality" },
-    { key: "vostfr", fr: "VOSTFR", en: "Subtitles" },
+    { key: "vostfr", fr: "VOSTFR", en: "Non-dubbed titles" },
+    { key: "soustitres", fr: "Sous-titres", en: "Subtitles" },
   ],
   visuels: [
     { key: "cartes", fr: "Cartes", en: "Cards" },

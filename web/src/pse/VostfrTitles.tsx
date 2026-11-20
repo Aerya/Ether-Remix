@@ -121,7 +121,7 @@ function SubmakerSwitch({
           {!data.available ? (
             <Link
               className="text-primary underline"
-              to="/remix/sources?source=stremio#submaker-integration"
+              to="/remix/lecture?view=soustitres#submaker-integration"
             >
               {L("Réglages SubMaker", "SubMaker settings")}
             </Link>

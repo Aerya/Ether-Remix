@@ -5,7 +5,6 @@ import { apiFetch } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { getLocale } from "../i18n";
 import { ReleaseBrowser } from "./ReleaseBrowser";
-import { IndexerActivity } from "./IndexerActivity";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 interface Overview {
   auditPending?: boolean;
@@ -129,12 +128,7 @@ export function ReleaseLibraryDashboard({ compact = false }: { compact?: boolean
   return (
     <section className="min-w-0 max-w-full space-y-4">
       <ReleaseOverview compact={compact} />
-      {!compact && (
-        <>
-          <IndexerActivity />
-          <ReleaseBrowser />
-        </>
-      )}
+      {!compact && <ReleaseBrowser />}
     </section>
   );
 }

@@ -221,3 +221,29 @@ it("la page Sources du mode expert garde toutes les catégories", async () => {
   expect(screen.getByRole("tab", { name: "FTP / SFTP" })).toBeTruthy();
   expect(screen.getByText("Contenus concernés :")).toBeTruthy();
 });
+
+it("place chaque fonction Remix dans un seul onglet, sans orpheline", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const dir = resolve(process.cwd(), "../internal/pse/console");
+  const declared = new Set<string>(["torrent2", "torrent3"]);
+  for (const file of readdirSync(dir).filter(
+    (f) => /^fields.*\.go$/.test(f) && !f.endsWith("_test.go"),
+  ))
+    for (const m of readFileSync(resolve(dir, file), "utf8").matchAll(/\bID:\s*"([a-z0-9_]+)"/g))
+      declared.add(m[1]!);
+  const { REMIX_TABS } = await import("./navigation");
+  const placed: string[] = REMIX_TABS.flatMap((t) => [...t.features]);
+  expect(placed.filter((id, i) => placed.indexOf(id) !== i)).toEqual([]);
+  expect([...declared].filter((id) => !placed.includes(id))).toEqual([]);
+  expect(placed.filter((id) => !declared.has(id))).toEqual([]);
+});
+
+it("range SubMaker, la recherche SeerrCatalog et le tri chacun à un seul endroit", async () => {
+  const { REMIX_TABS } = await import("./navigation");
+  const where = (id: string) =>
+    REMIX_TABS.filter((t) => (t.features as readonly string[]).includes(id)).map((t) => t.key);
+  expect(where("submaker")).toEqual(["lecture"]);
+  expect(where("seerrcatalog_search")).toEqual(["sources"]);
+  expect(where("librarysort")).toEqual(["contenus"]);
+});

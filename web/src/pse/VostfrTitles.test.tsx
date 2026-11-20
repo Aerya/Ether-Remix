@@ -60,7 +60,7 @@ it("disables the switch and links to the settings while SubMaker is not configur
   const toggle = await screen.findByRole("switch", { name: /SubMaker/ });
   expect((toggle as HTMLInputElement).disabled).toBe(true);
   expect(screen.getByRole("link", { name: /SubMaker/ }).getAttribute("href")).toBe(
-    "/remix/sources?source=stremio#submaker-integration",
+    "/remix/lecture?view=soustitres#submaker-integration",
   );
 });
 

@@ -51,6 +51,10 @@ export const REMIX_UPDATES = [
         "In Simple mode, Sources is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use.",
       ],
       [
+        "Chaque option n’a plus qu’un emplacement : SubMaker passe dans Lecture → Sous-titres, le tri des bibliothèques dans Contenus, et l’activité des recherches se suit uniquement dans Vue d’ensemble → Activité. Contenus → Musique indique où régler chaque partie de la musique.",
+        "Each option now has a single place: SubMaker moves to Playback → Subtitles, library sorting to Content, and search activity is tracked only in Overview → Activity. Content → Music shows where to set each part of music.",
+      ],
+      [
         "L’interrupteur Expert affiche tous les onglets et réglages habituels, sans rien retirer, regroupés en Surveiller, Trouver, Lire et Personnaliser. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
         "The Expert switch shows every usual tab and setting, with nothing removed, grouped as Monitor, Find, Watch and Customize. The choice is remembered in your browser; old links and bookmarks keep working.",
       ],

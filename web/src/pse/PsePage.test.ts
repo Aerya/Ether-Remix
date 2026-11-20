@@ -45,7 +45,17 @@ describe("onglets de la page Ether-Remix", () => {
     expect(featuresOfTab("sources", all)).toEqual([]);
     expect(featuresOfTab("apercu", all)).toEqual([]);
   });
-  it("met une section inconnue dans le dernier onglet", () => {
-    expect(featuresOfTab("suivi", all).map((x) => x.id)).toEqual(["notify", "scrob", "nouveau"]);
+  it("n’affiche une section inconnue dans aucun onglet", () => {
+    for (const tab of [
+      "apercu",
+      "sources",
+      "indexation",
+      "lecture",
+      "contenus",
+      "visuels",
+      "suivi",
+    ] as const)
+      expect(featuresOfTab(tab, all).map((x) => x.id)).not.toContain("nouveau");
+    expect(featuresOfTab("suivi", all).map((x) => x.id)).toEqual(["notify", "scrob"]);
   });
 });
