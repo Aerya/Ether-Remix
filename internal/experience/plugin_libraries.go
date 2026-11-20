@@ -234,6 +234,11 @@ func (s *Service) sectionOrFilterAllowed(ctx context.Context, v *core.User, titl
 			return true
 		}
 	}
+	// Bibliothèque Remix explicitement accordée (frontend.PSEThemeGrant) : le
+	// titre, ses saisons et ses épisodes s'ouvrent sans les sections de base.
+	if s.d.Visibility.ThemeGrant != nil && s.d.Visibility.ThemeGrant(v, title) {
+		return true
+	}
 	filterLibs := s.allowedFilterLibraries(ctx, v)
 	if len(filterLibs) == 0 {
 		return false
