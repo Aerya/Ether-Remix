@@ -6,6 +6,11 @@ function isKesurof(pr) {
     pr.head?.repo?.owner?.login === 'kesurof' &&
     pr.base?.repo?.full_name === repository && pr.base?.ref === 'main';
 }
+function needsImage(files) {
+  return files.some(({filename}) => !(/\.md$/.test(filename) ||
+    filename.startsWith('docs/') || filename.startsWith('release-notes/') ||
+    filename.startsWith('.github/') || filename === 'LICENSE'));
+}
 function canEnable(pr) {
   return isKesurof(pr) && pr.state === 'open' && !pr.draft;
 }
@@ -69,6 +74,8 @@ async function run({github, context, core, sleep = ms => new Promise(r => setTim
       await sleep(2000);
     }
     if (!pr.merged || pr.head.sha !== sha) continue;
+    const files = await github.paginate(github.rest.pulls.listFiles, {...repo, pull_number, per_page: 100});
+    if (!needsImage(files)) continue;
     const mergeSha = pr.merge_commit_sha;
     const existing = await github.rest.actions.listWorkflowRuns({
       ...repo, workflow_id: 'pse-docker.yml', head_sha: mergeSha, per_page: 100
@@ -84,4 +91,4 @@ async function run({github, context, core, sleep = ms => new Promise(r => setTim
     core.info(`Publication Docker demandée après fusion de la PR #${pull_number}.`);
   }
 }
-module.exports = {run, isKesurof, canEnable};
+module.exports = {run, isKesurof, canEnable, needsImage};

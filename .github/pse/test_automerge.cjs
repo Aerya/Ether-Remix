@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {run, isKesurof, canEnable} = require('./automerge.cjs');
+const {run, isKesurof, canEnable, needsImage} = require('./automerge.cjs');
 const repo = {full_name: 'Aerya/Ether-Remix'};
 const fixture = () => ({number: 1, node_id: 'PR_test', state: 'open', draft: false,
   user: {login: 'kesurof'}, head: {sha: 'abc', repo: {full_name: 'kesurof/Ether-Remix', owner: {login: 'kesurof'}}},
@@ -12,10 +12,10 @@ function harness(pr, event = 'pull_request_target') {
     context.payload = {workflow_run: {head_sha: 'abc', path: '.github/workflows/pse-ci.yml', event: 'pull_request', conclusion: 'success'}};
   }
   const github = {
-    paginate: async () => [{number: 1}],
+    paginate: async method => method === 'files' ? [{filename: 'web/src/example.tsx'}] : [{number: 1}],
     graphql: async (...args) => { calls.push(['enable', ...args]); },
     rest: {
-      pulls: {get: async () => ({data: pr})},
+      pulls: {get: async () => ({data: pr}), listFiles: 'files'},
       repos: {
         listPullRequestsAssociatedWithCommit: {},
         getCollaboratorPermissionLevel: async () => ({data: {permission: 'write'}}),
@@ -83,4 +83,13 @@ test('si tout est déjà vert, fusion native protégée et publication, sans byp
   rejected.github.graphql = async () => { throw new Error('Required status check is missing'); };
   await assert.rejects(run(rejected), /Required status check/);
   assert.deepEqual(rejected.calls, []);
+});
+
+test('aucune image pour la configuration GitHub et la documentation seules', async () => {
+  assert.equal(needsImage([{filename: '.github/workflows/pse-ci.yml'}, {filename: 'README.md'}]), false);
+  assert.equal(needsImage([{filename: '.github/pse/automerge.cjs'}, {filename: 'internal/app/example.go'}]), true);
+  const pr = fixture(); Object.assign(pr, {merged: true, state: 'closed', merge_commit_sha: 'merged'});
+  const h = harness(pr, 'workflow_run');
+  h.github.paginate = async method => method === 'files' ? [{filename: '.github/workflows/pse-ci.yml'}] : [{number: 1}];
+  await run(h); assert.deepEqual(h.calls, []);
 });
