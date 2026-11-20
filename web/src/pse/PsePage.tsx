@@ -352,6 +352,7 @@ function PseSettings() {
           ) : null}
           {tab === "sources" ? (
             <RemixSources
+              simple={mode === "simple"}
               music={musicPart("source")}
               torrent={current.features
                 .filter((f) => ["torrent", "torrent2", "torrent3"].includes(f.id))
@@ -457,7 +458,7 @@ function PseSettings() {
                 </p>
               ) : null}
               {content !== "musique" ? <JukeboxQuickSetup /> : null}
-              {content !== "musique" ? <XperienceImport /> : null}
+              {content !== "musique" && mode === "expert" ? <XperienceImport /> : null}
               {content === "musique" ? (
                 musicPart("content")
               ) : (
@@ -474,11 +475,13 @@ function PseSettings() {
           {tab === "lecture" && view === "vostfr" ? <VostfrTitles /> : null}
           {tab === "lecture" && view === "qualite" ? (
             <>
-              <CollapsibleBlock
-                title={L("Profils de qualité des releases", "Release quality profiles")}
-              >
-                <QualityProfiles onMode={setQualityActive} />
-              </CollapsibleBlock>
+              <div hidden={mode !== "expert"}>
+                <CollapsibleBlock
+                  title={L("Profils de qualité des releases", "Release quality profiles")}
+                >
+                  <QualityProfiles onMode={setQualityActive} />
+                </CollapsibleBlock>
+              </div>
               {qualityActive ? (
                 <p className="rounded border border-border p-3 text-sm">
                   {L(
@@ -487,7 +490,7 @@ function PseSettings() {
                   )}
                 </p>
               ) : null}
-              <ThemeLibraries exceptionsOnly />
+              {mode === "expert" ? <ThemeLibraries exceptionsOnly /> : null}
             </>
           ) : null}
           {tab === "apercu" && view !== "demarrage" ? (

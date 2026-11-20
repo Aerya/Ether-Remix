@@ -15,6 +15,14 @@ export const REMIX_TABS = [
   { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob"] },
 ] as const;
 
+/** Regroupement du mode Expert par intention, dans l’ordre où on s’en sert. */
+export const EXPERT_GROUPS = [
+  { fr: "Surveiller", en: "Monitor", tabs: ["apercu"] },
+  { fr: "Trouver", en: "Find", tabs: ["sources", "indexation"] },
+  { fr: "Lire", en: "Watch", tabs: ["lecture", "contenus"] },
+  { fr: "Personnaliser", en: "Customize", tabs: ["visuels", "suivi"] },
+] as const;
+
 /** Onglets du mode simple : le parcours d’un débutant, dans l’ordre où on s’en sert. */
 export const SIMPLE_TABS = [
   { key: "accueil", fr: "Accueil", en: "Home" },

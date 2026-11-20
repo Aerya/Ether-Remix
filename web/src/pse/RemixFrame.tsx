@@ -5,15 +5,18 @@ import type { ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { DomainPage } from "../components/layout";
 import { getLocale } from "../i18n";
-import { REMIX_TABS, SIMPLE_TABS, simpleTabHref, simpleTabOf } from "./navigation";
+import { EXPERT_GROUPS, REMIX_TABS, SIMPLE_TABS, simpleTabHref, simpleTabOf } from "./navigation";
 import { useRemixMode } from "./remixMode";
 
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
+const label = (t: { fr: string; en: string }) => L(t.fr, t.en);
 
 /**
- * Cadre commun des pages Ether-Remix : titre, onglets du mode simple ou du mode
- * expert, bouton Diagnostic et interrupteur Expert. Une adresse réservée au mode
- * expert affiche les onglets experts sans modifier le mode mémorisé.
+ * Cadre commun des pages Ether-Remix : titre, navigation, bouton Diagnostic et
+ * interrupteur Expert. Le mode simple affiche quatre onglets ; le mode expert
+ * regroupe tous les onglets par intention (Surveiller, Trouver, Lire,
+ * Personnaliser). Une adresse réservée au mode expert affiche la navigation
+ * experte sans modifier le mode mémorisé.
  */
 export function RemixFrame({
   tab,
@@ -29,19 +32,56 @@ export function RemixFrame({
   const [mode, setMode] = useRemixMode();
   const simpleActive = simpleTabOf(tab, params.get("view"));
   const expert = mode === "expert" || simpleActive === null;
-  const tabs = expert
-    ? REMIX_TABS.map((t) => ({ key: t.key, label: L(t.fr, t.en) }))
-    : SIMPLE_TABS.map((t) => ({ key: t.key, label: L(t.fr, t.en) }));
+  const active = expert ? (tab ?? "") : (simpleActive ?? "");
+  const groups = expert
+    ? EXPERT_GROUPS.map((g) => ({
+        name: label(g),
+        tabs: g.tabs.map((key) => REMIX_TABS.find((t) => t.key === key)!),
+      }))
+    : [{ name: "", tabs: [...SIMPLE_TABS] }];
   return (
     <DomainPage
       className={className}
       title="Ether-Remix"
       base="/remix"
-      tabs={tabs}
-      active={expert ? (tab ?? "") : (simpleActive ?? "")}
-      tabHref={expert ? undefined : simpleTabHref}
-      tabActions={
-        <>
+      description={L(
+        "Films, séries, animés et musique. Les réglages s'appliquent sans redémarrer.",
+        "Movies, shows, anime and music. Settings apply without a restart.",
+      )}
+    >
+      <div className="flex flex-wrap items-end gap-x-6 gap-y-3 border-b border-border pb-3">
+        <div
+          role="tablist"
+          aria-label={L("Sections d’Ether-Remix", "Ether-Remix sections")}
+          className="flex flex-wrap items-end gap-x-6 gap-y-3"
+        >
+          {groups.map((g) => (
+            <div key={g.name || "simple"} role="presentation">
+              {g.name ? (
+                <p
+                  aria-hidden="true"
+                  className="mb-1 text-xs uppercase tracking-wide text-fg-muted"
+                >
+                  {g.name}
+                </p>
+              ) : null}
+              <div role="presentation" className="flex flex-wrap gap-x-1">
+                {g.tabs.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active === t.key}
+                    onClick={() => navigate(expert ? `/remix/${t.key}` : simpleTabHref(t.key))}
+                  >
+                    {label(t)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant={tab === "diagnostic" ? "default" : "outline"}
@@ -62,13 +102,8 @@ export function RemixFrame({
               }}
             />
           </label>
-        </>
-      }
-      description={L(
-        "Films, séries, animés et musique. Les réglages s'appliquent sans redémarrer.",
-        "Movies, shows, anime and music. Settings apply without a restart.",
-      )}
-    >
+        </div>
+      </div>
       {children}
     </DomainPage>
   );

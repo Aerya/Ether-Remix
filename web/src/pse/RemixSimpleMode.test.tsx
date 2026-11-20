@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { DashboardData } from "../lib/types";
@@ -23,6 +23,21 @@ vi.mock("../i18n", async (original) => ({
   getLocale: () => "fr",
 }));
 
+vi.mock("../pages/sources/Indexers", () => ({ IndexerList: () => null }));
+vi.mock("./IndexerGroups", () => ({ IndexerGroups: () => null }));
+vi.mock("../pages/sources/Debrid", () => ({ DebridSources: () => null }));
+vi.mock("../pages/sources/Usenet", () => ({ UsenetProviders: () => null }));
+vi.mock("../pages/sources/IPTV", () => ({ IPTVProviders: () => null }));
+vi.mock("./LocalMediaHealth", () => ({ LocalMediaHealth: () => null }));
+vi.mock("./OwnedMedia", () => ({ LocalMedia: () => null, IBroadcastSource: () => null }));
+vi.mock("../components/ProwlarrImport", () => ({ ProwlarrImport: () => null }));
+vi.mock("../pages/libraries/browser/NewReleasesSettings", () => ({
+  NewReleaseBudgetSection: () => null,
+}));
+vi.mock("../pages/sources/cards", () => ({ AddSourceGallery: () => null }));
+vi.mock("./Submaker", () => ({ Submaker: () => null }));
+vi.mock("./IndexerActivity", () => ({ IndexerActivity: () => null }));
+vi.mock("./SearchPriority", () => ({ SearchPriority: () => null }));
 vi.mock("./IndexerDetails", () => ({ IndexerDetails: () => null }));
 vi.mock("./ReleaseLibraryDashboard", () => ({ ReleaseLibraryDashboard: () => null }));
 
@@ -156,4 +171,53 @@ it("la page Diagnostic mène à l’action de chaque problème", async () => {
   expect(await screen.findByText("La préparation automatique est désactivée")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Connecter" }));
   expect((await screen.findByTestId("where")).textContent).toBe("/apps");
+});
+
+const names = (role: string) => screen.getAllByRole(role).map((t) => t.textContent);
+
+it("regroupe les onglets experts par intention", async () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  render(page("/remix/indexation"));
+  expect(await screen.findByRole("tab", { name: "Indexation" })).toBeTruthy();
+  expect(names("tab")).toEqual([
+    "Vue d’ensemble",
+    "Sources",
+    "Indexation",
+    "Lecture",
+    "Contenus",
+    "Visuels",
+    "Suivi",
+  ]);
+  for (const group of ["Surveiller", "Trouver", "Lire", "Personnaliser"])
+    expect(screen.getByText(group)).toBeTruthy();
+});
+
+it("la page Sources du mode simple masque les catégories réservées aux experts", async () => {
+  render(page("/remix/sources"));
+  await screen.findByRole("button", { name: "Ajouter une source" });
+  const nav = screen.getByRole("tablist", { name: "Catégories de sources" });
+  expect(
+    within(nav)
+      .getAllByRole("tab")
+      .map((t) => t.textContent),
+  ).toEqual([
+    "Stremio",
+    "Debrid",
+    "Fournisseurs Usenet",
+    "Streaming musical",
+    "Fichiers locaux",
+    "IPTV",
+  ]);
+  expect(screen.queryByText("Contenus concernés :")).toBeNull();
+  expect(screen.queryByText("Seedstrem")).toBeNull();
+  expect(screen.queryByRole("tab", { name: "XDCC" })).toBeNull();
+});
+
+it("la page Sources du mode expert garde toutes les catégories", async () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  render(page("/remix/sources"));
+  await screen.findByRole("button", { name: "Ajouter une source" });
+  expect(screen.getByRole("tab", { name: "XDCC" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "FTP / SFTP" })).toBeTruthy();
+  expect(screen.getByText("Contenus concernés :")).toBeTruthy();
 });

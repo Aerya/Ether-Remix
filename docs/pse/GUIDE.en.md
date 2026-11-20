@@ -36,7 +36,7 @@
 <a id="nav-demarrage-rapide"></a>
 ## Quick start
 
-In the console, **Ether-Remix** opens in **Simple mode**: **Home**, **Sources**, **Languages and quality** and **Library** tabs. On a first visit with no source at all, a four-step **assistant** (Sources, Language, App, Done) starts once; **Home** lets you run it again. The always-visible **Diagnostics** button checks sources, indexing, titles ready to play and storage, and offers one action per problem. The **Expert** switch shows all the usual tabs; the choice is remembered in your browser only.
+In the console, **Ether-Remix** opens in **Simple mode**: **Home**, **Sources**, **Languages and quality** and **Library** tabs. On a first visit with no source at all, a four-step **assistant** (Sources, Language, App, Done) starts once; **Home** lets you run it again. The always-visible **Diagnostics** button checks sources, indexing, titles ready to play and storage, and offers one action per problem. In this mode, **Sources** is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use. The **Expert** switch shows all the usual tabs, grouped by intent — **Monitor** (Overview), **Find** (Sources, Indexing), **Watch** (Playback, Content) and **Customize** (Visuals, Tracking) — plus the Indexers, BitTorrent, XDCC and FTP / SFTP categories; the choice is remembered in your browser only.
 
 For the detailed Expert walkthrough, open **Ether-Remix → Overview → Quick start**. This view opens by default while indexing is disabled, remains available and does not change settings automatically.
 

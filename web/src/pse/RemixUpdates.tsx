@@ -47,8 +47,12 @@ export const REMIX_UPDATES = [
         "The always-visible Diagnostics button checks sources, indexing, titles ready to play and storage, with one action per problem.",
       ],
       [
-        "L’interrupteur Expert affiche tous les onglets et réglages habituels, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
-        "The Expert switch shows every usual tab and setting, with nothing removed. The choice is remembered in your browser; old links and bookmarks keep working.",
+        "En mode Simple, Sources se limite à Stremio, Debrid, Usenet, Streaming musical, Fichiers locaux et IPTV, rangés par usage.",
+        "In Simple mode, Sources is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use.",
+      ],
+      [
+        "L’interrupteur Expert affiche tous les onglets et réglages habituels, sans rien retirer, regroupés en Surveiller, Trouver, Lire et Personnaliser. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
+        "The Expert switch shows every usual tab and setting, with nothing removed, grouped as Monitor, Find, Watch and Customize. The choice is remembered in your browser; old links and bookmarks keep working.",
       ],
     ],
   },
