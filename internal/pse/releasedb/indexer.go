@@ -462,6 +462,7 @@ func (s *Service) IndexTitle(ctx context.Context, t core.Title, sources []source
 		season, episode = 1, 1
 		req.Type, req.Season, req.Episode, req.AbsoluteEpisode = core.TypeEpisode, 1, 1, 1
 	}
+	req = CheckSeriesIdentity(ctx, s.st.db, req)
 	now := s.d.Now()
 	// Issue de chaque source : réussie (complète, éventuellement sans
 	// résultat), partielle (erreur avec des résultats), en panne ou sans

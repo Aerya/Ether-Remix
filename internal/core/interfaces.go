@@ -577,6 +577,9 @@ type SearchRequest struct {
 	// alternative titles) a release name may use; matching only, never
 	// part of a query or cache key (additive).
 	AlternativeTitles []string `json:"-"`
+	// SeriesIdentityChecked is local catalogue evidence, never addon input.
+	// Only set after checking all requested title variants for other shows.
+	SeriesIdentityChecked bool `json:"-"`
 	// Released is when the movie came out or the episode aired (zero when
 	// unknown). Indexer caches keep results for older titles longer; never
 	// part of a query or cache key (additive).

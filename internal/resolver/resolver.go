@@ -81,6 +81,9 @@ type LibraryProfiles interface {
 type Options struct {
 	QuickSearch        func(context.Context, core.SearchRequest, string, string) ([]core.Release, error)
 	ReferenceAdmission func(core.SearchRequest, core.Release) string
+
+	// PrepareReferenceRequest supplies local identity evidence once per ranking pass.
+	PrepareReferenceRequest func(context.Context, core.SearchRequest) core.SearchRequest
 	// EpisodeIdentity must read only bounded local catalogue data; no upstream calls.
 	EpisodeIdentity func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	SpecialTitles   func(context.Context, int64) []string
@@ -247,6 +250,8 @@ type Service struct {
 	log                *slog.Logger
 	now                func() time.Time
 
+	prepareReferenceRequest func(context.Context, core.SearchRequest) core.SearchRequest
+
 	cfgMu             sync.RWMutex
 	rcfg              config.Resolver
 	quality           config.Quality
@@ -305,7 +310,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{quickSearch: opts.QuickSearch, referenceAdmission: opts.ReferenceAdmission, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
+	s := &Service{quickSearch: opts.QuickSearch, referenceAdmission: opts.ReferenceAdmission, prepareReferenceRequest: opts.PrepareReferenceRequest, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, reps: map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
@@ -1559,6 +1564,9 @@ func (env *rankEnv) audio(profile core.QualityProfile, req core.ResolveRequest) 
 func (s *Service) rankWith(ctx context.Context, env rankEnv, req core.ResolveRequest, sreq core.SearchRequest, profile core.QualityProfile, results []core.Release, trace *Trace, pinID string) ([]candidate, bool, error) {
 	if s.db != nil {
 		s.loadRejectionsFor(ctx, req.Title.Key)
+	}
+	if s.prepareReferenceRequest != nil {
+		sreq = s.prepareReferenceRequest(ctx, sreq)
 	}
 	s.prepareSeriesYears(ctx, req.Title, sreq, results)
 	return s.rankPass(ctx, env, req, sreq, profile, results, trace, pinID)
