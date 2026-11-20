@@ -141,10 +141,16 @@ func TestPSEThemeAllowedLibraries(t *testing.T) {
 	users["other"] = core.User{ID: 42, Username: "other", AllowedLibraries: []core.LibraryID{1, 2, 5102}}
 	users["legacy"] = core.User{ID: 43, Username: "legacy", AllowedLibraries: []core.LibraryID{1, 2}}
 	users["none"] = core.User{ID: 44, Username: "none", AllowedLibraries: []core.LibraryID{1, 2, 5100}}
+	// Thème explicite mais section de base absente : invisible.
+	users["nobase"] = core.User{ID: 45, Username: "nobase", AllowedLibraries: []core.LibraryID{2, 5100, 5101, 5102}}
+	// ID de thème orphelin : ignoré, les autres thèmes restent en mode explicite.
+	users["orphan"] = core.User{ID: 46, Username: "orphan", AllowedLibraries: []core.LibraryID{1, 2, 5100, 5150, 5102}}
 	cases := []struct {
 		token string
 		want  map[string]bool
 	}{
+		{"nobase", map[string]bool{"5101": false, "5102": false, "5201": true}},
+		{"orphan", map[string]bool{"5101": false, "5102": true, "5201": false}},
 		{"none", map[string]bool{"5101": false, "5102": false, "5201": false}},
 		{"explicit", map[string]bool{"5101": true, "5102": false, "5201": true}},
 		{"other", map[string]bool{"5101": false, "5102": true, "5201": false}},

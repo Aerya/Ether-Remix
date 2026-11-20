@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { api } from "../../lib/api";
+import { api, apiFetch } from "../../lib/api";
 import { ViewerLibraries, remixChecked, remixSection } from "./ViewerAccess";
 import type { Library } from "../libraries/api";
 import type { ThemeLibrary } from "../../pse/ThemeLibraries";
@@ -43,5 +43,24 @@ describe("Remix libraries in viewer access", () => {
     fireEvent.click(await screen.findByRole("switch", { name: "Anime" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith(7, { allowedLibraries: [1, 5100] }));
+  });
+  it("blocks saving when the Remix libraries fail to load", async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new Error("boom"));
+    const spy = vi.spyOn(api, "updateUser").mockResolvedValue({} as never);
+    render(<ViewerLibraries userId={7} allowed={[1, 2]} onSaved={() => {}} />);
+    await screen.findByRole("alert");
+    fireEvent.click(await screen.findByRole("switch", { name: "Shows" }));
+    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(spy).not.toHaveBeenCalled();
+  });
+  it("adds no marker when there is no Remix library", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce({ libraries: [] });
+    const spy = vi.spyOn(api, "updateUser").mockResolvedValue({} as never);
+    render(<ViewerLibraries userId={7} allowed={[1, 2]} onSaved={() => {}} />);
+    fireEvent.click(await screen.findByRole("switch", { name: "Shows" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(7, { allowedLibraries: [1] }));
   });
 });

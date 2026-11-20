@@ -117,8 +117,11 @@ export function ViewerLibraries({
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(allowed ?? []);
   const baseOn = (th: ThemeLibrary) => baseLibraryIds(th, all).some((id) => current.includes(id));
   // La liste enregistrée : bibliothèques d'Ether, plus les Remix cochées (5100+ID).
+  // Sans bibliothèque Remix, la liste reste telle quelle (aucun marqueur ajouté).
   const withRemix = (ids: number[], on: Set<number>) =>
-    [...ids.filter((x) => !inRemixRange(x)), REMIX_MARKER, ...on].sort((a, b) => a - b);
+    themes.length === 0
+      ? ids
+      : [...ids.filter((x) => !inRemixRange(x)), REMIX_MARKER, ...on].sort((a, b) => a - b);
   const toggleLibrary = (id: number, on: boolean) =>
     setDraft((prev) => {
       const base = prev ?? allowed ?? [];
@@ -155,9 +158,11 @@ export function ViewerLibraries({
                   setDraft(
                     e.target.checked
                       ? []
-                      : [REMIX_MARKER, ...all.map((l) => l.id), ...themes.map(remixSection)].sort(
-                          (a, b) => a - b,
-                        ),
+                      : [
+                          ...(themes.length > 0 ? [REMIX_MARKER] : []),
+                          ...all.map((l) => l.id),
+                          ...themes.map(remixSection),
+                        ].sort((a, b) => a - b),
                   )
                 }
               />
@@ -198,6 +203,11 @@ export function ViewerLibraries({
               ))}
             </>
           ) : null}
+          {remix.error && !isOwner ? (
+            <p role="alert" className="px-5 py-2 text-sm text-danger">
+              {t("Couldn't load the Remix libraries, so saving is disabled.")}
+            </p>
+          ) : null}
           {isOwner ? (
             <p className="px-5 py-4 text-sm text-fg-muted">
               {t("The owner can always open every library.")}
@@ -206,7 +216,7 @@ export function ViewerLibraries({
             <div className="pt-2">
               <Button
                 size="sm"
-                disabled={!dirty || saving}
+                disabled={!dirty || saving || Boolean(remix.error)}
                 onClick={() => {
                   setSaving(true);
                   api
