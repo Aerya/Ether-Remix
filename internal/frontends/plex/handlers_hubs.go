@@ -602,6 +602,7 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 	} else {
 		mc.Hub = heroReadyHomeHubs(stableHomeHubs(rows))
 	}
+	s.noteRankedHubs(pr, mc.Hub)
 	mc.Size = len(mc.Hub)
 	return homeBuild{mc: mc, served: served, provisional: provisional}
 }
@@ -983,6 +984,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section) homeBuild {
 		sectionName = "shows"
 	}
 	mc.Hub = stableHomeHubs(s.arrangeHomeRows(ctx, pr, pc, sectionName, mc.Hub, layoutHubs, layoutNeutral))
+	s.noteRankedHubs(pr, mc.Hub)
 	if sectionPlaylist != nil {
 		at := 0
 		for i, h := range mc.Hub {
@@ -1028,6 +1030,12 @@ func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 		}
 		mc.Metadata = s.renderHub(ctx, pr, hs, hc).Metadata
 	}
+	// A row the Home painted ranked keeps its ten numbered positions and wide
+	// display here too (ranked_hub_items.go).
+	ranked := s.rankedHub(pr, id)
+	if ranked {
+		mc.Metadata = limitRankedItems(mc.Metadata)
+	}
 	total := len(mc.Metadata)
 	start := min(max(pr.Start, 0), total)
 	end := total
@@ -1035,6 +1043,9 @@ func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 		end = start + pr.Size
 	}
 	mc.Metadata = mc.Metadata[start:end]
+	if ranked {
+		paintRankedHubPage(mc, start)
+	}
 	mc.Size = len(mc.Metadata)
 	mc.SetPage(start, total)
 	s.log.Debug("shelf items rendered", "id", id, "user", pr.User.ID, "start", pr.Start, "requested", pr.Size, "size", mc.Size, "total", total)

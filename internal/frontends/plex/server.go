@@ -127,6 +127,8 @@ type Server struct {
 	emittedHubMu     sync.Mutex
 	emittedHubs      map[string]emittedHub
 	emittedHubBytes  int
+	rankedHubMu      sync.Mutex
+	rankedHubs       map[string]time.Time // viewer+row -> ranked until (ranked_hub_items.go)
 	shelfMu          sync.Mutex
 	shelfCuts        map[string]shelfCut
 	shelfGenerations map[string]shelfGeneration
