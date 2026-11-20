@@ -36,7 +36,9 @@
 <a id="nav-demarrage-rapide"></a>
 ## Démarrage rapide
 
-Dans la console, ouvrez **Ether-Remix → Vue d’ensemble → Démarrage**. Cette vue s’ouvre par défaut tant que l’indexation est désactivée et reste accessible ensuite ; elle ne modifie pas les réglages automatiquement.
+Dans la console, **Ether-Remix** s’ouvre en **mode Simple** : onglets **Accueil**, **Sources**, **Langues et qualité** et **Bibliothèque**. À la première visite sans aucune source, un **assistant** en quatre étapes (Sources, Langue, Application, Terminé) démarre une seule fois ; l’**Accueil** permet ensuite de le relancer. Le bouton **Diagnostic**, toujours visible, vérifie les sources, l’indexation, les titres prêts à lire et le stockage, et propose une action par problème. L’interrupteur **Expert** affiche tous les onglets habituels ; le choix est mémorisé dans votre navigateur uniquement.
+
+Pour le parcours détaillé du mode Expert, ouvrez **Ether-Remix → Vue d’ensemble → Démarrage**. Cette vue s’ouvre par défaut tant que l’indexation est désactivée et reste accessible ensuite ; elle ne modifie pas les réglages automatiquement.
 
 1. **Sources** : ajoutez, testez et activez vos fournisseurs. Un addon qui fournit ses propres liens de lecture n’exige pas une seconde clé débrideur pour les recherches.
 2. **Indexation** : activez et enregistrez l’indexation en arrière-plan pour préparer le catalogue vidéo. Le mode Automatique utilise les addons Stremio activés ; passez en Personnalisé pour choisir vos sources, notamment les indexeurs Prowlarr/Jackett. Une sélection personnalisée vide ne lance aucune recherche. Respectez les quotas des fournisseurs.
@@ -285,6 +287,7 @@ Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lir
 
 - **Sources** : accès unique aux comptes, addons Stremio, indexeurs BitTorrent/Usenet, fournisseurs Usenet, IPTV et sources musicales. Les composants et configurations Ether sont conservés. Les indexeurs peuvent être filtrés par instance Prowlarr/Jackett ou par provenance manuelle. Leur configuration reste unique.
 - **Indexation → Réglages** : activation, quotas, rythme et choix des sources : Automatique pour les addons Stremio activés, ou Personnalisé, y compris aucune source. Ce choix ne désactive pas les sources à la lecture. Les titres à indexer en priorité présentent les compteurs catalogue, recherchés, avec release et affichés par bibliothèque ou collection ; les groupes peuvent se recouper.
+- **Accueil, Diagnostic et assistant** (mode Simple) : premières étapes, contrôle de l’installation et configuration guidée.
 - **Vue d’ensemble** : démarrage rapide, activité de l’indexation Remix, tableaux de bord Sources et Utilisation hérités d’Ether.
 - **Lecture → Priorités** : configuration rapide facultative à ordre strict et librement modifiable ([guide](QUICK_SOURCES.fr.md)). Désactivé, les préférences avancées restent à qualité équivalente et ne rendent pas les recherches successives.
 - **Lecture → Qualité** : catalogue français, langues de release, résolution, codecs, cache et exceptions par collection.

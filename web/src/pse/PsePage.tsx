@@ -38,6 +38,11 @@ import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
 import { RemixSources } from "./RemixSources";
 import { REMIX_TABS, visibleRemixViews, legacyRemixRoute } from "./navigation";
+import { RemixFrame } from "./RemixFrame";
+import { SimpleHome } from "./SimpleHome";
+import { RemixWizard } from "./RemixWizard";
+import { RemixDiagnostic } from "./RemixDiagnostic";
+import { getRemixMode, useRemixMode } from "./remixMode";
 import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { SourceStatistics, StatisticsPeriod } from "../pages/sources/statistics/Statistics";
 import { ImportedSources } from "./ImportedSources";
@@ -136,7 +141,35 @@ export default function PsePage() {
         to={location.pathname.replace(/^\/accent/, "/remix") + location.search + location.hash}
       />
     );
-  if (!tab) return <Navigate replace to={"/remix/apercu" + location.search + location.hash} />;
+  if (!tab)
+    return (
+      <Navigate
+        replace
+        to={
+          (getRemixMode() === "expert" ? "/remix/apercu" : "/remix/accueil") +
+          location.search +
+          location.hash
+        }
+      />
+    );
+  if (tab === "accueil")
+    return (
+      <RemixFrame tab={tab}>
+        <SimpleHome />
+      </RemixFrame>
+    );
+  if (tab === "assistant")
+    return (
+      <RemixFrame tab={tab}>
+        <RemixWizard />
+      </RemixFrame>
+    );
+  if (tab === "diagnostic")
+    return (
+      <RemixFrame tab={tab}>
+        <RemixDiagnostic />
+      </RemixFrame>
+    );
   let legacy = legacyRemixRoute(tab, location.search);
   if (tab === "sources" && new URLSearchParams(location.search).get("source") === "indexation")
     legacy = "/remix/indexation";
@@ -173,6 +206,7 @@ function PseSettings() {
   const [params, setParams] = useSearchParams();
   const content = params.get("content") ?? "bibliotheques";
   const tab = useRouteTab(TABS);
+  const [mode] = useRemixMode();
   const doc = useAsync(() => apiFetch<PseData>("/pse/"), []);
   const [data, setData] = useState<PseData | null>(null);
   const current = data ?? doc.data ?? null;
@@ -290,26 +324,15 @@ function PseSettings() {
       </nav>
     ) : null;
   return (
-    <DomainPage
-      className="remix-navigation"
-      title="Ether-Remix"
-      base={BASE}
-      tabs={TABS.map((t) => ({
-        key: t.key,
-        label: L(t.fr, t.en),
-      }))}
-      active={tab}
-      description={L(
-        "Films, séries, animés et musique. Les réglages s'appliquent sans redémarrer.",
-        "Movies, shows, anime and music. Settings apply without a restart.",
-      )}
-    >
+    <RemixFrame tab={tab}>
       <CollapsibleSections.Provider
         key={tab + (view ?? "")}
         value={tab !== "apercu" || view === "demarrage"}
       >
         <div className="space-y-6">
-          {viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
+          {tab === "lecture" && view === "qualite" && mode === "simple"
+            ? null
+            : viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
           {tab === "apercu" && view === "demarrage" ? (
             <>
               <QuickStart indexing={saved.PSE_INDEXER === "on"} />
@@ -513,7 +536,7 @@ function PseSettings() {
           setError(null);
         }}
       />
-    </DomainPage>
+    </RemixFrame>
   );
 }
 

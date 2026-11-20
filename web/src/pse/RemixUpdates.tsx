@@ -26,8 +26,35 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-20-limit-debrid",
+    id: "2026-11-20-simple-expert-menu",
     version: "current",
+    date: "2026-11-20",
+    title: [
+      "Menu Remix simplifié : mode Simple, assistant et Diagnostic",
+      "Simplified Remix menu: Simple mode, assistant and Diagnostics",
+    ],
+    items: [
+      [
+        "Ether-Remix s’ouvre en mode Simple, avec quatre onglets dans l’ordre d’usage : Accueil, Sources, Langues et qualité, Bibliothèque. L’Accueil liste trois étapes avec leur état.",
+        "Ether-Remix opens in Simple mode, with four tabs in the order you use them: Home, Sources, Languages and quality, Library. Home lists three steps with their status.",
+      ],
+      [
+        "Au premier lancement sans source, un assistant en quatre étapes (Sources, Langue, Application, Terminé) démarre une seule fois. Il se relance depuis l’Accueil. Une installation déjà configurée n’est pas interrompue.",
+        "On a first launch with no source, a four-step assistant (Sources, Language, App, Done) starts once. It can be run again from Home. An already configured installation is not interrupted.",
+      ],
+      [
+        "Le bouton Diagnostic, toujours visible, vérifie les sources, l’indexation, les titres prêts à lire et le stockage, avec une action par problème.",
+        "The always-visible Diagnostics button checks sources, indexing, titles ready to play and storage, with one action per problem.",
+      ],
+      [
+        "L’interrupteur Expert affiche tous les onglets et réglages habituels, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
+        "The Expert switch shows every usual tab and setting, with nothing removed. The choice is remembered in your browser; old links and bookmarks keep working.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-20-limit-debrid",
+    version: "0.2.37-remix.119.1",
     date: "2026-11-20",
     title: [
       "Limiter le recours aux débrideurs, voire préférer le téléchargement & streaming BitTorrent/Usenet",

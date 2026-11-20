@@ -15,6 +15,33 @@ export const REMIX_TABS = [
   { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob"] },
 ] as const;
 
+/** Onglets du mode simple : le parcours d’un débutant, dans l’ordre où on s’en sert. */
+export const SIMPLE_TABS = [
+  { key: "accueil", fr: "Accueil", en: "Home" },
+  { key: "sources", fr: "Sources", en: "Sources" },
+  { key: "langues", fr: "Langues et qualité", en: "Languages and quality" },
+  { key: "bibliotheque", fr: "Bibliothèque", en: "Library" },
+] as const;
+
+/** Adresse d’un onglet du mode simple, qui réutilise les pages existantes. */
+export function simpleTabHref(key: string): string {
+  if (key === "langues") return "/remix/lecture?view=qualite";
+  if (key === "bibliotheque") return "/remix/contenus";
+  return `/remix/${key}`;
+}
+
+/**
+ * Onglet simple correspondant à une adresse, `""` pour une page du mode simple
+ * sans onglet (assistant, diagnostic), `null` pour une page réservée au mode expert.
+ */
+export function simpleTabOf(tab: string | undefined, view: string | null): string | null {
+  if (tab === "accueil" || tab === "sources") return tab;
+  if (tab === "contenus") return "bibliotheque";
+  if (tab === "lecture" && view === "qualite") return "langues";
+  if (tab === "assistant" || tab === "diagnostic") return "";
+  return null;
+}
+
 /** Vues secondaires des onglets regroupés, portées par `?view=`. */
 export const REMIX_VIEWS = {
   apercu: [

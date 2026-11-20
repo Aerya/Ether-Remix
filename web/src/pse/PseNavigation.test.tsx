@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import PsePage from "./PsePage";
 
 const apiFetch = vi.fn();
@@ -29,6 +29,8 @@ vi.mock("./MusicAccess", () => ({ MusicAccess: () => null }));
 vi.mock("./MusicPlaylists", () => ({ MusicPlaylists: () => null }));
 vi.mock("./SourceOrder", () => ({ SourceOrder: () => null }));
 vi.mock("./ThemeLibraries", () => ({ ThemeLibraries: () => null }));
+// Ces scénarios décrivent le mode expert : le mode simple a ses propres tests (RemixSimpleMode.test.tsx).
+beforeEach(() => window.localStorage.setItem("remix.mode", "expert"));
 const txt = (s: string) => ({ fr: s, en: s });
 
 it("orders tabs and lets vertically listed imported sources be selected and saved", async () => {

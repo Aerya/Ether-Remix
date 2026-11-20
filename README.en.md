@@ -37,6 +37,8 @@ Your **local videos**, movies, episodes and personal recordings join your librar
 
 For **music**, bring together the Deezer catalogue, your audio files and your iBroadcast accounts in Plexamp, Jellyfin clients or Subsonic apps. Enabled music sources and debrid accounts provide playback; playlists can be browsed, imported and managed per user. Local folders and iBroadcast accounts are private by default, with optional sharing.
 
+The **Ether-Remix** console page opens in **Simple mode** for beginners: four tabs (Home, Sources, Languages and quality, Library), a four-step assistant on first launch and a **Diagnostics** button explaining why nothing plays. The **Expert** switch exposes every setting, with nothing removed. [Guide](docs/pse/GUIDE.en.md#nav-demarrage-rapide).
+
 **JukeBox** quick setup helps create libraries and collections. SubMaker subtitles, Scrob and Last.fm tracking, statistics and the French console round out these features.
 
 <a id="nav-remix-features"></a>
