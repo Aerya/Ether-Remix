@@ -17,7 +17,13 @@ export const REMIX_TABS = [
       "ftp",
     ],
   },
-  { key: "indexation", fr: "Indexation", en: "Indexing", features: ["indexer"] },
+  {
+    key: "indexation",
+    fr: "Indexation",
+    en: "Indexing",
+    // « predb » : section « Pré » de la PR en brouillon #151, placée ici d’avance.
+    features: ["indexer", "predb"],
+  },
   {
     key: "lecture",
     fr: "Lecture",

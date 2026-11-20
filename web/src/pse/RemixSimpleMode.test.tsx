@@ -236,7 +236,15 @@ it("place chaque fonction Remix dans un seul onglet, sans orpheline", async () =
   const placed: string[] = REMIX_TABS.flatMap((t) => [...t.features]);
   expect(placed.filter((id, i) => placed.indexOf(id) !== i)).toEqual([]);
   expect([...declared].filter((id) => !placed.includes(id))).toEqual([]);
-  expect(placed.filter((id) => !declared.has(id))).toEqual([]);
+  // Emplacements prévus d’avance pour des fonctions de PR en brouillon pas encore fusionnées.
+  const planned = ["predb"];
+  expect(placed.filter((id) => !declared.has(id) && !planned.includes(id))).toEqual([]);
+});
+
+it("range la section Pré (PR #151) dans Indexation", async () => {
+  const { REMIX_TABS } = await import("./navigation");
+  const where = REMIX_TABS.filter((t) => (t.features as readonly string[]).includes("predb"));
+  expect(where.map((t) => t.key)).toEqual(["indexation"]);
 });
 
 it("range SubMaker, la recherche SeerrCatalog et le tri chacun à un seul endroit", async () => {
