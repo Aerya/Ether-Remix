@@ -65,6 +65,11 @@ func AssociationRequestsFor(ctx context.Context, db *sql.DB, keys []core.RatingK
 		err = rows.Err()
 	}
 	rows.Close()
+	if err == nil {
+		for key, q := range out {
+			out[key] = CheckSeriesIdentity(ctx, db, q)
+		}
+	}
 	return out, err
 }
 func AssociationRequest(all map[core.RatingKey]core.SearchRequest, key core.RatingKey, season, episode int) (core.SearchRequest, bool) {

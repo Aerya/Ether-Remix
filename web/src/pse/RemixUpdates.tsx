@@ -26,8 +26,24 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-19-quick-source-setup",
+    id: "2026-11-20-yearless-episodes",
     version: "current",
+    date: "2026-11-20",
+    title: ["Épisodes sans année dans le nom", "Episodes without a year in the filename"],
+    items: [
+      [
+        "Les épisodes peuvent être retenus sans année dans leur nom après vérification du catalogue local : titre complet, année catalogue connue, épisode exact et absence d’homonyme connu.",
+        "Episodes can be retained without a filename year after checking the local catalogue: complete title, known catalogue year, exact episode and no known namesake.",
+      ],
+      [
+        "Les années contradictoires et identités ambiguës restent refusées. Si les références conservées ne conviennent pas au lecteur, la recherche de secours peut récupérer les autres releases des sources.",
+        "Conflicting years and ambiguous identities remain rejected. If retained references do not suit the player, rescue search can retrieve other source releases.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-19-quick-source-setup",
+    version: "0.2.37-remix.116.1",
     date: "2026-11-19",
     title: ["Configuration rapide des sources", "Quick source setup"],
     items: [

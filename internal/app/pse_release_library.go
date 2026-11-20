@@ -136,6 +136,7 @@ func (a *App) pseReleaseLibraryAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) rememberSearchReferences(ctx context.Context, req core.SearchRequest, rs []core.Release) {
+	req = releasedb.CheckSeriesIdentity(ctx, a.db, req)
 	if !releasedb.LibraryEnabled() || req.IDs.TMDB <= 0 {
 		return
 	}
@@ -155,6 +156,7 @@ func (a *App) rememberSearchReferences(ctx context.Context, req core.SearchReque
 }
 
 func (a *App) retainedReleaseLibrary(ctx context.Context, req core.SearchRequest) ([]core.Release, bool) {
+	req = releasedb.CheckSeriesIdentity(ctx, a.db, req)
 	if pseRuntimeOf(a).associationPending.Load() || !releasedb.LibraryEnabled() || core.IndexerPurpose(ctx) != core.IndexerPurposePlayback || core.IsUnattendedSearch(ctx) || req.IDs.TMDB <= 0 {
 		return nil, false
 	}

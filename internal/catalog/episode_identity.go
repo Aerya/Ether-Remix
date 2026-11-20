@@ -10,6 +10,7 @@ import (
 )
 
 func init() {
+	store.Register("catalog_episode_identity", 2, `CREATE INDEX IF NOT EXISTS catalog_alt_titles_lower_title ON catalog_alt_titles(LOWER(title), key);`)
 	store.Register("catalog_episode_identity", 1, `CREATE INDEX IF NOT EXISTS catalog_titles_type_lower_original ON catalog_titles(type, LOWER(original_title), year);`)
 }
 

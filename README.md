@@ -25,6 +25,8 @@ L’accueil Plex se personnalise dans `/ether/home` : choisissez le spectateur e
 
 ## Remix, en bref
 
+Les épisodes sans année dans le nom sont admis après vérification du catalogue local : année de série connue, titre complet, épisode exact et absence d’homonyme connu. Une année contradictoire reste refusée ; une erreur de catalogue conserve le contrôle strict.
+
 Les **modèles de disposition** enregistrent l’accueil, les bibliothèques et la présentation des collections : sauvegardez l’existant, dupliquez A/B/C et réappliquez une variante avec retour en arrière. Les bibliothèques à thème Plex peuvent combiner dossiers locaux et sources indexées et cibler tous les utilisateurs ou une sélection ; les contenus privés restent filtrés par spectateur. [Guide des dispositions et du partage](docs/pse/FEATURES.fr.md#nav-des-bibliotheques-et-collections-personnalisees).
 
 Ether-Remix reprend le serveur et les applications compatibles d’Ether, avec un catalogue orienté français et des réglages de langue et de qualité. Selon vos choix, l’accueil et les collections privilégient les titres en VF/MULTi ou disposant de releases correspondant à vos critères. La recherche automatique prépare les releases à l’avance sans télécharger les vidéos ; les recherches et imports alimentent le même index, réutilisé à la lecture.

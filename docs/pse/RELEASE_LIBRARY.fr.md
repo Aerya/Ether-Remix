@@ -36,6 +36,10 @@ Une erreur de rafraîchissement des compteurs conserve leurs dernières valeurs 
 
 ## Identité des médias et réparation de l’index
 
+Les épisodes sans année dans le nom sont admis après vérification du catalogue local : année de série connue, titre complet, épisode exact et absence d’homonyme connu. Une année contradictoire reste refusée ; une erreur de catalogue conserve le contrôle strict.
+
+Les liens précédemment rejetés ne sont pas restaurés depuis la quarantaine. Une nouvelle recherche ou un import doit les fournir ; les caches des addons et leurs budgets restent applicables. La recherche de secours existante contourne l’index retenu si aucun candidat ne convient, y compris lorsque les seules références dépassent la résolution du lecteur.
+
 Une recherche par TMDB/IMDb ne prouve pas que la source a répondu pour le bon média. Même un identifiant déclaré concordant exige un nom correspondant à un titre complet du catalogue (original ou alternatif compris) et une année exacte pour un film. Une contradiction d’identifiants reste éliminatoire. Un épisode exige une correspondance de série et un numéro unique compatible ; sans identifiant déclaré concordant, l’année de la série doit aussi être connue. Les packs de saison et les noms ambigus sont refusés. Les résultats sans véritable référence de source sont refusés : un identifiant de résultat seul ne permet pas de lire. Le même contrôle protège les recherches normales, de secours et les références déjà enregistrées avant lecture.
 
 Un nouvel audit, version 2, s’exécute même si le précédent avait terminé. Il vérifie les anciennes métadonnées et références chiffrées, y compris les imports StreamFusion : le rattachement historique TMDB ne sert jamais de preuve à lui-même. Les entrées non confirmées sont préservées dans les tables privées `pse_releases_quarantine` et `pse_release_library_quarantine`, hors recherche et réutilisation. « Non confirmé » ne signifie pas nécessairement « faux » : les preuves peuvent manquer. L’indexation et la réutilisation attendent la fin de cet audit ; les anciens compteurs et verdicts de disponibilité sont recalculés.

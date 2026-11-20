@@ -28,6 +28,7 @@ func (a *App) buildPSEIndexer() {
 	a.startPSEFTP()
 	if a.indexers != nil {
 		a.indexers.SetSearchAdmission(func(ctx context.Context, req core.SearchRequest, rs []core.Release) []core.Release {
+			req = releasedb.CheckSeriesIdentity(ctx, a.db, req)
 			out := make([]core.Release, 0, len(rs))
 			for _, r := range rs {
 				if strictReferenceAdmission(req, r) == "" {

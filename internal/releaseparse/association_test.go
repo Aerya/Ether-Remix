@@ -73,3 +73,41 @@ func TestAssociationSeriesMissingCatalogueYearNeedsReportedIdentity(t *testing.T
 		t.Fatal(reason)
 	}
 }
+
+func TestAssociationYearlessEpisodesNeedCatalogueCheck(t *testing.T) {
+	q := core.SearchRequest{Type: core.TypeEpisode, Title: "Le Seigneur des anneaux : Les Anneaux de pouvoir", OriginalTitle: "The Lord of the Rings: The Rings of Power", Year: 2022, Season: 1, Episode: 1, IDs: core.IDs{TMDB: 84773, IMDB: "tt7631058"}, SeriesIdentityChecked: true}
+	for _, tc := range []struct{ name, want string }{
+		{"The.Lord.of.the.Rings.The.Rings.of.Power.S01E01.MULTi.VF2.1080p.WEB.H265-FW", ""},
+		{"The.Lord.Of.The.Rings.The.Rings.Of.Power.S01E01.MULTi.TRUEFRENCH.VF2.1080p.AMZN.WEB-DL.DDP5.1.H264-FRATERNiTY", ""},
+		{"The.Lord.of.the.Rings.The.Rings.of.Power.S01E01.A.Shadow.of.the.Past.MULTi.1080p.AMZN.WEB.H264-BYOR", ""},
+		{"the.lord.of.the.rings.the.rings.of.power.s01e01.multi.1080p.web.h264-higgsboson", ""},
+		{"The Lord of the Rings The Rings of Power (2022) S01E01 MULTi VFF 2160p 10bit 4KLight DV HDR10Plus WebRip DDP 5.1 Atmos x265-QTZ", ""},
+		{"The.Lord.of.the.Rings.The.Rings.of.Power.2019.S01E01.MULTi.1080p.WEB.H265-GRP", "year_conflict"},
+		{"The.Lord.of.the.Rings.The.Rings.of.Power.S01E02.MULTi.1080p.WEB.H265-GRP", "episode_conflict"},
+		{"The.Power.S01E01.MULTi.VF2.1080p.WEBRip.AC3.5.1.H265-TARDiS", "unconfirmed_title"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AssociationReason(q, core.Release{Name: tc.name}); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+	r := core.Release{Name: "The.Lord.of.the.Rings.The.Rings.of.Power.S01E01.1080p"}
+	q.SeriesIdentityChecked = false
+	if got := AssociationReason(q, r); got != "unconfirmed_series_year" {
+		t.Fatal(got)
+	}
+	r.TitleIDs, r.TitleIDsEchoed = q.IDs, true
+	if AssociationReason(q, r) == "" {
+		t.Fatal("echoed identifiers accepted")
+	}
+	r.TitleIDsEchoed = false
+	if got := AssociationReason(q, r); got != "" {
+		t.Fatal(got)
+	}
+	q.SeriesIdentityChecked, q.Year = true, 0
+	r.TitleIDs = core.IDs{}
+	if AssociationReason(q, r) == "" {
+		t.Fatal("unknown catalogue year accepted")
+	}
+}
