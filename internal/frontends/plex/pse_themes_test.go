@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -115,3 +116,49 @@ func (pseKeyedThemes) Themes() []frontend.PSETheme {
 }
 
 func (pseKeyedThemes) RowKeys(context.Context, string, *core.User) []core.RatingKey { return nil }
+
+type pseTwoThemes struct{}
+
+func (pseTwoThemes) Themes() []frontend.PSETheme {
+	return []frontend.PSETheme{
+		{Section: 5101, Title: "Services", Type: core.TypeMovie, Rows: []frontend.PSEThemeRow{{ID: "11", Title: "Netflix"}}},
+		{Section: 5102, Title: "Concerts", Type: core.TypeMovie, Rows: []frontend.PSEThemeRow{{ID: "21", Title: "Live"}}},
+		{Section: 5201, Title: "Services · Séries", Type: core.TypeShow, Rows: []frontend.PSEThemeRow{{ID: "13", Title: "Netflix"}}},
+	}
+}
+func (pseTwoThemes) RowKeys(context.Context, string, *core.User) []core.RatingKey { return nil }
+
+// Une bibliothèque à thème suit AllowedLibraries : numéro 5100+ID explicite,
+// la moitié Séries suit le principal, et un ancien réglage (aucun numéro de
+// thème) garde la visibilité de la section de base.
+func TestPSEThemeAllowedLibraries(t *testing.T) {
+	frontend.SetPSEThemes(pseTwoThemes{})
+	t.Cleanup(func() { frontend.SetPSEThemes(nil) })
+	f := newFixture()
+	defer f.srv.Close()
+	users := f.srv.testAuth().users
+	users["explicit"] = core.User{ID: 41, Username: "explicit", AllowedLibraries: []core.LibraryID{1, 2, 5101}}
+	users["other"] = core.User{ID: 42, Username: "other", AllowedLibraries: []core.LibraryID{1, 2, 5102}}
+	users["legacy"] = core.User{ID: 43, Username: "legacy", AllowedLibraries: []core.LibraryID{1, 2}}
+	cases := []struct {
+		token string
+		want  map[string]bool
+	}{
+		{"explicit", map[string]bool{"5101": true, "5102": false, "5201": true}},
+		{"other", map[string]bool{"5101": false, "5102": true, "5201": false}},
+		{"legacy", map[string]bool{"5101": true, "5102": true, "5201": true}},
+	}
+	for _, c := range cases {
+		hdr := map[string]string{"X-Plex-Token": c.token, "Accept": "application/json"}
+		body := f.request(t, http.MethodGet, "/library/sections", hdr).Body.String()
+		for key, want := range c.want {
+			if got := strings.Contains(body, `"key":"`+key+`"`); got != want {
+				t.Errorf("%s : section %s listée = %v, attendu %v (%s)", c.token, key, got, want, body)
+			}
+			code := f.request(t, http.MethodGet, "/library/sections/"+key+"/all", hdr).Code
+			if (code != http.StatusNotFound) != want {
+				t.Errorf("%s : ouverture de %s = %d, visible attendu %v", c.token, key, code, want)
+			}
+		}
+	}
+}

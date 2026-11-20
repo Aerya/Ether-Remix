@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/datafs"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
@@ -716,6 +717,7 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	u.ID = id // path wins over body
 	u.SubtitleLanguages, u.AudioLanguages = subtitles, audio
 	u.MaxContentRating = strings.TrimSpace(u.MaxContentRating)
+	u.AllowedLibraries = frontend.NormalizeAllowedLibraries(u.AllowedLibraries)
 	var invalid []FieldError
 	if u.StreamLimit < 0 {
 		invalid = append(invalid, FieldError{Field: "streamLimit", Message: "must be >= 0"})

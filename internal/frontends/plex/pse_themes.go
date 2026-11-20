@@ -58,13 +58,16 @@ func (s *Server) pseSectionByID(id int) (Section, bool) {
 }
 
 // pseCanSeeTheme : une bibliothèque à thème est visible de qui voit la
-// section d'Ether de même type.
+// section d'Ether de même type et y est autorisé (frontend.ThemeAllowed).
 func (s *Server) pseCanSeeTheme(u *frontend.User, id int) bool {
 	th, _, ok := s.pseTheme(id)
 	if !ok {
 		return false
 	}
 	if th.VisibleTo != nil && !th.VisibleTo(u) {
+		return false
+	}
+	if !frontend.ThemeAllowed(u, id) {
 		return false
 	}
 	base, ok := s.untitledSectionFor(th.Type)
@@ -84,7 +87,7 @@ func (s *Server) pseWithThemes(u *frontend.User, secs []Section) []Section {
 	}
 	out := secs
 	for _, th := range t.Themes() {
-		if visible[th.Type] && len(th.Rows) > 0 && (th.VisibleTo == nil || th.VisibleTo(u)) {
+		if visible[th.Type] && len(th.Rows) > 0 && (th.VisibleTo == nil || th.VisibleTo(u)) && frontend.ThemeAllowed(u, th.Section) {
 			out = append(out, s.pseThemeSection(th))
 		}
 	}

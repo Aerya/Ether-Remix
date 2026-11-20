@@ -88,3 +88,59 @@ func PSEThemeKeys(ctx context.Context, t PSEThemes, th PSETheme, user *core.User
 	}
 	return out
 }
+
+// themeMainSection ramène la moitié Séries (5200+ID) d'une bibliothèque à
+// thème à son numéro principal (5100+ID).
+func themeMainSection(section int) int {
+	if section > PSEThemeSectionBase+PSEThemeShowOffset && section <= PSEThemeSectionMax {
+		return section - PSEThemeShowOffset
+	}
+	return section
+}
+
+// IsThemeSection indique si un numéro de section est dans la plage des
+// bibliothèques à thème (5101 à 5299).
+func IsThemeSection(section int) bool {
+	return section > PSEThemeSectionBase && section <= PSEThemeSectionMax
+}
+
+// NormalizeAllowedLibraries ramène les moitiés Séries (5200+ID) à leur numéro
+// principal (5100+ID) et supprime les doublons, en gardant l'ordre.
+func NormalizeAllowedLibraries(ids []core.LibraryID) []core.LibraryID {
+	if ids == nil {
+		return nil
+	}
+	seen := make(map[core.LibraryID]bool, len(ids))
+	out := make([]core.LibraryID, 0, len(ids))
+	for _, id := range ids {
+		id = core.LibraryID(themeMainSection(int(id)))
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// ThemeAllowed applique les restrictions de bibliothèques d'un spectateur à
+// une bibliothèque à thème, identifiée par son numéro principal 5100+ID (la
+// moitié Séries 5200+ID suit le même droit). Une liste vide ouvre tout ; une
+// liste sans aucun numéro de thème (réglage antérieur aux bibliothèques
+// Remix) conserve la visibilité d'origine, qui suit la section de base.
+func ThemeAllowed(viewer *core.User, themeSection int) bool {
+	if viewer == nil || viewer.IsOwner || len(viewer.AllowedLibraries) == 0 {
+		return true
+	}
+	main := themeMainSection(themeSection)
+	hasTheme := false
+	for _, allowed := range viewer.AllowedLibraries {
+		if !IsThemeSection(int(allowed)) {
+			continue
+		}
+		hasTheme = true
+		if themeMainSection(int(allowed)) == main {
+			return true
+		}
+	}
+	return !hasTheme
+}
