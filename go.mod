@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	fyne.io/systray v1.12.2
+	github.com/Cycl0o0/OpenDeezer/v3 v3.1.4
 	github.com/PuerkitoBio/goquery v1.13.0
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/andybalholm/cascadia v1.3.5
@@ -37,10 +38,14 @@ require (
 )
 
 require (
+	github.com/bogem/id3v2/v2 v2.1.4 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.2 // indirect
+	github.com/go-flac/flacpicture v0.3.0 // indirect
+	github.com/go-flac/flacvorbis v0.2.0 // indirect
+	github.com/go-flac/go-flac v1.0.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

@@ -220,8 +220,8 @@ export function MusicSourceSettings({ fields }: { fields: SourceField[] }) {
         <SettingsSection
           title={L("Autres sources", "Other sources")}
           description={L(
-            "AllDebrid, TorBox, Audius et HiFi API. Les comptes debrid se règlent dans Sources → Debrid.",
-            "AllDebrid, TorBox, Audius and HiFi API. Manage debrid accounts under Sources → Debrid.",
+            "AllDebrid, TorBox, Audius, OpenDeezer et HiFi API. Les comptes debrid se règlent dans Sources → Debrid.",
+            "AllDebrid, TorBox, Audius, OpenDeezer and HiFi API. Manage debrid accounts under Sources → Debrid.",
           )}
         >
           {controls(others.filter((f) => !f.advanced))}

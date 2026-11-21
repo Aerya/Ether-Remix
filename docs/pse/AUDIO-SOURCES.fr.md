@@ -63,6 +63,22 @@ ACCENT_MUSIC_LIVE=1 go test ./internal/pse/music -run TestAudiusLive -v
 
 **Simulé :** recherche et refus de morceaux restreints/incomplets, versions live et artistes incorrects, gestion 401/403/429/500 et JSON invalide, priorité, non-réutilisation d'une URL refusée, repli après un HTTP 403 audio, signatures/STREAMINFO et expiration. Les tests habituels de musique, console, Plex et Jellyfin couvrent les régressions des interfaces. Les essais réseau sont désactivés par défaut en CI.
 
+## OpenDeezer
+
+Source désactivée par défaut qui lit un titre Deezer avec **votre propre compte Deezer** grâce au SDK Go [OpenDeezer](https://github.com/Cycl0o0/OpenDeezer). Elle ne crée ni catalogue ni lecteur : elle résout l'identifiant Deezer déjà présent dans Remix, au même rang que les autres résolveurs.
+
+Réglages (**Sources → Streaming musical → Autres sources**) : `PSE_MUSIC_OPENDEEZER` (interrupteur, `off` par défaut), `PSE_MUSIC_OPENDEEZER_ARL` (cookie `arl` de votre session, champ secret : jamais réaffiché ni journalisé ; vider le champ le supprime) et `PSE_MUSIC_OPENDEEZER_ORDER` (`last` : secours après les autres sources, par défaut ; `first` : avant). Sans ARL, la source reste inactive. Le **Diagnostic audio** de la console teste la connexion (compte, offre, flux) sur un titre, sans le lire en entier ni signaler d'écoute.
+
+Fonctionnement : le flux chiffré du CDN Deezer est lu, déchiffré et envoyé au client au fil de l'eau. Les requêtes `Range` et les déplacements dans le titre rouvrent le CDN à la position demandée ; une coupure reprend à la position courante ; l'annulation du client ferme aussitôt la connexion CDN. Aucun fichier n'est écrit et aucun titre n'est téléchargé en entier avant la lecture. Plex, Jellyfin et Subsonic utilisent le même relais ; l'en-tête `X-Accent-Audio-Source` vaut `OpenDeezer`.
+
+Limites et garde-fous :
+
+- Seules les qualités autorisées par le compte sont demandées (jamais FLAC pour un compte gratuit : MP3 128 kb/s). La qualité réelle est celle annoncée par Deezer.
+- Si Deezer ne donne qu'un **aperçu de 30 s**, refuse le flux, ou si le fichier est trop court pour la durée du titre, la source est **indisponible** et le résolveur suivant prend le relais. Un aperçu n'est jamais présenté comme un titre complet.
+- Remix ne contourne ni les restrictions d'accès ni les publicités ni la comptabilisation : chaque lecture est signalée à Deezer comme le fait son lecteur web. Les publicités audio du compte gratuit ne peuvent pas être jouées par un relais ; leur calendrier n'est pas appliqué. Vérifiez que cet usage est compatible avec les conditions de Deezer pour votre compte : c'est votre responsabilité.
+- Le SDK appelle Deezer directement (hors proxys par compte de Remix) et son comportement dépend d'API Deezer non officielles, susceptibles de changer sans préavis.
+- Test réel facultatif, sans enregistrer l'ARL dans le dépôt : `OPENDEEZER_LIVE_ARL=<arl> go test ./internal/pse/music -run OpenDeezerLive -v`.
+
 ## Sources de l'audit
 
 - [Protocole Eclipse : recherche, flux, expiration et codecs](https://eclipsemusic.app/docs).

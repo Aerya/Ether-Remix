@@ -26,6 +26,12 @@ type Settings struct {
 	// Torrent : client BitTorrent de Remix (PSE_TORRENT et PSE_TORRENT_MUSIC).
 	Torrent bool
 	Audius  string // off, first or last; public MP3 fallback
+	// OpenDeezer : lecture directe avec la session Deezer (ARL) du
+	// compte de l'administrateur. Désactivé par défaut ; OpenDeezerOrder :
+	// "last" (secours après les autres sources, défaut) ou "first".
+	OpenDeezer      bool
+	OpenDeezerARL   string
+	OpenDeezerOrder string
 }
 
 // TorrentSource est la source « client torrent » de Remix.
@@ -33,7 +39,7 @@ const TorrentSource = "torrent"
 
 // Enabled indique si l'API Subsonic doit être montée.
 func (s Settings) Enabled() bool {
-	return (s.EclipseURLs != "" || s.hasCommunity()) || s.HiFiURL != "" || (s.Debrid || s.RealDebrid || s.TorBox || s.DMM || s.Torrent) || s.audiusEnabled()
+	return (s.EclipseURLs != "" || s.hasCommunity()) || s.HiFiURL != "" || (s.Debrid || s.RealDebrid || s.TorBox || s.DMM || s.Torrent) || s.audiusEnabled() || s.openDeezerEnabled()
 }
 
 // Mode renvoie la source utilisée : "eclipse", "alldebrid",
@@ -44,6 +50,8 @@ func (s Settings) Mode() string {
 		return "debrid"
 	case s.audiusEnabled():
 		return "audius"
+	case s.openDeezerEnabled() && s.EclipseURLs == "" && !s.hasCommunity() && !s.Debrid:
+		return "opendeezer"
 	case (s.EclipseURLs != "" || s.hasCommunity()) && s.Debrid:
 		return "eclipse+alldebrid"
 	case s.EclipseURLs != "" || s.hasCommunity():
@@ -59,16 +67,19 @@ func (s Settings) Mode() string {
 // LoadSettings lit l'environnement.
 func LoadSettings() Settings {
 	s := Settings{
-		EclipseURLs: strings.Join(ParseEclipseURLs(pseenv.Get("PSE_MUSIC_ECLIPSE_URL")), " "),
-		HiFiURL:     strings.TrimSpace(pseenv.Get("PSE_MUSIC_HIFI_URL")),
-		Quality:     strings.ToUpper(strings.TrimSpace(pseenv.Get("PSE_MUSIC_QUALITY"))),
-		CoverBase:   strings.TrimSpace(pseenv.Get("PSE_MUSIC_COVERS_URL")),
-		Audius:      strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_MUSIC_AUDIUS"))),
-		Debrid:      on(pseenv.Get("PSE_MUSIC_ALLDEBRID")),
-		RealDebrid:  on(pseenv.Get("PSE_MUSIC_REALDEBRID")),
-		DMMURL:      pseenv.Get("PSE_MUSIC_DMM_URL"),
-		DMM:         on(pseenv.Get("PSE_MUSIC_DMM")),
-		TorBox:      on(pseenv.Get("PSE_MUSIC_TORBOX")),
+		EclipseURLs:     strings.Join(ParseEclipseURLs(pseenv.Get("PSE_MUSIC_ECLIPSE_URL")), " "),
+		HiFiURL:         strings.TrimSpace(pseenv.Get("PSE_MUSIC_HIFI_URL")),
+		Quality:         strings.ToUpper(strings.TrimSpace(pseenv.Get("PSE_MUSIC_QUALITY"))),
+		CoverBase:       strings.TrimSpace(pseenv.Get("PSE_MUSIC_COVERS_URL")),
+		Audius:          strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_MUSIC_AUDIUS"))),
+		Debrid:          on(pseenv.Get("PSE_MUSIC_ALLDEBRID")),
+		OpenDeezer:      on(pseenv.Get("PSE_MUSIC_OPENDEEZER")),
+		OpenDeezerARL:   strings.TrimSpace(pseenv.Get("PSE_MUSIC_OPENDEEZER_ARL")),
+		OpenDeezerOrder: strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_MUSIC_OPENDEEZER_ORDER"))),
+		RealDebrid:      on(pseenv.Get("PSE_MUSIC_REALDEBRID")),
+		DMMURL:          pseenv.Get("PSE_MUSIC_DMM_URL"),
+		DMM:             on(pseenv.Get("PSE_MUSIC_DMM")),
+		TorBox:          on(pseenv.Get("PSE_MUSIC_TORBOX")),
 		Torrent: on(pseenv.Get("PSE_TORRENT")) && strings.TrimSpace(pseenv.Get("PSE_TORRENT_URL")) != "" &&
 			!off(pseenv.Get("PSE_TORRENT_MUSIC")),
 	}
@@ -76,6 +87,9 @@ func LoadSettings() Settings {
 		if urls := ParseEclipseURLs(pseenv.Get(a.Key)); len(urls) == 1 {
 			s.CommunityURLs[i] = urls[0]
 		}
+	}
+	if s.OpenDeezerOrder != "first" {
+		s.OpenDeezerOrder = "last"
 	}
 	switch s.Quality {
 	case "HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW":
@@ -92,8 +106,11 @@ func LoadSettings() Settings {
 // ensemble des résolveurs debrid, filtrés par leurs activations respectives.
 func (s Settings) NewSource(debrid DebridSources) Source {
 	switch s.Mode() {
-	case "debrid", "eclipse", "alldebrid", "eclipse+alldebrid", "audius":
+	case "debrid", "eclipse", "alldebrid", "eclipse+alldebrid", "audius", "opendeezer":
 		var rs Resolvers
+		if s.openDeezerEnabled() && s.OpenDeezerOrder == "first" {
+			rs = append(rs, NewOpenDeezer(s.OpenDeezerARL, nil))
+		}
 		if s.Audius == "first" {
 			rs = append(rs, NewAudius(nil))
 		}
@@ -107,6 +124,9 @@ func (s Settings) NewSource(debrid DebridSources) Source {
 		}
 		if s.Audius == "last" {
 			rs = append(rs, NewAudius(nil))
+		}
+		if s.openDeezerEnabled() && s.OpenDeezerOrder != "first" {
+			rs = append(rs, NewOpenDeezer(s.OpenDeezerARL, nil))
 		}
 		return NewDeezerSource(rs, nil)
 	case "hifi":
@@ -130,6 +150,9 @@ func off(v string) bool {
 	}
 	return false
 }
+
+// openDeezerEnabled : option activée ET session renseignée.
+func (s Settings) openDeezerEnabled() bool { return s.OpenDeezer && s.OpenDeezerARL != "" }
 
 func (s Settings) audiusEnabled() bool { return s.Audius == "first" || s.Audius == "last" }
 

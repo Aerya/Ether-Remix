@@ -28,7 +28,7 @@ export const REMIX_UPDATES = [
   {
     id: "2026-11-20-simple-expert-menu",
     version: "current",
-    date: "2026-11-20",
+    date: "2026-11-21",
     title: [
       "Menu Remix dans la barre latérale : mode Simple, assistant et Diagnostic",
       "Remix menu in the sidebar: Simple mode, assistant and Diagnostics",
@@ -57,6 +57,21 @@ export const REMIX_UPDATES = [
       [
         "L’interrupteur Expert du groupe ajoute Indexation, Lecture, Visuels, Suivi et Statistiques, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
         "The group’s Expert switch adds Indexing, Playback, Visuals, Tracking and Statistics, with nothing removed. The choice is remembered in your browser; old links and bookmarks keep working.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-21-opendeezer",
+    version: "0.2.37-remix.121.1",
+    date: "2026-11-21",
+    title: [
+      "OpenDeezer : lecture avec votre compte Deezer",
+      "OpenDeezer: play with your Deezer account",
+    ],
+    items: [
+      [
+        "Nouvelle source musicale, désactivée par défaut (Sources → Streaming musical → Autres sources) : Remix lit les titres Deezer complets accessibles à votre compte avec votre session ARL, en secours après vos autres sources ou avant elles. Flux relayé sans téléchargement ni stockage ; MP3 128 kb/s avec un compte gratuit. Un aperçu de 30 s ou un refus de Deezer fait passer à la source suivante. Le test des sources vérifie la connexion.",
+        "New music source, disabled by default (Sources → Music streaming → Other sources): Remix streams full Deezer tracks available to your account using your ARL session, as a fallback after your other sources or before them. The stream is relayed with no download or storage; MP3 128 kbps with a free account. A 30 s preview or a refusal from Deezer moves on to the next source. The source test checks the connection.",
       ],
     ],
   },
