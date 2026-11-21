@@ -29,7 +29,7 @@ export const REMIX_TABS = [
     key: "lecture",
     fr: "Lecture",
     en: "Playback",
-    features: ["french", "playable", "submaker"],
+    features: ["french", "playable", "submaker", "continuewatch"],
   },
   { key: "contenus", fr: "Contenus", en: "Content", features: ["music", "librarysort"] },
   { key: "visuels", fr: "Visuels", en: "Visuals", features: ["posters"] },
@@ -186,6 +186,7 @@ export const REMIX_VIEWS = {
     { key: "qualite", fr: "Qualité", en: "Quality" },
     { key: "vostfr", fr: "VOSTFR", en: "Non-dubbed titles" },
     { key: "soustitres", fr: "Sous-titres", en: "Subtitles" },
+    { key: "continuer", fr: "Continuer à regarder", en: "Continue watching" },
   ],
   visuels: [
     { key: "cartes", fr: "Cartes", en: "Cards" },

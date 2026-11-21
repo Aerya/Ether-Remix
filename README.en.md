@@ -70,6 +70,7 @@ The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources an
 | Libraries and home | Collections, JukeBox quick setup, Xperience imports, layout templates, posters and custom cards. Sharing respects each viewer’s permissions. |
 | Music | Deezer catalogue, enabled music sources (including OpenDeezer, with your own Deezer account), local files and iBroadcast; access through Plexamp, Jellyfin or Subsonic, with personal playlists. |
 | Tracking | Per-viewer progress and history, video and music activity, Scrob, Last.fm and source statistics. |
+| Continue Watching | An old show with a newly released episode comes back to the top of the row, ranked by the release date. Settings in Remix → Playback → Continue watching: shows examined (200 by default), last-watched period (unlimited), new episodes window (60 days) and maximum movies and shows. |
 
 <a id="nav-unified-sources-and-searches-ahead-of-playback"></a>
 

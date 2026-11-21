@@ -737,7 +737,7 @@ func (s *surfaceExperience) NewRecent(o frontend.RecentOptions) frontend.Recent 
 
 func (s *surfaceExperience) NewContinue(o frontend.ContinueOptions) frontend.Continue {
 	o.Unrestricted = s.wrapUnrestricted(o.Unrestricted)
-	return s.Service.NewContinue(o)
+	return psePrepareContinue(s.Service.NewContinue(o)) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 }
 
 func (s *surfaceExperience) NewScopedCollection(o frontend.ScopedCollectionOptions) frontend.ScopedCollection {
