@@ -58,7 +58,7 @@ func (s *Server) pseSectionByID(id int) (Section, bool) {
 }
 
 // pseCanSeeTheme : une bibliothèque à thème est visible de qui voit la
-// section d'Ether de même type.
+// section d'Ether de même type et y est autorisé (frontend.ThemeAllowed).
 func (s *Server) pseCanSeeTheme(u *frontend.User, id int) bool {
 	th, _, ok := s.pseTheme(id)
 	if !ok {
@@ -66,6 +66,12 @@ func (s *Server) pseCanSeeTheme(u *frontend.User, id int) bool {
 	}
 	if th.VisibleTo != nil && !th.VisibleTo(u) {
 		return false
+	}
+	if !frontend.ThemeAllowed(u, id) {
+		return false
+	}
+	if frontend.ThemeExplicit(u) {
+		return true // choix Remix explicite : indépendant des sections de base
 	}
 	base, ok := s.untitledSectionFor(th.Type)
 	return ok && s.canSeeSection(u, base.ID)
@@ -82,9 +88,10 @@ func (s *Server) pseWithThemes(u *frontend.User, secs []Section) []Section {
 	for _, sec := range secs {
 		visible[sec.Type] = true
 	}
+	explicit := frontend.ThemeExplicit(u)
 	out := secs
 	for _, th := range t.Themes() {
-		if visible[th.Type] && len(th.Rows) > 0 && (th.VisibleTo == nil || th.VisibleTo(u)) {
+		if (visible[th.Type] || explicit) && len(th.Rows) > 0 && (th.VisibleTo == nil || th.VisibleTo(u)) && frontend.ThemeAllowed(u, th.Section) {
 			out = append(out, s.pseThemeSection(th))
 		}
 	}
@@ -99,6 +106,7 @@ func (s *Server) pseThemeFilter(ctx context.Context, sec Section, u *frontend.Us
 		return
 	}
 	var keys []frontend.RatingKey
+	u = frontend.ThemeKeyViewer(u) // sans les sections de base, qui viderait les rangées
 	langFree := th.AllLanguages
 	if row := q.Get(pseRowParam); row != "" {
 		for _, r := range th.Rows {

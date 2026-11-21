@@ -234,6 +234,10 @@ func (s *Service) sectionOrFilterAllowed(ctx context.Context, v *core.User, titl
 			return true
 		}
 	}
+	// PSE-HOOK: bibliothèque Remix accordée, titre ouvert sans les sections de base — voir docs/pse/FORK.fr.md
+	if s.d.Visibility.ThemeGrant != nil && s.d.Visibility.ThemeGrant(v, title) {
+		return true
+	}
 	filterLibs := s.allowedFilterLibraries(ctx, v)
 	if len(filterLibs) == 0 {
 		return false

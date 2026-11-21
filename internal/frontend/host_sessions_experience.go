@@ -70,6 +70,8 @@ type Visibility struct {
 	// set means every title may be.
 	JudgedOnFacts func(context.Context) func(core.Title) bool
 	Sessions      func() []*core.PlaySession
+	// PSE-HOOK: ThemeGrant ouvre un titre refusé par les sections de base quand il appartient à une bibliothèque Remix autorisée — voir docs/pse/FORK.fr.md
+	ThemeGrant func(*core.User, *core.Title) bool
 }
 
 // TitleFacts is what the access policy reads of a title beyond its row for
@@ -106,7 +108,10 @@ func (v Visibility) TitleAllowed(viewer *core.User, title *core.Title) bool {
 		return true
 	}
 	id, ok := v.SectionFor(title.Type)
-	return !ok || SectionAllowed(viewer, id)
+	if !ok || SectionAllowed(viewer, id) {
+		return true
+	}
+	return v.ThemeGrant != nil && v.ThemeGrant(viewer, title) // PSE-HOOK: bibliothèque Remix accordée — voir docs/pse/FORK.fr.md
 }
 
 // Playable checks inherited show policy without requiring discovery evidence.

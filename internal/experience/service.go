@@ -109,6 +109,8 @@ type ServiceDeps struct {
 	// CountBrowsable is the indexed library size. The view list uses it instead
 	// of browsing titles.
 	CountBrowsable func(context.Context, core.MediaType) (int, error)
+	// PSE-HOOK: appliquer le filtre du catalogue aux membres d'un thème Jellyfin — voir docs/pse/FORK.fr.md
+	PSEThemeDiscoveryKeys func(context.Context, []core.RatingKey) ([]core.RatingKey, error)
 	// CreditItems enumerates cached credit-title keys without browsing or hydration.
 	CreditItems func(context.Context, core.RatingKey, int) ([]core.RatingKey, error)
 	// PeopleIndex lists credited people with a name word starting with every
@@ -362,7 +364,12 @@ func (s *Service) Views(ctx context.Context, viewer *core.Viewer) ([]frontend.Vi
 		return nil, err
 	}
 	if s.d.PluginLibraries != nil {
-		return s.storedViews(ctx, v)
+		views, err := s.storedViews(ctx, v)
+		// PSE-HOOK: vues des bibliothèques Remix pour Jellyfin — voir docs/pse/FORK.fr.md
+		if err != nil {
+			return nil, err
+		}
+		return s.pseJellyfinAppendThemeViews(ctx, v, views), nil
 	}
 	libs := s.libraries()
 	out := make([]frontend.View, 0, len(libs))
@@ -371,7 +378,8 @@ func (s *Service) Views(ctx context.Context, viewer *core.Viewer) ([]frontend.Vi
 			out = append(out, frontend.View{ID: strconv.Itoa(lib.ID), LibraryID: core.LibraryID(lib.ID), Name: lib.Name, Type: lib.Type, Virtual: lib.Virtual})
 		}
 	}
-	return out, nil
+	// PSE-HOOK: vues des bibliothèques Remix pour Jellyfin — voir docs/pse/FORK.fr.md
+	return s.pseJellyfinAppendThemeViews(ctx, v, out), nil
 }
 
 // LibraryCount is the indexed size of one library. It does not browse or
@@ -450,6 +458,10 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return core.Page{}, err
+	}
+	// PSE-HOOK: parcourir les bibliothèques et collections Remix dans Jellyfin — voir docs/pse/FORK.fr.md
+	if page, handled, err := s.pseJellyfinLibraryItems(ctx, v, device, viewID, q); handled || err != nil {
+		return page, err
 	}
 	// A request whose IncludeItemTypes names only kinds no accessible library
 	// can present can never match: answer empty without listing #405's
@@ -1627,6 +1639,10 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		return frontend.SearchPage{}, nil
 	}
 
+	// PSE-HOOK: recherche d'un profil limité aux thèmes Remix Jellyfin — voir docs/pse/FORK.fr.md
+	if page, ok, err := s.pseJellyfinThemeOnlySearch(ctx, viewer, device, v, query, q); ok || err != nil {
+		return page, err
+	}
 	var types []core.MediaType
 	show := false
 	seenType := make(map[core.MediaType]bool)
@@ -1657,6 +1673,9 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 			}
 		}
 	}
+	// PSE-HOOK: recherche dans les bibliothèques Remix Jellyfin — voir docs/pse/FORK.fr.md
+	types = s.pseJellyfinSearchTypes(ctx, v, types)
+	show = show || slices.Contains(types, core.TypeShow)
 	// Season and episode titles are keyword hits inside a show library.
 	if show {
 		types = append(types, core.TypeSeason, core.TypeEpisode)
@@ -2423,8 +2442,9 @@ func (s *Service) Ancestors(ctx context.Context, viewer *core.Viewer, device cor
 // Facets are computed only from titles the viewer may see.
 func (s *Service) Facets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string) ([]core.FacetValue, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
-	skipIndexed := false
-	if s.d.PluginLibraries != nil && viewID != "" {
+	// PSE-HOOK: les facettes d'une vue Remix sont calculées sur ses titres autorisés — voir docs/pse/FORK.fr.md
+	skipIndexed := s.pseJellyfinThemeViewID(viewID)
+	if !skipIndexed && s.d.PluginLibraries != nil && viewID != "" {
 		id, err := strconv.Atoi(viewID)
 		if err != nil {
 			return nil, core.ErrNotFound
@@ -2815,8 +2835,9 @@ func facetID(kind, value string) string { return core.FacetID(kind, value) }
 // ResolveFacet only resolves identifiers among the viewer's current visible facets.
 func (s *Service) ResolveFacet(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, kind, id string) (core.FacetValue, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
-	isBuiltinView := true
-	if s.d.PluginLibraries != nil && viewID != "" {
+	// PSE-HOOK: résoudre les identifiants de facettes Remix dans leurs vues — voir docs/pse/FORK.fr.md
+	isBuiltinView := !s.pseJellyfinThemeViewID(viewID)
+	if isBuiltinView && s.d.PluginLibraries != nil && viewID != "" {
 		if lid, err := strconv.Atoi(viewID); err == nil {
 			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lid)); err == nil && lib.Source != core.LibraryBuiltin {
 				isBuiltinView = false

@@ -1854,10 +1854,15 @@ func (s *Server) peopleVisibilityRows(ctx context.Context, batch peopleBatchCata
 
 func (s *Server) searchTypes(u *frontend.User, sectionID int) []frontend.MediaType {
 	var out []frontend.MediaType
-	for _, sec := range s.userSections(u) {
+	seen := map[frontend.MediaType]bool{}
+	for _, sec := range s.pseWithThemes(u, s.userSections(u)) { // PSE-HOOK: bibliothèques à thème — voir docs/pse/FORK.fr.md
 		if sectionID > 0 && sec.ID != sectionID {
 			continue
 		}
+		if seen[sec.Type] {
+			continue
+		}
+		seen[sec.Type] = true
 		out = append(out, sec.Type)
 	}
 	return out

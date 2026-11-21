@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -91,6 +93,35 @@ func TestLibrariesCRUD(t *testing.T) {
 	c, _ := s.Create(ctx, Library{Name: "Encore", Type: "show", Collections: []string{"2"}})
 	if c.Section() != 5102 {
 		t.Fatalf("section réutilisée = %d", c.Section())
+	}
+}
+
+func TestCreateDoesNotReuseThemeSectionWithSavedViewerGrant(t *testing.T) {
+	ctx := t.Context()
+	s, _ := newTest(t)
+	s.SetSectionReservations(auth.RemixLibraryReservations)
+	old, err := s.Create(ctx, Library{Name: "Enfants", Type: TypeMixed, Collections: []string{"1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Une ancienne sélection peut encore contenir la moitié Séries.
+	limits, err := json.Marshal([]core.LibraryID{5100, core.LibraryID(old.ShowSection())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO auth_users(plex_id, allowed_libraries, created_at, updated_at) VALUES(?, ?, 1, 1)`, 37, string(limits)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.Create(ctx, Library{Name: "Autres titres", Type: TypeMovie, Collections: []string{"2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := &core.User{ID: 37, AllowedLibraries: []core.LibraryID{5100, core.LibraryID(old.ShowSection())}}
+	if next.ID == old.ID || frontend.ThemeAllowed(viewer, next.Section()) {
+		t.Fatalf("old grant %v authorizes replacement section %d", viewer.AllowedLibraries, next.Section())
 	}
 }
 

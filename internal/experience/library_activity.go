@@ -47,11 +47,15 @@ func (s *Service) LatestAdded(ctx context.Context, viewer *core.Viewer, device c
 	return s.latestAdded(ctx, viewer, device, viewID, limit, true)
 }
 
-func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID string, limit int, group bool) ([]frontend.LatestItem, error) {
+func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, device core.Device, viewID string, limit int, group bool) ([]frontend.LatestItem, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return nil, err
+	}
+	// PSE-HOOK: ajouts récents des bibliothèques à thème Jellyfin — voir docs/pse/FORK.fr.md
+	if s.pseJellyfinThemeViewID(viewID) {
+		return s.pseJellyfinLatest(ctx, v, device, viewID, limit, group)
 	}
 	lib, err := s.activityLibrary(v, viewID)
 	if err != nil {
@@ -228,7 +232,8 @@ func (s *Service) Resume(ctx context.Context, viewer *core.Viewer, _ core.Device
 	if err != nil {
 		return page, err
 	}
-	lib, err := s.activityLibrary(v, viewID)
+	// PSE-HOOK: reprise dans les bibliothèques à thème Jellyfin — voir docs/pse/FORK.fr.md
+	scope, err := s.pseResumeScope(ctx, v, viewID)
 	if err != nil {
 		return page, err
 	}
@@ -276,8 +281,8 @@ func (s *Service) Resume(ctx context.Context, viewer *core.Viewer, _ core.Device
 			if title == nil || title.Key != status.Key || visibility.SectionFor == nil {
 				continue
 			}
-			section, ok := visibility.SectionFor(title.Type)
-			if !ok || !SectionAllowed(v, section) || (lib != nil && section != lib.ID) || !visibility.Visible(ctx, v, title) {
+			// PSE-HOOK: reprise des titres accordés par un thème Jellyfin — voir docs/pse/FORK.fr.md
+			if !s.pseResumeVisible(ctx, v, title, visibility, scope) {
 				continue
 			}
 			if len(types) > 0 {
@@ -370,6 +375,8 @@ func (s *Service) NextUp(ctx context.Context, viewer *core.Viewer, _ core.Device
 	if s.d.NextUp == nil {
 		return nil, core.ErrNotAvailable
 	}
+	// PSE-HOOK: « À suivre » des thèmes Remix Jellyfin — voir docs/pse/FORK.fr.md
+	ctx = s.pseJellyfinNextUpContext(ctx)
 	titles, err := s.d.NextUp(ctx, v, activityLimit(limit))
 	if err != nil {
 		return nil, err

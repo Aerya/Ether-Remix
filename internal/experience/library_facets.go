@@ -128,6 +128,10 @@ func (s *Service) facetLibraries(v *core.User, viewID string) ([]Library, error)
 // them, never every studio of the library.
 func (s *Service) FacetPage(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string, offset, limit int) ([]core.FacetValue, int, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
+	// PSE-HOOK: paginer les facettes dans la vue Remix autorisée — voir docs/pse/FORK.fr.md
+	if out, total, ok, err := s.pseJellyfinFacetPage(ctx, viewer, device, viewID, name, offset, limit); ok {
+		return out, total, err
+	}
 	if s.d.PluginLibraries != nil && viewID != "" {
 		if id, err := strconv.Atoi(viewID); err == nil {
 			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil && lib.Source != core.LibraryBuiltin {
@@ -223,6 +227,10 @@ func (s *Service) resolveStudio(ctx context.Context, viewer *core.Viewer, viewID
 // catalogue's top-value index rather than materializing the studio vocabulary.
 func (s *Service) FilterFacets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string) ([]core.FacetValue, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
+	// PSE-HOOK: les filtres d'une vue Remix suivent les mêmes facettes que sa liste — voir docs/pse/FORK.fr.md
+	if values, ok, err := s.pseJellyfinFilterFacets(ctx, viewer, device, viewID, name); ok {
+		return values, err
+	}
 	queryName := name
 	if name == "studio" {
 		queryName = "filterStudio"

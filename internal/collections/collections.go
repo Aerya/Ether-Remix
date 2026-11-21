@@ -69,6 +69,8 @@ type Service struct {
 	state    core.State
 	auth     core.Auth
 	chat     Chatter
+	// PSE-HOOK: appelé après chaque reconstruction réussie d'une collection — voir docs/pse/FORK.fr.md
+	builtHook atomic.Pointer[func()]
 	// Ephemeral vibe-search collections (vibe_ephemeral.go).
 	describeMu     sync.Mutex
 	describeJobs   map[string]*describeJob
@@ -494,6 +496,7 @@ func (s *Service) build(ctx context.Context, row *specRow) (*memberSet, error) {
 		if err == nil {
 			s.members[row.id] = ms
 			delete(s.failed, bk)
+			defer s.pseBuilt() // PSE-HOOK: invalidation des caches dérivés des membres — voir docs/pse/FORK.fr.md
 		} else if !errors.Is(err, context.Canceled) {
 			s.failed[bk] = s.now()
 		}
