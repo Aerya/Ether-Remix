@@ -33,7 +33,7 @@
 
 Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lire, configurez la voie adaptée : compte débrideur, client BitTorrent ou addon Stremio comme Seedstrem. Seedstrem utilise son propre client torrent. Pour Usenet, Remix lit via son moteur NNTP et vos fournisseurs Usenet ; SABnzbd/NZBGet ne sont pas des clients externes intégrés.
 
-- **Groupe Remix, mode Simple et mode Expert** : le menu de gauche a un groupe **Remix**, au-dessus de Bibliothèque. Il s’ouvre en mode Simple (Accueil, Sources, Langues et qualité, Contenus, Diagnostic), avec un assistant en quatre étapes au premier lancement. L’interrupteur **Expert**, mémorisé par navigateur, ajoute Indexation, Lecture, Visuels, Suivi et Statistiques.
+- **Groupe Remix, mode Simple et mode Expert** : le menu de gauche a un groupe **Remix**, au-dessus de Bibliothèque. Il s’ouvre en mode Simple (Accueil, Sources, Langues et qualité, Contenus, Statistiques, Diagnostic), avec un assistant en quatre étapes au premier lancement. L’interrupteur **Expert**, mémorisé par navigateur, ajoute Indexation, Lecture, Visuels et Suivi.
 - **Démarrage rapide** : la vue **Vue d’ensemble → Démarrage** guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Un rappel signale lorsque la recherche automatique est désactivée.
 - **Console Remix** : réglages regroupés dans `/ether/remix`, blocs repliables fermés par défaut ; iBroadcast rejoint les fournisseurs musicaux et les informations Subsonic restent dans Contenus → Musique.
 - **IPTV et VOD Xtream** : chaînes en direct, guide EPG et import des films et séries du fournisseur.
@@ -158,7 +158,7 @@ Un **style pour plusieurs cartes** peut être préparé depuis une même galerie
 
 ### Une interface adaptée à vos habitudes
 
-- Mode Expert : pages **Indexation** (réglages et releases), **Lecture** (priorités, qualité, VOSTFR, sous-titres), **Visuels** (cartes Nuvio, packs, renouvellement des affiches), **Suivi** et **Statistiques** (démarrage, activité, sources, utilisation), en plus de **Sources** (avec la santé des médias locaux) et **Contenus**. Les anciens liens et favoris sont redirigés.
+- **Statistiques** (dès le mode Simple) et, en mode Expert, **Indexation** (réglages, releases, Pre), **Lecture** (priorités, qualité, VOSTFR, sous-titres), **Visuels** (cartes Nuvio, packs, renouvellement des affiches) et **Suivi**. Statistiques : (démarrage, activité, sources, utilisation), en plus de **Sources** (avec la santé des médias locaux) et **Contenus**. Les anciens liens et favoris sont redirigés.
 - Indexation automatique des addons Stremio activés ou sélection personnalisée, même vide ; filtres par instance Prowlarr/Jackett et compteurs catalogue, recherchés, avec release et affichés pour chaque bibliothèque ou collection prioritaire.
 - Sources regroupées par famille, tri par catégorie ou contenu, clés debrid affichables ponctuellement et blocs repliables sans perdre la saisie. Réglez les palettes dans **Apparence**.
 - Six palettes : **Ether, Nord, Catppuccin, Solarized, Gruvbox et Rosé Pine**, chacune en clair et sombre, avec aperçu immédiat et mémorisation par navigateur.
