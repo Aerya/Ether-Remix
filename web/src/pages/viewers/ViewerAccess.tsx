@@ -68,8 +68,8 @@ function TimeZoneSelect({
 }
 
 /** Libraries this viewer can open (empty restriction = every library, §1.4). */
+// PSE-HOOK: exporté pour le test des bibliothèques Remix — voir docs/pse/FORK.fr.md
 export function ViewerLibraries({
-  // PSE-HOOK: exporté pour le test des bibliothèques Remix — voir docs/pse/FORK.fr.md
   userId,
   allowed,
   isOwner,
@@ -85,7 +85,7 @@ export function ViewerLibraries({
   const [draft, setDraft] = useState<number[] | null>(null);
   const [saving, setSaving] = useState(false);
   const all = libs.data ?? [];
-  const themes = remix.data?.libraries ?? [];
+  const themes = remix.data?.libraries ?? []; // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
   const current = draft ?? allowed ?? [];
   const unrestricted = current.length === 0;
   const checkedThemes = remixChecked(current, themes, all); // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
@@ -104,6 +104,7 @@ export function ViewerLibraries({
         "With every library allowed, new libraries open for this viewer too. Pick libraries to limit them to just those.",
       )}
     >
+      {/* PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md */}
       {libs.loading || remix.loading ? (
         <LoadingRows rows={2} />
       ) : (
@@ -115,6 +116,7 @@ export function ViewerLibraries({
                 aria-label={t("All libraries")}
                 checked={unrestricted || Boolean(isOwner)}
                 disabled={Boolean(isOwner)}
+                // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
                 onChange={(e) => setDraft(e.target.checked ? [] : pseAllLibraries(themes, all))}
               />
             }
@@ -134,6 +136,7 @@ export function ViewerLibraries({
                 />
               ))
             : null}
+          {/* PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md */}
           {!unrestricted && !isOwner && themes.length > 0 ? (
             <PseRemixLibraryRows themes={themes} checked={checkedThemes} onToggle={toggleRemix} />
           ) : null}
@@ -146,6 +149,7 @@ export function ViewerLibraries({
             <div className="pt-2">
               <Button
                 size="sm"
+                // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
                 disabled={!dirty || saving || Boolean(remix.error)}
                 onClick={() => {
                   setSaving(true);
