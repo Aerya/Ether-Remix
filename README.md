@@ -84,6 +84,7 @@ La recherche de fond ne télécharge ni ne débride les fichiers. Un addon dista
 Les fichiers AllDebrid vérifiés peuvent être prioritaires lorsqu’ils respectent le profil. Les quotas suspendent les comptes concernés, les tentatives de secours sont limitées et le renouvellement des liens peut être réglé pour éviter des appels inutiles. [AllDebrid et proxys](docs/alldebrid-mediaflow.md).
 
 Quand aucune source n’est disponible à cause d’une limite d’indexeur ou d’un quota debrid, les lecteurs comme Plezy affichent « fichier indisponible » et reviennent à la fiche au lieu de rester bloqués.
+Quand un indexeur limite les requêtes d’Ether (HTTP 429), la lecture indique son nom et l’heure de reprise, et précise si aucune autre source n’a de release. Sans `Retry-After`, la pause passe de 15 min à 30 min, 1 h, 2 h… jusqu’à 24 h, puis revient à 15 min dès qu’une requête réussit. La limite journalière réglée dans Ether a son propre message.
 
 <a id="nav-applications-compatibles"></a>
 <a id="applications"></a>

@@ -614,6 +614,7 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 		}
 		return nil, apiError(resp.StatusCode, resp.Status)
 	}
+	c.pseRateOK() // PSE-HOOK: pause qui s'allonge — voir docs/pse/FORK.fr.md
 	return body, nil
 }
 
@@ -1097,7 +1098,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 	// results and NZBs. The manager must reach this cache before this check.
 	if c.Exhausted(ctx) {
 		c.emit(Event{Kind: "search", Purpose: usagePurpose(ctx), BudgetExhausted: true})
-		return nil, fmt.Errorf("indexer %q: %w: %w", c.Name(), errLocalBudget, core.ErrBudgetExhausted)
+		return nil, c.pseExhaustedErr(ctx) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	}
 	if err := c.searchPaused(); err != nil {
 		return nil, err
@@ -1364,7 +1365,7 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 	}
 	if c.Exhausted(ctx) {
 		c.emit(Event{Kind: "search", Purpose: usagePurpose(ctx), BudgetExhausted: true})
-		return nil, fmt.Errorf("indexer %q: %w: %w", c.Name(), errLocalBudget, core.ErrBudgetExhausted)
+		return nil, c.pseExhaustedErr(ctx) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	}
 	if err := c.searchPaused(); err != nil {
 		return nil, err
@@ -1796,6 +1797,7 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 		}
 	}
 	if err == nil {
+		c.pseRateOK() // PSE-HOOK: pause qui s'allonge — voir docs/pse/FORK.fr.md
 		name, id := c.Name(), c.indexerID()
 		for i := range results {
 			r := &results[i]
@@ -1887,6 +1889,7 @@ func TestWithOptions(ctx context.Context, cfg config.Indexer, opts Options) erro
 	if name == "" {
 		name = c.Name()
 	}
+	c.rate.pse.plain = true // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	if _, err := c.Caps(ctx); err != nil {
 		return humanError(name, err)
 	}
