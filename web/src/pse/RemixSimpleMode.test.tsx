@@ -150,6 +150,7 @@ it("la barre latérale affiche les entrées du mode simple par défaut", () => {
     "Sources",
     "Langues et qualité",
     "Contenus",
+    "Statistiques",
     "Diagnostic",
     "Expert",
   ]);
@@ -198,7 +199,7 @@ it("distingue les pages du mode simple de celles réservées à l’expert", () 
   expect(isSimpleRoute("contenus", null)).toBe(true);
   expect(isSimpleRoute("diagnostic", null)).toBe(true);
   expect(isSimpleRoute("indexation", null)).toBe(false);
-  expect(isSimpleRoute("apercu", null)).toBe(false);
+  expect(isSimpleRoute("apercu", null)).toBe(true);
 });
 
 it("place le groupe Remix au-dessus de Bibliothèque, avec des libellés traduits", () => {
@@ -391,7 +392,8 @@ it("Statistiques affiche les releases indexées au total et celles issues des pr
       <PreStats status={{ active: false }} />
     </MemoryRouter>,
   );
-  expect(container.textContent).toBe("");
+  expect(container.textContent).toContain("Désactivée");
+  expect(container.textContent).not.toContain("Releases issues des pre");
   rerender(
     <MemoryRouter>
       <PreStats status={{ active: true, import: { added: 250, pending: 3, last: 1700000000 } }} />
@@ -452,8 +454,19 @@ it("Statistiques détaille les releases indexées pour chaque pre, sans exposer 
                 indexed: 25,
                 pending: 2,
                 unmatched: 3,
+                state: "ok",
+                fetched: 100,
+                kept: 12,
               },
-              { feed: "perso:1", seen: 10, indexed: 10, pending: 0, unmatched: 0 },
+              {
+                feed: "perso:1",
+                seen: 10,
+                indexed: 10,
+                pending: 0,
+                unmatched: 0,
+                state: "error",
+                error: "flux refusé (403)",
+              },
               { feed: "", seen: 0, indexed: 5, pending: 0, unmatched: 0 },
             ],
           },
@@ -465,8 +478,48 @@ it("Statistiques détaille les releases indexées pour chaque pre, sans exposer 
   const rows = within(table)
     .getAllByRole("row")
     .map((r) => [...r.querySelectorAll("th,td")].map((c) => c.textContent));
-  expect(rows[1]).toEqual(["predb.me · films", "30", "25", "2", "3"]);
-  expect(rows[2]).toEqual(["Flux personnel 1", "10", "10", "0", "0"]);
+  expect(rows[1]).toEqual([
+    "predb.me · films",
+    "30",
+    "25",
+    "2",
+    "3",
+    "OK · 100 annonces · 12 retenues",
+  ]);
+  expect(rows[2]).toEqual(["Flux personnel 1", "10", "10", "0", "0", "Erreur · flux refusé (403)"]);
   expect(rows[3]![0]).toBe("Plus anciennes ou flux inconnu");
-  expect(rows[4]).toEqual(["Total", "40", "40", "2", "3"]);
+  expect(rows[4]).toEqual(["Total", "40", "40", "2", "3", ""]);
+});
+
+it("Statistiques est visible dès le mode Simple et montre les releases indexées par source", async () => {
+  const { IndexedReleases } = await import("./IndexedReleases");
+  apiFetch.mockResolvedValue({
+    sources: [
+      { id: "a", name: "AIOStreams", enabled: true, titles: 10, releases: 300 },
+      {
+        id: "remix-pre",
+        name: "Pre (annonces de releases)",
+        enabled: true,
+        titles: 4,
+        releases: 40,
+      },
+      { id: "z", name: "Source vide", enabled: false, titles: 0, releases: 0 },
+    ],
+  });
+  render(
+    <MemoryRouter>
+      <IndexedReleases pre={{ active: false }} />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Releases indexées (global)")).toBeTruthy();
+  expect(screen.getByText("340")).toBeTruthy();
+  const rows = within(screen.getByRole("table"))
+    .getAllByRole("row")
+    .map((r) => [...r.querySelectorAll("th,td")].map((c) => c.textContent));
+  expect(rows[1]).toEqual(["AIOStreams", "10", "300"]);
+  expect(rows[2]).toEqual(["Pre (annonces de releases)", "4", "40"]);
+  expect(rows).toHaveLength(3);
+  expect(screen.getByRole("link", { name: /Activer dans Indexation/ }).getAttribute("href")).toBe(
+    "/remix/indexation?view=pre",
+  );
 });

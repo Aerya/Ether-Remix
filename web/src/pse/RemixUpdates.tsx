@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-20-simple-expert-menu",
+    id: "2026-11-21-stats-visible-pre-feeds",
     version: "current",
+    date: "2026-11-21",
+    title: [
+      "Statistiques visibles dès le mode Simple, releases indexées par flux de pre",
+      "Statistics visible from Simple mode, indexed releases by pre feed",
+    ],
+    items: [
+      [
+        "Statistiques est de nouveau visible dans le groupe Remix dès le mode Simple. L’interrupteur Expert ajoute Indexation, Lecture, Visuels et Suivi.",
+        "Statistics is visible again in the Remix group from Simple mode. The Expert switch adds Indexing, Playback, Visuals and Tracking.",
+      ],
+      [
+        "Statistiques → Résumé affiche les releases indexées au total et par source. Quand l’option Pre est activée, un tableau détaille chaque flux de pre : annonces lues, releases indexées, en attente, non trouvées et dernière lecture (annonces reçues et retenues, ou erreur courte). Sinon, un encart renvoie vers Indexation → Pre (bêta) pour l’activer.",
+        "Statistics → Summary shows indexed releases overall and by source. When the Pre option is on, a table details each pre feed: announcements read, indexed releases, pending, not matched and last read (announcements received and kept, or a short error). Otherwise a note links to Indexing → Pre (beta) to enable it.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-20-simple-expert-menu",
+    version: "0.2.37-remix.122.1",
     date: "2026-11-21",
     title: [
       "Menu Remix dans la barre latérale : mode Simple, assistant et Diagnostic",

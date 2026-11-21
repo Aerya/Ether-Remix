@@ -318,8 +318,21 @@ type PreDBStatus struct {
 	Added   int    `json:"added"`   // releases enregistrées depuis le début
 	Pending int    `json:"pending"` // en attente du délai ou d'un média
 	Error   string `json:"error,omitempty"`
+	// Runs : résultat de la dernière lecture de chaque flux (enregistré).
+	Runs []PreFeedRun `json:"runs,omitempty"`
 	// Feeds : détail par flux, calculé à la lecture (jamais enregistré).
 	Feeds []PreFeedStat `json:"feeds,omitempty"`
+}
+
+// PreFeedRun est le résultat de la dernière lecture d'un flux. Error est un message
+// court, sans adresse ni clé.
+type PreFeedRun struct {
+	Feed    string `json:"feed"`
+	State   string `json:"state"` // ok, error
+	At      int64  `json:"at"`
+	Fetched int    `json:"fetched"` // annonces reçues
+	Kept    int    `json:"kept"`    // annonces retenues (langue, section, correction)
+	Error   string `json:"error,omitempty"`
 }
 
 // PreFeedStat compte, pour un flux, les pre lues et les releases qui en viennent.
@@ -332,6 +345,12 @@ type PreFeedStat struct {
 	Indexed   int    `json:"indexed"`   // releases indexées issues de ce flux
 	Pending   int    `json:"pending"`   // en attente du délai ou d'un média
 	Unmatched int    `json:"unmatched"` // média introuvable, abandonnées
+	// Dernière lecture du flux : état, annonces reçues et retenues, erreur éventuelle.
+	State   string `json:"state,omitempty"`
+	ReadAt  int64  `json:"readAt,omitempty"`
+	Fetched int    `json:"fetched,omitempty"`
+	Kept    int    `json:"kept,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // preFeedID identifie un flux : son adresse s'il est public, « perso:N » sinon.
@@ -354,6 +373,14 @@ func (s *Store) preStatus(ctx context.Context) PreDBStatus {
 func (s *Store) LoadPreDBStatus(ctx context.Context) PreDBStatus {
 	st := s.preStatus(ctx)
 	st.Feeds = s.preFeedStats(ctx, LoadPreDBSettings())
+	for i := range st.Feeds {
+		for _, r := range st.Runs {
+			if r.Feed == st.Feeds[i].Feed {
+				st.Feeds[i].State, st.Feeds[i].ReadAt = r.State, r.At
+				st.Feeds[i].Fetched, st.Feeds[i].Kept, st.Feeds[i].Error = r.Fetched, r.Kept, r.Error
+			}
+		}
+	}
 	return st
 }
 
@@ -425,6 +452,13 @@ WHERE r.source_id=? GROUP BY p.feed`, PreDBSourceID); err == nil {
 		out = append(out, *v)
 	}
 	return out
+}
+
+// preSetRuns met à jour le résultat par flux sans toucher au reste de l'état.
+func (s *Store) preSetRuns(ctx context.Context, runs []PreFeedRun) {
+	st := s.preStatus(ctx)
+	st.Runs = runs
+	s.preSetStatus(ctx, st)
 }
 
 func (s *Store) preSetStatus(ctx context.Context, st PreDBStatus) {
@@ -570,7 +604,8 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 		}
 	}
 	now := s.d.Now()
-	s.st.preSetStatus(ctx, PreDBStatus{State: "running", Last: now.Unix(), Added: s.st.preAdded(ctx), Pending: s.st.prePending(ctx)})
+	prev := s.st.preStatus(ctx)
+	s.st.preSetStatus(ctx, PreDBStatus{State: "running", Last: now.Unix(), Added: s.st.preAdded(ctx), Pending: s.st.prePending(ctx), Runs: prev.Runs})
 	type feed struct {
 		id, url, key string
 	}
@@ -584,6 +619,7 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 		feeds = append(feeds, feed{preFeedID(false, "", i+1), u, cfg.PrivateKey})
 	}
 	okFeeds, lastErr := 0, error(nil)
+	var runs []PreFeedRun
 	for _, f := range feeds {
 		items, err := fetchPre(ctx, f.url, f.key)
 		if err != nil {
@@ -591,6 +627,7 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 				return ctx.Err()
 			}
 			lastErr = err
+			runs = append(runs, PreFeedRun{Feed: f.id, State: "error", At: now.Unix(), Error: err.Error()})
 			continue
 		}
 		okFeeds++
@@ -603,8 +640,10 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 		if err := s.st.preNote(ctx, f.id, keep, now); err != nil {
 			return err
 		}
+		runs = append(runs, PreFeedRun{Feed: f.id, State: "ok", At: now.Unix(), Fetched: len(items), Kept: len(keep)})
 	}
 	if okFeeds == 0 && lastErr != nil {
+		s.st.preSetRuns(ctx, runs)
 		return lastErr
 	}
 	due, err := s.st.preDue(ctx, now.Add(-cfg.Delay), preDBResolveMax)
@@ -635,9 +674,9 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 		_ = s.st.preSet(ctx, r.Name, "done", r.Tries)
 	}
 	_, _ = s.st.db.ExecContext(ctx, `DELETE FROM pse_pre WHERE state<>'pending' AND first_seen<?`, now.Add(-preDBKeep).Unix())
-	st := PreDBStatus{State: "ok", Last: now.Unix(), Added: s.st.preAdded(ctx), Pending: s.st.prePending(ctx)}
-	if okFeeds < len(feeds) {
-		st.Error = "un flux est inaccessible"
+	st := PreDBStatus{State: "ok", Last: now.Unix(), Added: s.st.preAdded(ctx), Pending: s.st.prePending(ctx), Runs: runs}
+	if failed := len(feeds) - okFeeds; failed > 0 {
+		st.Error = fmt.Sprintf("%d flux sur %d en erreur : voir le détail par flux", failed, len(feeds))
 	}
 	s.st.preSetStatus(ctx, st)
 	return nil
@@ -647,7 +686,7 @@ func (s *Service) runPreDB(ctx context.Context, cfg PreDBSettings) {
 	for wait := preDBStartDelay; sleepCtx(ctx, wait); wait = cfg.Every {
 		if err := s.preCycle(ctx, cfg); err != nil && ctx.Err() == nil {
 			s.d.Logger.Warn("pse pre index failed", "err", err)
-			s.st.preSetStatus(ctx, PreDBStatus{State: "error", Last: s.d.Now().Unix(), Error: err.Error()})
+			s.st.preSetStatus(ctx, PreDBStatus{State: "error", Last: s.d.Now().Unix(), Error: err.Error(), Runs: s.st.preStatus(ctx).Runs})
 		}
 	}
 }

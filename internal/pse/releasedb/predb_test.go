@@ -204,3 +204,40 @@ func TestPreFeedStatsListConfiguredFeedsAndOrphans(t *testing.T) {
 		t.Fatalf("release sans flux connu : %+v", stats)
 	}
 }
+
+// Chaque flux garde le résultat de sa dernière lecture, sans adresse ni clé.
+func TestPreCycleReportsEachFeed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ko" {
+			http.Error(w, "interdit", http.StatusForbidden)
+			return
+		}
+		w.Write([]byte(`<rss><channel>
+<item><title>Un.Film.2024.FRENCH.1080p.WEB.H264-GRP</title></item>
+<item><title>Autre.2024.GERMAN.1080p.WEB.H264-GRP</title></item></channel></rss>`))
+	}))
+	defer srv.Close()
+	old := preClient
+	preClient = srv.Client()
+	defer func() { preClient = old }()
+	db := store.OpenTest(t)
+	s := New(Deps{DB: db, Now: func() time.Time { return time.Unix(1_800_000_000, 0) }})
+	cfg := PreDBSettings{Enabled: true, PrivateURLs: []string{srv.URL + "/ok", srv.URL + "/ko"}, Langs: []string{"fr"}, Delay: time.Hour, Every: 10 * time.Minute}
+	ctx := context.Background()
+	if err := s.preCycle(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	st := s.st.preStatus(ctx)
+	if len(st.Runs) != 2 || st.Runs[0].State != "ok" || st.Runs[0].Fetched != 2 || st.Runs[0].Kept != 1 {
+		t.Fatalf("flux lisible : %+v", st.Runs)
+	}
+	if st.Runs[1].State != "error" || st.Runs[1].Error != "flux refusé (403)" || st.Runs[1].Feed != "perso:2" {
+		t.Fatalf("flux refusé : %+v", st.Runs)
+	}
+	if st.Error != "1 flux sur 2 en erreur : voir le détail par flux" {
+		t.Fatalf("message global : %q", st.Error)
+	}
+	if strings.Contains(fmt.Sprint(st), srv.URL) {
+		t.Fatal("l'adresse d'un flux personnel ne doit jamais être enregistrée")
+	}
+}
