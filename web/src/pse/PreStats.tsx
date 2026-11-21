@@ -14,6 +14,7 @@ export interface PreFeedStat {
   pending: number;
   unmatched: number;
   /** Dernière lecture du flux : « ok » ou « error », annonces reçues et retenues. */
+  label?: string;
   state?: string;
   readAt?: number;
   fetched?: number;
@@ -33,11 +34,11 @@ export interface PreStatus {
 }
 
 /** Nom d’un flux : sa description s’il est public, « Flux personnel N » sinon (adresse jamais exposée). */
-export function preFeedLabel(feed: string): string {
+export function preFeedLabel(feed: string, name?: string): string {
   const pub = PRE_PUBLIC_FEEDS.find((f) => f.url === feed);
   if (pub) return L(pub.fr, pub.en);
   const personal = /^perso:(\d+)$/.exec(feed);
-  if (personal) return L(`Flux personnel ${personal[1]}`, `Personal feed ${personal[1]}`);
+  if (personal) return name || L(`Site ${personal[1]}`, `Site ${personal[1]}`);
   return L("Plus anciennes ou flux inconnu", "Older or unknown feed");
 }
 
@@ -208,7 +209,7 @@ function PreFeedTable({ feeds }: { feeds: PreFeedStat[] }) {
           {feeds.map((f) => (
             <tr key={f.feed || "none"} className="border-b border-border">
               <th scope="row" className="px-4 py-3 text-left font-medium">
-                {preFeedLabel(f.feed)}
+                {preFeedLabel(f.feed, f.label)}
               </th>
               <td className={cell}>{num(f.seen)}</td>
               <td className={cell}>{num(f.indexed)}</td>

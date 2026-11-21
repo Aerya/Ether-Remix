@@ -102,6 +102,9 @@ type Deps struct {
 	// ou PSE_MUSIC_HIFI_URL) répond.
 	// Le message décrit le résultat (par exemple l'album lu en test).
 	TestMusic func(ctx context.Context, key, value string) (string, error)
+	// TestPre lit maintenant les flux de pre avec les réglages donnés (valeur d'un réglage
+	// par clé) et renvoie le détail par flux, sans rien enregistrer.
+	TestPre func(ctx context.Context, get func(key string) string) any
 }
 
 type fieldView struct {
@@ -132,6 +135,7 @@ func Handler(d Deps) http.Handler {
 	mux.HandleFunc("GET /{$}", h.get)
 	mux.HandleFunc("PUT /{$}", h.put)
 	mux.HandleFunc("POST /music/test", h.testMusic)
+	mux.HandleFunc("POST /predb/test", h.testPre)
 	mux.HandleFunc("POST /seerrcatalog/test", h.testSeerrCatalog)
 	return mux
 }
@@ -521,7 +525,16 @@ func validate(fd Field, v string, sources []Option) (string, error) {
 			return "", errors.New("clé d'API invalide")
 		}
 		return v, nil
+	case KindFeeds:
+		return validateFeeds(v)
 	case KindURL:
+		if fd.Key == "PSE_PREDB_PROXY_URL" && v != "" {
+			u, err := url.Parse(v)
+			if err != nil || u.Hostname() == "" || u.User != nil || !slices.Contains([]string{"http", "https", "socks5", "socks5h"}, u.Scheme) {
+				return "", errors.New("adresse http://, https:// ou socks5:// sans identifiants dedans attendue")
+			}
+			return strings.TrimRight(v, "/"), nil
+		}
 		if fd.Key == "PSE_MUSIC_DMM_URL" && v != "" {
 			u, err := url.Parse(v)
 			if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -584,6 +597,9 @@ func display(fd Field, v string) string {
 		}
 		return mask
 	}
+	if fd.Kind == KindFeeds {
+		return displayFeeds(v)
+	}
 	if fd.Kind == KindKey {
 		if len(v) <= 4 {
 			return v
@@ -610,6 +626,9 @@ func restore(fd Field, v, prev string) string {
 			return prev
 		}
 		return v
+	}
+	if fd.Kind == KindFeeds {
+		return restoreFeeds(v, prev)
 	}
 	if fd.Kind == KindKey {
 		if v != "" && v == display(fd, prev) {
