@@ -30,7 +30,10 @@ func (e *IndexerThrottledError) Error() string {
 	return IndexerThrottleMessage(e, time.Now()) + errDetail(e.Err)
 }
 
-var urlInText = regexp.MustCompile(`https?://\S+`)
+var (
+	urlInText    = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://\S+`)
+	secretInText = regexp.MustCompile(`(?i)\b(apikey|api_key|token|key|password|passkey)=[^&\s]+`)
+)
 
 // errDetail garde le détail d'origine pour les journaux et l'historique,
 // sans URL (elle peut porter une clé) et en version courte.
@@ -39,8 +42,9 @@ func errDetail(err error) string {
 		return ""
 	}
 	d := urlInText.ReplaceAllString(err.Error(), "<url>")
-	if len(d) > 200 {
-		d = d[:200] + "…"
+	d = secretInText.ReplaceAllString(d, "$1=***")
+	if r := []rune(d); len(r) > 200 {
+		d = string(r[:200]) + "…"
 	}
 	return " (" + d + ")"
 }

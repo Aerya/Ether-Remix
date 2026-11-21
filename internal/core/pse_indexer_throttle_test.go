@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestIndexerThrottledErrorChain(t *testing.T) {
@@ -70,5 +71,18 @@ func TestErrorKeepsSafeDetail(t *testing.T) {
 	got := e.Error()
 	if !strings.Contains(got, "(") || !strings.Contains(got, ErrBudgetExhausted.Error()) || strings.Contains(got, "SECRET") || strings.Contains(got, "x.test") {
 		t.Fatalf("detail: %q", got)
+	}
+}
+
+func TestErrDetailMasksSchemesSecretsAndCutsRunes(t *testing.T) {
+	d := errDetail(errors.New("HTTPS://host/x?apikey=s3cret sftp://u:p@h/ host/api?apikey=hidden&t=1 token=abc"))
+	for _, leak := range []string{"s3cret", "u:p@", "hidden", "abc"} {
+		if strings.Contains(d, leak) {
+			t.Fatalf("detail leaks %q: %s", leak, d)
+		}
+	}
+	long := errDetail(errors.New(strings.Repeat("é", 300)))
+	if !utf8.ValidString(long) || utf8.RuneCountInString(long) != 200+4 {
+		t.Fatalf("bad cut: %d runes, valid=%v", utf8.RuneCountInString(long), utf8.ValidString(long))
 	}
 }
