@@ -3,7 +3,7 @@ import { getLocale } from "../i18n";
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 
 /**
- * Flux publics lus par défaut par l’index des pré. La liste doit rester identique à
+ * Flux publics lus par défaut par l’index des pre. La liste doit rester identique à
  * `preDBPublicFeeds` (internal/pse/releasedb/predb.go) : un test le vérifie.
  */
 export const PRE_PUBLIC_FEEDS = [
@@ -35,7 +35,7 @@ export const PRE_PUBLIC_FEEDS = [
 
 const DOC = "https://github.com/Aerya/Ether-Remix/blob/main/docs/pse/";
 
-/** Sources lues par défaut, avec leurs liens, en tête de la vue Pré (bêta). */
+/** Sources lues par défaut, avec leurs liens, en tête de la vue Pre (bêta). */
 export function PreFeeds() {
   const fr = getLocale().startsWith("fr");
   return (
@@ -71,7 +71,7 @@ export function PreFeeds() {
           target="_blank"
           rel="noreferrer"
         >
-          {L("Documentation : Pré (bêta)", "Documentation: Pre (beta)")}
+          {L("Documentation : Pre (bêta)", "Documentation: Pre (beta)")}
         </a>
       </p>
     </aside>

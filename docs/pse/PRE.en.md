@@ -32,6 +32,10 @@ In the console: **Remix → Indexing → Pre (beta)**, then **Enable** and save.
 
 Requests go through Ether’s network guard (`safefetch`). Status is shown in the console.
 
+## Statistics
+
+When the option is on, **Remix → Statistics → Summary** shows a **Pre (beta)** block: releases indexed overall, releases coming from pre (with their share of the total), pending pre and the time of the last read. The per-source release detail, including pre, is under **Statistics → Searches** (“Stored releases by source”). Nothing is shown while the option is off.
+
 ## Limits
 
 - An announcement does not prove the release is on your sources: the one-hour delay is an estimate.

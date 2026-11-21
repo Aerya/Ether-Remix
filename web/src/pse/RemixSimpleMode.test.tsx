@@ -307,7 +307,7 @@ it("place chaque fonction Remix dans un seul onglet, sans orpheline", async () =
   expect(placed.filter((id) => !declared.has(id))).toEqual([]);
 });
 
-it("range la section Pré dans Indexation", async () => {
+it("range la section Pre dans Indexation", async () => {
   const { REMIX_TABS } = await import("./navigation");
   const where = REMIX_TABS.filter((t) => (t.features as readonly string[]).includes("predb"));
   expect(where.map((t) => t.key)).toEqual(["indexation"]);
@@ -322,13 +322,13 @@ it("range SubMaker, la recherche SeerrCatalog et le tri chacun à un seul endroi
   expect(where("librarysort")).toEqual(["contenus"]);
 });
 
-it("donne à la section Pré (bêta) sa propre vue dans Indexation", async () => {
+it("donne à la section Pre (bêta) sa propre vue dans Indexation", async () => {
   window.localStorage.setItem("remix.mode", "expert");
   apiFetch.mockResolvedValue({
     features: [
       {
         id: "predb",
-        title: { fr: "Section Pré", en: "Pre section" },
+        title: { fr: "Section Pre", en: "Pre section" },
         description: { fr: "", en: "" },
         fields: [],
       },
@@ -341,9 +341,9 @@ it("donne à la section Pré (bêta) sa propre vue dans Indexation", async () =>
     ],
   });
   render(page("/remix/indexation?view=pre"));
-  expect(await screen.findByText("Section Pré")).toBeTruthy();
+  expect(await screen.findByText("Section Pre")).toBeTruthy();
   expect(screen.queryByText("Indexation des releases")).toBeNull();
-  expect(screen.getByRole("button", { name: "Pré (bêta)" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Pre (bêta)" })).toBeTruthy();
 });
 
 it("Statistiques propose Résumé, Catalogue, Recherches, Sources et Utilisation", async () => {
@@ -357,7 +357,7 @@ it("Statistiques propose Résumé, Catalogue, Recherches, Sources et Utilisation
   ).toEqual(["Résumé", "Catalogue", "Recherches", "Sources", "Utilisation"]);
 });
 
-it("la vue Pré cite les flux publics lus par défaut, avec leurs liens", async () => {
+it("la vue Pre cite les flux publics lus par défaut, avec leurs liens", async () => {
   window.localStorage.setItem("remix.mode", "expert");
   render(page("/remix/indexation?view=pre"));
   expect(await screen.findByText("Flux publics lus par défaut")).toBeTruthy();
@@ -379,4 +379,57 @@ it("la liste des flux publics affichée est celle du serveur", async () => {
   );
   const urls = [...block.matchAll(/"(https:\/\/[^"]+)"/g)].map((m) => m[1]);
   expect(PRE_PUBLIC_FEEDS.map((f) => f.url)).toEqual(urls);
+});
+
+it("Statistiques affiche les releases indexées au total et celles issues des pre quand l’option est activée", async () => {
+  const { PreStats } = await import("./PreStats");
+  apiFetch.mockImplementation(async (path: string) =>
+    path.startsWith("/pse/release-library") ? { references: 1000 } : {},
+  );
+  const { container, rerender } = render(
+    <MemoryRouter>
+      <PreStats status={{ active: false }} />
+    </MemoryRouter>,
+  );
+  expect(container.textContent).toBe("");
+  rerender(
+    <MemoryRouter>
+      <PreStats status={{ active: true, import: { added: 250, pending: 3, last: 1700000000 } }} />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Releases indexées (global)")).toBeTruthy();
+  expect(await screen.findByText(/^1\s?000$/)).toBeTruthy();
+  expect(screen.getByText("Releases issues des pre")).toBeTruthy();
+  expect(screen.getByText("250")).toBeTruthy();
+  expect(screen.getByText("25 % du total")).toBeTruthy();
+  expect(screen.getByText("Pre en attente")).toBeTruthy();
+});
+
+it("la vue Résumé de Statistiques montre le bloc Pre seulement si l’option est activée", async () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  const features = (active: boolean) => ({
+    features: [
+      {
+        id: "predb",
+        title: { fr: "Section Pre", en: "Pre section" },
+        description: { fr: "", en: "" },
+        fields: [],
+        status: { active, import: { added: 5, pending: 0 } },
+      },
+    ],
+  });
+  apiFetch.mockImplementation(async (path: string) =>
+    path === "/pse/"
+      ? features(true)
+      : path.startsWith("/pse/release-library")
+        ? { references: 50 }
+        : {},
+  );
+  const on = render(page("/remix/apercu?view=resume"));
+  expect(await screen.findByText("Releases issues des pre")).toBeTruthy();
+  on.unmount();
+  apiFetch.mockImplementation(async (path: string) => (path === "/pse/" ? features(false) : {}));
+  render(page("/remix/apercu?view=resume"));
+  await screen.findByRole("heading", { name: "Statistiques", level: 1 });
+  expect(screen.queryByText("Releases issues des pre")).toBeNull();
 });

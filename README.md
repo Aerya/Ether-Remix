@@ -33,7 +33,7 @@ Ether-Remix reprend le serveur et les applications compatibles d’Ether, avec u
 
 Vos **vidéos locales**, films, épisodes ou vidéos personnelles, rejoignent vos bibliothèques depuis des dossiers de l’hôte ou des montages réseau. Remix cherche une correspondance dans son catalogue puis TMDB et conserve une présentation locale si aucun résultat fiable ne convient. La vue **Sources → Fichiers locaux** signale les fichiers absents, les problèmes de lecture et les doublons potentiels, sans supprimer vos médias.
 
-Les **sources facultatives** complètent le debrid et Usenet : client torrent, XDCC via Grabscher et serveur FTP / SFTP. Torrent et XDCC écrivent des fichiers sur disque ; FTP / SFTP permet aussi une lecture distante sans copie complète, avec le cache habituel d’Ether. Ces sources sont désactivées par défaut. L’index des **pré** (bêta ; annonces de releases FR / MULTi / VOSTFR, flux personnels facultatifs) alimente aussi le catalogue sans écrire de fichier.
+Les **sources facultatives** complètent le debrid et Usenet : client torrent, XDCC via Grabscher et serveur FTP / SFTP. Torrent et XDCC écrivent des fichiers sur disque ; FTP / SFTP permet aussi une lecture distante sans copie complète, avec le cache habituel d’Ether. Ces sources sont désactivées par défaut. L’index des **pre** (bêta ; annonces de releases FR / MULTi / VOSTFR, flux personnels facultatifs) alimente aussi le catalogue sans écrire de fichier.
 
 Côté **musique**, réunissez le catalogue Deezer, vos fichiers audio et vos comptes iBroadcast dans Plexamp, les clients Jellyfin ou les applications Subsonic. Les sources musicales et les comptes debrid activés assurent la lecture ; les playlists se parcourent, s’importent et se gèrent par utilisateur. Dossiers locaux et comptes iBroadcast sont privés par défaut, avec partage facultatif.
 
@@ -125,7 +125,7 @@ Pour migrer depuis Ether, sauvegardez `/config`, arrêtez l’ancien serveur et 
 | Références, conservation et épisodes indexés | [Index des releases](docs/pse/RELEASE_LIBRARY.fr.md) |
 | Bibliothèques, accueil et partage | [Dispositions](docs/pse/FEATURES.fr.md#nav-des-bibliotheques-et-collections-personnalisees) |
 | Import StreamFusion Reborn | [StreamFusion](docs/pse/STREAMFUSION.fr.md) |
-| Annonces de releases FR (pré, bêta) | [Pré](docs/pse/PRE.fr.md) |
+| Annonces de releases FR (pre, bêta) | [Pre](docs/pse/PRE.fr.md) |
 | Disponibilités SeerrCatalog | [SeerrCatalog](docs/pse/SEERRCATALOG.fr.md) |
 | AllDebrid, MediaFlow et proxys | [Réseau](docs/alldebrid-mediaflow.md) |
 | Sous-titres et traduction | [SubMaker](docs/pse/SUBMAKER.fr.md) |

@@ -79,8 +79,8 @@ func TestPreDBSettings(t *testing.T) {
 	}
 }
 
-// Une pré n'est comptée qu'après le délai, son média est résolu, la clé
-// n'est envoyée qu'en en-tête, et une pré sans média est retentée puis
+// Une pre n'est comptée qu'après le délai, son média est résolu, la clé
+// n'est envoyée qu'en en-tête, et une pre sans média est retentée puis
 // abandonnée.
 func TestPreCycle(t *testing.T) {
 	var gotKey, gotQuery string
@@ -128,7 +128,7 @@ func TestPreCycle(t *testing.T) {
 		t.Fatalf("%v %+v", err, rels)
 	}
 	if !(Filter{Languages: []string{"french"}, CachedOnly: true}).Match(rels[0]) {
-		t.Fatal("la pré doit compter comme française et disponible")
+		t.Fatal("la pre doit compter comme française et disponible")
 	}
 	for range preDBMaxTries {
 		now = now.Add(11 * time.Minute)
@@ -137,7 +137,7 @@ func TestPreCycle(t *testing.T) {
 		}
 	}
 	if n := s.st.prePending(ctx); n != 0 {
-		t.Fatalf("la pré sans média doit être abandonnée : %d", n)
+		t.Fatalf("la pre sans média doit être abandonnée : %d", n)
 	}
 	// Changer les langues efface ce qui avait été importé.
 	cfg.Langs = []string{"vostfr"}
@@ -146,5 +146,30 @@ func TestPreCycle(t *testing.T) {
 	}
 	if n := s.st.preAdded(ctx); n != 0 {
 		t.Fatalf("après changement de réglage : %d", n)
+	}
+}
+
+// Les pre figurent dans le détail des releases par source de Statistiques.
+func TestSourceOverviewListsPreWhenEnabled(t *testing.T) {
+	e := newFreshEnv(t)
+	find := func() *SourceStats {
+		overview, err := e.s.SourceOverview(e.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range overview.Sources {
+			if overview.Sources[i].ID == PreDBSourceID {
+				return &overview.Sources[i]
+			}
+		}
+		return nil
+	}
+	if find() != nil {
+		t.Fatal("les pre ne doivent pas apparaître quand l'option est désactivée")
+	}
+	e.s.d.Settings.PreDB = PreDBSettings{Enabled: true, Public: true}
+	got := find()
+	if got == nil || got.Name != preDBName || !got.Enabled {
+		t.Fatalf("source pre absente ou mal nommée : %+v", got)
 	}
 }

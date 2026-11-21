@@ -2,6 +2,7 @@ import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStartHint } from "./QuickStart";
 import { PreFeeds } from "./PreFeeds";
+import { PreStats, type PreStatus } from "./PreStats";
 import { XperienceImport } from "./XperienceImport";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
@@ -441,7 +442,7 @@ function PseSettings() {
             <>
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Fonction facultative en bêta : lire les annonces de releases (pré) françaises, MULTi et VOSTFR pour alimenter l’index. Désactivée par défaut.",
+                  "Fonction facultative en bêta : lire les annonces de releases (pre) françaises, MULTi et VOSTFR pour alimenter l’index. Désactivée par défaut.",
                   "Optional beta feature: read French, MULTi and VOSTFR release announcements (pre) to feed the index. Off by default.",
                 )}
               </p>
@@ -574,7 +575,14 @@ function PseSettings() {
           ) : null}
           {tab === "apercu" ? (
             view === "resume" ? (
-              <IndexerDetails part="summary" />
+              <>
+                <IndexerDetails part="summary" />
+                <PreStats
+                  status={
+                    current.features.find((f) => f.id === "predb")?.status as PreStatus | undefined
+                  }
+                />
+              </>
             ) : view === "catalogue" ? (
               <>
                 <IndexerDetails part="catalogue" />

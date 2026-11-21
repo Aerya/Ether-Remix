@@ -88,7 +88,7 @@ type Deps struct {
 	Search         func(context.Context, core.SearchRequest) ([]core.Release, error)
 	Active         func() bool // une lecture est en cours : l'indexation attend
 	// Resolve relie une release analysée à un titre du catalogue (série ou
-	// film), en l'ajoutant au catalogue s'il n'y est pas encore (pré).
+	// film), en l'ajoutant au catalogue s'il n'y est pas encore (pre).
 	Resolve func(context.Context, core.ReleaseInfo) (core.Title, bool)
 	// Priority renvoie les titres à indexer avant le reste du catalogue
 	// (bibliothèques à thème, priorités de la console) ; facultatif.

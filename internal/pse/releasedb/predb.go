@@ -20,18 +20,18 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// Index des « pré » (annonces de releases de la scène) : option désactivée
-// par défaut. Une pré ne contient ni lien ni empreinte ; Remix part du
+// Index des « pre » (annonces de releases de la scène) : option désactivée
+// par défaut. Une pre ne contient ni lien ni empreinte ; Remix part du
 // principe qu'une release française annoncée est disponible, sous une
 // heure, sur les sources habituelles (debrid, BitTorrent, Usenet). Elle est
 // donc comptée comme release indexée, et son média est ajouté au catalogue
 // sans attendre qu'il y arrive par TMDB. La lecture passe toujours par les
-// sources : une pré ne sert jamais de lien.
+// sources : une pre ne sert jamais de lien.
 
 const (
-	// PreDBSourceID identifie les pré dans pse_releases.
+	// PreDBSourceID identifie les pre dans pse_releases.
 	PreDBSourceID = "remix-pre"
-	preDBName     = "Pré (annonces de releases)"
+	preDBName     = "Pre (annonces de releases)"
 
 	preDBDefaultEvery = 10 * time.Minute
 	preDBMinEvery     = 2 * time.Minute
@@ -39,8 +39,8 @@ const (
 	preDBStartDelay   = 45 * time.Second
 	preDBMaxBody      = 8 << 20
 	preDBResolveMax   = 40                  // titres résolus au plus par passage
-	preDBMaxTries     = 6                   // essais avant d'abandonner une pré sans média
-	preDBKeep         = 30 * 24 * time.Hour // mémoire des pré traitées
+	preDBMaxTries     = 6                   // essais avant d'abandonner une pre sans média
+	preDBKeep         = 30 * 24 * time.Hour // mémoire des pre traitées
 	preDBMarker       = "direct"            // même repère que les flux directs : « disponible sans attente »
 )
 
@@ -65,7 +65,7 @@ CREATE INDEX pse_pre_state ON pse_pre(state, first_seen);
 `)
 }
 
-// PreDBSettings règle l'import des pré (variables PSE_PREDB*).
+// PreDBSettings règle l'import des pre (variables PSE_PREDB*).
 type PreDBSettings struct {
 	Enabled bool
 	// Public : flux publics (désactivable pour n'utiliser que les flux privés).
@@ -155,7 +155,7 @@ func preLangOK(name string, langs []string) bool {
 	return false
 }
 
-// PreAccept dit si une pré est gardée, et renvoie son analyse. Il faut un
+// PreAccept dit si une pre est gardée, et renvoie son analyse. Il faut un
 // titre et une année (film) ou un épisode (série).
 func PreAccept(name, section string, langs []string) (core.ReleaseInfo, bool) {
 	if section != "" && preBadSection.MatchString(section) {
@@ -326,7 +326,7 @@ func (s *Store) preStatus(ctx context.Context) PreDBStatus {
 	return st
 }
 
-// LoadPreDBStatus lit le dernier état de l'import des pré.
+// LoadPreDBStatus lit le dernier état de l'import des pre.
 func (s *Store) LoadPreDBStatus(ctx context.Context) PreDBStatus { return s.preStatus(ctx) }
 
 func (s *Store) preSetStatus(ctx context.Context, st PreDBStatus) {
@@ -334,7 +334,7 @@ func (s *Store) preSetStatus(ctx context.Context, st PreDBStatus) {
 	_ = s.sfrSet(ctx, "pre_status", string(b))
 }
 
-// preNote enregistre les pré vues ; une pré déjà connue garde son état.
+// preNote enregistre les pre vues ; une pre déjà connue garde son état.
 func (s *Store) preNote(ctx context.Context, items []PreItem, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -358,7 +358,7 @@ type preRow struct {
 	Tries int
 }
 
-// preDue liste les pré dont le délai est écoulé. Le délai court depuis
+// preDue liste les pre dont le délai est écoulé. Le délai court depuis
 // l'heure indiquée par le flux, sinon depuis la première observation.
 func (s *Store) preDue(ctx context.Context, cutoff time.Time, limit int) ([]preRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT name,tries FROM pse_pre WHERE state='pending'
@@ -395,7 +395,7 @@ func (s *Store) preAdded(ctx context.Context) int {
 	return n
 }
 
-// preForget efface les pré et leurs releases (option désactivée ou changée).
+// preForget efface les pre et leurs releases (option désactivée ou changée).
 func (s *Service) preForget(ctx context.Context) error {
 	rows, err := s.st.db.QueryContext(ctx, `SELECT DISTINCT title_key FROM pse_releases WHERE source_id=?`, PreDBSourceID)
 	if err != nil {
@@ -432,7 +432,7 @@ func (s *Service) preForget(ctx context.Context) error {
 
 // ---- cycle ----
 
-// preSave transforme une pré résolue en release indexée.
+// preSave transforme une pre résolue en release indexée.
 func (s *Service) preSave(ctx context.Context, name string, info core.ReleaseInfo, t core.Title, now time.Time) error {
 	season, episode := 0, 0
 	if t.Type == core.TypeShow {
@@ -458,7 +458,7 @@ func preSignature(c PreDBSettings) string {
 	return strings.Join(c.Langs, ",") + "|" + fmt.Sprint(c.Public) + "|" + fmt.Sprint(len(c.PrivateURLs))
 }
 
-// preCycle lit les flux puis traite les pré dont le délai est écoulé.
+// preCycle lit les flux puis traite les pre dont le délai est écoulé.
 func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 	if sig, _ := s.st.sfrGet(ctx, "pre_sig"); sig != preSignature(cfg) {
 		if sig != "" {

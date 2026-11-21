@@ -188,6 +188,10 @@ func (s *Service) SourceOverview(ctx context.Context) (SourceOverview, error) {
 		v := get(SFRSourceID)
 		v.Name, v.Enabled = sfrName, true
 	}
+	if s.d.Settings.PreDB.Active() {
+		v := get(PreDBSourceID)
+		v.Name, v.Enabled = preDBName, true
+	}
 	rows, err := s.st.db.QueryContext(ctx, `SELECT source_id,COUNT(DISTINCT title_key),COUNT(*) FROM pse_releases GROUP BY source_id`)
 	if err != nil {
 		return out, err

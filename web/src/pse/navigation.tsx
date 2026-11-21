@@ -22,7 +22,7 @@ export const REMIX_TABS = [
     key: "indexation",
     fr: "Indexation",
     en: "Indexing",
-    // « predb » : section « Pré » (bêta).
+    // « predb » : section « Pre » (bêta).
     features: ["indexer", "predb"],
   },
   {
@@ -175,7 +175,7 @@ export const REMIX_VIEWS = {
   indexation: [
     { key: "reglages", fr: "Réglages", en: "Settings" },
     { key: "releases", fr: "Releases", en: "Releases" },
-    { key: "pre", fr: "Pré (bêta)", en: "Pre (beta)" },
+    { key: "pre", fr: "Pre (bêta)", en: "Pre (beta)" },
   ],
   lecture: [
     { key: "priorites", fr: "Priorités", en: "Priorities" },

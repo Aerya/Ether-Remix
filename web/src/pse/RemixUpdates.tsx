@@ -55,8 +55,8 @@ export const REMIX_UPDATES = [
         "Each option now has a single place: SubMaker moves to Playback → Subtitles, library sorting to Content, and search activity is tracked only in Statistics → Searches. Content → Music shows where to set each part of music.",
       ],
       [
-        "Statistiques se découpe en cinq vues, une par question : Résumé, Catalogue, Recherches, Sources et Utilisation. La section Pré (bêta) a sa propre vue dans Indexation.",
-        "Statistics is split into five views, one per question: Summary, Catalogue, Searches, Sources and Usage. The Pre (beta) section has its own view under Indexing.",
+        "Statistiques se découpe en cinq vues, une par question : Résumé, Catalogue, Recherches, Sources et Utilisation. La section Pre (bêta) a sa propre vue dans Indexation, qui cite les flux publics lus par défaut ; quand elle est activée, Statistiques → Résumé affiche les releases indexées au total et celles issues des pre.",
+        "Statistics is split into five views, one per question: Summary, Catalogue, Searches, Sources and Usage. The Pre (beta) section has its own view under Indexing, which lists the public feeds read by default; when it is on, Statistics → Summary shows releases indexed overall and those coming from pre.",
       ],
       [
         "L’interrupteur Expert du groupe ajoute Indexation, Lecture, Visuels, Suivi et Statistiques, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
@@ -84,16 +84,16 @@ export const REMIX_UPDATES = [
     version: "0.2.37-remix.120.1",
     date: "2026-11-20",
     title: [
-      "Index des pré en bêta (releases FR / MULTi / VOSTFR)",
+      "Index des pre en bêta (releases FR / MULTi / VOSTFR)",
       "Pre index in beta (FR / MULTi / VOSTFR releases)",
     ],
     items: [
       [
-        "Nouvelle option facultative en bêta, désactivée par défaut (Remix → Indexation → Pré (bêta)) : Remix lit les annonces de releases (pré) françaises, MULTi et VOSTFR. Une release annoncée est considérée comme disponible sous environ une heure sur vos sources (debrid, BitTorrent, Usenet) : elle compte comme release indexée et son film ou sa série est ajouté au catalogue sans attendre TMDB.",
+        "Nouvelle option facultative en bêta, désactivée par défaut (Remix → Indexation → Pre (bêta)) : Remix lit les annonces de releases (pre) françaises, MULTi et VOSTFR. Une release annoncée est considérée comme disponible sous environ une heure sur vos sources (debrid, BitTorrent, Usenet) : elle compte comme release indexée et son film ou sa série est ajouté au catalogue sans attendre TMDB.",
         "New optional beta setting, off by default (Remix → Indexing → Pre (beta)): Remix reads French, MULTi and VOSTFR release announcements (pre). An announced release is assumed available within about an hour on your sources (debrid, BitTorrent, Usenet): it counts as an indexed release and its movie or show is added to the catalogue without waiting for TMDB.",
       ],
       [
-        "Vous pouvez ajouter vos propres flux RSS ou une API personnelle avec votre clé ; rien de personnel n’est lu sans votre saisie. Une pré ne sert jamais de lien : la lecture passe toujours par vos sources.",
+        "Vous pouvez ajouter vos propres flux RSS ou une API personnelle avec votre clé ; rien de personnel n’est lu sans votre saisie. Une pre ne sert jamais de lien : la lecture passe toujours par vos sources.",
         "You can add your own RSS feeds or a personal API with your key; nothing personal is read without your input. A pre is never used as a link: playback always goes through your sources.",
       ],
     ],
