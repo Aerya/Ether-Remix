@@ -26,8 +26,27 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-20-simple-expert-menu",
+    id: "2026-11-21-stats-visible-pre-feeds",
     version: "current",
+    date: "2026-11-21",
+    title: [
+      "Statistiques visibles dès le mode Simple, releases indexées par flux de pre",
+      "Statistics visible from Simple mode, indexed releases by pre feed",
+    ],
+    items: [
+      [
+        "Statistiques est de nouveau visible dans le groupe Remix dès le mode Simple. L’interrupteur Expert ajoute Indexation, Lecture, Visuels et Suivi.",
+        "Statistics is visible again in the Remix group from Simple mode. The Expert switch adds Indexing, Playback, Visuals and Tracking.",
+      ],
+      [
+        "Statistiques → Résumé affiche les releases indexées au total et par source. Quand l’option Pre est activée, un tableau détaille chaque flux de pre : annonces lues, releases indexées, en attente, non trouvées et dernière lecture (annonces reçues et retenues, ou erreur courte). Sinon, un encart renvoie vers Indexation → Pre (bêta) pour l’activer.",
+        "Statistics → Summary shows indexed releases overall and by source. When the Pre option is on, a table details each pre feed: announcements read, indexed releases, pending, not matched and last read (announcements received and kept, or a short error). Otherwise a note links to Indexing → Pre (beta) to enable it.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-20-simple-expert-menu",
+    version: "0.2.37-remix.122.1",
     date: "2026-11-21",
     title: [
       "Menu Remix dans la barre latérale : mode Simple, assistant et Diagnostic",
@@ -35,8 +54,8 @@ export const REMIX_UPDATES = [
     ],
     items: [
       [
-        "Un groupe Remix apparaît dans le menu de gauche, au-dessus de Bibliothèque. Il s’ouvre en mode Simple : Accueil, Sources, Langues et qualité, Contenus, Statistiques et Diagnostic. Accueil liste trois étapes avec leur état.",
-        "A Remix group appears in the left menu, above Libraries. It opens in Simple mode: Start, Sources, Languages and quality, Content, Statistics and Diagnostics. Start lists three steps with their status.",
+        "Un groupe Remix apparaît dans le menu de gauche, au-dessus de Bibliothèque. Il s’ouvre en mode Simple : Accueil, Sources, Langues et qualité, Contenus et Diagnostic. Accueil liste trois étapes avec leur état.",
+        "A Remix group appears in the left menu, above Libraries. It opens in Simple mode: Start, Sources, Languages and quality, Content and Diagnostics. Start lists three steps with their status.",
       ],
       [
         "Au premier lancement sans source, un assistant en quatre étapes (Sources, Langue, Application, Terminé) démarre une seule fois. Il se relance depuis Accueil. Une installation déjà configurée n’est pas interrompue.",
@@ -55,12 +74,12 @@ export const REMIX_UPDATES = [
         "Each option now has a single place: SubMaker moves to Playback → Subtitles, library sorting to Content, and search activity is tracked only in Statistics → Searches. Content → Music shows where to set each part of music.",
       ],
       [
-        "Statistiques se découpe en cinq vues, une par question : Résumé, Catalogue, Recherches, Sources et Utilisation. La section Pre (bêta) a sa propre vue dans Indexation, qui cite les flux publics lus par défaut ; Statistiques → Résumé affiche les releases indexées au total et par source ; quand les pre sont activées, le détail pour chaque flux de pre s’y ajoute, et un lien permet de les activer sinon.",
-        "Statistics is split into five views, one per question: Summary, Catalogue, Searches, Sources and Usage. The Pre (beta) section has its own view under Indexing, which lists the public feeds read by default; Statistics → Summary shows releases indexed overall and by source; when pre is on, the detail for each pre feed is added, and a link lets you enable it otherwise.",
+        "Statistiques se découpe en cinq vues, une par question : Résumé, Catalogue, Recherches, Sources et Utilisation. La section Pre (bêta) a sa propre vue dans Indexation, qui cite les flux publics lus par défaut ; quand elle est activée, Statistiques → Résumé affiche les releases indexées au total et, pour chaque flux de pre, celles qui en sont issues.",
+        "Statistics is split into five views, one per question: Summary, Catalogue, Searches, Sources and Usage. The Pre (beta) section has its own view under Indexing, which lists the public feeds read by default; when it is on, Statistics → Summary shows releases indexed overall and, for each pre feed, those coming from it.",
       ],
       [
-        "L’interrupteur Expert du groupe ajoute Indexation, Lecture, Visuels et Suivi, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
-        "The group’s Expert switch adds Indexing, Playback, Visuals and Tracking, with nothing removed. The choice is remembered in your browser; old links and bookmarks keep working.",
+        "L’interrupteur Expert du groupe ajoute Indexation, Lecture, Visuels, Suivi et Statistiques, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
+        "The group’s Expert switch adds Indexing, Playback, Visuals, Tracking and Statistics, with nothing removed. The choice is remembered in your browser; old links and bookmarks keep working.",
       ],
     ],
   },
