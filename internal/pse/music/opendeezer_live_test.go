@@ -40,6 +40,12 @@ func TestOpenDeezerLive(t *testing.T) {
 	if size < 1<<20 {
 		t.Fatalf("flux trop court pour un titre complet : %d", size)
 	}
+	// Octets déchiffrés : un MP3 valide commence par une balise ID3 ou une synchro de trame.
+	_, _ = rc.Seek(0, io.SeekStart)
+	head := make([]byte, 3)
+	if _, err := io.ReadFull(rc, head); err != nil || !(string(head) == "ID3" || (head[0] == 0xFF && head[1]&0xE0 == 0xE0)) {
+		t.Fatalf("début de flux non déchiffré correctement : % x %v", head, err)
+	}
 	// Déplacement au milieu, lecture de 256 Kio puis arrêt : pas de téléchargement complet.
 	_, _ = rc.Seek(size/2, io.SeekStart)
 	n, err := io.CopyN(io.Discard, rc, 256<<10)
