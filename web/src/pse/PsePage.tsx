@@ -2,7 +2,8 @@ import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStartHint } from "./QuickStart";
 import { PreFeeds } from "./PreFeeds";
-import { PreStats, type PreStatus } from "./PreStats";
+import { IndexedReleases } from "./IndexedReleases";
+import type { PreStatus } from "./PreStats";
 import { XperienceImport } from "./XperienceImport";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
@@ -577,8 +578,8 @@ function PseSettings() {
             view === "resume" ? (
               <>
                 <IndexerDetails part="summary" />
-                <PreStats
-                  status={
+                <IndexedReleases
+                  pre={
                     current.features.find((f) => f.id === "predb")?.status as PreStatus | undefined
                   }
                 />

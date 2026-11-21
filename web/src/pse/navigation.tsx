@@ -100,7 +100,7 @@ export const REMIX_NAV = [
     fr: "Statistiques",
     en: "Statistics",
     icon: "Gauge",
-    mode: "expert",
+    mode: "simple",
   },
   {
     id: "pse-diagnostic",
@@ -141,7 +141,11 @@ export function remixTitle(tab: string | undefined, fr: boolean): string | null 
  * latérale ; sinon la barre affiche les entrées Expert sans changer le mode mémorisé.
  */
 export function isSimpleRoute(tab: string | undefined, view: string | null): boolean {
-  if (["accueil", "sources", "langues", "contenus", "assistant", "diagnostic"].includes(tab ?? ""))
+  if (
+    ["accueil", "sources", "langues", "contenus", "apercu", "assistant", "diagnostic"].includes(
+      tab ?? "",
+    )
+  )
     return true;
   return tab === "lecture" && view === "qualite";
 }

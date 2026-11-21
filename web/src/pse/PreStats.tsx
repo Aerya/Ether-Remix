@@ -13,6 +13,12 @@ export interface PreFeedStat {
   indexed: number;
   pending: number;
   unmatched: number;
+  /** Dernière lecture du flux : « ok » ou « error », annonces reçues et retenues. */
+  state?: string;
+  readAt?: number;
+  fetched?: number;
+  kept?: number;
+  error?: string;
 }
 export interface PreStatus {
   active?: boolean;
@@ -39,21 +45,47 @@ export function preFeedLabel(feed: string): string {
  * Compteurs des pre, affichés dans Statistiques seulement quand l’option est
  * activée : releases indexées au total, releases venues des pre et pre en attente.
  */
-export function PreStats({ status }: { status: PreStatus | undefined }) {
-  const [total, setTotal] = useState<number | null>(null);
+export function PreStats({
+  status,
+  total: givenTotal,
+}: {
+  status: PreStatus | undefined;
+  /** Total des releases indexées, fourni par Statistiques ; sinon lu ici. */
+  total?: number | null;
+}) {
+  const [fetched, setFetched] = useState<number | null>(null);
+  const total = givenTotal !== undefined ? givenTotal : fetched;
   useEffect(() => {
-    if (!status?.active) return;
+    if (!status?.active || givenTotal !== undefined) return;
     let live = true;
     apiFetch<{ references?: number }>("/pse/release-library?overview=1&summary=1")
       .then((d) => {
-        if (live && typeof d.references === "number") setTotal(d.references);
+        if (live && typeof d.references === "number") setFetched(d.references);
       })
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, [status?.active]);
-  if (!status?.active) return null;
+  }, [status?.active, givenTotal]);
+  if (!status) return null;
+  if (!status.active)
+    return (
+      <section
+        className="rounded-xl border border-border p-4 text-sm"
+        aria-label={L("Pre (bêta)", "Pre (beta)")}
+      >
+        <h3 className="font-semibold">{L("Pre (bêta)", "Pre (beta)")}</h3>
+        <p className="mt-1 text-fg-muted">
+          {L(
+            "Désactivée. Lit les annonces de releases (pre) françaises, MULTi et VOSTFR pour alimenter l’index ; les compteurs apparaissent ici une fois activée.",
+            "Off. Reads French, MULTi and VOSTFR release announcements (pre) to feed the index; counters appear here once it is on.",
+          )}{" "}
+          <Link className="underline" to="/remix/indexation?view=pre">
+            {L("Activer dans Indexation → Pre (bêta)", "Enable under Indexing → Pre (beta)")}
+          </Link>
+        </p>
+      </section>
+    );
   const added = status.import?.added ?? 0;
   const share = total && total > 0 ? Math.round((added * 1000) / total) / 10 : null;
   const last = status.import?.last
@@ -62,12 +94,14 @@ export function PreStats({ status }: { status: PreStatus | undefined }) {
         timeStyle: "short",
       })
     : null;
+  const globalCard: [string, string, string] = [
+    L("Releases indexées (global)", "Indexed releases (overall)"),
+    total === null ? "—" : num(total),
+    L("Toutes sources confondues", "All sources combined"),
+  ];
   const cards: [string, string, string][] = [
-    [
-      L("Releases indexées (global)", "Indexed releases (overall)"),
-      total === null ? "—" : num(total),
-      L("Toutes sources confondues", "All sources combined"),
-    ],
+    // Statistiques affiche déjà le total au-dessus : pas de doublon.
+    ...(givenTotal !== undefined ? [] : [globalCard]),
     [
       L("Releases issues des pre", "Releases from pre"),
       num(added),
@@ -137,10 +171,23 @@ function PreFeedTable({ feeds }: { feeds: PreFeedStat[] }) {
     L("En attente", "Pending"),
     L("Non trouvées", "Not matched"),
   ];
+  const lastRead = (f: PreFeedStat) =>
+    f.state === "error" ? (
+      <span className="text-warning">
+        {L("Erreur", "Error")} · {f.error || L("flux inaccessible", "feed unreachable")}
+      </span>
+    ) : f.state === "ok" ? (
+      L(
+        `OK · ${num(f.fetched ?? 0)} annonces · ${num(f.kept ?? 0)} retenues`,
+        `OK · ${num(f.fetched ?? 0)} announcements · ${num(f.kept ?? 0)} kept`,
+      )
+    ) : (
+      "—"
+    );
   const cell = "px-4 py-3 text-right tabular-nums";
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full min-w-[560px] text-sm">
+      <table className="w-full min-w-[760px] text-sm">
         <caption className="sr-only">{L("Détail par pre", "Detail by pre")}</caption>
         <thead>
           <tr className="border-b border-border text-xs text-fg-muted">
@@ -152,6 +199,9 @@ function PreFeedTable({ feeds }: { feeds: PreFeedStat[] }) {
                 {h}
               </th>
             ))}
+            <th scope="col" className="px-4 py-3 text-left font-medium">
+              {L("Dernière lecture", "Last read")}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -166,6 +216,7 @@ function PreFeedTable({ feeds }: { feeds: PreFeedStat[] }) {
               <td className={`${cell} ${f.unmatched > 0 ? "text-warning" : ""}`}>
                 {num(f.unmatched)}
               </td>
+              <td className="px-4 py-3 text-left text-xs text-fg-muted">{lastRead(f)}</td>
             </tr>
           ))}
           <tr>
@@ -176,6 +227,7 @@ function PreFeedTable({ feeds }: { feeds: PreFeedStat[] }) {
             <td className={`${cell} font-semibold`}>{num(total.indexed)}</td>
             <td className={`${cell} font-semibold`}>{num(total.pending)}</td>
             <td className={`${cell} font-semibold`}>{num(total.unmatched)}</td>
+            <td />
           </tr>
         </tbody>
       </table>
