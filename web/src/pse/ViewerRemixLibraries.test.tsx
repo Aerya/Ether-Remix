@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { api, apiFetch } from "../../lib/api";
-import { ViewerLibraries, remixChecked, remixSection } from "./ViewerAccess";
-import type { Library } from "../libraries/api";
-import type { ThemeLibrary } from "../../pse/ThemeLibraries";
+import { api, apiFetch } from "../lib/api";
+import { ViewerLibraries } from "../pages/viewers/ViewerAccess";
+import { remixChecked, remixSection } from "./ViewerRemixLibraries";
+import type { Library } from "../pages/libraries/api";
+import type { ThemeLibrary } from "./ThemeLibraries";
 
 const lib = (id: number, name: string, mediaType: string) => ({ id, name, mediaType }) as Library;
 const libs = [lib(1, "Movies", "movie"), lib(2, "Shows", "show")];
@@ -11,11 +12,11 @@ const theme = (id: number, name: string, type: ThemeLibrary["type"]) =>
   ({ id, name, type, collections: [], position: 0, section: 5100 + id }) as ThemeLibrary;
 const themes = [theme(1, "Concerts", "movie"), theme(2, "Anime", "mixed")];
 
-vi.mock("../libraries/api", () => ({
+vi.mock("../pages/libraries/api", () => ({
   librariesApi: { list: vi.fn(async () => libs) },
 }));
-vi.mock("../../lib/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../lib/api")>()),
+vi.mock("../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/api")>()),
   apiFetch: vi.fn(async () => ({ libraries: themes })),
 }));
 

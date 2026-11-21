@@ -26,8 +26,16 @@ import { ViewerSimkl } from "./sections/ViewerSimkl";
 import { ViewerMDBList } from "./sections/ViewerMDBList";
 import { ViewerTrakt } from "./sections/ViewerTrakt";
 import { KID_PRESETS, ListText, normalizePolicy, type SafetyPolicy } from "./shared";
-import { librariesApi, type Library } from "../libraries/api";
-import type { ThemeData, ThemeLibrary } from "../../pse/ThemeLibraries";
+import { librariesApi } from "../libraries/api";
+import {
+  PseRemixLibraryRows,
+  PseRemixLoadError,
+  pseAllLibraries,
+  pseToggleLibrary,
+  pseToggleRemix,
+  remixChecked,
+  usePseRemixThemes,
+} from "../../pse/ViewerRemixLibraries"; // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
 
 /** A searchable IANA timezone picker; a stored zone the browser lacks stays listed. */
 function TimeZoneSelect({
@@ -59,42 +67,8 @@ function TimeZoneSelect({
   );
 }
 
-/** Numéro de section Plex de la bibliothèque Remix : 5100 + son identifiant. */
-export const remixSection = (theme: ThemeLibrary) => 5100 + theme.id;
-
-/**
- * 5100 n'est jamais un vrai thème : sa présence marque un choix Remix explicite
- * (tout décocher = aucun thème). Il n'est jamais affiché comme case.
- */
-export const REMIX_MARKER = 5100;
-const inRemixRange = (id: number) => id >= REMIX_MARKER && id <= 5299;
-
-/** Bibliothèque d'Ether (Films / Séries) dont dépend la visibilité d'une bibliothèque Remix. */
-function baseLibraryIds(theme: ThemeLibrary, libs: Library[]): number[] {
-  const want = theme.type === "mixed" ? ["movie", "show"] : [theme.type];
-  return libs.filter((l) => want.includes(l.mediaType ?? "")).map((l) => l.id);
-}
-
-/**
- * Bibliothèques Remix cochées. Un réglage restreint sans aucun numéro Remix
- * (antérieur à ces cases) garde la visibilité d'origine : un thème est coché
- * quand sa bibliothèque de base l'est. Sinon, la liste fait foi (un numéro
- * orphelin n'a pas de case et est simplement ignoré).
- */
-export function remixChecked(current: number[], themes: ThemeLibrary[], libs: Library[]) {
-  const legacy = !current.some(inRemixRange);
-  const out = new Set<number>();
-  for (const th of themes) {
-    const on = legacy
-      ? baseLibraryIds(th, libs).some((id) => current.includes(id))
-      : current.includes(remixSection(th)) || current.includes(remixSection(th) + 100);
-    if (on) out.add(remixSection(th));
-  }
-  return out;
-}
-
 /** Libraries this viewer can open (empty restriction = every library, §1.4). */
-export function ViewerLibraries({
+export function ViewerLibraries({ // PSE-HOOK: exporté pour le test des bibliothèques Remix — voir docs/pse/FORK.fr.md
   userId,
   allowed,
   isOwner,
@@ -106,35 +80,22 @@ export function ViewerLibraries({
   onSaved: () => void;
 }) {
   const libs = useAsync((signal) => librariesApi.list(signal), []);
-  const remix = useAsync(() => apiFetch<ThemeData>("/pse/themes/"), []);
+  const remix = usePseRemixThemes(); // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
   const [draft, setDraft] = useState<number[] | null>(null);
   const [saving, setSaving] = useState(false);
   const all = libs.data ?? [];
   const themes = remix.data?.libraries ?? [];
   const current = draft ?? allowed ?? [];
   const unrestricted = current.length === 0;
-  const checkedThemes = remixChecked(current, themes, all);
+  const checkedThemes = remixChecked(current, themes, all); // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(allowed ?? []);
-  // La liste enregistrée : bibliothèques d'Ether, plus les Remix cochées (5100+ID).
-  // Sans bibliothèque Remix, la liste reste telle quelle (aucun marqueur ajouté).
-  const withRemix = (ids: number[], on: Set<number>) =>
-    themes.length === 0
-      ? ids
-      : [...ids.filter((x) => !inRemixRange(x)), REMIX_MARKER, ...on].sort((a, b) => a - b);
   const toggleLibrary = (id: number, on: boolean) =>
     setDraft((prev) => {
       const base = prev ?? allowed ?? [];
-      const ids = on ? [...base.filter((x) => x !== id), id] : base.filter((x) => x !== id);
-      return withRemix(ids, remixChecked(base, themes, all)).sort((a, b) => a - b);
+      return pseToggleLibrary(base, id, on, themes, all); // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
     });
   const toggleRemix = (section: number, on: boolean) =>
-    setDraft((prev) => {
-      const base = prev ?? allowed ?? [];
-      const set = remixChecked(base, themes, all);
-      if (on) set.add(section);
-      else set.delete(section);
-      return withRemix(base, set);
-    });
+    setDraft((prev) => pseToggleRemix(prev ?? allowed ?? [], section, on, themes, all)); // PSE-HOOK: bibliothèques Remix par spectateur — voir docs/pse/FORK.fr.md
   return (
     <SettingsSection
       title={t("Libraries this viewer can open")}
@@ -153,17 +114,7 @@ export function ViewerLibraries({
                 aria-label={t("All libraries")}
                 checked={unrestricted || Boolean(isOwner)}
                 disabled={Boolean(isOwner)}
-                onChange={(e) =>
-                  setDraft(
-                    e.target.checked
-                      ? []
-                      : [
-                          ...(themes.length > 0 ? [REMIX_MARKER] : []),
-                          ...all.map((l) => l.id),
-                          ...themes.map(remixSection),
-                        ].sort((a, b) => a - b),
-                  )
-                }
+                onChange={(e) => setDraft(e.target.checked ? [] : pseAllLibraries(themes, all))}
               />
             }
           />
@@ -183,28 +134,9 @@ export function ViewerLibraries({
               ))
             : null}
           {!unrestricted && !isOwner && themes.length > 0 ? (
-            <>
-              <h4 className="px-5 pt-4 text-sm font-medium text-fg">{t("Remix libraries")}</h4>
-              {themes.map((th) => (
-                <SettingsRow
-                  key={`remix-${th.id}`}
-                  title={th.name}
-                  control={
-                    <Switch
-                      aria-label={th.name}
-                      checked={checkedThemes.has(remixSection(th))}
-                      onChange={(e) => toggleRemix(remixSection(th), e.target.checked)}
-                    />
-                  }
-                />
-              ))}
-            </>
+            <PseRemixLibraryRows themes={themes} checked={checkedThemes} onToggle={toggleRemix} />
           ) : null}
-          {remix.error && !isOwner ? (
-            <p role="alert" className="px-5 py-2 text-sm text-danger">
-              {t("Couldn't load the Remix libraries, so saving is disabled.")}
-            </p>
-          ) : null}
+          {remix.error && !isOwner ? <PseRemixLoadError /> : null}
           {isOwner ? (
             <p className="px-5 py-4 text-sm text-fg-muted">
               {t("The owner can always open every library.")}
