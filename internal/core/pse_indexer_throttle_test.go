@@ -64,3 +64,11 @@ func TestLocalDownloadMessageIndexers(t *testing.T) {
 		t.Errorf("plain budget error: %q", got)
 	}
 }
+
+func TestErrorKeepsSafeDetail(t *testing.T) {
+	e := &IndexerThrottledError{Indexers: []string{"A"}, Err: fmt.Errorf("get https://x.test/api?apikey=SECRET: %w", ErrBudgetExhausted)}
+	got := e.Error()
+	if !strings.Contains(got, "(") || !strings.Contains(got, ErrBudgetExhausted.Error()) || strings.Contains(got, "SECRET") || strings.Contains(got, "x.test") {
+		t.Fatalf("detail: %q", got)
+	}
+}

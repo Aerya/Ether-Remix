@@ -1797,7 +1797,9 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 		}
 	}
 	if err == nil {
-		c.pseRateOK() // PSE-HOOK: pause qui s'allonge — voir docs/pse/FORK.fr.md
+		if hits > 0 { // PSE-HOOK: pause qui s'allonge, seulement après une requête partie — voir docs/pse/FORK.fr.md
+			c.pseRateOK()
+		}
 		name, id := c.Name(), c.indexerID()
 		for i := range results {
 			r := &results[i]

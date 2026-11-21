@@ -221,3 +221,79 @@ func TestHumanErrorStillShowsDailyLimit(t *testing.T) {
 		t.Fatalf("wizard probe: %v", got)
 	}
 }
+
+// stubBackend simule un addon : refuse (RateLimitError), répond sans rien
+// interroger (nil, nil) ou répond avec une requête réellement partie.
+type stubBackend struct{ mode string }
+
+func (b *stubBackend) Search(ctx context.Context, _ core.SearchRequest, reserve func(context.Context, string) error) ([]core.Release, error) {
+	switch b.mode {
+	case "noid":
+		return nil, nil
+	case "ok":
+		if err := reserve(ctx, "hit"); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if err := reserve(ctx, "hit"); err != nil {
+		return nil, err
+	}
+	return nil, &RateLimitError{Err: apiError(429, "too many requests")}
+}
+func (b *stubBackend) FetchNZB(context.Context, core.Release, func(context.Context, string) error) ([]byte, error) {
+	return nil, errors.New("unused")
+}
+func (b *stubBackend) ResolveTorrent(context.Context, core.Release, func(context.Context, string) error) (core.Release, error) {
+	return core.Release{}, errors.New("unused")
+}
+
+func TestBackendPathThrottleGrowsAndNoRequestKeepsStep(t *testing.T) {
+	ctx := context.Background()
+	clock := &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)}
+	b := &stubBackend{mode: "limit"}
+	cfg := testConfig("http://127.0.0.1:1")
+	c := New(cfg, nil, Options{Now: clock.now, NZBDir: t.TempDir(), Backend: func(config.Indexer) (Backend, error) { return b, nil }})
+	search := func() error {
+		_, err := c.stampBackend(ctx, "search", func(ctx context.Context, reserve func(context.Context, string) error) ([]core.Release, error) {
+			return b.Search(ctx, core.SearchRequest{}, reserve)
+		})
+		return err
+	}
+	for _, p := range []time.Duration{15 * time.Minute, 30 * time.Minute} {
+		thr := throttledErr(t, search())
+		if got := thr.RetryAt.Sub(clock.now()); got != p {
+			t.Fatalf("pause %v, want %v", got, p)
+		}
+		clock.add(p + time.Second)
+	}
+	// A search without identifier sends nothing: the step must not reset.
+	b.mode = "noid"
+	if err := search(); err != nil {
+		t.Fatal(err)
+	}
+	b.mode = "limit"
+	thr := throttledErr(t, search())
+	if got := thr.RetryAt.Sub(clock.now()); got != time.Hour {
+		t.Fatalf("step reset by a search that sent nothing: %v", got)
+	}
+	// A real request that succeeds resets it.
+	clock.add(time.Hour + time.Second)
+	b.mode = "ok"
+	if err := search(); err != nil {
+		t.Fatal(err)
+	}
+	b.mode = "limit"
+	thr = throttledErr(t, search())
+	if got := thr.RetryAt.Sub(clock.now()); got != 15*time.Minute {
+		t.Fatalf("no reset after success: %v", got)
+	}
+}
+
+func TestManagerNamesPausedAndDailyLimited(t *testing.T) {
+	e := &core.IndexerThrottledError{Indexers: []string{"A"}, DailyLimited: []string{"B"}, Err: core.ErrBudgetExhausted}
+	got := core.LocalDownloadMessage(e, "")
+	if !strings.Contains(got, "A limite") || !strings.Contains(got, "atteinte pour B.") {
+		t.Fatalf("message: %q", got)
+	}
+}

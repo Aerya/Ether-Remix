@@ -129,11 +129,11 @@ func psePauseOrBudget(_ context.Context, clients []*Client, slot func(i int) (er
 		if local {
 			err = fmt.Errorf("indexers paused by service: %w: %w", errLocalBudget, core.ErrBudgetExhausted)
 		}
-		return &core.IndexerThrottledError{Indexers: paused, RetryAt: retryAt, OthersAnswered: othersAnswered, Err: err}
+		return &core.IndexerThrottledError{Indexers: paused, DailyLimited: daily, RetryAt: retryAt, OthersAnswered: othersAnswered, Err: err}
 	}
 	if len(daily) > 0 {
 		return &core.IndexerDailyLimitError{Indexers: daily,
 			Err: fmt.Errorf("indexers at their daily limit: %w: %w", errLocalBudget, core.ErrBudgetExhausted)}
 	}
-	return fmt.Errorf("indexers at their budget: %w", core.ErrBudgetExhausted)
+	return fmt.Errorf("all indexers: %w", core.ErrBudgetExhausted)
 }

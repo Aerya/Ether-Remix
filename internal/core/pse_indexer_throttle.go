@@ -6,6 +6,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -21,10 +22,28 @@ type IndexerThrottledError struct {
 	Indexers       []string  // indexeurs en pause
 	RetryAt        time.Time // reprise la plus proche, zéro si inconnue
 	OthersAnswered bool      // un autre indexeur a répondu sans erreur
+	DailyLimited   []string  // indexeurs dont la limite journalière d'Ether est atteinte
 	Err            error
 }
 
-func (e *IndexerThrottledError) Error() string { return IndexerThrottleMessage(e, time.Now()) }
+func (e *IndexerThrottledError) Error() string {
+	return IndexerThrottleMessage(e, time.Now()) + errDetail(e.Err)
+}
+
+var urlInText = regexp.MustCompile(`https?://\S+`)
+
+// errDetail garde le détail d'origine pour les journaux et l'historique,
+// sans URL (elle peut porter une clé) et en version courte.
+func errDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	d := urlInText.ReplaceAllString(err.Error(), "<url>")
+	if len(d) > 200 {
+		d = d[:200] + "…"
+	}
+	return " (" + d + ")"
+}
 
 func (e *IndexerThrottledError) Unwrap() []error {
 	return []error{ErrIndexerThrottled, e.Err}
@@ -37,7 +56,9 @@ type IndexerDailyLimitError struct {
 	Err      error
 }
 
-func (e *IndexerDailyLimitError) Error() string { return IndexerDailyLimitMessage(e) }
+func (e *IndexerDailyLimitError) Error() string {
+	return IndexerDailyLimitMessage(e) + errDetail(e.Err)
+}
 
 func (e *IndexerDailyLimitError) Unwrap() error { return e.Err }
 
@@ -65,6 +86,9 @@ func IndexerThrottleMessage(e *IndexerThrottledError, now time.Time) string {
 	}
 	if e.OthersAnswered {
 		msg += " Aucune autre source n'a de release pour ce titre."
+	}
+	if len(e.DailyLimited) > 0 {
+		msg += " " + IndexerDailyLimitMessage(&IndexerDailyLimitError{Indexers: e.DailyLimited})
 	}
 	return msg
 }
