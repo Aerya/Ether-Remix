@@ -4,7 +4,17 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { DashboardData } from "../lib/types";
 import PsePage from "./PsePage";
 import { buildDiagnostic } from "./RemixDiagnostic";
-import { simpleTabHref, simpleTabOf } from "./navigation";
+import { buildNavigation } from "../App";
+import {
+  REMIX_NAV,
+  REMIX_EXPERT_HREF,
+  filterRemixNav,
+  isSimpleRoute,
+  pseNavLabel,
+  remixHref,
+} from "./navigation";
+import { RemixExpertToggle, useRemixExpertView } from "./RemixNavigation";
+import { remixDescriptors } from "./mock";
 
 const apiFetch = vi.fn();
 const app = vi.hoisted(() => ({
@@ -72,17 +82,12 @@ beforeEach(() => {
   app.health = [];
 });
 
-it("ouvre l’accueil et affiche les quatre onglets du mode simple", async () => {
+it("ouvre l’accueil, sans barre d’onglets, avec le titre de la page", async () => {
   window.localStorage.setItem("remix.setup.wizard", "1");
   render(page("/remix"));
   expect(await screen.findByText("3 étapes pour regarder un film")).toBeTruthy();
-  expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
-    "Accueil",
-    "Sources",
-    "Langues et qualité",
-    "Bibliothèque",
-  ]);
-  expect(screen.getByRole("button", { name: /Diagnostic/ })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Démarrage", level: 1 })).toBeTruthy();
+  expect(screen.queryAllByRole("tab")).toHaveLength(0);
   expect(screen.getByRole("link", { name: /Relancer l’assistant/ })).toBeTruthy();
 });
 
@@ -110,32 +115,114 @@ it("enregistre le choix de langue de l’assistant puis passe à l’application
   expect(await screen.findByText("Connectez votre application")).toBeTruthy();
 });
 
-it("bascule en mode expert, mémorise le choix et revient au mode simple", async () => {
-  window.localStorage.setItem("remix.setup.wizard", "1");
-  apiFetch.mockResolvedValue({ features: [] });
-  render(page("/remix/accueil"));
-  fireEvent.click(await screen.findByLabelText("Mode expert"));
-  expect(await screen.findByRole("tab", { name: "Vue d’ensemble" })).toBeTruthy();
+function Sidebar() {
+  const expert = useRemixExpertView();
+  const nav = filterRemixNav(buildNavigation(remixDescriptors), expert);
+  return (
+    <ul aria-label="barre">
+      {nav
+        .flatMap((g) => g.items)
+        .map((i) =>
+          i.href === REMIX_EXPERT_HREF ? (
+            <li key={i.href}>
+              <RemixExpertToggle>{i.label}</RemixExpertToggle>
+            </li>
+          ) : (
+            <li key={i.href}>{i.label}</li>
+          ),
+        )}
+    </ul>
+  );
+}
+const sidebar = (path: string) => (
+  <MemoryRouter initialEntries={[path]}>
+    <Routes>
+      <Route path="*" element={<Sidebar />} />
+    </Routes>
+  </MemoryRouter>
+);
+const labels = () => screen.getAllByRole("listitem").map((l) => l.textContent);
+
+it("la barre latérale affiche les entrées du mode simple par défaut", () => {
+  render(sidebar("/remix/accueil"));
+  expect(labels()).toEqual([
+    "Démarrage",
+    "Sources",
+    "Langues et qualité",
+    "Contenus",
+    "Diagnostic",
+    "Expert",
+  ]);
+});
+
+it("la barre latérale affiche les entrées Expert en mode Expert, sans Langues et qualité", () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  render(sidebar("/remix/accueil"));
+  expect(labels()).toEqual([
+    "Démarrage",
+    "Sources",
+    "Indexation",
+    "Lecture",
+    "Contenus",
+    "Visuels",
+    "Suivi",
+    "Statistiques",
+    "Diagnostic",
+    "Expert",
+  ]);
+});
+
+it("l’interrupteur Expert mémorise le choix par navigateur", () => {
+  render(sidebar("/remix/accueil"));
+  const toggle = screen.getByRole("button", { name: "Mode expert" });
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(toggle);
   expect(window.localStorage.getItem("remix.mode")).toBe("expert");
-  fireEvent.click(screen.getByLabelText("Mode expert"));
-  expect(await screen.findByText("3 étapes pour regarder un film")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Mode expert" }).getAttribute("aria-pressed")).toBe(
+    "true",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Mode expert" }));
   expect(window.localStorage.getItem("remix.mode")).toBe("simple");
 });
 
-it("affiche les onglets experts sur une adresse experte sans changer le mode mémorisé", async () => {
-  render(page("/remix/indexation"));
-  expect(await screen.findByRole("tab", { name: "Indexation" })).toBeTruthy();
+it("affiche les entrées Expert sur une page réservée à l’expert sans changer le mode mémorisé", () => {
+  render(sidebar("/remix/indexation"));
+  expect(labels()).toContain("Indexation");
   expect(window.localStorage.getItem("remix.mode")).toBeNull();
 });
 
-it("relie les onglets simples aux pages existantes", () => {
-  expect(simpleTabHref("langues")).toBe("/remix/lecture?view=qualite");
-  expect(simpleTabHref("bibliotheque")).toBe("/remix/contenus");
-  expect(simpleTabOf("lecture", "qualite")).toBe("langues");
-  expect(simpleTabOf("lecture", "priorites")).toBeNull();
-  expect(simpleTabOf("contenus", null)).toBe("bibliotheque");
-  expect(simpleTabOf("diagnostic", null)).toBe("");
-  expect(simpleTabOf("indexation", null)).toBeNull();
+it("distingue les pages du mode simple de celles réservées à l’expert", () => {
+  expect(isSimpleRoute("langues", null)).toBe(true);
+  expect(isSimpleRoute("lecture", "qualite")).toBe(true);
+  expect(isSimpleRoute("lecture", "priorites")).toBe(false);
+  expect(isSimpleRoute("contenus", null)).toBe(true);
+  expect(isSimpleRoute("diagnostic", null)).toBe(true);
+  expect(isSimpleRoute("indexation", null)).toBe(false);
+  expect(isSimpleRoute("apercu", null)).toBe(false);
+});
+
+it("place le groupe Remix au-dessus de Bibliothèque, avec des libellés traduits", () => {
+  const groups = buildNavigation([
+    ...remixDescriptors,
+    {
+      kind: "navItem",
+      id: "libraries",
+      owner: "builtin",
+      label: { source: "Libraries" },
+      group: "library",
+      meta: { route: "/libraries" },
+    },
+  ]);
+  expect(groups.map((g) => g.label)).toEqual(["Remix", "Library"]);
+  expect(groups[0]!.items).toHaveLength(REMIX_NAV.length);
+  expect(pseNavLabel("pse-langues")).toBe("Langues et qualité");
+  expect(groups[0]!.items.map((i) => i.href)).toContain(remixHref("diagnostic"));
+});
+
+it("l’adresse /remix/langues ouvre la page Qualité de Lecture sans barre de vues", async () => {
+  render(page("/remix/langues"));
+  expect(await screen.findByRole("heading", { name: "Langues et qualité", level: 1 })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Priorités" })).toBeNull();
 });
 
 it("le diagnostic signale la source manquante, l’indexation coupée et l’absence de titre", () => {
@@ -171,25 +258,6 @@ it("la page Diagnostic mène à l’action de chaque problème", async () => {
   expect(await screen.findByText("La préparation automatique est désactivée")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Connecter" }));
   expect((await screen.findByTestId("where")).textContent).toBe("/apps");
-});
-
-const names = (role: string) => screen.getAllByRole(role).map((t) => t.textContent);
-
-it("regroupe les onglets experts par intention", async () => {
-  window.localStorage.setItem("remix.mode", "expert");
-  render(page("/remix/indexation"));
-  expect(await screen.findByRole("tab", { name: "Indexation" })).toBeTruthy();
-  expect(names("tab")).toEqual([
-    "Vue d’ensemble",
-    "Sources",
-    "Indexation",
-    "Lecture",
-    "Contenus",
-    "Visuels",
-    "Suivi",
-  ]);
-  for (const group of ["Surveiller", "Trouver", "Lire", "Personnaliser"])
-    expect(screen.getByText(group)).toBeTruthy();
 });
 
 it("la page Sources du mode simple masque les catégories réservées aux experts", async () => {

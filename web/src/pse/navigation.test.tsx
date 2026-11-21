@@ -15,7 +15,7 @@ it("keeps one source entry and maps legacy source addresses without losing param
     },
   ]);
   const links = nav.flatMap((g) => g.items);
-  expect(links.some((i) => i.href === "/remix")).toBe(true);
+  expect(links.some((i) => i.href === "/remix/accueil")).toBe(true);
   expect(links.some((i) => i.href === "/sources")).toBe(false);
   expect(sourcesHref("stremio", "?new=addon")).toBe("/remix/sources?new=addon&source=stremio");
   expect(sourcesHref("usage", "?days=30")).toBe("/remix/apercu?days=30&view=usage");
@@ -24,7 +24,7 @@ it("keeps one source entry and maps legacy source addresses without losing param
   expect(legacyRemixRoute("statistiques", "?days=7")).toBe("/remix/apercu?days=7");
   expect(legacyRemixRoute("demarrage")).toBe("/remix/apercu?view=demarrage");
   expect(legacyRemixRoute("releases")).toBe("/remix/indexation?view=releases");
-  expect(legacyRemixRoute("langues")).toBe("/remix/lecture?view=qualite");
+  expect(legacyRemixRoute("langues")).toBeNull();
   expect(legacyRemixRoute("demande")).toBe("/remix/lecture?view=vostfr");
   expect(legacyRemixRoute("medias-locaux")).toBe("/remix/sources?source=local#local-media-health");
 });

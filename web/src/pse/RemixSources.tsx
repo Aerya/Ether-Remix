@@ -104,7 +104,6 @@ export function RemixSources({
   return (
     <section className="space-y-5" aria-label={L("Gestion des sources", "Source management")}>
       <div>
-        <h2 className="font-semibold">{L("Sources", "Sources")}</h2>
         <p className="text-sm text-fg-muted">
           {simple
             ? L(

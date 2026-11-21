@@ -1,4 +1,5 @@
 import { Navigate, useLocation, useParams } from "react-router-dom";
+import { getLocale } from "../i18n";
 
 export const REMIX_TABS = [
   { key: "apercu", fr: "Vue d’ensemble", en: "Overview", features: [] },
@@ -35,39 +36,131 @@ export const REMIX_TABS = [
   { key: "suivi", fr: "Suivi", en: "Tracking", features: ["notify", "scrob"] },
 ] as const;
 
-/** Regroupement du mode Expert par intention, dans l’ordre où on s’en sert. */
-export const EXPERT_GROUPS = [
-  { fr: "Surveiller", en: "Monitor", tabs: ["apercu"] },
-  { fr: "Trouver", en: "Find", tabs: ["sources", "indexation"] },
-  { fr: "Lire", en: "Watch", tabs: ["lecture", "contenus"] },
-  { fr: "Personnaliser", en: "Customize", tabs: ["visuels", "suivi"] },
+/**
+ * Entrées du groupe « Remix » de la barre latérale, dans l’ordre d’affichage.
+ * `mode` : « simple » (toujours), « expert » (réservée au mode Expert) ou
+ * « simple-only » (masquée en mode Expert, où Lecture couvre la qualité).
+ * Les mêmes entrées sont déclarées côté Go (internal/app/pse_descriptors.go) ;
+ * un test vérifie qu’elles concordent.
+ */
+export const REMIX_NAV = [
+  {
+    id: "pse-accueil",
+    tab: "accueil",
+    fr: "Démarrage",
+    en: "Start",
+    icon: "House",
+    mode: "simple",
+  },
+  { id: "pse-sources", tab: "sources", fr: "Sources", en: "Sources", icon: "Plug", mode: "simple" },
+  {
+    id: "pse-indexation",
+    tab: "indexation",
+    fr: "Indexation",
+    en: "Indexing",
+    icon: "Search",
+    mode: "expert",
+  },
+  {
+    id: "pse-langues",
+    tab: "langues",
+    fr: "Langues et qualité",
+    en: "Languages and quality",
+    icon: "Languages",
+    mode: "simple-only",
+  },
+  {
+    id: "pse-lecture",
+    tab: "lecture",
+    fr: "Lecture",
+    en: "Playback",
+    icon: "MonitorPlay",
+    mode: "expert",
+  },
+  {
+    id: "pse-contenus",
+    tab: "contenus",
+    fr: "Contenus",
+    en: "Content",
+    icon: "Film",
+    mode: "simple",
+  },
+  {
+    id: "pse-visuels",
+    tab: "visuels",
+    fr: "Visuels",
+    en: "Visuals",
+    icon: "Palette",
+    mode: "expert",
+  },
+  { id: "pse-suivi", tab: "suivi", fr: "Suivi", en: "Tracking", icon: "Eye", mode: "expert" },
+  {
+    id: "pse-apercu",
+    tab: "apercu",
+    fr: "Statistiques",
+    en: "Statistics",
+    icon: "Gauge",
+    mode: "expert",
+  },
+  {
+    id: "pse-diagnostic",
+    tab: "diagnostic",
+    fr: "Diagnostic",
+    en: "Diagnostics",
+    icon: "Stethoscope",
+    mode: "simple",
+  },
+  {
+    id: "pse-expert",
+    tab: "expert",
+    fr: "Expert",
+    en: "Expert",
+    icon: "SlidersHorizontal",
+    mode: "simple",
+  },
 ] as const;
 
-/** Onglets du mode simple : le parcours d’un débutant, dans l’ordre où on s’en sert. */
-export const SIMPLE_TABS = [
-  { key: "accueil", fr: "Accueil", en: "Home" },
-  { key: "sources", fr: "Sources", en: "Sources" },
-  { key: "langues", fr: "Langues et qualité", en: "Languages and quality" },
-  { key: "bibliotheque", fr: "Bibliothèque", en: "Library" },
-] as const;
+export const remixHref = (tab: string) => `/remix/${tab}`;
+/** Adresse de l’entrée qui bascule le mode Expert (rendue en interrupteur, pas en lien). */
+export const REMIX_EXPERT_HREF = remixHref("expert");
 
-/** Adresse d’un onglet du mode simple, qui réutilise les pages existantes. */
-export function simpleTabHref(key: string): string {
-  if (key === "langues") return "/remix/lecture?view=qualite";
-  if (key === "bibliotheque") return "/remix/contenus";
-  return `/remix/${key}`;
+/** Libellé d’une entrée Remix de la barre latérale, dans la langue de la console. */
+export function pseNavLabel(id: string): string | null {
+  const entry = REMIX_NAV.find((e) => e.id === id);
+  return entry ? (getLocale().startsWith("fr") ? entry.fr : entry.en) : null;
+}
+
+/** Titre d’une page Remix, d’après l’entrée de la barre latérale. */
+export function remixTitle(tab: string | undefined, fr: boolean): string | null {
+  const entry = REMIX_NAV.find((e) => e.tab === tab);
+  return entry ? (fr ? entry.fr : entry.en) : null;
 }
 
 /**
- * Onglet simple correspondant à une adresse, `""` pour une page du mode simple
- * sans onglet (assistant, diagnostic), `null` pour une page réservée au mode expert.
+ * Une page est « simple » quand le mode simple suffit à l’atteindre depuis la barre
+ * latérale ; sinon la barre affiche les entrées Expert sans changer le mode mémorisé.
  */
-export function simpleTabOf(tab: string | undefined, view: string | null): string | null {
-  if (tab === "accueil" || tab === "sources") return tab;
-  if (tab === "contenus") return "bibliotheque";
-  if (tab === "lecture" && view === "qualite") return "langues";
-  if (tab === "assistant" || tab === "diagnostic") return "";
-  return null;
+export function isSimpleRoute(tab: string | undefined, view: string | null): boolean {
+  if (["accueil", "sources", "langues", "contenus", "assistant", "diagnostic"].includes(tab ?? ""))
+    return true;
+  return tab === "lecture" && view === "qualite";
+}
+
+/** Retire de la barre latérale les entrées qui ne correspondent pas au mode affiché. */
+export function filterRemixNav<G extends { items: { href: string }[] }>(
+  groups: G[],
+  expert: boolean,
+): G[] {
+  const modeOf = new Map<string, string>(REMIX_NAV.map((e) => [remixHref(e.tab), e.mode]));
+  return groups.map((g) => ({
+    ...g,
+    items: g.items.filter((i) => {
+      const mode = modeOf.get(i.href);
+      if (mode === "expert") return expert;
+      if (mode === "simple-only") return !expert;
+      return true;
+    }),
+  }));
 }
 
 /** Vues secondaires des onglets regroupés, portées par `?view=`. */
@@ -106,7 +199,7 @@ export function legacyRemixRoute(tab?: string, search = ""): string | null {
   if (tab === "demarrage") return keep("/remix/apercu", "demarrage");
   if (tab === "releases") return keep("/remix/indexation", "releases");
   if (tab === "priorites") return "/remix/lecture";
-  if (tab === "films" || tab === "langues") return keep("/remix/lecture", "qualite");
+  if (tab === "films") return keep("/remix/lecture", "qualite");
   if (tab === "demande") return keep("/remix/lecture", "vostfr");
   if (tab === "medias-locaux") return "/remix/sources?source=local#local-media-health";
   if (tab === "animes") return "/remix/contenus?content=animes";

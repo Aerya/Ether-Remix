@@ -1,4 +1,3 @@
-import "./navigation.css";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStart, QuickStartHint } from "./QuickStart";
@@ -170,6 +169,7 @@ export default function PsePage() {
         <RemixDiagnostic />
       </RemixFrame>
     );
+  if (tab === "expert") return <Navigate replace to="/remix/accueil" />;
   let legacy = legacyRemixRoute(tab, location.search);
   if (tab === "sources" && new URLSearchParams(location.search).get("source") === "indexation")
     legacy = "/remix/indexation";
@@ -263,7 +263,11 @@ function PseSettings() {
   const [qualityActive, setQualityActive] = useState(false);
   const [params, setParams] = useSearchParams();
   const content = params.get("content") ?? "bibliotheques";
-  const tab = useRouteTab(TABS);
+  const { tab: routeTab } = useParams();
+  const routed = useRouteTab(TABS);
+  // « Langues et qualité » : la page Qualité de Lecture, sous sa propre adresse.
+  const isLangues = routeTab === "langues";
+  const tab = isLangues ? "lecture" : routed;
   const [mode] = useRemixMode();
   const doc = useAsync(() => apiFetch<PseData>("/pse/"), []);
   const [data, setData] = useState<PseData | null>(null);
@@ -351,9 +355,14 @@ function PseSettings() {
     tab === "apercu" || tab === "indexation" || tab === "lecture" || tab === "visuels"
       ? visibleRemixViews(tab)
       : [];
-  const view =
-    views.find((v) => v.key === params.get("view"))?.key ??
-    (tab === "apercu" ? (saved.PSE_INDEXER === "off" ? "demarrage" : "indexation") : views[0]?.key);
+  const view = isLangues
+    ? "qualite"
+    : (views.find((v) => v.key === params.get("view"))?.key ??
+      (tab === "apercu"
+        ? saved.PSE_INDEXER === "off"
+          ? "demarrage"
+          : "indexation"
+        : views[0]?.key));
   const viewNav = (
     items: readonly { key: string; fr: string; en: string }[],
     active: string | undefined,
@@ -382,24 +391,22 @@ function PseSettings() {
       </nav>
     ) : null;
   return (
-    <RemixFrame tab={tab}>
+    <RemixFrame tab={routeTab}>
       <CollapsibleSections.Provider
         key={tab + (view ?? "")}
         value={tab !== "apercu" || view === "demarrage"}
       >
         <div className="space-y-6">
-          {tab === "lecture" && view === "qualite" && mode === "simple"
-            ? null
-            : viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
+          {isLangues ? null : viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
           {tab === "apercu" && view === "demarrage" ? (
             <>
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Le parcours guidé se trouve dans l’Accueil et l’assistant, comme en mode Simple.",
-                  "The guided path is in Home and the assistant, as in Simple mode.",
+                  "Le parcours guidé se trouve dans Démarrage et l’assistant, comme en mode Simple.",
+                  "The guided path is in Start and the assistant, as in Simple mode.",
                 )}{" "}
                 <Link className="underline" to="/remix/accueil">
-                  {L("Ouvrir l’Accueil", "Open Home")}
+                  {L("Ouvrir Démarrage", "Open Start")}
                 </Link>
                 {" · "}
                 <Link className="underline" to="/remix/assistant">
@@ -477,8 +484,8 @@ function PseSettings() {
               <SearchPriority />
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Les recherches en cours et récentes se suivent dans Vue d’ensemble → Activité.",
-                  "Ongoing and recent searches are tracked in Overview → Activity.",
+                  "Les recherches en cours et récentes se suivent dans Statistiques → Activité.",
+                  "Ongoing and recent searches are tracked in Statistics → Activity.",
                 )}{" "}
                 <Link className="underline" to="/remix/apercu?view=indexation">
                   {L("Voir l’activité", "View activity")}

@@ -68,16 +68,6 @@ it("orders tabs and lets vertically listed imported sources be selected and save
   );
   const source = await screen.findByLabelText("Prowlarr");
   fireEvent.click(source.closest("details")!.querySelector("summary")!);
-  const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
-  expect(tabs).toEqual([
-    "Vue d’ensemble",
-    "Sources",
-    "Indexation",
-    "Lecture",
-    "Contenus",
-    "Visuels",
-    "Suivi",
-  ]);
   expect(screen.getByRole("table")).toBeTruthy();
   fireEvent.click(screen.getByLabelText("Mode de sélection"));
   fireEvent.click(await screen.findByRole("option", { name: /Personnalis/ }));
@@ -105,7 +95,7 @@ it("redirects the former on-demand tab to the Playback VOSTFR view", async () =>
     </MemoryRouter>,
   );
   expect(await screen.findByText("Titres en VOSTFR à la demande")).toBeTruthy();
-  expect(screen.getByRole("tab", { name: "Lecture" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("heading", { name: "Lecture", level: 1 })).toBeTruthy();
   expect(screen.getByRole("button", { name: "VOSTFR" }).getAttribute("aria-pressed")).toBe("true");
 });
 
@@ -120,7 +110,7 @@ it("redirects a legacy indexing anchor to its new source category", async () => 
       </Routes>
     </MemoryRouter>,
   );
-  expect(await screen.findByRole("heading", { name: "Indexation" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "Indexation", level: 1 })).toBeTruthy();
 });
 
 it("opens the overview statistics when entering Remix without a tab", async () => {
@@ -133,9 +123,7 @@ it("opens the overview statistics when entering Remix without a tab", async () =
     </MemoryRouter>,
   );
   expect(await screen.findByText("Tableau statistiques")).toBeTruthy();
-  expect(screen.getByRole("tab", { name: "Vue d’ensemble" }).getAttribute("aria-selected")).toBe(
-    "true",
-  );
+  expect(screen.getByRole("heading", { name: "Statistiques", level: 1 })).toBeTruthy();
 });
 
 it("redirige les anciens favoris en conservant paramètres et ancre", async () => {
@@ -224,7 +212,7 @@ it("regroupe cartes et affiches dans Visuels sans charger les cartes avant l’o
   );
   posters.unmount();
   render(page("/remix/contenus"));
-  await screen.findByRole("tab", { name: "Contenus" });
+  await screen.findByRole("heading", { name: "Contenus", level: 1 });
   expect(screen.queryByText("Cartes inspirées de Nuvio")).toBeNull();
   expect(screen.queryByText("Affiches dans les applications")).toBeNull();
 });

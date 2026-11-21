@@ -30,33 +30,33 @@ export const REMIX_UPDATES = [
     version: "current",
     date: "2026-11-20",
     title: [
-      "Menu Remix simplifié : mode Simple, assistant et Diagnostic",
-      "Simplified Remix menu: Simple mode, assistant and Diagnostics",
+      "Menu Remix dans la barre latérale : mode Simple, assistant et Diagnostic",
+      "Remix menu in the sidebar: Simple mode, assistant and Diagnostics",
     ],
     items: [
       [
-        "Ether-Remix s’ouvre en mode Simple, avec quatre onglets dans l’ordre d’usage : Accueil, Sources, Langues et qualité, Bibliothèque. L’Accueil liste trois étapes avec leur état.",
-        "Ether-Remix opens in Simple mode, with four tabs in the order you use them: Home, Sources, Languages and quality, Library. Home lists three steps with their status.",
+        "Un groupe Remix apparaît dans le menu de gauche, au-dessus de Bibliothèque. Il s’ouvre en mode Simple : Démarrage, Sources, Langues et qualité, Contenus et Diagnostic. Démarrage liste trois étapes avec leur état.",
+        "A Remix group appears in the left menu, above Libraries. It opens in Simple mode: Start, Sources, Languages and quality, Content and Diagnostics. Start lists three steps with their status.",
       ],
       [
-        "Au premier lancement sans source, un assistant en quatre étapes (Sources, Langue, Application, Terminé) démarre une seule fois. Il se relance depuis l’Accueil. Une installation déjà configurée n’est pas interrompue.",
-        "On a first launch with no source, a four-step assistant (Sources, Language, App, Done) starts once. It can be run again from Home. An already configured installation is not interrupted.",
+        "Au premier lancement sans source, un assistant en quatre étapes (Sources, Langue, Application, Terminé) démarre une seule fois. Il se relance depuis Démarrage. Une installation déjà configurée n’est pas interrompue.",
+        "On a first launch with no source, a four-step assistant (Sources, Language, App, Done) starts once. It can be run again from Start. An already configured installation is not interrupted.",
       ],
       [
-        "Le bouton Diagnostic, toujours visible, vérifie les sources, l’indexation, les titres prêts à lire et le stockage, avec une action par problème.",
-        "The always-visible Diagnostics button checks sources, indexing, titles ready to play and storage, with one action per problem.",
+        "Diagnostic vérifie les sources, l’indexation, les titres prêts à lire et le stockage, avec une action par problème.",
+        "Diagnostics checks sources, indexing, titles ready to play and storage, with one action per problem.",
       ],
       [
         "En mode Simple, Sources se limite à Stremio, Debrid, Usenet, Streaming musical, Fichiers locaux et IPTV, rangés par usage.",
         "In Simple mode, Sources is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use.",
       ],
       [
-        "Chaque option n’a plus qu’un emplacement : SubMaker passe dans Lecture → Sous-titres, le tri des bibliothèques dans Contenus, et l’activité des recherches se suit uniquement dans Vue d’ensemble → Activité. Contenus → Musique indique où régler chaque partie de la musique.",
-        "Each option now has a single place: SubMaker moves to Playback → Subtitles, library sorting to Content, and search activity is tracked only in Overview → Activity. Content → Music shows where to set each part of music.",
+        "Chaque option n’a plus qu’un emplacement : SubMaker passe dans Lecture → Sous-titres, le tri des bibliothèques dans Contenus, et l’activité des recherches se suit uniquement dans Statistiques → Activité. Contenus → Musique indique où régler chaque partie de la musique.",
+        "Each option now has a single place: SubMaker moves to Playback → Subtitles, library sorting to Content, and search activity is tracked only in Statistics → Activity. Content → Music shows where to set each part of music.",
       ],
       [
-        "L’interrupteur Expert affiche tous les onglets et réglages habituels, sans rien retirer, regroupés en Surveiller, Trouver, Lire et Personnaliser. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
-        "The Expert switch shows every usual tab and setting, with nothing removed, grouped as Monitor, Find, Watch and Customize. The choice is remembered in your browser; old links and bookmarks keep working.",
+        "L’interrupteur Expert du groupe ajoute Indexation, Lecture, Visuels, Suivi et Statistiques, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
+        "The group’s Expert switch adds Indexing, Playback, Visuals, Tracking and Statistics, with nothing removed. The choice is remembered in your browser; old links and bookmarks keep working.",
       ],
     ],
   },

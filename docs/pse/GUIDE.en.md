@@ -36,9 +36,9 @@
 <a id="nav-demarrage-rapide"></a>
 ## Quick start
 
-In the console, **Ether-Remix** opens in **Simple mode**: **Home**, **Sources**, **Languages and quality** and **Library** tabs. On a first visit with no source at all, a four-step **assistant** (Sources, Language, App, Done) starts once; **Home** lets you run it again. The always-visible **Diagnostics** button checks sources, indexing, titles ready to play and storage, and offers one action per problem. In this mode, **Sources** is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use. The **Expert** switch shows all the usual tabs, grouped by intent — **Monitor** (Overview), **Find** (Sources, Indexing), **Watch** (Playback, Content) and **Customize** (Visuals, Tracking) — plus the Indexers, BitTorrent, XDCC and FTP / SFTP categories; the choice is remembered in your browser only.
+In the console, the **Remix** group in the left menu, above **Libraries**, holds the Ether-Remix pages. It opens in **Simple mode**: **Start**, **Sources**, **Languages and quality**, **Content** and **Diagnostics**. On a first visit with no source at all, a four-step **assistant** (Sources, Language, App, Done) starts once; **Start** lets you run it again. **Diagnostics** checks sources, indexing, titles ready to play and storage, and offers one action per problem. In Simple mode, **Sources** is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use. The group’s **Expert** switch adds the **Indexing**, **Playback**, **Visuals**, **Tracking** and **Statistics** pages, plus the Indexers, BitTorrent, XDCC and FTP / SFTP categories; the choice is remembered in your browser only.
 
-In Expert mode, **Overview → Quick start** points to Home and the assistant, and keeps the detailed step-by-step guide in a collapsible block; it does not change settings automatically. Each option has a single place: SubMaker under **Playback → Subtitles**, library sorting under **Content**, search activity under **Overview → Activity**.
+In Expert mode, **Statistics → Quick start** points to Start and the assistant, and keeps the detailed step-by-step guide in a collapsible block; it does not change settings automatically. Each option has a single place: SubMaker under **Playback → Subtitles**, library sorting under **Content**, search activity under **Overview → Activity**.
 
 1. **Sources**: add, test and enable your providers. An addon supplying its own playback links does not require a second debrid key for searches.
 2. **Indexing**: enable and save background indexing to prepare the video catalogue. Automatic mode uses enabled Stremio addons; switch to Custom to choose sources, including Prowlarr/Jackett indexers. An empty custom selection performs no searches. Respect provider quotas.
@@ -287,7 +287,7 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 
 - **Sources**: one entry for accounts, Stremio addons, BitTorrent/Usenet indexers, Usenet providers, IPTV and music sources. Ether components and configurations are retained. Indexers can be filtered by Prowlarr/Jackett instance or manual origin, with one shared configuration.
 - **Indexing → Settings**: enablement, budgets, pace and source selection: Automatic for enabled Stremio addons, or Custom, including no sources. This does not disable playback sources. Priority titles show catalogue, searched, with-release and shown counts for each library or collection; groups can overlap.
-- **Home, Diagnostics and assistant** (Simple mode): first steps, installation check and guided setup.
+- **Start, Diagnostics and assistant** (Simple mode): first steps, installation check and guided setup.
 - **Overview**: quick start, Remix indexing activity plus Ether’s Sources and Usage dashboards.
 - **Playback → Priorities**: optional quick setup with a strict, freely reorderable source order ([guide](QUICK_SOURCES.en.md)). When disabled, advanced preferences still rank equivalent-quality sources and do not make searches sequential.
 - **Playback → Quality**: French catalogue, release languages, resolution, codecs, cache and collection exceptions.

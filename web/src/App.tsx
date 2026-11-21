@@ -1,5 +1,11 @@
 import { RemixAppearance } from "./pse/RemixAppearance";
-import { RemixSourcesRedirect } from "./pse/navigation";
+import {
+  REMIX_EXPERT_HREF,
+  RemixSourcesRedirect,
+  filterRemixNav,
+  pseNavLabel,
+} from "./pse/navigation";
+import { RemixExpertToggle, useRemixExpertView } from "./pse/RemixNavigation";
 import { RemixUpdates } from "./pse/RemixUpdates";
 import { McpAuthorize } from "./components/agent/McpAuthorize";
 import {
@@ -38,6 +44,13 @@ import {
   Network,
   Tags,
   Languages, // PSE-HOOK: icône du menu Ether-Remix — voir docs/pse/FORK.fr.md
+  House, // PSE-HOOK: icônes du groupe Remix — voir docs/pse/FORK.fr.md
+  Film,
+  Stethoscope,
+  Search,
+  Palette,
+  Eye,
+  SlidersHorizontal,
   Tv,
   Users,
 } from "lucide-react";
@@ -133,11 +146,17 @@ const RouterAnchor = forwardRef<
   return <Link ref={ref} to={href} {...rest} />;
 });
 
-const linkRender: LinkRender = ({ href, children, className, title, ariaCurrent, role }) => (
-  <Link to={href} className={className} title={title} aria-current={ariaCurrent} role={role}>
-    {children}
-  </Link>
-);
+const linkRender: LinkRender = ({ href, children, className, title, ariaCurrent, role }) =>
+  // PSE-HOOK: l’entrée « Expert » du groupe Remix est un interrupteur — voir docs/pse/FORK.fr.md
+  href === REMIX_EXPERT_HREF ? (
+    <RemixExpertToggle className={className} title={title}>
+      {children}
+    </RemixExpertToggle>
+  ) : (
+    <Link to={href} className={className} title={title} aria-current={ariaCurrent} role={role}>
+      {children}
+    </Link>
+  );
 
 /** Lucide icons by the name page descriptors carry. */
 const NAV_ICONS = {
@@ -151,6 +170,13 @@ const NAV_ICONS = {
   CalendarDays,
   Tags,
   Languages, // PSE-HOOK: icône du menu Ether-Remix — voir docs/pse/FORK.fr.md
+  House,
+  Film,
+  Stethoscope,
+  Search,
+  Palette,
+  Eye,
+  SlidersHorizontal,
   Network,
   ListFilter,
   HardDrive,
@@ -176,6 +202,7 @@ function navIcon(icon: string | undefined): ReactNode {
 /** Sidebar groups in display order; the top group has no heading. */
 const NAV_GROUPS: { key: string; label: () => string }[] = [
   { key: "", label: () => "" },
+  { key: "remix", label: () => "Remix" }, // PSE-HOOK: groupe Remix — voir docs/pse/FORK.fr.md
   { key: "library", label: () => t("Library") },
   { key: "streaming", label: () => t("Streaming") },
   { key: "server", label: () => t("Server") },
@@ -233,7 +260,7 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
       builtin: d.owner === BUILTIN,
       item: {
         href,
-        label: textOf(d.label),
+        label: pseNavLabel(d.id) ?? textOf(d.label),
         icon: navIcon(d.icon ?? page?.icon ?? pageMeta?.icon),
         exact: meta.exact || undefined,
         mobile: meta.mobile || undefined,
@@ -455,6 +482,7 @@ function Shell() {
   const remoteSession = boot.authRequired && Boolean(getToken());
   const version = versionLabel(boot.version);
   const serverName = boot.serverName?.trim() || "Ether-Remix";
+  const remixExpert = useRemixExpertView(); // PSE-HOOK: groupe Remix
   return (
     <div
       className={
@@ -462,7 +490,11 @@ function Shell() {
       }
     >
       <AppShell
-        groups={location.pathname === "/setup" ? [] : buildNavigation(navDescriptors)}
+        groups={
+          location.pathname === "/setup"
+            ? []
+            : filterRemixNav(buildNavigation(navDescriptors), remixExpert)
+        }
         pathname={location.pathname}
         navigationMode="sidebar"
         linkRender={linkRender}

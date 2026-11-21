@@ -71,8 +71,8 @@ export function QuickStart({ indexing }: { indexing: boolean }) {
     {
       title: L("Vérifier que les recherches démarrent", "Check that searches start"),
       text: L(
-        "Dans Vue d’ensemble → Activité, regardez Sources et activité, Dernières recherches et Titres cherchés. Le catalogue se remplit progressivement, pas immédiatement après l’installation.",
-        "In Overview → Activity, check Sources and activity, Recent searches and Searched titles. The catalogue fills progressively, not immediately after installation.",
+        "Dans Statistiques → Activité, regardez Sources et activité, Dernières recherches et Titres cherchés. Le catalogue se remplit progressivement, pas immédiatement après l’installation.",
+        "In Statistics → Activity, check Sources and activity, Recent searches and Searched titles. The catalogue fills progressively, not immediately after installation.",
       ),
       help: L(
         "Si rien ne bouge : vérifiez l’activation, les sources sélectionnées, les quotas, une lecture en cours et les erreurs. Les statistiques d’utilisation et de lecture sont distinctes de celles de l’indexation.",
