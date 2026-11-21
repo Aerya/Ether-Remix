@@ -433,3 +433,40 @@ it("la vue Résumé de Statistiques montre le bloc Pre seulement si l’option e
   await screen.findByRole("heading", { name: "Statistiques", level: 1 });
   expect(screen.queryByText("Releases issues des pre")).toBeNull();
 });
+
+it("Statistiques détaille les releases indexées pour chaque pre, sans exposer les flux personnels", async () => {
+  const { PreStats } = await import("./PreStats");
+  apiFetch.mockResolvedValue({ references: 1000 });
+  render(
+    <MemoryRouter>
+      <PreStats
+        status={{
+          active: true,
+          import: {
+            added: 40,
+            pending: 2,
+            feeds: [
+              {
+                feed: "https://predb.me/?cats=movies&rss=1",
+                seen: 30,
+                indexed: 25,
+                pending: 2,
+                unmatched: 3,
+              },
+              { feed: "perso:1", seen: 10, indexed: 10, pending: 0, unmatched: 0 },
+              { feed: "", seen: 0, indexed: 5, pending: 0, unmatched: 0 },
+            ],
+          },
+        }}
+      />
+    </MemoryRouter>,
+  );
+  const table = await screen.findByRole("table");
+  const rows = within(table)
+    .getAllByRole("row")
+    .map((r) => [...r.querySelectorAll("th,td")].map((c) => c.textContent));
+  expect(rows[1]).toEqual(["predb.me · films", "30", "25", "2", "3"]);
+  expect(rows[2]).toEqual(["Flux personnel 1", "10", "10", "0", "0"]);
+  expect(rows[3]![0]).toBe("Plus anciennes ou flux inconnu");
+  expect(rows[4]).toEqual(["Total", "40", "40", "2", "3"]);
+});

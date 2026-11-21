@@ -2,6 +2,7 @@ package releasedb
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -139,6 +140,14 @@ func TestPreCycle(t *testing.T) {
 	if n := s.st.prePending(ctx); n != 0 {
 		t.Fatalf("la pre sans média doit être abandonnée : %d", n)
 	}
+	// Détail par flux : le flux personnel a vu deux pre, l'une indexée, l'autre abandonnée.
+	stats := s.st.preFeedStats(ctx, cfg)
+	if len(stats) != 1 || stats[0].Feed != "perso:1" || stats[0].Seen != 2 || stats[0].Indexed != 1 || stats[0].Pending != 0 || stats[0].Unmatched != 1 {
+		t.Fatalf("détail par flux : %+v", stats)
+	}
+	if strings.Contains(fmt.Sprint(stats), srv.URL) {
+		t.Fatal("l'adresse d'un flux personnel ne doit jamais être exposée")
+	}
 	// Changer les langues efface ce qui avait été importé.
 	cfg.Langs = []string{"vostfr"}
 	if err := s.preCycle(ctx, cfg); err != nil {
@@ -171,5 +180,27 @@ func TestSourceOverviewListsPreWhenEnabled(t *testing.T) {
 	got := find()
 	if got == nil || got.Name != preDBName || !got.Enabled {
 		t.Fatalf("source pre absente ou mal nommée : %+v", got)
+	}
+}
+
+// Les flux publics configurés sont listés même sans pre, et une release dont la pre a quitté
+// la mémoire de 30 jours est comptée à part.
+func TestPreFeedStatsListConfiguredFeedsAndOrphans(t *testing.T) {
+	db := store.OpenTest(t)
+	s := New(Deps{DB: db, Now: func() time.Time { return time.Unix(1_800_000_000, 0) }})
+	ctx := context.Background()
+	stats := s.st.preFeedStats(ctx, PreDBSettings{Enabled: true, Public: true})
+	if len(stats) != len(preDBPublicFeeds) || stats[0].Feed != preDBPublicFeeds[0] || stats[0].Seen != 0 {
+		t.Fatalf("flux publics : %+v", stats)
+	}
+	rel := core.Release{ID: "pre:vieille.release", Name: "Vieille.Release.2020.FRENCH.1080p-GRP", Info: core.ReleaseInfo{Title: "Vieille Release"}}
+	saved := FromCore(core.Title{Key: core.MovieKey(7), Type: core.TypeMovie}, 0, 0, PreDBSourceID, rel, []string{preDBMarker})
+	if err := s.st.Save(ctx, []Release{saved}, time.Unix(1_800_000_000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	stats = s.st.preFeedStats(ctx, PreDBSettings{Enabled: true, Public: true})
+	last := stats[len(stats)-1]
+	if last.Feed != "" || last.Indexed != 1 {
+		t.Fatalf("release sans flux connu : %+v", stats)
 	}
 }

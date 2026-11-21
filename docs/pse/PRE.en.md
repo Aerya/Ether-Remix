@@ -34,7 +34,7 @@ Requests go through Ether’s network guard (`safefetch`). Status is shown in th
 
 ## Statistics
 
-When the option is on, **Remix → Statistics → Summary** shows a **Pre (beta)** block: releases indexed overall, releases coming from pre (with their share of the total), pending pre and the time of the last read. The per-source release detail, including pre, is under **Statistics → Searches** (“Stored releases by source”). Nothing is shown while the option is off.
+When the option is on, **Remix → Statistics → Summary** shows a **Pre (beta)** block: releases indexed overall, releases coming from pre (with their share of the total), pending pre and the time of the last read. The per-source release detail, including pre, is under **Statistics → Searches** (“Stored releases by source”). A table then details, **for each pre feed** (the four public feeds and your personal feeds, named “Personal feed 1”, “2”… without ever showing their address), the pre read over 30 days, indexed releases, pending pre and those whose title was not found, with a total. A pre seen in several feeds is counted for the first one that saw it; releases whose pre is older than 30 days, or read before this tracking, are grouped in an “Older or unknown feed” line. Nothing is shown while the option is off.
 
 ## Limits
 

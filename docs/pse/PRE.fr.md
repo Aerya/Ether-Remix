@@ -34,7 +34,7 @@ Les requêtes passent par le garde-fou réseau d’Ether (`safefetch`). L’éta
 
 ## Statistiques
 
-Quand l’option est activée, **Remix → Statistiques → Résumé** affiche un bloc **Pre (bêta)** : les releases indexées au total, les releases issues des pre (avec leur part du total), les pre en attente et la date de la dernière lecture. Le détail des releases par source, dont les pre, est dans **Statistiques → Recherches** (« Releases conservées par source »). Rien n’est affiché quand l’option est désactivée.
+Quand l’option est activée, **Remix → Statistiques → Résumé** affiche un bloc **Pre (bêta)** : les releases indexées au total, les releases issues des pre (avec leur part du total), les pre en attente et la date de la dernière lecture. Le détail des releases par source, dont les pre, est dans **Statistiques → Recherches** (« Releases conservées par source »). Un tableau détaille ensuite, **pour chaque flux de pre** (les quatre flux publics et vos flux personnels, nommés « Flux personnel 1 », « 2 »… sans jamais afficher leur adresse), les pre lues sur 30 jours, les releases indexées, les pre en attente et celles dont le média est introuvable, avec un total. Une pre vue par plusieurs flux est comptée pour le premier qui l’a vue ; les releases dont la pre a plus de 30 jours, ou lue avant ce suivi, sont regroupées dans une ligne « Plus anciennes ou flux inconnu ». Rien n’est affiché quand l’option est désactivée.
 
 ## Limites
 

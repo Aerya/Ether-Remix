@@ -2,13 +2,37 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getLocale } from "../i18n";
 import { apiFetch } from "../lib/api";
+import { PRE_PUBLIC_FEEDS } from "./PreFeeds";
 
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
 const num = (n: number) => n.toLocaleString(getLocale());
 
+export interface PreFeedStat {
+  feed: string;
+  seen: number;
+  indexed: number;
+  pending: number;
+  unmatched: number;
+}
 export interface PreStatus {
   active?: boolean;
-  import?: { state?: string; last?: number; added?: number; pending?: number; error?: string };
+  import?: {
+    state?: string;
+    last?: number;
+    added?: number;
+    pending?: number;
+    error?: string;
+    feeds?: PreFeedStat[];
+  };
+}
+
+/** Nom d’un flux : sa description s’il est public, « Flux personnel N » sinon (adresse jamais exposée). */
+export function preFeedLabel(feed: string): string {
+  const pub = PRE_PUBLIC_FEEDS.find((f) => f.url === feed);
+  if (pub) return L(pub.fr, pub.en);
+  const personal = /^perso:(\d+)$/.exec(feed);
+  if (personal) return L(`Flux personnel ${personal[1]}`, `Personal feed ${personal[1]}`);
+  return L("Plus anciennes ou flux inconnu", "Older or unknown feed");
 }
 
 /**
@@ -78,6 +102,7 @@ export function PreStats({ status }: { status: PreStatus | undefined }) {
           </div>
         ))}
       </div>
+      {status.import?.feeds?.length ? <PreFeedTable feeds={status.import.feeds} /> : null}
       {status.import?.error ? (
         <p role="alert" className="text-sm text-warning">
           {status.import.error}
@@ -93,5 +118,67 @@ export function PreStats({ status }: { status: PreStatus | undefined }) {
         </Link>
       </p>
     </section>
+  );
+}
+
+function PreFeedTable({ feeds }: { feeds: PreFeedStat[] }) {
+  const total = feeds.reduce(
+    (acc, f) => ({
+      seen: acc.seen + f.seen,
+      indexed: acc.indexed + f.indexed,
+      pending: acc.pending + f.pending,
+      unmatched: acc.unmatched + f.unmatched,
+    }),
+    { seen: 0, indexed: 0, pending: 0, unmatched: 0 },
+  );
+  const head = [
+    L("Pre lues (30 j)", "Pre read (30 d)"),
+    L("Releases indexées", "Indexed releases"),
+    L("En attente", "Pending"),
+    L("Non trouvées", "Not matched"),
+  ];
+  const cell = "px-4 py-3 text-right tabular-nums";
+  return (
+    <div className="overflow-x-auto rounded-xl border border-border">
+      <table className="w-full min-w-[560px] text-sm">
+        <caption className="sr-only">{L("Détail par pre", "Detail by pre")}</caption>
+        <thead>
+          <tr className="border-b border-border text-xs text-fg-muted">
+            <th scope="col" className="px-4 py-3 text-left font-medium">
+              {L("Pre (flux)", "Pre (feed)")}
+            </th>
+            {head.map((h) => (
+              <th key={h} scope="col" className="px-4 py-3 text-right font-medium">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {feeds.map((f) => (
+            <tr key={f.feed || "none"} className="border-b border-border">
+              <th scope="row" className="px-4 py-3 text-left font-medium">
+                {preFeedLabel(f.feed)}
+              </th>
+              <td className={cell}>{num(f.seen)}</td>
+              <td className={cell}>{num(f.indexed)}</td>
+              <td className={cell}>{num(f.pending)}</td>
+              <td className={`${cell} ${f.unmatched > 0 ? "text-warning" : ""}`}>
+                {num(f.unmatched)}
+              </td>
+            </tr>
+          ))}
+          <tr>
+            <th scope="row" className="px-4 py-3 text-left font-semibold">
+              {L("Total", "Total")}
+            </th>
+            <td className={`${cell} font-semibold`}>{num(total.seen)}</td>
+            <td className={`${cell} font-semibold`}>{num(total.indexed)}</td>
+            <td className={`${cell} font-semibold`}>{num(total.pending)}</td>
+            <td className={`${cell} font-semibold`}>{num(total.unmatched)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   );
 }
