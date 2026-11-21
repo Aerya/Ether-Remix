@@ -66,7 +66,7 @@ The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources an
 | Video sources | Debrid, Usenet, Stremio addons, Prowlarr/Jackett/NZBHydra2, StreamFusion Reborn database and SeerrCatalog. Optional torrent clients, XDCC and FTP/SFTP. |
 | Local files | Video and music from folders or mounted network shares, without moving or deleting originals. |
 | Libraries and home | Collections, JukeBox quick setup, Xperience imports, layout templates, posters and custom cards. Sharing respects each viewer’s permissions. |
-| Music | Deezer catalogue, enabled music sources (including OpenDeezer in BETA, with your own Deezer account), local files and iBroadcast; access through Plexamp, Jellyfin or Subsonic, with personal playlists. |
+| Music | Deezer catalogue, enabled music sources (including OpenDeezer, with your own Deezer account), local files and iBroadcast; access through Plexamp, Jellyfin or Subsonic, with personal playlists. |
 | Tracking | Per-viewer progress and history, video and music activity, Scrob, Last.fm and source statistics. |
 
 <a id="nav-unified-sources-and-searches-ahead-of-playback"></a>

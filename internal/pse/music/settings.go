@@ -26,7 +26,7 @@ type Settings struct {
 	// Torrent : client BitTorrent de Remix (PSE_TORRENT et PSE_TORRENT_MUSIC).
 	Torrent bool
 	Audius  string // off, first or last; public MP3 fallback
-	// OpenDeezer (BÊTA) : lecture directe avec la session Deezer (ARL) du
+	// OpenDeezer : lecture directe avec la session Deezer (ARL) du
 	// compte de l'administrateur. Désactivé par défaut ; OpenDeezerOrder :
 	// "last" (secours après les autres sources, défaut) ou "first".
 	OpenDeezer      bool
@@ -151,7 +151,7 @@ func off(v string) bool {
 	return false
 }
 
-// openDeezerEnabled : bêta activée ET session renseignée.
+// openDeezerEnabled : option activée ET session renseignée.
 func (s Settings) openDeezerEnabled() bool { return s.OpenDeezer && s.OpenDeezerARL != "" }
 
 func (s Settings) audiusEnabled() bool { return s.Audius == "first" || s.Audius == "last" }

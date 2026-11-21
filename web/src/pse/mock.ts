@@ -62,7 +62,7 @@ const demoFeatures = [
           { value: "fallback", label: text("En repli", "Fallback") },
         ],
       }),
-      demoField("PSE_MUSIC_OPENDEEZER", "OpenDeezer (BÊTA)", "OpenDeezer (BETA)", "toggle"),
+      demoField("PSE_MUSIC_OPENDEEZER", "OpenDeezer", "OpenDeezer", "toggle"),
       demoField(
         "PSE_MUSIC_OPENDEEZER_ARL",
         "Session Deezer (ARL)",

@@ -63,9 +63,9 @@ ACCENT_MUSIC_LIVE=1 go test ./internal/pse/music -run TestAudiusLive -v
 
 **Simulé :** recherche et refus de morceaux restreints/incomplets, versions live et artistes incorrects, gestion 401/403/429/500 et JSON invalide, priorité, non-réutilisation d'une URL refusée, repli après un HTTP 403 audio, signatures/STREAMINFO et expiration. Les tests habituels de musique, console, Plex et Jellyfin couvrent les régressions des interfaces. Les essais réseau sont désactivés par défaut en CI.
 
-## OpenDeezer (BÊTA)
+## OpenDeezer
 
-Source **expérimentale**, désactivée par défaut, qui lit un titre Deezer avec **votre propre compte Deezer** grâce au SDK Go [OpenDeezer](https://github.com/Cycl0o0/OpenDeezer). Elle ne crée ni catalogue ni lecteur : elle résout l'identifiant Deezer déjà présent dans Remix, au même rang que les autres résolveurs.
+Source désactivée par défaut qui lit un titre Deezer avec **votre propre compte Deezer** grâce au SDK Go [OpenDeezer](https://github.com/Cycl0o0/OpenDeezer). Elle ne crée ni catalogue ni lecteur : elle résout l'identifiant Deezer déjà présent dans Remix, au même rang que les autres résolveurs.
 
 Réglages (**Sources → Streaming musical → Autres sources**) : `PSE_MUSIC_OPENDEEZER` (interrupteur, `off` par défaut), `PSE_MUSIC_OPENDEEZER_ARL` (cookie `arl` de votre session, champ secret : jamais réaffiché ni journalisé ; vider le champ le supprime) et `PSE_MUSIC_OPENDEEZER_ORDER` (`last` : secours après les autres sources, par défaut ; `first` : avant). Sans ARL, la source reste inactive. Le **Diagnostic audio** de la console teste la connexion (compte, offre, flux) sur un titre, sans le lire en entier ni signaler d'écoute.
 

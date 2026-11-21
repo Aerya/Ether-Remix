@@ -14,7 +14,7 @@ import (
 	dz "github.com/Cycl0o0/OpenDeezer/v3/sdk/deezer"
 )
 
-// OpenDeezer (BÊTA) : résolveur expérimental qui lit le titre Deezer demandé
+// OpenDeezer : résolveur qui lit le titre Deezer demandé
 // avec la session (ARL) du compte Deezer de l'administrateur, via le SDK
 // OpenDeezer. Le flux est relayé au fil de l'eau (lecture, déchiffrement,
 // envoi) : rien n'est écrit sur le disque et rien n'est téléchargé en

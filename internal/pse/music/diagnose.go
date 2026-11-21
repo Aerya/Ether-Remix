@@ -115,7 +115,7 @@ func chain(cfg Settings, debrid DebridSources, hc *http.Client) ([]namedResolver
 		plan = append(plan, PlanEntry{Name: name, Kind: kind, Reason: reason})
 	}
 	if cfg.openDeezerEnabled() && cfg.OpenDeezerOrder == "first" {
-		add(namedResolver{"OpenDeezer (BÊTA)", "opendeezer", NewOpenDeezer(cfg.OpenDeezerARL, nil)})
+		add(namedResolver{"OpenDeezer", "opendeezer", NewOpenDeezer(cfg.OpenDeezerARL, nil)})
 	}
 	if cfg.Audius == "first" {
 		add(namedResolver{"Audius", "audius", NewAudius(hc)})
@@ -170,13 +170,13 @@ func chain(cfg Settings, debrid DebridSources, hc *http.Client) ([]namedResolver
 		off("Audius", "audius", "Désactivé")
 	}
 	if cfg.openDeezerEnabled() && cfg.OpenDeezerOrder != "first" {
-		add(namedResolver{"OpenDeezer (BÊTA)", "opendeezer", NewOpenDeezer(cfg.OpenDeezerARL, nil)})
+		add(namedResolver{"OpenDeezer", "opendeezer", NewOpenDeezer(cfg.OpenDeezerARL, nil)})
 	}
 	switch {
 	case !cfg.OpenDeezer:
-		off("OpenDeezer (BÊTA)", "opendeezer", "Désactivé")
+		off("OpenDeezer", "opendeezer", "Désactivé")
 	case cfg.OpenDeezerARL == "":
-		off("OpenDeezer (BÊTA)", "opendeezer", "Aucune session Deezer (ARL) enregistrée")
+		off("OpenDeezer", "opendeezer", "Aucune session Deezer (ARL) enregistrée")
 	}
 	switch {
 	case cfg.HiFiURL == "":
