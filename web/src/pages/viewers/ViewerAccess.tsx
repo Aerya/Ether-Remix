@@ -68,7 +68,8 @@ function TimeZoneSelect({
 }
 
 /** Libraries this viewer can open (empty restriction = every library, §1.4). */
-export function ViewerLibraries({ // PSE-HOOK: exporté pour le test des bibliothèques Remix — voir docs/pse/FORK.fr.md
+export function ViewerLibraries({
+  // PSE-HOOK: exporté pour le test des bibliothèques Remix — voir docs/pse/FORK.fr.md
   userId,
   allowed,
   isOwner,
