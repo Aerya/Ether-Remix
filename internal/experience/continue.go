@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/pse/continuewatch"
 )
 
 // Continue coordinates resume and next-episode selection using viewer-scoped dependencies.
@@ -43,7 +44,7 @@ type Continue struct {
 	// supplied only when the catalogue and policy authorize the legacy path.
 	Unrestricted func(*core.User) bool
 	// PSE-HOOK: réglages de Continuer à regarder (nil = comportement d'Ether) — voir docs/pse/FORK.fr.md
-	PSE func() frontend.PSEContinueSettings
+	PSE func() continuewatch.Settings
 }
 
 func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []core.Title, state map[core.RatingKey]core.WatchStatus, limit int) []core.Title {
@@ -239,6 +240,7 @@ func (c Continue) InProgress(ctx context.Context, viewer *core.User, t core.Medi
 	if c.State == nil || viewer == nil {
 		return nil, nil
 	}
+	limit = c.pseLimit(t, limit) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 	if c.Unrestricted != nil && c.Unrestricted(viewer) {
 		sts, err := c.State.InProgress(ctx, viewer.ID, limit*2+10)
 		if err != nil {

@@ -122,6 +122,11 @@ Les références issues des recherches et imports sont conservées automatiqueme
 | `PSE_MUSIC_PLAYLISTS_HOURS` | `6` | Cadence de réimport des playlists Deezer et Last.fm, de 1 à 168 heures. |
 | `PSE_MUSIC_CHARTS` | `FR,WW` | Tops Deezer ajoutés en playlists pour chaque spectateur : FR, WW (monde), US, UK, BE, CA, DE, ES, IT, BR, NL, NG. Vide : aucun. |
 | `PSE_MUSIC_DISCOVER` | `on` | Playlist « Découvertes » par spectateur : une cinquantaine de titres d'artistes proches de ses écoutes et de ses playlists. |
+| `PSE_CONTINUE_SCAN_LIMIT` | `200` | « Continuer à regarder » : séries de l’historique examinées, de 20 à 1000 (au plus 100 sur Plex). |
+| `PSE_CONTINUE_WATCH_DAYS` | `0` | Période du dernier visionnage en jours, de 0 à 3650 ; 0 = illimitée. Un nouvel épisode garde une ancienne série affichée. |
+| `PSE_CONTINUE_NEW_DAYS` | `60` | Fenêtre des nouveaux épisodes en jours, de 0 à 365 ; 0 la désactive. |
+| `PSE_CONTINUE_MAX_MOVIES` | `0` | Nombre maximal de films dans la rangée, de 0 à 200 ; 0 = limite de l’application. |
+| `PSE_CONTINUE_MAX_SHOWS` | `0` | Nombre maximal de séries dans la rangée, de 0 à 200 ; 0 = limite de l’application. |
 | `PSE_PLAYABLE_PENDING` | `hide` | `show` garde visibles les titres pas encore indexés (pratique pendant la première indexation). |
 
 **Catalogues Stremio** : le bouton de synchronisation lance un travail en arrière-plan et affiche son état jusqu’à la fin. Un échec conserve le dernier import ; les autres catalogues peuvent encore être synchronisés. `PSE_CATALOGUE_SYNC_TIMEOUT` règle le budget par catalogue en secondes (180 par défaut, de 30 à 900), après l’attente dans la file. Les journaux séparent récupération et enregistrement.
@@ -132,7 +137,7 @@ Les références issues des recherches et imports sont conservées automatiqueme
 
 L’import complet depuis Plex Media Server alimente aussi l’activité récente avec les dates d’origine, sans doublons. Relancez « Récupérer tout l’historique depuis ce serveur » pour compléter un ancien import ; les états locaux plus récents restent prioritaires.
 
-Les séries en cours restent dans « Continuer à regarder » même après plusieurs mois sans lecture, avec leur prochain épisode. Le tri suit le dernier visionnage ; Plex conserve une limite de 40 éléments et les masquages du spectateur. La sélection consulte uniquement l’historique du spectateur concerné, sans parcourir celui des autres comptes.
+Les séries en cours restent dans « Continuer à regarder » même après plusieurs mois sans lecture, avec leur prochain épisode. Le tri suit le dernier visionnage, sauf quand l’épisode suivant non vu est sorti dans la fenêtre des nouveaux épisodes (60 jours par défaut) : la série est alors classée à sa date de sortie, même si son dernier visionnage est très ancien. 200 séries de l’historique sont examinées (au plus 100 sur Plex, contre 50 auparavant). Une saison hebdomadaire que le spectateur n’a pas commencée retombe à son ancien rang 60 jours après la sortie de l’épisode suivant. Plex conserve une limite de 40 éléments et les masquages du spectateur. La sélection consulte uniquement l’historique du spectateur concerné, sans parcourir celui des autres comptes.
 
 ### Connecter Scrob
 

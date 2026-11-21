@@ -144,7 +144,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 - Remix opens on statistics: coloured progress rings, a thin-bar history chart and live per-source searches, errors, quotas, durations and results.
 - View history **by day, week, month or year**, as period or cumulative values, filtered by movies, shows, anime and sources.
 - Compare the local catalogue with TMDB totals and review operations in the activity log.
-- Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing; Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
+- Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing, unless the next unwatched episode was released within the new-episodes window (60 days by default): the show is then ranked by that release date, even if it was last watched long ago. 200 shows from the history are examined (at most 100 on Plex, instead of 50). A weekly season the viewer has not started falls back to its former rank 60 days after the next episode’s release. Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
 - Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.
 - Connect Remix to **Scrob as a Jellyfin server** and choose sync directions and schedules in Scrob: watched status and ratings, one way or both. The real-time event webhook (**60-second** timeout) and history-only libraries are optional. Stops and playback changes are relayed per session without duplicates.
 - Connect **Last.fm** per user for music scrobbling and find listening statistics in Overview.
@@ -153,7 +153,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 
 ### An interface that fits your habits
 
-- **Statistics** (from Simple mode) and, in Expert mode, **Indexing** (settings, releases, Pre), **Playback** (priorities, quality, non-dubbed titles, subtitles), **Visuals** (Nuvio cards, packs, poster refresh) and **Tracking**. Statistics: (quick start, activity, sources, usage), on top of **Sources** (including local media health) and **Content**. Old links and bookmarks are redirected.
+- **Statistics** (from Simple mode) and, in Expert mode, **Indexing** (settings, releases, Pre), **Playback** (priorities, quality, non-dubbed titles, subtitles, Continue watching), **Visuals** (Nuvio cards, packs, poster refresh) and **Tracking**. Statistics: (quick start, activity, sources, usage), on top of **Sources** (including local media health) and **Content**. Old links and bookmarks are redirected.
 - Automatic indexing of enabled Stremio addons or a custom selection, including none; Prowlarr/Jackett instance filters and catalogue, searched, with-release and shown counts for each prioritized library or collection.
 - Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
 - Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.

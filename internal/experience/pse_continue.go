@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/pse/continuewatch"
 )
 
 // Ajout Remix — voir docs/pse/FORK.fr.md. Réglages de « Continuer à regarder » :
@@ -23,7 +23,7 @@ type pseContinueKey struct{}
 // pseContinue est l'état d'une construction de rangée. Les méthodes acceptent
 // un récepteur nil (réglages absents).
 type pseContinue struct {
-	s     frontend.PSEContinueSettings
+	s     continuewatch.Settings
 	now   time.Time
 	rank  map[core.RatingKey]time.Time
 	taken map[core.MediaType]int
@@ -32,7 +32,8 @@ type pseContinue struct {
 // pseContinueBegin lit les réglages et les attache au contexte, que appendNext relit.
 func (c Continue) pseContinueBegin(ctx context.Context) (context.Context, *pseContinue) {
 	if c.PSE == nil {
-		return ctx, nil
+		// Une rangée imbriquée sans réglages ne doit pas hériter de ceux d'une autre.
+		return context.WithValue(ctx, pseContinueKey{}, (*pseContinue)(nil)), nil
 	}
 	now := time.Now()
 	if c.Now != nil {
@@ -45,6 +46,32 @@ func (c Continue) pseContinueBegin(ctx context.Context) (context.Context, *pseCo
 func pseContinueFrom(ctx context.Context) *pseContinue {
 	r, _ := ctx.Value(pseContinueKey{}).(*pseContinue)
 	return r
+}
+
+// pseLimit ramène la limite au plafond des quantités réglées : sans cela,
+// la boucle d'élargissement d'InProgress, qui attend len(out) >= limit,
+// relancerait appendNext jusqu'à six fois.
+func (c Continue) pseLimit(t core.MediaType, limit int) int {
+	if c.PSE == nil || limit <= 0 {
+		return limit
+	}
+	s := c.PSE()
+	var capacity int
+	switch t {
+	case core.TypeMovie:
+		capacity = s.MaxMovies
+	case core.TypeShow, core.TypeEpisode:
+		capacity = s.MaxShows
+	default:
+		if s.MaxMovies <= 0 || s.MaxShows <= 0 {
+			return limit // un type sans plafond peut remplir toute la rangée
+		}
+		capacity = s.MaxMovies + s.MaxShows
+	}
+	if capacity <= 0 {
+		return limit
+	}
+	return min(limit, capacity)
 }
 
 // historyLimit : séries lues dans l'historique (200 chez Ether).

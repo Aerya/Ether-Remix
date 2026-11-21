@@ -122,6 +122,11 @@ References from searches and imports are automatically stored in a shared index,
 | `PSE_MUSIC_PLAYLISTS_HOURS` | `6` | How often Deezer and Last.fm playlists are re-imported, from 1 to 168 hours. |
 | `PSE_MUSIC_CHARTS` | `FR,WW` | Deezer charts added as playlists for every viewer: FR, WW (worldwide), US, UK, BE, CA, DE, ES, IT, BR, NL, NG. Empty: none. |
 | `PSE_MUSIC_DISCOVER` | `on` | Per-viewer “Discoveries” playlist: about fifty tracks by artists close to their plays and playlists. |
+| `PSE_CONTINUE_SCAN_LIMIT` | `200` | Continue Watching: history shows examined, 20 to 1000 (at most 100 on Plex). |
+| `PSE_CONTINUE_WATCH_DAYS` | `0` | Last-watched period in days, 0 to 3650; 0 = unlimited. A new episode keeps an older show listed. |
+| `PSE_CONTINUE_NEW_DAYS` | `60` | New-episodes window in days, 0 to 365; 0 turns it off. |
+| `PSE_CONTINUE_MAX_MOVIES` | `0` | Maximum movies in the row, 0 to 200; 0 = the app’s limit. |
+| `PSE_CONTINUE_MAX_SHOWS` | `0` | Maximum shows in the row, 0 to 200; 0 = the app’s limit. |
 | `PSE_PLAYABLE_PENDING` | `hide` | `show` keeps titles not yet indexed visible (handy during the first indexing run). |
 
 **Stremio catalogues**: the sync button starts background work and displays its status until completion. Failures preserve the last import; other catalogues can still synchronize. `PSE_CATALOGUE_SYNC_TIMEOUT` sets the per-catalogue budget in seconds (180 by default, 30–900), after queue waiting. Logs distinguish fetching from persistence.
@@ -132,7 +137,7 @@ References from searches and imports are automatically stored in a shared index,
 
 Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.
 
-Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing; Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
+Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing, unless the next unwatched episode was released within the new-episodes window (60 days by default): the show is then ranked by that release date, even if it was last watched long ago. 200 shows from the history are examined (at most 100 on Plex, instead of 50). A weekly season the viewer has not started falls back to its former rank 60 days after the next episode’s release. Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
 
 ### Connecting Scrob
 

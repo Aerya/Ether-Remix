@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/pse/continuewatch"
 )
 
@@ -57,7 +56,7 @@ func pseContinueFor(shows []pseShow, settings *continuewatch.Settings) (Continue
 		SectionAllowed:     func(*core.User, core.MediaType) bool { return true }}
 	if settings != nil {
 		s := *settings
-		c.PSE = func() frontend.PSEContinueSettings { return s }
+		c.PSE = func() continuewatch.Settings { return s }
 	}
 	return c, st
 }
@@ -137,7 +136,7 @@ func TestPSEContinueWatchWindowAppliesToInProgress(t *testing.T) {
 	build := func(days int) Continue {
 		s := continuewatch.Defaults()
 		s.WatchDays = days
-		return Continue{State: st, Now: func() time.Time { return pseNow }, PSE: func() frontend.PSEContinueSettings { return s },
+		return Continue{State: st, Now: func() time.Time { return pseNow }, PSE: func() continuewatch.Settings { return s },
 			GetTitles: func(context.Context, []core.RatingKey) []core.Title {
 				return []core.Title{{Key: recent, Type: core.TypeMovie}, {Key: old, Type: core.TypeMovie}}
 			},
@@ -164,7 +163,7 @@ func TestPSEContinueQuantities(t *testing.T) {
 		s := continuewatch.Defaults()
 		s.MaxMovies, s.MaxShows = movies, shows
 		return Continue{State: continueState{statuses: statuses, values: map[core.RatingKey]core.WatchStatus{}}, Now: func() time.Time { return pseNow },
-			PSE:            func() frontend.PSEContinueSettings { return s },
+			PSE:            func() continuewatch.Settings { return s },
 			GetTitles:      func(context.Context, []core.RatingKey) []core.Title { return titles },
 			Visible:        func(context.Context, *core.User, *core.Title) bool { return true },
 			SectionAllowed: func(*core.User, core.MediaType) bool { return true }}
@@ -268,5 +267,175 @@ func TestPSEContinueNilSettingsKeepsEtherLimits(t *testing.T) {
 	}
 	if !r.admit(time.Time{}, &core.Title{}, core.WatchStatus{}) || !r.take(core.TypeMovie) {
 		t.Fatal("nil doit tout admettre")
+	}
+}
+
+func TestPSEContinueNilSettingsResetsInheritedContext(t *testing.T) {
+	with := Continue{PSE: func() continuewatch.Settings { return continuewatch.Defaults() }}
+	ctx, run := with.pseContinueBegin(context.Background())
+	if run == nil || pseContinueFrom(ctx) != run {
+		t.Fatal("réglages non attachés au contexte")
+	}
+	ctx, run = Continue{}.pseContinueBegin(ctx)
+	if run != nil || pseContinueFrom(ctx) != nil {
+		t.Fatal("une rangée sans réglages hérite de ceux du contexte")
+	}
+}
+
+func TestPSEContinueQuantitiesBoundTheWideningLoop(t *testing.T) {
+	// 25 séries en cours : sans plafond effectif, la boucle d'élargissement
+	// d'InProgress (len(out) < limit) relance appendNext (une lecture d'historique).
+	var statuses []core.WatchStatus
+	var titles []core.Title
+	for i := int64(1); i <= 25; i++ {
+		e := core.EpisodeKey(i, 1, 1)
+		statuses = append(statuses, core.WatchStatus{Key: e, LastViewedAt: daysAgo(int(i))})
+		titles = append(titles, core.Title{Key: e, Type: core.TypeEpisode})
+	}
+	run := func(maxShows int) int {
+		s := continuewatch.Defaults()
+		s.MaxShows = maxShows
+		st := &pseHistoryState{continueState: continueState{statuses: statuses, values: map[core.RatingKey]core.WatchStatus{}}}
+		c := Continue{State: st, Now: func() time.Time { return pseNow }, PSE: func() continuewatch.Settings { return s },
+			GetTitles:   func(context.Context, []core.RatingKey) []core.Title { return titles },
+			NextEpisode: func(context.Context, core.RatingKey) (*core.Title, error) { return nil, nil },
+			Visible: func(_ context.Context, _ *core.User, ti *core.Title) bool {
+				return maxShows > 0 || ti.Key.TMDB() <= 2 // base : seuls 2 titres visibles, la boucle d'Ether s'élargit
+			},
+			SameDayUnavailable: func(context.Context, *core.Title) bool { return false },
+			SectionAllowed:     func(*core.User, core.MediaType) bool { return true }}
+		got, _ := c.InProgress(context.Background(), &core.User{ID: 1}, core.TypeShow, 5)
+		if maxShows > 0 && len(got) != maxShows {
+			t.Fatalf("quantité non respectée : %d", len(got))
+		}
+		return len(st.limits)
+	}
+	if n := run(2); n != 1 {
+		t.Fatalf("appendNext relancé %d fois malgré le plafond atteint", n)
+	}
+	if n := run(0); n < 2 {
+		t.Fatalf("sans quantité, la boucle d'élargissement d'Ether doit rester inchangée (%d)", n)
+	}
+	var c Continue
+	if c.pseLimit(core.TypeShow, 7) != 7 {
+		t.Fatal("PSE nil : limite modifiée")
+	}
+	c.PSE = func() continuewatch.Settings { return continuewatch.Settings{MaxMovies: 3, MaxShows: 4} }
+	for typ, want := range map[core.MediaType]int{"": 7, core.TypeMovie: 3, core.TypeShow: 4, core.TypeEpisode: 4} {
+		if got := c.pseLimit(typ, 10); got != want {
+			t.Errorf("pseLimit(%q) = %d, attendu %d", typ, got, want)
+		}
+	}
+	c.PSE = func() continuewatch.Settings { return continuewatch.Settings{MaxMovies: 3} }
+	if c.pseLimit("", 10) != 10 || c.pseLimit(core.TypeShow, 10) != 10 {
+		t.Fatal("un type sans plafond ne doit pas être borné")
+	}
+}
+
+func TestPSEContinueFavoritesStillFirst(t *testing.T) {
+	fav := pseShow{tmdb: 1, viewed: daysAgo(400), released: daysAgo(500)} // pas de nouvel épisode
+	fresh := pseShow{tmdb: 2, viewed: daysAgo(300), released: daysAgo(5)} // nouvel épisode
+	c, _ := pseContinueFor([]pseShow{fresh, fav}, pseDefaults())
+	c.FavoriteShows = func(context.Context, *core.User) (map[core.RatingKey]bool, error) {
+		return map[core.RatingKey]bool{core.ShowKey(fav.tmdb): true}, nil
+	}
+	got, _ := c.InProgress(context.Background(), &core.User{ID: 1}, core.TypeShow, 5)
+	if len(got) != 2 || got[0].Key != fav.next() || got[1].Key != fresh.next() {
+		t.Fatalf("les favoris passent après le tri, avant le nouvel épisode : %v", pseKeys(got))
+	}
+}
+
+func TestPSEContinueIgnoresSeasonZero(t *testing.T) {
+	a := pseShow{tmdb: 1, viewed: daysAgo(400)}
+	b := pseShow{tmdb: 2, viewed: daysAgo(400)}
+	c, _ := pseContinueFor([]pseShow{a, b}, pseDefaults())
+	special := core.EpisodeKey(a.tmdb, 0, 1)
+	real := core.EpisodeKey(a.tmdb, 2, 1)
+	onlySpecial := core.EpisodeKey(b.tmdb, 0, 1)
+	c.NextEpisode = func(_ context.Context, k core.RatingKey) (*core.Title, error) {
+		switch k {
+		case a.watched():
+			return &core.Title{Key: special, Type: core.TypeEpisode, Season: 0, Episode: 1, Released: daysAgo(3)}, nil
+		case special:
+			return &core.Title{Key: real, Type: core.TypeEpisode, Season: 2, Episode: 1, Released: daysAgo(4)}, nil
+		case b.watched():
+			return &core.Title{Key: onlySpecial, Type: core.TypeEpisode, Season: 0, Episode: 1, Released: daysAgo(3)}, nil
+		}
+		return nil, nil
+	}
+	got, _ := c.InProgress(context.Background(), &core.User{ID: 1}, core.TypeShow, 5)
+	if len(got) != 1 || got[0].Key != real {
+		t.Fatalf("la saison 0 doit être ignorée : %v", pseKeys(got))
+	}
+}
+
+func TestPSEContinueBatchedNextEpisodes(t *testing.T) {
+	old := pseShow{tmdb: 1, viewed: daysAgo(400), released: daysAgo(10)}
+	mid := pseShow{tmdb: 2, viewed: daysAgo(40), released: daysAgo(900)}
+	done := pseShow{tmdb: 3, viewed: daysAgo(20)}
+	c, _ := pseContinueFor([]pseShow{done, mid, old}, pseDefaults())
+	single := c.NextEpisode
+	c.NextEpisode = func(context.Context, core.RatingKey) (*core.Title, error) {
+		t.Fatal("la lecture par lots doit suffire pour le premier épisode suivant")
+		return nil, nil
+	}
+	calls, asked := 0, 0
+	c.NextEpisodes = func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]*core.Title, error) {
+		calls++
+		asked += len(keys)
+		out := map[core.RatingKey]*core.Title{}
+		for _, k := range keys {
+			if n, _ := single(ctx, k); n != nil {
+				out[k] = n
+			}
+		}
+		return out, nil
+	}
+	got, _ := c.InProgress(context.Background(), &core.User{ID: 1}, core.TypeShow, 5)
+	if calls != 1 || asked != 3 || len(got) != 2 || got[0].Key != old.next() || got[1].Key != mid.next() {
+		t.Fatalf("lecture par lots : %d appel(s), %d clés, %v", calls, asked, pseKeys(got))
+	}
+}
+
+func TestPSEContinueShowOnDeckWithRealDeck(t *testing.T) {
+	shows := []pseShow{
+		{tmdb: 1, viewed: daysAgo(30), released: daysAgo(900)},
+		{tmdb: 2, viewed: daysAgo(400), released: daysAgo(10)},
+		{tmdb: 3, viewed: daysAgo(20)}, // série terminée : rien à reprendre
+	}
+	episodes := map[core.RatingKey][]core.Title{}
+	states := map[core.RatingKey]core.WatchStatus{}
+	byKey := map[core.RatingKey]core.Title{}
+	for _, s := range shows {
+		eps := []core.Title{{Key: s.watched(), Type: core.TypeEpisode, Season: 1, Episode: 1}}
+		states[s.watched()] = core.WatchStatus{Key: s.watched(), ViewCount: 1, LastViewedAt: s.viewed}
+		if !s.released.IsZero() {
+			eps = append(eps, core.Title{Key: s.next(), Type: core.TypeEpisode, Season: 2, Episode: 1, Released: s.released})
+		}
+		episodes[core.ShowKey(s.tmdb)] = eps
+		for _, e := range eps {
+			byKey[e.Key] = e
+		}
+	}
+	deck := &ContinueDeck{
+		Load: func(context.Context, []core.RatingKey) (map[core.RatingKey][]core.Title, map[core.RatingKey]core.WatchStatus) {
+			return episodes, states
+		},
+		Hydrate: func(_ context.Context, keys []core.RatingKey) []core.Title {
+			var out []core.Title
+			for _, k := range keys {
+				out = append(out, byKey[k])
+			}
+			return out
+		},
+		Unavailable: func(context.Context, *core.Title) bool { return false },
+	}
+	var prepared int
+	c, _ := pseContinueFor(shows, pseDefaults())
+	c.ShowOnDeck = deck.Select
+	c.PrepareShowOnDeck = func(ctx context.Context, keys []core.RatingKey) { prepared = len(keys); deck.Prepare(ctx, keys) }
+	got, _ := c.InProgress(context.Background(), &core.User{ID: 1}, core.TypeShow, 5)
+	if len(got) != 2 || got[0].Key != shows[1].next() || got[1].Key != shows[0].next() || prepared != 3 {
+		t.Fatalf("ContinueDeck : %v, %d séries préparées", pseKeys(got), prepared)
 	}
 }
