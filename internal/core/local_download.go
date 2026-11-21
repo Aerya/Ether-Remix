@@ -103,6 +103,9 @@ func LocalDownloadMessage(err error, lang string) string {
 	if errors.As(err, &lne) {
 		return lne.Message(lang)
 	}
+	if m := indexerThrottleMessage(err); m != "" { // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
+		return m
+	}
 	if errors.Is(err, ErrLocalNoSpace) {
 		if strings.HasPrefix(strings.ToLower(localLang(lang)), "fr") {
 			return "Plus assez de place sur le client torrent : le téléchargement n'a pas été lancé."

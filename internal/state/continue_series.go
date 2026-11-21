@@ -30,7 +30,7 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, continueSeriesHistoryQuery, uid,
-		int64(core.EpisodeKey(0, 0, 0)), int64(core.EpisodeKey(0, 0, 0))+1000000000000000, min(max(limit, 1), 200))
+		int64(core.EpisodeKey(0, 0, 0)), int64(core.EpisodeKey(0, 0, 0))+1000000000000000, min(max(limit, 1), 1000)) // PSE-HOOK: séries examinées de Continuer à regarder (plafond réglable jusqu’à 1000) — voir docs/pse/FORK.fr.md
 	if err != nil {
 		return nil, err
 	}

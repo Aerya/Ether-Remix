@@ -100,7 +100,7 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 	if until, err := c.rateLimitUntil(ctx); err != nil {
 		return err
 	} else if c.now().Before(until) {
-		return fmt.Errorf("indexer %q paused until %s: %w: %w", c.Name(), until.UTC().Format(time.RFC3339), errLocalBudget, core.ErrBudgetExhausted)
+		return c.pseThrottledErr(until) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	}
 	cfg := c.Config()
 	limit := 0
@@ -143,7 +143,7 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 			used = c.mem.grabs
 		}
 		if limit > 0 && used >= limit {
-			return fmt.Errorf("indexer %q %s budget: %w: %w", c.Name(), kind, errLocalBudget, core.ErrBudgetExhausted)
+			return c.pseDailyLimitErr(kind) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 		}
 		if kind == "hit" {
 			c.mem.hits++
@@ -179,7 +179,7 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("indexer %q %s budget: %w: %w", c.Name(), kind, errLocalBudget, core.ErrBudgetExhausted)
+		return c.pseDailyLimitErr(kind) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	}
 	c.recordUsage(ctx, kind)
 	return nil

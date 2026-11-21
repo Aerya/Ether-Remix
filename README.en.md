@@ -70,6 +70,7 @@ The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources an
 | Libraries and home | Collections, JukeBox quick setup, Xperience imports, layout templates, posters and custom cards. Sharing respects each viewer’s permissions. |
 | Music | Deezer catalogue, enabled music sources (including OpenDeezer, with your own Deezer account), local files and iBroadcast; access through Plexamp, Jellyfin or Subsonic, with personal playlists. |
 | Tracking | Per-viewer progress and history, video and music activity, Scrob, Last.fm and source statistics. |
+| Continue Watching | An old show with a newly released episode comes back to the top of the row, ranked by the release date. Settings in Remix → Playback → Continue watching: shows examined (200 by default), last-watched period (unlimited), new episodes window (60 days) and maximum movies and shows. |
 
 <a id="nav-unified-sources-and-searches-ahead-of-playback"></a>
 
@@ -82,6 +83,9 @@ Under **Remix → Indexing**, a single switch, **Automatically search for releas
 Background search does not download or unlock files. A remote addon may still make its own calls. For shows, the initial pass covers **S01E01**: other episodes are retained as they are searched, without implying a complete season. [How the index works](docs/pse/RELEASE_LIBRARY.en.md).
 
 Verified AllDebrid files can take priority when they meet the profile. Quotas pause affected accounts, fallback attempts are capped, and link renewal can be configured to avoid unnecessary calls. [AllDebrid and proxies](docs/alldebrid-mediaflow.md).
+
+When no source is available because of an indexer limit or a debrid quota, players such as Plezy show "file unavailable" and return to the title page instead of staying stuck.
+When an indexer throttles Ether (HTTP 429), playback names it and shows when it resumes, and says if no other source has a release. Without `Retry-After`, the pause grows from 15 min to 30 min, 1 h, 2 h… up to 24 h, and returns to 15 min after the next success. The daily limit set in Ether has its own message. After a restart the current pause is kept, but the step starts again at 15 min.
 
 <a id="nav-compatible-apps"></a>
 <a id="apps"></a>

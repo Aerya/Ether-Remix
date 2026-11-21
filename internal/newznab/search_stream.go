@@ -114,6 +114,7 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 	if resp.StatusCode != http.StatusOK {
 		return nil, apiError(resp.StatusCode, resp.Status)
 	}
+	c.pseRateOK() // PSE-HOOK: pause qui s'allonge — voir docs/pse/FORK.fr.md
 	return rs, nil
 }
 
