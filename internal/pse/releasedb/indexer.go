@@ -39,11 +39,13 @@ type Settings struct {
 	Types []core.MediaType
 	// SFR : import depuis une base StreamFusion Reborn (sfr.go).
 	SFR SFRSettings
+	// PreDB : index des annonces de releases (predb.go).
+	PreDB PreDBSettings
 }
 
 // LoadSettings lit la configuration depuis l'environnement.
 func LoadSettings() Settings {
-	s := Settings{Daily: 1000, Pace: 10 * time.Second, Types: []core.MediaType{core.TypeMovie, core.TypeShow}, SFR: LoadSFRSettings()}
+	s := Settings{Daily: 1000, Pace: 10 * time.Second, Types: []core.MediaType{core.TypeMovie, core.TypeShow}, SFR: LoadSFRSettings(), PreDB: LoadPreDBSettings()}
 	switch strings.ToLower(strings.TrimSpace(pseenv.Get("PSE_INDEXER"))) {
 	case "on", "1", "true", "yes", "oui":
 		s.Enabled = true
@@ -85,6 +87,9 @@ type Deps struct {
 	Browse         func(context.Context, core.BrowseQuery) (core.Page, error)
 	Search         func(context.Context, core.SearchRequest) ([]core.Release, error)
 	Active         func() bool // une lecture est en cours : l'indexation attend
+	// Resolve relie une release analysée à un titre du catalogue (série ou
+	// film), en l'ajoutant au catalogue s'il n'y est pas encore (pré).
+	Resolve func(context.Context, core.ReleaseInfo) (core.Title, bool)
 	// Priority renvoie les titres à indexer avant le reste du catalogue
 	// (bibliothèques à thème, priorités de la console) ; facultatif.
 	Priority func(context.Context, core.MediaType) []PriorityKey
@@ -108,6 +113,7 @@ type Service struct {
 	done     int
 	stop     context.CancelFunc
 	sfrStop  context.CancelFunc
+	preStop  context.CancelFunc
 	openSFR  func(context.Context, string) (sfrReader, error)
 	wg       sync.WaitGroup
 }
@@ -164,6 +170,12 @@ func (s *Service) Start() {
 			defer s.wg.Done()
 			s.runSFR(ctx, cfg)
 		}()
+	}
+	if cfg := s.d.Settings.PreDB; cfg.Active() {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.preStop = cancel
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.runPreDB(ctx, cfg) }()
 	}
 	if !s.d.Settings.Enabled || len(s.d.Settings.Types) == 0 {
 		s.d.Logger.Info("pse release indexer disabled (set PSE_INDEXER=on to enable)")
@@ -233,6 +245,9 @@ func (s *Service) activeSourceIDs() []string {
 	if s.d.Settings.SFR.Enabled {
 		ids = append(ids, SFRSourceID)
 	}
+	if s.d.Settings.PreDB.Active() {
+		ids = append(ids, PreDBSourceID)
+	}
 	return ids
 }
 
@@ -256,6 +271,9 @@ func (s *Service) maintain(ctx context.Context) {
 func (s *Service) Close() {
 	if s.sfrStop != nil {
 		s.sfrStop()
+	}
+	if s.preStop != nil {
+		s.preStop()
 	}
 	if s.stop != nil {
 		s.stop()

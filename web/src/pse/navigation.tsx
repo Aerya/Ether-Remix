@@ -21,7 +21,7 @@ export const REMIX_TABS = [
     key: "indexation",
     fr: "Indexation",
     en: "Indexing",
-    // « predb » : section « Pré » de la PR en brouillon #151, placée ici d’avance.
+    // « predb » : section « Pré » (bêta).
     features: ["indexer", "predb"],
   },
   {
