@@ -53,7 +53,8 @@ func (s *Service) pseJellyfinThemeOnlySearch(ctx context.Context, viewer *core.V
 	// Without a type Service.Search also finds seasons and episodes.
 	own, children := asked(core.TypeMovie, core.TypeShow), asked(core.TypeSeason, core.TypeEpisode)
 	if len(q.Types) == 0 && len(q.UnservedTypes) > 0 {
-		children = nil
+		// Only unserved types were asked: Service.Search answers empty.
+		return frontend.SearchPage{TotalExact: true, Continuation: frontend.ContinuationExhausted}, true, nil
 	}
 	var items []core.Title
 	if len(own) > 0 {
