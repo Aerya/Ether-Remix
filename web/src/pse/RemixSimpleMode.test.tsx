@@ -86,7 +86,7 @@ it("ouvre l’accueil, sans barre d’onglets, avec le titre de la page", async 
   window.localStorage.setItem("remix.setup.wizard", "1");
   render(page("/remix"));
   expect(await screen.findByText("3 étapes pour regarder un film")).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Démarrage", level: 1 })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Accueil", level: 1 })).toBeTruthy();
   expect(screen.queryAllByRole("tab")).toHaveLength(0);
   expect(screen.getByRole("link", { name: /Relancer l’assistant/ })).toBeTruthy();
 });
@@ -146,7 +146,7 @@ const labels = () => screen.getAllByRole("listitem").map((l) => l.textContent);
 it("la barre latérale affiche les entrées du mode simple par défaut", () => {
   render(sidebar("/remix/accueil"));
   expect(labels()).toEqual([
-    "Démarrage",
+    "Accueil",
     "Sources",
     "Langues et qualité",
     "Contenus",
@@ -159,7 +159,7 @@ it("la barre latérale affiche les entrées Expert en mode Expert, sans Langues 
   window.localStorage.setItem("remix.mode", "expert");
   render(sidebar("/remix/accueil"));
   expect(labels()).toEqual([
-    "Démarrage",
+    "Accueil",
     "Sources",
     "Indexation",
     "Lecture",
@@ -320,4 +320,63 @@ it("range SubMaker, la recherche SeerrCatalog et le tri chacun à un seul endroi
   expect(where("submaker")).toEqual(["lecture"]);
   expect(where("seerrcatalog_search")).toEqual(["sources"]);
   expect(where("librarysort")).toEqual(["contenus"]);
+});
+
+it("donne à la section Pré (bêta) sa propre vue dans Indexation", async () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  apiFetch.mockResolvedValue({
+    features: [
+      {
+        id: "predb",
+        title: { fr: "Section Pré", en: "Pre section" },
+        description: { fr: "", en: "" },
+        fields: [],
+      },
+      {
+        id: "indexer",
+        title: { fr: "Indexation des releases", en: "Release indexing" },
+        description: { fr: "", en: "" },
+        fields: [],
+      },
+    ],
+  });
+  render(page("/remix/indexation?view=pre"));
+  expect(await screen.findByText("Section Pré")).toBeTruthy();
+  expect(screen.queryByText("Indexation des releases")).toBeNull();
+  expect(screen.getByRole("button", { name: "Pré (bêta)" })).toBeTruthy();
+});
+
+it("Statistiques propose Résumé, Catalogue, Recherches, Sources et Utilisation", async () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  render(page("/remix/apercu"));
+  const nav = await screen.findByRole("navigation", { name: "Vues de l’onglet" });
+  expect(
+    within(nav)
+      .getAllByRole("button")
+      .map((b) => b.textContent),
+  ).toEqual(["Résumé", "Catalogue", "Recherches", "Sources", "Utilisation"]);
+});
+
+it("la vue Pré cite les flux publics lus par défaut, avec leurs liens", async () => {
+  window.localStorage.setItem("remix.mode", "expert");
+  render(page("/remix/indexation?view=pre"));
+  expect(await screen.findByText("Flux publics lus par défaut")).toBeTruthy();
+  const hrefs = screen.getAllByRole("link").map((a) => a.getAttribute("href"));
+  expect(hrefs).toContain("https://predb.net/");
+  expect(hrefs).toContain("https://api.predb.net/feed/");
+  expect(hrefs).toContain("https://predb.me/?cats=movies&rss=1");
+  expect(hrefs.some((h) => h?.endsWith("/docs/pse/PRE.fr.md"))).toBe(true);
+});
+
+it("la liste des flux publics affichée est celle du serveur", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const { PRE_PUBLIC_FEEDS } = await import("./PreFeeds");
+  const go = readFileSync(resolve(process.cwd(), "../internal/pse/releasedb/predb.go"), "utf8");
+  const block = go.slice(
+    go.indexOf("var preDBPublicFeeds"),
+    go.indexOf("}", go.indexOf("var preDBPublicFeeds")),
+  );
+  const urls = [...block.matchAll(/"(https:\/\/[^"]+)"/g)].map((m) => m[1]);
+  expect(PRE_PUBLIC_FEEDS.map((f) => f.url)).toEqual(urls);
 });

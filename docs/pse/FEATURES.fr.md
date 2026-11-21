@@ -33,7 +33,7 @@
 
 Les indexeurs (Prowlarr, Jackett, NZBHydra2) trouvent les releases. Pour les lire, configurez la voie adaptée : compte débrideur, client BitTorrent ou addon Stremio comme Seedstrem. Seedstrem utilise son propre client torrent. Pour Usenet, Remix lit via son moteur NNTP et vos fournisseurs Usenet ; SABnzbd/NZBGet ne sont pas des clients externes intégrés.
 
-- **Groupe Remix, mode Simple et mode Expert** : le menu de gauche a un groupe **Remix**, au-dessus de Bibliothèque. Il s’ouvre en mode Simple (Démarrage, Sources, Langues et qualité, Contenus, Diagnostic), avec un assistant en quatre étapes au premier lancement. L’interrupteur **Expert**, mémorisé par navigateur, ajoute Indexation, Lecture, Visuels, Suivi et Statistiques.
+- **Groupe Remix, mode Simple et mode Expert** : le menu de gauche a un groupe **Remix**, au-dessus de Bibliothèque. Il s’ouvre en mode Simple (Accueil, Sources, Langues et qualité, Contenus, Diagnostic), avec un assistant en quatre étapes au premier lancement. L’interrupteur **Expert**, mémorisé par navigateur, ajoute Indexation, Lecture, Visuels, Suivi et Statistiques.
 - **Démarrage rapide** : la vue **Vue d’ensemble → Démarrage** guide les premiers réglages — sources, indexation vidéo, langues et qualité, statistiques et clients. Un rappel signale lorsque la recherche automatique est désactivée.
 - **Console Remix** : réglages regroupés dans `/ether/remix`, blocs repliables fermés par défaut ; iBroadcast rejoint les fournisseurs musicaux et les informations Subsonic restent dans Contenus → Musique.
 - **IPTV et VOD Xtream** : chaînes en direct, guide EPG et import des films et séries du fournisseur.

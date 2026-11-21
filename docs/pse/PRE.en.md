@@ -16,7 +16,7 @@ In the console: **Remix → Indexing → Pre (beta)**, then **Enable** and save.
 | Setting | Purpose |
 | --- | --- |
 | Enable | Master switch. |
-| Public feeds | predb.net and predb.me (movies, shows, anime). Untick to use only your personal feeds. |
+| Public feeds | [predb.net](https://predb.net/) ([feed](https://api.predb.net/feed/)) and predb.me: [movies](https://predb.me/?cats=movies&rss=1), [shows](https://predb.me/?cats=tv&rss=1), [anime](https://predb.me/?cats=anime&rss=1). Untick to use only your personal feeds. |
 | Languages kept | FRENCH / VF, MULTi, VOSTFR / SUBFRENCH. “Other language + MULTi” releases and fixes (FIX) are always dropped. |
 | Personal feeds or API | Your own RSS feeds or a JSON API endpoint you have access to, separated by spaces. `http` or `https` addresses without credentials inside; never shown again. |
 | Personal API key | Sent as an `X-API-Key` header to the personal addresses only, never in an address, never shown again. Not resent after a redirect to another host. |

@@ -22,7 +22,7 @@ it("keeps one source entry and maps legacy source addresses without losing param
   expect(legacyRemixRoute("priorites")).toBe("/remix/lecture");
   expect(legacyRemixRoute("animes")).toBe("/remix/contenus?content=animes");
   expect(legacyRemixRoute("statistiques", "?days=7")).toBe("/remix/apercu?days=7");
-  expect(legacyRemixRoute("demarrage")).toBe("/remix/apercu?view=demarrage");
+  expect(legacyRemixRoute("demarrage")).toBe("/remix/accueil");
   expect(legacyRemixRoute("releases")).toBe("/remix/indexation?view=releases");
   expect(legacyRemixRoute("langues")).toBeNull();
   expect(legacyRemixRoute("demande")).toBe("/remix/lecture?view=vostfr");

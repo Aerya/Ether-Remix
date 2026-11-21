@@ -1,9 +1,12 @@
 import { Button } from "@braedonsaunders/appkit-ui";
 import { Check, Stethoscope, Wand2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useApp } from "../app-context";
 import { LoadingRows } from "../components/feedback";
 import { getLocale } from "../i18n";
+import { apiFetch } from "../lib/api";
+import { QuickStart } from "./QuickStart";
 import { getSetupFlag, setSetupFlag, type SetupFlag } from "./remixMode";
 
 const L = (fr: string, en: string) => (getLocale().startsWith("fr") ? fr : en);
@@ -21,6 +24,21 @@ interface Step {
 export function SimpleHome() {
   const { dashboard } = useApp();
   const navigate = useNavigate();
+  const [indexing, setIndexing] = useState(false);
+  useEffect(() => {
+    let live = true;
+    apiFetch<{ features?: { fields: { key: string; value: string }[] }[] }>("/pse/")
+      .then((data) => {
+        const v = data.features
+          ?.flatMap((f) => f.fields)
+          .find((f) => f.key === "PSE_INDEXER")?.value;
+        if (live) setIndexing(v === "on");
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
   if (!dashboard) return <LoadingRows rows={3} />;
   const sources = dashboard.setupSteps?.find((s) => s.id === "sources");
   // Première visite sans aucune source : l’assistant démarre tout seul, une seule fois.
@@ -124,6 +142,14 @@ export function SimpleHome() {
           {L("Ça ne marche pas ? Lancer le diagnostic", "Not working? Run the diagnostics")}
         </Link>
       </p>
+      <details className="rounded-xl border border-border px-5 py-4 text-sm">
+        <summary className="cursor-pointer font-medium">
+          {L("Guide détaillé pas à pas", "Detailed step-by-step guide")}
+        </summary>
+        <div className="mt-4">
+          <QuickStart indexing={indexing} />
+        </div>
+      </details>
     </section>
   );
 }

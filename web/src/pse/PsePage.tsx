@@ -1,6 +1,7 @@
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
-import { QuickStart, QuickStartHint } from "./QuickStart";
+import { QuickStartHint } from "./QuickStart";
+import { PreFeeds } from "./PreFeeds";
 import { XperienceImport } from "./XperienceImport";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
@@ -109,6 +110,9 @@ const T = (text: Text) => (fr() ? text.fr : text.en);
 
 const BASE = "/remix";
 
+/** Anciennes vues de Statistiques : « Activité » est devenue « Recherches ». */
+const legacyView = (view: string | null) => (view === "indexation" ? "recherches" : view);
+
 /** Onglets de la page ; une section inconnue va dans le dernier. */
 const TABS = REMIX_TABS;
 type TabKey = (typeof TABS)[number]["key"];
@@ -170,6 +174,8 @@ export default function PsePage() {
       </RemixFrame>
     );
   if (tab === "expert") return <Navigate replace to="/remix/accueil" />;
+  if (tab === "apercu" && new URLSearchParams(location.search).get("view") === "demarrage")
+    return <Navigate replace to="/remix/accueil" />;
   let legacy = legacyRemixRoute(tab, location.search);
   if (tab === "sources" && new URLSearchParams(location.search).get("source") === "indexation")
     legacy = "/remix/indexation";
@@ -357,12 +363,7 @@ function PseSettings() {
       : [];
   const view = isLangues
     ? "qualite"
-    : (views.find((v) => v.key === params.get("view"))?.key ??
-      (tab === "apercu"
-        ? saved.PSE_INDEXER === "off"
-          ? "demarrage"
-          : "indexation"
-        : views[0]?.key));
+    : (views.find((v) => v.key === legacyView(params.get("view")))?.key ?? views[0]?.key);
   const viewNav = (
     items: readonly { key: string; fr: string; en: string }[],
     active: string | undefined,
@@ -392,46 +393,10 @@ function PseSettings() {
     ) : null;
   return (
     <RemixFrame tab={routeTab}>
-      <CollapsibleSections.Provider
-        key={tab + (view ?? "")}
-        value={tab !== "apercu" || view === "demarrage"}
-      >
+      <CollapsibleSections.Provider key={tab + (view ?? "")} value={tab !== "apercu"}>
         <div className="space-y-6">
           {isLangues ? null : viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
-          {tab === "apercu" && view === "demarrage" ? (
-            <>
-              <p className="text-sm text-fg-muted">
-                {L(
-                  "Le parcours guidé se trouve dans Démarrage et l’assistant, comme en mode Simple.",
-                  "The guided path is in Start and the assistant, as in Simple mode.",
-                )}{" "}
-                <Link className="underline" to="/remix/accueil">
-                  {L("Ouvrir Démarrage", "Open Start")}
-                </Link>
-                {" · "}
-                <Link className="underline" to="/remix/assistant">
-                  {L("Lancer l’assistant", "Run the assistant")}
-                </Link>
-              </p>
-              <CollapsibleBlock
-                title={L("Guide détaillé pas à pas", "Detailed step-by-step guide")}
-              >
-                <div className="p-4">
-                  <QuickStart indexing={saved.PSE_INDEXER === "on"} />
-                </div>
-              </CollapsibleBlock>
-              <p className="text-sm text-fg-muted">
-                {L(
-                  "Cartes d’accueil, packs de visuels et affiches se règlent dans Visuels.",
-                  "Home cards, artwork packs and posters are set up in Visuals.",
-                )}{" "}
-                <Link className="underline" to="/remix/visuels">
-                  {L("Ouvrir Visuels", "Open Visuals")}
-                </Link>
-              </p>
-            </>
-          ) : null}
-          {tab === "apercu" && view !== "demarrage" && saved.PSE_INDEXER === "off" ? (
+          {tab === "apercu" && view === "resume" && saved.PSE_INDEXER === "off" ? (
             <QuickStartHint />
           ) : null}
           {tab === "sources" ? (
@@ -472,7 +437,19 @@ function PseSettings() {
             />
           ) : null}
           {tab === "indexation" && view === "releases" ? <ReleaseLibraryDashboard /> : null}
-          {tab === "indexation" && view !== "releases" ? (
+          {tab === "indexation" && view === "pre" ? (
+            <>
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Fonction facultative en bêta : lire les annonces de releases (pré) françaises, MULTi et VOSTFR pour alimenter l’index. Désactivée par défaut.",
+                  "Optional beta feature: read French, MULTi and VOSTFR release announcements (pre) to feed the index. Off by default.",
+                )}
+              </p>
+              <PreFeeds />
+              {current.features.filter((f) => f.id === "predb").map((f) => renderFeature(f))}
+            </>
+          ) : null}
+          {tab === "indexation" && view !== "releases" && view !== "pre" ? (
             <>
               <p className="text-sm text-fg-muted">
                 {L(
@@ -480,14 +457,16 @@ function PseSettings() {
                   "Choose which sources to query in advance, how often and for which titles. These choices do not disable playback sources.",
                 )}
               </p>
-              {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
+              {featuresOfTab(tab, current.features)
+                .filter((f) => f.id !== "predb")
+                .map((f) => renderFeature(f))}
               <SearchPriority />
               <p className="text-sm text-fg-muted">
                 {L(
-                  "Les recherches en cours et récentes se suivent dans Statistiques → Activité.",
-                  "Ongoing and recent searches are tracked in Statistics → Activity.",
+                  "Les recherches en cours et récentes se suivent dans Statistiques → Recherches.",
+                  "Ongoing and recent searches are tracked in Statistics → Searches.",
                 )}{" "}
-                <Link className="underline" to="/remix/apercu?view=indexation">
+                <Link className="underline" to="/remix/apercu?view=recherches">
                   {L("Voir l’activité", "View activity")}
                 </Link>
               </p>
@@ -593,18 +572,22 @@ function PseSettings() {
               {mode === "expert" ? <ThemeLibraries exceptionsOnly /> : null}
             </>
           ) : null}
-          {tab === "apercu" && view !== "demarrage" ? (
-            <>
-              {view === "indexation" && <ReleaseLibraryDashboard compact />}
-              {view === "indexation" ? (
-                <IndexerDetails />
-              ) : (
-                <>
-                  <StatisticsPeriod />
-                  <SourceStatistics view={view === "usage" ? "usage" : "statistics"} />
-                </>
-              )}
-            </>
+          {tab === "apercu" ? (
+            view === "resume" ? (
+              <IndexerDetails part="summary" />
+            ) : view === "catalogue" ? (
+              <>
+                <IndexerDetails part="catalogue" />
+                <ReleaseLibraryDashboard compact />
+              </>
+            ) : view === "recherches" ? (
+              <IndexerDetails part="searches" />
+            ) : (
+              <>
+                <StatisticsPeriod />
+                <SourceStatistics view={view === "usage" ? "usage" : "statistics"} />
+              </>
+            )
           ) : null}
           {tab !== "sources" &&
           tab !== "contenus" &&

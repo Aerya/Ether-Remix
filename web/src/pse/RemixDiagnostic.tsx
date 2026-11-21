@@ -107,7 +107,7 @@ export function buildDiagnostic(
             ),
             action: {
               label: L("Voir l’activité", "View activity"),
-              to: "/remix/apercu?view=indexation",
+              to: "/remix/apercu?view=recherches",
             },
           },
     );

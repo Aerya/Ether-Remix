@@ -47,7 +47,7 @@ export const REMIX_NAV = [
   {
     id: "pse-accueil",
     tab: "accueil",
-    fr: "Démarrage",
+    fr: "Accueil",
     en: "Start",
     icon: "House",
     mode: "simple",
@@ -166,14 +166,16 @@ export function filterRemixNav<G extends { items: { href: string }[] }>(
 /** Vues secondaires des onglets regroupés, portées par `?view=`. */
 export const REMIX_VIEWS = {
   apercu: [
-    { key: "demarrage", fr: "Démarrage", en: "Quick start" },
-    { key: "indexation", fr: "Activité", en: "Activity" },
+    { key: "resume", fr: "Résumé", en: "Summary" },
+    { key: "catalogue", fr: "Catalogue", en: "Catalogue" },
+    { key: "recherches", fr: "Recherches", en: "Searches" },
     { key: "sources", fr: "Sources", en: "Sources" },
     { key: "usage", fr: "Utilisation", en: "Usage" },
   ],
   indexation: [
     { key: "reglages", fr: "Réglages", en: "Settings" },
     { key: "releases", fr: "Releases", en: "Releases" },
+    { key: "pre", fr: "Pré (bêta)", en: "Pre (beta)" },
   ],
   lecture: [
     { key: "priorites", fr: "Priorités", en: "Priorities" },
@@ -196,7 +198,7 @@ export function legacyRemixRoute(tab?: string, search = ""): string | null {
     return q ? `${path}?${q}` : path;
   };
   if (tab === "statistiques") return keep("/remix/apercu");
-  if (tab === "demarrage") return keep("/remix/apercu", "demarrage");
+  if (tab === "demarrage") return "/remix/accueil";
   if (tab === "releases") return keep("/remix/indexation", "releases");
   if (tab === "priorites") return "/remix/lecture";
   if (tab === "films") return keep("/remix/lecture", "qualite");

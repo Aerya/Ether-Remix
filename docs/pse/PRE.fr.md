@@ -16,7 +16,7 @@ Dans la console : **Remix → Indexation → Pré (bêta)**, puis **Activer** et
 | Réglage | Rôle |
 | --- | --- |
 | Activer | Interrupteur général. |
-| Flux publics | predb.net et predb.me (films, séries, animés). Décochez pour n’utiliser que vos flux personnels. |
+| Flux publics | [predb.net](https://predb.net/) ([flux](https://api.predb.net/feed/)) et predb.me : [films](https://predb.me/?cats=movies&rss=1), [séries](https://predb.me/?cats=tv&rss=1), [animés](https://predb.me/?cats=anime&rss=1). Décochez pour n’utiliser que vos flux personnels. |
 | Langues gardées | FRENCH / VF, MULTi, VOSTFR / SUBFRENCH. Les releases « autre langue + MULTi » et les corrections (FIX) sont toujours écartées. |
 | Flux ou API personnels | Vos propres flux RSS ou un point d’API JSON auquel vous avez accès, séparés par des espaces. Adresses `http` ou `https` sans identifiants dedans ; jamais réaffichées. |
 | Clé d’API personnelle | Envoyée en en-tête `X-API-Key` aux seules adresses personnelles, jamais dans une adresse, jamais réaffichée. Elle n’est pas renvoyée en cas de redirection vers un autre hôte. |
