@@ -225,6 +225,7 @@ func (a *App) experienceContinueKind(ctx context.Context, viewer *core.User, lib
 		},
 		OnError: func(err error) { loadErr = err },
 	}
+	c.PSE = pseContinueSettings // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 	if a.favorites != nil {
 		c.FavoriteShowsFor = a.favorites.HasTitles
 	}

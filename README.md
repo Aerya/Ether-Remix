@@ -70,6 +70,7 @@ Le [détail des fonctionnalités](docs/pse/FEATURES.fr.md) précise les options,
 | Bibliothèques et accueil | Collections, configuration rapide JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. Le partage respecte les droits de chaque spectateur. |
 | Musique | Catalogue Deezer, sources musicales activées (dont OpenDeezer, avec votre compte Deezer), fichiers locaux et iBroadcast ; accès depuis Plexamp, Jellyfin ou Subsonic, avec playlists personnelles. |
 | Suivi | Progression et historique par spectateur, activité vidéo et musicale, Scrob, Last.fm et statistiques des sources. |
+| Continuer à regarder | Une ancienne série dont un nouvel épisode vient de sortir remonte en tête de la rangée, classée à la date de sortie. Réglages dans Remix → Lecture → Continuer à regarder : séries examinées (200 par défaut), période du dernier visionnage (illimitée), fenêtre des nouveaux épisodes (60 jours) et nombre maximal de films et de séries. |
 
 <a id="nav-des-sources-reunies-et-une-recherche-anticipee"></a>
 
@@ -82,6 +83,9 @@ Dans **Remix → Indexation**, un seul interrupteur, **Rechercher automatiquemen
 La recherche de fond ne télécharge ni ne débride les fichiers. Un addon distant peut néanmoins effectuer ses propres appels. Pour les séries, le passage initial couvre **S01E01** : les autres épisodes sont enregistrés au fil des recherches, sans garantie de saison complète. [Fonctionnement de l’index](docs/pse/RELEASE_LIBRARY.fr.md).
 
 Les fichiers AllDebrid vérifiés peuvent être prioritaires lorsqu’ils respectent le profil. Les quotas suspendent les comptes concernés, les tentatives de secours sont limitées et le renouvellement des liens peut être réglé pour éviter des appels inutiles. [AllDebrid et proxys](docs/alldebrid-mediaflow.md).
+
+Quand aucune source n’est disponible à cause d’une limite d’indexeur ou d’un quota debrid, les lecteurs comme Plezy affichent « fichier indisponible » et reviennent à la fiche au lieu de rester bloqués.
+Quand un indexeur limite les requêtes d’Ether (HTTP 429), la lecture indique son nom et l’heure de reprise, et précise si aucune autre source n’a de release. Sans `Retry-After`, la pause passe de 15 min à 30 min, 1 h, 2 h… jusqu’à 24 h, puis revient à 15 min dès qu’une requête réussit. La limite journalière réglée dans Ether a son propre message. Après un redémarrage, la pause en cours est conservée, mais le palier repart de 15 min.
 
 <a id="nav-applications-compatibles"></a>
 <a id="applications"></a>

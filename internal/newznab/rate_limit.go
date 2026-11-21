@@ -22,6 +22,7 @@ type rateLimitState struct {
 	mu     sync.Mutex
 	loaded bool
 	until  time.Time
+	pse    pseRateState // PSE-HOOK: pause qui s'allonge — voir docs/pse/FORK.fr.md
 }
 
 // There is no universal Newznab account-quota discovery endpoint. Let the
@@ -74,9 +75,9 @@ func (c *Client) rateLimitUntil(ctx context.Context) (time.Time, error) {
 }
 
 func (c *Client) recordRateLimit(ctx context.Context, retryAfter string, cause error) error {
-	until := retryTime(retryAfter, c.now())
 	c.rate.mu.Lock()
 	defer c.rate.mu.Unlock()
+	until := c.pseNextPause(retryAfter) // PSE-HOOK: pause qui s'allonge — voir docs/pse/FORK.fr.md
 	if c.rate.until.After(until) {
 		until = c.rate.until
 	}
@@ -88,6 +89,7 @@ ON CONFLICT(indexer_id) DO UPDATE SET retry_at=CASE WHEN excluded.retry_at > new
 			c.log.Warn("could not persist indexer pause", "indexer", c.Name(), "err", err)
 		}
 	}
-	c.log.Info("indexer paused by service; will retry automatically", "indexer", c.Name(), "retryAt", until.UTC())
-	return cause
+	// PSE-HOOK: pause qui s'allonge, pause d'indexeur — voir docs/pse/FORK.fr.md
+	c.pseLogPause(cause, until)
+	return c.pseThrottledCause(until, cause)
 }

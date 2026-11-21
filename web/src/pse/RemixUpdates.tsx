@@ -26,8 +26,39 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-21-stats-visible-pre-feeds",
+    id: "2026-11-21-playback-clear-new-seasons",
     version: "current",
+    date: "2026-11-21",
+    title: [
+      "Lecture plus claire et nouvelles saisons dans Continuer à regarder",
+      "Clearer playback and new seasons in Continue watching",
+    ],
+    items: [
+      [
+        "Quand aucune source n’est disponible, à cause d’une limite d’indexeur ou d’un quota debrid, les lecteurs comme Plezy affichent « fichier indisponible » et reviennent à la fiche, au lieu de rester bloqués.",
+        'When no source is available, because of an indexer limit or a debrid quota, players such as Plezy show "file unavailable" and return to the title page instead of staying stuck.',
+      ],
+      [
+        "Quand un indexeur limite les requêtes d’Ether, la lecture le nomme et indique l’heure de reprise, au lieu d’annoncer que tous les indexeurs sont à leur limite. Le message précise si aucune autre source n’a de release.",
+        "When an indexer throttles Ether, playback names it and shows when it resumes, instead of saying all indexers are at their limit. The message says if no other source has a release.",
+      ],
+      [
+        "Sans Retry-After, la pause passe de 15 min à 30 min, 1 h, 2 h… jusqu’à 24 h, puis revient à 15 min au premier succès. La limite journalière réglée dans Ether garde son propre message.",
+        "Without Retry-After, the pause grows from 15 min to 30 min, 1 h, 2 h… up to 24 h, then returns to 15 min on the first success. The daily limit set in Ether keeps its own message.",
+      ],
+      [
+        "Une ancienne série dont l’épisode suivant vient de sortir remonte dans la rangée, avec son premier épisode non vu, et se classe à la date de sortie de cet épisode. Valable pour Plex, Jellyfin, Emby et Stremio, bibliothèques Ether comme Remix. Les droits, le contrôle parental, les favoris et les épisodes à venir ne changent pas.",
+        "An older show whose next episode just came out moves up in the row with its first unwatched episode, ranked by that episode’s release date. Applies to Plex, Jellyfin, Emby and Stremio, Ether and Remix libraries alike. Access rights, parental controls, favorites and upcoming episodes are unchanged.",
+      ],
+      [
+        "Nouveaux réglages dans Remix → Lecture → Continuer à regarder : séries examinées (200 par défaut, de 20 à 1000 ; 100 au plus sur Plex), période du dernier visionnage (illimitée), fenêtre des nouveaux épisodes (60 jours) et nombre maximal de films et de séries (0 = limite de l’application). Pris en compte sans redémarrage.",
+        "New settings in Remix → Playback → Continue watching: shows examined (200 by default, 20 to 1000; at most 100 on Plex), last-watched period (unlimited), new episodes window (60 days) and maximum movies and shows (0 = the app’s limit). Applied without a restart.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-21-stats-visible-pre-feeds",
+    version: "0.2.37-remix.124.1",
     date: "2026-11-21",
     title: [
       "Statistiques visibles dès le mode Simple, releases indexées par flux de pre",

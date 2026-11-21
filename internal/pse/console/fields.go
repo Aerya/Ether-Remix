@@ -1,6 +1,9 @@
 package console
 
-import "github.com/braedonsaunders/ether/internal/pse/music"
+import (
+	"github.com/braedonsaunders/ether/internal/pse/continuewatch"
+	"github.com/braedonsaunders/ether/internal/pse/music"
+)
 
 // Text est un libellé bilingue ; la page choisit selon la langue de la console.
 type Text struct {
@@ -196,6 +199,23 @@ var Features = communityFields([]Feature{
 			{Key: "PSE_LIBRARY_SORT", Kind: KindSelect, Default: "release", Label: tx("Tri par défaut", "Default sort"),
 				Help:    tx("Plex applique ce tri tant que vous n'en avez pas choisi un autre. Jellyfin Web et Infuse gardent leur propre tri : changez-le une fois dans l'application.", "Plex uses this sort until you pick another. Jellyfin Web and Infuse keep their own: change it once in the app."),
 				Options: []Option{{"release", tx("Date de sortie, du plus récent au plus ancien", "Release date, newest first")}, {"title", tx("Titre (A → Z)", "Title (A → Z)")}}},
+		},
+	},
+	{
+		ID:          "continuewatch",
+		Title:       tx("Continuer à regarder", "Continue watching"),
+		Description: tx("Rangée « Continuer à regarder » de Plex, Jellyfin, Emby et Stremio, pour les bibliothèques Ether comme pour les bibliothèques Remix. Une ancienne série dont un nouvel épisode vient de sortir remonte en tête, classée à la date de sortie de l'épisode. Droits, contrôle parental, favoris et épisodes futurs ne changent pas.", "Continue Watching row of Plex, Jellyfin, Emby and Stremio, for Ether libraries and Remix libraries alike. An old show with a newly released episode comes back on top, ranked by the episode's release date. Access rights, parental controls, favorites and future episodes are unchanged."),
+		Fields: []Field{
+			{Key: continuewatch.KeyScanLimit, Kind: KindNumber, Default: "200", Min: ptr(continuewatch.MinScanLimit), Max: ptr(continuewatch.MaxScanLimit), Label: tx("Séries examinées", "Shows examined"),
+				Help: tx("Nombre de séries de l'historique dont l'épisode suivant est cherché (de 20 à 1000). Plus il est grand, plus on retrouve d'anciennes séries, mais plus la rangée est longue à construire. Sur Plex, au plus 100 séries sont examinées.", "Number of history shows whose next episode is looked up (20 to 1000). A higher value finds older shows but makes the row slower to build. On Plex, at most 100 shows are examined.")},
+			{Key: continuewatch.KeyWatchDays, Kind: KindNumber, Default: "0", Min: ptr(0), Max: ptr(continuewatch.MaxWatchDays), Label: tx("Période du dernier visionnage (jours)", "Last-watched period (days)"),
+				Help: tx("Ignore les titres en cours et les séries terminées regardés il y a plus longtemps. 0 = illimitée. Une série plus ancienne reste affichée si son épisode suivant est un nouvel épisode.", "Skips in-progress titles and finished shows last watched longer ago. 0 = unlimited. An older show is still shown when its next episode is a new episode.")},
+			{Key: continuewatch.KeyNewDays, Kind: KindNumber, Default: "60", Min: ptr(0), Max: ptr(continuewatch.MaxNewDays), Label: tx("Fenêtre des nouveaux épisodes (jours)", "New episodes window (days)"),
+				Help: tx("Un épisode suivant non vu, sorti depuis moins de ce nombre de jours, fait remonter la série même si son dernier visionnage est ancien, et la classe à la date de sortie. 0 = désactivé.", "An unwatched next episode released within this many days brings the show back even if it was last watched long ago, ranked by its release date. 0 = off.")},
+			{Key: continuewatch.KeyMaxMovies, Kind: KindNumber, Default: "0", Min: ptr(0), Max: ptr(continuewatch.MaxQuantity), Label: tx("Films au maximum", "Maximum movies"),
+				Help: tx("Nombre maximal de films dans la rangée, sans dépasser la limite de l'application. 0 = limite de l'application.", "Maximum number of movies in the row, never above the app's limit. 0 = the app's limit.")},
+			{Key: continuewatch.KeyMaxShows, Kind: KindNumber, Default: "0", Min: ptr(0), Max: ptr(continuewatch.MaxQuantity), Label: tx("Séries au maximum", "Maximum shows"),
+				Help: tx("Nombre maximal de séries (un épisode par série) dans la rangée, sans dépasser la limite de l'application. 0 = limite de l'application.", "Maximum number of shows (one episode each) in the row, never above the app's limit. 0 = the app's limit.")},
 		},
 	},
 	{

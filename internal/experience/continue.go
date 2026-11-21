@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/pse/continuewatch"
 )
 
 // Continue coordinates resume and next-episode selection using viewer-scoped dependencies.
@@ -42,6 +43,8 @@ type Continue struct {
 	// Unrestricted is a trusted policy capability; nil fails closed. It is
 	// supplied only when the catalogue and policy authorize the legacy path.
 	Unrestricted func(*core.User) bool
+	// PSE-HOOK: réglages de Continuer à regarder (nil = comportement d'Ether) — voir docs/pse/FORK.fr.md
+	PSE func() continuewatch.Settings
 }
 
 func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []core.Title, state map[core.RatingKey]core.WatchStatus, limit int) []core.Title {
@@ -50,12 +53,14 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 	// cannot crowd older unfinished shows out of the bounded candidate list.
 	var history []core.HistoryEntry
 	var err error
+	run := pseContinueFrom(ctx)                           // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
+	historyLimit := run.historyLimit(c.ShowOnDeck != nil) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 	if source, ok := c.State.(interface {
 		ContinueSeriesHistory(context.Context, int64, int) ([]core.HistoryEntry, error)
 	}); ok {
-		history, err = source.ContinueSeriesHistory(ctx, viewer.ID, 200)
+		history, err = source.ContinueSeriesHistory(ctx, viewer.ID, historyLimit)
 	} else {
-		history, err = c.State.History(ctx, viewer.ID, time.Time{}, 200)
+		history, err = c.State.History(ctx, viewer.ID, time.Time{}, historyLimit)
 	}
 	if err != nil {
 		return titles
@@ -76,7 +81,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 		recent = append(recent, h)
 		keys = append(keys, h.Key)
 		shows = append(shows, core.ShowKey(h.Key.TMDB()))
-		if len(recent) >= min(max(limit, 1), 50) {
+		if len(recent) >= run.recentCap(limit, c.ShowOnDeck != nil) { // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 			break
 		}
 	}
@@ -100,6 +105,9 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 			}
 			if st.LastViewedAt.Before(h.ViewedAt) {
 				st.LastViewedAt = h.ViewedAt
+			}
+			if !run.admit(h.ViewedAt, ep, st) { // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
+				continue
 			}
 			state[ep.Key] = st
 			titles = append(titles, *ep)
@@ -216,6 +224,9 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 			if st.LastViewedAt.Before(h.ViewedAt) {
 				st.LastViewedAt = h.ViewedAt
 			}
+			if !run.admit(h.ViewedAt, next, st) { // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
+				break
+			}
 			state[next.Key] = st
 			titles = append(titles, *next)
 			break
@@ -229,6 +240,7 @@ func (c Continue) InProgress(ctx context.Context, viewer *core.User, t core.Medi
 	if c.State == nil || viewer == nil {
 		return nil, nil
 	}
+	limit = c.pseLimit(t, limit) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 	if c.Unrestricted != nil && c.Unrestricted(viewer) {
 		sts, err := c.State.InProgress(ctx, viewer.ID, limit*2+10)
 		if err != nil {
@@ -269,6 +281,7 @@ func (c Continue) inProgressBatch(ctx context.Context, viewer *core.User, t core
 
 func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t core.MediaType, limit int, sts []core.WatchStatus, unrestricted bool) ([]core.Title, map[core.RatingKey]core.WatchStatus) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
+	ctx, run := c.pseContinueBegin(ctx) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 	keys := make([]core.RatingKey, 0, len(sts))
 	state := make(map[core.RatingKey]core.WatchStatus, len(sts))
 	for _, st := range sts {
@@ -300,11 +313,12 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 	}
 	// Resume unfinished media and advance completed series. A
 	// completed episode has no offset, so InProgress alone loses the show.
+	titles = run.filterInProgress(titles, state) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 	if t != core.TypeMovie {
 		titles = c.appendNext(ctx, viewer, titles, state, limit)
 	}
 	sort.SliceStable(titles, func(i, j int) bool {
-		a, b := state[titles[i].Key].LastViewedAt, state[titles[j].Key].LastViewedAt
+		a, b := run.rankOf(titles[i].Key, state), run.rankOf(titles[j].Key, state) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 		if !a.Equal(b) {
 			return a.After(b)
 		}
@@ -352,6 +366,9 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 				continue
 			}
 			seenShows[ti.Key.TMDB()] = true
+		}
+		if !run.take(ti.Type) { // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
+			continue
 		}
 		out = append(out, ti)
 		if limit > 0 && len(out) >= limit {

@@ -432,7 +432,7 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 			}
 		}
 		if allBudget {
-			return nil, fmt.Errorf("all indexers: %w", core.ErrBudgetExhausted)
+			return nil, psePauseOrBudget(ctx, clients, func(i int) (error, bool) { return slots[i].err, !slots[i].skipped }) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 		}
 		if !anySearched && len(clients) > 0 {
 			return nil, errs[0]

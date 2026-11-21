@@ -119,7 +119,7 @@ func (s *Server) writeStartErr(w http.ResponseWriter, r *http.Request, pr *Reque
 	status := http.StatusBadRequest
 	w.Header().Del("Retry-After")
 	switch {
-	case errors.Is(err, frontend.ErrNotFound), errors.Is(err, frontend.ErrNotAvailable):
+	case errors.Is(err, frontend.ErrNotFound), errors.Is(err, frontend.ErrNotAvailable), psePartTerminal(err): // PSE-HOOK: budget d'indexeur ou quota debrid : 404 — voir docs/pse/FORK.fr.md
 		status = http.StatusNotFound
 	case errors.Is(err, frontend.ErrUnauthorized):
 		status = http.StatusForbidden
@@ -2250,7 +2250,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 // Part acquisition failures distinguish an absent provider file from a failed
 // upstream transport; the conversion start routes retain their own contract.
 func (s *Server) writePartErr(w http.ResponseWriter, r *http.Request, pr *Request, err error) {
-	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) {
+	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || psePartTerminal(err) { // PSE-HOOK: budget d'indexeur ou quota debrid : 404 au lieu de 502 — voir docs/pse/FORK.fr.md
 		s.writeStartErr(w, r, pr, err)
 		return
 	}
