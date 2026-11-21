@@ -58,7 +58,7 @@ export const REMIX_UPDATES = [
   },
   {
     id: "2026-11-21-stats-visible-pre-feeds",
-    version: "0.2.37-remix.123.1",
+    version: "0.2.37-remix.124.1",
     date: "2026-11-21",
     title: [
       "Statistiques visibles dès le mode Simple, releases indexées par flux de pre",
