@@ -154,6 +154,13 @@ func (s *Service) pseJellyfinLatestEpisodes(ctx context.Context, viewer *core.Us
 		}
 		return nil, core.ErrNotFound
 	}
+	// One scan budget for the whole feed, as the library feed has.
+	budget := activityScanLimit
+	type progress struct {
+		page     core.Page
+		offset   int
+		accepted int
+	}
 	for batch := range slices.Chunk(showKeys, 50) {
 		var pages map[core.RatingKey]core.Page
 		if s.d.AiredEpisodesMany != nil && len(batch) > 1 {
@@ -169,39 +176,57 @@ func (s *Service) pseJellyfinLatestEpisodes(ctx context.Context, viewer *core.Us
 		if err != nil {
 			return nil, err
 		}
+		active := make(map[core.RatingKey]*progress, len(batch))
 		for _, show := range batch {
-			listCtx := ctx
-			if membership.langFree[show] {
-				listCtx = core.WithPSELangFree(ctx)
-			}
-			page := pages[show]
-			accepted := 0
-			for offset := 0; ; {
+			active[show] = &progress{page: pages[show]}
+		}
+		// Each round judges the page read for every active series together
+		// (one played-state read), then reads one more page for the series
+		// that still lack enough accepted episodes, until the series are
+		// exhausted or the shared budget is spent.
+		for len(active) > 0 {
+			var round []core.Title
+			for _, show := range batch {
+				state := active[show]
+				if state == nil {
+					continue
+				}
+				budget -= len(state.page.Items)
+				listCtx := ctx
+				if membership.langFree[show] {
+					listCtx = core.WithPSELangFree(ctx)
+				}
 				var episodes []core.Title
-				for _, episode := range page.Items {
+				for _, episode := range state.page.Items {
 					if episode.Type == core.TypeEpisode && episode.ShowKey == show && vis.Playable(listCtx, viewer, &episode) {
 						episodes = append(episodes, episode)
 					}
 				}
-				episodes = vis.Available(listCtx, viewer, episodes)
-				if keep != nil {
-					if episodes, err = keep(episodes); err != nil {
-						return nil, err
-					}
+				round = append(round, vis.Available(listCtx, viewer, episodes)...)
+				state.offset += len(state.page.Items)
+			}
+			if keep != nil && len(round) > 0 {
+				if round, err = keep(round); err != nil {
+					return nil, err
 				}
-				out = append(out, episodes...)
-				accepted += len(episodes)
-				offset += len(page.Items)
-				// Without a filter the newest episodes are enough. With one, read
-				// on page by page, as the library feed does, until enough
-				// episodes are accepted or the series is exhausted.
-				if keep == nil || accepted >= limit || len(page.Items) == 0 || offset >= page.Total || offset >= activityScanLimit {
-					break
+			}
+			for _, episode := range round {
+				active[episode.ShowKey].accepted++
+			}
+			out = append(out, round...)
+			for _, show := range batch {
+				state := active[show]
+				if state == nil {
+					continue
+				}
+				if state.accepted >= limit || len(state.page.Items) == 0 || state.offset >= state.page.Total || budget <= 0 {
+					delete(active, show)
+					continue
 				}
 				if err = ctx.Err(); err != nil {
 					return nil, err
 				}
-				if page, err = s.d.AiredEpisodes(ctx, show, offset, localEpisodeCap); err != nil {
+				if state.page, err = s.d.AiredEpisodes(ctx, show, state.offset, localEpisodeCap); err != nil {
 					return nil, err
 				}
 			}

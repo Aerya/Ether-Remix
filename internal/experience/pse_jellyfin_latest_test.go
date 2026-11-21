@@ -131,3 +131,27 @@ func TestPSEJellyfinLatestEpisodesReadPastViewedOnes(t *testing.T) {
 		t.Fatalf("played latest %v (error %v)", latestKeys(items), err)
 	}
 }
+
+func TestPSEJellyfinLatestEpisodesReadOnWhenAvailabilityDropsThem(t *testing.T) {
+	s, viewer, calls := latestFixture(t, nil)
+	frontend.SetPSEThemes(activityThemes{
+		themes: []frontend.PSETheme{{Section: 5101, Title: "Séries", Type: core.TypeShow, Rows: []frontend.PSEThemeRow{{ID: "s", Title: "Séries"}}}},
+		rows:   map[string][]core.RatingKey{"s": {core.ShowKey(10)}},
+	})
+	// Only the oldest two episodes are available; the first page of four
+	// holds one of them.
+	s.d.Visibility.FilterAvailable = func(_ context.Context, titles []core.Title) []core.Title {
+		var out []core.Title
+		for _, title := range titles {
+			if title.Episode <= 2 {
+				out = append(out, title)
+			}
+		}
+		return out
+	}
+	items, err := s.LatestAddedGrouped(t.Context(), viewer, core.Device{}, "5101", 2, false)
+	want := []core.RatingKey{core.EpisodeKey(10, 1, 2), core.EpisodeKey(10, 1, 1)}
+	if err != nil || !slices.Equal(latestKeys(items), want) || len(*calls) < 2 {
+		t.Fatalf("latest %v, want %v (%d reads, error %v)", latestKeys(items), want, len(*calls), err)
+	}
+}

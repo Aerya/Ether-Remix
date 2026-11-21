@@ -3,16 +3,42 @@ package experience
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
+// themeSearchFixture adds a title index to the fixture. Children must never be
+// read by a search.
+func themeSearchFixture(t *testing.T, viewer *core.User) *Service {
+	t.Helper()
+	s := jellyfinThemeViewsFixture(t, viewer)
+	s.d.Children = func(context.Context, *core.User, core.RatingKey) ([]core.Title, error) {
+		t.Error("a search read the children of a series")
+		return nil, nil
+	}
+	indexed := []core.Title{
+		{Key: core.EpisodeKey(5, 1, 1), ShowKey: core.ShowKey(5), Type: core.TypeEpisode, Title: "Le début", ContentRating: "TV-PG", Season: 1, Episode: 1},
+		{Key: core.EpisodeKey(5, 1, 2), ShowKey: core.ShowKey(5), Type: core.TypeEpisode, Title: "Le début 2", ContentRating: "TV-MA", Season: 1, Episode: 2},
+		{Key: core.EpisodeKey(99, 1, 1), ShowKey: core.ShowKey(99), Type: core.TypeEpisode, Title: "Le début ailleurs", ContentRating: "TV-G", Season: 1, Episode: 1},
+	}
+	s.d.Search = Search{Visibility: s.d.Visibility, Catalog: func(_ context.Context, query string, types []core.MediaType, _ int) ([]core.Title, error) {
+		var out []core.Title
+		for _, title := range indexed {
+			if strings.Contains(strings.ToLower(title.Title), strings.ToLower(query)) && slices.Contains(types, title.Type) {
+				out = append(out, title)
+			}
+		}
+		return out, nil
+	}}
+	return s
+}
+
 func TestPSEJellyfinThemeOnlySearchStaysInAuthorizedThemes(t *testing.T) {
 	viewer := &core.User{ID: 17, AllowedLibraries: []core.LibraryID{5100, 5101}, MaxContentRating: "PG"}
-	// The fixture has no catalogue search: reaching it would panic.
-	s := jellyfinThemeViewsFixture(t, viewer)
+	s := themeSearchFixture(t, viewer)
 	ctx := t.Context()
 	for _, tc := range []struct {
 		query string
@@ -84,22 +110,25 @@ func TestPSEJellyfinThemeRecursiveReadsChildrenOnlyWhenAsked(t *testing.T) {
 	}
 }
 
-func TestPSEJellyfinThemeOnlySearchRanksAndReportsExactTotals(t *testing.T) {
+func TestPSEJellyfinThemeOnlySearchRanksAndReportsTotals(t *testing.T) {
 	viewer := &core.User{ID: 17, AllowedLibraries: []core.LibraryID{5100, 5101}, MaxContentRating: "PG"}
-	s := jellyfinThemeViewsFixture(t, viewer)
+	s := themeSearchFixture(t, viewer)
 	ctx := t.Context()
-
-	page, err := s.Search(ctx, viewer, core.Device{}, "le film", frontend.ItemQuery{Limit: 10})
+	// Members only: the total is exact.
+	page, err := s.Search(ctx, viewer, core.Device{}, "le film", frontend.ItemQuery{Types: []core.MediaType{core.TypeMovie}, Limit: 10})
 	if err != nil || !page.TotalExact || page.Continuation != frontend.ContinuationExhausted || page.Page.Total != 1 {
-		t.Fatalf("last page %+v, error %v", page, err)
+		t.Fatalf("members page %+v, error %v", page, err)
 	}
-	// Without a type, episodes are searched too (as Service.Search does).
+	// Without a type, episodes come from the title index: an episode of a
+	// theme's series is found, one of another series or above the parental
+	// limit is not, and the total is no longer exact.
 	page, err = s.Search(ctx, viewer, core.Device{}, "début", frontend.ItemQuery{Limit: 10})
-	if err != nil || len(page.Page.Items) != 1 || page.Page.Items[0].Key != core.EpisodeKey(5, 1, 1) {
-		t.Fatalf("untyped search %+v, error %v", page.Page.Items, err)
+	if err != nil || len(page.Page.Items) != 1 || page.Page.Items[0].Key != core.EpisodeKey(5, 1, 1) || page.TotalExact || page.Continuation != frontend.ContinuationUnknown {
+		t.Fatalf("untyped search %+v, error %v", page, err)
 	}
+	// Movies, series and episodes are merged, then paged.
 	page, err = s.Search(ctx, viewer, core.Device{}, "e", frontend.ItemQuery{Limit: 1})
-	if err != nil || page.Continuation != frontend.ContinuationMore || !page.TotalExact || page.Page.Total < 2 {
+	if err != nil || page.Continuation != frontend.ContinuationMore || page.TotalExact || page.Page.Total < 2 {
 		t.Fatalf("first page %+v, error %v", page, err)
 	}
 }
