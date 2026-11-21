@@ -244,6 +244,10 @@ func pseJellyfinMatchesThemeRow(name string, q frontend.ItemQuery, kind string) 
 		(f.NameLessThan == "" || name < strings.ToLower(f.NameLessThan))
 }
 
+// Copie de browse.go search (SearchHints), à resynchroniser avec Ether.
+// Pas de type boxset : une vue Remix ne renvoie que des films, séries, saisons
+// et épisodes ; ses collections sont des dossiers servis par /Items, pas par
+// la recherche.
 // pseJellyfinSearch answers /Search/Hints when ParentId names a Remix view. The
 // search then stays in that view and skips Live TV. It returns false for any
 // other request, which keeps the usual search.

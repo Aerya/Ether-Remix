@@ -55,7 +55,33 @@ func (s *Service) pseJellyfinLatest(ctx context.Context, viewer *core.User, devi
 	limit = activityLimit(limit)
 	candidates := page.Items
 	if !group {
-		candidates, err = s.pseJellyfinLatestEpisodes(ctx, viewer, viewID, page.Items, limit)
+		var keep func([]core.Title) ([]core.Title, error)
+		if played, filterPlayed := frontend.LatestPlayedFilter(ctx); filterPlayed {
+			if s.d.State == nil {
+				return nil, core.ErrNotAvailable
+			}
+			keep = func(episodes []core.Title) ([]core.Title, error) {
+				if len(episodes) == 0 {
+					return nil, nil
+				}
+				keys := make([]core.RatingKey, len(episodes))
+				for i, episode := range episodes {
+					keys[i] = episode.Key
+				}
+				states, err := s.d.State.GetMany(ctx, viewer.ID, keys)
+				if err != nil {
+					return nil, err
+				}
+				var out []core.Title
+				for _, episode := range episodes {
+					if (states[episode.Key].ViewCount > 0) == played {
+						out = append(out, episode)
+					}
+				}
+				return out, nil
+			}
+		}
+		candidates, err = s.pseJellyfinLatestEpisodes(ctx, viewer, viewID, page.Items, limit, keep)
 		if err != nil {
 			return nil, err
 		}
@@ -98,10 +124,10 @@ func (s *Service) pseJellyfinLatest(ctx context.Context, viewer *core.User, devi
 
 // pseJellyfinLatestEpisodes replaces the visible series of a theme with their
 // newest aired episodes, in a few batched reads instead of one children
-// listing per series. Each series contributes at most the number of items
-// asked for (a little more when the played filter may drop some), so the
-// result holds the newest ones of the theme.
-func (s *Service) pseJellyfinLatestEpisodes(ctx context.Context, viewer *core.User, viewID string, items []core.Title, limit int) ([]core.Title, error) {
+// listing per series. Without a played filter each series contributes its
+// newest episodes only; with one, it is read page by page until enough
+// episodes pass the filter.
+func (s *Service) pseJellyfinLatestEpisodes(ctx context.Context, viewer *core.User, viewID string, items []core.Title, limit int, keep func([]core.Title) ([]core.Title, error)) ([]core.Title, error) {
 	if s.d.AiredEpisodes == nil || s.d.Visibility.SectionFor == nil {
 		return nil, core.ErrNotAvailable
 	}
@@ -148,13 +174,37 @@ func (s *Service) pseJellyfinLatestEpisodes(ctx context.Context, viewer *core.Us
 			if membership.langFree[show] {
 				listCtx = core.WithPSELangFree(ctx)
 			}
-			var episodes []core.Title
-			for _, episode := range pages[show].Items {
-				if episode.Type == core.TypeEpisode && episode.ShowKey == show && vis.Playable(listCtx, viewer, &episode) {
-					episodes = append(episodes, episode)
+			page := pages[show]
+			accepted := 0
+			for offset := 0; ; {
+				var episodes []core.Title
+				for _, episode := range page.Items {
+					if episode.Type == core.TypeEpisode && episode.ShowKey == show && vis.Playable(listCtx, viewer, &episode) {
+						episodes = append(episodes, episode)
+					}
+				}
+				episodes = vis.Available(listCtx, viewer, episodes)
+				if keep != nil {
+					if episodes, err = keep(episodes); err != nil {
+						return nil, err
+					}
+				}
+				out = append(out, episodes...)
+				accepted += len(episodes)
+				offset += len(page.Items)
+				// Without a filter the newest episodes are enough. With one, read
+				// on page by page, as the library feed does, until enough
+				// episodes are accepted or the series is exhausted.
+				if keep == nil || accepted >= limit || len(page.Items) == 0 || offset >= page.Total || offset >= activityScanLimit {
+					break
+				}
+				if err = ctx.Err(); err != nil {
+					return nil, err
+				}
+				if page, err = s.d.AiredEpisodes(ctx, show, offset, localEpisodeCap); err != nil {
+					return nil, err
 				}
 			}
-			out = append(out, vis.Available(listCtx, viewer, episodes)...)
 		}
 	}
 	return out, nil

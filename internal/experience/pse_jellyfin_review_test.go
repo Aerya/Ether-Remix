@@ -83,3 +83,35 @@ func TestPSEJellyfinThemeRecursiveReadsChildrenOnlyWhenAsked(t *testing.T) {
 		t.Fatalf("episode by ID: %+v, %d children reads, error %v", page.Items, calls, err)
 	}
 }
+
+func TestPSEJellyfinThemeOnlySearchRanksAndReportsExactTotals(t *testing.T) {
+	viewer := &core.User{ID: 17, AllowedLibraries: []core.LibraryID{5100, 5101}, MaxContentRating: "PG"}
+	s := jellyfinThemeViewsFixture(t, viewer)
+	ctx := t.Context()
+
+	page, err := s.Search(ctx, viewer, core.Device{}, "le film", frontend.ItemQuery{Limit: 10})
+	if err != nil || !page.TotalExact || page.Continuation != frontend.ContinuationExhausted || page.Page.Total != 1 {
+		t.Fatalf("last page %+v, error %v", page, err)
+	}
+	// Without a type, episodes are searched too (as Service.Search does).
+	page, err = s.Search(ctx, viewer, core.Device{}, "début", frontend.ItemQuery{Limit: 10})
+	if err != nil || len(page.Page.Items) != 1 || page.Page.Items[0].Key != core.EpisodeKey(5, 1, 1) {
+		t.Fatalf("untyped search %+v, error %v", page.Page.Items, err)
+	}
+	page, err = s.Search(ctx, viewer, core.Device{}, "e", frontend.ItemQuery{Limit: 1})
+	if err != nil || page.Continuation != frontend.ContinuationMore || !page.TotalExact || page.Page.Total < 2 {
+		t.Fatalf("first page %+v, error %v", page, err)
+	}
+}
+
+func TestPSEJellyfinRankSearch(t *testing.T) {
+	items := []core.Title{{Title: "Le Roi Lion 2"}, {Title: "Roi"}, {Title: "Roi Lion"}, {Title: "Un roi"}}
+	pseJellyfinRankSearch(items, "roi")
+	var got []string
+	for _, item := range items {
+		got = append(got, item.Title)
+	}
+	if !slices.Equal(got, []string{"Roi", "Roi Lion", "Le Roi Lion 2", "Un roi"}) {
+		t.Fatalf("ranking %v", got)
+	}
+}

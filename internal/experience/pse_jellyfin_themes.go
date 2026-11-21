@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"slices"
 	"strconv"
 
@@ -139,6 +140,12 @@ func (s *Service) PSEThemeRowViews(ctx context.Context, viewer *core.Viewer, vie
 	return nil, core.ErrNotFound
 }
 
+// pseJellyfinRowLangFree is the language exception of a row, shared by the
+// row's opening and by the check that lists it.
+func pseJellyfinRowLangFree(part frontend.PSETheme, row frontend.PSEThemeRow) bool {
+	return part.AllLanguages || row.LangFree
+}
+
 // pseJellyfinRowHasAllowed stops at the first title of the row the viewer may
 // see (parental control and language scope included).
 func (s *Service) pseJellyfinRowHasAllowed(ctx context.Context, themes frontend.PSEThemes, v *core.User, part frontend.PSETheme, row frontend.PSEThemeRow) bool {
@@ -150,13 +157,15 @@ func (s *Service) pseJellyfinRowHasAllowed(ctx context.Context, themes frontend.
 		}
 		keys = append(keys, key)
 		membership.keys[key] = true
-		if part.AllLanguages || row.LangFree {
+		if pseJellyfinRowLangFree(part, row) {
 			membership.langFree[key] = true
 		}
 	}
 	for batch := range slices.Chunk(keys, 25) {
 		titles, err := s.pseJellyfinThemeTitles(ctx, v, batch, membership)
 		if err != nil {
+			// Fail closed: a row whose titles cannot be read is not listed.
+			slog.Warn("experience: theme row not listed, titles unreadable", "row", row.ID, "err", err)
 			return false
 		}
 		if len(titles) > 0 {
@@ -260,7 +269,7 @@ func (s *Service) pseJellyfinThemeMembership(ctx context.Context, v *core.User, 
 						membership.ordered = append(membership.ordered, key)
 						membership.keys[key] = true
 					}
-					if part.AllLanguages || row.LangFree {
+					if pseJellyfinRowLangFree(part, row) {
 						membership.langFree[key] = true
 					}
 				}

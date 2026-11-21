@@ -3,6 +3,7 @@ package experience
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -37,15 +38,43 @@ func (s *Service) pseJellyfinThemeOnlySearch(ctx context.Context, viewer *core.V
 		return frontend.SearchPage{Continuation: frontend.ContinuationUnknown}, true, nil
 	}
 	q.Filter.Query = query
-	q.Recursive = q.Recursive || slices.Contains(q.Types, core.TypeSeason) || slices.Contains(q.Types, core.TypeEpisode)
-	q.Offset, q.Limit = offset, limit
+	// As Service.Search, a request without types also finds seasons and
+	// episodes of the series.
+	q.Recursive = q.Recursive || len(q.Types) == 0 || slices.Contains(q.Types, core.TypeSeason) || slices.Contains(q.Types, core.TypeEpisode)
+	// The whole membership is read: it is ranked before it is paged.
+	q.Offset, q.Limit = 0, 0
 	page, err := s.LibraryItems(ctx, viewer, device, "", q)
 	if err != nil {
 		return frontend.SearchPage{}, true, err
 	}
-	continuation := frontend.ContinuationUnknown
-	if offset+len(page.Items) < page.Total {
+	items := page.Items
+	if q.Sort == "" {
+		pseJellyfinRankSearch(items, query)
+	}
+	start := min(offset, len(items))
+	stop := min(offset+limit, len(items))
+	// The catalogue's relevance score does not exist for members read from a
+	// theme: exact matches come first, then prefixes, then the list's order.
+	continuation := frontend.ContinuationExhausted
+	if stop < len(items) {
 		continuation = frontend.ContinuationMore
 	}
-	return frontend.SearchPage{Page: page, Continuation: continuation}, true, nil
+	return frontend.SearchPage{Page: core.Page{Items: items[start:stop], Total: len(items)}, TotalExact: true, Continuation: continuation}, true, nil
+}
+
+// pseJellyfinRankSearch orders exact title matches, then titles starting with
+// the query, then the others, keeping the existing order inside each class.
+func pseJellyfinRankSearch(items []core.Title, query string) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	rank := func(title core.Title) int {
+		name := strings.ToLower(strings.TrimSpace(title.Title))
+		switch {
+		case name == query:
+			return 0
+		case strings.HasPrefix(name, query):
+			return 1
+		}
+		return 2
+	}
+	slices.SortStableFunc(items, func(a, b core.Title) int { return rank(a) - rank(b) })
 }
