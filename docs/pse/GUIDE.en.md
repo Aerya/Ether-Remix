@@ -36,7 +36,9 @@
 <a id="nav-demarrage-rapide"></a>
 ## Quick start
 
-In the console, open **Ether-Remix → Overview → Quick start**. This view opens by default while indexing is disabled, remains available and does not change settings automatically.
+In the console, the **Remix** group in the left menu, above **Libraries**, holds the Ether-Remix pages. It opens in **Simple mode**: **Start**, **Sources**, **Languages and quality**, **Content** and **Diagnostics**. On a first visit with no source at all, a four-step **assistant** (Sources, Language, App, Done) starts once; **Start** lets you run it again. **Diagnostics** checks sources, indexing, titles ready to play and storage, and offers one action per problem. In Simple mode, **Sources** is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use. The group’s **Expert** switch adds the **Indexing**, **Playback**, **Visuals**, **Tracking** and **Statistics** pages, plus the Indexers, BitTorrent, XDCC and FTP / SFTP categories; the choice is remembered in your browser only.
+
+The detailed step-by-step guide is in **Start**, collapsible; it does not change settings automatically. In Expert mode, **Statistics** has five views: **Summary** (where preparation stands), **Catalogue**, **Searches**, **Sources** and **Usage**. The **Indexing → Pre (beta)** section has its own view. Each option has a single place: SubMaker under **Playback → Subtitles**, library sorting under **Content**, search activity under **Statistics → Searches**.
 
 1. **Sources**: add, test and enable your providers. An addon supplying its own playback links does not require a second debrid key for searches.
 2. **Indexing**: enable and save background indexing to prepare the video catalogue. Automatic mode uses enabled Stremio addons; switch to Custom to choose sources, including Prowlarr/Jackett indexers. An empty custom selection performs no searches. Respect provider quotas.
@@ -285,6 +287,7 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 
 - **Sources**: one entry for accounts, Stremio addons, BitTorrent/Usenet indexers, Usenet providers, IPTV and music sources. Ether components and configurations are retained. Indexers can be filtered by Prowlarr/Jackett instance or manual origin, with one shared configuration.
 - **Indexing → Settings**: enablement, budgets, pace and source selection: Automatic for enabled Stremio addons, or Custom, including no sources. This does not disable playback sources. Priority titles show catalogue, searched, with-release and shown counts for each library or collection; groups can overlap.
+- **Start, Diagnostics and assistant** (Simple mode): first steps, installation check and guided setup.
 - **Overview**: quick start, Remix indexing activity plus Ether’s Sources and Usage dashboards.
 - **Playback → Priorities**: optional quick setup with a strict, freely reorderable source order ([guide](QUICK_SOURCES.en.md)). When disabled, advanced preferences still rank equivalent-quality sources and do not make searches sequential.
 - **Playback → Quality**: French catalogue, release languages, resolution, codecs, cache and collection exceptions.

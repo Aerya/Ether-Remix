@@ -37,6 +37,7 @@ Indexers (Prowlarr, Jackett, NZBHydra2) find releases. Configure the appropriate
 - **Shared Ether and Remix configuration**: Stremio addons, indexers, Usenet services, debrid accounts, music sources and IPTV in one place.
 - **Self-hosted Seedstrem**: add its manifest from Sources → Stremio; the addon list opens after saving so you can find and edit it. Prowlarr search and playback during download via qBittorrent or Deluge; files stay on the Seedstrem host, with no volume to mount in Remix. Downloads start only for playback; optional last-resort playback keeps searches available for indexing. [Setup and connection](SEEDSTREM.en.md).
 - **Stremio catalogues**: background manual synchronization, visible status and retention of the last import on failure.
+- **Remix group, Simple and Expert modes**: the left menu has a **Remix** group, above Libraries. It opens in Simple mode (Start, Sources, Languages and quality, Content, Diagnostics), with a four-step assistant on first launch. The **Expert** switch, remembered per browser, adds Indexing, Playback, Visuals, Tracking and Statistics.
 - **Quick start**: the **Overview → Quick start** view guides initial setup — sources, video indexing, languages and quality, statistics and clients. A reminder indicates when automatic search is disabled.
 - **Remix console**: settings under `/ether/remix`, collapsible sections closed by default; iBroadcast sits alongside music providers, with Subsonic information under Content → Music.
 - **Background indexing**: search releases through your addons and Prowlarr, Jackett or NZBHydra2 indexers before playback starts.
@@ -152,7 +153,7 @@ A **style for multiple cards** can be prepared from one gallery: choose cards, s
 
 ### An interface that fits your habits
 
-- Seven tabs: **Overview** (quick start, activity, sources, usage), **Sources** (including local media health), **Indexing** (settings and releases), **Playback** (priorities, quality, subtitles), **Content**, **Visuals** (Nuvio cards, packs, poster refresh) and **Tracking**. Old links and bookmarks are redirected.
+- Expert mode: **Indexing** (settings and releases), **Playback** (priorities, quality, non-dubbed titles, subtitles), **Visuals** (Nuvio cards, packs, poster refresh), **Tracking** and **Statistics** (quick start, activity, sources, usage), on top of **Sources** (including local media health) and **Content**. Old links and bookmarks are redirected.
 - Automatic indexing of enabled Stremio addons or a custom selection, including none; Prowlarr/Jackett instance filters and catalogue, searched, with-release and shown counts for each prioritized library or collection.
 - Sources grouped by family, category/content sorting, on-demand debrid key display and collapsible sections that preserve your input. Choose palettes in **Appearance**.
 - Six palettes: **Ether, Nord, Catppuccin, Solarized, Gruvbox and Rosé Pine**, each with light and dark modes, instant preview and per-browser persistence.

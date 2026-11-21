@@ -128,7 +128,60 @@ function Breakdown({ rows, label }: { rows: Row[]; label: string }) {
   );
 }
 
-export function IndexerDetails() {
+function SummaryExtra({ total, types }: { total: Counts; types: Record<string, Counts> }) {
+  const attention = total.failing + total.stale;
+  return (
+    <>
+      <div
+        role="status"
+        className={`rounded-xl border p-4 text-sm ${attention > 0 ? "border-warning" : "border-border"}`}
+      >
+        <p className="font-medium">{L("À surveiller", "To watch")}</p>
+        <p className="mt-1 text-fg-muted">
+          {attention > 0
+            ? L(
+                `${num(total.failing)} titre(s) avec une source en erreur · ${num(total.stale)} observation(s) ancienne(s). `,
+                `${num(total.failing)} title(s) with a source error · ${num(total.stale)} old observation(s). `,
+              )
+            : L("Rien à signaler pour le moment. ", "Nothing to report for now. ")}
+          <Link className="underline" to="/remix/apercu?view=recherches">
+            {L("Voir les recherches", "View searches")}
+          </Link>
+        </p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {TYPES.map(([type, fr, en]) => {
+          const c = types[type];
+          if (!c) return null;
+          return (
+            <div key={type} className="rounded-xl border border-border p-4 text-sm">
+              <p className="font-medium">{L(fr, en)}</p>
+              <p className="mt-1 text-fg-muted">
+                {L(
+                  `${num(c.titles)} titres · ${pct(c.indexed, c.titles)} cherchés`,
+                  `${num(c.titles)} titles · ${pct(c.indexed, c.titles)} searched`,
+                )}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-sm">
+        <Link className="underline" to="/remix/apercu?view=catalogue">
+          {L("Détail par type et par bibliothèque", "Detail by type and library")}
+        </Link>
+      </p>
+    </>
+  );
+}
+
+/**
+ * Statistiques du catalogue et de l’indexation, découpées par question :
+ * « summary » (où en est la préparation), « catalogue » (ce qui est suivi) et
+ * « searches » (ce qui se passe). Sans `part`, toutes les parties s’affichent.
+ */
+export function IndexerDetails({ part }: { part?: "summary" | "catalogue" | "searches" } = {}) {
+  const shows = (...parts: string[]) => !part || parts.includes(part);
   const [data, setData] = useState<Details | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -162,32 +215,34 @@ export function IndexerDetails() {
       aria-label={L("Statistiques du catalogue", "Catalogue statistics")}
       aria-busy={busy}
     >
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-semibold">
-            {L("Le catalogue en chiffres", "Your catalogue at a glance")}
-          </h2>
-          <p className="mt-1 text-sm text-fg-muted">
-            {L(
-              "Couverture des recherches et disponibilité des films et séries.",
-              "Search coverage and availability of movies and shows.",
-            )}
-          </p>
-          {data ? (
-            <p className="mt-2 text-xs text-fg-muted">
-              {L("Calculé le ", "Calculated on ")}
-              {new Date(data.at * 1000).toLocaleString(getLocale(), {
-                dateStyle: "medium",
-                timeStyle: "short",
-              })}
+      {shows("summary", "catalogue") ? (
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold">
+              {L("Le catalogue en chiffres", "Your catalogue at a glance")}
+            </h2>
+            <p className="mt-1 text-sm text-fg-muted">
+              {L(
+                "Couverture des recherches et disponibilité des films et séries.",
+                "Search coverage and availability of movies and shows.",
+              )}
             </p>
-          ) : null}
-        </div>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => void load(true)}>
-          <RefreshCw className={`mr-2 h-4 w-4 ${busy ? "animate-spin" : ""}`} />
-          {busy ? L("Calcul…", "Computing…") : L("Actualiser", "Refresh")}
-        </Button>
-      </header>
+            {data ? (
+              <p className="mt-2 text-xs text-fg-muted">
+                {L("Calculé le ", "Calculated on ")}
+                {new Date(data.at * 1000).toLocaleString(getLocale(), {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </p>
+            ) : null}
+          </div>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void load(true)}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${busy ? "animate-spin" : ""}`} />
+            {busy ? L("Calcul…", "Computing…") : L("Actualiser", "Refresh")}
+          </Button>
+        </header>
+      ) : null}
       {error ? (
         <p role="alert" className="rounded-xl border border-border p-4 text-sm text-warning">
           {error}
@@ -200,222 +255,256 @@ export function IndexerDetails() {
       ) : null}
       {data ? (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Metric
-              label={L("Catalogue local", "Local catalogue")}
-              value={total.titles}
-              hint={L(
-                "Titres gardés par Ether, où Remix cherche",
-                "Titles kept by Ether, where Remix searches",
-              )}
-            />
-            <Metric
-              color="var(--viz-4)"
-              label={L("Titres cherchés", "Searched titles")}
-              value={total.indexed}
-              hint={L(
-                `${pct(total.indexed, total.titles)} du catalogue`,
-                `${pct(total.indexed, total.titles)} of the catalogue`,
-              )}
-            />
-            <Metric
-              color="var(--viz-2)"
-              label={L("Avec une release", "With a release")}
-              value={total.found}
-              hint={L("Au moins une release trouvée", "At least one release found")}
-            />
-            <Metric
-              color="var(--viz-3)"
-              label={L("Titres affichés", "Shown titles")}
-              value={total.playable}
-              hint={L(
-                `${pct(total.playable, total.indexed)} des titres cherchés · seuil : ${data.min}`,
-                `${pct(total.playable, total.indexed)} of searched titles · threshold: ${data.min}`,
-              )}
-            />
-          </div>
-          {total.titles === 0 ? (
-            <p className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-fg-muted">
-              {L(
-                "Aucun titre suivi pour le moment. Configurez l’indexation dans Sources → Indexation.",
-                "No tracked titles yet. Configure indexing under Sources → Indexing.",
-              )}
-            </p>
+          {shows("summary") ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <Metric
+                  label={L("Catalogue local", "Local catalogue")}
+                  value={total.titles}
+                  hint={L(
+                    "Titres gardés par Ether, où Remix cherche",
+                    "Titles kept by Ether, where Remix searches",
+                  )}
+                />
+                <Metric
+                  color="var(--viz-4)"
+                  label={L("Titres cherchés", "Searched titles")}
+                  value={total.indexed}
+                  hint={L(
+                    `${pct(total.indexed, total.titles)} du catalogue`,
+                    `${pct(total.indexed, total.titles)} of the catalogue`,
+                  )}
+                />
+                <Metric
+                  color="var(--viz-2)"
+                  label={L("Avec une release", "With a release")}
+                  value={total.found}
+                  hint={L("Au moins une release trouvée", "At least one release found")}
+                />
+                <Metric
+                  color="var(--viz-3)"
+                  label={L("Titres affichés", "Shown titles")}
+                  value={total.playable}
+                  hint={L(
+                    `${pct(total.playable, total.indexed)} des titres cherchés · seuil : ${data.min}`,
+                    `${pct(total.playable, total.indexed)} of searched titles · threshold: ${data.min}`,
+                  )}
+                />
+              </div>
+              {total.titles === 0 ? (
+                <p className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-fg-muted">
+                  {L(
+                    "Aucun titre suivi pour le moment. Configurez l’indexation dans Sources → Indexation.",
+                    "No tracked titles yet. Configure indexing under Sources → Indexing.",
+                  )}
+                </p>
+              ) : null}
+              {part === "summary" ? <SummaryExtra total={total} types={types} /> : null}
+            </>
           ) : null}
-          <p className="text-sm text-fg-muted">
-            {L(
-              "Ces nombres portent sur le catalogue local, pas sur tout TMDB. C’est Ether, et non Remix, qui le limite aux titres assez connus et déjà sortis. « Cherchés » indique combien ont déjà été interrogés sur vos sources de releases.",
-              "These counts cover the local catalogue, not all of TMDB. Ether, not Remix, limits it to titles popular enough and already released. “Searched” counts titles already queried on your release sources.",
-            )}{" "}
-            <Link className="underline" to="/catalog/settings">
-              {L(
-                "Réglage Ether : Masquer les titres obscurs",
-                "Ether setting: Hide obscure titles",
-              )}
-            </Link>
-          </p>
-          <div className="grid gap-4 xl:grid-cols-3 md:grid-cols-2">
-            {TYPES.map(([type, fr, en]) => {
-              const c = types[type];
-              if (!c) return null;
-              return (
-                <article
-                  key={type}
-                  className="remix-stat-card rounded-xl border border-border bg-surface p-5"
-                >
-                  <div className="mb-4 flex min-h-12 items-center justify-between gap-3">
-                    <h3 className="font-semibold">{L(fr, en)}</h3>
-                    <span className="text-sm text-fg-muted">
-                      {num(c.titles)}{" "}
-                      {type === "anime"
-                        ? L(
-                            "dont animes · inclus dans Films et Séries",
-                            "of which anime · included in Movies and TV shows",
-                          )
-                        : L("titres du catalogue local", "titles in the local catalogue")}
-                    </span>
-                  </div>
-                  <CoverageRing
-                    value={c.indexed}
-                    total={c.titles}
-                    color={
-                      type === "movie"
-                        ? "var(--viz-1)"
-                        : type === "show"
-                          ? "var(--viz-2)"
-                          : "var(--viz-3)"
-                    }
-                    label={L("Recherche effectuée", "Search completed")}
-                  />
-                  <dl className="mt-5 grid grid-cols-3 gap-3 text-sm">
-                    {[
-                      [L("Cherchés", "Searched"), c.indexed],
-                      [L("Avec release", "With release"), c.found],
-                      [L("Affichés", "Shown"), c.playable],
-                    ].map(([label, value]) => (
-                      <div key={label}>
-                        <dt className="text-xs text-fg-muted">{label}</dt>
-                        <dd className="mt-1 font-semibold tabular-nums">{num(value as number)}</dd>
+          {shows("catalogue") ? (
+            <>
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Ces nombres portent sur le catalogue local, pas sur tout TMDB. C’est Ether, et non Remix, qui le limite aux titres assez connus et déjà sortis. « Cherchés » indique combien ont déjà été interrogés sur vos sources de releases.",
+                  "These counts cover the local catalogue, not all of TMDB. Ether, not Remix, limits it to titles popular enough and already released. “Searched” counts titles already queried on your release sources.",
+                )}{" "}
+                <Link className="underline" to="/catalog/settings">
+                  {L(
+                    "Réglage Ether : Masquer les titres obscurs",
+                    "Ether setting: Hide obscure titles",
+                  )}
+                </Link>
+              </p>
+              <div className="grid gap-4 xl:grid-cols-3 md:grid-cols-2">
+                {TYPES.map(([type, fr, en]) => {
+                  const c = types[type];
+                  if (!c) return null;
+                  return (
+                    <article
+                      key={type}
+                      className="remix-stat-card rounded-xl border border-border bg-surface p-5"
+                    >
+                      <div className="mb-4 flex min-h-12 items-center justify-between gap-3">
+                        <h3 className="font-semibold">{L(fr, en)}</h3>
+                        <span className="text-sm text-fg-muted">
+                          {num(c.titles)}{" "}
+                          {type === "anime"
+                            ? L(
+                                "dont animes · inclus dans Films et Séries",
+                                "of which anime · included in Movies and TV shows",
+                              )
+                            : L("titres du catalogue local", "titles in the local catalogue")}
+                        </span>
                       </div>
-                    ))}
-                  </dl>
-                </article>
-              );
-            })}
-          </div>
+                      <CoverageRing
+                        value={c.indexed}
+                        total={c.titles}
+                        color={
+                          type === "movie"
+                            ? "var(--viz-1)"
+                            : type === "show"
+                              ? "var(--viz-2)"
+                              : "var(--viz-3)"
+                        }
+                        label={L("Recherche effectuée", "Search completed")}
+                      />
+                      <dl className="mt-5 grid grid-cols-3 gap-3 text-sm">
+                        {[
+                          [L("Cherchés", "Searched"), c.indexed],
+                          [L("Avec release", "With release"), c.found],
+                          [L("Affichés", "Shown"), c.playable],
+                        ].map(([label, value]) => (
+                          <div key={label}>
+                            <dt className="text-xs text-fg-muted">{label}</dt>
+                            <dd className="mt-1 font-semibold tabular-nums">
+                              {num(value as number)}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          ) : null}
         </>
       ) : null}
-      <CatalogHistory
-        localMovies={data ? (types.movie?.titles ?? 0) : null}
-        localShows={data ? (types.show?.titles ?? 0) : null}
-      />
-      <IndexerActivity />
+      {!part ? (
+        <CatalogHistory
+          localMovies={data ? (types.movie?.titles ?? 0) : null}
+          localShows={data ? (types.show?.titles ?? 0) : null}
+        />
+      ) : null}
+      {part === "catalogue" ? (
+        <CatalogHistory
+          part="reference"
+          localMovies={data ? (types.movie?.titles ?? 0) : null}
+          localShows={data ? (types.show?.titles ?? 0) : null}
+        />
+      ) : null}
+      {shows("searches") ? <IndexerActivity /> : null}
       {data ? (
         <>
-          <section className="space-y-3">
-            <h3 className="font-semibold">
-              {L("Activité et fraîcheur", "Activity and freshness")}
-            </h3>
-            <div className="grid gap-3 md:grid-cols-3">
-              <Metric
-                label={L("Recherchés en 24 h", "Searched in 24 h")}
-                value={total.recent}
-                hint={L("Titres interrogés récemment", "Recently queried titles")}
-              />
-              <Metric
-                label={L("Observations anciennes", "Old observations")}
-                value={total.stale}
-                warning
-                hint={L(
-                  "Titres affichés, non recherchés depuis 3 semaines",
-                  "Shown titles not searched for 3 weeks",
-                )}
-              />
-              <Metric
-                label={L("Titres avec une source en erreur", "Titles with a source error")}
-                value={total.failing}
-                warning
-                hint={L(
-                  "Dernière recherche incomplète · nouvel essai sous 24 h",
-                  "Last search incomplete · retry within 24 h",
-                )}
-              />
-            </div>
-          </section>
-          {data.libraries?.length ? (
+          {shows("searches") ? (
             <section className="space-y-3">
-              <h3 className="font-semibold">{L("Bibliothèques à thème", "Theme libraries")}</h3>
-              <p className="text-xs text-fg-muted">
-                {L(
-                  "Un titre peut appartenir à plusieurs bibliothèques : ces nombres ne s’additionnent pas.",
-                  "A title can belong to several libraries: these counts are not additive.",
-                )}
-              </p>
-              {data.libraries.map((lib, i) => (
-                <details
-                  key={`${lib.id}-${i}`}
-                  className="overflow-hidden rounded-xl border border-border"
-                >
-                  <summary className="cursor-pointer px-5 py-4 text-sm marker:text-fg-muted">
-                    <span className="font-medium">{lib.name}</span>
-                    <span className="ml-3 text-xs text-fg-muted">
-                      {num(lib.playable)} / {num(lib.titles)} {L("titres affichés", "titles shown")}
-                    </span>
-                  </summary>
-                  <Breakdown
-                    label={L("Bibliothèque / collection", "Library / collection")}
-                    rows={[
-                      { ...lib, name: L("Ensemble de la bibliothèque", "Whole library") },
-                      ...(lib.rows ?? []),
-                    ]}
-                  />
-                </details>
-              ))}
+              <h3 className="font-semibold">
+                {L("Activité et fraîcheur", "Activity and freshness")}
+              </h3>
+              <div className="grid gap-3 md:grid-cols-3">
+                <Metric
+                  label={L("Recherchés en 24 h", "Searched in 24 h")}
+                  value={total.recent}
+                  hint={L("Titres interrogés récemment", "Recently queried titles")}
+                />
+                <Metric
+                  label={L("Observations anciennes", "Old observations")}
+                  value={total.stale}
+                  warning
+                  hint={L(
+                    "Titres affichés, non recherchés depuis 3 semaines",
+                    "Shown titles not searched for 3 weeks",
+                  )}
+                />
+                <Metric
+                  label={L("Titres avec une source en erreur", "Titles with a source error")}
+                  value={total.failing}
+                  warning
+                  hint={L(
+                    "Dernière recherche incomplète · nouvel essai sous 24 h",
+                    "Last search incomplete · retry within 24 h",
+                  )}
+                />
+              </div>
             </section>
           ) : null}
-          {data.collections?.length ? (
-            <details className="overflow-hidden rounded-xl border border-border">
-              <summary className="cursor-pointer px-5 py-4 text-sm font-medium">
-                {L("Toutes les collections", "All collections")}{" "}
-                <span className="ml-2 text-fg-muted">({num(data.collections.length)})</span>
-              </summary>
-              <Breakdown label={L("Collection", "Collection")} rows={data.collections} />
-            </details>
+          {shows("catalogue") ? (
+            <>
+              {data.libraries?.length ? (
+                <section className="space-y-3">
+                  <h3 className="font-semibold">{L("Bibliothèques à thème", "Theme libraries")}</h3>
+                  <p className="text-xs text-fg-muted">
+                    {L(
+                      "Un titre peut appartenir à plusieurs bibliothèques : ces nombres ne s’additionnent pas.",
+                      "A title can belong to several libraries: these counts are not additive.",
+                    )}
+                  </p>
+                  {data.libraries.map((lib, i) => (
+                    <details
+                      key={`${lib.id}-${i}`}
+                      className="overflow-hidden rounded-xl border border-border"
+                    >
+                      <summary className="cursor-pointer px-5 py-4 text-sm marker:text-fg-muted">
+                        <span className="font-medium">{lib.name}</span>
+                        <span className="ml-3 text-xs text-fg-muted">
+                          {num(lib.playable)} / {num(lib.titles)}{" "}
+                          {L("titres affichés", "titles shown")}
+                        </span>
+                      </summary>
+                      <Breakdown
+                        label={L("Bibliothèque / collection", "Library / collection")}
+                        rows={[
+                          { ...lib, name: L("Ensemble de la bibliothèque", "Whole library") },
+                          ...(lib.rows ?? []),
+                        ]}
+                      />
+                    </details>
+                  ))}
+                </section>
+              ) : null}
+              {data.collections?.length ? (
+                <details className="overflow-hidden rounded-xl border border-border">
+                  <summary className="cursor-pointer px-5 py-4 text-sm font-medium">
+                    {L("Toutes les collections", "All collections")}{" "}
+                    <span className="ml-2 text-fg-muted">({num(data.collections.length)})</span>
+                  </summary>
+                  <Breakdown label={L("Collection", "Collection")} rows={data.collections} />
+                </details>
+              ) : null}
+              {data.empty > 0 ? (
+                <p className="text-xs text-fg-muted">
+                  {L(
+                    `${data.empty} collection(s) pas encore construite(s) ou réservée(s) à un spectateur, non détaillée(s).`,
+                    `${data.empty} collection(s) not built yet or private to a viewer, not detailed.`,
+                  )}
+                </p>
+              ) : null}
+              <details className="rounded-xl border border-border px-5 py-4 text-sm">
+                <summary className="cursor-pointer font-medium">
+                  {L("Comprendre les chiffres", "Understanding the numbers")}
+                </summary>
+                <div className="mt-4 space-y-3 text-fg-muted">
+                  <p>
+                    {L(
+                      `Un titre affiché possède au moins ${data.min} releases correspondant à vos options. Son pourcentage se rapporte aux titres cherchés, pas à tout le catalogue.`,
+                      `A shown title has at least ${data.min} releases matching your options. Its percentage is based on searched titles, not the entire catalogue.`,
+                    )}
+                  </p>
+                  <p>
+                    {L(
+                      "Une observation ancienne date de plus de 3 semaines. Une release non revue depuis 60 jours ne compte plus. Si une source ne répond pas, ses releases précédentes sont conservées et une nouvelle recherche est tentée sous 24 h.",
+                      "An old observation is over 3 weeks old. A release not seen for 60 days no longer counts. If a source fails, its previous releases are retained and a new search is attempted within 24 hours.",
+                    )}
+                  </p>
+                  <p>
+                    {L(
+                      "Le marqueur « en cache » est annoncé par l’addon, sans vérification auprès du debrid. Les chiffres ne garantissent pas la lecture de chaque titre.",
+                      "The cached marker is reported by the addon, without verification against the debrid service. These figures do not guarantee playback of every title.",
+                    )}
+                  </p>
+                </div>
+              </details>
+            </>
           ) : null}
-          {data.empty > 0 ? (
-            <p className="text-xs text-fg-muted">
-              {L(
-                `${data.empty} collection(s) pas encore construite(s) ou réservée(s) à un spectateur, non détaillée(s).`,
-                `${data.empty} collection(s) not built yet or private to a viewer, not detailed.`,
-              )}
-            </p>
-          ) : null}
-          <details className="rounded-xl border border-border px-5 py-4 text-sm">
-            <summary className="cursor-pointer font-medium">
-              {L("Comprendre les chiffres", "Understanding the numbers")}
-            </summary>
-            <div className="mt-4 space-y-3 text-fg-muted">
-              <p>
-                {L(
-                  `Un titre affiché possède au moins ${data.min} releases correspondant à vos options. Son pourcentage se rapporte aux titres cherchés, pas à tout le catalogue.`,
-                  `A shown title has at least ${data.min} releases matching your options. Its percentage is based on searched titles, not the entire catalogue.`,
-                )}
-              </p>
-              <p>
-                {L(
-                  "Une observation ancienne date de plus de 3 semaines. Une release non revue depuis 60 jours ne compte plus. Si une source ne répond pas, ses releases précédentes sont conservées et une nouvelle recherche est tentée sous 24 h.",
-                  "An old observation is over 3 weeks old. A release not seen for 60 days no longer counts. If a source fails, its previous releases are retained and a new search is attempted within 24 hours.",
-                )}
-              </p>
-              <p>
-                {L(
-                  "Le marqueur « en cache » est annoncé par l’addon, sans vérification auprès du debrid. Les chiffres ne garantissent pas la lecture de chaque titre.",
-                  "The cached marker is reported by the addon, without verification against the debrid service. These figures do not guarantee playback of every title.",
-                )}
-              </p>
-            </div>
-          </details>
         </>
+      ) : null}
+      {part === "searches" ? (
+        <CatalogHistory
+          part="history"
+          localMovies={data ? (types.movie?.titles ?? 0) : null}
+          localShows={data ? (types.show?.titles ?? 0) : null}
+        />
       ) : null}
     </section>
   );

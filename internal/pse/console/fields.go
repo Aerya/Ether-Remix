@@ -130,8 +130,8 @@ var Features = communityFields([]Feature{
 	},
 	{
 		ID:    "predb",
-		Title: tx("Pré (bêta) : annonces de releases FR / MULTi / VOSTFR", "Pre (beta): FR / MULTi / VOSTFR release announcements"),
-		Description: tx("Fonction en bêta : les flux publics et les formats d'API personnels n'ont pas encore été éprouvés en conditions réelles. Lit les annonces de releases (les « pré ») et garde les françaises. Remix part du principe qu'une release annoncée est disponible sous une heure sur vos sources (debrid, BitTorrent, Usenet) : elle compte comme release indexée, et son film ou sa série est ajouté au catalogue sans attendre qu'il y arrive par TMDB. Une pré ne contient aucun lien : la lecture passe toujours par vos sources.",
+		Title: tx("Pre (bêta) : annonces de releases FR / MULTi / VOSTFR", "Pre (beta): FR / MULTi / VOSTFR release announcements"),
+		Description: tx("Fonction en bêta : les flux publics et les formats d'API personnels n'ont pas encore été éprouvés en conditions réelles. Lit les annonces de releases (les « pre ») et garde les françaises. Remix part du principe qu'une release annoncée est disponible sous une heure sur vos sources (debrid, BitTorrent, Usenet) : elle compte comme release indexée, et son film ou sa série est ajouté au catalogue sans attendre qu'il y arrive par TMDB. Une pre ne contient aucun lien : la lecture passe toujours par vos sources.",
 			"Beta feature: the public feeds and personal API formats have not yet been proven in real conditions. Reads release announcements (“pre”) and keeps the French ones. Remix assumes an announced release is available within an hour on your sources (debrid, BitTorrent, Usenet): it counts as an indexed release, and its movie or show is added to the catalogue without waiting for it to arrive through TMDB. A pre holds no link: playback always goes through your sources."),
 		Fields: []Field{
 			{Key: "PSE_PREDB", Kind: KindToggle, Default: "off", Label: tx("Activer", "Enable"),
@@ -145,7 +145,7 @@ var Features = communityFields([]Feature{
 			{Key: "PSE_PREDB_PRIVATE_KEY", Kind: KindKey, Default: "", Label: tx("Clé d'API personnelle (facultatif)", "Personal API key (optional)"),
 				Help: tx("Envoyée en en-tête X-API-Key aux seules adresses personnelles ci-dessus, jamais dans une adresse. Jamais réaffichée.", "Sent as an X-API-Key header to the personal addresses above only, never in an address. Never shown again.")},
 			{Key: "PSE_PREDB_DELAY", Advanced: true, Kind: KindDuration, Default: "1h", Placeholder: "1h", Label: tx("Délai avant prise en compte", "Delay before counting"),
-				Help: tx("Une pré n'est comptée que ce temps après son annonce, le temps que la release arrive sur les sources. 0s : tout de suite.", "A pre only counts this long after its announcement, so the release has time to reach the sources. 0s: immediately.")},
+				Help: tx("Une pre n'est comptée que ce temps après son annonce, le temps que la release arrive sur les sources. 0s : tout de suite.", "A pre only counts this long after its announcement, so the release has time to reach the sources. 0s: immediately.")},
 			{Key: "PSE_PREDB_INTERVAL", Advanced: true, Kind: KindDuration, Default: "10m", Placeholder: "10m", Label: tx("Intervalle de lecture", "Read interval"),
 				Help: tx("Minimum 2m.", "At least 2m.")},
 		},

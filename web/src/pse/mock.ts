@@ -1,4 +1,5 @@
 import type { Descriptor } from "../lib/extend";
+import { REMIX_NAV, remixHref } from "./navigation";
 const text = (fr: string, en = fr) => ({ fr, en });
 const demoField = (key: string, fr: string, en: string, kind = "toggle", extra = {}) => ({
   key,
@@ -152,18 +153,18 @@ export const remixDescriptors: Descriptor[] = [
     owner: "builtin",
     label: { source: "Ether-Remix" },
     icon: "Languages",
-    group: "",
-    order: 15,
-    meta: { route: "/remix", navGroup: "", inNav: true },
+    group: "remix",
+    order: 10,
+    meta: { route: "/remix", navGroup: "remix", inNav: true },
   },
-  {
+  ...REMIX_NAV.map((e, i): Descriptor => ({
     kind: "navItem",
-    id: "pse",
+    id: e.id,
     owner: "builtin",
-    label: { source: "Ether-Remix" },
-    icon: "Languages",
-    group: "",
-    order: 15,
-    meta: { route: "/remix", page: "pse" },
-  },
+    label: { source: e.fr },
+    icon: e.icon,
+    group: "remix",
+    order: 10 + i,
+    meta: { route: remixHref(e.tab), page: "pse" },
+  })),
 ];

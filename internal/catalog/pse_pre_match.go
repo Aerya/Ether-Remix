@@ -9,7 +9,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
-// MatchRelease relie une release analysée (nom de pré) à un film ou à une
+// MatchRelease relie une release analysée (nom de pre) à un film ou à une
 // série du catalogue. Un titre et une année exacts sont exigés pour un
 // film ; une série n'a besoin que du titre exact (année facultative). Un
 // nom ambigu n'est pas rapproché. Si le média manque au catalogue, il est
@@ -88,7 +88,7 @@ func (c *Catalog) MatchRelease(ctx context.Context, info core.ReleaseInfo) (core
 		return core.Title{}, false
 	}
 	for key := range candidates {
-		// get n'applique pas les règles de visibilité : une pré prouve la
+		// get n'applique pas les règles de visibilité : une pre prouve la
 		// sortie, l'affichage reste réglé par le catalogue.
 		if t, err := c.get(ctx, key); err == nil && t != nil {
 			return core.Title{Key: key, Type: typ}, true

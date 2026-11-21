@@ -26,8 +26,47 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-21-opendeezer",
+    id: "2026-11-20-simple-expert-menu",
     version: "current",
+    date: "2026-11-21",
+    title: [
+      "Menu Remix dans la barre latérale : mode Simple, assistant et Diagnostic",
+      "Remix menu in the sidebar: Simple mode, assistant and Diagnostics",
+    ],
+    items: [
+      [
+        "Un groupe Remix apparaît dans le menu de gauche, au-dessus de Bibliothèque. Il s’ouvre en mode Simple : Accueil, Sources, Langues et qualité, Contenus et Diagnostic. Accueil liste trois étapes avec leur état.",
+        "A Remix group appears in the left menu, above Libraries. It opens in Simple mode: Start, Sources, Languages and quality, Content and Diagnostics. Start lists three steps with their status.",
+      ],
+      [
+        "Au premier lancement sans source, un assistant en quatre étapes (Sources, Langue, Application, Terminé) démarre une seule fois. Il se relance depuis Accueil. Une installation déjà configurée n’est pas interrompue.",
+        "On a first launch with no source, a four-step assistant (Sources, Language, App, Done) starts once. It can be run again from Start. An already configured installation is not interrupted.",
+      ],
+      [
+        "Diagnostic vérifie les sources, l’indexation, les titres prêts à lire et le stockage, avec une action par problème.",
+        "Diagnostics checks sources, indexing, titles ready to play and storage, with one action per problem.",
+      ],
+      [
+        "En mode Simple, Sources se limite à Stremio, Debrid, Usenet, Streaming musical, Fichiers locaux et IPTV, rangés par usage.",
+        "In Simple mode, Sources is limited to Stremio, Debrid, Usenet, Music streaming, Local files and IPTV, arranged by use.",
+      ],
+      [
+        "Chaque option n’a plus qu’un emplacement : SubMaker passe dans Lecture → Sous-titres, le tri des bibliothèques dans Contenus, et l’activité des recherches se suit uniquement dans Statistiques → Recherches. Contenus → Musique indique où régler chaque partie de la musique.",
+        "Each option now has a single place: SubMaker moves to Playback → Subtitles, library sorting to Content, and search activity is tracked only in Statistics → Searches. Content → Music shows where to set each part of music.",
+      ],
+      [
+        "Statistiques se découpe en cinq vues, une par question : Résumé, Catalogue, Recherches, Sources et Utilisation. La section Pre (bêta) a sa propre vue dans Indexation, qui cite les flux publics lus par défaut ; quand elle est activée, Statistiques → Résumé affiche les releases indexées au total et, pour chaque flux de pre, celles qui en sont issues.",
+        "Statistics is split into five views, one per question: Summary, Catalogue, Searches, Sources and Usage. The Pre (beta) section has its own view under Indexing, which lists the public feeds read by default; when it is on, Statistics → Summary shows releases indexed overall and, for each pre feed, those coming from it.",
+      ],
+      [
+        "L’interrupteur Expert du groupe ajoute Indexation, Lecture, Visuels, Suivi et Statistiques, sans rien retirer. Le choix est mémorisé dans votre navigateur ; les anciens liens et favoris continuent de fonctionner.",
+        "The group’s Expert switch adds Indexing, Playback, Visuals, Tracking and Statistics, with nothing removed. The choice is remembered in your browser; old links and bookmarks keep working.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-21-opendeezer",
+    version: "0.2.37-remix.121.1",
     date: "2026-11-21",
     title: [
       "OpenDeezer : lecture avec votre compte Deezer",
@@ -45,16 +84,16 @@ export const REMIX_UPDATES = [
     version: "0.2.37-remix.120.1",
     date: "2026-11-20",
     title: [
-      "Index des pré en bêta (releases FR / MULTi / VOSTFR)",
+      "Index des pre en bêta (releases FR / MULTi / VOSTFR)",
       "Pre index in beta (FR / MULTi / VOSTFR releases)",
     ],
     items: [
       [
-        "Nouvelle option facultative en bêta, désactivée par défaut : Remix lit les annonces de releases (pré) françaises, MULTi et VOSTFR. Une release annoncée est considérée comme disponible sous environ une heure sur vos sources (debrid, BitTorrent, Usenet) : elle compte comme release indexée et son film ou sa série est ajouté au catalogue sans attendre TMDB.",
-        "New optional beta setting, off by default: Remix reads French, MULTi and VOSTFR release announcements (pre). An announced release is assumed available within about an hour on your sources (debrid, BitTorrent, Usenet): it counts as an indexed release and its movie or show is added to the catalogue without waiting for TMDB.",
+        "Nouvelle option facultative en bêta, désactivée par défaut (Remix → Indexation → Pre (bêta)) : Remix lit les annonces de releases (pre) françaises, MULTi et VOSTFR. Une release annoncée est considérée comme disponible sous environ une heure sur vos sources (debrid, BitTorrent, Usenet) : elle compte comme release indexée et son film ou sa série est ajouté au catalogue sans attendre TMDB.",
+        "New optional beta setting, off by default (Remix → Indexing → Pre (beta)): Remix reads French, MULTi and VOSTFR release announcements (pre). An announced release is assumed available within about an hour on your sources (debrid, BitTorrent, Usenet): it counts as an indexed release and its movie or show is added to the catalogue without waiting for TMDB.",
       ],
       [
-        "Vous pouvez ajouter vos propres flux RSS ou une API personnelle avec votre clé ; rien de personnel n’est lu sans votre saisie. Une pré ne sert jamais de lien : la lecture passe toujours par vos sources.",
+        "Vous pouvez ajouter vos propres flux RSS ou une API personnelle avec votre clé ; rien de personnel n’est lu sans votre saisie. Une pre ne sert jamais de lien : la lecture passe toujours par vos sources.",
         "You can add your own RSS feeds or a personal API with your key; nothing personal is read without your input. A pre is never used as a link: playback always goes through your sources.",
       ],
     ],

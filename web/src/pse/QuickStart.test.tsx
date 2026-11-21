@@ -11,7 +11,7 @@ it("exposes the guide and directs users to the actual indexing settings", () => 
       <QuickStart indexing={false} />
     </MemoryRouter>,
   );
-  expect(REMIX_VIEWS.apercu.some((v) => v.key === "demarrage")).toBe(true);
+  expect(REMIX_VIEWS.apercu[0]!.key).toBe("resume");
   expect(screen.getAllByRole("listitem")).toHaveLength(6);
   expect(screen.getByText("Réglage enregistré : désactivée")).toBeVisible();
   expect(screen.getByRole("link", { name: "Régler l’indexation" })).toHaveAttribute(
@@ -40,6 +40,6 @@ it("links the disabled-indexing reminder to the guide", () => {
   );
   expect(screen.getByRole("link", { name: "Démarrage rapide" })).toHaveAttribute(
     "href",
-    "/remix/apercu?view=demarrage",
+    "/remix/accueil",
   );
 });

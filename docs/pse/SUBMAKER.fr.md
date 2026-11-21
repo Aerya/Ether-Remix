@@ -5,13 +5,13 @@ Cette intégration facultative est désactivée par défaut. Elle utilise une in
 ## Configuration
 
 1. Configurez vos fournisseurs de sous-titres et votre moteur de traduction dans SubMaker. Copiez son **manifeste personnel**, de forme `https://submaker.example/addon/<configuration>/manifest.json`. Une adresse `/configure` seule ne suffit pas. Ce manifeste contient des informations privées : ne le publiez pas.
-2. Dans **Remix → Sources → Stremio → SubMaker**, activez l’intégration, collez le manifeste et choisissez les langues source/cible (anglais/français par défaut). Enregistrez les réglages de la page, puis testez le manifeste. Ce test ne déclenche aucune traduction.
+2. Dans **Remix → Lecture → Sous-titres → SubMaker**, activez l’intégration, collez le manifeste et choisissez les langues source/cible (anglais/français par défaut). Enregistrez les réglages de la page, puis testez le manifeste. Ce test ne déclenche aucune traduction.
 3. Autorisez le périmètre global ou ajoutez des exceptions pour les bibliothèques/collections, puis **Enregistrer le périmètre**. La collection prime sur la bibliothèque, puis sur le global ; à priorité égale, la première règle correspondante gagne. Un titre SeerrCatalog sans appartenance connue utilise le global.
 4. Pour [SeerrCatalog](https://github.com/Aerya/Stremio-Seerr-Catalog), configurez aussi la recherche via Remix et sa clé dédiée. Dans les filtres utilisateur SeerrCatalog, activez les sous-titres externes et choisissez la même langue cible que Remix. Le partage des disponibilités garde sa propre activation et sa propre clé.
 
 ## VOSTFR à la demande
 
-Dans **Remix → VOSTFR à la demande**, l’option **Préparer les sous-titres français avec SubMaker** (désactivée par défaut) place les titres choisis dans le périmètre SubMaker, même si le global est coupé. Elle n’est proposée que lorsque SubMaker est activé avec un manifeste valide. Une règle de collection explicite dans le périmètre SubMaker reste prioritaire ; une règle de bibliothèque ne l’est pas.
+Dans **Remix → Lecture → VOSTFR**, l’option **Préparer les sous-titres français avec SubMaker** (désactivée par défaut) place les titres choisis dans le périmètre SubMaker, même si le global est coupé. Elle n’est proposée que lorsque SubMaker est activé avec un manifeste valide. Une règle de collection explicite dans le périmètre SubMaker reste prioritaire ; une règle de bibliothèque ne l’est pas.
 
 À l’activation, les titres sans sous-titres français connus sont recherchés à nouveau ; SubMaker prépare ensuite les releases trouvées, dans la limite du budget quotidien. Chaque titre affiche un état : VF disponible, sous-titres FR annoncés, SRT français prêt, SRT traduit (IA), en préparation, échec (nouvel essai plus tard), sans sous-titres FR ou aucune release indexée. Pour une série, l’état reflète l’épisode préparé lors de l’indexation ; les autres épisodes le sont à la lecture.
 

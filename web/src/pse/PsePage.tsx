@@ -1,8 +1,8 @@
-import "./navigation.css";
-import { IndexerActivity } from "./IndexerActivity";
 import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
-import { QuickStart, QuickStartHint } from "./QuickStart";
+import { QuickStartHint } from "./QuickStart";
+import { PreFeeds } from "./PreFeeds";
+import { PreStats, type PreStatus } from "./PreStats";
 import { XperienceImport } from "./XperienceImport";
 import { JukeboxQuickSetup } from "./JukeboxQuickSetup";
 import { Submaker } from "./Submaker";
@@ -38,6 +38,11 @@ import { ThemeLibraries } from "./ThemeLibraries";
 import { SearchPriority } from "./SearchPriority";
 import { RemixSources } from "./RemixSources";
 import { REMIX_TABS, visibleRemixViews, legacyRemixRoute } from "./navigation";
+import { RemixFrame } from "./RemixFrame";
+import { SimpleHome } from "./SimpleHome";
+import { RemixWizard } from "./RemixWizard";
+import { RemixDiagnostic } from "./RemixDiagnostic";
+import { getRemixMode, useRemixMode } from "./remixMode";
 import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { SourceStatistics, StatisticsPeriod } from "../pages/sources/statistics/Statistics";
 import { ImportedSources } from "./ImportedSources";
@@ -106,17 +111,21 @@ const T = (text: Text) => (fr() ? text.fr : text.en);
 
 const BASE = "/remix";
 
+/** Anciennes vues de Statistiques : « Activité » est devenue « Recherches ». */
+const legacyView = (view: string | null) => (view === "indexation" ? "recherches" : view);
+
 /** Onglets de la page ; une section inconnue va dans le dernier. */
 const TABS = REMIX_TABS;
 type TabKey = (typeof TABS)[number]["key"];
 
+/**
+ * Fonctions d’un onglet, d’après la table `REMIX_TABS`. Chaque fonction a un seul
+ * emplacement : une fonction absente de la table n’est affichée nulle part, et le
+ * test de navigation échoue tant qu’elle n’a pas d’onglet.
+ */
 export function featuresOfTab(tab: TabKey, features: Feature[]): Feature[] {
-  const known = new Set<string>(TABS.flatMap((t) => [...t.features]));
   const def = TABS.find((t) => t.key === tab)!;
-  const own = [...def.features].flatMap((id) => features.filter((f) => f.id === id));
-  return tab === TABS[TABS.length - 1]!.key
-    ? [...own, ...features.filter((f) => !known.has(f.id))]
-    : own;
+  return [...def.features].flatMap((id) => features.filter((f) => f.id === id));
 }
 
 function valuesOf(data: PseData | null): Record<string, string> | null {
@@ -136,7 +145,38 @@ export default function PsePage() {
         to={location.pathname.replace(/^\/accent/, "/remix") + location.search + location.hash}
       />
     );
-  if (!tab) return <Navigate replace to={"/remix/apercu" + location.search + location.hash} />;
+  if (!tab)
+    return (
+      <Navigate
+        replace
+        to={
+          (getRemixMode() === "expert" ? "/remix/apercu" : "/remix/accueil") +
+          location.search +
+          location.hash
+        }
+      />
+    );
+  if (tab === "accueil")
+    return (
+      <RemixFrame tab={tab}>
+        <SimpleHome />
+      </RemixFrame>
+    );
+  if (tab === "assistant")
+    return (
+      <RemixFrame tab={tab}>
+        <RemixWizard />
+      </RemixFrame>
+    );
+  if (tab === "diagnostic")
+    return (
+      <RemixFrame tab={tab}>
+        <RemixDiagnostic />
+      </RemixFrame>
+    );
+  if (tab === "expert") return <Navigate replace to="/remix/accueil" />;
+  if (tab === "apercu" && new URLSearchParams(location.search).get("view") === "demarrage")
+    return <Navigate replace to="/remix/accueil" />;
   let legacy = legacyRemixRoute(tab, location.search);
   if (tab === "sources" && new URLSearchParams(location.search).get("source") === "indexation")
     legacy = "/remix/indexation";
@@ -168,11 +208,74 @@ export function musicFieldPlacement(key: string) {
   return MUSIC_TRACKING.has(key) ? "tracking" : MUSIC_CONTENT.has(key) ? "content" : "source";
 }
 
+/** La musique se règle à quatre endroits ; ce plan dit lequel sert à quoi. */
+const MUSIC_MAP = [
+  {
+    title: ["Sources › Streaming musical", "Sources › Music streaming"],
+    text: [
+      "Comptes et services qui fournissent la musique (debrid, Deezer, Audius…).",
+      "Accounts and services that supply music (debrid, Deezer, Audius…).",
+    ],
+    to: "/remix/sources?source=musique",
+  },
+  {
+    title: ["Sources › Fichiers locaux, BitTorrent", "Sources › Local files, BitTorrent"],
+    text: [
+      "Vos dossiers audio, vos comptes iBroadcast et le téléchargement de musique.",
+      "Your audio folders, iBroadcast accounts and music downloads.",
+    ],
+    to: "/remix/sources?source=local",
+  },
+  {
+    title: ["Contenus › Musique (cette page)", "Content › Music (this page)"],
+    text: [
+      "Accès Subsonic, playlists, classements et découvertes.",
+      "Subsonic access, playlists, charts and discoveries.",
+    ],
+    to: "",
+  },
+  {
+    title: ["Suivi", "Tracking"],
+    text: ["Liaison Last.fm et envoi des écoutes.", "Last.fm link and play reporting."],
+    to: "/remix/suivi",
+  },
+] as const;
+
+function MusicMap() {
+  return (
+    <aside className="rounded-xl border border-border p-4 text-sm">
+      <h2 className="font-semibold">{L("Musique : où régler quoi", "Music: where to set what")}</h2>
+      <ul className="mt-2 space-y-1">
+        {MUSIC_MAP.map((row) => (
+          <li key={row.title[0]}>
+            {row.to ? (
+              <Link className="underline" to={row.to}>
+                {L(row.title[0], row.title[1])}
+              </Link>
+            ) : (
+              <strong>{L(row.title[0], row.title[1])}</strong>
+            )}
+            <span className="text-fg-muted">
+              {" — "}
+              {L(row.text[0], row.text[1])}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
+}
+
 function PseSettings() {
   const [qualityActive, setQualityActive] = useState(false);
   const [params, setParams] = useSearchParams();
   const content = params.get("content") ?? "bibliotheques";
-  const tab = useRouteTab(TABS);
+  const { tab: routeTab } = useParams();
+  const routed = useRouteTab(TABS);
+  // « Langues et qualité » : la page Qualité de Lecture, sous sa propre adresse.
+  const isLangues = routeTab === "langues";
+  const tab = isLangues ? "lecture" : routed;
+  const [mode] = useRemixMode();
   const doc = useAsync(() => apiFetch<PseData>("/pse/"), []);
   const [data, setData] = useState<PseData | null>(null);
   const current = data ?? doc.data ?? null;
@@ -259,9 +362,9 @@ function PseSettings() {
     tab === "apercu" || tab === "indexation" || tab === "lecture" || tab === "visuels"
       ? visibleRemixViews(tab)
       : [];
-  const view =
-    views.find((v) => v.key === params.get("view"))?.key ??
-    (tab === "apercu" ? (saved.PSE_INDEXER === "off" ? "demarrage" : "indexation") : views[0]?.key);
+  const view = isLangues
+    ? "qualite"
+    : (views.find((v) => v.key === legacyView(params.get("view")))?.key ?? views[0]?.key);
   const viewNav = (
     items: readonly { key: string; fr: string; en: string }[],
     active: string | undefined,
@@ -290,45 +393,16 @@ function PseSettings() {
       </nav>
     ) : null;
   return (
-    <DomainPage
-      className="remix-navigation"
-      title="Ether-Remix"
-      base={BASE}
-      tabs={TABS.map((t) => ({
-        key: t.key,
-        label: L(t.fr, t.en),
-      }))}
-      active={tab}
-      description={L(
-        "Films, séries, animés et musique. Les réglages s'appliquent sans redémarrer.",
-        "Movies, shows, anime and music. Settings apply without a restart.",
-      )}
-    >
-      <CollapsibleSections.Provider
-        key={tab + (view ?? "")}
-        value={tab !== "apercu" || view === "demarrage"}
-      >
+    <RemixFrame tab={routeTab}>
+      <CollapsibleSections.Provider key={tab + (view ?? "")} value={tab !== "apercu"}>
         <div className="space-y-6">
-          {viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
-          {tab === "apercu" && view === "demarrage" ? (
-            <>
-              <QuickStart indexing={saved.PSE_INDEXER === "on"} />
-              <p className="text-sm text-fg-muted">
-                {L(
-                  "Cartes d’accueil, packs de visuels et affiches se règlent dans Visuels.",
-                  "Home cards, artwork packs and posters are set up in Visuals.",
-                )}{" "}
-                <Link className="underline" to="/remix/visuels">
-                  {L("Ouvrir Visuels", "Open Visuals")}
-                </Link>
-              </p>
-            </>
-          ) : null}
-          {tab === "apercu" && view !== "demarrage" && saved.PSE_INDEXER === "off" ? (
+          {isLangues ? null : viewNav(views, view, "view", L("Vues de l’onglet", "Tab views"))}
+          {tab === "apercu" && view === "resume" && saved.PSE_INDEXER === "off" ? (
             <QuickStartHint />
           ) : null}
           {tab === "sources" ? (
             <RemixSources
+              simple={mode === "simple"}
               music={musicPart("source")}
               torrent={current.features
                 .filter((f) => ["torrent", "torrent2", "torrent3"].includes(f.id))
@@ -338,12 +412,6 @@ function PseSettings() {
               stremio={
                 <>
                   {current.features.filter((f) => f.id === "sfr").map((f) => renderFeature(f))}
-                  <CollapsibleBlock title="SubMaker" id="submaker-integration">
-                    {current.features
-                      .filter((f) => f.id === "submaker")
-                      .map((f) => renderFeature(f))}
-                    <Submaker />
-                  </CollapsibleBlock>
                   <CollapsibleBlock title="SeerrCatalog" id="seerrcatalog-integration">
                     <div className="space-y-4 p-4">
                       <a
@@ -370,7 +438,19 @@ function PseSettings() {
             />
           ) : null}
           {tab === "indexation" && view === "releases" ? <ReleaseLibraryDashboard /> : null}
-          {tab === "indexation" && view !== "releases" ? (
+          {tab === "indexation" && view === "pre" ? (
+            <>
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Fonction facultative en bêta : lire les annonces de releases (pre) françaises, MULTi et VOSTFR pour alimenter l’index. Désactivée par défaut.",
+                  "Optional beta feature: read French, MULTi and VOSTFR release announcements (pre) to feed the index. Off by default.",
+                )}
+              </p>
+              <PreFeeds />
+              {current.features.filter((f) => f.id === "predb").map((f) => renderFeature(f))}
+            </>
+          ) : null}
+          {tab === "indexation" && view !== "releases" && view !== "pre" ? (
             <>
               <p className="text-sm text-fg-muted">
                 {L(
@@ -378,9 +458,19 @@ function PseSettings() {
                   "Choose which sources to query in advance, how often and for which titles. These choices do not disable playback sources.",
                 )}
               </p>
-              {featuresOfTab(tab, current.features).map((f) => renderFeature(f))}
+              {featuresOfTab(tab, current.features)
+                .filter((f) => f.id !== "predb")
+                .map((f) => renderFeature(f))}
               <SearchPriority />
-              <IndexerActivity />
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Les recherches en cours et récentes se suivent dans Statistiques → Recherches.",
+                  "Ongoing and recent searches are tracked in Statistics → Searches.",
+                )}{" "}
+                <Link className="underline" to="/remix/apercu?view=recherches">
+                  {L("Voir l’activité", "View activity")}
+                </Link>
+              </p>
             </>
           ) : null}
           {tab === "lecture" && view === "priorites" ? (
@@ -434,9 +524,17 @@ function PseSettings() {
                 </p>
               ) : null}
               {content !== "musique" ? <JukeboxQuickSetup /> : null}
-              {content !== "musique" ? <XperienceImport /> : null}
+              {content !== "musique"
+                ? current.features
+                    .filter((f) => f.id === "librarysort")
+                    .map((f) => renderFeature(f))
+                : null}
+              {content !== "musique" && mode === "expert" ? <XperienceImport /> : null}
               {content === "musique" ? (
-                musicPart("content")
+                <>
+                  <MusicMap />
+                  {musicPart("content")}
+                </>
               ) : (
                 <ThemeLibraries
                   key={content}
@@ -449,13 +547,21 @@ function PseSettings() {
             </>
           ) : null}
           {tab === "lecture" && view === "vostfr" ? <VostfrTitles /> : null}
+          {tab === "lecture" && view === "soustitres" ? (
+            <CollapsibleBlock title="SubMaker" id="submaker-integration">
+              {current.features.filter((f) => f.id === "submaker").map((f) => renderFeature(f))}
+              <Submaker />
+            </CollapsibleBlock>
+          ) : null}
           {tab === "lecture" && view === "qualite" ? (
             <>
-              <CollapsibleBlock
-                title={L("Profils de qualité des releases", "Release quality profiles")}
-              >
-                <QualityProfiles onMode={setQualityActive} />
-              </CollapsibleBlock>
+              <div hidden={mode !== "expert"}>
+                <CollapsibleBlock
+                  title={L("Profils de qualité des releases", "Release quality profiles")}
+                >
+                  <QualityProfiles onMode={setQualityActive} />
+                </CollapsibleBlock>
+              </div>
               {qualityActive ? (
                 <p className="rounded border border-border p-3 text-sm">
                   {L(
@@ -464,30 +570,56 @@ function PseSettings() {
                   )}
                 </p>
               ) : null}
-              <ThemeLibraries exceptionsOnly />
+              {mode === "expert" ? <ThemeLibraries exceptionsOnly /> : null}
             </>
           ) : null}
-          {tab === "apercu" && view !== "demarrage" ? (
-            <>
-              {view === "indexation" && <ReleaseLibraryDashboard compact />}
-              {view === "indexation" ? (
-                <IndexerDetails />
-              ) : (
-                <>
-                  <StatisticsPeriod />
-                  <SourceStatistics view={view === "usage" ? "usage" : "statistics"} />
-                </>
-              )}
-            </>
+          {tab === "apercu" ? (
+            view === "resume" ? (
+              <>
+                <IndexerDetails part="summary" />
+                <PreStats
+                  status={
+                    current.features.find((f) => f.id === "predb")?.status as PreStatus | undefined
+                  }
+                />
+              </>
+            ) : view === "catalogue" ? (
+              <>
+                <IndexerDetails part="catalogue" />
+                <ReleaseLibraryDashboard compact />
+              </>
+            ) : view === "recherches" ? (
+              <IndexerDetails part="searches" />
+            ) : (
+              <>
+                <StatisticsPeriod />
+                <SourceStatistics view={view === "usage" ? "usage" : "statistics"} />
+              </>
+            )
           ) : null}
           {tab !== "sources" &&
           tab !== "contenus" &&
           tab !== "indexation" &&
           (tab !== "lecture" || view === "qualite") &&
           (tab !== "visuels" || view === "affiches")
-            ? featuresOfTab(tab, current.features).map((f) => renderFeature(f))
+            ? featuresOfTab(tab, current.features)
+                .filter((f) => !(tab === "lecture" && f.id === "submaker"))
+                .map((f) => renderFeature(f))
             : null}
-          {tab === "visuels" && view === "cartes" ? <DiscoveryCardsSetup /> : null}
+          {tab === "visuels" && view === "cartes" ? (
+            <>
+              <DiscoveryCardsSetup />
+              <p className="text-sm text-fg-muted">
+                {L(
+                  "Les modèles de disposition (accueil, bibliothèques, collections) se gèrent avec les bibliothèques, dans Contenus.",
+                  "Layout templates (home, libraries, collections) are managed with libraries, in Content.",
+                )}{" "}
+                <Link className="underline" to="/remix/contenus?content=bibliotheques#pse-themes">
+                  {L("Ouvrir les modèles de disposition", "Open layout templates")}
+                </Link>
+              </p>
+            </>
+          ) : null}
           {tab === "visuels" && view === "affiches" ? (
             <p className="text-sm text-fg-muted">
               {L(
@@ -513,7 +645,7 @@ function PseSettings() {
           setError(null);
         }}
       />
-    </DomainPage>
+    </RemixFrame>
   );
 }
 

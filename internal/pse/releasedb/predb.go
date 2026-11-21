@@ -20,18 +20,18 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// Index des « pré » (annonces de releases de la scène) : option désactivée
-// par défaut. Une pré ne contient ni lien ni empreinte ; Remix part du
+// Index des « pre » (annonces de releases de la scène) : option désactivée
+// par défaut. Une pre ne contient ni lien ni empreinte ; Remix part du
 // principe qu'une release française annoncée est disponible, sous une
 // heure, sur les sources habituelles (debrid, BitTorrent, Usenet). Elle est
 // donc comptée comme release indexée, et son média est ajouté au catalogue
 // sans attendre qu'il y arrive par TMDB. La lecture passe toujours par les
-// sources : une pré ne sert jamais de lien.
+// sources : une pre ne sert jamais de lien.
 
 const (
-	// PreDBSourceID identifie les pré dans pse_releases.
+	// PreDBSourceID identifie les pre dans pse_releases.
 	PreDBSourceID = "remix-pre"
-	preDBName     = "Pré (annonces de releases)"
+	preDBName     = "Pre (annonces de releases)"
 
 	preDBDefaultEvery = 10 * time.Minute
 	preDBMinEvery     = 2 * time.Minute
@@ -39,8 +39,8 @@ const (
 	preDBStartDelay   = 45 * time.Second
 	preDBMaxBody      = 8 << 20
 	preDBResolveMax   = 40                  // titres résolus au plus par passage
-	preDBMaxTries     = 6                   // essais avant d'abandonner une pré sans média
-	preDBKeep         = 30 * 24 * time.Hour // mémoire des pré traitées
+	preDBMaxTries     = 6                   // essais avant d'abandonner une pre sans média
+	preDBKeep         = 30 * 24 * time.Hour // mémoire des pre traitées
 	preDBMarker       = "direct"            // même repère que les flux directs : « disponible sans attente »
 )
 
@@ -63,9 +63,11 @@ CREATE TABLE pse_pre(
 );
 CREATE INDEX pse_pre_state ON pse_pre(state, first_seen);
 `)
+	// Flux d'origine de chaque pre, pour le détail par flux de Statistiques.
+	store.Register("pse_releases", 13, `ALTER TABLE pse_pre ADD COLUMN feed TEXT NOT NULL DEFAULT '';`)
 }
 
-// PreDBSettings règle l'import des pré (variables PSE_PREDB*).
+// PreDBSettings règle l'import des pre (variables PSE_PREDB*).
 type PreDBSettings struct {
 	Enabled bool
 	// Public : flux publics (désactivable pour n'utiliser que les flux privés).
@@ -155,7 +157,7 @@ func preLangOK(name string, langs []string) bool {
 	return false
 }
 
-// PreAccept dit si une pré est gardée, et renvoie son analyse. Il faut un
+// PreAccept dit si une pre est gardée, et renvoie son analyse. Il faut un
 // titre et une année (film) ou un épisode (série).
 func PreAccept(name, section string, langs []string) (core.ReleaseInfo, bool) {
 	if section != "" && preBadSection.MatchString(section) {
@@ -316,6 +318,28 @@ type PreDBStatus struct {
 	Added   int    `json:"added"`   // releases enregistrées depuis le début
 	Pending int    `json:"pending"` // en attente du délai ou d'un média
 	Error   string `json:"error,omitempty"`
+	// Feeds : détail par flux, calculé à la lecture (jamais enregistré).
+	Feeds []PreFeedStat `json:"feeds,omitempty"`
+}
+
+// PreFeedStat compte, pour un flux, les pre lues et les releases qui en viennent.
+// Feed est l'adresse d'un flux public, « perso:N » pour le N-ième flux personnel
+// (leurs adresses ne sont jamais exposées) ou vide pour les pre plus anciennes que la
+// mémoire de 30 jours ou lues avant le suivi par flux.
+type PreFeedStat struct {
+	Feed      string `json:"feed"`
+	Seen      int    `json:"seen"`      // pre retenues, dans la mémoire de 30 jours
+	Indexed   int    `json:"indexed"`   // releases indexées issues de ce flux
+	Pending   int    `json:"pending"`   // en attente du délai ou d'un média
+	Unmatched int    `json:"unmatched"` // média introuvable, abandonnées
+}
+
+// preFeedID identifie un flux : son adresse s'il est public, « perso:N » sinon.
+func preFeedID(public bool, url string, personal int) string {
+	if public {
+		return url
+	}
+	return fmt.Sprintf("perso:%d", personal)
 }
 
 func (s *Store) preStatus(ctx context.Context) PreDBStatus {
@@ -326,16 +350,91 @@ func (s *Store) preStatus(ctx context.Context) PreDBStatus {
 	return st
 }
 
-// LoadPreDBStatus lit le dernier état de l'import des pré.
-func (s *Store) LoadPreDBStatus(ctx context.Context) PreDBStatus { return s.preStatus(ctx) }
+// LoadPreDBStatus lit le dernier état de l'import des pre, avec le détail par flux.
+func (s *Store) LoadPreDBStatus(ctx context.Context) PreDBStatus {
+	st := s.preStatus(ctx)
+	st.Feeds = s.preFeedStats(ctx, LoadPreDBSettings())
+	return st
+}
+
+// preFeedStats calcule le détail par flux : les flux configurés d'abord (même sans pre),
+// puis ceux qui ne le sont plus, puis les releases sans flux connu.
+func (s *Store) preFeedStats(ctx context.Context, cfg PreDBSettings) []PreFeedStat {
+	byFeed := map[string]*PreFeedStat{}
+	var order []string
+	get := func(id string) *PreFeedStat {
+		if v := byFeed[id]; v != nil {
+			return v
+		}
+		v := &PreFeedStat{Feed: id}
+		byFeed[id] = v
+		order = append(order, id)
+		return v
+	}
+	if cfg.Public {
+		for _, u := range preDBPublicFeeds {
+			get(preFeedID(true, u, 0))
+		}
+	}
+	for i := range cfg.PrivateURLs {
+		get(preFeedID(false, "", i+1))
+	}
+	if rows, err := s.db.QueryContext(ctx, `SELECT feed,state,COUNT(*) FROM pse_pre GROUP BY feed,state`); err == nil {
+		for rows.Next() {
+			var feed, state string
+			var n int
+			if rows.Scan(&feed, &state, &n) != nil {
+				break
+			}
+			v := get(feed)
+			v.Seen += n
+			switch state {
+			case "pending":
+				v.Pending += n
+			case "unmatched":
+				v.Unmatched += n
+			}
+		}
+		rows.Close()
+	}
+	attributed := 0
+	if rows, err := s.db.QueryContext(ctx, `SELECT p.feed,COUNT(*) FROM pse_releases r JOIN pse_pre p ON r.name=p.name
+WHERE r.source_id=? GROUP BY p.feed`, PreDBSourceID); err == nil {
+		for rows.Next() {
+			var feed string
+			var n int
+			if rows.Scan(&feed, &n) != nil {
+				break
+			}
+			get(feed).Indexed += n
+			attributed += n
+		}
+		rows.Close()
+	}
+	// Les releases dont la pre a quitté la mémoire de 30 jours n'ont plus de flux connu.
+	if rest := s.preAdded(ctx) - attributed; rest > 0 {
+		get("").Indexed += rest
+	}
+	out := make([]PreFeedStat, 0, len(order))
+	for _, id := range order {
+		if id != "" {
+			out = append(out, *byFeed[id])
+		}
+	}
+	if v := byFeed[""]; v != nil && (v.Seen > 0 || v.Indexed > 0) {
+		out = append(out, *v)
+	}
+	return out
+}
 
 func (s *Store) preSetStatus(ctx context.Context, st PreDBStatus) {
 	b, _ := json.Marshal(st)
 	_ = s.sfrSet(ctx, "pre_status", string(b))
 }
 
-// preNote enregistre les pré vues ; une pré déjà connue garde son état.
-func (s *Store) preNote(ctx context.Context, items []PreItem, now time.Time) error {
+// preNote enregistre les pre vues dans un flux ; une pre déjà connue garde son état
+// et son flux d'origine (le premier qui l'a vue).
+func (s *Store) preNote(ctx context.Context, feed string, items []PreItem, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -346,7 +445,7 @@ func (s *Store) preNote(ctx context.Context, items []PreItem, now time.Time) err
 		if !it.At.IsZero() {
 			at = it.At.Unix()
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO pse_pre(name,first_seen,pre_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, it.Name, now.Unix(), at); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pse_pre(name,first_seen,pre_at,feed) VALUES(?,?,?,?) ON CONFLICT(name) DO NOTHING`, it.Name, now.Unix(), at, feed); err != nil {
 			return err
 		}
 	}
@@ -358,7 +457,7 @@ type preRow struct {
 	Tries int
 }
 
-// preDue liste les pré dont le délai est écoulé. Le délai court depuis
+// preDue liste les pre dont le délai est écoulé. Le délai court depuis
 // l'heure indiquée par le flux, sinon depuis la première observation.
 func (s *Store) preDue(ctx context.Context, cutoff time.Time, limit int) ([]preRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT name,tries FROM pse_pre WHERE state='pending'
@@ -395,7 +494,7 @@ func (s *Store) preAdded(ctx context.Context) int {
 	return n
 }
 
-// preForget efface les pré et leurs releases (option désactivée ou changée).
+// preForget efface les pre et leurs releases (option désactivée ou changée).
 func (s *Service) preForget(ctx context.Context) error {
 	rows, err := s.st.db.QueryContext(ctx, `SELECT DISTINCT title_key FROM pse_releases WHERE source_id=?`, PreDBSourceID)
 	if err != nil {
@@ -432,7 +531,7 @@ func (s *Service) preForget(ctx context.Context) error {
 
 // ---- cycle ----
 
-// preSave transforme une pré résolue en release indexée.
+// preSave transforme une pre résolue en release indexée.
 func (s *Service) preSave(ctx context.Context, name string, info core.ReleaseInfo, t core.Title, now time.Time) error {
 	season, episode := 0, 0
 	if t.Type == core.TypeShow {
@@ -458,7 +557,7 @@ func preSignature(c PreDBSettings) string {
 	return strings.Join(c.Langs, ",") + "|" + fmt.Sprint(c.Public) + "|" + fmt.Sprint(len(c.PrivateURLs))
 }
 
-// preCycle lit les flux puis traite les pré dont le délai est écoulé.
+// preCycle lit les flux puis traite les pre dont le délai est écoulé.
 func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 	if sig, _ := s.st.sfrGet(ctx, "pre_sig"); sig != preSignature(cfg) {
 		if sig != "" {
@@ -473,19 +572,18 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 	now := s.d.Now()
 	s.st.preSetStatus(ctx, PreDBStatus{State: "running", Last: now.Unix(), Added: s.st.preAdded(ctx), Pending: s.st.prePending(ctx)})
 	type feed struct {
-		url, key string
+		id, url, key string
 	}
 	var feeds []feed
 	if cfg.Public {
 		for _, u := range preDBPublicFeeds {
-			feeds = append(feeds, feed{u, ""})
+			feeds = append(feeds, feed{preFeedID(true, u, 0), u, ""})
 		}
 	}
-	for _, u := range cfg.PrivateURLs {
-		feeds = append(feeds, feed{u, cfg.PrivateKey})
+	for i, u := range cfg.PrivateURLs {
+		feeds = append(feeds, feed{preFeedID(false, "", i+1), u, cfg.PrivateKey})
 	}
 	okFeeds, lastErr := 0, error(nil)
-	var keep []PreItem
 	for _, f := range feeds {
 		items, err := fetchPre(ctx, f.url, f.key)
 		if err != nil {
@@ -496,17 +594,18 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 			continue
 		}
 		okFeeds++
+		var keep []PreItem
 		for _, it := range items {
 			if _, ok := PreAccept(it.Name, it.Section, cfg.Langs); ok {
 				keep = append(keep, it)
 			}
 		}
+		if err := s.st.preNote(ctx, f.id, keep, now); err != nil {
+			return err
+		}
 	}
 	if okFeeds == 0 && lastErr != nil {
 		return lastErr
-	}
-	if err := s.st.preNote(ctx, keep, now); err != nil {
-		return err
 	}
 	due, err := s.st.preDue(ctx, now.Add(-cfg.Delay), preDBResolveMax)
 	if err != nil {
