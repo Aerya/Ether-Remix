@@ -1011,6 +1011,16 @@ func (s *Server) relayAudio(w http.ResponseWriter, r *http.Request, id int64) er
 		if st.Open != nil {
 			f, modified, err := st.Open()
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if st.URL != "" {
+					// Source interne indisponible : on passe à la suivante.
+					s.o.Logger.Warn("flux musical illisible, source suivante", "track", id, "err", redactErr(err))
+					last = err
+					ctx = WithSkippedStreams(ctx, st.URL)
+					continue
+				}
 				return err
 			}
 			defer f.Close()
