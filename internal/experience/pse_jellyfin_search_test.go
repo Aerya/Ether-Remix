@@ -35,7 +35,7 @@ func TestPSEJellyfinSearchAndPlaybackUseThemeGrants(t *testing.T) {
 		keys: map[string][]core.RatingKey{"enfants": {show.Key}, "autres": {unknownShow.Key}},
 	})
 	t.Cleanup(func() { frontend.SetPSEThemes(nil) })
-	viewer := &core.User{ID: 1, AllowedLibraries: []core.LibraryID{5100, 5101}, MaxContentRating: "PG"}
+	viewer := &core.User{ID: 1, AllowedLibraries: []core.LibraryID{1, 5100, 5101}, MaxContentRating: "PG"}
 	titles := []core.Title{unknownEpisode, adult, episode, show, unknownShow}
 	get := func(_ context.Context, key core.RatingKey) (*core.Title, error) {
 		for _, title := range titles {

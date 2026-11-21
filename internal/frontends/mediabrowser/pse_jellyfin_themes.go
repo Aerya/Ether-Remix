@@ -244,14 +244,51 @@ func pseJellyfinMatchesThemeRow(name string, q frontend.ItemQuery, kind string) 
 		(f.NameLessThan == "" || name < strings.ToLower(f.NameLessThan))
 }
 
-func (i *instance) pseJellyfinThemeSearchPage(r *http.Request, v *frontend.Viewer, number int64, term string, q frontend.ItemQuery) (frontend.SearchPage, error) {
+// pseJellyfinSearch answers /Search/Hints when ParentId names a Remix view. The
+// search then stays in that view and skips Live TV. It returns false for any
+// other request, which keeps the usual search.
+func (i *instance) pseJellyfinSearch(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, term string, q frontend.ItemQuery) bool {
+	number, err := i.pseJellyfinThemeParent(r)
+	if err != nil {
+		http.Error(w, "Invalid ParentId", http.StatusBadRequest)
+		return true
+	}
 	if number == 0 {
-		return i.searchPage(r, v, term, q)
+		return false
 	}
 	q.Filter.Query = term
 	q.Recursive = q.Recursive || slices.Contains(q.Types, frontend.MediaType("season")) || slices.Contains(q.Types, frontend.MediaType("episode"))
 	page, err := i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(number), q)
-	return frontend.SearchPage{Page: page}, err
+	if err != nil {
+		pseJellyfinThemeError(w, r, err)
+		return true
+	}
+	images := i.gridListImages(r, page.Items)
+	hints := make([]any, 0, len(page.Items))
+	for _, t := range page.Items {
+		id := ids.RatingKeyGUID(t.Key)
+		kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode"}[t.Type]
+		hint := map[string]any{"Id": id, "ItemId": id, "Name": t.Title, "Type": kind, "ProductionYear": t.Year, "IsFolder": t.Type == "show" || t.Type == "season"}
+		if tags, ok := images[t.Key]["ImageTags"].(map[string]string); ok && tags["Primary"] != "" {
+			hint["PrimaryImageTag"] = tags["Primary"]
+		}
+		if t.Type == "movie" || t.Type == "episode" {
+			hint["MediaType"] = "Video"
+		}
+		if t.Runtime > 0 {
+			hint["RunTimeTicks"] = t.Runtime.Nanoseconds() / 100
+		}
+		if t.Type == "episode" {
+			hint["IndexNumber"] = t.Episode
+			hint["ParentIndexNumber"] = t.Season
+			if t.ShowTitle != "" {
+				hint["Series"] = t.ShowTitle
+			}
+		}
+		hints = append(hints, hint)
+	}
+	i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": page.Total})
+	return true
 }
 
 func pseJellyfinThemeError(w http.ResponseWriter, r *http.Request, err error) {

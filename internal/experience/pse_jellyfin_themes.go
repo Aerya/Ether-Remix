@@ -133,13 +133,40 @@ func (s *Service) PSEThemeRowViews(ctx context.Context, viewer *core.Viewer, vie
 	}
 	for _, theme := range s.pseJellyfinThemesFrom(ctx, v, themes) {
 		if theme.view.ID == viewID {
-			return theme.rowViews(ctx, themes, v, ""), nil
+			return s.pseJellyfinRowViews(ctx, theme, themes, v, ""), nil
 		}
 	}
 	return nil, core.ErrNotFound
 }
 
-func (theme pseJellyfinTheme) rowViews(ctx context.Context, themes frontend.PSEThemes, v *core.User, viewID string) []frontend.View {
+// pseJellyfinRowHasAllowed stops at the first title of the row the viewer may
+// see (parental control and language scope included).
+func (s *Service) pseJellyfinRowHasAllowed(ctx context.Context, themes frontend.PSEThemes, v *core.User, part frontend.PSETheme, row frontend.PSEThemeRow) bool {
+	membership := pseJellyfinMembership{keys: map[core.RatingKey]bool{}, langFree: map[core.RatingKey]bool{}}
+	var keys []core.RatingKey
+	for _, key := range pseJellyfinRowKeys(ctx, themes, v, row.ID) {
+		if !pseJellyfinThemePartKey(part.Type, key) || membership.keys[key] {
+			continue
+		}
+		keys = append(keys, key)
+		membership.keys[key] = true
+		if part.AllLanguages || row.LangFree {
+			membership.langFree[key] = true
+		}
+	}
+	for batch := range slices.Chunk(keys, 25) {
+		titles, err := s.pseJellyfinThemeTitles(ctx, v, batch, membership)
+		if err != nil {
+			return false
+		}
+		if len(titles) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) pseJellyfinRowViews(ctx context.Context, theme pseJellyfinTheme, themes frontend.PSEThemes, v *core.User, viewID string) []frontend.View {
 	var out []frontend.View
 	positions := make(map[string]int)
 	for _, part := range theme.parts {
@@ -148,8 +175,7 @@ func (theme pseJellyfinTheme) rowViews(ctx context.Context, themes frontend.PSET
 			if viewID != "" && viewID != id {
 				continue
 			}
-			keys := pseJellyfinRowKeys(ctx, themes, v, row.ID)
-			if !slices.ContainsFunc(keys, func(key core.RatingKey) bool { return pseJellyfinThemePartKey(part.Type, key) }) {
+			if !s.pseJellyfinRowHasAllowed(ctx, themes, v, part, row) {
 				continue
 			}
 			if pos, ok := positions[row.ID]; ok {
@@ -180,7 +206,7 @@ func (s *Service) PSEThemeRowView(ctx context.Context, viewer *core.Viewer, view
 	ctx = core.WithCatalogViewer(ctx, v)
 	themes := frontend.CurrentPSEThemes()
 	for _, theme := range s.pseJellyfinThemesFrom(ctx, v, themes) {
-		if rows := theme.rowViews(ctx, themes, v, viewID); len(rows) != 0 {
+		if rows := s.pseJellyfinRowViews(ctx, theme, themes, v, viewID); len(rows) != 0 {
 			return rows[0], nil
 		}
 	}
@@ -290,11 +316,20 @@ func (s *Service) pseJellyfinLibraryItems(ctx context.Context, v *core.User, dev
 			include[key] = true
 		}
 	}
-	keys := membership.ordered
-	if include != nil && !q.Recursive {
-		keys = make([]core.RatingKey, 0, min(len(keys), len(include)))
+	// An Ids request only needs the listed titles and, for seasons and
+	// episodes, their series: never the whole theme.
+	keys, expand := membership.ordered, include
+	if include != nil {
+		expand = make(map[core.RatingKey]bool, len(include))
+		for key := range include {
+			expand[key] = true
+			if key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode {
+				expand[core.ShowKey(key.TMDB())] = true
+			}
+		}
+		keys = make([]core.RatingKey, 0, min(len(keys), len(expand)))
 		for _, key := range membership.ordered {
-			if include[key] {
+			if expand[key] {
 				keys = append(keys, key)
 			}
 		}
@@ -315,7 +350,7 @@ func (s *Service) pseJellyfinLibraryItems(ctx context.Context, v *core.User, dev
 					items = append(items, title)
 				}
 			}
-			if q.Recursive && title.Type == core.TypeShow {
+			if q.Recursive && title.Type == core.TypeShow && pseJellyfinWantsChildren(q) {
 				children, err := s.pseJellyfinThemeChildren(ctx, v, device, title, q, membership, include)
 				if err != nil {
 					return core.Page{}, true, err
@@ -340,6 +375,40 @@ func (s *Service) pseJellyfinLibraryItems(ctx context.Context, v *core.User, dev
 		limit = -1
 	}
 	return core.Page{Items: paging.Slice(items, q.Offset, limit), Total: len(items)}, true, nil
+}
+
+// pseJellyfinWantsChildren avoids reading every series when the request names
+// only types that a series' children cannot have.
+func pseJellyfinWantsChildren(q frontend.ItemQuery) bool {
+	if len(q.Types) == 0 {
+		return true
+	}
+	return slices.Contains(q.Types, core.TypeSeason) || slices.Contains(q.Types, core.TypeEpisode)
+}
+
+// pseJellyfinFilterFacets answers the filter facets of a Remix view with the
+// same facets as its list.
+func (s *Service) pseJellyfinFilterFacets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string) ([]core.FacetValue, bool, error) {
+	if !s.pseJellyfinThemeViewID(viewID) {
+		return nil, false, nil
+	}
+	if name == "tag" {
+		// Owner tags are not carried on the title facts of a themed page.
+		return []core.FacetValue{}, true, nil
+	}
+	values, err := s.Facets(ctx, viewer, device, viewID, name)
+	return values[:min(len(values), 256)], true, err
+}
+
+func (s *Service) pseJellyfinFacetPage(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string, offset, limit int) ([]core.FacetValue, int, bool, error) {
+	if !s.pseJellyfinThemeViewID(viewID) {
+		return nil, 0, false, nil
+	}
+	facets, err := s.Facets(ctx, viewer, device, viewID, name)
+	if err != nil {
+		return nil, 0, true, err
+	}
+	return paging.Slice(facets, offset, limit), len(facets), true, nil
 }
 
 func (s *Service) pseJellyfinThemeTitles(ctx context.Context, v *core.User, keys []core.RatingKey, membership pseJellyfinMembership) ([]core.Title, error) {

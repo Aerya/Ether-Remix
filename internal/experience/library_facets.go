@@ -129,8 +129,10 @@ func (s *Service) facetLibraries(v *core.User, viewID string) ([]Library, error)
 func (s *Service) FacetPage(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string, offset, limit int) ([]core.FacetValue, int, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	// PSE-HOOK: paginer les facettes dans la vue Remix autorisée — voir docs/pse/FORK.fr.md
-	themeView := s.pseJellyfinThemeViewID(viewID)
-	if !themeView && s.d.PluginLibraries != nil && viewID != "" {
+	if out, total, ok, err := s.pseJellyfinFacetPage(ctx, viewer, device, viewID, name, offset, limit); ok {
+		return out, total, err
+	}
+	if s.d.PluginLibraries != nil && viewID != "" {
 		if id, err := strconv.Atoi(viewID); err == nil {
 			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil && lib.Source != core.LibraryBuiltin {
 				facets, err := s.Facets(ctx, viewer, device, viewID, name)
@@ -141,10 +143,8 @@ func (s *Service) FacetPage(ctx context.Context, viewer *core.Viewer, device cor
 			}
 		}
 	}
-	if !themeView {
-		if out, total, ok, err := s.pagedFacets(ctx, viewer, viewID, name, max(offset, 0), limit); err != nil || ok {
-			return out, total, err
-		}
+	if out, total, ok, err := s.pagedFacets(ctx, viewer, viewID, name, max(offset, 0), limit); err != nil || ok {
+		return out, total, err
 	}
 	facets, err := s.Facets(ctx, viewer, device, viewID, name)
 	if err != nil {
@@ -223,18 +223,13 @@ func (s *Service) resolveStudio(ctx context.Context, viewer *core.Viewer, viewID
 	return core.FacetValue{ID: id, Key: studio, Title: studio}, nil
 }
 
-// FilterFacets uses the catalogue's top-value index for a studio filter in a
-// standard library rather than materializing the studio vocabulary.
+// FilterFacets never falls back to walking LibraryItems. Studios use the
+// catalogue's top-value index rather than materializing the studio vocabulary.
 func (s *Service) FilterFacets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string) ([]core.FacetValue, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	// PSE-HOOK: les filtres d'une vue Remix suivent les mêmes facettes que sa liste — voir docs/pse/FORK.fr.md
-	if s.pseJellyfinThemeViewID(viewID) {
-		if name == "tag" {
-			// Owner tags are not carried on the title facts of a themed page.
-			return []core.FacetValue{}, nil
-		}
-		values, err := s.Facets(ctx, viewer, device, viewID, name)
-		return values[:min(len(values), 256)], err
+	if values, ok, err := s.pseJellyfinFilterFacets(ctx, viewer, device, viewID, name); ok {
+		return values, err
 	}
 	queryName := name
 	if name == "studio" {

@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 func (s *Service) pseJellyfinSearchTypes(ctx context.Context, v *core.User, types []core.MediaType) []core.MediaType {
@@ -19,4 +20,32 @@ func (s *Service) pseJellyfinSearchTypes(ctx context.Context, v *core.User, type
 		}
 	}
 	return types
+}
+
+// pseJellyfinThemeOnlySearch searches a profile limited to Remix themes inside
+// the union of its authorized themes. The catalogue's candidate window covers
+// every library, so filtering it afterwards would drop titles of the themes.
+func (s *Service) pseJellyfinThemeOnlySearch(ctx context.Context, viewer *core.Viewer, device core.Device, v *core.User, query string, q frontend.ItemQuery) (frontend.SearchPage, bool, error) {
+	if only, err := s.pseJellyfinThemeOnly(ctx, v); !only || err != nil {
+		return frontend.SearchPage{}, false, err
+	}
+	offset, limit := max(q.Offset, 0), q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset >= 1000 {
+		return frontend.SearchPage{Continuation: frontend.ContinuationUnknown}, true, nil
+	}
+	q.Filter.Query = query
+	q.Recursive = q.Recursive || slices.Contains(q.Types, core.TypeSeason) || slices.Contains(q.Types, core.TypeEpisode)
+	q.Offset, q.Limit = offset, limit
+	page, err := s.LibraryItems(ctx, viewer, device, "", q)
+	if err != nil {
+		return frontend.SearchPage{}, true, err
+	}
+	continuation := frontend.ContinuationUnknown
+	if offset+len(page.Items) < page.Total {
+		continuation = frontend.ContinuationMore
+	}
+	return frontend.SearchPage{Page: page, Continuation: continuation}, true, nil
 }

@@ -358,7 +358,8 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 			}
 		}
 		allowed := unrestricted || c.Visible(ctx, viewer, &ti)
-		if !c.SectionAllowed(viewer, ti.Type) || !allowed {
+		// PSE-HOOK: titres accordés par un thème Remix Jellyfin — voir docs/pse/FORK.fr.md
+		if !c.pseSectionAllowed(ctx, viewer, &ti) || !allowed {
 			continue
 		}
 		if ti.Type == core.TypeEpisode {

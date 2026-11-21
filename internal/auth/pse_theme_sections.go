@@ -24,8 +24,10 @@ func RemixLibraryReservations(ctx context.Context, tx *sql.Tx) ([]core.LibraryID
 		}
 		for _, encoded := range []string{configured, shared} {
 			var ids []core.LibraryID
+			// Comme Ether (auth.go, lecture d'un spectateur) : une valeur illisible
+			// est ignorée, elle ne bloque pas la création d'un thème.
 			if err := json.Unmarshal([]byte(encoded), &ids); err != nil {
-				return nil, err
+				continue
 			}
 			sections = append(sections, ids...)
 		}

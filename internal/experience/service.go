@@ -1639,6 +1639,10 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		return frontend.SearchPage{}, nil
 	}
 
+	// PSE-HOOK: recherche d'un profil limité aux thèmes Remix Jellyfin — voir docs/pse/FORK.fr.md
+	if page, ok, err := s.pseJellyfinThemeOnlySearch(ctx, viewer, device, v, query, q); ok || err != nil {
+		return page, err
+	}
 	var types []core.MediaType
 	show := false
 	seenType := make(map[core.MediaType]bool)

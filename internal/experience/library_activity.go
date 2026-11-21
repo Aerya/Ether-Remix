@@ -375,6 +375,8 @@ func (s *Service) NextUp(ctx context.Context, viewer *core.Viewer, _ core.Device
 	if s.d.NextUp == nil {
 		return nil, core.ErrNotAvailable
 	}
+	// PSE-HOOK: « À suivre » des thèmes Remix Jellyfin — voir docs/pse/FORK.fr.md
+	ctx = s.pseJellyfinNextUpContext(ctx)
 	titles, err := s.d.NextUp(ctx, v, activityLimit(limit))
 	if err != nil {
 		return nil, err

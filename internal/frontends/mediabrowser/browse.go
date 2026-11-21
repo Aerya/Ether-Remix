@@ -945,30 +945,21 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	}
 	q := itemQuery(r)
 	// PSE-HOOK: recherche limitée à la vue Remix demandée — voir docs/pse/FORK.fr.md
-	themeView, err := i.pseJellyfinThemeParent(r)
-	if err != nil {
-		http.Error(w, "Invalid ParentId", http.StatusBadRequest)
+	if i.pseJellyfinSearch(w, r, v, terms[0], q) {
 		return
 	}
-	var live []any
-	if themeView == 0 {
-		_, token, _ := i.viewer(r)
-		live, err = i.liveSearchItems(r, v, token, terms[0])
-		if err != nil {
-			http.Error(w, "Unavailable", 503)
-			return
-		}
+	_, token, _ := i.viewer(r)
+	live, e := i.liveSearchItems(r, v, token, terms[0])
+	if e != nil {
+		http.Error(w, "Unavailable", 503)
+		return
 	}
 	extra := paging.Slice(live, q.Offset, q.Limit)
 	catalogQuery := q
 	catalogQuery.Offset = max(0, q.Offset-len(live))
 	catalogQuery.Limit = max(1, q.Limit-len(extra))
-	result, err := i.pseJellyfinThemeSearchPage(r, v, themeView, terms[0], catalogQuery) // PSE-HOOK: recherche dans une vue Remix — voir docs/pse/FORK.fr.md
+	result, err := i.searchPage(r, v, terms[0], catalogQuery)
 	if err != nil {
-		if errors.Is(err, frontend.ErrNotFound) && themeView != 0 {
-			http.NotFound(w, r)
-			return
-		}
 		http.Error(w, "Unavailable", 503)
 		return
 	}

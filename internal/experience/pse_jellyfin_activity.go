@@ -44,23 +44,28 @@ func (s *Service) pseResumeVisible(ctx context.Context, viewer *core.User, title
 }
 
 func (s *Service) pseJellyfinLatest(ctx context.Context, viewer *core.User, device core.Device, viewID string, limit int, group bool) ([]frontend.LatestItem, error) {
-	query := frontend.ItemQuery{Types: []core.MediaType{core.TypeMovie, core.TypeShow}}
-	if !group {
-		query.Types = []core.MediaType{core.TypeMovie, core.TypeEpisode}
-		query.Recursive = true
-	}
 	// Resolve the view and its visible members as for a normal library browse.
-	// Read only real addition dates, then page after the played filter and sort.
-	page, err := s.LibraryItems(ctx, viewer, device, viewID, query)
+	// Series are only expanded into episodes for the ungrouped feed, and then
+	// only through their newest aired episodes. Read only real addition dates,
+	// then page after the played filter and sort.
+	page, err := s.LibraryItems(ctx, viewer, device, viewID, frontend.ItemQuery{Types: []core.MediaType{core.TypeMovie, core.TypeShow}})
 	if err != nil {
 		return nil, err
+	}
+	limit = activityLimit(limit)
+	candidates := page.Items
+	if !group {
+		candidates, err = s.pseJellyfinLatestEpisodes(ctx, viewer, viewID, page.Items, limit)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if s.d.AddedTimes == nil {
 		return nil, core.ErrNotAvailable
 	}
 	var latest []frontend.LatestItem
 	played, filterPlayed := frontend.LatestPlayedFilter(ctx)
-	for batch := range slices.Chunk(page.Items, 500) {
+	for batch := range slices.Chunk(candidates, 500) {
 		keys := make([]core.RatingKey, len(batch))
 		for i, title := range batch {
 			keys[i] = title.Key
@@ -88,5 +93,69 @@ func (s *Service) pseJellyfinLatest(ctx context.Context, viewer *core.User, devi
 		}
 	}
 	sort.SliceStable(latest, func(i, j int) bool { return latest[i].AddedAt.After(*latest[j].AddedAt) })
-	return latest[:min(len(latest), activityLimit(limit))], nil
+	return latest[:min(len(latest), limit)], nil
+}
+
+// pseJellyfinLatestEpisodes replaces the visible series of a theme with their
+// newest aired episodes, in a few batched reads instead of one children
+// listing per series. Each series contributes at most the number of items
+// asked for (a little more when the played filter may drop some), so the
+// result holds the newest ones of the theme.
+func (s *Service) pseJellyfinLatestEpisodes(ctx context.Context, viewer *core.User, viewID string, items []core.Title, limit int) ([]core.Title, error) {
+	if s.d.AiredEpisodes == nil || s.d.Visibility.SectionFor == nil {
+		return nil, core.ErrNotAvailable
+	}
+	membership, _, err := s.pseJellyfinThemeMembership(ctx, viewer, viewID)
+	if err != nil {
+		return nil, err
+	}
+	var out []core.Title
+	shows := map[core.RatingKey]core.Title{}
+	var showKeys []core.RatingKey
+	for _, title := range items {
+		if title.Type == core.TypeShow {
+			shows[title.Key] = title
+			showKeys = append(showKeys, title.Key)
+		} else if title.Type == core.TypeMovie {
+			out = append(out, title)
+		}
+	}
+	fetch := min(2*limit, localEpisodeCap)
+	vis := withoutSectionCheck(s.d.Visibility)
+	vis.GetTitle = func(_ context.Context, key core.RatingKey) (*core.Title, error) {
+		if show, ok := shows[key]; ok {
+			return &show, nil
+		}
+		return nil, core.ErrNotFound
+	}
+	for batch := range slices.Chunk(showKeys, 50) {
+		var pages map[core.RatingKey]core.Page
+		if s.d.AiredEpisodesMany != nil && len(batch) > 1 {
+			pages, err = s.d.AiredEpisodesMany(ctx, batch, fetch)
+		} else {
+			pages = make(map[core.RatingKey]core.Page, len(batch))
+			for _, show := range batch {
+				if pages[show], err = s.d.AiredEpisodes(ctx, show, 0, fetch); err != nil {
+					break
+				}
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, show := range batch {
+			listCtx := ctx
+			if membership.langFree[show] {
+				listCtx = core.WithPSELangFree(ctx)
+			}
+			var episodes []core.Title
+			for _, episode := range pages[show].Items {
+				if episode.Type == core.TypeEpisode && episode.ShowKey == show && vis.Playable(listCtx, viewer, &episode) {
+					episodes = append(episodes, episode)
+				}
+			}
+			out = append(out, vis.Available(listCtx, viewer, episodes)...)
+		}
+	}
+	return out, nil
 }

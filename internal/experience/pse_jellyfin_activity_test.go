@@ -73,6 +73,12 @@ func jellyfinThemeActivityFixture(t *testing.T) (*Service, *core.User) {
 			}
 			return []core.Title{hiddenEpisode}, nil
 		},
+		AiredEpisodes: func(_ context.Context, key core.RatingKey, _, _ int) (core.Page, error) {
+			if key == show.Key {
+				return core.Page{Items: []core.Title{episode}, Total: 1}, nil
+			}
+			return core.Page{Items: []core.Title{hiddenEpisode}, Total: 1}, nil
+		},
 		AddedTimes: func(context.Context, []core.RatingKey) (map[core.RatingKey]time.Time, error) {
 			return map[core.RatingKey]time.Time{
 				movie.Key: time.Unix(10, 0), show.Key: time.Unix(20, 0), episode.Key: time.Unix(30, 0),
