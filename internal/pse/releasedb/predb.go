@@ -628,6 +628,10 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 			}
 			lastErr = err
 			runs = append(runs, PreFeedRun{Feed: f.id, State: "error", At: now.Unix(), Error: err.Error()})
+			// Visible dans les journaux : sans adresse pour un flux personnel (identifiant « perso:N »).
+			if s.d.Logger != nil {
+				s.d.Logger.Warn("pse pre feed failed", "feed", f.id, "err", err.Error())
+			}
 			continue
 		}
 		okFeeds++
