@@ -717,7 +717,7 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	u.ID = id // path wins over body
 	u.SubtitleLanguages, u.AudioLanguages = subtitles, audio
 	u.MaxContentRating = strings.TrimSpace(u.MaxContentRating)
-	u.AllowedLibraries = frontend.NormalizeAllowedLibraries(u.AllowedLibraries)
+	u.AllowedLibraries = frontend.NormalizeAllowedLibraries(u.AllowedLibraries) // PSE-HOOK: normalisation des bibliothèques Remix accordées — voir docs/pse/FORK.fr.md
 	var invalid []FieldError
 	if u.StreamLimit < 0 {
 		invalid = append(invalid, FieldError{Field: "streamLimit", Message: "must be >= 0"})

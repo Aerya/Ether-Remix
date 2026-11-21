@@ -286,7 +286,7 @@ func (s *ImageGrantService) pageImages(ctx context.Context, viewer *core.Viewer,
 	s.pageMu.Unlock()
 	gen := uint64(0)
 	if genFn != nil {
-		gen = genFn() + frontend.PSEThemesGeneration()
+		gen = genFn() + frontend.PSEThemesGeneration() // PSE-HOOK: cache des images sensible aux thèmes — voir docs/pse/FORK.fr.md
 	}
 	cacheKey := pageArtKey{viewer: viewer.ID, item: key, language: device.Language, rating: viewer.MaxContentRating, sections: sectionsKey(viewer.AllowedLibraries)}
 	if genFn != nil {

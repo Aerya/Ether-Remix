@@ -67,7 +67,7 @@ func (s *Server) titleAllowed(u *frontend.User, t *frontend.Title) bool {
 }
 
 func (s *Server) visibility() frontend.Visibility {
-	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(), ThemeGrant: frontend.PSEThemeGrant,
+	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(), ThemeGrant: frontend.PSEThemeGrant, // PSE-HOOK: titre ouvert par une bibliothèque Remix accordée — voir docs/pse/FORK.fr.md
 		SectionFor: func(t frontend.MediaType) (int, bool) { sec, ok := s.untitledSectionFor(t); return sec.ID, ok }}
 	if s.catalog() != nil {
 		v.GetTitle = s.seriesTitle

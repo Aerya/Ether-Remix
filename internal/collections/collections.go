@@ -53,23 +53,24 @@ type TitleUpserter interface {
 
 // Service is the collection engine.
 type Service struct {
-	builtHook atomic.Pointer[func()] // appelé après chaque reconstruction réussie d'une collection
-	db        *sql.DB
-	mirror    *catalog.Mirror
-	cat       core.Catalog
-	log       *slog.Logger
-	now       func() time.Time
-	upserter  TitleUpserter
-	api       *tmdbAPI
-	names     *nameResolver
-	idx       *index
-	web       *webClient
-	bases     ExternalBases
-	anime     animeIDCache
-	depsMu    sync.RWMutex
-	state     core.State
-	auth      core.Auth
-	chat      Chatter
+	db       *sql.DB
+	mirror   *catalog.Mirror
+	cat      core.Catalog
+	log      *slog.Logger
+	now      func() time.Time
+	upserter TitleUpserter
+	api      *tmdbAPI
+	names    *nameResolver
+	idx      *index
+	web      *webClient
+	bases    ExternalBases
+	anime    animeIDCache
+	depsMu   sync.RWMutex
+	state    core.State
+	auth     core.Auth
+	chat     Chatter
+	// PSE-HOOK: appelé après chaque reconstruction réussie d'une collection — voir docs/pse/FORK.fr.md
+	builtHook atomic.Pointer[func()]
 	// Ephemeral vibe-search collections (vibe_ephemeral.go).
 	describeMu     sync.Mutex
 	describeJobs   map[string]*describeJob
@@ -495,9 +496,7 @@ func (s *Service) build(ctx context.Context, row *specRow) (*memberSet, error) {
 		if err == nil {
 			s.members[row.id] = ms
 			delete(s.failed, bk)
-			if h := s.builtHook.Load(); h != nil {
-				defer (*h)()
-			}
+			defer s.pseBuilt() // PSE-HOOK: invalidation des caches dérivés des membres — voir docs/pse/FORK.fr.md
 		} else if !errors.Is(err, context.Canceled) {
 			s.failed[bk] = s.now()
 		}
@@ -1180,13 +1179,3 @@ func filterTitlesByRating(items []core.Title, user *core.User) []core.Title {
 }
 
 func idString(id int64) string { return strconv.FormatInt(id, 10) }
-
-// SetBuiltHook enregistre une fonction appelée après chaque reconstruction
-// réussie d'une collection (les caches dérivés de ses membres s'invalident).
-func (s *Service) SetBuiltHook(fn func()) {
-	if fn == nil {
-		s.builtHook.Store(nil)
-		return
-	}
-	s.builtHook.Store(&fn)
-}
