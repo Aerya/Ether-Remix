@@ -266,6 +266,9 @@ func (a *App) pseHandlers(m map[string]http.Handler) {
 			sort.Slice(out, func(i, j int) bool { return out[i].Label.FR < out[j].Label.FR })
 			return out
 		},
+		TestPre: func(ctx context.Context, get func(string) string) any {
+			return releasedb.TestPreFeeds(ctx, releasedb.LoadPreDBSettingsWith(get))
+		},
 		TestMusic: func(ctx context.Context, key, value string) (string, error) {
 			if music.IsCommunityKey(key) {
 				key = "PSE_MUSIC_ECLIPSE_URL"

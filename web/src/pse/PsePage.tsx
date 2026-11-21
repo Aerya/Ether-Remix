@@ -2,6 +2,8 @@ import { ReleaseLibraryDashboard } from "./ReleaseLibraryDashboard";
 import { DiscoveryCardsSetup } from "./DiscoveryCardsSetup";
 import { QuickStartHint } from "./QuickStart";
 import { PreFeeds } from "./PreFeeds";
+import { PreFeedsControl } from "./PreFeedsControl";
+import { PreTest } from "./PreTest";
 import { IndexedReleases } from "./IndexedReleases";
 import type { PreStatus } from "./PreStats";
 import { XperienceImport } from "./XperienceImport";
@@ -78,6 +80,7 @@ interface Field {
     | "multi"
     | "countries"
     | "filter"
+    | "feeds"
     | "url"
     | "secret";
   label: Text;
@@ -449,6 +452,7 @@ function PseSettings() {
               </p>
               <PreFeeds />
               {current.features.filter((f) => f.id === "predb").map((f) => renderFeature(f))}
+              <PreTest values={draft} />
             </>
           ) : null}
           {tab === "indexation" && view !== "releases" && view !== "pre" ? (
@@ -674,6 +678,7 @@ function FeatureSection({
       stacked={
         fd.kind === "multi" ||
         fd.kind === "filter" ||
+        fd.kind === "feeds" ||
         (fd.kind === "url" && feature.id !== "seerrcatalog")
       }
       title={
@@ -827,6 +832,8 @@ function Control({
           ))}
         </Select>
       );
+    case "feeds":
+      return <PreFeedsControl value={value} onChange={onChange} label={label} />;
     case "multi":
       return <MultiControl field={field} value={value} onChange={onChange} />;
     case "number":

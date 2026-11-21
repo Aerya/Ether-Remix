@@ -6,15 +6,12 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/pse/pseenv"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -33,8 +30,10 @@ const (
 	PreDBSourceID = "remix-pre"
 	preDBName     = "Pre (annonces de releases)"
 
-	preDBDefaultEvery = 10 * time.Minute
-	preDBMinEvery     = 2 * time.Minute
+	// Les flux publics ne gardent que les 20 dernières annonces : une lecture par minute,
+	// comme PreBot, évite d'en perdre.
+	preDBDefaultEvery = time.Minute
+	preDBMinEvery     = 30 * time.Second
 	preDBDefaultDelay = time.Hour
 	preDBStartDelay   = 45 * time.Second
 	preDBMaxBody      = 8 << 20
@@ -47,6 +46,9 @@ const (
 // Flux publics lus quand l'option est active.
 var preDBPublicFeeds = []string{
 	"https://api.predb.net/feed/",
+	// Les animés n'apparaissent dans le flux général que par hasard : l'API de predb.net
+	// renvoie les 20 dernières annonces de la section ANiME.
+	"https://api.predb.net/?type=section&q=ANiME",
 	"https://predb.me/?cats=movies&rss=1",
 	"https://predb.me/?cats=tv&rss=1",
 	"https://predb.me/?cats=anime&rss=1",
@@ -67,57 +69,9 @@ CREATE INDEX pse_pre_state ON pse_pre(state, first_seen);
 	store.Register("pse_releases", 13, `ALTER TABLE pse_pre ADD COLUMN feed TEXT NOT NULL DEFAULT '';`)
 }
 
-// PreDBSettings règle l'import des pre (variables PSE_PREDB*).
-type PreDBSettings struct {
-	Enabled bool
-	// Public : flux publics (désactivable pour n'utiliser que les flux privés).
-	Public bool
-	// PrivateURLs : flux RSS ou points d'API personnels, propres à l'utilisateur.
-	PrivateURLs []string
-	// PrivateKey : clé d'API envoyée en en-tête, jamais dans l'adresse.
-	PrivateKey string
-	Langs      []string // fr, multi, vostfr
-	Delay      time.Duration
-	Every      time.Duration
-}
-
-// LoadPreDBSettings lit la configuration effective.
-func LoadPreDBSettings() PreDBSettings {
-	s := PreDBSettings{
-		Enabled:    isOn("PSE_PREDB"),
-		Public:     !strings.EqualFold(strings.TrimSpace(pseenv.Get("PSE_PREDB_PUBLIC")), "off"),
-		PrivateKey: strings.TrimSpace(pseenv.Get("PSE_PREDB_PRIVATE_KEY")),
-		Delay:      preDBDefaultDelay,
-		Every:      preDBDefaultEvery,
-	}
-	for _, u := range strings.Fields(pseenv.Get("PSE_PREDB_PRIVATE_URL")) {
-		if p, err := url.Parse(u); err == nil && (p.Scheme == "https" || p.Scheme == "http") && p.Hostname() != "" && p.User == nil {
-			s.PrivateURLs = append(s.PrivateURLs, p.String())
-		}
-	}
-	langs := strings.Split(strings.ToLower(pseenv.Get("PSE_PREDB_LANGS")), ",")
-	for _, l := range langs {
-		switch l = strings.TrimSpace(l); l {
-		case "fr", "multi", "vostfr":
-			s.Langs = append(s.Langs, l)
-		}
-	}
-	if len(s.Langs) == 0 {
-		s.Langs = []string{"fr", "multi", "vostfr"}
-	}
-	if d, err := time.ParseDuration(strings.TrimSpace(pseenv.Get("PSE_PREDB_DELAY"))); err == nil && d >= 0 {
-		s.Delay = min(d, 48*time.Hour)
-	}
-	if d, err := time.ParseDuration(strings.TrimSpace(pseenv.Get("PSE_PREDB_INTERVAL"))); err == nil {
-		s.Every = d
-	}
-	s.Every = max(s.Every, preDBMinEvery)
-	return s
-}
-
 // Active indique qu'au moins un flux est lu.
 func (s PreDBSettings) Active() bool {
-	return s.Enabled && (s.Public || len(s.PrivateURLs) > 0)
+	return s.Enabled && (s.Public || len(s.Feeds) > 0)
 }
 
 // ---- filtrage ----
@@ -130,7 +84,7 @@ var (
 	preForeignMulti = regexp.MustCompile(`(?i)(^|[^a-z0-9])(spanish|italian|german|dutch|polish|russian|swedish|norwegian|danish|finnish|portuguese|czech|hungarian|turkish|greek|korean|japanese|chinese|hindi)[._ -]+multi`)
 	preFix          = regexp.MustCompile(`(?i)(^|[^a-z0-9])(dir|nfo|sample|proof|sync|sub|read ?nfo)?fix([^a-z0-9]|$)`)
 	preXXX          = regexp.MustCompile(`(?i)(^|[^a-z0-9])xxx([^a-z0-9]|$)`)
-	preBadSection   = regexp.MustCompile(`(?i)(mp3|flac|music|mvid|game|apps?|0day|xxx|ebook|audiobook|dox|iso|ps[0-9p]|nsw|xbox|doc|pda|nds)`)
+	preBadSection   = regexp.MustCompile(`(?i)(mp3|flac|music|mvid|game|apps?|0day|xxx|ebook|audiobook|dox|iso|ps[0-9p]|nsw|xbox|^doc$|pda|nds)`)
 )
 
 // preLangOK applique le choix de langues et écarte les corrections.
@@ -238,7 +192,14 @@ func ParsePreFeed(body []byte) ([]PreItem, error) {
 		for _, e := range list {
 			m, _ := e.(map[string]any)
 			p := PreItem{Name: preStr(m, "name", "release", "title"), Section: preStr(m, "section", "cat", "category")}
-			if d := preStr(m, "date", "pretime", "pre_at", "created_at"); d != "" {
+			// L'API de predb.net donne l'heure en secondes Unix (nombre).
+			for _, k := range []string{"pretime", "pre_at", "timestamp"} {
+				if f, ok := m[k].(float64); ok && f > 1e9 && f < 1e11 {
+					p.At = time.Unix(int64(f), 0).UTC()
+					break
+				}
+			}
+			if d := preStr(m, "date", "pretime", "pre_at", "created_at"); d != "" && p.At.IsZero() {
 				for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
 					if t, err := time.Parse(layout, d); err == nil {
 						p.At = t.UTC()
@@ -274,41 +235,6 @@ func preStr(m map[string]any, keys ...string) string {
 
 var preClient = (&safefetch.Guard{}).Client(&http.Client{Timeout: 30 * time.Second})
 
-// fetchPre lit un flux. La clé personnelle n'est envoyée qu'en en-tête, et
-// seulement aux adresses privées.
-func fetchPre(ctx context.Context, u, key string) ([]PreItem, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/rss+xml, application/xml, application/json;q=0.9, */*;q=0.5")
-	req.Header.Set("User-Agent", "Ether-Remix")
-	if key != "" {
-		req.Header.Set("X-API-Key", key)
-	}
-	// La clé personnelle ne suit jamais une redirection vers un autre hôte.
-	c := *preClient
-	c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if len(via) >= 5 || (key != "" && next.URL.Host != via[0].URL.Host) {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}
-	res, err := c.Do(req)
-	if err != nil {
-		return nil, errors.New("flux inaccessible")
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("flux refusé (%d)", res.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(res.Body, preDBMaxBody))
-	if err != nil {
-		return nil, errors.New("flux interrompu")
-	}
-	return ParsePreFeed(body)
-}
-
 // ---- état ----
 
 // PreDBStatus est affiché dans la console.
@@ -328,11 +254,14 @@ type PreDBStatus struct {
 // court, sans adresse ni clé.
 type PreFeedRun struct {
 	Feed    string `json:"feed"`
-	State   string `json:"state"` // ok, error
+	Label   string `json:"label,omitempty"` // nom d'un flux personnel
+	State   string `json:"state"`           // ok, error
 	At      int64  `json:"at"`
 	Fetched int    `json:"fetched"` // annonces reçues
 	Kept    int    `json:"kept"`    // annonces retenues (langue, section, correction)
 	Error   string `json:"error,omitempty"`
+	// Sample : quelques annonces retenues, pour le test des flux.
+	Sample []string `json:"sample,omitempty"`
 }
 
 // PreFeedStat compte, pour un flux, les pre lues et les releases qui en viennent.
@@ -346,6 +275,7 @@ type PreFeedStat struct {
 	Pending   int    `json:"pending"`   // en attente du délai ou d'un média
 	Unmatched int    `json:"unmatched"` // média introuvable, abandonnées
 	// Dernière lecture du flux : état, annonces reçues et retenues, erreur éventuelle.
+	Label   string `json:"label,omitempty"`
 	State   string `json:"state,omitempty"`
 	ReadAt  int64  `json:"readAt,omitempty"`
 	Fetched int    `json:"fetched,omitempty"`
@@ -376,7 +306,7 @@ func (s *Store) LoadPreDBStatus(ctx context.Context) PreDBStatus {
 	for i := range st.Feeds {
 		for _, r := range st.Runs {
 			if r.Feed == st.Feeds[i].Feed {
-				st.Feeds[i].State, st.Feeds[i].ReadAt = r.State, r.At
+				st.Feeds[i].State, st.Feeds[i].ReadAt, st.Feeds[i].Label = r.State, r.At, r.Label
 				st.Feeds[i].Fetched, st.Feeds[i].Kept, st.Feeds[i].Error = r.Fetched, r.Kept, r.Error
 			}
 		}
@@ -403,8 +333,11 @@ func (s *Store) preFeedStats(ctx context.Context, cfg PreDBSettings) []PreFeedSt
 			get(preFeedID(true, u, 0))
 		}
 	}
-	for i := range cfg.PrivateURLs {
-		get(preFeedID(false, "", i+1))
+	labels := map[string]string{}
+	for i, f := range cfg.Feeds {
+		id := preFeedID(false, "", i+1)
+		get(id)
+		labels[id] = f.Name
 	}
 	if rows, err := s.db.QueryContext(ctx, `SELECT feed,state,COUNT(*) FROM pse_pre GROUP BY feed,state`); err == nil {
 		for rows.Next() {
@@ -588,7 +521,7 @@ func (s *Service) preSave(ctx context.Context, name string, info core.ReleaseInf
 }
 
 func preSignature(c PreDBSettings) string {
-	return strings.Join(c.Langs, ",") + "|" + fmt.Sprint(c.Public) + "|" + fmt.Sprint(len(c.PrivateURLs))
+	return strings.Join(c.Langs, ",") + "|" + fmt.Sprint(c.Public) + "|" + fmt.Sprint(len(c.Feeds))
 }
 
 // preCycle lit les flux puis traite les pre dont le délai est écoulé.
@@ -606,28 +539,17 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 	now := s.d.Now()
 	prev := s.st.preStatus(ctx)
 	s.st.preSetStatus(ctx, PreDBStatus{State: "running", Last: now.Unix(), Added: s.st.preAdded(ctx), Pending: s.st.prePending(ctx), Runs: prev.Runs})
-	type feed struct {
-		id, url, key string
-	}
-	var feeds []feed
-	if cfg.Public {
-		for _, u := range preDBPublicFeeds {
-			feeds = append(feeds, feed{preFeedID(true, u, 0), u, ""})
-		}
-	}
-	for i, u := range cfg.PrivateURLs {
-		feeds = append(feeds, feed{preFeedID(false, "", i+1), u, cfg.PrivateKey})
-	}
+	feeds := cfg.feeds()
 	okFeeds, lastErr := 0, error(nil)
 	var runs []PreFeedRun
 	for _, f := range feeds {
-		items, err := fetchPre(ctx, f.url, f.key)
+		fetched, keep, err := readPreFeed(ctx, f, cfg)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			lastErr = err
-			runs = append(runs, PreFeedRun{Feed: f.id, State: "error", At: now.Unix(), Error: err.Error()})
+			runs = append(runs, PreFeedRun{Feed: f.id, Label: f.label, State: "error", At: now.Unix(), Error: err.Error()})
 			// Visible dans les journaux : sans adresse pour un flux personnel (identifiant « perso:N »).
 			if s.d.Logger != nil {
 				s.d.Logger.Warn("pse pre feed failed", "feed", f.id, "err", err.Error())
@@ -635,16 +557,10 @@ func (s *Service) preCycle(ctx context.Context, cfg PreDBSettings) error {
 			continue
 		}
 		okFeeds++
-		var keep []PreItem
-		for _, it := range items {
-			if _, ok := PreAccept(it.Name, it.Section, cfg.Langs); ok {
-				keep = append(keep, it)
-			}
-		}
 		if err := s.st.preNote(ctx, f.id, keep, now); err != nil {
 			return err
 		}
-		runs = append(runs, PreFeedRun{Feed: f.id, State: "ok", At: now.Unix(), Fetched: len(items), Kept: len(keep)})
+		runs = append(runs, PreFeedRun{Feed: f.id, Label: f.label, State: "ok", At: now.Unix(), Fetched: fetched, Kept: len(keep)})
 	}
 	if okFeeds == 0 && lastErr != nil {
 		s.st.preSetRuns(ctx, runs)

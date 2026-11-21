@@ -42,6 +42,14 @@ export const REMIX_UPDATES = [
         "Statistiques → Résumé affiche les releases indexées au total et par source. Quand l’option Pre est activée, un tableau détaille chaque flux de pre : annonces lues, releases indexées, en attente, non trouvées et dernière lecture (annonces reçues et retenues, ou erreur courte). Sinon, un encart renvoie vers Indexation → Pre (bêta) pour l’activer.",
         "Statistics → Summary shows indexed releases overall and by source. When the Pre option is on, a table details each pre feed: announcements read, indexed releases, pending, not matched and last read (announcements received and kept, or a short error). Otherwise a note links to Indexing → Pre (beta) to enable it.",
       ],
+      [
+        "Pre (bêta) : vous pouvez maintenant ajouter autant de sites (flux RSS ou API, avec une clé facultative par site) que vous voulez. Un bouton « Tester les flux » lit chaque flux tout de suite et montre le résultat, les annonces retenues et des exemples, ou l’erreur.",
+        "Pre (beta): you can now add as many sites as you like (RSS feed or API, with an optional key per site). A “Test the feeds” button reads each feed right away and shows the result, kept announcements and examples, or the error.",
+      ],
+      [
+        "Pre (bêta) : nouveau réglage de proxy (HTTP, SOCKS ou relais MediaFlow, avec identifiants) pour les flux publics, utile quand predb.me refuse l’adresse du serveur (erreur 403). Lecture toutes les minutes par défaut, et l’API animés de predb.net est lue en plus pour ne plus perdre les animés.",
+        "Pre (beta): new proxy setting (HTTP, SOCKS or MediaFlow relay, with credentials) for the public feeds, useful when predb.me refuses the server address (403 error). Read every minute by default, and the predb.net anime API is now read too so anime are no longer missed.",
+      ],
     ],
   },
   {

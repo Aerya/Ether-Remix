@@ -20,6 +20,7 @@ const (
 	KindCountries = "countries"
 	KindFilter    = "filter"
 	KindURL       = "url"
+	KindFeeds     = "feeds"  // liste de flux : JSON [{name, url, key}], clés masquées à l'affichage
 	KindKey       = "key"    // clé d'API, masquée à l'affichage
 	KindSecret    = "secret" // mot de passe : jamais renvoyé, même en partie
 )
@@ -140,14 +141,19 @@ var Features = communityFields([]Feature{
 				Help: tx("predb.me et la source publique de PreDB. Décochez pour n'utiliser que vos flux personnels.", "predb.me and PreDB's public source. Untick to use only your personal feeds.")},
 			{Key: "PSE_PREDB_LANGS", Kind: KindMulti, Default: "fr,multi,vostfr", Options: []Option{{"fr", tx("FRENCH / VF (VFF, VFQ, VFI…)", "FRENCH / VF (VFF, VFQ, VFI…)")}, {"multi", tx("MULTi", "MULTi")}, {"vostfr", tx("VOSTFR / SUBFRENCH", "VOSTFR / SUBFRENCH")}}, Label: tx("Langues gardées", "Languages kept"),
 				Help: tx("Les releases « autre langue + MULTi » et les corrections (FIX) sont toujours écartées.", "“Other language + MULTi” releases and fixes are always dropped.")},
-			{Key: "PSE_PREDB_PRIVATE_URL", Kind: KindURL, List: true, Secret: true, Default: "", Placeholder: "https://…", Label: tx("Flux ou API personnels (facultatif)", "Personal feeds or API (optional)"),
-				Help: tx("Adresses de vos flux RSS ou d'un point d'API JSON auquel vous avez accès, séparées par des espaces. Rien n'est lu tant que vous n'en renseignez pas. Ces adresses ne sont jamais réaffichées.", "Addresses of your RSS feeds or of a JSON API endpoint you have access to, separated by spaces. Nothing is read until you provide some. These addresses are never shown again.")},
-			{Key: "PSE_PREDB_PRIVATE_KEY", Kind: KindKey, Default: "", Label: tx("Clé d'API personnelle (facultatif)", "Personal API key (optional)"),
-				Help: tx("Envoyée en en-tête X-API-Key aux seules adresses personnelles ci-dessus, jamais dans une adresse. Jamais réaffichée.", "Sent as an X-API-Key header to the personal addresses above only, never in an address. Never shown again.")},
+			{Key: "PSE_PREDB_FEEDS", Kind: KindFeeds, Default: "", Label: tx("Autres sites (flux RSS ou API) — facultatif", "Other sites (RSS feeds or API) — optional"),
+				Help: tx("Ajoutez autant de sites que vous voulez : un nom (facultatif), l'adresse d'un flux RSS ou d'une API JSON et, si le site en demande une, sa clé d'API. La clé est envoyée en en-tête X-API-Key à ce site seulement, jamais dans l'adresse, et n'est jamais réaffichée. Ces sites sont lus directement, sans passer par le proxy ci-dessous.", "Add as many sites as you like: an optional name, the address of an RSS feed or JSON API and, if the site needs one, its API key. The key is sent as an X-API-Key header to that site only, never in the address, and is never shown again. These sites are read directly, not through the proxy below.")},
+			{Key: "PSE_PREDB_PROXY_TYPE", Kind: KindSelect, Default: "", Label: tx("Proxy pour les flux publics", "Proxy for public feeds"),
+				Help:    tx("predb.me refuse les adresses de serveurs d'hébergeurs (erreur 403). Choisissez un proxy HTTP, HTTPS ou SOCKS5 (par exemple Gluetun), ou un relais MediaFlow, pour lire les flux publics par une autre sortie.", "predb.me refuses hosting-provider addresses (403 error). Pick an HTTP, HTTPS or SOCKS5 proxy (for example Gluetun), or a MediaFlow relay, to read the public feeds through another exit."),
+				Options: []Option{{"", tx("Aucun (lecture directe)", "None (direct)")}, {"proxy", tx("Proxy HTTP, HTTPS ou SOCKS5", "HTTP, HTTPS or SOCKS5 proxy")}, {"mediaflow", tx("Relais MediaFlow", "MediaFlow relay")}}},
+			{Key: "PSE_PREDB_PROXY_URL", Kind: KindURL, Default: "", Placeholder: "http://gluetun:8888 · socks5://hôte:1080 · https://mediaflow.exemple.net", Label: tx("Adresse du proxy ou du relais", "Proxy or relay address"),
+				Help: tx("Sans identifiants dans l'adresse : ils se saisissent dans le champ suivant. Adresses http://, https:// ou socks5:// pour un proxy ; http(s):// pour un relais MediaFlow.", "No credentials in the address: enter them in the next field. http://, https:// or socks5:// addresses for a proxy; http(s):// for a MediaFlow relay.")},
+			{Key: "PSE_PREDB_PROXY_AUTH", Kind: KindSecret, Default: "", Label: tx("Identifiants du proxy (utilisateur:mot de passe) ou mot de passe API MediaFlow", "Proxy credentials (user:password) or MediaFlow API password"),
+				Help: tx("Facultatif pour un proxy sans authentification. Pour MediaFlow, saisissez le mot de passe API du relais. Jamais réaffiché.", "Optional for a proxy without authentication. For MediaFlow, enter the relay's API password. Never shown again.")},
 			{Key: "PSE_PREDB_DELAY", Advanced: true, Kind: KindDuration, Default: "1h", Placeholder: "1h", Label: tx("Délai avant prise en compte", "Delay before counting"),
 				Help: tx("Une pre n'est comptée que ce temps après son annonce, le temps que la release arrive sur les sources. 0s : tout de suite.", "A pre only counts this long after its announcement, so the release has time to reach the sources. 0s: immediately.")},
-			{Key: "PSE_PREDB_INTERVAL", Advanced: true, Kind: KindDuration, Default: "10m", Placeholder: "10m", Label: tx("Intervalle de lecture", "Read interval"),
-				Help: tx("Minimum 2m.", "At least 2m.")},
+			{Key: "PSE_PREDB_INTERVAL", Advanced: true, Kind: KindDuration, Default: "1m", Placeholder: "1m", Label: tx("Intervalle de lecture", "Read interval"),
+				Help: tx("Minimum 30s. Les flux publics ne gardent que les 20 dernières annonces : une lecture par minute évite d'en perdre.", "At least 30s. Public feeds only keep the 20 latest announcements: reading once a minute avoids missing some.")},
 		},
 	},
 	{

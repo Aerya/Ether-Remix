@@ -75,7 +75,7 @@ func TestPreDBSettings(t *testing.T) {
 	restore := pseenv.Replace(map[string]string{"PSE_PREDB": "on", "PSE_PREDB_PUBLIC": "off", "PSE_PREDB_PRIVATE_URL": "https://a.example/rss ftp://x https://" + "u" + ":" + "p" + "@b.example/ https://c.example/api"})
 	defer restore()
 	s := LoadPreDBSettings()
-	if !s.Active() || s.Public || len(s.PrivateURLs) != 2 {
+	if !s.Active() || s.Public || len(s.Feeds) != 2 {
 		t.Fatalf("flux personnels seuls : %+v", s)
 	}
 }
@@ -105,7 +105,7 @@ func TestPreCycle(t *testing.T) {
 		}
 		return core.Title{}, false
 	}})
-	cfg := PreDBSettings{Enabled: true, PrivateURLs: []string{srv.URL + "/feed"}, PrivateKey: testKey, Langs: []string{"fr", "multi"}, Delay: time.Hour, Every: 10 * time.Minute}
+	cfg := PreDBSettings{Enabled: true, Feeds: []PreFeedConf{{URL: srv.URL + "/feed", Key: testKey}}, Langs: []string{"fr", "multi"}, Delay: time.Hour, Every: 10 * time.Minute}
 	ctx := context.Background()
 
 	if err := s.preCycle(ctx, cfg); err != nil {
@@ -222,7 +222,7 @@ func TestPreCycleReportsEachFeed(t *testing.T) {
 	defer func() { preClient = old }()
 	db := store.OpenTest(t)
 	s := New(Deps{DB: db, Now: func() time.Time { return time.Unix(1_800_000_000, 0) }})
-	cfg := PreDBSettings{Enabled: true, PrivateURLs: []string{srv.URL + "/ok", srv.URL + "/ko"}, Langs: []string{"fr"}, Delay: time.Hour, Every: 10 * time.Minute}
+	cfg := PreDBSettings{Enabled: true, Feeds: []PreFeedConf{{Name: "Mon site", URL: srv.URL + "/ok"}, {URL: srv.URL + "/ko"}}, Langs: []string{"fr"}, Delay: time.Hour, Every: 10 * time.Minute}
 	ctx := context.Background()
 	if err := s.preCycle(ctx, cfg); err != nil {
 		t.Fatal(err)

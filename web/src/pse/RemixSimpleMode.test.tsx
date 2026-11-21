@@ -486,7 +486,7 @@ it("Statistiques détaille les releases indexées pour chaque pre, sans exposer 
     "3",
     "OK · 100 annonces · 12 retenues",
   ]);
-  expect(rows[2]).toEqual(["Flux personnel 1", "10", "10", "0", "0", "Erreur · flux refusé (403)"]);
+  expect(rows[2]).toEqual(["Site 1", "10", "10", "0", "0", "Erreur · flux refusé (403)"]);
   expect(rows[3]![0]).toBe("Plus anciennes ou flux inconnu");
   expect(rows[4]).toEqual(["Total", "40", "40", "2", "3", ""]);
 });

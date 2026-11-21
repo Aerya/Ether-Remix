@@ -14,6 +14,12 @@ export const PRE_PUBLIC_FEEDS = [
     en: "predb.net · all categories",
   },
   {
+    url: "https://api.predb.net/?type=section&q=ANiME",
+    site: "https://predb.net/",
+    fr: "predb.net · animés (API)",
+    en: "predb.net · anime (API)",
+  },
+  {
     url: "https://predb.me/?cats=movies&rss=1",
     site: "https://predb.me/",
     fr: "predb.me · films",
