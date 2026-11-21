@@ -83,6 +83,8 @@ Background search does not download or unlock files. A remote addon may still ma
 
 Verified AllDebrid files can take priority when they meet the profile. Quotas pause affected accounts, fallback attempts are capped, and link renewal can be configured to avoid unnecessary calls. [AllDebrid and proxies](docs/alldebrid-mediaflow.md).
 
+When no source is available because of an indexer limit or a debrid quota, players such as Plezy show "file unavailable" and return to the title page instead of staying stuck.
+
 <a id="nav-compatible-apps"></a>
 <a id="apps"></a>
 
