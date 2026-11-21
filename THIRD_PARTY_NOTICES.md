@@ -67,6 +67,7 @@ SOFTWARE.
 | `modernc.org/sqlite` (+ its modernc.org support modules) | Pure-Go SQLite store | BSD-3-Clause (module); SQLite itself is public domain |
 | `github.com/jackc/pgx/v5` (+ `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, `github.com/jackc/puddle/v2`) | Pure-Go PostgreSQL driver (database/sql adapter) for clustered mode, `internal/store` | MIT (© Jack Christensen) |
 | `github.com/jlaffaye/ftp` | FTP / FTPS source | ISC |
+| `github.com/Cycl0o0/OpenDeezer/v3` (`sdk/deezer`, + its `go-flac`/`id3v2` support modules, indirect) | OpenDeezer music source, `internal/pse/music/opendeezer.go` | AGPL-3.0 (© Cycl0o0). GPL-3.0 §13 allows combining with AGPL-3.0: network users of a build that includes it must be offered its corresponding source |
 | `github.com/pkg/sftp` | SFTP source | BSD-2-Clause |
 | `github.com/kr/fs` | SFTP filesystem traversal (indirect) | BSD-3-Clause |
 | `github.com/kardianos/service` | OS service (systemd/launchd/Windows SCM), `internal/service` | Zlib-style (“as-is”, © Daniel Theophanes) |

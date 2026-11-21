@@ -114,6 +114,9 @@ func chain(cfg Settings, debrid DebridSources, hc *http.Client) ([]namedResolver
 	off := func(name, kind, reason string) {
 		plan = append(plan, PlanEntry{Name: name, Kind: kind, Reason: reason})
 	}
+	if cfg.openDeezerEnabled() && cfg.OpenDeezerOrder == "first" {
+		add(namedResolver{"OpenDeezer", "opendeezer", NewOpenDeezer(cfg.OpenDeezerARL, nil)})
+	}
 	if cfg.Audius == "first" {
 		add(namedResolver{"Audius", "audius", NewAudius(hc)})
 	}
@@ -165,6 +168,15 @@ func chain(cfg Settings, debrid DebridSources, hc *http.Client) ([]namedResolver
 	}
 	if !cfg.audiusEnabled() {
 		off("Audius", "audius", "Désactivé")
+	}
+	if cfg.openDeezerEnabled() && cfg.OpenDeezerOrder != "first" {
+		add(namedResolver{"OpenDeezer", "opendeezer", NewOpenDeezer(cfg.OpenDeezerARL, nil)})
+	}
+	switch {
+	case !cfg.OpenDeezer:
+		off("OpenDeezer", "opendeezer", "Désactivé")
+	case cfg.OpenDeezerARL == "":
+		off("OpenDeezer", "opendeezer", "Aucune session Deezer (ARL) enregistrée")
 	}
 	switch {
 	case cfg.HiFiURL == "":
@@ -263,6 +275,23 @@ func DiagnoseSource(ctx context.Context, cfg Settings, debrid DebridSources, que
 // probe ouvre les premiers octets du lien pour constater le format.
 func probe(ctx context.Context, hc *http.Client, st Stream, rep *SourceReport) error {
 	ctx = egress.WithStreamSource(ctx, st.DebridAccountID, "")
+	if st.Open != nil {
+		f, _, err := st.Open()
+		if err != nil {
+			return errors.New("flux de la source illisible")
+		}
+		defer f.Close()
+		rep.Stage = "link"
+		b, err := io.ReadAll(io.LimitReader(f, 64<<10))
+		if err != nil {
+			return errors.New("lecture audio interrompue")
+		}
+		if !inspectAudio(b, rep) {
+			return errors.New("format audio non vérifié dans les premiers octets")
+		}
+		rep.Stage = "bytes"
+		return nil
+	}
 	if st.File != "" {
 		f, err := os.Open(st.File)
 		if err != nil {

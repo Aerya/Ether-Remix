@@ -26,8 +26,23 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-20-pre-index",
+    id: "2026-11-21-opendeezer",
     version: "current",
+    date: "2026-11-21",
+    title: [
+      "OpenDeezer : lecture avec votre compte Deezer",
+      "OpenDeezer: play with your Deezer account",
+    ],
+    items: [
+      [
+        "Nouvelle source musicale, désactivée par défaut (Sources → Streaming musical → Autres sources) : Remix lit les titres Deezer complets accessibles à votre compte avec votre session ARL, en secours après vos autres sources ou avant elles. Flux relayé sans téléchargement ni stockage ; MP3 128 kb/s avec un compte gratuit. Un aperçu de 30 s ou un refus de Deezer fait passer à la source suivante. Le test des sources vérifie la connexion.",
+        "New music source, disabled by default (Sources → Music streaming → Other sources): Remix streams full Deezer tracks available to your account using your ARL session, as a fallback after your other sources or before them. The stream is relayed with no download or storage; MP3 128 kbps with a free account. A 30 s preview or a refusal from Deezer moves on to the next source. The source test checks the connection.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-20-pre-index",
+    version: "0.2.37-remix.120.1",
     date: "2026-11-20",
     title: [
       "Index des pré en bêta (releases FR / MULTi / VOSTFR)",
