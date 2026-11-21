@@ -41,6 +41,25 @@ export const REMIX_UPDATES = [
     ],
   },
   {
+    id: "2026-11-20-pre-index",
+    version: "0.2.37-remix.120.1",
+    date: "2026-11-20",
+    title: [
+      "Index des pré en bêta (releases FR / MULTi / VOSTFR)",
+      "Pre index in beta (FR / MULTi / VOSTFR releases)",
+    ],
+    items: [
+      [
+        "Nouvelle option facultative en bêta, désactivée par défaut : Remix lit les annonces de releases (pré) françaises, MULTi et VOSTFR. Une release annoncée est considérée comme disponible sous environ une heure sur vos sources (debrid, BitTorrent, Usenet) : elle compte comme release indexée et son film ou sa série est ajouté au catalogue sans attendre TMDB.",
+        "New optional beta setting, off by default: Remix reads French, MULTi and VOSTFR release announcements (pre). An announced release is assumed available within about an hour on your sources (debrid, BitTorrent, Usenet): it counts as an indexed release and its movie or show is added to the catalogue without waiting for TMDB.",
+      ],
+      [
+        "Vous pouvez ajouter vos propres flux RSS ou une API personnelle avec votre clé ; rien de personnel n’est lu sans votre saisie. Une pré ne sert jamais de lien : la lecture passe toujours par vos sources.",
+        "You can add your own RSS feeds or a personal API with your key; nothing personal is read without your input. A pre is never used as a link: playback always goes through your sources.",
+      ],
+    ],
+  },
+  {
     id: "2026-11-20-limit-debrid",
     version: "0.2.37-remix.119.1",
     date: "2026-11-20",
