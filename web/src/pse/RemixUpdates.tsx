@@ -26,8 +26,31 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-21-playback-clear-new-seasons",
+    id: "2026-11-21-remix-libraries-per-viewer",
     version: "current",
+    date: "2026-11-21",
+    title: [
+      "Bibliothèques Remix au choix pour chaque spectateur, aussi dans Jellyfin",
+      "Remix libraries chosen per viewer, in Jellyfin too",
+    ],
+    items: [
+      [
+        "Dans la fiche d’un spectateur, cochez ses bibliothèques Remix. Un choix explicite peut lui ouvrir ces seules bibliothèques, sans les sections Films et Séries : pratique pour un profil enfant limité à « Dessins animés ». Sans choix, rien ne change.",
+        "In a viewer’s page, tick their Remix libraries. An explicit choice can open only those libraries, without the Movies and Shows sections: handy for a kids profile limited to “Cartoons”. Without a choice, nothing changes.",
+      ],
+      [
+        "Un titre d’une bibliothèque Remix accordée se lit aussi depuis Stremio et depuis les hubs Plex, même s’il n’est pas dans les sections de base du spectateur. Le contrôle parental reste actif.",
+        "A title from a granted Remix library also plays from Stremio and from Plex hubs, even when it is outside the viewer’s base sections. Parental controls still apply.",
+      ],
+      [
+        "Jellyfin affiche les bibliothèques Remix et leurs collections selon les droits de chaque spectateur. Un profil limité aux bibliothèques Remix peut parcourir, rechercher, reprendre et retrouver la suite (« À suivre ») des titres autorisés.",
+        "Jellyfin shows Remix libraries and their collections according to each viewer’s permissions. A viewer limited to Remix libraries can browse, search, resume and find the next episode (“Next Up”) of permitted titles.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-21-playback-clear-new-seasons",
+    version: "0.2.37-remix.125.1",
     date: "2026-11-21",
     title: [
       "Lecture plus claire et nouvelles saisons dans Continuer à regarder",
