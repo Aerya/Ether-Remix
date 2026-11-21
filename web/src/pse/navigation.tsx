@@ -8,7 +8,12 @@ export const REMIX_TABS = [
     en: "Sources",
     features: ["sfr", "seerrcatalog", "torrent", "torrent2", "torrent3", "xdcc", "ftp"],
   },
-  { key: "indexation", fr: "Indexation", en: "Indexing", features: ["indexer"] },
+  {
+    key: "indexation",
+    fr: "Indexation",
+    en: "Indexing",
+    features: ["indexer", "predb"],
+  },
   { key: "lecture", fr: "Lecture", en: "Playback", features: ["french", "playable"] },
   { key: "contenus", fr: "Contenus", en: "Content", features: ["music"] },
   { key: "visuels", fr: "Visuels", en: "Visuals", features: ["posters"] },

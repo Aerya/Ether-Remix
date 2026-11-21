@@ -33,7 +33,7 @@ Ether-Remix retains Ether’s server and compatible applications, adding a Frenc
 
 Your **local videos**, movies, episodes and personal recordings join your libraries from host folders or network mounts. Remix looks for a match in its catalogue, then TMDB, and keeps a local presentation when there is no reliable match. The **Sources → Local files** view reports missing files, readability problems and potential duplicates without deleting your media.
 
-**Optional sources** extend debrid and Usenet: torrent clients, XDCC through Grabscher and FTP / SFTP servers. Torrent and XDCC write files to disk; FTP / SFTP also supports remote playback without a complete copy, with Ether’s normal cache. These sources are off by default.
+**Optional sources** extend debrid and Usenet: torrent clients, XDCC through Grabscher and FTP / SFTP servers. Torrent and XDCC write files to disk; FTP / SFTP also supports remote playback without a complete copy, with Ether’s normal cache. These sources are off by default. The **pre** index (beta; FR / MULTi / VOSTFR release announcements, optional personal feeds) also feeds the catalogue without writing any file.
 
 For **music**, bring together the Deezer catalogue, your audio files and your iBroadcast accounts in Plexamp, Jellyfin clients or Subsonic apps. Enabled music sources and debrid accounts provide playback; playlists can be browsed, imported and managed per user. Local folders and iBroadcast accounts are private by default, with optional sharing.
 
@@ -123,6 +123,7 @@ When migrating from Ether, back up `/config`, stop the previous server and reuse
 | References, retention and indexed episodes | [Release index](docs/pse/RELEASE_LIBRARY.en.md) |
 | Libraries, home and sharing | [Layouts](docs/pse/FEATURES.en.md#nav-personal-libraries-and-collections) |
 | StreamFusion Reborn imports | [StreamFusion](docs/pse/STREAMFUSION.fr.md) (French) |
+| French release announcements (pre, beta) | [Pre](docs/pse/PRE.en.md) |
 | SeerrCatalog availability | [SeerrCatalog](docs/pse/SEERRCATALOG.en.md) |
 | AllDebrid, MediaFlow and proxies | [Networking](docs/alldebrid-mediaflow.md) |
 | Subtitles and translation | [SubMaker](docs/pse/SUBMAKER.en.md) |

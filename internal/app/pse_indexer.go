@@ -85,6 +85,9 @@ func (a *App) newPSEIndexer() *releasedb.Service {
 			c.Indexers = ftpIndexers(xdccIndexers(c.Indexers))
 			return c
 		},
+		Resolve: func(ctx context.Context, info core.ReleaseInfo) (core.Title, bool) {
+			return a.catalog.MatchRelease(ctx, info)
+		},
 		Browse: func(ctx context.Context, q core.BrowseQuery) (core.Page, error) {
 			q.Filter.PSEUnplayable = true
 			return a.catalog.Browse(ctx, q)
