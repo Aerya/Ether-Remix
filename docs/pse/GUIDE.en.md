@@ -103,6 +103,7 @@ References from searches and imports are automatically stored in a shared index,
 | `PSE_POSTER_REFRESH_HOURS` | `24` | With a poster provider (PostersPlus, XRDB, RPDB…), delay in hours (1 to 168) after which apps fetch its posters again. Ether used 6 hours. |
 | `PSE_LIBRARY_SORT` | `release` | Movies and Shows library order when opened: `release` (release date, newest first) or `title` (A → Z). A sort chosen in the app still wins. |
 | `PSE_LIGHT_LISTS` | `on` | A library, row, collection or Stremio catalogue only shows what is already stored: no TMDB detail fetched, no catalogue write, no debrid warm-up. Details load only when a title is opened or played. `off` restores Ether's behaviour. |
+| `PSE_INSTANT_SCREENS` | `on` | Plex: an already built Home or Recommended view is served at once, then rebuilt in the background (up to 12 h old), even after a viewing or a layout change. Never for a restricted viewer, nor after a change of rights or settings. `off` restores Ether's behaviour. |
 | `PSE_FRENCH` | `off` | `on` enables the French-language catalogue: Movies and Shows pages, Home rows (including Trending), collections and similar titles. Upcoming collections, the watchlist and Continue Watching are left alone. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Countries whose digital or physical release counts (ISO codes). `FR,CA` adds Canada, not always dubbed in French. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Indexed release languages that count (`vfq` for Québec French only, `vff`…). |

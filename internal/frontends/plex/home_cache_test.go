@@ -3,6 +3,7 @@ package plex
 import (
 	"context"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/instantscreens"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ func (c *buildCountingRecommender) HomeHubs(ctx context.Context, u *core.User, n
 // for an unrestricted viewer, but is rebuilt on the request for a restricted
 // one.
 func TestHomeCacheRevisionContract(t *testing.T) {
+	t.Setenv(instantscreens.Key, "off") // PSE-HOOK: contrat d'Ether, écrans immédiats coupés — voir docs/pse/FORK.fr.md
 	var mu sync.Mutex
 	revs := map[int64]experience.HomeRevision{}
 	setRev := func(id int64, fn func(*experience.HomeRevision)) {
