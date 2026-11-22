@@ -364,8 +364,8 @@ function IBroadcastAccount({
       )}
       <p className="text-xs text-fg-muted">
         {L(
-          "Actualisation automatique chaque heure. Lecture MP3 128 kb/s, compatible avec les comptes gratuits. Les favoris et écoutes restent gérés dans Remix.",
-          "Automatic hourly refresh. MP3 128 kb/s playback, compatible with free accounts. Favourites and listening history remain managed in Remix.",
+          "Actualisation automatique chaque heure. Lecture en qualité originale par défaut (Premium), avec repli automatique en MP3 128 kb/s si l’original est refusé. Les favoris et écoutes restent gérés dans Remix.",
+          "Automatic hourly refresh. Original quality by default (Premium), with automatic MP3 128 kb/s fallback if the original is refused. Favourites and listening history remain managed in Remix.",
         )}
       </p>
       {(error || data?.error) && (
