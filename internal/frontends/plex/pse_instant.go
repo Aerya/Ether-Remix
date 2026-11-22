@@ -5,6 +5,7 @@ package plex
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend/kit/instantscreens"
@@ -43,5 +44,20 @@ func (s *Server) pseStaleHome(e *homeEntry, hard string, pr *Request, now time.T
 	if e.hard == hard && age < homeMaxStale {
 		return false // déjà servi par le cas normal d'Ether
 	}
+	if pseViewerMasks(e.hard) != pseViewerMasks(hard) {
+		return false // titre masqué ou « pas intéressé » : reconstruire tout de suite
+	}
 	return e.psePolicy == s.psePolicyStamp(pr)
+}
+
+// pseViewerMasks extrait de l'empreinte dure les deux derniers compteurs de
+// rev.Viewer : exclusions « pas intéressé » et règles de catalogue du
+// spectateur. Leur changement retire des titres de l'écran.
+func pseViewerMasks(hard string) string {
+	viewer, _, _ := strings.Cut(hard, "|")
+	parts := strings.Split(viewer, ".")
+	if len(parts) < 2 {
+		return viewer
+	}
+	return strings.Join(parts[len(parts)-2:], ".")
 }

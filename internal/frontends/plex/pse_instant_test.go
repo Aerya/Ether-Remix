@@ -43,8 +43,9 @@ func TestPSEInstantHomeServesThenRefreshes(t *testing.T) {
 		}
 		return r.Body.String()
 	}
+	setRev(ownerUser.ID, func(r *experience.HomeRevision) { r.Viewer = "1.0.0.0.0.0.0.0" })
 	first := home(ownerToken)
-	setRev(ownerUser.ID, func(r *experience.HomeRevision) { r.Viewer = "watched-more" })
+	setRev(ownerUser.ID, func(r *experience.HomeRevision) { r.Viewer = "2.0.0.0.0.0.0.0" })
 	if home(ownerToken) != first {
 		t.Fatal("un visionnage a fait attendre une reconstruction")
 	}
@@ -54,6 +55,17 @@ func TestPSEInstantHomeServesThenRefreshes(t *testing.T) {
 			t.Fatal("l'écran n'a pas été reconstruit en arrière-plan")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// Un titre « pas intéressé » ou une règle du spectateur : jamais l'écran périmé.
+	rebuilt := home(ownerToken)
+	setRev(ownerUser.ID, func(r *experience.HomeRevision) { r.Viewer = "2.0.0.0.0.0.1.0" })
+	if home(ownerToken) == rebuilt {
+		t.Fatal("un titre masqué a été servi depuis l'écran périmé")
+	}
+	rebuilt = home(ownerToken)
+	setRev(ownerUser.ID, func(r *experience.HomeRevision) { r.Viewer = "2.0.0.0.0.0.1.1" })
+	if home(ownerToken) == rebuilt {
+		t.Fatal("une règle de catalogue du spectateur a été ignorée")
 	}
 
 	kid := home("kid-token")
