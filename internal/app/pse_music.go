@@ -22,6 +22,7 @@ func (a *App) mountPSEMusic(mux *http.ServeMux) {
 	rt.prepare(a)
 	rt.reloadMusic(a)
 	a.startOwnedMedia()
+	a.startPSEContinue()
 	// Account and priority changes must invalidate music links as well.
 	a.cfg.Subscribe(func(config.Config) { rt.reloadMusic(a) })
 	a.startPSEPlaylists(rt)

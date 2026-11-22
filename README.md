@@ -70,7 +70,7 @@ Le [détail des fonctionnalités](docs/pse/FEATURES.fr.md) précise les options,
 | Bibliothèques et accueil | Collections, configuration rapide JukeBox, import Xperience, modèles de disposition, affiches et cartes personnalisées. Le partage respecte les droits de chaque spectateur : bibliothèques Remix au choix par spectateur, avec ou sans les sections de base, dans Plex, Stremio et Jellyfin. |
 | Musique | Catalogue Deezer, sources musicales activées (dont OpenDeezer, avec votre compte Deezer), fichiers locaux et iBroadcast ; accès depuis Plexamp, Jellyfin ou Subsonic, avec playlists personnelles. |
 | Suivi | Progression et historique par spectateur, activité vidéo et musicale, Scrob, Last.fm et statistiques des sources. |
-| Continuer à regarder | Une ancienne série dont un nouvel épisode vient de sortir remonte en tête de la rangée, classée à la date de sortie. Réglages dans Remix → Lecture → Continuer à regarder : séries examinées (200 par défaut), période du dernier visionnage (illimitée), fenêtre des nouveaux épisodes (60 jours) et nombre maximal de films et de séries. |
+| Continuer à regarder | Une ancienne série dont un nouvel épisode vient de sortir remonte en tête de la rangée, classée à la date de sortie. Réglages dans Remix → Lecture → Continuer à regarder : séries examinées (200 par défaut), période du dernier visionnage (illimitée), fenêtre des nouveaux épisodes (60 jours) et nombre maximal de films et de séries. Toutes les séries en cours y figurent, et la rangée s'affiche instantanément : l'épisode suivant de chaque série est calculé à l'avance, à chaque visionnage ou nouvel épisode. |
 
 <a id="nav-des-sources-reunies-et-une-recherche-anticipee"></a>
 

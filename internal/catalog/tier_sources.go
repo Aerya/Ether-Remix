@@ -218,6 +218,8 @@ var tierUntouchedTables = []string{
 	"plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
 	"plugins_proposals", "plugins_settings", "agent_approvals", "agent_audit", "agent_secret_requests",
 	"agent_threads", "schema_migrations", "sqlite_",
+	// PSE-HOOK: « à suivre » recalculé depuis l'historique — voir docs/pse/FORK.fr.md
+	"pse_continue_next", "pse_continue_next_",
 }
 
 // tierTouched is the set of titles the touch sources name, collapsed to

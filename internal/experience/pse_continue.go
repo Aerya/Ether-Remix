@@ -26,6 +26,7 @@ type pseContinue struct {
 	s     continuewatch.Settings
 	now   time.Time
 	rank  map[core.RatingKey]time.Time
+	fresh map[core.RatingKey]bool
 	taken map[core.MediaType]int
 }
 
@@ -39,7 +40,7 @@ func (c Continue) pseContinueBegin(ctx context.Context) (context.Context, *pseCo
 	if c.Now != nil {
 		now = c.Now()
 	}
-	r := &pseContinue{s: c.PSE(), now: now, rank: map[core.RatingKey]time.Time{}, taken: map[core.MediaType]int{}}
+	r := &pseContinue{s: c.PSE(), now: now, rank: map[core.RatingKey]time.Time{}, fresh: map[core.RatingKey]bool{}, taken: map[core.MediaType]int{}}
 	return context.WithValue(ctx, pseContinueKey{}, r), r
 }
 
@@ -138,6 +139,9 @@ func (r *pseContinue) admit(viewed time.Time, ep *core.Title, st core.WatchStatu
 				rank = rel
 			}
 			r.rank[ep.Key] = rank
+			// Sorti après le dernier visionnage : nouvel épisode ou nouvelle
+			// saison, mis en tête comme Nuvio, Trakt ou Plex.
+			r.fresh[ep.Key] = rel.After(viewed)
 			return true
 		}
 	}
@@ -171,4 +175,10 @@ func (r *pseContinue) take(t core.MediaType) bool {
 	}
 	r.taken[t]++
 	return true
+}
+
+// isNew : épisode sorti après le dernier visionnage de la série (nouvel
+// épisode ou nouvelle saison) ; ces épisodes passent devant le reste.
+func (r *pseContinue) isNew(key core.RatingKey) bool {
+	return r != nil && r.fresh[key]
 }

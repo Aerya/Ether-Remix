@@ -439,3 +439,15 @@ func TestPSEContinueShowOnDeckWithRealDeck(t *testing.T) {
 		t.Fatalf("ContinueDeck : %v, %d séries préparées", pseKeys(got), prepared)
 	}
 }
+
+// Comme Nuvio : un épisode sorti après le dernier visionnage passe devant une
+// série regardée plus récemment que sa date de sortie.
+func TestPSEContinueNewEpisodeBeforeMoreRecentlyWatched(t *testing.T) {
+	fresh := pseShow{tmdb: 1, viewed: daysAgo(300), released: daysAgo(5)}
+	watched := pseShow{tmdb: 2, viewed: daysAgo(1), released: daysAgo(400)}
+	c, _ := pseContinueFor([]pseShow{watched, fresh}, pseDefaults())
+	got, _ := c.InProgress(context.Background(), &core.User{ID: 1}, core.TypeShow, 5)
+	if len(got) != 2 || got[0].Key != fresh.next() {
+		t.Fatalf("nouvel épisode attendu en tête : %v", pseKeys(got))
+	}
+}
