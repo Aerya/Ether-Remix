@@ -60,6 +60,7 @@ type pseRuntime struct {
 	music             atomic.Pointer[music.Server]
 	musicConf         music.Settings
 	musicAccounts     [32]byte
+	ownedMusic        string // empreinte de pse_music_owned au dernier rechargement
 	scrob             atomic.Pointer[scrobpush.Pusher]
 	plOnce            sync.Once
 	playlists         *music.PlaylistSync
@@ -164,6 +165,7 @@ func (rt *pseRuntime) reloadMusic(a *App) {
 		return
 	}
 	rt.musicConf, rt.musicAccounts = cfg, fingerprint
+	rt.ownedMusic = a.ownedMusicFingerprint(context.Background()) // état de la musique personnelle pris en compte
 	if !cfg.Enabled() && !a.hasOwnedMusic(context.Background()) {
 		rt.music.Store(nil)
 		frontend.SetPSEMusic(nil)

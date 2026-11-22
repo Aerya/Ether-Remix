@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/braedonsaunders/ether/internal/pse/mediaaccess"
 	"net/http"
 	"slices"
@@ -73,12 +74,31 @@ func (a *App) startOwnedMedia() {
 		return nil
 	})
 }
+
+// reloadOwnedMusic recharge la musique seulement si la musique personnelle a
+// changé depuis le dernier rechargement : la synchronisation horaire ne remet
+// plus à zéro les sources de lecture quand rien n'a bougé.
 func (a *App) reloadOwnedMusic() {
 	rt := pseRuntimeOf(a)
+	fp := a.ownedMusicFingerprint(context.Background())
 	rt.mu.Lock()
+	if fp != "" && fp == rt.ownedMusic {
+		rt.mu.Unlock()
+		return
+	}
+	rt.ownedMusic = fp
 	rt.musicConf.Quality = "reload-owned"
 	rt.mu.Unlock()
 	rt.reloadMusic(a)
+}
+
+// ownedMusicFingerprint résume le contenu de pse_music_owned ("" si illisible).
+func (a *App) ownedMusicFingerprint(ctx context.Context) string {
+	var n, sum, last int64
+	if err := a.db.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(rowid),0), COALESCE(MAX(added_at),0) FROM pse_music_owned").Scan(&n, &sum, &last); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d:%d", n, sum, last)
 }
 func (a *App) hasOwnedMusic(ctx context.Context) bool {
 	var n int
