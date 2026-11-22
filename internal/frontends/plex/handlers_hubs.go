@@ -662,7 +662,7 @@ func (s *Server) recommendSection(ctx context.Context, pr *Request, t frontend.M
 // cached/debrid link (no opening prefetch), and Prewarm's existing per-user
 // / rate budgets still apply.
 func (s *Server) warmBrowseLink(ctx context.Context, pr *Request, rows []model.Hub) {
-	if pr == nil || pr.User == nil {
+	if pr == nil || pr.User == nil || frontend.PSEListOnly(ctx) { // PSE-HOOK: listes légères, aucun préchauffage — voir docs/pse/FORK.fr.md
 		return
 	}
 	pw, ok := s.playback().(frontend.Prewarmer)
@@ -948,7 +948,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section) homeBuild {
 		served[mh.HubIdentifier] = hs.Hub
 	}
 	add(s.continueHub(ctx, pr, cwSection, sec, visibleCount))
-	if ra, err := s.recentlyAddedHub(ctx, pr, sec, count); err == nil {
+	if ra, err := s.recentlyAddedHubPage(ctx, pr, sec, count, true); err == nil { // PSE-HOOK: vue Recommandé, « Ajouts récents » sans total (seul « plus » sert) — voir docs/pse/FORK.fr.md
 		add(ra)
 	} else {
 		s.log.Warn("recently added hub", "section", sec.ID, "err", err)

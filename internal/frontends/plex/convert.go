@@ -195,7 +195,9 @@ func seasonTitle(t *frontend.Title) string {
 
 // metadata renders one title.
 func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o renderOpts) model.Metadata {
-	if !o.storedOnly {
+	if frontend.PSEListOnly(ctx) { // PSE-HOOK: listes légères, détails déjà en mémoire seulement — voir docs/pse/FORK.fr.md
+		t = s.pseEnrichCached(t)
+	} else if !o.storedOnly {
 		t = s.enrich(t)
 	}
 	added := t.DateAdded(s.now())
@@ -206,7 +208,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	}
 	thumbStamp := overlayThumbStamp(t, ov, hasPlex)
 	artStamp := overlayArtStamp(t, ov, hasPlex)
-	show := s.showOfOpts(t, o.storedOnly)
+	show := s.showOfOpts(t, o.storedOnly || frontend.PSEListOnly(ctx)) // PSE-HOOK: listes légères, aucune lecture programmée — voir docs/pse/FORK.fr.md
 	m := model.Metadata{
 		RatingKey:     t.Key.String(),
 		Key:           metadataKey(t.Key, t.Type),
@@ -1406,7 +1408,9 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	if len(ts) == 0 {
 		return nil
 	}
-	s.warmTitleDetails(ts, o.storedOnly)
+	if !frontend.PSEListOnly(ctx) { // PSE-HOOK: listes légères, aucune fiche complétée — voir docs/pse/FORK.fr.md
+		s.warmTitleDetails(ts, o.storedOnly)
+	}
 	if d := s.discovery(); d != nil {
 		if d.Ratings != nil {
 			ctx = d.Ratings.WithSettingsSnapshot(ctx)

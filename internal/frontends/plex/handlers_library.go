@@ -1297,6 +1297,7 @@ func (s *Server) sectionList(w http.ResponseWriter, r *http.Request, sec Section
 		s.libraryByGUID(w, r, &sec)
 		return
 	}
+	r = frontend.PSEListRequest(r) // PSE-HOOK: listes légères, base seule (pas la recherche par GUID) — voir docs/pse/FORK.fr.md
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	// Plugin and filter libraries are served from the Experience's plugin

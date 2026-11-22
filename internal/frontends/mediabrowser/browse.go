@@ -1107,6 +1107,7 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		i.pageWithExtra(w, r, v, result.Page, q.Offset, 0, "", nil, extra)
 		return
 	}
+	r = pseListItems(r, parent) // PSE-HOOK: listes légères, base seule — voir docs/pse/FORK.fr.md
 	if len(parent) == 0 || parent[0] == "" {
 		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), "", q)
 	} else if id, e := ids.ParseGUID(ids.View, parent[0]); e == nil && ids.PersonalView(id) {

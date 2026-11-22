@@ -71,6 +71,7 @@ The [detailed feature guide](docs/pse/FEATURES.en.md) covers options, sources an
 | Music | Deezer catalogue, enabled music sources (including OpenDeezer, with your own Deezer account), local files and iBroadcast; access through Plexamp, Jellyfin or Subsonic, with personal playlists. |
 | Tracking | Per-viewer progress and history, video and music activity, Scrob, Last.fm and source statistics. |
 | Continue Watching | An old show with a newly released episode comes back to the top of the row, ranked by the release date. Settings in Remix → Playback → Continue watching: shows examined (200 by default), last-watched period (unlimited), new episodes window (60 days) and maximum movies and shows. Every show in progress is listed, and the row appears instantly: each show's next episode is computed ahead of time, on every viewing or new episode. |
+| Light lists | A library, row or collection only shows what is already stored: no TMDB detail fetched, no catalogue write, no debrid warm-up. Details load only when a title is opened or played. Setting `PSE_LIGHT_LISTS` (Remix console), on by default. |
 
 <a id="nav-unified-sources-and-searches-ahead-of-playback"></a>
 

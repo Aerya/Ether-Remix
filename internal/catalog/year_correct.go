@@ -316,8 +316,8 @@ func movieYearMightDiffer(t core.Title) bool {
 // page finds those still unmarked; a fetch per candidate would start up to
 // yearFetchSlots goroutines on every page view, each holding a connection
 // for a point read, past the idle pool and so opening new connections.
-func (c *Catalog) kickMovieYears(items []core.Title) {
-	if c == nil {
+func (c *Catalog) kickMovieYears(ctx context.Context, items []core.Title) {
+	if c == nil || pseListOnly(ctx) { // PSE-HOOK: listes légères, aucune correction d'année — voir docs/pse/FORK.fr.md
 		return
 	}
 	var keys []any

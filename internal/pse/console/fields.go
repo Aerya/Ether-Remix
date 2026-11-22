@@ -202,6 +202,15 @@ var Features = communityFields([]Feature{
 		},
 	},
 	{
+		ID:          "lightlists",
+		Title:       tx("Listes légères", "Light lists"),
+		Description: tx("Une bibliothèque, une rangée ou une collection n'affiche que ce qui est déjà en base : aucune fiche TMDB complétée, aucune écriture du catalogue, aucun appel debrid. Les détails ne partent qu'à l'ouverture d'une fiche ou à la lecture.", "A library, row or collection only shows what is already stored: no TMDB detail fetched, no catalogue write, no debrid call. Details load only when a title is opened or played."),
+		Fields: []Field{
+			{Key: "PSE_LIGHT_LISTS", Kind: KindToggle, Default: "on", Label: tx("Listes sans chargement des fiches", "Lists without loading titles"),
+				Help: tx("Désactivé, les listes se comportent comme dans Ether : fiches complétées à l'affichage et préchauffage de l'accueil.", "Off, lists behave like Ether: details completed while listing and Home warm-up.")},
+		},
+	},
+	{
 		ID:          "continuewatch",
 		Title:       tx("Continuer à regarder", "Continue watching"),
 		Description: tx("Rangée « Continuer à regarder » de Plex, Jellyfin, Emby et Stremio, pour les bibliothèques Ether comme pour les bibliothèques Remix. Une ancienne série dont un nouvel épisode vient de sortir remonte en tête, classée à la date de sortie de l'épisode. Droits, contrôle parental, favoris et épisodes futurs ne changent pas.", "Continue Watching row of Plex, Jellyfin, Emby and Stremio, for Ether libraries and Remix libraries alike. An old show with a newly released episode comes back on top, ranked by the episode's release date. Access rights, parental controls, favorites and future episodes are unchanged."),

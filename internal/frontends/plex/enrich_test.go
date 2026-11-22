@@ -266,6 +266,7 @@ func (c *listCatalog) count(k core.RatingKey) int {
 }
 
 func TestHubItemsEnrichedFromDetail(t *testing.T) {
+	pseLightListsOff(t) // PSE-HOOK: listes légères désactivées, comportement d'Ether — voir docs/pse/FORK.fr.md
 	f := newFixture()
 	f.srv.Close()
 	lc := &listCatalog{fakeCatalog: f.catalog, gets: map[core.RatingKey]int{}}
@@ -297,6 +298,7 @@ func TestHubItemsEnrichedFromDetail(t *testing.T) {
 }
 
 func TestEnrichFailureKeepsSummaryAndRetriesLater(t *testing.T) {
+	pseLightListsOff(t) // PSE-HOOK: listes légères désactivées, comportement d'Ether — voir docs/pse/FORK.fr.md
 	f := newFixture()
 	f.srv.Close()
 	lc := &listCatalog{fakeCatalog: f.catalog, gets: map[core.RatingKey]int{}, fail: true}

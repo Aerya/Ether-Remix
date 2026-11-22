@@ -123,6 +123,9 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if extra.Get("search") == "" {
+		r = frontend.PSEListRequest(r) // PSE-HOOK: listes légères, base seule — voir docs/pse/FORK.fr.md
+	}
 	q := frontend.ItemQuery{Limit: 100}
 	if skip := extra.Get("skip"); skip != "" {
 		q.Offset, err = strconv.Atoi(skip)

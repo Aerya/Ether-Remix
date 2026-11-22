@@ -1078,6 +1078,7 @@ func (s *Server) handleCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCollectionItems(w http.ResponseWriter, r *http.Request) {
+	r = frontend.PSEListRequest(r) // PSE-HOOK: listes légères, base seule — voir docs/pse/FORK.fr.md
 	if s.serveCollectionShelf(w, r) {
 		return
 	}

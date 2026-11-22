@@ -107,6 +107,7 @@ func newHomeCache() *homeCache {
 // serveHome answers a Home route from the viewer's cached screen, or builds,
 // writes and stores it.
 func (s *Server) serveHome(w http.ResponseWriter, r *http.Request, route string, build homeBuildFunc) {
+	r = frontend.PSEListRequest(r) // PSE-HOOK: listes légères, base seule — voir docs/pse/FORK.fr.md
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	if s.homeCache() == nil || pr == nil || pr.User == nil || s.liveSessionOnClient(pr) {
@@ -175,7 +176,7 @@ func (s *Server) serveHome(w http.ResponseWriter, r *http.Request, route string,
 
 // homeBuildRequest is r with the cache's build context.
 func (s *Server) homeBuildRequest(r *http.Request) *http.Request {
-	return r.WithContext(s.exp().NoProviderWait(r.Context()))
+	return frontend.PSEListRequest(r.WithContext(s.exp().NoProviderWait(r.Context()))) // PSE-HOOK: listes légères, base seule — voir docs/pse/FORK.fr.md
 }
 
 // writeHomeBuild writes an uncached build exactly as the handler always did.
@@ -487,7 +488,7 @@ func (s *Server) recordCompactImpressions(pr *Request, hc frontend.HubContext, r
 }
 
 func (s *Server) warmKey(ctx context.Context, pr *Request, key frontend.RatingKey) {
-	if key == 0 || pr == nil || pr.User == nil {
+	if key == 0 || pr == nil || pr.User == nil || frontend.PSEListOnly(ctx) { // PSE-HOOK: listes légères, aucun préchauffage — voir docs/pse/FORK.fr.md
 		return
 	}
 	if pw, ok := s.playback().(frontend.Prewarmer); ok {
