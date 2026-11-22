@@ -51,7 +51,7 @@ func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 		case "/library":
 			reply(map[string]any{"result": true, "library": map[string]any{
 				"playlists": map[string]any{"map": map[string]int{"name": 0, "tracks": 1}, "1": []any{"Ma sélection", []any{10, 11, 10}}},
-				"tracks":    map[string]any{"map": map[string]int{"title": 0, "artist_id": 1, "album_id": 2, "length": 3, "file": 4, "trashed": 5, "artwork_id": 6, "track": 7}, "10": []any{"Song", 20, 30, 99, "/128/a/b/123", false, 40, 1}, "11": []any{"Deleted", 20, 30, 99, "/128/a/b/124", true, 40, 2}},
+				"tracks":    map[string]any{"map": map[string]int{"title": 0, "artist_id": 1, "album_id": 2, "length": 3, "file": 4, "trashed": 5, "artwork_id": 6, "track": 7, "type": 8}, "10": []any{"Song", 20, 30, 99, "/128/a/b/123", false, 40, 1, "audio/flac"}, "11": []any{"Deleted", 20, 30, 99, "/128/a/b/124", true, 40, 2}},
 				"artists":   map[string]any{"map": map[string]any{"name": 0, "artists_additional_map": map[string]int{"artist_id": 0}}, "20": []any{"Artist"}}, "albums": map[string]any{"map": map[string]any{"name": 0, "artists_additional_map": map[string]int{"artist_id": 0}}, "30": []any{"Album"}}}})
 		default:
 			t.Errorf("unexpected endpoint %s", r.URL.Path)
@@ -103,6 +103,9 @@ func TestIBroadcastDeviceFlowRefreshCatalogueAndDisconnect(t *testing.T) {
 	tt, err := owned.SearchTracks(withMusicViewer(t.Context(), 7), "Song", 10, 0)
 	if err != nil || len(tt) != 1 || tt[0].Artist.Name != "Artist" {
 		t.Fatal(tt, err)
+	}
+	if tt[0].MIME != "audio/flac" || tt[0].Container != "flac" || tt[0].Codec != "flac" {
+		t.Fatal("original format lost", tt[0])
 	}
 	st, err := owned.Stream(withMusicViewer(t.Context(), 7), tt[0].ID, "LOSSLESS")
 	if err != nil {

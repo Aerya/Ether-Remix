@@ -541,7 +541,8 @@ func (s *IBroadcast) sync(ctx context.Context) error {
 			fileID, _ = strconv.ParseInt(id, 10, 64)
 		}
 		links[trackID] = ibTrack{ID: trackID, FileID: fileID, Path: path, MIME: tracks.text(id, "type")}
-		tt = append(tt, Track{MIME: "audio/mpeg", Container: "mp3", Codec: "mp3", ID: trackID, Title: tracks.text(id, "title"), Duration: int(tracks.num(id, "length")), Number: int(tracks.num(id, "track")), Volume: int(albums.num(alid, "disc")), Artist: artist, Album: album})
+		mime, container, codec := ibOriginalFormat(tracks.text(id, "type"))
+		tt = append(tt, Track{MIME: mime, Container: container, Codec: codec, ID: trackID, Title: tracks.text(id, "title"), Duration: int(tracks.num(id, "length")), Number: int(tracks.num(id, "track")), Volume: int(albums.num(alid, "disc")), Artist: artist, Album: album})
 		available[id] = tt[len(tt)-1]
 	}
 	var lists []Playlist
@@ -604,14 +605,79 @@ func (s *IBroadcast) Stream(ctx context.Context, id int64, quality string) (Stre
 	if !ibHost(c.Server) || c.UserID == 0 {
 		return Stream{}, ErrNotFound
 	}
-	// Standard 128 kbps is available to every account; original quality depends
-	// on the account's iBroadcast plan and is deliberately not assumed.
-	u, err := url.Parse(strings.TrimRight(c.Server, "/") + t.Path)
-	if err != nil || !ibHost(u.String()) {
-		return Stream{}, ErrNotFound
+	// Try the uploaded file first. The shared audio relay marks refused URLs
+	// in this request's context, allowing a free account to fall back to MP3.
+	// Compare paths rather than signed URLs: Expires changes on every call.
+	for _, bitrate := range []string{"orig", "128"} {
+		path, err := ibPlaybackPath(t.Path, bitrate)
+		if err != nil {
+			return Stream{}, err
+		}
+		u, err := url.Parse(strings.TrimRight(c.Server, "/") + path)
+		if err != nil || !ibHost(u.String()) {
+			return Stream{}, ErrNotFound
+		}
+		if ibSkipped(ctx, u) {
+			continue
+		}
+		u.RawQuery = url.Values{"Expires": {strconv.FormatInt(time.Now().UnixMilli(), 10)}, "Signature": {c.Access}, "file_id": {strconv.FormatInt(t.FileID, 10)}, "user_id": {strconv.FormatInt(c.UserID, 10)}, "platform": {"ether-remix"}, "version": {"1.0"}}.Encode()
+		mime, streamQuality := "audio/mpeg", "128"
+		if bitrate == "orig" {
+			mime, _, _ = ibOriginalFormat(t.MIME)
+			streamQuality = "ORIGINAL"
+		}
+		return Stream{Provider: "ibroadcast", URL: u.String(), Mime: mime, Quality: streamQuality, ExpiresAt: c.ExpiresAt}, nil
 	}
-	u.RawQuery = url.Values{"Expires": {strconv.FormatInt(time.Now().UnixMilli(), 10)}, "Signature": {c.Access}, "file_id": {strconv.FormatInt(t.FileID, 10)}, "user_id": {strconv.FormatInt(c.UserID, 10)}, "platform": {"ether-remix"}, "version": {"1.0"}}.Encode()
-	return Stream{Provider: "ibroadcast", URL: u.String(), Mime: "audio/mpeg", Quality: "128", ExpiresAt: c.ExpiresAt}, nil
+	return Stream{}, ErrNotFound
+}
+
+func ibSkipped(ctx context.Context, candidate *url.URL) bool {
+	links, _ := ctx.Value(skipKey{}).(map[string]bool)
+	for link := range links {
+		u, err := url.Parse(link)
+		if err == nil && u.Scheme == candidate.Scheme && u.Host == candidate.Host && u.EscapedPath() == candidate.EscapedPath() {
+			return true
+		}
+	}
+	return false
+}
+
+func ibPlaybackPath(path, bitrate string) (string, error) {
+	parts := strings.SplitN(path, "/", 3)
+	if len(parts) != 3 || parts[0] != "" || parts[2] == "" {
+		return "", ErrNotFound
+	}
+	switch parts[1] {
+	case "96", "128", "192", "256", "320", "orig":
+		return "/" + bitrate + "/" + parts[2], nil
+	}
+	return "", ErrNotFound
+}
+
+// iBroadcast's type column describes the uploaded file. Never label an
+// unknown original as MP3 or guess the codec of an MP4/Ogg container.
+func ibOriginalFormat(kind string) (mime, container, codec string) {
+	switch strings.ToLower(strings.TrimSpace(strings.SplitN(kind, ";", 2)[0])) {
+	case "flac", "audio/flac", "audio/x-flac":
+		return "audio/flac", "flac", "flac"
+	case "mp3", "audio/mpeg", "audio/mp3":
+		return "audio/mpeg", "mp3", "mp3"
+	case "m4a", "mp4", "audio/mp4", "audio/x-m4a":
+		return "audio/mp4", "m4a", ""
+	case "alac", "audio/alac":
+		return "audio/mp4", "m4a", "alac"
+	case "aac", "audio/aac":
+		return "audio/aac", "aac", "aac"
+	case "ogg", "oga", "audio/ogg", "application/ogg":
+		return "audio/ogg", "ogg", ""
+	case "opus", "audio/opus":
+		return "audio/ogg", "ogg", "opus"
+	case "wav", "wave", "audio/wav", "audio/x-wav", "audio/wave":
+		return "audio/wav", "wav", ""
+	case "aif", "aiff", "audio/aiff", "audio/x-aiff":
+		return "audio/aiff", "aiff", ""
+	}
+	return "application/octet-stream", "", ""
 }
 func (s *IBroadcast) ImageURL(ref string, size int) string {
 	id, err := strconv.ParseInt(strings.TrimPrefix(ref, "ib-"), 10, 64)

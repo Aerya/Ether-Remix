@@ -26,8 +26,20 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-21-remix-libraries-per-viewer",
+    id: "2026-11-22-ibroadcast-original",
     version: "current",
+    date: "2026-11-22",
+    title: ["iBroadcast en qualité originale", "Original-quality iBroadcast"],
+    items: [
+      [
+        "La lecture privilégie le fichier original pour les comptes Premium et se replie automatiquement en MP3 128 kb/s si iBroadcast le refuse. Actualisez la bibliothèque pour retrouver les formats d’origine dans vos lecteurs.",
+        "Playback prefers the original file for Premium accounts and automatically falls back to MP3 128 kbps if iBroadcast refuses it. Refresh your library to see original formats in your players.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-21-remix-libraries-per-viewer",
+    version: "0.2.37-remix.126.1",
     date: "2026-11-21",
     title: [
       "Bibliothèques Remix au choix pour chaque spectateur, aussi dans Jellyfin",
