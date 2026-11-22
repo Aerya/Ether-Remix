@@ -343,6 +343,13 @@ func (s *Service) pseJellyfinLibraryItems(ctx context.Context, v *core.User, dev
 			}
 		}
 	}
+	// A listing without IDs never walks series: reading every season and
+	// episode of every themed show on each page blocked the database (#37).
+	// Seasons and episodes stay reachable from their series and by ID.
+	walkChildren := include != nil && pseJellyfinWantsChildren(q)
+	if include == nil && len(q.Types) > 0 && !slices.Contains(q.Types, core.TypeMovie) && !slices.Contains(q.Types, core.TypeShow) {
+		return core.Page{}, true, nil
+	}
 	var items []core.Title
 	for batch := range slices.Chunk(keys, 400) {
 		titles, err := s.pseJellyfinThemeTitles(ctx, v, batch, membership)
@@ -359,7 +366,7 @@ func (s *Service) pseJellyfinLibraryItems(ctx context.Context, v *core.User, dev
 					items = append(items, title)
 				}
 			}
-			if q.Recursive && title.Type == core.TypeShow && pseJellyfinWantsChildren(q) {
+			if q.Recursive && title.Type == core.TypeShow && walkChildren {
 				children, err := s.pseJellyfinThemeChildren(ctx, v, device, title, q, membership, include)
 				if err != nil {
 					return core.Page{}, true, err

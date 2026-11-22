@@ -141,7 +141,7 @@ func TestPSEJellyfinThemeBrowseFiltersAndPaginatesAuthorizedTitles(t *testing.T)
 	s := jellyfinThemeViewsFixture(t, viewer)
 	ctx := t.Context()
 	movie, show := core.MovieKey(1), core.ShowKey(5)
-	season, episode := core.SeasonKey(5, 1), core.EpisodeKey(5, 1, 1)
+	episode := core.EpisodeKey(5, 1, 1)
 	for _, tc := range []struct {
 		name, id string
 		query    frontend.ItemQuery
@@ -153,7 +153,9 @@ func TestPSEJellyfinThemeBrowseFiltersAndPaginatesAuthorizedTitles(t *testing.T)
 		{"pagination", "5101", frontend.ItemQuery{Offset: 1, Limit: 1}, []core.RatingKey{show}, 2},
 		{"large limit", "5101", frontend.ItemQuery{Offset: 1, Limit: math.MaxInt}, []core.RatingKey{show}, 2},
 		{"search within row", pseJellyfinThemeRowID("5101", "mixed"), frontend.ItemQuery{Filter: core.Filter{Query: "film"}}, []core.RatingKey{movie}, 1},
-		{"filtered recursive view", "5101", frontend.ItemQuery{Recursive: true, Types: []core.MediaType{core.TypeSeason, core.TypeEpisode}}, []core.RatingKey{season, episode}, 2},
+		{"recursive episodes never walk series", "5101", frontend.ItemQuery{Recursive: true, Types: []core.MediaType{core.TypeSeason, core.TypeEpisode}}, nil, 0},
+		{"recursive root episodes never walk series", "", frontend.ItemQuery{Recursive: true, Types: []core.MediaType{core.TypeEpisode}, Limit: 100, Offset: 17800}, nil, 0},
+		{"recursive listing keeps top-level titles", "5101", frontend.ItemQuery{Recursive: true}, []core.RatingKey{movie, show}, 2},
 		{"mixed direct IDs", "5101", frontend.ItemQuery{Recursive: true, Filter: core.Filter{IncludeKeys: []core.RatingKey{episode, core.MovieKey(3)}}}, []core.RatingKey{episode}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
