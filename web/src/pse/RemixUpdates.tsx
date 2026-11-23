@@ -287,10 +287,6 @@ export const REMIX_UPDATES = [
         "Désactivé par défaut, ce mode conserve les réglages avancés et ne modifie ni les médias locaux ni la musique.",
         "Off by default, this mode preserves advanced settings and does not change local media or music.",
       ],
-      [
-        "Dans Jellyfin, une liste de tous les épisodes ne parcourt plus chaque série des bibliothèques Remix : le serveur ne se bloque plus. Les saisons et les épisodes s’ouvrent depuis la fiche de la série.",
-        "In Jellyfin, a list of every episode no longer walks each series of the Remix libraries, so the server no longer stalls. Seasons and episodes open from the series page.",
-      ],
     ],
   },
   {
