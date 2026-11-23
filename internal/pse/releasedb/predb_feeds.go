@@ -25,8 +25,8 @@ type PreFeedConf struct {
 	Key  string `json:"key,omitempty"`
 }
 
-// PreProxy fait passer la lecture des flux publics par un proxy ou un relais, pour
-// les serveurs que predb.me ou predb.net refusent (adresses d'hébergeurs).
+// PreProxy fait passer les appels PRE (flux publics et flux privés) par un proxy ou un
+// relais, pour les serveurs que les sites de pre refusent (adresses d'hébergeurs).
 type PreProxy struct {
 	// Type : « » (aucun), « proxy » (HTTP, HTTPS ou SOCKS5) ou « mediaflow ».
 	Type string
@@ -197,8 +197,8 @@ func preProxyTransport(p PreProxy) (*http.Transport, error) {
 	}, nil
 }
 
-// fetchPre lit un flux. Un flux public passe par le proxy ou le relais choisi ; un flux
-// personnel est toujours lu directement, avec sa clé en en-tête seulement.
+// fetchPre lit un flux. Les flux publics comme les flux privés passent par le proxy ou le
+// relais choisi, s'il y en a un ; la clé d'un flux privé n'est envoyée qu'en en-tête.
 func fetchPre(ctx context.Context, f preFeed, cfg PreDBSettings) ([]PreItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.url, nil)
 	if err != nil {
@@ -212,7 +212,7 @@ func fetchPre(ctx context.Context, f preFeed, cfg PreDBSettings) ([]PreItem, err
 	var c http.Client
 	relay := false
 	switch {
-	case !f.public || cfg.Proxy.Type == "":
+	case cfg.Proxy.Type == "":
 		c = *preClient
 	case cfg.Proxy.Problem() != "":
 		return nil, errors.New("proxy mal configuré")
@@ -250,7 +250,7 @@ func fetchPre(ctx context.Context, f preFeed, cfg PreDBSettings) ([]PreItem, err
 		switch {
 		case relay:
 			return nil, errors.New("relais inaccessible")
-		case f.public && cfg.Proxy.Type == "proxy":
+		case cfg.Proxy.Type == "proxy":
 			return nil, errors.New("proxy inaccessible")
 		}
 		return nil, errors.New("flux inaccessible")
@@ -295,9 +295,7 @@ type PreTestResult struct {
 // le nombre d'annonces reçues et retenues, quelques exemples ou l'erreur rencontrée.
 func TestPreFeeds(ctx context.Context, cfg PreDBSettings) PreTestResult {
 	out := PreTestResult{Runs: []PreFeedRun{}}
-	if cfg.Public {
-		out.Proxy = cfg.Proxy.Problem()
-	}
+	out.Proxy = cfg.Proxy.Problem()
 	feeds := cfg.feeds()
 	out.Runs = make([]PreFeedRun, len(feeds))
 	var wg sync.WaitGroup

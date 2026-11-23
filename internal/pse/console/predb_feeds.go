@@ -98,6 +98,15 @@ func displayFeeds(v string) string {
 	return marshalFeedEntries(list)
 }
 
+// feedSite renvoie « schéma://hôte:port » d'une adresse, ou une chaîne vide.
+func feedSite(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
 // restoreFeeds remet la clé enregistrée d'un site quand la page renvoie le masque : la clé
 // revient seulement pour la même adresse.
 func restoreFeeds(v, prev string) string {
@@ -106,16 +115,24 @@ func restoreFeeds(v, prev string) string {
 		return v
 	}
 	old, _ := parseFeedEntries(prev)
-	byURL := map[string]string{}
+	byURL, bySite := map[string]string{}, map[string]string{}
 	for _, f := range old {
 		byURL[f.URL] = f.Key
+		if s := feedSite(f.URL); s != "" && f.Key != "" && bySite[s] == "" {
+			bySite[s] = f.Key
+		}
 	}
 	for i := range list {
 		if list[i].Key != mask {
 			continue
 		}
 		// Une adresse inconnue garde le masque : la validation demande de ressaisir la clé.
-		if k := byURL[strings.TrimSpace(list[i].URL)]; k != "" {
+		u := strings.TrimSpace(list[i].URL)
+		if k := byURL[u]; k != "" {
+			list[i].Key = k
+		} else if k := bySite[feedSite(u)]; k != "" {
+			// Même site (schéma et hôte), autre chemin : la clé n'est envoyée qu'à ce
+			// site, on peut la garder quand on corrige seulement l'adresse.
 			list[i].Key = k
 		}
 	}
