@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	fyne.io/systray v1.12.2
 	github.com/Cycl0o0/OpenDeezer/v3 v3.1.4
-	github.com/PuerkitoBio/goquery v1.13.0
+	github.com/PuerkitoBio/goquery v1.14.0
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/andybalholm/cascadia v1.3.5
 	github.com/coder/websocket v1.8.15
@@ -15,7 +15,7 @@ require (
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/kardianos/service v1.3.0
 	github.com/mnightingale/rapidyenc v0.0.0-20261008131718-6657b7ca854e
@@ -29,7 +29,7 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/ulikunitz/xz v0.5.17
 	go.yaml.in/yaml/v3 v3.0.6
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.50.0
