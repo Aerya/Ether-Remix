@@ -7,9 +7,15 @@ import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
-import { RulesPanel, type VisibilityRule } from "../libraries/browser/LibraryVisibility";
+import {
+  isShowOnlyRules,
+  RulesPanel,
+  ruleLabel,
+  type VisibilityRule,
+} from "../libraries/browser/LibraryVisibility";
 
 type Policy = {
+  broken?: boolean;
   mode: string;
   exclusions: VisibilityRule[];
   visibilityDefault: string;
@@ -60,6 +66,13 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
         "Choose which catalogue rules this viewer uses. Parental controls always apply.",
       )}
     >
+      {data.policy.broken ? (
+        <p role="alert" className="text-sm text-danger">
+          {t(
+            "Some saved rules could not be read. Titles stay hidden until you edit or remove the rules and save.",
+          )}
+        </p>
+      ) : null}
       <SettingsRow
         title={t("Catalogue rules")}
         control={
@@ -86,7 +99,10 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
             >
               {t("Cancel")}
             </Button>
-            <Button disabled={!draft.dirty || saving} onClick={() => void save()}>
+            <Button
+              disabled={(!draft.dirty && !data.policy.broken) || saving}
+              onClick={() => void save()}
+            >
               {t("Save changes")}
             </Button>
           </div>
@@ -103,17 +119,20 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
               value={p.mode}
               onChange={(e) => {
                 const mode = e.target.value;
-                patch(
-                  mode === "custom"
-                    ? {
-                        mode,
-                        exclusions: structuredClone(data.globalRules).filter(
-                          (_, i) => !p.exemptions.includes(data.globalIDs[i]!),
-                        ),
-                        visibilityDefault: data.globalDefault || "show",
-                      }
-                    : { mode },
-                );
+                if (mode === "custom") {
+                  const exclusions = structuredClone(data.globalRules).filter(
+                    (_, i) => !p.exemptions.includes(data.globalIDs[i]!),
+                  );
+                  const becameShowOnly =
+                    !isShowOnlyRules(data.globalRules) && isShowOnlyRules(exclusions);
+                  patch({
+                    mode,
+                    exclusions,
+                    visibilityDefault: becameShowOnly ? "hide" : data.globalDefault || "show",
+                  });
+                } else {
+                  patch({ mode });
+                }
               }}
             >
               {[
@@ -142,7 +161,8 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
                     })
                   }
                 />
-                {rule.name || t("Rule {number}", { number: i + 1 })}
+                {rule.name ||
+                  (rule.rules?.length ? ruleLabel(rule) : t("Rule {number}", { number: i + 1 }))}
               </label>
             ))}
           </div>
@@ -151,7 +171,13 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
           <RulesPanel
             rules={p.exclusions}
             fallback={p.visibilityDefault}
-            onRules={(exclusions) => patch({ exclusions })}
+            onRules={(exclusions, nextFallback) =>
+              patch(
+                nextFallback !== undefined
+                  ? { exclusions, visibilityDefault: nextFallback }
+                  : { exclusions },
+              )
+            }
             onFallback={(visibilityDefault) => patch({ visibilityDefault })}
             region={region}
           />

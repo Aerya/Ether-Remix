@@ -39,6 +39,7 @@ func (s *Service) DeleteScopedField(ctx context.Context, user int64, scope, id, 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM trackprefs_scoped WHERE user_id=? AND scope=? AND scope_id=? AND field=?`, user, scope, id, field)
 	if err == nil {
 		s.forgetRules()
+		reqmemo.Forget(ctx, scopedAllMemoKey(user))
 	}
 	return err
 }
@@ -87,6 +88,7 @@ func (s *Service) PutScoped(ctx context.Context, user int64, scope, id string, v
 		_, err := s.db.ExecContext(ctx, `DELETE FROM trackprefs_scoped WHERE user_id=? AND scope=? AND scope_id=?`, user, scope, id)
 		if err == nil {
 			s.forgetRules()
+			reqmemo.Forget(ctx, scopedAllMemoKey(user))
 		}
 		return err
 	}
@@ -138,6 +140,7 @@ func (s *Service) PutScoped(ctx context.Context, user int64, scope, id string, v
 		return err
 	}
 	s.forgetRules()
+	reqmemo.Forget(ctx, scopedAllMemoKey(user))
 	return nil
 }
 
@@ -258,25 +261,51 @@ func LimitBitrate(existing, preference int) int {
 }
 
 type scopedRow struct{ field, raw string }
+type scopedLookupKey struct{ kind, id string }
 
-// scopedRows reads one scope's overrides. A read request asks once per
-// scope: a list resolves track rules for every item, and the library and
-// device scopes are the same for all of them.
+func scopedAllMemoKey(user int64) string {
+	return "trackprefs:scoped-all:" + strconv.FormatInt(user, 10)
+}
+
+// scopedRows reads one scope's overrides. Within a request memo, all of the
+// viewer's scoped overrides are read once so a hub or shelf of 20+ items never
+// issues one trackprefs_scoped query per item.
 func (s *Service) scopedRows(ctx context.Context, user int64, kind, id string) ([]scopedRow, error) {
-	return reqmemo.Do(ctx, "trackprefs:scoped:"+strconv.FormatInt(user, 10)+":"+kind+":"+id, func() ([]scopedRow, error) {
-		rows, err := s.db.QueryContext(ctx, `SELECT field,value FROM trackprefs_scoped WHERE user_id=? AND scope=? AND scope_id=?`, user, kind, id)
+	if reqmemo.Active(ctx) {
+		all, err := reqmemo.Do(ctx, scopedAllMemoKey(user), func() (map[scopedLookupKey][]scopedRow, error) {
+			rows, err := s.db.QueryContext(ctx, `SELECT scope,scope_id,field,value FROM trackprefs_scoped WHERE user_id=?`, user)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			out := map[scopedLookupKey][]scopedRow{}
+			for rows.Next() {
+				var k scopedLookupKey
+				var row scopedRow
+				if err := rows.Scan(&k.kind, &k.id, &row.field, &row.raw); err != nil {
+					return nil, err
+				}
+				out[k] = append(out[k], row)
+			}
+			return out, rows.Err()
+		})
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		var out []scopedRow
-		for rows.Next() {
-			var row scopedRow
-			if err := rows.Scan(&row.field, &row.raw); err != nil {
-				return nil, err
-			}
-			out = append(out, row)
+		return all[scopedLookupKey{kind: kind, id: id}], nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT field,value FROM trackprefs_scoped WHERE user_id=? AND scope=? AND scope_id=?`, user, kind, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []scopedRow
+	for rows.Next() {
+		var row scopedRow
+		if err := rows.Scan(&row.field, &row.raw); err != nil {
+			return nil, err
 		}
-		return out, rows.Err()
-	})
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }

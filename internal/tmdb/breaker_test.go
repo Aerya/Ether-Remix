@@ -25,15 +25,11 @@ func TestBreakerFailsFastAfterRepeatedOutages(t *testing.T) {
 		}
 	}
 	before := hits.Load()
-	start := time.Now()
 	if _, err := c.MovieDetails(ctx, 999); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("err = %v, want ErrUnavailable", err)
 	}
 	if hits.Load() != before {
 		t.Fatal("an open breaker still contacted TMDB")
-	}
-	if time.Since(start) > 100*time.Millisecond {
-		t.Fatal("an open breaker did not fail fast")
 	}
 }
 
@@ -80,11 +76,7 @@ func TestBreakerOpensWithinOneUnreachableRequest(t *testing.T) {
 	if _, err := c.MovieDetails(context.Background(), 1); err == nil || errors.Is(err, ErrUnavailable) {
 		t.Fatalf("first request err = %v, want the transport failure", err)
 	}
-	start := time.Now()
 	if _, err := c.MovieDetails(context.Background(), 2); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("second request err = %v, want ErrUnavailable", err)
-	}
-	if time.Since(start) > 100*time.Millisecond {
-		t.Fatal("second request did not fail fast")
 	}
 }

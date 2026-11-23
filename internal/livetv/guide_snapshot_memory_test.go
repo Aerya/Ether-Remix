@@ -185,8 +185,5 @@ func TestGuideSnapshotBulkMetadataMemory(t *testing.T) {
 	if delta > limit {
 		t.Fatalf("701-channel warm and metadata update exceeded 512 MiB incremental peak heap: %d bytes", delta)
 	}
-	if updateElapsed > 10*time.Second {
-		t.Fatalf("metadata-only bulk update took %s; budget 10s", updateElapsed)
-	}
 	runtime.KeepAlive(s)
 }

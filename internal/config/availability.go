@@ -17,8 +17,9 @@ type Availability struct {
 	CheckRequests            int      `json:"checkRequests"` // indexer + provider API calls per day
 	Grabs                    int      `json:"grabs"`
 	Checks                   int      `json:"checks"`
-	CheckBytes               int64    `json:"checkBytes"`     // conservative wire reservations for validation
-	ReservePercent           int      `json:"reservePercent"` // preserve this share of configured indexer caps
+	PluginUsenetChecks       int      `json:"pluginUsenetChecks"` // per-plugin background usenet_check allowance per UTC day (0 disables)
+	CheckBytes               int64    `json:"checkBytes"`         // conservative wire reservations for validation
+	ReservePercent           int      `json:"reservePercent"`     // preserve this share of configured indexer caps
 	// Effort is gentle, normal, unlimited, or custom. Empty means the
 	// v0.2.57 default budgets still apply and should scale; any other
 	// stored budget is a custom choice.
@@ -51,8 +52,10 @@ type IndexerCap struct {
 	PageMax    int
 }
 
+const DefaultPluginUsenetChecksPerDay = 20
+
 func DefaultAvailability() Availability {
-	return Availability{Monitor: true, PollMinutes: 15, MaxPages: 5, FeedRequests: 400, CheckRequests: 100, Grabs: 20, Checks: 20, CheckBytes: 512 << 20, ReservePercent: 80, Debrid: true, PreferVerified: true, NewlyAvailable: true, Mode: ModePlayable}
+	return Availability{Monitor: true, PollMinutes: 15, MaxPages: 5, FeedRequests: 400, CheckRequests: 100, Grabs: 20, Checks: 20, PluginUsenetChecks: DefaultPluginUsenetChecksPerDay, CheckBytes: 512 << 20, ReservePercent: 80, Debrid: true, PreferVerified: true, NewlyAvailable: true, Mode: ModePlayable}
 }
 
 const (

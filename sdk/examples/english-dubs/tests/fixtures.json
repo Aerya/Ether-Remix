@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "name": "health returns ok",
+      "method": "GET",
+      "path": "/ether/health",
+      "wantStatus": 200,
+      "wantFields": {
+        "status": "ok"
+      }
+    },
+    {
+      "name": "configure accepts default settings",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {
+        "includeIncomplete": false,
+        "typeFilter": "both"
+      },
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {}
+      }
+    },
+    {
+      "name": "configure accepts series filter with incomplete dubs",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {
+        "includeIncomplete": true,
+        "typeFilter": "series"
+      },
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {}
+      }
+    },
+    {
+      "name": "configure rejects invalid typeFilter",
+      "method": "POST",
+      "path": "/ether/configure",
+      "body": {
+        "typeFilter": "ova"
+      },
+      "wantStatus": 200,
+      "wantFields": {
+        "errors": {
+          "typeFilter": "Type filter must be both, series, or movies."
+        }
+      }
+    },
+    {
+      "name": "status view renders offline without network calls",
+      "method": "GET",
+      "path": "/ether/view/status",
+      "wantStatus": 200,
+      "wantFields": {
+        "title": "English dubbed anime"
+      }
+    },
+    {
+      "name": "unknown catalog returns 404 error envelope",
+      "method": "GET",
+      "path": "/catalog/movie/unknown.json",
+      "wantStatus": 404,
+      "wantFields": {
+        "error": {
+          "code": "not_found",
+          "message": "Catalog not found."
+        }
+      }
+    }
+  ]
+}

@@ -210,6 +210,7 @@ type sharedClient struct {
 	SessionID       string `json:"sessionID,omitempty"`
 	RemoteIP        string `json:"remoteIP,omitempty"`
 	Remote          bool   `json:"remote,omitempty"`
+	Secure          bool   `json:"secure,omitempty"`
 }
 
 func (s *Server) toShared(e playEntry) sharedEntry {
@@ -219,15 +220,16 @@ func (s *Server) toShared(e playEntry) sharedEntry {
 		Client: sharedClient{ClientID: e.client.ClientID, Product: e.client.Product, Version: e.client.Version,
 			Platform: e.client.Platform, PlatformVersion: e.client.PlatformVersion, Device: e.client.Device,
 			DeviceName: e.client.DeviceName, Model: e.client.Model, Vendor: e.client.Vendor, ProfileName: e.client.ProfileName,
-			SessionID: e.client.SessionID, Remote: e.client.Remote}}
+			SessionID: e.client.SessionID, Remote: e.client.Remote, Secure: e.client.Secure}}
 	if e.client.RemoteIP.IsValid() {
 		se.Client.RemoteIP = e.client.RemoteIP.String()
 	}
-	if e.transcodeID != "" {
-		if te, ok := s.transcodes.get(e.transcodeID); ok {
-			ts := s.servedTranscodeSessionModel(te)
-			se.Transcode = &ts
-		}
+	if te, ok := s.activeTranscodeForSession(e); ok {
+		se.TranscodeID = te.id
+		ts := s.servedTranscodeSessionModel(te)
+		se.Transcode = &ts
+	} else {
+		se.TranscodeID = ""
 	}
 	return se
 }
@@ -240,7 +242,7 @@ func (se sharedEntry) entry(node string) playEntry {
 		client: Request{ClientID: se.Client.ClientID, Product: se.Client.Product, Version: se.Client.Version,
 			Platform: se.Client.Platform, PlatformVersion: se.Client.PlatformVersion, Device: se.Client.Device,
 			DeviceName: se.Client.DeviceName, Model: se.Client.Model, Vendor: se.Client.Vendor, ProfileName: se.Client.ProfileName,
-			SessionID: se.Client.SessionID, Remote: se.Client.Remote}}
+			SessionID: se.Client.SessionID, Remote: se.Client.Remote, Secure: se.Client.Secure}}
 	e.client.RemoteIP = parseAddr(se.Client.RemoteIP)
 	return e
 }
@@ -559,7 +561,7 @@ func (c *clusterState) onNotify(msg []byte) {
 	if ev.Type == "activity" {
 		var root struct{ NotificationContainer model.NotificationContainer }
 		if json.Unmarshal(ev.Data, &root) == nil {
-			c.s.recordActivities(root.NotificationContainer)
+			c.s.recordActivities(root.NotificationContainer, ev.UserID)
 		}
 	}
 	c.s.notifier.deliver(newNotification(ev.Type, []byte(ev.Data)), ev.UserID)

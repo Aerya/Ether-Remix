@@ -544,6 +544,7 @@ var tierDependents = []struct{ table, column string }{
 	{"catalog_remote_trailers", "key"},
 	{"catalog_release_names", "key"},
 	{"catalog_release_evidence", "rating_key"},
+	{"catalog_release_audio_langs", "rating_key"},
 	{"catalog_show_episodes", "show_key"},
 	{"catalog_show_episode_ratings", "show_key"},
 	{"availability_title_checks", "rating_key"},

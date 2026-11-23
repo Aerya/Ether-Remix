@@ -302,6 +302,7 @@ func (s *QualitySyncer) apply(c *config.Config, name, media string, saved core.P
 	next.MaxSizeMBPerMin = cur.MaxSizeMBPerMin
 	next.EpisodeMinSizeMBPerMin = cur.EpisodeMinSizeMBPerMin
 	next.EpisodeMaxSizeMBPerMin = cur.EpisodeMaxSizeMBPerMin
+	next.AudioLanguageMode = cur.AudioLanguageMode
 	next.AllowCam = cur.AllowCam
 	next.CustomFormatScores = maps.Clone(plan.Profile.CustomFormatScores)
 	for id, v := range cur.CustomFormatScores {

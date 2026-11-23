@@ -1,15 +1,20 @@
 package vela
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/contentrating"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reading"
 )
 
 func hashJSON(v any) string { b, _ := json.Marshal(v); return hash(string(b)) }
@@ -34,6 +39,9 @@ func key(r *http.Request) (frontend.RatingKey, error) {
 	return ids.ParseRatingKeyGUID(r.PathValue("id"))
 }
 func titleWire(t frontend.Title) object {
+	return titleWireForRegions(t, []string{"US"})
+}
+func titleWireForRegions(t frontend.Title, regions []string) object {
 	kind := "movie"
 	switch t.Key.Kind() {
 	case frontend.KindShow:
@@ -42,6 +50,15 @@ func titleWire(t frontend.Title) object {
 		kind = "season"
 	case frontend.KindEpisode:
 		kind = "episode"
+	default:
+		switch t.Type {
+		case frontend.TypeShow:
+			kind = "show"
+		case frontend.TypeSeason:
+			kind = "season"
+		case frontend.TypeEpisode:
+			kind = "episode"
+		}
 	}
 	genres := t.Genres
 	if genres == nil {
@@ -51,23 +68,79 @@ func titleWire(t frontend.Title) object {
 	if t.Year > 0 {
 		out["year"] = t.Year
 	}
+	if !t.Released.IsZero() {
+		out["airDate"] = t.Released.UTC().Format("2006-01-02")
+	}
+	if t.DateDisplay == "date" {
+		out["dateDisplay"] = "date"
+	}
 	if t.Runtime > 0 {
 		out["durationSeconds"] = t.Runtime.Seconds()
 	}
-	if t.ContentRating != "" {
-		out["rating"] = t.ContentRating
+	if label, country := contentrating.Display(t.ContentRating, t.ContentRatings, regions...); label != "" {
+		out["rating"] = label
+		if country != "" {
+			out["ratingCountry"] = country
+		}
 	}
-	if t.ShowKey != 0 {
+	if t.ShowKey != 0 && (t.MediaClass == "" || t.MediaClass == frontend.MediaClassVideo) {
 		out["showId"] = ids.RatingKeyGUID(t.ShowKey)
-		out["seasonNumber"] = t.Season
-		out["episodeNumber"] = t.Episode
+		if kind == "season" || kind == "episode" {
+			out["seasonNumber"] = t.Season
+		}
+		if kind == "episode" {
+			out["episodeNumber"] = t.Episode
+		}
+	}
+	if media := titleMediaWire(t); media != nil {
+		out["media"] = media
 	}
 	return out
 }
 func watchWire(s frontend.WatchStatus) object {
-	return object{"positionSeconds": s.ViewOffset.Seconds(), "played": s.ViewCount > 0, "favorite": s.IsFavorite, "watchlisted": s.InWatchlist}
+	out := object{
+		"positionSeconds": s.ViewOffset.Seconds(),
+		"played":          s.ViewCount > 0,
+		"favorite":        s.IsFavorite,
+		"watchlisted":     s.InWatchlist,
+	}
+	if !s.LastViewedAt.IsZero() {
+		out["lastViewedAt"] = s.LastViewedAt.UTC().Format(time.RFC3339)
+	}
+	if s.Reading != nil {
+		reading := object{
+			"locator":  s.Reading.Locator,
+			"fraction": s.Reading.Fraction,
+		}
+		if s.Reading.Label != "" {
+			reading["label"] = s.Reading.Label
+		}
+		if !s.Reading.UpdatedAt.IsZero() {
+			reading["updatedAt"] = s.Reading.UpdatedAt.UTC().Format(time.RFC3339)
+		}
+		out["reading"] = reading
+	}
+	return out
 }
+
+type homeTitlesKey struct{}
+
 func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title) ([]object, error) {
+	if cached, ok := r.Context().Value(homeTitlesKey{}).(map[frontend.RatingKey]object); ok {
+		out := make([]object, 0, len(ts))
+		complete := true
+		for _, title := range ts {
+			wire, found := cached[title.Key]
+			if !found {
+				complete = false
+				break
+			}
+			out = append(out, wire)
+		}
+		if complete {
+			return out, nil
+		}
+	}
 	keys := make([]frontend.RatingKey, 0, len(ts))
 	for _, t := range ts {
 		keys = append(keys, t.Key)
@@ -76,29 +149,134 @@ func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts 
 	if err != nil {
 		return nil, err
 	}
+	return i.titlesWithUserData(r, v, token, ts, states)
+}
+
+// Detail already owns the watch/favorite/watchlist state. Do not load it again
+// only to overwrite it with the authorized detail's state below.
+func (i *instance) titleArtworkBatch(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title) (map[frontend.RatingKey][]object, error) {
 	art := map[frontend.RatingKey][]object{}
+	if len(ts) == 0 || i.host.ImageGrants == nil {
+		return art, nil
+	}
+	kinds := []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}
+	hasLandscape := false
+	for _, title := range ts {
+		if title.LandscapeCard && title.Key.IsPluginKey() {
+			hasLandscape = true
+			break
+		}
+	}
+	if hasLandscape {
+		kinds = append(kinds, frontend.ImageThumb)
+	}
 	if signer, ok := i.host.ImageGrants.(frontend.ImagePageSigner); ok {
-		for start := 0; start < len(ts); start += 50 {
-			end := min(start+50, len(ts))
-			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: ts[start:end], Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
-			if e != nil {
-				return nil, e
-			}
-			for _, item := range images {
-				for _, g := range titleArtwork(item.Item, item.Images) {
-					im := g.Image
-					art[item.Item] = append(art[item.Item], object{"id": hash(im.Path), "kind": im.Kind, "tag": im.Tag, "sizes": []object{imageSize(im, g.Secret)}, "blurHash": im.BlurHash, "thumbHash": im.ThumbHash})
+		// Include series in the same authorization, artwork and signing batch.
+		// Their poster keeps its show scope, including overlays and policy checks.
+		page := append([]frontend.Title(nil), ts...)
+		seen := make(map[frontend.RatingKey]bool, len(ts))
+		for _, title := range ts {
+			seen[title.Key] = true
+		}
+		for _, title := range ts {
+			if !title.LandscapeCard {
+				if show := episodePosterShow(title); show != 0 && !seen[show] {
+					seen[show] = true
+					page = append(page, frontend.Title{Key: show})
 				}
 			}
 		}
+		images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: page, Kinds: kinds})
+		if e != nil {
+			return nil, e
+		}
+		byKey := make(map[frontend.RatingKey][]frontend.GrantedImage, len(images))
+		for _, item := range images {
+			byKey[item.Item] = item.Images
+		}
+		seen = make(map[frontend.RatingKey]bool, len(ts))
+		for _, title := range ts {
+			if seen[title.Key] {
+				continue
+			}
+			seen[title.Key] = true
+			selected := titleCardArtwork(title, byKey[title.Key])
+			if !title.LandscapeCard {
+				if show := episodePosterShow(title); show != 0 && !hasPortrait(selected) {
+					for _, image := range byKey[show] {
+						if image.Image.Kind == frontend.ImagePoster && image.Image.Path != "" && image.Secret != "" {
+							// A poster-only landscape fallback is replaced by the
+							// actual series poster; stills and backdrops keep priority.
+							if len(selected) > 0 {
+								selected = selected[:1]
+								if selected[0].Image.Kind == frontend.ImagePoster {
+									selected = nil
+								}
+							}
+							selected = append(selected, image)
+							break
+						}
+					}
+				}
+			}
+			for _, g := range selected {
+				im := g.Image
+				art[title.Key] = append(art[title.Key], object{"id": hash(im.Path), "kind": im.Kind, "tag": im.Tag, "sizes": []object{imageSize(im, g.Secret)}, "blurHash": im.BlurHash, "thumbHash": im.ThumbHash})
+			}
+		}
+	} else if artReader, hasArt := i.host.Experience.(frontend.ItemArtwork); hasArt {
+		wanted := make(map[string]bool, len(kinds))
+		for _, k := range kinds {
+			wanted[k] = true
+		}
+		seen := make(map[frontend.RatingKey]bool, len(ts))
+		for _, title := range ts {
+			if seen[title.Key] {
+				continue
+			}
+			seen[title.Key] = true
+			imgs, ok, err := artReader.ItemArtwork(frontend.WithArtworkKinds(r.Context(), wanted), v, requestDevice(r), title.Key)
+			if err != nil || !ok {
+				continue
+			}
+			var granted []frontend.GrantedImage
+			for _, im := range imgs {
+				if im.Path == "" || !slices.Contains(kinds, im.Kind) {
+					continue
+				}
+				secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{
+					Credential: token,
+					Device:     requestDevice(r),
+					Item:       title.Key,
+					Image:      im,
+				})
+				if err != nil || secret == "" {
+					continue
+				}
+				granted = append(granted, frontend.GrantedImage{Image: im, Secret: secret})
+			}
+			for _, g := range titleCardArtwork(title, granted) {
+				im := g.Image
+				art[title.Key] = append(art[title.Key], object{"id": hash(im.Path), "kind": im.Kind, "tag": im.Tag, "sizes": []object{imageSize(im, g.Secret)}, "blurHash": im.BlurHash, "thumbHash": im.ThumbHash})
+			}
+		}
+	}
+	return art, nil
+}
+
+func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title, states map[frontend.RatingKey]frontend.WatchStatus) ([]object, error) {
+	art, err := i.titleArtworkBatch(r, v, token, ts)
+	if err != nil {
+		return nil, err
 	}
 	ratings := map[frontend.RatingKey][]frontend.RatingScore{}
 	if source, ok := i.host.Experience.(frontend.CachedRatings); ok {
 		ratings = source.PageCachedRatings(r.Context(), v, ts)
 	}
+	regions := i.preferredRatingRegions(r)
 	out := []object{}
 	for _, t := range ts {
-		item := titleWire(t)
+		item := titleWireForRegions(t, regions)
 		scores := append([]frontend.RatingScore(nil), ratings[t.Key]...)
 		if t.VoteCount > 0 && t.Rating >= 0 && t.Rating <= 10 && !math.IsNaN(t.Rating) {
 			scores = append(scores, frontend.RatingScore{Source: "tmdb", Kind: "audience", Value: t.Rating, Scale: 10, Votes: int64(t.VoteCount)})
@@ -115,17 +293,102 @@ func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts 
 	return out, nil
 }
 
-// Episode cards have one landscape image: their own still, or an explicitly
-// typed fallback. Do not leave inherited series art competing with a still.
-// Selection happens after batch signing, so every URL retains its item scope.
+// episodePosterShow requests a show fallback only when the episode has no
+// portrait of its own. Packed catalogue keys also cover cards without ShowKey.
+func episodePosterShow(title frontend.Title) frontend.RatingKey {
+	// Episodes often carry an inherited or unmeasured PosterPath that
+	// titleArtwork does not select as a portrait, so the show is always
+	// fetched; it is only used when the card ends up without a portrait.
+	if title.Key.Kind() != frontend.KindEpisode && title.Type != frontend.TypeEpisode {
+		return 0
+	}
+	if nonVideoMedia(title) {
+		// Music tracks, audiobook parts and book items carry their own
+		// (square or cover) art; a grandparent artist photo is never theirs.
+		return 0
+	}
+	if title.ShowKey != 0 {
+		return title.ShowKey
+	}
+	if !title.Key.IsPluginKey() {
+		return title.Key.Parent().Parent()
+	}
+	return 0
+}
+
+func hasPortrait(images []frontend.GrantedImage) bool {
+	for i, image := range images {
+		// A poster in first place is a landscape fallback, not a portrait.
+		if i > 0 && image.Image.Kind == frontend.ImagePoster {
+			return true
+		}
+	}
+	return false
+}
+
+// Episode cards keep their still (or landscape fallback) first, followed by
+// an available portrait. Selection happens after batch signing, so every URL
+// retains its item scope.
 func titleArtwork(key frontend.RatingKey, images []frontend.GrantedImage) []frontend.GrantedImage {
 	if key.Kind() != frontend.KindEpisode {
 		return images
 	}
+	return selectEpisodeArtwork(images)
+}
+
+func titleCardArtwork(title frontend.Title, images []frontend.GrantedImage) []frontend.GrantedImage {
+	if title.LandscapeCard {
+		return selectLandscapeCardArtwork(images)
+	}
+	if title.Key.Kind() != frontend.KindEpisode && title.Type != frontend.TypeEpisode {
+		return images
+	}
+	if nonVideoMedia(title) {
+		return images
+	}
+	return selectEpisodeArtwork(images)
+}
+
+// nonVideoMedia reports a plugin title of a non-video media class (music,
+// audiobook, book, podcast, photo), whose artwork is not episode artwork.
+func nonVideoMedia(title frontend.Title) bool {
+	return title.MediaClass != "" && title.MediaClass != frontend.MediaClassVideo
+}
+
+func selectLandscapeCardArtwork(images []frontend.GrantedImage) []frontend.GrantedImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]frontend.GrantedImage, 0, len(images))
+	for _, kind := range []string{frontend.ImageThumb, frontend.ImageStill, frontend.ImageBackdrop} {
+		for _, image := range images {
+			if image.Image.Kind == kind && image.Image.Path != "" && image.Secret != "" {
+				out = append(out, image)
+			}
+		}
+	}
+	for _, image := range images {
+		if image.Image.Kind != frontend.ImageThumb && image.Image.Kind != frontend.ImageStill && image.Image.Kind != frontend.ImageBackdrop && image.Image.Path != "" && image.Secret != "" {
+			out = append(out, image)
+		}
+	}
+	return out
+}
+
+func selectEpisodeArtwork(images []frontend.GrantedImage) []frontend.GrantedImage {
 	for _, kind := range []string{frontend.ImageStill, frontend.ImageBackdrop, frontend.ImagePoster} {
 		for _, image := range images {
 			if image.Image.Kind == kind && image.Image.Path != "" && image.Secret != "" {
-				return []frontend.GrantedImage{image}
+				out := []frontend.GrantedImage{image}
+				if kind != frontend.ImagePoster {
+					for _, portrait := range images {
+						if portrait.Image.Kind == frontend.ImagePoster && portrait.Image.Width > 0 && portrait.Image.Height > portrait.Image.Width && portrait.Image.Path != "" && portrait.Secret != "" {
+							out = append(out, portrait)
+							break
+						}
+					}
+				}
+				return out
 			}
 		}
 	}
@@ -150,6 +413,33 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	if placement != frontend.PlacementHome && placement != frontend.PlacementDetail && placement != frontend.PlacementLibrary {
 		return nil, false, frontend.ErrNotFound
 	}
+	if rawLib, exists := r.URL.Query()["libraryId"]; exists {
+		if len(rawLib) != 1 || (rawLib[0] != "" && placement != frontend.PlacementLibrary) {
+			return nil, false, frontend.ErrInvalidPreferences
+		}
+	}
+	libraryID := r.URL.Query().Get("libraryId")
+	var matched *frontend.View
+	if placement == frontend.PlacementLibrary && libraryID != "" {
+		visibleViews, err := i.host.Experience.Views(r.Context(), v)
+		if err != nil {
+			return nil, false, err
+		}
+		for idx := range visibleViews {
+			if visibleViews[idx].ID == libraryID {
+				matched = &visibleViews[idx]
+				break
+			}
+		}
+		if r.PathValue("id") == "" {
+			if matched == nil {
+				return nil, false, frontend.ErrNotFound
+			}
+			if matched.PluginID != "" || matched.KindKey != "" {
+				return []object{}, false, nil
+			}
+		}
+	}
 	var item frontend.RatingKey
 	if s := r.URL.Query().Get("titleId"); s != "" {
 		var err error
@@ -162,7 +452,8 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	var excludedHeroes []string
 	outerMore := false
 	views, hasViews := i.host.Experience.(frontend.RowViews)
-	if id := r.PathValue("id"); id != "" && hasViews {
+	useRowViews := hasViews && !(placement == frontend.PlacementDetail && item.IsPluginKey())
+	if id := r.PathValue("id"); id != "" && useRowViews {
 		offset := 0
 		if token := r.URL.Query().Get("cursor"); token != "" {
 			c, e := i.readRowToken(r, v, token)
@@ -190,14 +481,28 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		row.PreviewOnFocus = meta.Layout.PreviewOnFocus
 		row.RankedTop10 = row.RankedTop10 || meta.Layout.RankedTop10
 		rows = append(rows, row)
-	} else if hasViews {
-		vv, e := views.ListRowViews(r.Context(), frontend.RowViewRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", Placement: placement, Item: item, Refresh: refresh})
+	} else if useRowViews {
+		vv, e := views.ListRowViews(r.Context(), frontend.RowViewRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", Placement: placement, ViewID: libraryID, Item: item, Refresh: refresh})
 		if e != nil {
 			return nil, false, e
 		}
 		outerMore = len(vv) > limit(r)
 		vv = vv[:min(len(vv), limit(r))]
-		for _, view := range vv {
+		var pages []frontend.RowViewPage
+		if batch, ok := i.host.Experience.(frontend.RowViewPages); ok && len(vv) > 1 {
+			reqs := make([]frontend.RowViewPageRequest, len(vv))
+			for n, view := range vv {
+				reqs[n] = frontend.RowViewPageRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", ID: view.ID, Limit: rowItemLimit(r)}
+			}
+			pages, e = batch.ResolveRowViews(r.Context(), reqs)
+			if e != nil {
+				return nil, false, e
+			}
+			if len(pages) != len(vv) {
+				return nil, false, frontend.ErrRowViewStale
+			}
+		}
+		for n, view := range vv {
 			noteBootstrapDeadline(r, view.ExpiresAt)
 			i.rowMu.Lock()
 			if len(i.rowMeta) >= 2000 {
@@ -205,7 +510,14 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 			}
 			i.rowMeta[view.ID] = view
 			i.rowMu.Unlock()
-			row, e := i.rowPage(r, v, view.ID, 0, rowItemLimit(r))
+			var row frontend.Row
+			var e error
+			if pages != nil {
+				row = rowFromPage(view.ID, pages[n])
+				noteBootstrapDeadline(r, pages[n].ExpiresAt)
+			} else {
+				row, e = i.rowPage(r, v, view.ID, 0, rowItemLimit(r))
+			}
 			if e != nil {
 				if errors.Is(e, frontend.ErrNotFound) {
 					e = frontend.ErrRowViewStale
@@ -223,7 +535,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		}
 	} else {
 		var e error
-		rows, e = i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: requestDevice(r), Placement: placement, Item: item, Limit: rowItemLimit(r)})
+		rows, e = i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: requestDevice(r), Placement: placement, ViewID: libraryID, Item: item, Limit: rowItemLimit(r)})
 		if e != nil {
 			return nil, false, e
 		}
@@ -232,6 +544,49 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		outerMore = true
 		rows = rows[:limit(r)]
 	}
+	if matched != nil {
+		markLandscapeRows(rows, *matched)
+	}
+	out, err := i.rowsToWire(r, v, token, rows, excludedHeroes, useRowViews, rowItemLimit(r), sources...)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, outerMore, nil
+}
+
+func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string, rows []frontend.Row, excludedHeroes []string, hasViews bool, itemLimit int, sources ...map[string]heroSource) ([]object, error) {
+	// Share card state, ratings and artwork across all shelves in this page.
+	var pageTitles []frontend.Title
+	seenTitles := map[frontend.RatingKey]bool{}
+	for _, row := range rows {
+		ts := row.Items
+		if len(row.Entries) > 0 {
+			ts = nil
+			for _, entry := range row.Entries {
+				if entry.Title != nil {
+					ts = append(ts, *entry.Title)
+				}
+			}
+		}
+		if row.RankedTop10 {
+			ts = ts[:min(len(ts), 10)]
+		}
+		for _, title := range ts {
+			if !seenTitles[title.Key] {
+				seenTitles[title.Key] = true
+				pageTitles = append(pageTitles, title)
+			}
+		}
+	}
+	converted, err := i.titles(r, v, token, pageTitles)
+	if err != nil {
+		return nil, err
+	}
+	cardCache := make(map[frontend.RatingKey]object, len(converted))
+	for n, title := range pageTitles {
+		cardCache[title.Key] = converted[n]
+	}
+	r = r.WithContext(context.WithValue(r.Context(), homeTitlesKey{}, cardCache))
 	out := []object{}
 	for _, row := range rows {
 		if len(sources) > 0 {
@@ -244,14 +599,14 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		}
 		wire, e := i.rowWire(r, v, token, row, offset, excludedHeroes, hasViews)
 		if e != nil {
-			return nil, false, e
+			return nil, e
 		}
-		if e := i.backfillShelf(r, v, token, wire, rowItemLimit(r)); e != nil {
-			return nil, false, e
+		if e := i.backfillShelf(r, v, token, wire, itemLimit); e != nil {
+			return nil, e
 		}
 		out = append(out, wire)
 	}
-	return out, outerMore, nil
+	return out, nil
 }
 
 // rowWire retains source entry receipts while converting one authorized page.
@@ -262,9 +617,12 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 		row.More = false
 	}
 	ts := []frontend.Title{}
+	cols := []frontend.Collection{}
 	for _, e := range row.Entries {
 		if e.Kind == frontend.RowEntryTitle && e.Title != nil {
 			ts = append(ts, *e.Title)
+		} else if e.Kind == frontend.RowEntryCollection && e.Collection != nil {
+			cols = append(cols, *e.Collection)
 		}
 	}
 	if len(row.Entries) == 0 {
@@ -278,6 +636,16 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	for _, t := range converted {
 		byID[t["id"].(string)] = t
 	}
+	colByID := map[string]object{}
+	if len(cols) > 0 {
+		convertedCols, err := i.collectionsWire(r, v, token, cols)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range convertedCols {
+			colByID[c["id"].(string)] = c
+		}
+	}
 	entries := []object{}
 	for _, e := range row.Entries {
 		base := object{"receiptToken": e.Handle}
@@ -286,6 +654,11 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 			base["id"] = ids.RatingKeyGUID(e.Title.Key)
 			base["kind"] = "title"
 			base["title"] = byID[base["id"].(string)]
+		case e.Collection != nil:
+			colID := ids.RatingKeyGUID(e.Collection.Key)
+			base["id"] = colID
+			base["kind"] = "collection"
+			base["collection"] = colByID[colID]
 		case e.LiveChannel != nil:
 			c := e.LiveChannel
 			base["id"] = c.ID
@@ -340,7 +713,7 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	return wire, nil
 }
 
-func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string, refresh bool) (object, error) {
+func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string, avatar object, spoilerFree bool, refresh bool) (object, error) {
 	sources := map[string]heroSource{}
 	rows, _, e := i.homeVisit(r, v, t, refresh, sources)
 	if e != nil {
@@ -356,11 +729,28 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 			heroes, shelves = heroesFromRows(append(rows, fill...), sources)
 		}
 	}
-	viewer, err := i.viewerPolicyWire(r, v, requestDevice(r))
+	viewer, err := i.viewerPolicyWire(r, v, requestDevice(r), avatar)
 	if err != nil {
 		return nil, err
 	}
-	out := object{"viewer": viewer, "capabilities": i.requestCapabilities(r), "defaultSkinId": i.appearanceDocument().skinID, "rows": shelves}
+	viewer["spoilerFree"] = spoilerFree
+	appDoc := i.appearanceDocument()
+	navigation, err := i.screenNavigation(r, v)
+	if err != nil {
+		return nil, err
+	}
+	out := object{
+		"viewer":        viewer,
+		"capabilities":  i.requestCapabilitiesFor(r, v),
+		"navigation":    navigation,
+		"defaultSkinId": appDoc.skinID,
+		"branding":      appDoc.branding,
+		"force":         appDoc.force,
+		"packs":         appDoc.packs,
+		"documents":     appDoc.documents,
+		"appearance":    json.RawMessage(appDoc.payload),
+		"rows":          shelves,
+	}
 	if len(heroes) > 0 {
 		ids := make([]string, 0, len(heroes))
 		for _, hero := range heroes {
@@ -388,6 +778,7 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	return out, nil
 }
 func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(i.host.Experience.NoProviderWait(r.Context()))
 	v, t, e := i.viewer(r)
 	if e != nil {
 		fail(w, e, r)
@@ -404,6 +795,7 @@ func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
 	if id := r.PathValue("id"); id != "" {
 		for _, row := range rows {
 			if row["id"] == id {
+				varyLanguage(w)
 				cache(w, r, row)
 				return
 			}
@@ -415,6 +807,7 @@ func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
 	if more {
 		continuation = "unknown"
 	}
+	varyLanguage(w)
 	cache(w, r, object{"items": rows, "continuation": continuation})
 }
 func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
@@ -423,11 +816,17 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
+	if rawID := r.PathValue("id"); strings.HasPrefix(rawID, "facet:") {
+		i.facetSeriesDetail(w, r, v, t, rawID)
+		return
+	}
 	k, e := key(r)
 	if e != nil {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
+	r = r.WithContext(ctx)
 	d, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k})
 	if e != nil {
 		fail(w, e, r)
@@ -446,10 +845,10 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		extras = append(extras, object{"id": ids.RatingKeyGUID(x.Key), "parentId": ids.RatingKeyGUID(x.ParentKey), "kind": kind, "name": x.Title, "durationSeconds": x.Duration.Seconds(), "availability": availability})
 	}
 	if strings.HasSuffix(r.URL.Path, "/extras") {
-		cache(w, r, object{"items": extras})
+		cacheDetail(w, r, object{"items": extras}, pending)
 		return
 	}
-	ts, e := i.titles(r, v, t, []frontend.Title{d.Title})
+	ts, e := i.titlesWithUserData(r, v, t, []frontend.Title{d.Title}, map[frontend.RatingKey]frontend.WatchStatus{d.Title.Key: d.UserData})
 	if e != nil {
 		fail(w, e, r)
 		return
@@ -458,18 +857,21 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		ts[0]["themeMusic"] = theme
 	}
 	ts[0]["watch"] = watchWire(d.UserData)
-	cast, e := i.cast(r, t, d)
+	cast, crew, e := i.credits(r, v, t, d)
 	if e != nil {
 		fail(w, e, r)
 		return
 	}
-	crew, e := i.crew(r, t, d)
-	if e != nil {
-		fail(w, e, r)
-		return
-	}
-	out := object{"title": ts[0], "extras": extras, "chapters": []object{}, "cast": cast, "crew": crew}
-	if d.CanPlay != nil {
+	out := object{"title": ts[0], "extras": extras, "chapters": detailChapters(d), "cast": cast, "crew": crew}
+	if reading.IsBookTitle(d.Title) {
+		out["canPlay"] = false
+		canRead := i.host.KindStreams != nil && d.Title.Key.IsPluginKey() && d.Unavailable == nil &&
+			d.Title.Type != frontend.TypeShow && d.Title.Type != frontend.TypeSeason
+		if d.CanRead != nil {
+			canRead = canRead && *d.CanRead
+		}
+		out["canRead"] = canRead
+	} else if d.CanPlay != nil {
 		out["canPlay"] = *d.CanPlay
 	}
 	if summary := mediaSummary(d); summary != nil {
@@ -479,8 +881,20 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
+	// If detailChildren hydrated a previously unhydrated plugin container,
+	// refresh its media counts (childCount / childCounts) in one O(1) read.
+	if d.Title.Key.IsPluginKey() && len(d.Title.ChildCounts) == 0 &&
+		(d.Title.Type == frontend.TypeShow || d.Title.Type == frontend.TypeSeason) &&
+		(d.Title.ChildCount > 0 || out["seasons"] != nil || out["episodes"] != nil) {
+		if refreshed, rErr := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k}); rErr == nil {
+			if media := titleMediaWire(refreshed.Title); media != nil {
+				ts[0]["media"] = media
+			}
+		}
+	}
 	i.warmDetail(r, v, d)
-	cache(w, r, out)
+	varyLanguage(w)
+	cacheDetail(w, r, out, pending)
 }
 func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	v, t, e := i.viewer(r)
@@ -488,7 +902,31 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
-	if !noCursor(w, r) {
+	rawID := r.PathValue("id")
+	if strings.HasPrefix(rawID, "facet:") {
+		i.facetSeriesChildren(w, r, v, t, rawID)
+		return
+	}
+	role := strings.TrimSpace(r.URL.Query().Get("role"))
+	level := strings.TrimSpace(r.URL.Query().Get("level"))
+	if len(role) > 64 || len(level) > 64 {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	lim := limit(r)
+	var cur liveCursor
+	if i.seal != nil {
+		scope, err := i.livePageScope(r, v, t)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		cur, err = i.readLiveCursor(r, scope, hashJSON([]any{"children", rawID, role, level, lim}))
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+	} else if !noCursor(w, r) {
 		return
 	}
 	k, e := key(r)
@@ -496,23 +934,42 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
-	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Limit: limit(r), NoTotal: true})
+	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
+	r = r.WithContext(ctx)
+	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Offset: cur.Offset, Limit: lim + 1, Level: level, Role: role, NoTotal: true})
 	if e != nil {
 		fail(w, e, r)
 		return
 	}
-	ts, e := i.titles(r, v, t, p.Items)
+	hasMore := len(p.Items) > lim
+	items := p.Items
+	if hasMore {
+		items = items[:lim]
+	}
+	ts, e := i.titles(r, v, t, items)
 	if e != nil {
 		fail(w, e, r)
 		return
 	}
-	c := "exhausted"
-	if len(ts) == limit(r) {
-		c = "unknown"
+	resp := object{"items": ts, "continuation": "exhausted"}
+	if hasMore {
+		if i.seal != nil {
+			next, err := i.nextLiveCursor(cur, cur.Offset+len(items), "children")
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			resp["continuation"] = "more"
+			resp["nextCursor"] = next
+		} else {
+			resp["continuation"] = "unknown"
+		}
 	}
-	cache(w, r, object{"items": ts, "continuation": c})
+	varyLanguage(w)
+	cacheDetail(w, r, resp, pending)
 }
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(frontend.WithSearchMemo(r.Context()))
 	v, t, e := i.viewer(r)
 	if e != nil {
 		fail(w, e, r)
@@ -521,10 +978,82 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Query, Mode, Cursor string
 		Generation, Limit   int
+		// Sort orders the results (searchSorts); "relevance" or empty keeps
+		// the search's own order. Kind limits results to movies, shows, or a
+		// plugin kind; Library scopes results to one visible Vela library.
+		Sort, Direction, Kind string
+		Library               string
 	}
 	if body(r, &b) != nil || b.Query == "" {
 		problem(w, 400, "request", "invalid_request")
 		return
+	}
+	var targetView *frontend.View
+	if b.Library != "" {
+		views, err := i.host.Experience.Views(r.Context(), v)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		for idx := range views {
+			if views[idx].ID == b.Library {
+				targetView = &views[idx]
+				break
+			}
+		}
+		if targetView == nil {
+			problem(w, 400, "request", "invalid_library")
+			return
+		}
+	}
+	iq := frontend.ItemQuery{NoTotal: true}
+	switch b.Sort {
+	case "", "relevance":
+	case "title", "released", "added", "rating", "popularity":
+		iq.Sort = frontend.SortOrder(b.Sort)
+	case "year", "index":
+		offered := false
+		if targetView != nil {
+			wire := libraryWire(*targetView)
+			for _, candidate := range wire["browse"].(object)["sorts"].([]object) {
+				if candidate["id"] == b.Sort {
+					offered = true
+					break
+				}
+			}
+		}
+		if !offered {
+			problem(w, 400, "request", "invalid_sort")
+			return
+		}
+		iq.Sort = frontend.SortOrder(b.Sort)
+	default:
+		problem(w, 400, "request", "invalid_sort")
+		return
+	}
+	switch b.Direction {
+	case "", "asc":
+	case "desc":
+		iq.Desc = true
+	default:
+		problem(w, 400, "request", "invalid_direction")
+		return
+	}
+	// Kind is one of searchKinds: movie, show, or a plugin kind the viewer
+	// can see ("<pluginID>/<kindKey>"), matched by its library.
+	var kindLibrary frontend.LibraryID
+	switch b.Kind {
+	case "":
+	case "movie", "show":
+		iq.Types = []frontend.MediaType{frontend.MediaType(b.Kind)}
+	default:
+		_, libs := i.searchKinds(r, v)
+		lib, ok := libs[b.Kind]
+		if !ok {
+			problem(w, 400, "request", "invalid_kind")
+			return
+		}
+		kindLibrary = lib
 	}
 	if b.Cursor != "" {
 		problem(w, 409, "conflict", "cursor_expired")
@@ -535,7 +1064,56 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		n = 50
 	}
 	n = min(n, 100)
+	iq.Limit = n
+
+	incompatible := false
+	if targetView != nil {
+		if kindLibrary != 0 {
+			if (targetView.PluginID == "" && targetView.KindKey == "") || (targetView.LibraryID != 0 && targetView.LibraryID != kindLibrary) {
+				incompatible = true
+			}
+		}
+		if len(iq.Types) > 0 && targetView.Type != "" && !slices.Contains(iq.Types, targetView.Type) {
+			incompatible = true
+		}
+	}
+
 	var p frontend.SearchPage
+	scoped := false
+	if incompatible && b.Mode == "fast" {
+		p.Page = frontend.Page{Items: []frontend.Title{}}
+		p.Continuation = frontend.ContinuationExhausted
+		kindLibrary, scoped = 0, true
+	} else if (targetView != nil || kindLibrary != 0) && b.Mode == "fast" {
+		// Scoped search queries inside the target library directly, so sorting
+		// and the page limit apply to that library's matches only.
+		viewID := ""
+		if targetView != nil {
+			viewID = targetView.ID
+		} else {
+			viewID = i.viewForLibrary(r, v, kindLibrary)
+			if viewID == "" {
+				problem(w, 400, "request", "invalid_kind")
+				return
+			}
+		}
+		lq := iq
+		lq.Filter.Query = b.Query
+		page, err := i.host.Experience.LibraryItems(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), viewID, lq)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		if len(page.Items) > n {
+			page.Items = page.Items[:n]
+		}
+		if targetView != nil {
+			markLandscapeTitles(page.Items, *targetView)
+		}
+		p.Page = page
+		p.Continuation = frontend.ContinuationUnknown
+		kindLibrary, scoped = 0, true
+	}
 	switch b.Mode {
 	case "descriptive":
 		source, ok := i.host.Experience.(frontend.DescriptiveSearcher)
@@ -543,9 +1121,11 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusServiceUnavailable, "policy", "feature_unavailable")
 			return
 		}
-		p, e = source.DescriptiveSearch(r.Context(), v, requestDevice(r), b.Query, frontend.ItemQuery{Limit: n, NoTotal: true})
+		p, e = source.DescriptiveSearch(r.Context(), v, requestDevice(r), b.Query, iq)
 	case "fast":
-		p, e = i.host.Experience.Search(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), b.Query, frontend.ItemQuery{Limit: n, NoTotal: true})
+		if !scoped {
+			p, e = i.host.Experience.Search(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), b.Query, iq)
+		}
 	default:
 		problem(w, 400, "request", "invalid_search_mode")
 		return
@@ -553,6 +1133,52 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		fail(w, e, r)
 		return
+	}
+	if b.Mode == "descriptive" && incompatible {
+		p.Page.Items = []frontend.Title{}
+	} else if b.Mode == "descriptive" && targetView != nil {
+		isPluginView := targetView.PluginID != "" || targetView.KindKey != ""
+		var libMembers map[frontend.RatingKey]bool
+		var libScoped bool
+		if !isPluginView && targetView.LibraryID != 0 && len(p.Page.Items) > 0 {
+			if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+				keys := make([]frontend.RatingKey, len(p.Page.Items))
+				for idx, it := range p.Page.Items {
+					keys[idx] = it.Key
+				}
+				if m, ok, err := sr.LibraryMembers(r.Context(), targetView.LibraryID, keys); err == nil && ok {
+					libMembers, libScoped = m, true
+				}
+			}
+		}
+		kept := p.Page.Items[:0]
+		for _, item := range p.Page.Items {
+			match := false
+			if isPluginView {
+				match = targetView.LibraryID != 0 && item.LibraryID == targetView.LibraryID
+			} else if targetView.LibraryID != 0 && item.LibraryID != 0 {
+				match = item.LibraryID == targetView.LibraryID
+			} else {
+				match = targetView.Type == "" || item.Type == targetView.Type
+			}
+			if libScoped && !libMembers[item.Key] {
+				match = false
+			}
+			if match && (kindLibrary == 0 || item.LibraryID == kindLibrary) && len(kept) < n {
+				kept = append(kept, item)
+			}
+		}
+		p.Page.Items = kept
+		markLandscapeTitles(p.Page.Items, *targetView)
+	} else if kindLibrary != 0 {
+		// Descriptive search for a plugin kind keeps only that library.
+		kept := p.Page.Items[:0]
+		for _, item := range p.Page.Items {
+			if item.LibraryID == kindLibrary && len(kept) < n {
+				kept = append(kept, item)
+			}
+		}
+		p.Page.Items = kept
 	}
 	ts, e := i.titles(r, v, t, p.Page.Items)
 	if e != nil {
@@ -618,12 +1244,22 @@ func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
-	if _, e = i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k}); e != nil {
+	detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k})
+	if e != nil {
 		fail(w, e, r)
 		return
 	}
-	var b struct{ Played, Favorite, Watchlisted *bool }
+	var b struct {
+		Played           *bool `json:"played"`
+		Favorite         *bool `json:"favorite"`
+		Watchlisted      *bool `json:"watchlisted"`
+		ContinueWatching *bool `json:"continueWatching"`
+	}
 	if body(r, &b) != nil {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	if b.ContinueWatching != nil && *b.ContinueWatching {
 		problem(w, 400, "request", "invalid_request")
 		return
 	}
@@ -639,6 +1275,21 @@ func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
 	}
 	if e == nil && b.Watchlisted != nil {
 		e = i.host.Experience.SetWatchlist(r.Context(), v, k, *b.Watchlisted)
+	}
+	if e == nil && b.ContinueWatching != nil {
+		if !k.IsPluginKey() && (k.Kind() == frontend.KindPlaylist || k.Kind() == frontend.KindCollection || k.Kind() == frontend.KindSmart) {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		target := k
+		if detail.Title.Type == frontend.TypeEpisode || k.Kind() == frontend.KindEpisode {
+			if detail.Title.ShowKey != 0 {
+				target = detail.Title.ShowKey
+			} else if !k.IsPluginKey() && k.TMDB() > 0 {
+				target = frontend.ShowKey(k.TMDB())
+			}
+		}
+		e = i.host.Experience.RemoveFromContinue(r.Context(), v, target)
 	}
 	if e != nil {
 		fail(w, e, r)
@@ -665,4 +1316,45 @@ func descriptiveWire(status *frontend.DescriptiveSearchStatus) object {
 		retry = object{"allowed": true, "afterSeconds": seconds}
 	}
 	return object{"state": state, "retry": retry}
+}
+
+// searchKinds lists the result kinds a viewer can filter search by: movies,
+// shows, and every plugin library kind the viewer can open. Plugin kinds are
+// keyed "<pluginID>/<kindKey>" and labelled with their library's name.
+func (i *instance) searchKinds(r *http.Request, v *frontend.Viewer) ([]object, map[string]frontend.LibraryID) {
+	kinds := []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}
+	libs := map[string]frontend.LibraryID{}
+	if v == nil {
+		return kinds, libs
+	}
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		return kinds, libs
+	}
+	for _, view := range views {
+		if view.PluginID == "" || view.KindKey == "" || view.LibraryID == 0 {
+			continue
+		}
+		id := view.PluginID + "/" + view.KindKey
+		if _, seen := libs[id]; seen {
+			continue
+		}
+		libs[id] = view.LibraryID
+		kinds = append(kinds, object{"id": id, "label": view.Name})
+	}
+	return kinds, libs
+}
+
+// viewForLibrary returns the viewer's published view id for a library.
+func (i *instance) viewForLibrary(r *http.Request, v *frontend.Viewer, lib frontend.LibraryID) string {
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		return ""
+	}
+	for _, view := range views {
+		if view.LibraryID == lib {
+			return view.ID
+		}
+	}
+	return ""
 }

@@ -75,6 +75,13 @@ func (m *Manager) TestIndexer(ctx context.Context, cfg config.Indexer, policy co
 	return TestWithOptions(core.WithIndexerPurpose(ctx, core.IndexerPurposeTest), cfg, Options{ClientIdentity: policy, usageDB: m.db, onEvent: m.emitEvent})
 }
 
+// TestIndexerCaps runs a single t=caps request through the resolved identity
+// for cfg under policy, recording the request as a manual test without
+// spending the daily budget.
+func (m *Manager) TestIndexerCaps(ctx context.Context, cfg config.Indexer, policy config.ClientIdentity) (config.Identity, error) {
+	return TestCapsWithOptions(core.WithIndexerPurpose(ctx, core.IndexerPurposeTest), cfg, Options{ClientIdentity: policy, usageDB: m.db, onEvent: m.emitEvent})
+}
+
 // PurposeCount is one purpose's share of a usage window.
 type PurposeCount struct {
 	Purpose string `json:"purpose"`
@@ -99,17 +106,19 @@ type UsageDay struct {
 // IndexerUsage is one configured indexer's request history: what it would
 // show on the indexer's own API-hit counter, by purpose.
 type IndexerUsage struct {
-	ID         string      `json:"id"`
-	Name       string      `json:"name"`
-	Enabled    bool        `json:"enabled"`
-	Torrent    bool        `json:"torrent"`
-	DailyLimit int         `json:"dailyLimit"`
-	DailyGrabs int         `json:"dailyGrabs"`
-	RetryAt    int64       `json:"retryAt,omitempty"`
-	Today      UsageWindow `json:"today"`
-	Week       UsageWindow `json:"week"`
-	Month      UsageWindow `json:"month"`
-	Days       []UsageDay  `json:"days"`
+	ID                string      `json:"id"`
+	Name              string      `json:"name"`
+	Enabled           bool        `json:"enabled"`
+	Torrent           bool        `json:"torrent"`
+	DailyLimit        int         `json:"dailyLimit"`
+	DailyGrabs        int         `json:"dailyGrabs"`
+	RetryAt           int64       `json:"retryAt,omitempty"`
+	PausedUntil       int64       `json:"pausedUntil,omitempty"`
+	MissingDefinition bool        `json:"missingDefinition,omitempty"`
+	Today             UsageWindow `json:"today"`
+	Week              UsageWindow `json:"week"`
+	Month             UsageWindow `json:"month"`
+	Days              []UsageDay  `json:"days"`
 }
 
 // UsageReport is every configured indexer's usage. Days are UTC.
@@ -180,8 +189,9 @@ func (m *Manager) Usage(ctx context.Context) (UsageReport, error) {
 		out := map[string][2]int64{}
 		var covered [2]int64
 		for p, v := range purposes[k] {
-			// Detail searches have a separate budget class, but belong to
-			// the existing opened-details category in the owner's report.
+			// Detail discovery and unattended warm-ups have independent
+			// allowances but both prepare titles before Play. The console
+			// groups them under "Warm-ups and prefetch", including opened details.
 			category := p
 			if category == core.IndexerPurposeDetail {
 				category = core.IndexerPurposeWarmup
@@ -201,11 +211,15 @@ func (m *Manager) Usage(ctx context.Context) (UsageReport, error) {
 
 	for _, cl := range m.Clients() {
 		cfg := cl.Config()
+		clNow := cl.now()
 		u := IndexerUsage{
 			ID: cl.indexerID(), Name: cl.Name(), Enabled: cfg.Enabled, Torrent: cfg.IsTorrent(),
-			DailyLimit: cfg.DailyLimit, DailyGrabs: cfg.DailyGrabs, Days: []UsageDay{},
+			DailyLimit: cfg.DailyLimit, DailyGrabs: cfg.DailyGrabs,
+			PausedUntil:       cl.br.pausedUntil(clNow),
+			MissingDefinition: cl.missingDefinition(),
+			Days:              []UsageDay{},
 		}
-		if until, err := cl.rateLimitUntil(ctx); err == nil && cl.now().Before(until) {
+		if until, err := cl.rateLimitUntil(ctx); err == nil && clNow.Before(until) {
 			u.RetryAt = until.Unix()
 		}
 		today, week, month := map[string][2]int64{}, map[string][2]int64{}, map[string][2]int64{}

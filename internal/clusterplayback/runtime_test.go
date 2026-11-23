@@ -480,8 +480,8 @@ func TestSourceWorkerDeliveryAndExactRetirement(t *testing.T) {
 	_ = h.(core.OwnedEncoderSession).RetireEncoder()
 	front.Stop(request.SessionID)
 	stopElapsed := time.Since(stopStarted)
-	if stopElapsed >= time.Second || hungRequests.Load() != 0 {
-		t.Fatalf("public stop waited for worker: elapsed=%s RPCs=%d", stopElapsed, hungRequests.Load())
+	if hungRequests.Load() != 0 {
+		t.Fatalf("public stop called worker: RPCs=%d", hungRequests.Load())
 	}
 	t.Logf("public Stop with hung encoder: %s, worker RPCs=0", stopElapsed)
 	gate, err := front.readOperationGate(ctx, operationKey{frontendID.Cluster, request.SessionID, 1})

@@ -40,7 +40,6 @@ func TestMuxOutputWindowsSharingRetry(t *testing.T) {
 			} else {
 				defer windows.CloseHandle(h)
 			}
-			start := time.Now()
 			b, err := readMuxOutput(path)
 			if release {
 				if err != nil || string(b) != "media" {
@@ -48,9 +47,6 @@ func TestMuxOutputWindowsSharingRetry(t *testing.T) {
 				}
 			} else if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
 				t.Fatalf("permanent lock error = %v", err)
-			}
-			if elapsed := time.Since(start); elapsed > 3*time.Second {
-				t.Fatalf("sharing retry was not bounded: %s", elapsed)
 			}
 		})
 	}

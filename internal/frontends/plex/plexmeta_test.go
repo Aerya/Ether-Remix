@@ -136,8 +136,11 @@ func TestPlexMetaOnServesPlexFieldsOnlyOnPlex(t *testing.T) {
 	if strings.Contains(body, `"audienceRatingImage":"themoviedb://image.rating"`) {
 		t.Fatal("Plex audience rating used TMDB badge")
 	}
-	if !strings.Contains(body, `"tagKey":"tmdb-person-287"`) {
+	if !strings.Contains(body, `"id":287`) || !strings.Contains(body, `"filter":"actor=287"`) {
 		t.Fatalf("TMDB person id dropped: %s", body)
+	}
+	if strings.Contains(body, `"tagKey":"tmdb-person-`) {
+		t.Fatalf("fabricated tmdb-person tagKey emitted: %s", body)
 	}
 	catalog := f.catalog.titles[fightClub.Key]
 	if catalog.Summary != fightClub.Summary {

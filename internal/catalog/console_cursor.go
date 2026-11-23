@@ -119,7 +119,7 @@ func (c *Catalog) consoleCursorPage(ctx context.Context, q core.BrowseQuery) (co
 		hint := ""
 		// Availability projections can be much smaller than the title domain;
 		// let the planner drive those key sets before ordering the candidates.
-		selectiveEvidence := typed.Playable != "" || typed.DebridCached != "" || len(typed.Qualities) > 0 || typed.ReleaseGate != ""
+		selectiveEvidence := typed.Playable != "" || typed.DebridCached != "" || len(typed.Qualities) > 0 || len(typed.EvidenceResolutions) > 0 || len(typed.EvidenceHDR) > 0 || len(typed.EvidenceAudioLanguages) > 0 || typed.ReleaseGate != ""
 		if store.DialectOf(c.db) != store.Postgres && !selectiveEvidence && !consoleHasSparseCandidates(typed) && !useRank {
 			if specs[0].Sort == core.SortPopularity && specs[0].Desc && len(specs) == 1 {
 				hint = c.indexHint("catalog_titles_console_pop_page")

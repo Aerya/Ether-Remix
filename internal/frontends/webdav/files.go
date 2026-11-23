@@ -12,6 +12,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/caps"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/libpath"
 )
 
@@ -278,7 +279,11 @@ func (i *instance) handleFile(w http.ResponseWriter, r *http.Request, viewer *fr
 			http.Error(w, "Depth not supported", http.StatusForbidden)
 			return
 		}
-		prefix := "/webdav" + r.URL.Path
+		fwdPrefix := ""
+		if origin, ok := i.host.Origin(r); ok {
+			fwdPrefix = origin.Prefix
+		}
+		prefix := clientnet.JoinPrefix(fwdPrefix, "/webdav") + r.URL.Path
 		var size *int64
 		if !node.dir {
 			size = i.estimate(r, viewer, device, node.title.Key)

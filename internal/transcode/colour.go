@@ -38,7 +38,7 @@ func canToneMap(f features) bool {
 	if _, ok := cpuToneMap(f); ok {
 		return true
 	}
-	return f.hasFilter("tonemap_vaapi") || f.hasFilter("tonemap_videotoolbox") || f.hasFilter("scale_vt") || f.hasFilter("tonemap_cuda")
+	return f.hasFilter("tonemap_vaapi") || f.hasFilter("tonemap_videotoolbox") || f.hasFilter("scale_vt") || f.hasFilter("tonemap_cuda") || f.vppQSVTonemap
 }
 
 // canConvertColour reports whether v can be encoded under c's colours.
@@ -152,6 +152,9 @@ func toneMapPaths(f features, hw core.HWAccel) []string {
 	}
 	if hw.Name == AccelNVENC && f.hasFilter("tonemap_cuda") {
 		out = append(out, "cuda")
+	}
+	if qsvHardwareToneMapAvailable(f, hw) {
+		out = append(out, "qsv")
 	}
 	return out
 }

@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +22,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/stremio"
 )
 
-// MaxPluginListItems bounds one list source refresh.
+// MaxPluginListItems bounds the maximum items an explicit source config may request.
 const MaxPluginListItems = stremio.MaxCatalogItems
+
+// DefaultPluginListItems bounds an unbounded list refresh per run so multi-thousand-item
+// Stremio/MDBList catalogues page incrementally without exhausting runtime timeouts.
+const DefaultPluginListItems = 500
 
 // Bridge tracks the source kinds registered for each plugin so enable,
 // disable, update and uninstall cleanly replace or remove them.
@@ -31,24 +37,30 @@ type Bridge struct {
 	pers *personalize.Engine
 	tv   *livetv.Service
 
-	mu       sync.Mutex
-	listIDs  map[string][]string
-	livetvID map[string]string
+	mu          sync.Mutex
+	listIDs     map[string][]string
+	livetvID    map[string]string
+	pausedUntil map[string]time.Time
 }
 
 // Attach wires plugin list sources (collections + Home rows) and Live TV
 // channel sources to the plugin manager's lifecycle.
 func Attach(mgr *plugins.Manager, cols *collections.Service, pers *personalize.Engine, tv *livetv.Service) *Bridge {
 	b := &Bridge{
-		mgr:      mgr,
-		cols:     cols,
-		pers:     pers,
-		tv:       tv,
-		listIDs:  map[string][]string{},
-		livetvID: map[string]string{},
+		mgr:         mgr,
+		cols:        cols,
+		pers:        pers,
+		tv:          tv,
+		listIDs:     map[string][]string{},
+		livetvID:    map[string]string{},
+		pausedUntil: map[string]time.Time{},
+	}
+	if cols != nil && pers != nil {
+		cols.SetOnBuilt(pers.InvalidateOwnerRows)
 	}
 	if tv != nil && mgr != nil {
 		tv.SetStreamOpener(b.openPluginStream)
+		tv.SetStreamExpander(b.expandPluginStream)
 	}
 	if mgr != nil {
 		mgr.OnSync(b.Sync)
@@ -88,6 +100,7 @@ func (b *Bridge) Sync(_ context.Context, r plugins.Record) {
 			continue
 		}
 		kind := &listSourceKind{
+			bridge:     b,
 			mgr:        b.mgr,
 			pluginID:   r.ID,
 			pluginName: r.Name,
@@ -114,6 +127,9 @@ func (b *Bridge) Sync(_ context.Context, r plugins.Record) {
 		}
 		if r.Manifest.SpeaksStremio() {
 			chKind.mode = modeAddon
+			if r.Manifest.ServesLiveEvents() {
+				chKind.onDemandInterval = eventAddonRefreshInterval
+			}
 		}
 		if b.tv != nil {
 			_ = b.tv.RegisterSourceKind(chKind)
@@ -146,6 +162,7 @@ func resolvePlainText(mgr *plugins.Manager, pluginID, raw, fallback string) stri
 }
 
 type listSourceKind struct {
+	bridge     *Bridge
 	mgr        *plugins.Manager
 	pluginID   string
 	pluginName string
@@ -258,8 +275,11 @@ func catalogExtras(params map[string]string) map[string]string {
 }
 
 // maxItems is how many items one refresh reads: the source's own limit,
-// within the list's, within MaxPluginListItems.
+// within the list's, within DefaultPluginListItems when neither sets one.
 func (k *listSourceKind) maxItems(src core.CollectionSource) int {
+	if k.meta.MaxItems <= 0 && src.MaxItems <= 0 {
+		return DefaultPluginListItems
+	}
 	n := MaxPluginListItems
 	if k.meta.MaxItems > 0 && k.meta.MaxItems < n {
 		n = k.meta.MaxItems
@@ -319,12 +339,20 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 		return
 	}
 	preview := collections.IsPreview(g.Ctx)
+	if !preview && k.bridge != nil {
+		if until, paused := k.bridge.rateLimitUntil(k.pluginID); paused {
+			g.Fail(fmt.Errorf("add-on rate-limited until %s", until.UTC().Format(time.RFC3339)))
+			return
+		}
+	}
 	limit := k.maxItems(g.Src)
 	if preview && limit > collections.PreviewItems {
 		limit = collections.PreviewItems
 	}
 	extra := catalogExtras(g.Src.Params)
 	metadata := rec.Manifest.HasCapability(plugins.CapMetadata)
+	stremioManifest := rec.Manifest.Stremio()
+	foreignStremio := rec.Manifest.SpeaksStremio()
 	var refs []collections.ExternalRef
 	read, total, unidentified := false, 0, 0
 	for _, cat := range k.catalogs(g.Kinds) {
@@ -341,6 +369,11 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 			metas, err = addon.Catalog(g.Ctx, cat, extra, limit-total)
 		}
 		if err != nil {
+			var he *stremio.HTTPError
+			rateLimited := errors.As(err, &he) && he.RateLimited()
+			if rateLimited && k.bridge != nil {
+				k.bridge.recordRateLimit(rec.ID, he.RetryAfter)
+			}
 			if preview && errors.Is(err, context.DeadlineExceeded) {
 				g.Fail(fmt.Errorf("plugin list preview timed out: %w", err))
 				return
@@ -348,7 +381,11 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 			if !fetcher.recorded {
 				k.mgr.RecordFailure(g.Ctx, rec.ID, fmt.Sprintf("catalog %s/%s: %v", cat.Type, cat.ID, err))
 			}
-			if g.Strict {
+			// If earlier pages already yielded items, keep them and warn instead
+			// of discarding the whole list when a deep skip page fails.
+			// On a rate limit during a background build, fail instead of wiping
+			// the collection's existing members.
+			if (g.Strict || (!preview && rateLimited)) && len(metas) == 0 && !read {
 				g.Fail(err)
 				return
 			}
@@ -362,7 +399,15 @@ func (k *listSourceKind) Gather(g *collections.Gather) {
 				break
 			}
 			total++
-			if ref, ok := catalogRef(m, cat.Type, metadata, rec.ID); ok {
+			canMeta := metadata
+			if canMeta && foreignStremio && m.ID != "" {
+				metaType := strings.ToLower(m.Type)
+				if metaType != stremio.TypeMovie && metaType != stremio.TypeSeries {
+					metaType = cat.Type
+				}
+				canMeta = stremioManifest.TakesID(stremio.ResourceMeta, metaType, m.ID)
+			}
+			if ref, ok := catalogRef(m, cat.Type, canMeta, rec.ID); ok {
 				refs = append(refs, ref)
 			} else {
 				unidentified++
@@ -413,6 +458,60 @@ func (f *healthFetcher) Fetch(ctx context.Context, route string, limit int64) ([
 		f.recorded = true
 	}
 	return body, err
+}
+
+func (b *Bridge) rateLimitUntil(pluginID string) (time.Time, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	until := b.pausedUntil[pluginID]
+	if until.IsZero() || !time.Now().Before(until) {
+		delete(b.pausedUntil, pluginID)
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+func (b *Bridge) recordRateLimit(pluginID, retryAfter string) {
+	wait := parseRetryAfterDuration(retryAfter)
+	until := time.Now().Add(wait)
+	b.mu.Lock()
+	if until.After(b.pausedUntil[pluginID]) {
+		b.pausedUntil[pluginID] = until
+	}
+	b.mu.Unlock()
+}
+
+func parseRetryAfterDuration(raw string) time.Duration {
+	const (
+		def = time.Minute
+		min = 15 * time.Second
+		max = 30 * time.Minute
+	)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def
+	}
+	if secs, err := strconv.Atoi(raw); err == nil {
+		d := time.Duration(secs) * time.Second
+		if d < min {
+			return min
+		}
+		if d > max {
+			return max
+		}
+		return d
+	}
+	if at, err := http.ParseTime(raw); err == nil {
+		d := time.Until(at)
+		if d < min {
+			return min
+		}
+		if d > max {
+			return max
+		}
+		return d
+	}
+	return def
 }
 
 func firstNonEmpty(vals ...string) string {

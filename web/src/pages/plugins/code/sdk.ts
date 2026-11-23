@@ -80,6 +80,10 @@ export const HOST_DTS = `interface EtherFetchRequest {
   headers?: Record<string, string>;
   body?: string;
   bodyBase64?: string;
+  /** Optional per-request timeout in ms (bounded by 60000 and the call deadline). */
+  timeoutMs?: number;
+  /** Optional host or wildcard (*.example.org) patterns within granted network hosts that may keep headers across redirects. */
+  keepHeadersOnRedirect?: string[];
 }
 interface EtherFetchResponse {
   status: number;
@@ -89,6 +93,17 @@ interface EtherFetchResponse {
   /** Exact bytes, only for responses that are not text. */
   bodyBase64?: string;
 }
+interface EtherFetchManyOptions {
+  /** Maximum in-flight requests for this batch (default 8, host ceiling 8). */
+  concurrency?: number;
+}
+interface EtherFetchError {
+  code: string;
+  message: string;
+}
+type EtherFetchManyResult =
+  | (EtherFetchResponse & { error?: undefined })
+  | { status?: undefined; headers?: undefined; body?: undefined; bodyBase64?: undefined; error: EtherFetchError };
 interface EtherCatalogTitle {
   id: number;
   title: string;
@@ -96,6 +111,27 @@ interface EtherCatalogTitle {
   year?: number;
   tmdbId?: number;
   imdbId?: string;
+}
+interface EtherAIMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+interface EtherAICompleteRequest {
+  messages: EtherAIMessage[];
+  /** Optional JSON Schema object for structured JSON output (external $ref URLs rejected). */
+  schema?: Record<string, unknown>;
+  /** Output token cap (default 1024, max 4096). */
+  maxTokens?: number;
+  /** Optional sampling temperature in [0, 2]. */
+  temperature?: number;
+  /** Optional tighter timeout in ms (clamped to 30000 on background/action paths, 20000 on search routes, and call deadline). */
+  timeoutMs?: number;
+  /** Viewer search text when calling ai.complete on a search route under permissions.ai: "complete+search" (required on adapter routes without a URL query param, and used for per-query caching). */
+  searchQuery?: string;
+}
+interface EtherAICompleteResponse<T = unknown> {
+  text: string;
+  json?: T;
 }
 declare const ether: {
   log(...args: unknown[]): void;
@@ -110,7 +146,11 @@ declare const ether: {
   settings: { get(): Record<string, unknown> };
   secret: { get(name: string): string };
   /** Reaches only hosts listed in the manifest's network permissions. */
-  http: { fetch(req: EtherFetchRequest): EtherFetchResponse };
+  http: {
+    fetch(req: EtherFetchRequest): EtherFetchResponse;
+    /** Runs up to 64 requests concurrently on the host (up to 8 in-flight per batch, 6 per origin) and returns ordered answers, each with either a response or error. */
+    fetchMany(requests: EtherFetchRequest[], opts?: EtherFetchManyOptions): EtherFetchManyResult[];
+  };
   /** Add-on drafts only: asks the add-on this plugin was made from. */
   addon: { get(route: string): { status: number; body: string } };
   catalog: {
@@ -128,6 +168,8 @@ declare const ether: {
     list(root: string, path?: string): { name: string; path: string; dir: boolean; size?: number }[];
     stat(root: string, path: string): { name: string; path: string; dir: boolean; size?: number };
   };
+  /** Owner-configured language model completions. Requires permissions.ai: "complete" (or "complete+search" to also allow bounded 20 s cached calls on interactive search routes). */
+  ai: { complete<T = unknown>(req: EtherAICompleteRequest): EtherAICompleteResponse<T> };
   notify: { owner(text: string): void };
 };
 `;

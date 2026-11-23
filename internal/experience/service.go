@@ -3,6 +3,7 @@ package experience
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"slices"
 	"sort"
@@ -49,14 +50,19 @@ type ServiceDeps struct {
 	BeginPeopleRead     func(context.Context, *core.User) (PeopleRead, error)
 	NotInterestedSource func(context.Context, *core.User) ([]frontend.NotInterestedEntry, error)
 	ByExternalID        func(context.Context, string, string) (*core.Title, error)
-	Active              func(context.Context, int64) (*core.User, error)
-	Libraries           []Library
+	// KeysByProviderID resolves one external provider id ("tmdb", "imdb",
+	// "tvdb", case-insensitive) to candidate rating keys via indexed lookup,
+	// never scanning the catalogue.
+	KeysByProviderID func(context.Context, string, string, []core.MediaType) ([]core.RatingKey, error)
+	Active           func(context.Context, int64) (*core.User, error)
+	Libraries        []Library
 	// LiveLibraries, when set, is read on each surface call so configured
 	// names stay current. IDs and media types stay stable. Nil uses Libraries.
-	LiveLibraries   func() []Library
-	PluginLibraries PluginLibraries
-	Visibility      Visibility
-	Get             func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
+	LiveLibraries     func() []Library
+	PluginLibraries   PluginLibraries
+	PluginProbedMedia func(ctx context.Context, v *core.User, title core.Title) (core.MediaInfo, bool)
+	Visibility        Visibility
+	Get               func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
 	// CachedGet applies catalogue visibility without a network refresh.
 	CachedGet func(context.Context, core.RatingKey) (*core.Title, error)
 	// CachedGetMany reads current cached rows in bounded batches without refresh.
@@ -134,12 +140,15 @@ type ServiceDeps struct {
 	// its related shelves on the facts their ranking reads and reads only
 	// its page in full. Optional.
 	RankingDetails    func(context.Context, []core.Title) ([]core.Title, error)
+	PersonMetadata    func(context.Context, int64, bool) core.PersonMetadata
+	LibraryMembers    func(context.Context, core.LibraryID, []core.RatingKey) (map[core.RatingKey]bool, int64, bool, error)
 	PersonCreditForms func(context.Context, int64, []core.MediaType) ([]core.PersonCreditForm, error)
 	PersonFormKeys    func(context.Context, int64, []core.MediaType, []core.PersonCreditForm, core.RatingKey, int) ([]core.RatingKey, error)
 	// peopleVisibleTitles is the people read's VisibleTitles (readPeople).
-	peopleVisibleTitles  func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
-	peoplePortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
-	AiredEpisodes        func(context.Context, core.RatingKey, int, int) (core.Page, error)
+	peopleVisibleTitles         func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
+	peoplePortraitTitles        func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	peopleRecheckPortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	AiredEpisodes               func(context.Context, core.RatingKey, int, int) (core.Page, error)
 	// AiredEpisodesMany is AiredEpisodes(show, 0, limit) for several shows in
 	// a few statements. Optional; without it each show is read alone.
 	AiredEpisodesMany func(context.Context, []core.RatingKey, int) (map[core.RatingKey]core.Page, error)
@@ -176,7 +185,12 @@ type ServiceDeps struct {
 	Related               core.Recommender
 	FilterRecommendations func(context.Context, *core.User, []core.Title) ([]core.Title, error)
 	Collections           core.Collections
-	Playlists             core.Playlists
+	// Franchises answers page-first TMDB franchise listing, set-based
+	// visibility counts, metadata and fallback artwork from the indexed
+	// catalog_franchises summary table. Optional; tests with fake
+	// core.Collections leave it nil.
+	Franchises FranchiseStore
+	Playlists  core.Playlists
 	// Scheduled lists metadata-only future episodes for one season. Nil means
 	// the host has not opted in. Callers must not resolve a release from it.
 	Scheduled func(context.Context, core.RatingKey) ([]core.Title, error)
@@ -186,6 +200,7 @@ type ServiceDeps struct {
 	State    core.State
 	Search   Search
 	Rows     *RowsService
+	Layout   core.NeutralHomeLayoutSource
 	Protocol core.Protocol
 	// Favorites manages the stable, per-viewer Favorites playlist mapping.
 	Favorites      func(context.Context, *core.User, core.RatingKey, bool) (bool, error)
@@ -198,7 +213,10 @@ type ServiceDeps struct {
 	// CountWatched counts the titles matching a filter that a viewer has
 	// played, from their watch rows. Optional; without it a played filter's
 	// total is counted over the whole type.
-	CountWatched            func(context.Context, core.Filter, int64) (int, error)
+	CountWatched func(context.Context, core.Filter, int64) (int, error)
+	// WatchedTitles reports which keys a viewer has fully watched, matching
+	// Browse's watched predicate for shows and seasons. Optional.
+	WatchedTitles           func(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
 	IsNotInterestedMany     func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
 	IsWatchlistedMany       func(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
 	FavoriteMembership      func(context.Context, *core.User, core.RatingKey) (frontend.Membership, error)
@@ -236,12 +254,24 @@ type ServiceDeps struct {
 	HomeRevision        func(context.Context, *core.User) (frontend.HomeRevision, error)
 	NoProviderWait      func(context.Context) context.Context
 	Now                 func() time.Time
+	Log                 *slog.Logger
 }
 
 type Service struct {
 	d             ServiceDeps
 	cursors       *episodeCursors
 	pluginCursors *pluginCursorCache
+	searchGate    *descriptiveGate
+}
+
+func (s *Service) ensureSearchGate() *descriptiveGate {
+	if s.searchGate != nil {
+		return s.searchGate
+	}
+	if s.d.Search.gate != nil {
+		return s.d.Search.gate
+	}
+	return fallbackDescriptiveGate
 }
 
 // pageUserData reads watch progress, favorites, not-interested and watchlist
@@ -260,14 +290,17 @@ func NewService(d ServiceDeps) (*Service, error) {
 	d.Dashboard, d.Resources = Statistics(d.Dashboard, d.Resources, d.Now)
 	d.Libraries = append([]Library(nil), d.Libraries...)
 	d.Search.Visibility = d.Visibility
-	return &Service{d: d, cursors: &episodeCursors{}, pluginCursors: newPluginCursorCache()}, nil
+	gate := d.Search.gate
+	if gate == nil {
+		gate = newDescriptiveGate()
+		d.Search.gate = gate
+	}
+	return &Service{d: d, cursors: &episodeCursors{}, pluginCursors: newPluginCursorCache(), searchGate: gate}, nil
 }
 
 func (s *Service) libraries() []Library {
 	if s.d.LiveLibraries != nil {
-		if live := s.d.LiveLibraries(); live != nil {
-			return live
-		}
+		return s.d.LiveLibraries()
 	}
 	return s.d.Libraries
 }
@@ -286,6 +319,9 @@ func (s *Service) viewer(ctx context.Context, v *core.User) (*core.User, error) 
 	}
 	// A surface without a request memo still resolves the viewer once per
 	// read request, not once per listed item.
+	if s.d.Active == nil {
+		return nil, core.ErrNotFound
+	}
 	active, err := reqmemo.Do(ctx, "experience:active:"+strconv.FormatInt(v.ID, 10), func() (*core.User, error) {
 		return s.d.Active(ctx, v.ID)
 	})
@@ -328,7 +364,7 @@ func (s *Service) visible(ctx context.Context, v *core.User, title *core.Title) 
 }
 func (s *Service) playable(ctx context.Context, v *core.User, key core.RatingKey) (*core.Title, error) {
 	if key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, key)
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
 		if err != nil {
 			return nil, core.ErrNotFound
 		}
@@ -345,7 +381,7 @@ func (s *Service) playable(ctx context.Context, v *core.User, key core.RatingKey
 }
 func (s *Service) item(ctx context.Context, v *core.User, key core.RatingKey) (*core.Title, error) {
 	if key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, key)
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
 		if err != nil {
 			return nil, core.ErrNotFound
 		}
@@ -412,7 +448,7 @@ func (s *Service) LibraryCount(ctx context.Context, viewer *core.Viewer, viewID 
 		switch lib.Source {
 		case core.LibraryPlugin:
 			return s.d.PluginLibraries.Count(ctx, lib)
-		case core.LibraryCatalog, core.LibraryCollection:
+		case core.LibraryBuiltin, core.LibraryCatalog, core.LibraryCollection:
 			page, err := s.LibraryItems(ctx, v, core.Device{}, viewID, frontend.ItemQuery{Limit: 1})
 			if err != nil {
 				return 0, err
@@ -467,7 +503,10 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	// can present can never match: answer empty without listing #405's
 	// Person/Music* favorites asks used to scan the whole TV library.
 	if !s.requestedTypesServable(ctx, v, q) {
-		return core.Page{Items: []core.Title{}}, nil
+		return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+	}
+	if q.FilterByProviderIDs {
+		return s.providerIDLibraryItems(ctx, v, viewID, q)
 	}
 	if viewID == "" {
 		if q.Sort == "" {
@@ -556,7 +595,10 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return core.Page{}, core.ErrNotFound
 		}
 		if lib.Source == core.LibraryPlugin {
-			return s.pluginLibraryItems(ctx, v, lib, q)
+			return s.pluginLibraryItems(ctx, v, lib, s.sanitizePluginLibraryQuery(ctx, lib, q))
+		}
+		if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {
+			return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
 		}
 		if s.d.Browse == nil {
 			return core.Page{}, core.ErrNotFound
@@ -575,6 +617,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return core.Page{}, core.ErrNotFound
 		}
 	}
+	if q.CollectionKey != 0 {
+		return s.libraryCollectionItems(ctx, v, device, library, stored, q)
+	}
 	// Recursive show browsing can produce the show, its seasons, and its episodes.
 	// Skip the library when the requested types cannot appear in that tree.
 	if q.Recursive && library.Type == core.TypeShow && len(q.Types) > 0 {
@@ -589,7 +634,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			if q.StartAt != 0 || q.AdjacentTo != 0 {
 				return core.Page{}, core.ErrNotFound
 			}
-			return core.Page{Items: []core.Title{}, Total: 0}, nil
+			return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
 		}
 	}
 	wantShowChildren := q.Recursive && (len(q.Types) == 0 || containsMediaType(q.Types, core.TypeSeason))
@@ -610,14 +655,10 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return nil
 		}
 		chunk := recursiveBatch
-		var watched map[core.RatingKey]core.WatchStatus
+		var watched map[core.RatingKey]bool
 		if q.Watched != nil {
-			keys := make([]core.RatingKey, len(chunk))
-			for i := range chunk {
-				keys[i] = chunk[i].Key
-			}
 			var e error
-			watched, e = s.d.State.GetMany(ctx, v.ID, keys)
+			watched, e = s.titlesWatched(ctx, v, chunk)
 			if e != nil {
 				return e
 			}
@@ -626,7 +667,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		// and no title pointers escape the batch.
 		eligible := chunk[:0]
 		for _, title := range chunk {
-			if q.Watched == nil || (watched[title.Key].ViewCount > 0) == *q.Watched {
+			if q.Watched == nil || watched[title.Key] == *q.Watched {
 				eligible = append(eligible, title)
 			}
 		}
@@ -696,7 +737,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		return core.Page{}, err
 	} else if ok {
 		return page, nil
-	} else if stored != nil && stored.Source == core.LibraryCollection && !indexedBrowseQuery(library, q) {
+	} else if stored != nil && stored.Source == core.LibraryCollection && !expand && !indexedBrowseQuery(library, q) {
 		// A sort or request shape SQL cannot page uses the bounded
 		// in-process walk; an indexed page already returned above.
 		return s.collectionLibraryScan(ctx, v, library, q, stored.CollectionID)
@@ -710,19 +751,26 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	for offset := 0; ; {
 		filter := q.Filter
 		if expand {
-			filter = core.Filter{}
+			filter = scopedShowFilter(q.Filter, nil)
 		}
 		filter.Type = library.Type
-		if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.LevelOf(v.MaxContentRating)) < int(contentrating.LevelOf(filter.MaxContentRating))) {
+		if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.EnforceLevelOf(v.MaxContentRating)) < int(contentrating.EnforceLevelOf(filter.MaxContentRating))) {
 			filter.MaxContentRating = v.MaxContentRating
 		}
-		page, err := s.d.Browse(ctx, core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500})
+		bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500}
+		if q.Sort.IsLastViewed() {
+			bq.Sort = core.SortTitle
+			bq.SortLastViewed = true
+			bq.SortViewerID = v.ID
+		}
+		page, err := s.d.Browse(ctx, bq)
 		if err != nil {
 			return core.Page{}, err
 		}
 		var candidatesPage []core.Title
-		accept := func(title core.Title, vis Visibility) error {
-			if !s.sectionOrFilterAllowed(ctx, v, &title, vis.SectionFor) || !withoutSectionCheck(vis).Visible(ctx, v, &title) {
+		pageSectionAllowed := s.sectionOrFilterAllowedBatch(ctx, v, page.Items, s.d.Visibility.SectionFor)
+		accept := func(title core.Title, vis Visibility, sectionAllowed map[core.RatingKey]bool) error {
+			if !sectionAllowed[title.Key] || !withoutSectionCheck(vis).Visible(ctx, v, &title) {
 				return nil
 			}
 			if !expand {
@@ -730,6 +778,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 				return nil
 			}
 			staticQuery := q
+			staticQuery.Filter.Type = ""
 			staticQuery.Watched, staticQuery.Favorite = nil, nil
 			ok, e := s.matchesUserQuery(ctx, v, title, staticQuery)
 			if e != nil {
@@ -765,7 +814,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			}
 			// Copy only accepted values into the bounded batch; do not duplicate
 			// or retain the catalogue's full per-show children slice.
-			if e := accept(*parent, s.d.Visibility); e != nil {
+			if e := accept(*parent, s.d.Visibility, pageSectionAllowed); e != nil {
 				return core.Page{}, e
 			}
 			for start := 0; start < len(children); start += 400 {
@@ -792,8 +841,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 						return &title, nil
 					}
 				}
+				chunkSectionAllowed := s.sectionOrFilterAllowedBatch(ctx, v, chunk, vis.SectionFor)
 				for j := range chunk {
-					if e := accept(chunk[j], vis); e != nil {
+					if e := accept(chunk[j], vis, chunkSectionAllowed); e != nil {
 						return core.Page{}, e
 					}
 				}
@@ -801,13 +851,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		}
 		for start := 0; start < len(candidatesPage); start += 400 {
 			chunk := candidatesPage[start:min(start+400, len(candidatesPage))]
-			var watched map[core.RatingKey]core.WatchStatus
+			var watched map[core.RatingKey]bool
 			if q.Watched != nil {
-				keys := make([]core.RatingKey, len(chunk))
-				for i := range chunk {
-					keys[i] = chunk[i].Key
-				}
-				watched, err = s.d.State.GetMany(ctx, v.ID, keys)
+				watched, err = s.titlesWatched(ctx, v, chunk)
 				if err != nil {
 					return core.Page{}, err
 				}
@@ -827,7 +873,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 				query.Favorite = nil
 			}
 			for _, title := range chunk {
-				if q.Watched != nil && (watched[title.Key].ViewCount > 0) != *q.Watched {
+				if q.Watched != nil && watched[title.Key] != *q.Watched {
 					continue
 				}
 				if q.Favorite != nil && s.d.IsFavoriteMany != nil && favorites[title.Key] != *q.Favorite {
@@ -847,7 +893,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			}
 		}
 		if plainTotal && len(candidatesPage) == len(page.Items) && totalMatched == len(candidatesPage) && len(permitted) >= q.Limit {
-			return core.Page{Items: permitted[:q.Limit], Total: page.Total}, nil
+			return core.Page{Items: permitted[:q.Limit], Total: page.Total, TotalExact: page.TotalExact}, nil
 		}
 		offset += len(page.Items)
 		if offset >= page.Total {
@@ -866,7 +912,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		}
 	}
 	if bounded {
-		return core.Page{Items: permitted, Total: totalMatched}, nil
+		return core.Page{Items: permitted, Total: totalMatched, TotalExact: true}, nil
 	}
 	if expand {
 		if err := s.sortTitles(ctx, permitted, q); err != nil {
@@ -885,11 +931,55 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	if q.Limit > 0 {
 		end = min(start+q.Limit, total)
 	}
-	return core.Page{Items: permitted[start:end], Total: total}, nil
+	return core.Page{Items: permitted[start:end], Total: total, TotalExact: true}, nil
 }
 
 func plainItemFilter(f core.Filter) bool {
-	return f.Group == nil && !f.KnownAddedDate && len(f.ExcludeKeys) == 0 && f.Type == "" && len(f.Genres) == 0 && f.YearFrom == 0 && f.YearTo == 0 && len(f.Years) == 0 && len(f.ExcludeYears) == 0 && len(f.ReleasedFilters) == 0 && f.MinRating == 0 && f.MaxRuntime == 0 && f.MinRuntime == 0 && len(f.Languages) == 0 && len(f.Countries) == 0 && len(f.ContentRatings) == 0 && f.MaxContentRating == "" && f.Collection == 0 && f.Person == 0 && f.Studio == "" && f.FirstCharacter == "" && f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" && f.Query == ""
+	return f.Group == nil && !f.KnownAddedDate && f.IncludeKeys == nil && len(f.ExcludeKeys) == 0 && f.Type == "" && len(f.Genres) == 0 && f.YearFrom == 0 && f.YearTo == 0 && len(f.Years) == 0 && len(f.ExcludeYears) == 0 && len(f.ReleasedFilters) == 0 && f.MinRating == 0 && f.MaxRuntime == 0 && f.MinRuntime == 0 && len(f.Languages) == 0 && len(f.Countries) == 0 && len(f.ContentRatings) == 0 && f.MaxContentRating == "" && f.Collection == 0 && f.Person == 0 && f.Studio == "" && f.FirstCharacter == "" && f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" && f.Query == ""
+}
+
+// filterHasLibraryScope reports whether f carries a library, tab, preview,
+// catalogue-source or collection scope that narrows the admitted series.
+func filterHasLibraryScope(f core.Filter) bool {
+	return len(f.ExtraRules) > 0 || (f.ExtraFallback != "" && f.ExtraFallback != "show") ||
+		len(f.TabRules) > 0 || (f.TabFallback != "" && f.TabFallback != "show") ||
+		len(f.PreviewRules) > 0 || (f.PreviewFallback != "" && f.PreviewFallback != "show") ||
+		(f.RuleVisibility != "" && f.RuleVisibility != "all") || f.ApplyCanonicalInPreview ||
+		len(f.CatalogueSources) > 0 || f.CollectionMembers != 0
+}
+
+// scopedShowFilter extracts the series-scoping fields of a library/tab filter
+// onto a TypeShow browse filter (with the viewer's content-rating cap when v
+// is non-nil).
+func scopedShowFilter(f core.Filter, v *core.User) core.Filter {
+	show := core.Filter{
+		Type:                    core.TypeShow,
+		RuleVisibility:          f.RuleVisibility,
+		ApplyCanonicalInPreview: f.ApplyCanonicalInPreview,
+		PreviewRules:            f.PreviewRules,
+		PreviewFallback:         f.PreviewFallback,
+		ExtraRules:              f.ExtraRules,
+		ExtraFallback:           f.ExtraFallback,
+		TabRules:                f.TabRules,
+		TabFallback:             f.TabFallback,
+		CatalogueSources:        f.CatalogueSources,
+		CollectionMembers:       f.CollectionMembers,
+	}
+	if v != nil {
+		show.MaxContentRating = v.MaxContentRating
+	}
+	return show
+}
+
+// plainRecursiveFilter is plainItemFilter for a recursive library listing:
+// libraryBrowseFilter stamps a custom library's own type on the request
+// filter, and the indexed page overwrites Type per child type it reads, so
+// that stamp alone must not send the listing into the whole-library walk.
+func plainRecursiveFilter(f core.Filter, libraryType core.MediaType) bool {
+	if f.Type == libraryType {
+		f.Type = ""
+	}
+	return plainItemFilter(f)
 }
 
 func (s *Service) Rows(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
@@ -898,6 +988,9 @@ func (s *Service) Rows(ctx context.Context, req frontend.RowRequest) ([]frontend
 		return nil, err
 	}
 	req.Viewer = tv
+	if req.Placement == frontend.PlacementDetail && req.Item.IsPluginKey() {
+		return s.pluginDetailRows(ctx, tv, req)
+	}
 	return s.d.Rows.Rows(ctx, req, s.d.Protocol)
 }
 
@@ -910,7 +1003,21 @@ func (s *Service) SnapshotRows(ctx context.Context, req frontend.RowRequest) ([]
 		return nil, err
 	}
 	req.Viewer = tv
+	if req.Placement == frontend.PlacementDetail && req.Item.IsPluginKey() {
+		return s.pluginDetailRows(ctx, tv, req)
+	}
 	return s.d.Rows.SnapshotRows(ctx, req, s.d.Protocol)
+}
+
+func pluginPlayRead(piv PluginItemView) (canPlay *bool, canRead *bool) {
+	isBook := piv.Title.MediaClass == core.MediaClassBook || piv.Title.MBItemType == "Book"
+	playable := piv.Playable && !isBook
+	canPlay = &playable
+	if isBook {
+		readable := piv.Playable && piv.Unavailable == nil
+		canRead = &readable
+	}
+	return canPlay, canRead
 }
 
 // StoredItem reads a title already in the catalogue. Resume, Next Up, and
@@ -921,16 +1028,21 @@ func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (fro
 		return frontend.ItemDetail{}, err
 	}
 	if req.Key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, req.Key)
+		itemCtx := ctx
+		if !core.ColdDetail(ctx, req.Key) {
+			itemCtx = core.WithNoContainerExpand(ctx)
+		}
+		piv, err := s.pluginItem(itemCtx, v, req.Key)
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
-		playable := piv.Playable
+		canPlay, canRead := pluginPlayRead(piv)
 		return frontend.ItemDetail{
 			Title:               piv.Title,
 			Images:              piv.Images,
 			ImagesAuthoritative: len(piv.Images) > 0,
-			CanPlay:             &playable,
+			CanPlay:             canPlay,
+			CanRead:             canRead,
 			Unavailable:         piv.Unavailable,
 		}, nil
 	}
@@ -966,6 +1078,7 @@ func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (fro
 }
 
 func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+	ctx = s.NoProviderWait(ctx)
 	v, err := s.viewer(ctx, req.Viewer)
 	if err != nil {
 		return frontend.ItemDetail{}, err
@@ -975,28 +1088,53 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
-		playable := piv.Playable
+		canPlay, canRead := pluginPlayRead(piv)
 		d := frontend.ItemDetail{
 			Title:               piv.Title,
 			Images:              piv.Images,
 			ImagesAuthoritative: len(piv.Images) > 0,
-			CanPlay:             &playable,
+			Chapters:            append([]core.Chapter(nil), piv.Chapters...),
+			CanPlay:             canPlay,
+			CanRead:             canRead,
 			Unavailable:         piv.Unavailable,
+		}
+		if s.d.PluginProbedMedia != nil {
+			if info, ok := s.d.PluginProbedMedia(ctx, v, piv.Title); ok && !info.Estimated {
+				if len(info.Chapters) > 0 {
+					d.Chapters = append([]core.Chapter(nil), info.Chapters...)
+				}
+				if len(info.Streams) > 0 {
+					d.Tracks = append([]core.StreamInfo(nil), info.Streams...)
+					d.TracksEstimated = false
+				}
+			}
 		}
 		d.UserData, err = s.d.State.Get(ctx, v.ID, piv.Title.Key)
 		if err != nil {
 			return frontend.ItemDetail{}, err
 		}
 		if s.d.IsFavorite != nil {
-			d.UserData.IsFavorite, err = s.d.IsFavorite(ctx, v, piv.Title.Key)
+			if fav, ferr := s.d.IsFavorite(ctx, v, piv.Title.Key); ferr != nil {
+				s.logPluginEnrichError("favorites", piv.Title.Key, ferr)
+			} else {
+				d.UserData.IsFavorite = fav
+			}
 		}
-		if err == nil && s.d.IsNotInterested != nil {
-			d.UserData.IsNotInterested, err = s.d.IsNotInterested(ctx, v, piv.Title.Key)
+		if s.d.IsNotInterested != nil {
+			if ni, nerr := s.d.IsNotInterested(ctx, v, piv.Title.Key); nerr != nil {
+				s.logPluginEnrichError("not_interested", piv.Title.Key, nerr)
+			} else {
+				d.UserData.IsNotInterested = ni
+			}
 		}
-		if err == nil && s.d.IsWatchlisted != nil {
-			d.UserData.InWatchlist, err = s.d.IsWatchlisted(ctx, v, piv.Title.Key)
+		if s.d.IsWatchlisted != nil {
+			if wl, werr := s.d.IsWatchlisted(ctx, v, piv.Title.Key); werr != nil {
+				s.logPluginEnrichError("watchlist", piv.Title.Key, werr)
+			} else {
+				d.UserData.InWatchlist = wl
+			}
 		}
-		return d, err
+		return d, nil
 	}
 	if req.Key.Kind() == core.KindCollection || req.Key.Kind() == core.KindSmart {
 		if s.d.Collections == nil {
@@ -1032,13 +1170,13 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 		if err != nil || p == nil || p.UserID != v.ID || p.Key != req.Key {
 			return frontend.ItemDetail{}, core.ErrNotFound
 		}
-		copy := *p
-		copy.Items = nil
-		for _, key := range p.Items {
-			if _, err := s.item(ctx, v, key); err == nil {
-				copy.Items = append(copy.Items, key)
-			}
+		visible, _, err := s.visiblePlaylistIndexes(ctx, v, p.Items)
+		if err != nil {
+			return frontend.ItemDetail{}, err
 		}
+		copy := *p
+		copy.Items = visible
+		copy.ItemIDs = nil
 		return frontend.ItemDetail{Playlist: &copy}, nil
 	}
 	title, err := s.item(ctx, v, req.Key)
@@ -1098,6 +1236,142 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 	return d, err
 }
 
+// BatchTitles authorizes and returns titles for keys in the requested order
+// using batched catalogue, plugin, availability, and parent lookups rather
+// than per-item detail enrichment, watch-state, or artwork queries. Keys that
+// are missing, non-title entities, or hidden from viewer are omitted.
+func (s *Service) BatchTitles(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) ([]core.Title, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	ctx = s.NoProviderWait(ctx)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		pluginKeys  []core.RatingKey
+		catalogKeys []core.RatingKey
+		seen        = make(map[core.RatingKey]bool, len(keys))
+	)
+	for _, key := range keys {
+		if key == 0 || seen[key] {
+			continue
+		}
+		if key.IsPluginKey() {
+			seen[key] = true
+			pluginKeys = append(pluginKeys, key)
+			continue
+		}
+		switch key.Kind() {
+		case core.KindCollection, core.KindSmart, core.KindPlaylist:
+			continue
+		}
+		seen[key] = true
+		catalogKeys = append(catalogKeys, key)
+	}
+	allowed := make(map[core.RatingKey]core.Title, len(pluginKeys)+len(catalogKeys))
+	if len(pluginKeys) > 0 && s.d.PluginLibraries != nil {
+		views, err := s.d.PluginLibraries.ItemsMany(ctx, pluginKeys)
+		if err != nil {
+			return nil, err
+		}
+		pubCache := make(map[core.LibraryID]bool, 4)
+		for k, piv := range views {
+			if s.pluginItemAllowedCached(ctx, v, piv, pubCache) {
+				allowed[k] = piv.Title
+			}
+		}
+	}
+	if len(catalogKeys) > 0 {
+		var cached map[core.RatingKey]core.Title
+		if s.d.CachedGetMany != nil {
+			cached, err = s.d.CachedGetMany(ctx, catalogKeys)
+			if err != nil {
+				return nil, err
+			}
+		}
+		cachedList := make([]core.Title, 0, len(cached))
+		var missed []core.RatingKey
+		for _, k := range catalogKeys {
+			if t, ok := cached[k]; ok && t.Key == k {
+				cachedList = append(cachedList, t)
+			} else {
+				missed = append(missed, k)
+			}
+		}
+		if len(cachedList) > 0 {
+			admitted, err := s.allowTitles(ctx, v, cachedList)
+			if err != nil {
+				return nil, err
+			}
+			for _, t := range admitted {
+				allowed[t.Key] = t
+			}
+			for _, t := range cachedList {
+				if _, ok := allowed[t.Key]; !ok && t.Key.Kind() == core.KindEpisode {
+					if ep := s.scheduledTitle(ctx, v, t.Key); ep != nil {
+						allowed[t.Key] = *ep
+					}
+				}
+			}
+		}
+		for _, k := range missed {
+			if s.d.Get != nil {
+				if t, e := s.item(ctx, v, k); e == nil && t != nil {
+					allowed[k] = *t
+					continue
+				}
+			}
+			if ep := s.scheduledTitle(ctx, v, k); ep != nil {
+				allowed[k] = *ep
+			}
+		}
+	}
+	if s.d.CachedGetMany != nil {
+		var needShows []core.RatingKey
+		seenShow := map[core.RatingKey]bool{}
+		for _, t := range allowed {
+			if !t.Key.IsPluginKey() && t.ShowKey != 0 && t.ShowTitle == "" && !seenShow[t.ShowKey] {
+				seenShow[t.ShowKey] = true
+				needShows = append(needShows, t.ShowKey)
+			}
+		}
+		if len(needShows) > 0 {
+			if shows, e := s.d.CachedGetMany(ctx, needShows); e == nil && len(shows) > 0 {
+				showList := make([]core.Title, 0, len(shows))
+				for _, sh := range shows {
+					showList = append(showList, sh)
+				}
+				if okShows, e := s.allowTitles(ctx, v, showList); e == nil && len(okShows) > 0 {
+					byKey := make(map[core.RatingKey]core.Title, len(okShows))
+					for _, sh := range okShows {
+						byKey[sh.Key] = sh
+					}
+					for k, t := range allowed {
+						if t.ShowKey != 0 && t.ShowTitle == "" {
+							if sh, ok := byKey[t.ShowKey]; ok {
+								t.ShowTitle = sh.Title
+								if t.ShowYear == 0 {
+									t.ShowYear = sh.Year
+								}
+								allowed[k] = t
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	out := make([]core.Title, 0, len(allowed))
+	for _, k := range keys {
+		if t, ok := allowed[k]; ok {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 // AuthorizeArtwork applies the same active-viewer and item policy as Item,
 // without running playback or track enrichment for a grid of images.
 // allowTitles applies library, policy, availability and parent visibility to a
@@ -1127,13 +1401,14 @@ func (s *Service) allowTitles(ctx context.Context, v *core.User, titles []core.T
 			}
 		}
 	}
+	sectionAllowed := s.sectionOrFilterAllowedBatch(ctx, v, titles, s.d.Visibility.SectionFor)
 	candidates := make([]core.Title, 0, len(titles))
 	for i := range titles {
 		title := titles[i]
 		if title.Key.IsPluginKey() {
 			continue
 		}
-		if !s.sectionOrFilterAllowed(ctx, v, &title, s.d.Visibility.SectionFor) || !TitleAllowed(s.d.Visibility.Policy, v, &title) {
+		if !sectionAllowed[title.Key] || !TitleAllowed(s.d.Visibility.Policy, v, &title) {
 			continue
 		}
 		candidates = append(candidates, title)
@@ -1285,8 +1560,9 @@ func (s *Service) PageArtworkTitles(ctx context.Context, viewer *core.Viewer, ke
 			return nil, err
 		}
 		pluginTitles = make(map[core.RatingKey]core.Title, len(views))
+		pubCache := make(map[core.LibraryID]bool, 4)
 		for k, piv := range views {
-			if s.pluginItemAllowed(ctx, v, piv) {
+			if s.pluginItemAllowedCached(ctx, v, piv, pubCache) {
 				pluginTitles[k] = piv.Title
 			}
 		}
@@ -1365,14 +1641,42 @@ func (s *Service) AuthorizeArtworkAs(ctx context.Context, viewer *core.Viewer, d
 
 func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device core.Device, key core.RatingKey) error {
 	if key.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, v, key)
+		piv, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
 		if err != nil {
 			return err
 		}
 		frontend.ArtworkRowsFrom(ctx).Put(piv.Title)
 		return nil
 	}
-	if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart || key.Kind() == core.KindPlaylist {
+	if key.Kind() == core.KindPlaylist {
+		if _, err := s.ownedPlaylist(ctx, v, key); err != nil {
+			return err
+		}
+		return nil
+	}
+	if key.Kind() == core.KindSmart && s.d.Collections != nil {
+		// Artwork needs only a visible collection with one visible member;
+		// loading every member (a genre collection holds thousands) per
+		// poster made a Collections page take most of a minute.
+		u, err := s.viewer(ctx, v)
+		if err != nil {
+			return err
+		}
+		c, err := s.d.Collections.Get(ctx, u, key)
+		if err != nil {
+			return err
+		}
+		if !s.d.Visibility.CollectionAllowed(u, c) || (c.OwnerUserID != 0 && c.OwnerUserID != u.ID) {
+			return core.ErrNotFound
+		}
+		ok, err := s.smartCollectionHasVisibleMember(ctx, u, *c, nil)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return core.ErrNotFound
+		}
+	} else if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart {
 		if _, err := s.Item(ctx, frontend.ItemRequest{Viewer: v, Device: device, Key: key}); err != nil {
 			return err
 		}
@@ -1430,6 +1734,7 @@ func (s *Service) LocalEpisodes(ctx context.Context, viewer *core.Viewer, key co
 }
 
 func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core.Device, key core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
+	ctx = s.NoProviderWait(ctx)
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	if q.StartAt != 0 && q.AdjacentTo != 0 {
 		return core.Page{}, errors.New("experience: incompatible item anchors")
@@ -1439,6 +1744,9 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 		return core.Page{}, err
 	}
 	if key.IsPluginKey() {
+		if q.FilterByProviderIDs {
+			return emptyProviderIDPage(q)
+		}
 		return s.pluginChildren(ctx, v, key, q)
 	}
 	if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart || key.Kind() == core.KindPlaylist {
@@ -1450,18 +1758,41 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 		if detail.Collection != nil {
 			items, err = s.collectionItems(ctx, v, key)
 		} else if detail.Playlist != nil {
-			for _, k := range detail.Playlist.Items {
-				if t, e := s.item(ctx, v, k); e == nil {
-					items = append(items, *t)
+			visibleMap, loadErr := s.loadVisiblePlaylistTitles(ctx, v, detail.Playlist.Items)
+			if loadErr != nil {
+				err = loadErr
+			} else {
+				for _, k := range detail.Playlist.Items {
+					if t, ok := visibleMap[k]; ok {
+						items = append(items, t)
+					}
 				}
 			}
 		}
 		if err != nil {
 			return core.Page{}, err
 		}
+		var providerKeySet map[core.RatingKey]bool
+		if q.FilterByProviderIDs {
+			allowedTypes := intersectRequestedTypes([]core.MediaType{core.TypeMovie, core.TypeShow, core.TypeSeason, core.TypeEpisode}, q)
+			matchedKeys, kerr := s.resolveProviderIDKeys(ctx, q.ProviderIDs, allowedTypes)
+			if kerr != nil {
+				return core.Page{}, kerr
+			}
+			providerKeySet = make(map[core.RatingKey]bool, len(matchedKeys))
+			for _, mk := range matchedKeys {
+				providerKeySet[mk] = true
+			}
+		}
+		check := q
+		check.FilterByProviderIDs = false
+		check.ProviderIDs = nil
 		filtered := make([]core.Title, 0, len(items))
 		for _, title := range items {
-			ok, e := s.matchesUserQuery(ctx, v, title, q)
+			if q.FilterByProviderIDs && !providerKeySet[title.Key] && !titleMatchesProviderIDs(title, q.ProviderIDs) {
+				continue
+			}
+			ok, e := s.matchesUserQuery(ctx, v, title, check)
 			if e != nil {
 				return core.Page{}, e
 			}
@@ -1489,6 +1820,9 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 	}
 	if _, err = s.item(ctx, v, key); err != nil {
 		return core.Page{}, err
+	}
+	if q.FilterByProviderIDs {
+		return s.providerIDChildren(ctx, v, key, q)
 	}
 	if page, handled, err := s.pagedSeason(ctx, v, key, q); handled || err != nil {
 		return page, err
@@ -1630,7 +1964,10 @@ func (s *Service) rootWindow(ctx context.Context, v *core.User, device core.Devi
 const searchWindowMin = 100
 
 func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery) (frontend.SearchPage, error) {
-	ctx = core.WithCatalogViewer(ctx, viewer)
+	ctx = core.WithCatalogViewer(core.WithExplicitSearch(ctx), viewer)
+	if core.SearchClientFrom(ctx) == "" && device.ID != "" {
+		ctx = core.WithSearchClient(ctx, device.ID)
+	}
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return frontend.SearchPage{}, err
@@ -1734,14 +2071,57 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 	if err != nil {
 		return frontend.SearchPage{}, err
 	}
-	if len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
+	aiMerged := false
+	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" {
+		if !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || HasTitleMatch(pluginHits) || len(types) == 0 {
+			if prev, superseded := s.ensureSearchGate().supersede(v, core.SearchClientFrom(ctx), query); superseded {
+				if ctrl, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearchController); ok {
+					ctrl.CancelDescribeSearch(v, prev)
+				}
+			}
+		} else {
+			search := s.d.Search
+			search.gate = s.ensureSearchGate()
+			_, aiRaw, handled, err := search.resolveDescriptive(ctx, v, query, types, false)
+			if err != nil {
+				return frontend.SearchPage{}, err
+			}
+			if handled && len(aiRaw) > 0 {
+				aiItems := make([]core.Title, 0, len(aiRaw))
+				for _, title := range aiRaw {
+					if !s.visible(ctx, v, &title) {
+						continue
+					}
+					ok, e := s.matchesUserQuery(ctx, v, title, q)
+					if e != nil {
+						return frontend.SearchPage{}, e
+					}
+					if ok {
+						aiItems = append(aiItems, title)
+					}
+				}
+				items = mergeAIAndKeyword(aiItems, items)
+				aiMerged = true
+			}
+		}
+	} else if len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
 		items, err = s.vibeMembers(ctx, v, query, q)
 		if err != nil {
 			return frontend.SearchPage{}, err
 		}
 	}
 	if len(pluginHits) > 0 {
+		// Interleave by relevance: a plugin title or cast member match must
+		// not land behind every loose catalogue match.
 		items = append(items, pluginHits...)
+		if !aiMerged {
+			sort.SliceStable(items, func(i, j int) bool {
+				if items[i].SearchScore != items[j].SearchScore {
+					return items[i].SearchScore > items[j].SearchScore
+				}
+				return items[i].Popularity > items[j].Popularity
+			})
+		}
 	}
 	if err = s.sortTitles(ctx, items, q); err != nil {
 		return frontend.SearchPage{}, err
@@ -1800,7 +2180,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 // date added (a full title derives it from its release dates), or the
 // catalogue or availability cannot say.
 func (s *Service) searchCandidates(ctx context.Context, v *core.User, q frontend.ItemQuery) *core.SearchCandidates {
-	if s.d.Search.Details == nil || q.Filter.Person != 0 || q.Sort == core.SortAdded {
+	if s.d.Search.Details == nil || q.Filter.Person != 0 || len(q.Filter.Credits) > 0 || q.Sort == core.SortAdded {
 		return nil
 	}
 	detail, ok := s.d.Visibility.FactJudge(ctx)
@@ -1808,13 +2188,13 @@ func (s *Service) searchCandidates(ctx context.Context, v *core.User, q frontend
 		return nil
 	}
 	facts := s.d.Visibility.TitleFacts(v)
-	if len(q.Filter.Genres) > 0 {
+	if len(q.Filter.Genres) > 0 || len(q.Filter.ExcludeGenres) > 0 {
 		facts |= core.FactGenres
 	}
-	if len(q.Filter.Countries) > 0 {
+	if len(q.Filter.Countries) > 0 || len(q.Filter.ExcludeCountries) > 0 {
 		facts |= core.FactCountries
 	}
-	if q.Filter.Studio != "" {
+	if q.Filter.Studio != "" || len(q.Filter.StudioFilters) > 0 {
 		facts |= core.FactStudios
 	}
 	return &core.SearchCandidates{Facts: facts, Detail: detail}
@@ -1859,8 +2239,9 @@ func (s *Service) UserData(ctx context.Context, viewer *core.Viewer, keys []core
 			return nil, err
 		}
 		pluginAllowed = make(map[core.RatingKey]bool, len(views))
+		pubCache := make(map[core.LibraryID]bool, 4)
 		for k, piv := range views {
-			if s.pluginItemAllowed(ctx, v, piv) {
+			if s.pluginItemAllowedCached(ctx, v, piv, pubCache) {
 				pluginAllowed[k] = true
 			}
 		}
@@ -1942,24 +2323,60 @@ func (s *Service) UserData(ctx context.Context, viewer *core.Viewer, keys []core
 	return data, nil
 }
 
-func (s *Service) fillFavorites(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
-	if s.d.IsFavoriteMany != nil {
-		flags, err := s.d.IsFavoriteMany(ctx, v, keys)
-		if err != nil {
-			return err
+func (s *Service) logPluginEnrichError(field string, key core.RatingKey, err error) {
+	log := s.d.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Warn("plugin item enrichment omitted", "field", field, "key", key, "err", err)
+}
+
+func splitPluginKeys(keys []core.RatingKey) (catalog, plugin []core.RatingKey) {
+	for _, key := range keys {
+		if key.IsPluginKey() {
+			plugin = append(plugin, key)
+		} else {
+			catalog = append(catalog, key)
 		}
-		for _, key := range keys {
-			status := data[key]
-			status.Key = key
-			status.IsFavorite = flags[key]
-			data[key] = status
+	}
+	return catalog, plugin
+}
+
+func (s *Service) fillFavorites(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
+	catalogKeys, pluginKeys := splitPluginKeys(keys)
+	if s.d.IsFavoriteMany != nil {
+		if len(catalogKeys) > 0 {
+			flags, err := s.d.IsFavoriteMany(ctx, v, catalogKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range catalogKeys {
+				status := data[key]
+				status.Key = key
+				status.IsFavorite = flags[key]
+				data[key] = status
+			}
+		}
+		if len(pluginKeys) > 0 {
+			flags, err := s.d.IsFavoriteMany(ctx, v, pluginKeys)
+			if err != nil {
+				s.logPluginEnrichError("favorites", pluginKeys[0], err)
+			}
+			for _, key := range pluginKeys {
+				status := data[key]
+				status.Key = key
+				if err == nil {
+					status.IsFavorite = flags[key]
+				}
+				data[key] = status
+			}
 		}
 		return nil
 	}
 	if s.d.IsFavorite == nil {
 		return nil
 	}
-	for _, key := range keys {
+	for _, key := range catalogKeys {
 		favorite, err := s.d.IsFavorite(ctx, v, key)
 		if err != nil {
 			return err
@@ -1969,26 +2386,51 @@ func (s *Service) fillFavorites(ctx context.Context, v *core.User, keys []core.R
 		status.IsFavorite = favorite
 		data[key] = status
 	}
+	for _, key := range pluginKeys {
+		status := data[key]
+		status.Key = key
+		if favorite, err := s.d.IsFavorite(ctx, v, key); err != nil {
+			s.logPluginEnrichError("favorites", key, err)
+		} else {
+			status.IsFavorite = favorite
+		}
+		data[key] = status
+	}
 	return nil
 }
 
 func (s *Service) fillNotInterested(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
+	catalogKeys, pluginKeys := splitPluginKeys(keys)
 	if s.d.IsNotInterestedMany != nil {
-		flags, err := s.d.IsNotInterestedMany(ctx, v, keys)
-		if err != nil {
-			return err
+		if len(catalogKeys) > 0 {
+			flags, err := s.d.IsNotInterestedMany(ctx, v, catalogKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range catalogKeys {
+				status := data[key]
+				status.IsNotInterested = flags[key]
+				data[key] = status
+			}
 		}
-		for _, key := range keys {
-			status := data[key]
-			status.IsNotInterested = flags[key]
-			data[key] = status
+		if len(pluginKeys) > 0 {
+			flags, err := s.d.IsNotInterestedMany(ctx, v, pluginKeys)
+			if err != nil {
+				s.logPluginEnrichError("not_interested", pluginKeys[0], err)
+			} else {
+				for _, key := range pluginKeys {
+					status := data[key]
+					status.IsNotInterested = flags[key]
+					data[key] = status
+				}
+			}
 		}
 		return nil
 	}
 	if s.d.IsNotInterested == nil {
 		return nil
 	}
-	for _, key := range keys {
+	for _, key := range catalogKeys {
 		value, err := s.d.IsNotInterested(ctx, v, key)
 		if err != nil {
 			return err
@@ -1997,26 +2439,50 @@ func (s *Service) fillNotInterested(ctx context.Context, v *core.User, keys []co
 		status.IsNotInterested = value
 		data[key] = status
 	}
+	for _, key := range pluginKeys {
+		if value, err := s.d.IsNotInterested(ctx, v, key); err != nil {
+			s.logPluginEnrichError("not_interested", key, err)
+		} else {
+			status := data[key]
+			status.IsNotInterested = value
+			data[key] = status
+		}
+	}
 	return nil
 }
 
 func (s *Service) fillWatchlist(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
+	catalogKeys, pluginKeys := splitPluginKeys(keys)
 	if s.d.IsWatchlistedMany != nil {
-		flags, err := s.d.IsWatchlistedMany(ctx, v.ID, keys)
-		if err != nil {
-			return err
+		if len(catalogKeys) > 0 {
+			flags, err := s.d.IsWatchlistedMany(ctx, v.ID, catalogKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range catalogKeys {
+				status := data[key]
+				status.InWatchlist = flags[key]
+				data[key] = status
+			}
 		}
-		for _, key := range keys {
-			status := data[key]
-			status.InWatchlist = flags[key]
-			data[key] = status
+		if len(pluginKeys) > 0 {
+			flags, err := s.d.IsWatchlistedMany(ctx, v.ID, pluginKeys)
+			if err != nil {
+				s.logPluginEnrichError("watchlist", pluginKeys[0], err)
+			} else {
+				for _, key := range pluginKeys {
+					status := data[key]
+					status.InWatchlist = flags[key]
+					data[key] = status
+				}
+			}
 		}
 		return nil
 	}
 	if s.d.IsWatchlisted == nil {
 		return nil
 	}
-	for _, key := range keys {
+	for _, key := range catalogKeys {
 		value, err := s.d.IsWatchlisted(ctx, v, key)
 		if err != nil {
 			return err
@@ -2024,6 +2490,15 @@ func (s *Service) fillWatchlist(ctx context.Context, v *core.User, keys []core.R
 		status := data[key]
 		status.InWatchlist = value
 		data[key] = status
+	}
+	for _, key := range pluginKeys {
+		if value, err := s.d.IsWatchlisted(ctx, v, key); err != nil {
+			s.logPluginEnrichError("watchlist", key, err)
+		} else {
+			status := data[key]
+			status.InWatchlist = value
+			data[key] = status
+		}
 	}
 	return nil
 }
@@ -2048,7 +2523,8 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 		return err
 	}
 	if k.IsPluginKey() {
-		piv, err := s.pluginItem(ctx, viewer, k)
+		noExpandCtx := core.WithNoContainerExpand(ctx)
+		piv, err := s.pluginItem(noExpandCtx, viewer, k)
 		if err != nil {
 			return err
 		}
@@ -2056,8 +2532,8 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 		if !piv.Playable {
 			keys = nil
 			cursor := ""
-			for pageIdx := 0; pageIdx < maxPluginBrowseWalkPages; pageIdx++ {
-				page, err := s.d.PluginLibraries.Children(ctx, k, true, cursor, 500)
+			for {
+				page, err := s.d.PluginLibraries.Children(noExpandCtx, k, true, cursor, 500)
 				if err != nil {
 					return err
 				}
@@ -2080,7 +2556,7 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 						}
 					}
 				}
-				if page.NextCursor == "" || len(page.Items) == 0 {
+				if page.NextCursor == "" || len(page.Items) == 0 || page.NextCursor == cursor {
 					break
 				}
 				cursor = page.NextCursor
@@ -2156,6 +2632,19 @@ func (s *Service) SetPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 func (s *Service) SetUnplayed(ctx context.Context, v *core.Viewer, k core.RatingKey) error {
 	return s.setPlayed(ctx, v, k, false)
 }
+
+var _ frontend.ReadingProgressWriter = (*Service)(nil)
+
+func (s *Service) SetReadingProgress(ctx context.Context, v *core.Viewer, k core.RatingKey, progress frontend.ReadingProgress) error {
+	ctx = state.WithOrigin(ctx, state.Origin{Surface: s.d.Protocol})
+	return s.mutate(ctx, v, k, func(u *core.User) error {
+		rs, ok := s.d.State.(core.ReadingState)
+		if !ok || rs == nil {
+			return core.ErrNotAvailable
+		}
+		return rs.SetReadingProgress(ctx, u.ID, k, progress)
+	})
+}
 func (s *Service) SetNotInterested(ctx context.Context, v *core.Viewer, k core.RatingKey, on bool) error {
 	return s.mutate(ctx, v, k, func(u *core.User) error {
 		if s.d.SetNotInterestedSource == nil {
@@ -2188,10 +2677,15 @@ func (s *Service) SetRating(ctx context.Context, v *core.Viewer, k core.RatingKe
 func (s *Service) RemoveFromContinue(ctx context.Context, v *core.Viewer, k core.RatingKey) error {
 	ctx = state.WithOrigin(ctx, state.Origin{Surface: s.d.Protocol})
 	return s.mutate(ctx, v, k, func(u *core.User) error {
-		if s.d.RemoveContinue == nil {
-			return core.ErrNotFound
+		if s.d.RemoveContinue != nil {
+			return s.d.RemoveContinue(ctx, u, k)
 		}
-		return s.d.RemoveContinue(ctx, u, k)
+		if hider, ok := s.d.State.(interface {
+			HideContinue(context.Context, int64, core.RatingKey) error
+		}); ok {
+			return hider.HideContinue(ctx, u.ID, k)
+		}
+		return core.ErrNotFound
 	})
 }
 
@@ -2241,30 +2735,51 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 		}
 	}
 	switch q.Sort {
-	case core.SortTitle, core.SortReleased, core.SortAdded, core.SortRating, core.SortPopularity:
-	case core.SortPlayed:
-		// A played order comes from the viewer's watch rows, which the
-		// catalogue rows do not carry; the listing already produced it.
+	case core.SortTitle, core.SortReleased, core.SortAdded, core.SortYear, core.SortRating, core.SortPopularity, core.SortDuration, core.SortIndex:
+	case core.SortPlayed, core.SortLastViewed, core.SortUpdated:
+		// Played and updated orders come from catalogue/watch rows that
+		// projected titles do not carry; preserve the listing's order.
 		return nil
 	default:
 		return errors.New("experience: unsupported sort")
 	}
 	now := time.Now()
+	addedTime := func(t core.Title) time.Time {
+		if t.Key.IsPluginKey() && t.PluginAddedAt > 0 {
+			return time.Unix(t.PluginAddedAt, 0).UTC()
+		}
+		return t.DateAdded(now)
+	}
+	// A title missing the sorted value goes last in either direction; a
+	// sort never drops it or floats it to the top of an ascending list.
+	missing := func(t core.Title) bool {
+		switch q.Sort {
+		case core.SortReleased:
+			return t.Released.IsZero()
+		case core.SortAdded:
+			return addedTime(t).IsZero()
+		case core.SortYear:
+			return t.Year == 0
+		case core.SortRating:
+			return t.Rating == 0
+		case core.SortPopularity:
+			return t.Popularity == 0
+		case core.SortDuration:
+			return t.Runtime <= 0
+		}
+		return false
+	}
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
+		if am, bm := missing(a), missing(b); am != bm {
+			return bm
+		}
 		cmp := 0
 		switch q.Sort {
 		case core.SortTitle:
-			at, bt := a.SortTitle, b.SortTitle
-			if at == "" {
-				at = a.Title
-			}
-			if bt == "" {
-				bt = b.Title
-			}
-			cmp = strings.Compare(strings.ToLower(at), strings.ToLower(bt))
+			cmp = strings.Compare(core.EffectiveSortTitle(a.Title, a.SortTitle), core.EffectiveSortTitle(b.Title, b.SortTitle))
 		case core.SortAdded:
-			ad, bd := a.DateAdded(now), b.DateAdded(now)
+			ad, bd := addedTime(a), addedTime(b)
 			if ad.Before(bd) {
 				cmp = -1
 			} else if ad.After(bd) {
@@ -2274,6 +2789,12 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 			if a.Released.Before(b.Released) {
 				cmp = -1
 			} else if a.Released.After(b.Released) {
+				cmp = 1
+			}
+		case core.SortYear:
+			if a.Year < b.Year {
+				cmp = -1
+			} else if a.Year > b.Year {
 				cmp = 1
 			}
 		case core.SortRating:
@@ -2287,6 +2808,47 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 				cmp = -1
 			} else if a.Popularity > b.Popularity {
 				cmp = 1
+			}
+		case core.SortDuration:
+			if a.Runtime < b.Runtime {
+				cmp = -1
+			} else if a.Runtime > b.Runtime {
+				cmp = 1
+			}
+		case core.SortIndex:
+			if a.ParentKey != b.ParentKey && (a.ParentTitle != "" || b.ParentTitle != "") {
+				cmp = strings.Compare(strings.ToLower(a.ParentTitle), strings.ToLower(b.ParentTitle))
+			}
+			if cmp == 0 && a.ParentKey != b.ParentKey {
+				if a.ParentKey < b.ParentKey {
+					cmp = -1
+				} else {
+					cmp = 1
+				}
+			}
+			if cmp == 0 {
+				da, db := a.Disc, b.Disc
+				if da <= 0 {
+					da = 1
+				}
+				if db <= 0 {
+					db = 1
+				}
+				if da < db {
+					cmp = -1
+				} else if da > db {
+					cmp = 1
+				}
+			}
+			if cmp == 0 {
+				if a.ItemIndex < b.ItemIndex {
+					cmp = -1
+				} else if a.ItemIndex > b.ItemIndex {
+					cmp = 1
+				}
+			}
+			if cmp == 0 {
+				cmp = strings.Compare(core.EffectiveSortTitle(a.Title, a.SortTitle), core.EffectiveSortTitle(b.Title, b.SortTitle))
 			}
 		}
 		if cmp == 0 {
@@ -2441,6 +3003,12 @@ func (s *Service) Ancestors(ctx context.Context, viewer *core.Viewer, device cor
 
 // Facets are computed only from titles the viewer may see.
 func (s *Service) Facets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, name string) ([]core.FacetValue, error) {
+	return s.FacetsAtLevel(ctx, viewer, device, viewID, "", name)
+}
+
+// FacetsAtLevel computes facet values for viewID, scoped to level (or protocol
+// item type) when viewID names a plugin library.
+func (s *Service) FacetsAtLevel(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, level, name string) ([]core.FacetValue, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	// PSE-HOOK: les facettes d'une vue Remix sont calculées sur ses titres autorisés — voir docs/pse/FORK.fr.md
 	skipIndexed := s.pseJellyfinThemeViewID(viewID)
@@ -2456,7 +3024,7 @@ func (s *Service) Facets(ctx context.Context, viewer *core.Viewer, device core.D
 		switch lib.Source {
 		case core.LibraryPlugin, core.LibraryCollection:
 			if lib.Source == core.LibraryPlugin {
-				return s.pluginLibraryFacets(ctx, viewer, lib, name)
+				return s.pluginLibraryFacetsAtLevel(ctx, viewer, lib, level, name)
 			}
 			// A collection library's facet values are counted over the same
 			// SQL semi-join as its page, then the walk stays the last word.
@@ -2551,6 +3119,10 @@ func (s *Service) collectionItems(ctx context.Context, v *core.User, key core.Ra
 			upcoming = true
 		}
 	}
+	return s.collectionItemsFor(ctx, v, key, upcoming)
+}
+
+func (s *Service) collectionItemsFor(ctx context.Context, v *core.User, key core.RatingKey, upcoming bool) ([]core.Title, error) {
 	var out []core.Title
 	seen := map[core.RatingKey]bool{}
 	for offset := 0; ; {
@@ -2657,10 +3229,19 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	if containsMediaType(q.ExcludedTypes, t.Type) {
 		return false, nil
 	}
+	// A declared MediaBrowser type (MusicAlbum, Audio, Book, …) is a name a
+	// client can include or exclude an item by, alongside its core type.
+	if t.MBItemType != "" {
+		for _, excluded := range q.ExcludedTypes {
+			if strings.EqualFold(string(excluded), t.MBItemType) {
+				return false, nil
+			}
+		}
+	}
 	if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
 		found := containsMediaType(q.Types, t.Type)
 		for _, kind := range q.UnservedTypes {
-			if strings.EqualFold(kind, string(t.Type)) {
+			if strings.EqualFold(kind, string(t.Type)) || strings.EqualFold(kind, t.MBItemType) {
 				found = true
 			}
 		}
@@ -2671,16 +3252,22 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	if !matchesFilter(t, q.Filter) {
 		return false, nil
 	}
+	if q.Level != "" && !strings.EqualFold(t.KindLevel, q.Level) {
+		return false, nil
+	}
+	if q.Role != "" && !strings.EqualFold(string(t.MediaRole), q.Role) && !strings.EqualFold(t.KindLevel, q.Role) {
+		return false, nil
+	}
 	if q.Season != nil && t.Season != *q.Season {
 		return false, nil
 	}
 
 	if q.Watched != nil {
-		st, err := s.d.State.Get(ctx, v.ID, t.Key)
+		watched, err := s.titlesWatched(ctx, v, []core.Title{t})
 		if err != nil {
 			return false, err
 		}
-		if (st.ViewCount > 0) != *q.Watched {
+		if watched[t.Key] != *q.Watched {
 			return false, nil
 		}
 	}
@@ -2690,7 +3277,12 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 		}
 		favorite, err := s.d.IsFavorite(ctx, v, t.Key)
 		if err != nil {
-			return false, err
+			if t.Key.IsPluginKey() {
+				s.logPluginEnrichError("favorites", t.Key, err)
+				favorite = false
+			} else {
+				return false, err
+			}
 		}
 		if favorite != *q.Favorite {
 			return false, nil
@@ -2700,8 +3292,22 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 }
 
 func matchesFilter(t core.Title, f core.Filter) bool {
-	if f.MaxContentRating != "" && contentrating.Exceeds(t.ContentRating, f.MaxContentRating) {
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	if f.MaxContentRating != "" && contentrating.EnforceExceeds(enf, f.MaxContentRating) {
 		return false
+	}
+	if enf == contentrating.UncertifiedAdult && (len(f.ContentRatings) > 0 || len(f.ExcludeContentRatings) > 0 || f.MinContentRating != "") {
+		return false
+	}
+	if f.MinContentRating != "" {
+		minLvl := contentrating.EnforceLevelOf(f.MinContentRating)
+		haveLvl := contentrating.EnforceLevelOf(enf)
+		if haveLvl == contentrating.Unrated {
+			haveLvl = contentrating.EnforceLevelOf(t.ContentRating)
+		}
+		if minLvl == contentrating.Unrated || haveLvl == contentrating.Unrated || haveLvl < minLvl {
+			return false
+		}
 	}
 	for _, key := range f.ExcludeKeys {
 		if t.Key == key {
@@ -2726,10 +3332,19 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 	if f.MinRating > 0 && t.Rating < f.MinRating {
 		return false
 	}
+	if f.MaxRating > 0 && t.Rating > f.MaxRating {
+		return false
+	}
+	if len(f.ExcludeRatings) > 0 && slices.Contains(f.ExcludeRatings, t.Rating) {
+		return false
+	}
 	if f.MinRuntime > 0 && t.Runtime < f.MinRuntime {
 		return false
 	}
 	if f.MaxRuntime > 0 && t.Runtime > f.MaxRuntime {
+		return false
+	}
+	if len(f.ExcludeRuntimes) > 0 && slices.Contains(f.ExcludeRuntimes, t.Runtime) {
 		return false
 	}
 	intersects := func(a, b []string) bool {
@@ -2745,19 +3360,37 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 		}
 		return false
 	}
-	if !intersects(t.Genres, f.Genres) || !intersects([]string{t.Language}, f.Languages) || !intersects(t.Countries, f.Countries) || !intersects([]string{t.ContentRating}, f.ContentRatings) {
+	hasExcluded := func(a, b []string) bool {
+		return len(b) > 0 && intersects(a, b)
+	}
+	if !intersects(t.Genres, f.Genres) || !intersects([]string{t.Language}, f.Languages) || !intersects(t.Countries, f.Countries) || (len(f.ContentRatings) > 0 && !matchesFilterRatings(t.ContentRating, enf, f.ContentRatings)) {
 		return false
 	}
-	if f.Collection != 0 && t.CollectionID != f.Collection {
+	if hasExcluded(t.Genres, f.ExcludeGenres) || hasExcluded(t.Countries, f.ExcludeCountries) || (len(f.ExcludeContentRatings) > 0 && matchesFilterRatings(t.ContentRating, enf, f.ExcludeContentRatings)) {
 		return false
 	}
-	if f.Studio != "" && !intersects(t.Studios, []string{f.Studio}) {
+	if f.Collection != 0 && len(f.Collections) == 0 && t.CollectionID != f.Collection {
 		return false
 	}
-	if f.Query != "" && !strings.Contains(strings.ToLower(t.Title), strings.ToLower(f.Query)) && !strings.Contains(strings.ToLower(t.OriginalTitle), strings.ToLower(f.Query)) {
+	if len(f.Collections) > 0 && !slices.Contains(f.Collections, t.CollectionID) {
 		return false
 	}
-	if f.Person != 0 {
+	if len(f.ExcludeCollections) > 0 && slices.Contains(f.ExcludeCollections, t.CollectionID) {
+		return false
+	}
+	if f.Studio != "" && len(f.StudioFilters) == 0 && !intersects(t.Studios, []string{f.Studio}) {
+		return false
+	}
+	if !studioFiltersMatch(t.Studios, f.StudioFilters) {
+		return false
+	}
+	if f.Query != "" && !titleContainsQuery(t, f.Query) {
+		return false
+	}
+	if !titleFiltersMatch(t, f.TitleFilters) {
+		return false
+	}
+	if f.Person != 0 && len(f.Credits) == 0 {
 		found := false
 		for _, group := range [][]core.Person{t.Cast, t.Directors, t.Writers, t.Crew} {
 			for _, p := range group {
@@ -2768,6 +3401,194 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 		}
 		if !found {
 			return false
+		}
+	}
+	for _, cf := range f.Credits {
+		if len(cf.People) == 0 && len(cf.Names) == 0 {
+			continue
+		}
+		var groups [][]core.Person
+		switch cf.Kind {
+		case "cast":
+			groups = [][]core.Person{t.Cast}
+		case "director":
+			groups = [][]core.Person{t.Directors}
+		case "writer":
+			groups = [][]core.Person{t.Writers}
+		case "crew":
+			groups = [][]core.Person{t.Crew}
+		default:
+			groups = [][]core.Person{t.Cast, t.Directors, t.Writers, t.Crew}
+		}
+		matched := false
+		for _, group := range groups {
+			for _, p := range group {
+				if slices.Contains(cf.People, p.TMDB) {
+					matched = true
+					break
+				}
+				for _, name := range cf.Names {
+					if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(name)) {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if matched == cf.Exclude {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesFilterRatings(rating, enf string, values []string) bool {
+	have := strings.TrimSpace(rating)
+	haveLevel := contentrating.EnforceLevelOf(enf)
+	if haveLevel == contentrating.Unrated {
+		haveLevel = contentrating.EnforceLevelOf(have)
+	}
+	nonUSOrUnratedDisplay := have == "" || contentrating.IsNotRated(have) || contentrating.Parse(have).Country != "US"
+	for _, want := range values {
+		w := strings.TrimSpace(want)
+		if w == "" || strings.EqualFold(w, "None") || strings.EqualFold(w, "NR") {
+			if enf == "" && haveLevel == contentrating.Unrated && (have == "" || contentrating.IsNotRated(have)) {
+				return true
+			}
+			continue
+		}
+		if strings.EqualFold(have, w) {
+			return true
+		}
+		if nonUSOrUnratedDisplay && contentrating.Parse(w).Country == "US" {
+			wantLevel := contentrating.EnforceLevelOf(w)
+			if wantLevel == contentrating.Unrated {
+				continue
+			}
+			if haveLevel == wantLevel {
+				return true
+			}
+			if strings.EqualFold(w, "TV-MA") && haveLevel == contentrating.Adult {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func titleContainsQuery(t core.Title, q string) bool {
+	needle := strings.ToLower(q)
+	if strings.Contains(strings.ToLower(t.Title), needle) || strings.Contains(strings.ToLower(t.OriginalTitle), needle) {
+		return true
+	}
+	for _, alt := range t.AlternativeTitles {
+		if strings.Contains(strings.ToLower(alt), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func studioFiltersMatch(studios []string, filters []core.StringFilter) bool {
+	for _, sf := range filters {
+		val := strings.ToLower(sf.Value)
+		switch sf.Op {
+		case "==":
+			ok := false
+			for _, s := range studios {
+				if strings.EqualFold(s, sf.Value) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		case "!==":
+			for _, s := range studios {
+				if strings.EqualFold(s, sf.Value) {
+					return false
+				}
+			}
+		case "!=":
+			for _, s := range studios {
+				if strings.Contains(strings.ToLower(s), val) {
+					return false
+				}
+			}
+		case "<=":
+			ok := false
+			for _, s := range studios {
+				if strings.HasPrefix(strings.ToLower(s), val) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		case ">=":
+			ok := false
+			for _, s := range studios {
+				if strings.HasSuffix(strings.ToLower(s), val) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		default:
+			ok := false
+			for _, s := range studios {
+				if strings.Contains(strings.ToLower(s), val) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func titleFiltersMatch(t core.Title, filters []core.StringFilter) bool {
+	titleLower := strings.ToLower(t.Title)
+	for _, tf := range filters {
+		val := strings.ToLower(tf.Value)
+		switch tf.Op {
+		case "==":
+			if !strings.EqualFold(t.Title, tf.Value) {
+				return false
+			}
+		case "!==":
+			if strings.EqualFold(t.Title, tf.Value) {
+				return false
+			}
+		case "!=":
+			if strings.Contains(titleLower, val) {
+				return false
+			}
+		case "<=":
+			if !strings.HasPrefix(titleLower, val) {
+				return false
+			}
+		case ">=":
+			if !strings.HasSuffix(titleLower, val) {
+				return false
+			}
+		default:
+			if !titleContainsQuery(t, tf.Value) {
+				return false
+			}
 		}
 	}
 	return true
@@ -2839,9 +3660,26 @@ func (s *Service) ResolveFacet(ctx context.Context, viewer *core.Viewer, device 
 	isBuiltinView := !s.pseJellyfinThemeViewID(viewID)
 	if isBuiltinView && s.d.PluginLibraries != nil && viewID != "" {
 		if lid, err := strconv.Atoi(viewID); err == nil {
-			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lid)); err == nil && lib.Source != core.LibraryBuiltin {
+			// Ordinary catalogue libraries share the indexed studio IDs;
+			// resolving one must not enumerate the entire vocabulary.
+			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lid)); err == nil && lib.Source != core.LibraryBuiltin && !(kind == "studio" && lib.Source == core.LibraryCatalog) {
 				isBuiltinView = false
 			}
+		}
+	}
+	if kind == "person" {
+		tmdb, ok, err := s.personFacetTMDB(ctx, id)
+		if err != nil {
+			return core.FacetValue{}, err
+		}
+		if ok {
+			if found, ok, err := s.resolvePersonFacet(ctx, viewer, viewID, id, tmdb); err != nil || ok {
+				return found, err
+			}
+		} else if isBuiltinView && s.d.PersonByFacetID != nil {
+			// The person vocabulary names every credited person: an id it
+			// does not know is no one's.
+			return core.FacetValue{}, core.ErrNotFound
 		}
 	}
 	if isBuiltinView {
@@ -2859,21 +3697,6 @@ func (s *Service) ResolveFacet(ctx context.Context, viewer *core.Viewer, device 
 			// every viewer, not a count of this viewer's whole library.
 			if found, ok, err := s.resolveGlobalFacet(ctx, viewer, viewID, kind, name, id); err != nil || ok {
 				return found, err
-			}
-		}
-		if kind == "person" {
-			tmdb, ok, err := s.personFacetTMDB(ctx, id)
-			if err != nil {
-				return core.FacetValue{}, err
-			}
-			if ok {
-				if found, ok, err := s.resolvePersonFacet(ctx, viewer, viewID, id, tmdb); err != nil || ok {
-					return found, err
-				}
-			} else if s.d.PersonByFacetID != nil {
-				// The person vocabulary names every credited person: an id it
-				// does not know is no one's.
-				return core.FacetValue{}, core.ErrNotFound
 			}
 		}
 	}

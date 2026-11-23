@@ -97,7 +97,7 @@ func TestEventsSeparateHTTPRequestsFromCacheAndBudgetRefusals(t *testing.T) {
 	cfg := testConfig(f.server.URL)
 	cfg.DailyLimit = 10
 	cfg.DailyGrabs = 2
-	m := NewManager(db, []config.Indexer{cfg}, Options{NZBDir: t.TempDir()})
+	m := NewManager(db, []config.Indexer{cfg}, Options{Vault: &testVault{}})
 
 	var mu sync.Mutex
 	var events []Event
@@ -202,7 +202,7 @@ func TestEventsSeparateHTTPRequestsFromCacheAndBudgetRefusals(t *testing.T) {
 		t.Fatalf("result cache events=%+v httpDelta=%d", evs, searchHTTP()-beforeHTTP)
 	}
 
-	// 4. NZB grab: first FetchNZB hits network (1 grab event), second hits disk cache (1 cache event).
+	// 4. NZB grab: first FetchNZB hits network (1 grab event), second hits the vault (1 cache event).
 	if _, err := m.FetchNZB(play, rels[0]); err != nil {
 		t.Fatal(err)
 	}

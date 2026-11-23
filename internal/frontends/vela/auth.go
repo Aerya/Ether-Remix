@@ -8,6 +8,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,10 +19,37 @@ func viewerWire(v *frontend.Viewer) object {
 	return object{"id": id, "name": v.Username, "policyRevision": hashJSON(v)}
 }
 
+func (i *instance) viewerAvatar(r *http.Request, v *frontend.Viewer, token string, d frontend.Device) object {
+	if i.host.ImageGrants == nil || token == "" {
+		return nil
+	}
+	img, ok := frontend.ViewerAvatarImage(v)
+	if !ok {
+		return nil
+	}
+	secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{
+		Credential: token,
+		Device:     d,
+		Image:      img,
+	})
+	if err != nil || secret == "" {
+		return nil
+	}
+	return object{
+		"id":    hash(img.Path),
+		"kind":  frontend.ImagePerson,
+		"tag":   img.Tag,
+		"sizes": []object{imageSize(img, secret)},
+	}
+}
+
 // viewerPolicyWire reads the current owner policy for a bootstrap or sign-in.
 // Countdown instants come from the same evaluator as playback admission.
-func (i *instance) viewerPolicyWire(r *http.Request, v *frontend.Viewer, d frontend.Device) (object, error) {
+func (i *instance) viewerPolicyWire(r *http.Request, v *frontend.Viewer, d frontend.Device, avatar object) (object, error) {
 	out := viewerWire(v)
+	if avatar != nil {
+		out["avatar"] = avatar
+	}
 	if i.host.ViewerCapabilities == nil {
 		return out, nil
 	}
@@ -55,6 +83,11 @@ func (i *instance) tokens(w http.ResponseWriter, r *http.Request, access, refres
 func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Username, Password, RefreshToken, Code, Browser, ExistingToken, UserCode, DeviceCode, Secret, TargetOrigin string
+		PlexToken                                                                                                  string `json:"plexToken"`
+		SelectProfile                                                                                              bool   `json:"selectProfile"`
+		SelectionToken                                                                                             string `json:"selectionToken"`
+		ProfileID                                                                                                  string `json:"profileId"`
+		PIN                                                                                                        string `json:"pin"`
 		Device                                                                                                     device `json:"device"`
 	}
 	if body(r, &b) != nil {
@@ -90,12 +123,35 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		send(w, 200, object{"code": code, "targetOrigin": b.TargetOrigin, "expiresAt": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})
 
 	case "sign-in":
+		if !i.signInMethods().Password {
+			i.unavailable(w, r)
+			return
+		}
 		a, e := i.host.Identity.SignIn(ctx, b.Username, b.Password, d)
 		if e != nil {
 			fail(w, e, r)
 			return
 		}
 		i.tokens(w, r, a, "", d)
+	case "plex":
+		if !i.signInMethods().Plex {
+			i.unavailable(w, r)
+			return
+		}
+		if b.SelectProfile {
+			i.plexSignInSelect(w, r, b.PlexToken, d)
+			return
+		}
+		a, e := i.host.Identity.SignInWithPlex(ctx, b.PlexToken, d)
+		if e != nil {
+			plexAuthFail(w, e)
+			return
+		}
+		i.tokens(w, r, a, "", d)
+	case "plex/profile":
+		i.plexProfileComplete(w, r, b.SelectionToken, b.ProfileID, b.PIN, d)
+	case "plex/profiles/challenge":
+		i.plexProfileChallenge(w, r, d)
 	case "refresh":
 		a, f, e := i.host.Identity.Refresh(ctx, b.RefreshToken, d)
 		if e != nil {
@@ -124,10 +180,15 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		var a string
 		var e error
+		reqOrigin, hasOrigin := i.host.Origin(r)
+		secureOrigin := ""
+		if hasOrigin && reqOrigin.Scheme == "https" && reqOrigin.Host != "" {
+			secureOrigin = "https://" + reqOrigin.Host
+		}
 		if bound, ok := i.host.Identity.(interface {
 			RedeemOriginWebCode(context.Context, string, frontend.Device, string) (string, error)
-		}); ok && r.TLS != nil && i.trustedSecureOrigin(r, "https://"+r.Host) {
-			a, e = bound.RedeemOriginWebCode(ctx, b.Code, d, "https://"+r.Host)
+		}); ok && secureOrigin != "" && i.trustedSecureOrigin(r, secureOrigin) {
+			a, e = bound.RedeemOriginWebCode(ctx, b.Code, d, secureOrigin)
 		} else {
 			a, e = service.RedeemDeviceWebCode(ctx, b.Code, d)
 		}
@@ -137,6 +198,10 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		i.tokens(w, r, a, "", d)
 	case "device", "quick-connect":
+		if !i.signInMethods().QuickConnect {
+			i.unavailable(w, r)
+			return
+		}
 		if path == "device" && i.host.ViewerPortalURL == nil {
 			i.unavailable(w, r)
 			return
@@ -166,6 +231,10 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		send(w, 200, object{"deviceCode": secret, "userCode": code, "verificationUrl": url, "expiresAt": details.ExpiresAt.UTC().Format(time.RFC3339), "pollIntervalSeconds": 5})
 	case "device/poll", "quick-connect/poll":
+		if !i.signInMethods().QuickConnect {
+			i.unavailable(w, r)
+			return
+		}
 		secret := b.Secret
 		if path == "device/poll" {
 			secret = b.DeviceCode
@@ -202,15 +271,123 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 			fail(w, e, r)
 			return
 		}
-		code := b.Code
+		if v.ID <= 0 || v.Delegated {
+			problem(w, http.StatusForbidden, "policy", "approval_not_allowed")
+			return
+		}
+		if !i.signInMethods().QuickConnect {
+			i.unavailable(w, r)
+			return
+		}
+		code := strings.TrimSpace(b.Code)
 		if path == "device/approve" {
-			code = b.UserCode
+			code = strings.TrimSpace(b.UserCode)
+		}
+		if code == "" {
+			problem(w, http.StatusBadRequest, "request", "invalid_code")
+			return
 		}
 		if e = i.host.Identity.QuickConnectApprove(ctx, v, code); e != nil {
-			fail(w, e, r)
+			quickConnectApproveFail(w, e, r)
 			return
 		}
 		send(w, 200, object{"accepted": true})
+	}
+}
+
+// quickConnectApproveFail translates approval errors after the caller's bearer
+// token has already been verified. Bad, expired, or already-used codes must
+// never return 401/auth, which Vela's transport treats as an expired session.
+func quickConnectApproveFail(w http.ResponseWriter, err error, r *http.Request) {
+	switch {
+	case errors.Is(err, frontend.ErrQuickConnectExpired):
+		send(w, http.StatusGone, object{
+			"error": object{
+				"class":   "conflict",
+				"code":    "code_expired",
+				"message": "code expired",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrQuickConnectUsed):
+		send(w, http.StatusConflict, object{
+			"error": object{
+				"class":   "conflict",
+				"code":    "code_used",
+				"message": "code already used",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrUnauthorized):
+		send(w, http.StatusBadRequest, object{
+			"error": object{
+				"class":   "request",
+				"code":    "invalid_code",
+				"message": "invalid code",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrRateLimited):
+		seconds := 1
+		var limited *frontend.IdentityRateLimitError
+		if errors.As(err, &limited) && limited.RetryAfter > 0 {
+			seconds = max(1, min(900, int((limited.RetryAfter+time.Second-1)/time.Second)))
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		send(w, http.StatusTooManyRequests, object{
+			"error": object{
+				"class":   "capacity",
+				"code":    "rate_limited",
+				"message": "rate limited",
+				"retry":   object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 2},
+			},
+		})
+	default:
+		fail(w, err, r)
+	}
+}
+
+func plexAuthFail(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, frontend.ErrUnauthorized):
+		problem(w, http.StatusUnauthorized, "auth", "invalid_credentials")
+	case errors.Is(err, frontend.ErrPlexNotShared):
+		send(w, http.StatusForbidden, object{
+			"error": object{
+				"class":   "policy",
+				"code":    "not_shared",
+				"message": "this server is not shared with this Plex account; ask the server owner to share access",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrRateLimited):
+		seconds := 1
+		var limited *frontend.IdentityRateLimitError
+		if errors.As(err, &limited) && limited.RetryAfter > 0 {
+			seconds = max(1, min(900, int((limited.RetryAfter+time.Second-1)/time.Second)))
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		send(w, http.StatusTooManyRequests, object{
+			"error": object{
+				"class":   "capacity",
+				"code":    "rate_limited",
+				"message": "rate limited",
+				"retry":   object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 2},
+			},
+		})
+	case errors.Is(err, frontend.ErrIdentityUnavailable):
+		problem(w, http.StatusForbidden, "policy", "identity_unavailable")
+	case errors.Is(err, context.Canceled):
+		problem(w, http.StatusRequestTimeout, "request", "request_canceled")
+	default:
+		send(w, http.StatusServiceUnavailable, object{
+			"error": object{
+				"class":   "transient",
+				"code":    "plex_unreachable",
+				"message": "plex.tv validation unavailable",
+				"retry":   object{"allowed": false},
+			},
+		})
 	}
 }
 

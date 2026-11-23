@@ -212,15 +212,16 @@ func (e *fakeEngine) openCount() int {
 }
 
 type fakeResolver struct {
-	mu         sync.Mutex
-	candidates []core.Release // best first
-	bad        map[string]string
-	calls      int
-	excludes   [][]string
-	prefers    []string
-	exactHEVC  []bool
-	delay      time.Duration
-	started    chan struct{} // closed on first Resolve, if set
+	mu              sync.Mutex
+	candidates      []core.Release // best first
+	bad             map[string]string
+	calls           int
+	excludes        [][]string
+	excludeReleases [][]core.Release
+	prefers         []string
+	exactHEVC       []bool
+	delay           time.Duration
+	started         chan struct{} // closed on first Resolve, if set
 }
 
 func newFakeResolver(ids ...string) *fakeResolver {
@@ -235,6 +236,7 @@ func (r *fakeResolver) Resolve(ctx context.Context, req core.ResolveRequest) (*c
 	r.mu.Lock()
 	r.calls++
 	r.excludes = append(r.excludes, slices.Clone(req.Exclude))
+	r.excludeReleases = append(r.excludeReleases, slices.Clone(req.ExcludeReleases))
 	r.prefers = append(r.prefers, req.Prefer)
 	r.exactHEVC = append(r.exactHEVC, req.ExactHEVCTranscode)
 	delay := r.delay
@@ -254,6 +256,16 @@ func (r *fakeResolver) Resolve(ctx context.Context, req core.ResolveRequest) (*c
 	var pick []core.Release
 	for _, c := range r.candidates {
 		if _, bad := r.bad[c.ID]; bad || slices.Contains(req.Exclude, c.ID) {
+			continue
+		}
+		excludedContent := false
+		for _, ex := range req.ExcludeReleases {
+			if core.SameReleaseContent(ex, c) {
+				excludedContent = true
+				break
+			}
+		}
+		if excludedContent {
 			continue
 		}
 		pick = append(pick, c)

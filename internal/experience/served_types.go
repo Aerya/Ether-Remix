@@ -62,6 +62,18 @@ func (s *Service) servedItemKinds(ctx context.Context, v *core.User) map[string]
 			continue
 		}
 		builtin(mt)
+		if lib.Present.Plex != nil {
+			switch strings.ToLower(lib.Present.Plex.Base) {
+			case "artist":
+				out["artist"], out["album"], out["track"] = true, true, true
+			case "photo":
+				out["photo"] = true
+			case "show":
+				out["show"], out["series"], out["season"], out["episode"] = true, true, true, true
+			case "movie":
+				out["movie"] = true
+			}
+		}
 		if lib.Present.MediaBrowser != nil {
 			for _, kind := range lib.Present.MediaBrowser.ItemTypes {
 				name := strings.ToLower(kind)
@@ -72,6 +84,18 @@ func (s *Service) servedItemKinds(ctx context.Context, v *core.User) map[string]
 					out["movie"] = true
 				case "series":
 					out["show"], out["series"] = true, true
+				case "musicartist":
+					out["artist"] = true
+				case "musicalbum":
+					// A flat playable album kind also answers Audio
+					// queries (each album as its own track); the
+					// per-library browse decides whether this library
+					// is that shape.
+					out["album"], out["audio"], out["track"] = true, true, true
+				case "audio":
+					out["track"] = true
+				case "photo", "photoalbum":
+					out["photo"] = true
 				}
 			}
 		}

@@ -478,6 +478,12 @@ func (s scorecardSessionWrapper) ProactiveFallbackAvailable() bool {
 	quality, ok := s.embeddedScorecardSessions.(frontend.QualitySessions)
 	return ok && quality.ProactiveFallbackAvailable()
 }
+func (s scorecardSessionWrapper) ProactiveFallbackAvailableFor(v *core.Viewer) bool {
+	if quality, ok := s.embeddedScorecardSessions.(interface{ ProactiveFallbackAvailableFor(*core.Viewer) bool }); ok {
+		return quality.ProactiveFallbackAvailableFor(v)
+	}
+	return s.ProactiveFallbackAvailable()
+}
 func (s scorecardSessionWrapper) QualityRungs(ctx context.Context, a frontend.SessionAccess, id string) ([]core.HLSRung, error) {
 	quality, ok := s.embeddedScorecardSessions.(frontend.QualitySessions)
 	if !ok {

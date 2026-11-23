@@ -5,6 +5,7 @@ package flight
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -39,9 +40,17 @@ func (g *Group[K, V]) Do(ctx context.Context, key K, fn func(context.Context) (V
 		}
 		c, leader := g.join(key)
 		if leader {
-			c.val, c.err = fn(ctx)
-			c.abandoned = c.err != nil && ctx.Err() != nil
-			g.finish(key, c)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						c.err = fmt.Errorf("flight: panic: %v", r)
+						c.abandoned = false
+					}
+					g.finish(key, c)
+				}()
+				c.val, c.err = fn(ctx)
+				c.abandoned = c.err != nil && ctx.Err() != nil
+			}()
 			return c.val, c.err
 		}
 		select {
@@ -83,8 +92,13 @@ func (g *Group[K, V]) DoDetachedLimit(ctx context.Context, key K, max int, fn fu
 	if leader {
 		fctx := context.WithoutCancel(ctx)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.err = fmt.Errorf("flight: panic: %v", r)
+				}
+				g.finish(key, c)
+			}()
 			c.val, c.err = fn(fctx)
-			g.finish(key, c)
 		}()
 	}
 	select {

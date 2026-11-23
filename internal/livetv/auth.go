@@ -206,6 +206,212 @@ func (a *SourceAuth) hasRedacted() bool {
 
 // prepareSourceAuth runs before an import: it restores secrets the owner
 // API sent back redacted, validates the settings and derives Xtream URLs.
+type xtreamParsedURL struct {
+	Server   string
+	Username string
+	Password string
+	Output   string
+}
+
+func xtreamValidCreds(user, pass string) bool {
+	return user != "" && pass != "" && user != redactedSecret && pass != redactedSecret
+}
+
+func xtreamOutputHint(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "m3u8", "hls":
+		return "m3u8"
+	case "ts", "mpegts":
+		return "ts"
+	default:
+		return ""
+	}
+}
+
+func xtreamSegmentOutputHint(seg string) string {
+	lower := strings.ToLower(seg)
+	switch {
+	case strings.HasSuffix(lower, ".m3u8"):
+		return "m3u8"
+	case strings.HasSuffix(lower, ".ts"):
+		return "ts"
+	default:
+		return ""
+	}
+}
+
+func xtreamQueryParam(q url.Values, name string) string {
+	if v := q.Get(name); v != "" {
+		return v
+	}
+	for k, vs := range q {
+		if strings.EqualFold(k, name) && len(vs) > 0 {
+			return vs[0]
+		}
+	}
+	return ""
+}
+
+func xtreamJoinBase(origin string, segs []string) string {
+	if len(segs) == 0 {
+		return origin
+	}
+	return origin + "/" + strings.Join(segs, "/")
+}
+
+func isXtreamPathFamily(seg string) bool {
+	switch strings.ToLower(seg) {
+	case "live", "movie", "series", "timeshift":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseXtreamURL splits a pasted Xtream provider link (get.php, player_api.php,
+// xmltv.php, /live/U/P/..., or /U/P/...) into server, username, password, and
+// optional stream format.
+func parseXtreamURL(raw string) (xtreamParsedURL, bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return xtreamParsedURL{}, false
+	}
+	origin := strings.ToLower(u.Scheme) + "://" + u.Host
+	var rawSegs []string
+	for _, part := range strings.Split(u.EscapedPath(), "/") {
+		if part != "" {
+			rawSegs = append(rawSegs, part)
+		}
+	}
+	q := u.Query()
+	qUser := xtreamQueryParam(q, "username")
+	qPass := xtreamQueryParam(q, "password")
+	qOut := xtreamOutputHint(xtreamQueryParam(q, "output"))
+
+	if xtreamValidCreds(qUser, qPass) {
+		baseSegs := rawSegs
+		if len(baseSegs) > 0 && strings.HasSuffix(strings.ToLower(baseSegs[len(baseSegs)-1]), ".php") {
+			baseSegs = baseSegs[:len(baseSegs)-1]
+		}
+		return xtreamParsedURL{
+			Server:   xtreamJoinBase(origin, baseSegs),
+			Username: qUser,
+			Password: qPass,
+			Output:   qOut,
+		}, true
+	}
+
+	for i := 0; i+3 <= len(rawSegs); i++ {
+		if !isXtreamPathFamily(rawSegs[i]) {
+			continue
+		}
+		user, err1 := url.PathUnescape(rawSegs[i+1])
+		pass, err2 := url.PathUnescape(rawSegs[i+2])
+		if err1 != nil || err2 != nil || !xtreamValidCreds(user, pass) {
+			return xtreamParsedURL{}, false
+		}
+		out := qOut
+		if out == "" && len(rawSegs) > i+3 {
+			out = xtreamSegmentOutputHint(rawSegs[len(rawSegs)-1])
+		}
+		return xtreamParsedURL{
+			Server:   xtreamJoinBase(origin, rawSegs[:i]),
+			Username: user,
+			Password: pass,
+			Output:   out,
+		}, true
+	}
+
+	if len(rawSegs) >= 3 && !strings.HasSuffix(strings.ToLower(rawSegs[len(rawSegs)-1]), ".php") {
+		user, err1 := url.PathUnescape(rawSegs[0])
+		pass, err2 := url.PathUnescape(rawSegs[1])
+		if err1 == nil && err2 == nil && xtreamValidCreds(user, pass) {
+			out := qOut
+			if out == "" {
+				out = xtreamSegmentOutputHint(rawSegs[len(rawSegs)-1])
+			}
+			return xtreamParsedURL{
+				Server:   origin,
+				Username: user,
+				Password: pass,
+				Output:   out,
+			}, true
+		}
+	}
+
+	if u.User != nil {
+		if pass, ok := u.User.Password(); ok && xtreamValidCreds(u.User.Username(), pass) {
+			baseSegs := rawSegs
+			if len(baseSegs) > 0 && strings.HasSuffix(strings.ToLower(baseSegs[len(baseSegs)-1]), ".php") {
+				baseSegs = baseSegs[:len(baseSegs)-1]
+			}
+			return xtreamParsedURL{
+				Server:   xtreamJoinBase(origin, baseSegs),
+				Username: u.User.Username(),
+				Password: pass,
+				Output:   qOut,
+			}, true
+		}
+	}
+
+	return xtreamParsedURL{}, false
+}
+
+// stripXtreamServerURL removes query parameters, fragments, userinfo, and
+// trailing .php endpoints so credentials or query tokens never stay in Server.
+func stripXtreamServerURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return trimmed
+	}
+	origin := strings.ToLower(u.Scheme) + "://" + u.Host
+	var rawSegs []string
+	for _, part := range strings.Split(u.EscapedPath(), "/") {
+		if part != "" {
+			rawSegs = append(rawSegs, part)
+		}
+	}
+	if len(rawSegs) > 0 && strings.HasSuffix(strings.ToLower(rawSegs[len(rawSegs)-1]), ".php") {
+		rawSegs = rawSegs[:len(rawSegs)-1]
+	}
+	for i := 0; i+3 <= len(rawSegs); i++ {
+		if isXtreamPathFamily(rawSegs[i]) {
+			return xtreamJoinBase(origin, rawSegs[:i])
+		}
+	}
+	if len(rawSegs) >= 3 {
+		for _, seg := range rawSegs[:2] {
+			if uSeg, _ := url.PathUnescape(seg); uSeg == redactedSecret {
+				return origin
+			}
+		}
+	}
+	return xtreamJoinBase(origin, rawSegs)
+}
+
+func (a *SourceAuth) normalizeXtream() {
+	if a == nil || a.Type != "xtream" {
+		return
+	}
+	if parsed, ok := parseXtreamURL(a.Server); ok {
+		a.Server = parsed.Server
+		if strings.TrimSpace(a.Username) == "" || a.Password == "" || a.Password == redactedSecret {
+			if strings.TrimSpace(a.Username) == "" || a.Password == redactedSecret {
+				a.Username = parsed.Username
+			}
+		}
+		if a.Password == "" || a.Password == redactedSecret {
+			a.Password = parsed.Password
+		}
+		if a.Output == "" && parsed.Output != "" {
+			a.Output = parsed.Output
+		}
+		return
+	}
+	a.Server = stripXtreamServerURL(a.Server)
+}
+
 func (s *Service) prepareSourceAuth(ctx context.Context, src *Source) error {
 	if err := s.prepareLogins(ctx, src); err != nil {
 		return err
@@ -214,6 +420,7 @@ func (s *Service) prepareSourceAuth(ctx context.Context, src *Source) error {
 		src.Auth = nil
 		return nil
 	}
+	src.Auth.normalizeXtream()
 	old, err := s.storedSourceByID(ctx, src.ID)
 	if err != nil && !errors.Is(err, core.ErrNotFound) {
 		return err
@@ -390,7 +597,7 @@ func (s *Service) openURL(ctx context.Context, raw string, h http.Header) (io.Re
 	if err != nil {
 		timer.Stop()
 		cancel()
-		return nil, err
+		return nil, sourceFetchFailure(err)
 	}
 	for k, v := range h {
 		req.Header[k] = v
@@ -415,7 +622,7 @@ func (s *Service) openURL(ctx context.Context, raw string, h http.Header) (io.Re
 	switch {
 	case res.StatusCode == 401 || res.StatusCode == 403:
 		closeBody()
-		return nil, fmt.Errorf("source refused the credentials (HTTP %d)", res.StatusCode)
+		return nil, &providerAuthError{StatusCode: res.StatusCode}
 	case res.StatusCode != 200:
 		closeBody()
 		return nil, fmt.Errorf("source returned HTTP %d", res.StatusCode)
@@ -463,9 +670,11 @@ type authCache struct {
 }
 
 type authEntry struct {
+	name          string
 	unratedRating string
 	adultGroups   map[string]bool
 	pool          *Source
+	account       *ProviderAccount
 	auth          *SourceAuth
 	limit         int           // connection limit; 0 is none
 	gap           time.Duration // least time between new provider streams
@@ -484,6 +693,7 @@ func (s *Service) forgetSourceAuth(id string) {
 	c.gen++
 	delete(c.m, id)
 	c.mu.Unlock()
+	s.bumpHealthRevision()
 }
 
 func (s *Service) setSourceEntry(id string, e authEntry) {
@@ -495,6 +705,7 @@ func (s *Service) setSourceEntry(id string, e authEntry) {
 	}
 	c.m[id] = e
 	c.mu.Unlock()
+	s.bumpHealthRevision()
 }
 
 func (s *Service) sourceAuth(ctx context.Context, id string) (*SourceAuth, error) {
@@ -520,7 +731,15 @@ func (s *Service) sourcePaused(ctx context.Context, c Channel) bool {
 		return false
 	}
 	_, err := s.sourceEntry(ctx, c.SourceID)
-	return errors.Is(err, core.ErrNotAvailable)
+	if !errors.Is(err, core.ErrNotAvailable) {
+		return false
+	}
+	for _, src := range c.StreamSources {
+		if src.Enabled && src.AuthSourceID != "" && src.AuthSourceID != c.SourceID && s.channelSourceEnabled(ctx, src.AuthSourceID) {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultTuneGap spaces new streams on a connection-limited account: a
@@ -558,9 +777,13 @@ func (s *Service) sourceEntry(ctx context.Context, id string) (authEntry, error)
 			c.m[id] = authEntry{at: s.o.Now(), disabled: true}
 		}
 		c.mu.Unlock()
+		if ok && !e.disabled {
+			s.bumpHealthRevision()
+		}
 		return authEntry{}, core.ErrNotAvailable
 	}
-	e = authEntry{auth: src.Auth, at: s.o.Now(), perHour: max(src.TunesPerHour, 0), unratedRating: src.UnratedRating, adultGroups: map[string]bool{}}
+	prevEntry, hadPrev := e, ok
+	e = authEntry{name: src.Name, auth: src.Auth, at: s.o.Now(), perHour: max(src.TunesPerHour, 0), unratedRating: src.UnratedRating, adultGroups: map[string]bool{}}
 	for _, g := range src.Groups {
 		if g.Adult {
 			e.adultGroups[normGroup(g.Name)] = true
@@ -570,6 +793,12 @@ func (s *Service) sourceEntry(ctx context.Context, id string) (authEntry, error)
 		e.pool = &Source{ID: src.ID, LoginPool: src.LoginPool, Auth: src.Auth, PlaylistURL: src.PlaylistURL, Account: src.Account, Logins: src.Logins}
 	}
 	if src.Account != nil {
+		acct := *src.Account
+		if src.Account.ExpiresAt != nil {
+			exp := *src.Account.ExpiresAt
+			acct.ExpiresAt = &exp
+		}
+		e.account = &acct
 		e.limit = src.Account.MaxConnections
 	}
 	if src.MaxConnections > 0 && (e.limit == 0 || src.MaxConnections < e.limit) {
@@ -599,6 +828,9 @@ func (s *Service) sourceEntry(ctx context.Context, id string) (authEntry, error)
 		e = cur
 	}
 	c.mu.Unlock()
+	if hadPrev && (prevEntry.disabled != e.disabled || !sameAccountHealth(prevEntry.account, e.account)) {
+		s.bumpHealthRevision()
+	}
 	return e, nil
 }
 

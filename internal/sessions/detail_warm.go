@@ -41,6 +41,7 @@ func (b *Broker) playCaps(v *core.Viewer, protocol frontend.Protocol, device cor
 			caps.MaxBitrateKbps = limit
 		}
 	}
+	b.stampViewerTranscoding(v, &caps)
 	return caps
 }
 
@@ -56,6 +57,9 @@ type warmDiscarder interface {
 // Dolby Vision turned on, another codec). Narrower caps are safe: Prepare's
 // own acceptance check rejects a warm release the device cannot play.
 func capsWiden(next, prev core.ClientCaps) bool {
+	if prev.NoVideoTranscode && !next.NoVideoTranscode {
+		return true
+	}
 	if prev.MaxBitrateKbps > 0 && (next.MaxBitrateKbps == 0 || next.MaxBitrateKbps > prev.MaxBitrateKbps) {
 		return true
 	}
@@ -159,7 +163,7 @@ func (b *Broker) WarmDetail(ctx context.Context, req frontend.PlanRequest) bool 
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(ctx, v, req.Device, req.Item)
+	title, err := lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil || title == nil || title.Key != req.Item || (title.Type != core.TypeMovie && title.Type != core.TypeEpisode) || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
 		return false
 	}

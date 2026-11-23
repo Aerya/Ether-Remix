@@ -1,5 +1,6 @@
 import { cn } from "@braedonsaunders/appkit-ui";
 import { createContext, useState, type ReactNode } from "react";
+import { useFallbackDocumentTitle } from "../lib/document-title";
 
 export const WorkspaceOverlayContext = createContext<HTMLDivElement | null>(null);
 
@@ -36,9 +37,10 @@ export function Workspace({
   children?: ReactNode;
 }) {
   const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
+  useFallbackDocumentTitle([title]);
   return (
     <WorkspaceOverlayContext.Provider value={overlay}>
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-x-hidden">
         <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-3 py-2.5 sm:px-5">
           <div className="flex min-w-0 flex-1 basis-full items-baseline gap-3 sm:basis-auto">
             {leading ? <div className="shrink-0 self-center">{leading}</div> : null}
@@ -50,7 +52,10 @@ export function Workspace({
           {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
         </header>
         {children ?? (
-          <div className="app-scroll min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-3 lg:overflow-hidden">
+          <div
+            data-workspace-scroll=""
+            className="app-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto lg:grid lg:grid-cols-3 lg:overflow-hidden"
+          >
             <aside
               className={cn(
                 "app-scroll flex flex-col border-b border-border bg-bg-subtle lg:col-span-1 lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r",

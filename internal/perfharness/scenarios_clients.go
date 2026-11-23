@@ -19,7 +19,8 @@ func jellyfinLibrarySteps(f string) []Step {
 	return []Step{
 		// Infuse's library sync pages in order: page 2 follows page 1 (the
 		// remembered page end lets it seek), the jumps below do not.
-		{Name: "movies p2 SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=50"},
+		{Name: "movies p2 SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=50", Discover: discoverMBItemBatch("movieIds100", "Movie", 100)},
+		{Name: "movies by Ids 100", Class: classBrowse, QueriesBound: detailQueriesBound, Path: "/Items?Ids={movieIds100}&fields=" + f + "&userId={userId}"},
 		{Name: "movies p3 SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=100"},
 		{Name: "movies very deep SortName", Class: classBrowse, Path: movies + "&sortBy=SortName&sortOrder=Ascending&startIndex=24000"},
 		{Name: "movies deep DateCreated", Class: classBrowse, Path: movies + "&sortBy=DateCreated%2CSortName&sortOrder=Descending&startIndex=12000"},
@@ -37,6 +38,7 @@ func jellyfinLibrarySteps(f string) []Step {
 		{Name: "movies p1 GenreIds", Class: classBrowse, Path: movies + "&genreIds={genreId}&sortBy=SortName&sortOrder=Ascending&startIndex=0"},
 		{Name: "/Studios movies", Class: classBrowse, Path: "/Studios?parentId={moviesView}&includeItemTypes=Movie&sortBy=SortName&sortOrder=Ascending&enableImages=false&userId={userId}", Discover: discoverMBItem("studioId", "Studio")},
 		{Name: "movies p1 StudioIds", Class: classBrowse, Path: movies + "&studioIds={studioId}&sortBy=SortName&sortOrder=Ascending&startIndex=0"},
+		{Name: "boxsets p1", Class: classBrowse, Path: "/Items?includeItemTypes=BoxSet&limit=50&startIndex=0&userId={userId}"},
 		{Name: "/Persons", Class: classBrowse, Path: "/Persons?limit=100&personTypes=Actor&enableImages=true&userId={userId}"},
 		{Name: "movie detail People", Class: classDetail, Path: "/Items/{movieId}?fields=" + f + "%2CPeople%2CStudios%2CTaglines&userId={userId}", Discover: discoverMBPerson},
 		{Name: "movies p1 PersonIds", Class: classBrowse, Path: "/Items?fields=" + f + "&includeItemTypes=Movie%2CSeries&limit=50&personIds={personId}&recursive=true&sortBy=SortName&sortOrder=Ascending&startIndex=0&userId={userId}"},

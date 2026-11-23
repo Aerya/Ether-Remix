@@ -2,15 +2,14 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
+
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
-// IssuePersonImages uses the same admission and serve-time revalidation as
-// single portrait grants, with one credit proof and one batched transaction.
+// IssuePersonImages signs credited portrait URLs using the same stateless HMAC
+// and serve-time revalidation as single portrait grants, with one batched
+// credit proof and zero persisted grant rows.
 func (s *ImageGrantService) IssuePersonImages(ctx context.Context, credential string, device core.Device, targets []frontend.PersonImageTarget) ([]string, error) {
 	if len(targets) > 100 {
 		return nil, frontend.ErrImageBatchLimit
@@ -24,17 +23,13 @@ func (s *ImageGrantService) IssuePersonImages(ctx context.Context, credential st
 			return nil, core.ErrUnauthorized
 		}
 	}
-	viewer, err := s.grants.Resolve(ctx, string(s.surface), credential)
+	viewer, source, err := s.resolveCredential(ctx, credential)
 	if err != nil {
 		return nil, err
 	}
-	source, ok := grantHash(credential)
-	if !ok {
-		return nil, core.ErrUnauthorized
-	}
-	deviceJSON, err := json.Marshal(device)
-	if err != nil || len(deviceJSON) > 4096 {
-		return nil, core.ErrUnauthorized
+	macKey, encBlock, err := s.grantKeys()
+	if err != nil {
+		return nil, core.ErrNotAvailable
 	}
 	reader, ok := s.experience().(frontend.PeopleImageBatchReader)
 	if !ok {
@@ -48,32 +43,30 @@ func (s *ImageGrantService) IssuePersonImages(ctx context.Context, credential st
 		return nil, core.ErrUnauthorized
 	}
 	secrets := make([]string, len(targets))
-	rows := make([]imageBatchRow, 0, len(targets))
+	sealedAny := false
 	for n, target := range targets {
 		if !allowed[n] {
 			continue
 		}
-		var raw [32]byte
-		if _, err := rand.Read(raw[:]); err != nil {
+		secret, err := sealImageGrant(macKey, encBlock, string(s.surface), imageClaims{
+			Viewer:   viewer.ID,
+			Item:     int64(target.Item),
+			Kind:     target.Image.Kind,
+			Path:     target.Image.Path,
+			Tag:      target.Image.Tag,
+			Subject:  target.Image.Subject,
+			Language: device.Language,
+		})
+		if err != nil {
 			return nil, err
 		}
-		secrets[n] = base64.RawURLEncoding.EncodeToString(raw[:])
-		hash, _ := validImageSecret(secrets[n])
-		rows = append(rows, imageBatchRow{hash: hash, item: target.Item, image: target.Image})
+		secrets[n] = secret
+		sealedAny = true
 	}
-	if len(rows) == 0 {
-		return secrets, nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if err := s.insertAdmitted(ctx, tx, viewer.ID, source, device.ID, string(deviceJSON), "", rows); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
+	if sealedAny {
+		if err := s.sourceStillLive(ctx, viewer.ID, source); err != nil {
+			return nil, err
+		}
 	}
 	return secrets, nil
 }

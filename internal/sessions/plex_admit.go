@@ -83,10 +83,28 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 	// policy clamping. Apply the same current ceilings before Decide and
 	// storing the plan, so Open does not mistake an omitted limit for a
 	// policy violation. Open still rechecks for policy changes.
+	b.stampViewerTranscoding(req.Viewer, &caps)
 	limit := b.deps.BitrateLimit(req.Viewer)
 	if caps.Remote && b.deps.RemoteBitrateLimit != nil {
 		if remote := b.deps.RemoteBitrateLimit(); remote > 0 && (limit == 0 || remote < limit) {
 			limit = remote
+		}
+	}
+	budgetCapKbps := 0
+	if caps.Remote && b.deps.RemoteUploadCap != nil {
+		existing := limit
+		if caps.MaxBitrateKbps > 0 && (existing == 0 || caps.MaxBitrateKbps < existing) {
+			existing = caps.MaxBitrateKbps
+		}
+		if opts.MaxBitrateKbps > 0 && (existing == 0 || opts.MaxBitrateKbps < existing) {
+			existing = opts.MaxBitrateKbps
+		}
+		allowTC := req.Channel != "" || !b.videoOff(caps)
+		if capKbps, fromBudget := b.deps.RemoteUploadCap(ctx, ps.ID, caps.Remote, allowTC, existing, media.BitrateKbps); fromBudget && capKbps > 0 {
+			budgetCapKbps = capKbps
+			if limit == 0 || capKbps < limit {
+				limit = capKbps
+			}
 		}
 	}
 	if limit > 0 {
@@ -97,17 +115,29 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 			opts.MaxBitrateKbps = limit
 		}
 	}
+	if budgetCapKbps > 0 && b.deps.RecordUploadCap != nil && ps.ID != "" {
+		constrained := media.BitrateKbps <= 0 || media.BitrateKbps > budgetCapKbps
+		b.deps.RecordUploadCap(ps.ID, budgetCapKbps, constrained)
+	}
 	protocol := admitted.Protocol
 	if protocol == "" {
 		protocol = string(req.Protocol)
 	}
 	preferRemux := admitted.PreferRemux || req.Intent.PreferRemux
+	videoOff := req.Channel == "" && b.videoOff(caps)
 	dec, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{
 		Session: ps, Caps: caps, Options: opts, PreferRemux: preferRemux,
 		Protocol: protocol, RemoteMaxBitrateKbps: admitted.RemoteMaxBitrateKbps,
+		NoVideoTranscode: videoOff,
 	})
 	if err != nil {
 		return frontend.PlayPlan{}, err
+	}
+	if videoOff && decisionEncodesVideo(dec, media) {
+		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
+			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+			Cause:         core.ErrVideoTranscodingDisabled,
+		}
 	}
 	req.Caps = caps
 	req.Intent.Options = opts
@@ -121,7 +151,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), etag: etag, external: true}
 	stored = true
 	b.mu.Unlock()
-	return frontend.PlayPlan{ID: id, Media: publicMedia(media), Decision: dec, ETag: etag}, nil
+	return frontend.PlayPlan{ID: id, Media: publicMedia(media), Decision: dec, VideoTranscodingOff: videoOff, ETag: etag}, nil
 }
 
 // reusePlexSession updates the broker session already published for a Plex

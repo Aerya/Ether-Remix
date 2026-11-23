@@ -115,7 +115,7 @@ func (h *Handler) portalTraktCall(w http.ResponseWriter, r *http.Request, rateLi
 	}
 	if rateLimited && h.deps.PollLimiter != nil {
 		ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
-		ok, lerr := h.deps.PollLimiter.Allow(r.Context(), "trakt:"+strconv.FormatInt(viewer.ID, 10), ip)
+		ok, lerr := h.deps.PollLimiter.Allow(identity.WithRateLimitApp(r.Context(), "Trakt"), "trakt:"+strconv.FormatInt(viewer.ID, 10), ip)
 		if lerr != nil || !ok {
 			writeError(w, http.StatusTooManyRequests, "rate_limit", "try again later")
 			return

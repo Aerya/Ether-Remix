@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/viewspec"
@@ -166,6 +168,33 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 		base := fmt.Sprintf("ether.contributes.ruleConditions[%d]", i)
 		recordRef(base+".label", rc.Label, 40, false)
 	}
+	if c.Events != nil {
+		for i, pe := range c.Events.Publish {
+			base := fmt.Sprintf("ether.contributes.events.publish[%d]", i)
+			recordRef(base+".label", pe.Label, 60, false)
+			recordRef(base+".description", pe.Description, 200, false)
+			for j, fld := range pe.Fields {
+				fbase := fmt.Sprintf("%s.fields[%d]", base, j)
+				recordRef(fbase+".label", fld.Label, 60, false)
+				recordRef(fbase+".description", fld.Description, 200, false)
+			}
+		}
+	}
+	for i, fa := range c.FlowActions {
+		base := fmt.Sprintf("ether.contributes.flowActions[%d]", i)
+		recordRef(base+".label", fa.Label, 60, false)
+		recordRef(base+".description", fa.Description, 200, false)
+		for j, p := range fa.Params {
+			pbase := fmt.Sprintf("%s.params[%d]", base, j)
+			recordRef(pbase+".label", p.Label, 60, false)
+			recordRef(pbase+".description", p.Description, 200, false)
+		}
+		for j, o := range fa.Outputs {
+			obase := fmt.Sprintf("%s.outputs[%d]", base, j)
+			recordRef(obase+".label", o.Label, 60, false)
+			recordRef(obase+".description", o.Description, 200, false)
+		}
+	}
 	for i, tl := range c.Tools {
 		base := fmt.Sprintf("ether.contributes.tools[%d]", i)
 		recordRef(base+".title", tl.Title, 40, false)
@@ -182,9 +211,30 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 		base := fmt.Sprintf("ether.contributes.commands[%d]", i)
 		recordRef(base+".label", cm.Label, 40, false)
 	}
+	for i, lf := range c.LiveFeeds {
+		base := fmt.Sprintf("ether.contributes.liveFeeds[%d]", i)
+		recordRef(base+".title", lf.Title, 60, false)
+	}
 	if c.Integration != nil {
 		for i, a := range c.Integration.Adds {
 			recordRef(fmt.Sprintf("ether.contributes.integration.adds[%d]", i), a, 80, false)
+		}
+	}
+	for i, k := range c.MediaKinds {
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("ether.contributes.mediaKinds[%d].library.tabs[%d]", i, j)
+			if strings.HasPrefix(tab.Label, "$t:") {
+				recordRef(tbase+".label", tab.Label, 40, false)
+			}
+			if strings.HasPrefix(tab.SearchPlaceholder, "$t:") {
+				recordRef(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60, false)
+			}
+		}
+		for j, shelf := range k.Library.Shelves {
+			sbase := fmt.Sprintf("ether.contributes.mediaKinds[%d].library.shelves[%d]", i, j)
+			if strings.HasPrefix(shelf.Label, "$t:") {
+				recordRef(sbase+".label", shelf.Label, 60, false)
+			}
 		}
 	}
 
@@ -434,20 +484,48 @@ func relLuminance(r, g, b float64) float64 {
 // recordingHost implements wasm.Host for conformance checking, recording
 // outbound http.fetch hosts and auditing them against manifest permissions.
 type recordingHost struct {
-	mu       sync.Mutex
-	man      plugins.Manifest
-	kv       map[string]string
-	observed map[string]int
-	undecl   map[string]bool
-	deferred int
+	mu               sync.Mutex
+	man              plugins.Manifest
+	operatorDefaults []string
+	kv               map[string]string
+	badges           map[string]map[string][]string
+	observed         map[string]int
+	undecl           map[string]bool
+	deferred         int
 }
 
-func newRecordingHost(man plugins.Manifest) *recordingHost {
+func resolvedSettingsSchema(man plugins.Manifest, files map[string][]byte) json.RawMessage {
+	if man.Ether == nil || len(man.Ether.Settings) == 0 {
+		return nil
+	}
+	raw := man.Ether.Settings
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) == nil {
+		if ref, ok := doc["$ref"].(string); ok && ref != "" {
+			if b, exists := files[ref]; exists {
+				raw = b
+			}
+		}
+	}
+	return raw
+}
+
+func newRecordingHost(man plugins.Manifest, files map[string][]byte) *recordingHost {
+	var opDefaults []string
+	if plugins.DeclaresOperatorHosts(man) {
+		schema := resolvedSettingsSchema(man, files)
+		for _, cand := range plugins.SettingsCandidateHosts(nil, schema, man.Ether.Permissions.Secrets, false) {
+			if u, err := url.Parse("https://" + cand); err == nil && u.Hostname() != "" {
+				opDefaults = append(opDefaults, strings.ToLower(u.Hostname()))
+			}
+		}
+	}
 	return &recordingHost{
-		man:      man,
-		kv:       map[string]string{},
-		observed: map[string]int{},
-		undecl:   map[string]bool{},
+		man:              man,
+		operatorDefaults: opDefaults,
+		kv:               map[string]string{},
+		observed:         map[string]int{},
+		undecl:           map[string]bool{},
 	}
 }
 
@@ -498,6 +576,85 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		sort.Strings(keys)
 		b, _ := json.Marshal(keys)
 		return b, nil
+	case "kv.usage":
+		var used int64
+		for _, v := range h.kv {
+			used += int64(len(v))
+		}
+		keys := int64(len(h.kv))
+		b, _ := json.Marshal(plugins.KVUsage{
+			Bytes:      used + keys*plugins.KVKeyChargeBytes,
+			Keys:       keys,
+			QuotaBytes: plugins.KVQuotaBytes,
+			QuotaKeys:  plugins.KVQuotaKeys,
+		})
+		return b, nil
+	case "badges.set":
+		var entries []plugins.BadgeEntry
+		if len(args) > 1 && len(args[1]) > 0 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &entries); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "badges.set takes (setKey, entries[])"}
+			}
+		}
+		norm, err := plugins.ValidateBadgeSetCall(h.man, str(0), entries)
+		if err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		if h.badges == nil {
+			h.badges = map[string]map[string][]string{}
+		}
+		if h.badges[str(0)] == nil {
+			h.badges[str(0)] = map[string][]string{}
+		}
+		for _, e := range norm {
+			tmdbK, imdbK := plugins.ExternalBadgeKeys(e.Title)
+			k := tmdbK
+			if k == "" {
+				k = imdbK
+			}
+			if len(e.Labels) == 0 {
+				delete(h.badges[str(0)], k)
+			} else {
+				h.badges[str(0)][k] = e.Labels
+			}
+		}
+		return json.RawMessage("null"), nil
+	case "badges.clear":
+		if err := plugins.ValidateBadgeClearCall(h.man, str(0)); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		delete(h.badges, str(0))
+		return json.RawMessage("null"), nil
+	case "badges.usage":
+		if !h.man.HasCapability(plugins.CapPosterBadges) {
+			return nil, wasm.Forbidden("poster_badges capability is required")
+		}
+		distinct := map[string]bool{}
+		for _, setMap := range h.badges {
+			for k := range setMap {
+				distinct[k] = true
+			}
+		}
+		b, _ := json.Marshal(plugins.BadgeUsage{Titles: int64(len(distinct)), QuotaTitles: plugins.PosterBadgeQuotaTitles})
+		return b, nil
+	case "events.publish":
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		if _, _, err := plugins.ValidatePublishEventCall(h.man, str(0), payload); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		return json.RawMessage("null"), nil
 	case "secret.get":
 		sec := str(0)
 		for _, allowed := range h.man.Ether.Permissions.Secrets {
@@ -506,8 +663,40 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			}
 		}
 		return nil, wasm.Forbidden("undeclared secret " + sec)
+	case "secret.set", "secret.delete":
+		sec := str(0)
+		for _, allowed := range h.man.Ether.Permissions.Secrets {
+			if allowed == sec {
+				return json.RawMessage("null"), nil
+			}
+		}
+		return nil, wasm.Forbidden("undeclared secret " + sec)
 	case "settings.get":
 		return json.RawMessage(`{}`), nil
+	case "runtime.limits":
+		limits := plugins.RuntimeLimits{
+			MemoryBytes:          32 << 20,
+			ReadBytes:            plugins.MinDataReadBytes,
+			FetchBytes:           plugins.MaxDataFetchBytes,
+			ArchiveMemberBytes:   8 << 30,
+			ArchiveExpandedBytes: 32 << 30,
+			ArchiveMembers:       65535,
+			MaxItems:             plugins.DefaultMaxPluginItems,
+			Deadline:             "12h",
+			PoolSize:             wasm.DefaultPoolSize,
+		}
+		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
+			limits = *l
+		}
+		if active, ok := wasm.CallLimits(ctx); ok {
+			limits.MemoryBytes = active.MemoryBytes
+			limits.ReadBytes = wasm.DataReadBytes(active.MemoryBytes)
+			limits.Deadline = active.Deadline.String()
+			limits.UnitBudget = active.UnitBudget
+			limits.PoolSize = active.PoolSize
+		}
+		b, _ := json.Marshal(limits)
+		return b, nil
 	case "addon.get":
 		// An add-on-backed plugin's checks run offline: the add-on answers
 		// with an empty, well-formed Stremio response.
@@ -536,7 +725,8 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		host := strings.ToLower(u.Hostname())
 		h.observed[host]++
-		if !hostMatches(h.man.Ether.Permissions.Network, host) {
+		if !hostMatches(h.man.Ether.Permissions.Network, host) &&
+			!(plugins.DeclaresOperatorHosts(h.man) && hostMatches(h.operatorDefaults, host)) {
 			h.undecl[host] = true
 			return nil, wasm.Forbidden("undeclared network host " + host)
 		}
@@ -544,6 +734,40 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		// Stop at this boundary and leave an explicit live-test warning.
 		h.deferred++
 		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared network request needs a live test"}
+	case "http.fetchMany":
+		reqs, _, fault := plugins.ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		if len(reqs) == 0 {
+			return json.RawMessage("[]"), nil
+		}
+		if len(reqs) > 1 {
+			if err := wasm.ChargeUnits(ctx, int64(len(reqs)-1)*wasm.FetchManyUnitsPerRequest); err != nil {
+				return nil, err
+			}
+		}
+		var undeclared string
+		for _, req := range reqs {
+			u, err := url.Parse(req.URL)
+			if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return nil, wasm.Forbidden("invalid url in http.fetchMany: " + req.URL)
+			}
+			host := strings.ToLower(u.Hostname())
+			h.observed[host]++
+			if !hostMatches(h.man.Ether.Permissions.Network, host) &&
+				!(plugins.DeclaresOperatorHosts(h.man) && hostMatches(h.operatorDefaults, host)) {
+				h.undecl[host] = true
+				if undeclared == "" {
+					undeclared = host
+				}
+			}
+		}
+		if undeclared != "" {
+			return nil, wasm.Forbidden("undeclared network host " + undeclared)
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared network requests need a live test"}
 	case "catalog.search":
 		if h.man.Ether.Permissions.Catalog != "read" {
 			return nil, wasm.Forbidden("catalog permission not declared")
@@ -593,6 +817,42 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		return json.RawMessage(`{"name":"movie.mkv","path":"movie.mkv","dir":false,"size":1024}`), nil
 	case "notify.owner":
 		return json.RawMessage("null"), nil
+	case "ai.complete":
+		if h.man.Ether == nil || !plugins.AIPermissionAllowsComplete(h.man.Ether.Permissions.AI) {
+			return nil, wasm.Forbidden("ai: complete permission not declared")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.AICompleteAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("ai.complete cannot run on viewer or client request path " + callPath)
+		}
+		var req plugins.AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		if _, err := plugins.ValidateAICompleteRequest(req); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared ai.complete request needs a live test"}
+	case "media.probe":
+		if h.man.Ether == nil || !plugins.MediaPermissionAllowsProbe(h.man.Ether.Permissions.Media) {
+			return nil, wasm.Forbidden("media: probe permission not declared")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.MediaProbeAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("media.probe cannot run on viewer or client request path " + callPath)
+		}
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		if err := plugins.ValidateMediaProbeSource(src); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared media.probe request needs a live test"}
 	default:
 		return nil, wasm.Forbidden("unknown host service " + name)
 	}
@@ -601,7 +861,10 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 func hostMatches(patterns []string, host string) bool {
 	host = strings.ToLower(host)
 	for _, p := range patterns {
-		p = strings.ToLower(p)
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == plugins.OperatorNetworkEntry {
+			continue
+		}
 		if strings.HasPrefix(p, "*.") {
 			if strings.HasSuffix(host, p[1:]) && host != p[2:] {
 				return true
@@ -619,10 +882,14 @@ func checkHostedRuntime(ctx context.Context, rep *Report, man plugins.Manifest, 
 	eng := wasm.NewEngine(nil)
 	defer func() { _ = eng.Close() }()
 
-	host := newRecordingHost(man)
+	host := newRecordingHost(man, files)
 	decl := man.Ether.Runtime
 	var plug *wasm.Plugin
 	var err error
+	// Route checks run under the limits the installed plugin is granted. Zero
+	// limits normalize to a one-second unit budget, so an install failed on a
+	// legitimately slow scheduled route whatever the manifest declared.
+	lim := plugins.RuntimeLimitsFor(man)
 
 	switch {
 	case decl.Module != "":
@@ -631,14 +898,14 @@ func checkHostedRuntime(ctx context.Context, rep *Report, man plugins.Manifest, 
 			rep.addErr("runtime", "ether.runtime.module", fmt.Sprintf("missing WASM module %q", decl.Module))
 			return
 		}
-		plug, err = eng.LoadWASM(man.ID, man.Version, modBytes, host, wasm.Limits{})
+		plug, err = eng.LoadWASM(man.ID, man.Version, modBytes, host, lim)
 	case decl.Entry != "":
 		jsSrc, compErr := loadOrCompileEntry(decl.Entry, files)
 		if compErr != nil {
 			rep.addErr("runtime", "ether.runtime.entry", compErr.Error())
 			return
 		}
-		plug, err = eng.LoadJS(man.ID, man.Version, jsSrc, host, wasm.Limits{})
+		plug, err = eng.LoadJS(man.ID, man.Version, jsSrc, host, lim)
 	default:
 		return
 	}
@@ -720,7 +987,9 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 		man.HasCapability(plugins.CapSubtitles) ||
 		man.HasCapability(plugins.CapMarkers) ||
 		man.HasCapability(plugins.CapNotify) ||
-		man.HasCapability(plugins.CapEvents)
+		man.HasCapability(plugins.CapEvents) ||
+		man.HasCapability(plugins.CapFlowActions) ||
+		man.HasCapability(plugins.CapLiveEvents)
 
 	if !plug.HasHandle() {
 		if needsHandle {
@@ -927,11 +1196,8 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 	}
 
 	// Events.
-	if man.HasCapability(plugins.CapEvents) {
-		evName := plugins.EventPlaybackStarted
-		if man.Ether.Contributes.Events != nil && len(man.Ether.Contributes.Events.Subscribe) > 0 {
-			evName = man.Ether.Contributes.Events.Subscribe[0]
-		}
+	if man.HasCapability(plugins.CapEvents) && man.Ether.Contributes.Events != nil && len(man.Ether.Contributes.Events.Subscribe) > 0 {
+		evName := man.Ether.Contributes.Events.Subscribe[0]
 		evBody, _ := json.Marshal(map[string]any{
 			"events": []map[string]any{
 				{"id": "ev-1", "name": evName, "at": "2026-01-01T00:00:00Z", "payload": map[string]any{"ratingKey": 1}},
@@ -954,6 +1220,56 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 				return ""
 			},
 		})
+	}
+
+	// Flow actions.
+	if man.HasCapability(plugins.CapFlowActions) {
+		for _, fa := range man.Ether.Contributes.FlowActions {
+			sampleParams := map[string]any{}
+			for _, p := range fa.Params {
+				switch {
+				case p.Default != nil:
+					sampleParams[p.Key] = p.Default
+				case p.Type == "enum" && len(p.Enum) > 0:
+					sampleParams[p.Key] = p.Enum[0].Value
+				case p.Type == "string":
+					sampleParams[p.Key] = "sample"
+				case p.Type == "int", p.Type == "duration_ms":
+					sampleParams[p.Key] = 1
+				case p.Type == "float":
+					sampleParams[p.Key] = 1.0
+				case p.Type == "bool":
+					sampleParams[p.Key] = true
+				case p.Type == "timestamp":
+					sampleParams[p.Key] = "2026-01-01T00:00:00Z"
+				case p.Type == "string_list":
+					sampleParams[p.Key] = []string{"sample"}
+				case p.Type == "object":
+					sampleParams[p.Key] = map[string]any{}
+				}
+			}
+			actBody, _ := json.Marshal(map[string]any{
+				"flowId":         "kit-flow",
+				"runId":          "kit-run",
+				"nodeId":         "kit-node",
+				"idempotencyKey": "idem_kit_" + fa.Key,
+				"dryRun":         true,
+				"params":         sampleParams,
+			})
+			fixtures = append(fixtures, routeFixture{
+				method:  "POST",
+				path:    fa.Route,
+				headers: map[string]string{plugins.HeaderIdempotencyKey: "idem_kit_" + fa.Key},
+				body:    actBody,
+				validate: func(resp wasm.Response) string {
+					var doc map[string]any
+					if err := decodeResponseBody(resp.Body, &doc); err != nil {
+						return "flow action response must be a JSON object: " + err.Error()
+					}
+					return ""
+				},
+			})
+		}
 	}
 
 	// Pages & Slots (ViewSpec validation + literal string rejection).
@@ -1017,6 +1333,29 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 				return ""
 			},
 		})
+	}
+
+	// Live event feeds.
+	if man.HasCapability(plugins.CapLiveEvents) {
+		for _, lf := range man.Ether.Contributes.LiveFeeds {
+			feedPath := "/ether/v1/live/" + lf.ID + "/events"
+			fixtures = append(fixtures, routeFixture{
+				method: "GET",
+				path:   feedPath,
+				validate: func(resp wasm.Response) string {
+					var doc struct {
+						Events []map[string]any `json:"events"`
+					}
+					if err := decodeResponseBody(resp.Body, &doc); err != nil {
+						return "live events response must be a JSON object with events[]: " + err.Error()
+					}
+					if doc.Events == nil {
+						return "live events response must contain an events array"
+					}
+					return ""
+				},
+			})
+		}
 	}
 
 	// Scheduled jobs.

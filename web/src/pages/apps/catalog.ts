@@ -65,3 +65,11 @@ export function appPurpose(id: string): string {
       return t("Another way to watch this library.");
   }
 }
+
+/** Vela can only be offered after the owner installs its client. */
+export function appInstalled(info: {
+  descriptor: { id: string };
+  status?: { webPlayerReady?: boolean };
+}): boolean {
+  return info.descriptor.id !== "vela" || info.status?.webPlayerReady === true;
+}

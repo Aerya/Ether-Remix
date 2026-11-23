@@ -1,0 +1,192 @@
+{
+  "sports": [
+    {
+      "leagues": [
+        {
+          "teams": [
+            {
+              "team": {
+                "id": "359",
+                "uid": "s:600~t:359",
+                "location": "Arsenal",
+                "name": "Arsenal",
+                "abbreviation": "ARS",
+                "displayName": "Arsenal",
+                "shortDisplayName": "Arsenal",
+                "color": "e20520",
+                "alternateColor": "003399",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500/359.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500-dark/359.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "331",
+                "uid": "s:600~t:331",
+                "location": "Brighton & Hove Albion",
+                "name": "Brighton & Hove Albion",
+                "abbreviation": "BHA",
+                "displayName": "Brighton & Hove Albion",
+                "shortDisplayName": "Brighton",
+                "color": "0606fa",
+                "alternateColor": "005F60",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500/331.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500-dark/331.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "363",
+                "uid": "s:600~t:363",
+                "location": "Chelsea",
+                "name": "Chelsea",
+                "abbreviation": "CHE",
+                "displayName": "Chelsea",
+                "shortDisplayName": "Chelsea",
+                "color": "144992",
+                "alternateColor": "FFFFFF",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500/363.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500-dark/363.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "306",
+                "uid": "s:600~t:306",
+                "location": "Hull City",
+                "name": "Hull City",
+                "abbreviation": "HUL",
+                "displayName": "Hull City",
+                "shortDisplayName": "Hull",
+                "color": "f28800",
+                "alternateColor": "ffffff",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500/306.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500-dark/306.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            },
+            {
+              "team": {
+                "id": "364",
+                "uid": "s:600~t:364",
+                "location": "Liverpool",
+                "name": "Liverpool",
+                "abbreviation": "LIV",
+                "displayName": "Liverpool",
+                "shortDisplayName": "Liverpool",
+                "color": "d11317",
+                "alternateColor": "FFFFFF",
+                "logos": [
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500/364.png",
+                    "rel": [
+                      "full",
+                      "default"
+                    ],
+                    "width": 500
+                  },
+                  {
+                    "alt": "",
+                    "height": 500,
+                    "href": "https://a.espncdn.com/i/teamlogos/soccer/500-dark/364.png",
+                    "rel": [
+                      "full",
+                      "dark"
+                    ],
+                    "width": 500
+                  }
+                ],
+                "isActive": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

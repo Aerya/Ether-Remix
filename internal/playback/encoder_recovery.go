@@ -7,6 +7,11 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+const (
+	encoderRecoveryBaseDelay   = 30 * time.Second
+	maxEncoderRecoveryAttempts = 3
+)
+
 type encoderStatusSource interface{ EncoderStatus() *core.EncoderStatus }
 
 // checkEncoderSpeed uses fresh authenticated viewer telemetry, published
@@ -18,7 +23,8 @@ func (m *Manager) checkEncoderSpeed(s *session, g *generation, hls core.HLSSessi
 		return false
 	}
 	status := source.EncoderStatus()
-	if status == nil || status.Decision.VideoCopy || status.Phase != "running" || status.Speed <= 0 || status.UpdatedAt.IsZero() || now.Sub(status.UpdatedAt) > 8*time.Second || now.Before(status.UpdatedAt) || now.Sub(status.StartedAt) < 6*time.Second {
+	audioOnly := g != nil && len(g.info.Streams) > 0 && g.info.Video() == nil
+	if status == nil || audioOnly || status.Decision.VideoCopy || status.Phase != "running" || status.Speed <= 0 || status.UpdatedAt.IsZero() || now.Sub(status.UpdatedAt) > 8*time.Second || now.Before(status.UpdatedAt) || now.Sub(status.StartedAt) < 6*time.Second {
 		s.mu.Lock()
 		s.encoderRecoveryReason, s.encoderRunway = "", nil
 		s.mu.Unlock()
@@ -74,18 +80,23 @@ func (m *Manager) checkEncoderSpeed(s *session, g *generation, hls core.HLSSessi
 			s.encoderSlowChecks = 0
 		}
 	}
-	trigger := slow && s.encoderSlowChecks >= 2 && runway <= 30*time.Second && !now.Before(s.encoderRetryAt)
+	exhausted := s.encoderMisses >= maxEncoderRecoveryAttempts
+	inFlight := g.backgroundFailover.Load()
+	trigger := slow && !exhausted && !inFlight && s.encoderSlowChecks >= 2 && runway <= 30*time.Second && !now.Before(s.encoderRetryAt)
 	if trigger {
 		s.encoderSlowChecks = 0
-		s.encoderRetryAt = now.Add(30 * time.Second)
+		s.encoderRetryAt = now.Add(encoderRecoveryBaseDelay << s.encoderMisses)
 	}
 	s.speedMu.Unlock()
 	s.mu.Lock()
 	if slow {
 		s.encoderRecoveryReason = "encoder output below real time"
+		if exhausted {
+			s.encoderRecoveryReason = "encoder output below real time; compatible-copy recovery exhausted"
+		}
 		r := runway
 		s.encoderRunway = &r
-		if trigger {
+		if trigger || inFlight {
 			s.encoderRecoveryReason = "searching for a compatible video copy"
 		}
 	} else {
@@ -138,16 +149,36 @@ func (m *Manager) backgroundEncoderFailover(s *session, g *generation, at time.D
 				return false
 			}
 			status := source.EncoderStatus()
-			return status != nil && !status.Decision.VideoCopy && status.Phase == "running" && status.Speed > 0 && status.Speed < 0.95 && !status.UpdatedAt.IsZero() && time.Since(status.UpdatedAt) <= 8*time.Second
+			audioOnly := g != nil && len(g.info.Streams) > 0 && g.info.Video() == nil
+			return status != nil && !audioOnly && !status.Decision.VideoCopy && status.Phase == "running" && status.Speed > 0 && status.Speed < 0.95 && !status.UpdatedAt.IsZero() && time.Since(status.UpdatedAt) <= 8*time.Second
 		}
-		_, err := m.failoverWith(ctx, s, g, at, failoverOpts{encoder: true, reason: "encoder output slower than playback", followPlayer: true, preserveBuffer: true, quietFailure: true, stillNeeded: stillSlow})
+		next, err := m.failoverWith(ctx, s, g, at, failoverOpts{encoder: true, reason: "encoder output slower than playback", followPlayer: true, preserveBuffer: true, quietFailure: true, stillNeeded: stillSlow})
+		if err == nil && next != nil && next != g {
+			s.speedMu.Lock()
+			s.encoderMisses = 0
+			s.speedMu.Unlock()
+			return
+		}
 		if err != nil && ctx.Err() == nil {
+			s.speedMu.Lock()
+			s.encoderMisses++
+			misses := s.encoderMisses
+			exhausted := misses >= maxEncoderRecoveryAttempts
+			s.speedMu.Unlock()
 			s.mu.Lock()
 			if s.cur == g {
-				s.encoderRecoveryReason = "encoder output below real time; compatible-copy recovery failed"
+				if exhausted {
+					s.encoderRecoveryReason = "encoder output below real time; compatible-copy recovery exhausted"
+				} else {
+					s.encoderRecoveryReason = "encoder output below real time; compatible-copy recovery failed"
+				}
 			}
 			s.mu.Unlock()
-			m.log.Info("no compatible copy available for slow encoder", "session", s.id, "err", err)
+			if exhausted {
+				m.log.Warn("stopping slow-encoder failover recovery after bounded attempts", "session", s.id, "attempts", misses, "err", err)
+			} else {
+				m.log.Info("no compatible copy available for slow encoder", "session", s.id, "attempt", misses, "maxAttempts", maxEncoderRecoveryAttempts, "err", err)
+			}
 		}
 	}()
 }

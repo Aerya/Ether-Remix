@@ -96,6 +96,40 @@ func TestPluginKeyAndLocalKeyGuard(t *testing.T) {
 	assertPanics("PluginKey(PluginKeyMaxSeq)", func() { PluginKey(PluginKeyMaxSeq) })
 }
 
+func TestPluginPartKeyRoundTrip(t *testing.T) {
+	parent := PluginKey(4242)
+	p0, ok := PluginPartKey(parent, 0)
+	if !ok || !p0.IsPluginKey() || !p0.IsPluginPartKey() || p0.IsPluginItemKey() || p0.PluginSeq() != 0 || !p0.Valid() || int64(p0) >= 1<<53 {
+		t.Fatalf("PluginPartKey(4242, 0) = %d (ok=%v)", p0, ok)
+	}
+	gotParent, gotIdx, ok := p0.PluginPart()
+	if !ok || gotParent != parent || gotIdx != 0 {
+		t.Fatalf("PluginPart() = (%d, %d, %v), want (%d, 0, true)", gotParent, gotIdx, ok, parent)
+	}
+	pLast, ok := PluginPartKey(PluginKey(PluginPartMaxSeq-1), int(PluginPartStride-1))
+	if !ok || !pLast.IsPluginKey() || !pLast.IsPluginPartKey() || int64(pLast) >= 1<<53 {
+		t.Fatalf("PluginPartKey(max) = %d (ok=%v) exceeds 2^53 or invalid", pLast, ok)
+	}
+	if gp, gi, ok := pLast.PluginPart(); !ok || gp != PluginKey(PluginPartMaxSeq-1) || gi != int(PluginPartStride-1) {
+		t.Fatalf("PluginPart(max) = (%d, %d, %v)", gp, gi, ok)
+	}
+	if _, ok := PluginPartKey(parent, -1); ok {
+		t.Fatal("negative part index should fail")
+	}
+	if _, ok := PluginPartKey(parent, int(PluginPartStride)); ok {
+		t.Fatal("out-of-range part index should fail")
+	}
+	if _, ok := PluginPartKey(p0, 0); ok {
+		t.Fatal("nested part key should fail")
+	}
+	if _, ok := PluginPartKey(MovieKey(1), 0); ok {
+		t.Fatal("non-plugin parent key should fail")
+	}
+	if parsed, err := ParseRatingKey(p0.String()); err != nil || parsed != p0 {
+		t.Fatalf("ParseRatingKey(p0) = %v, %v", parsed, err)
+	}
+}
+
 func TestItemRefParse(t *testing.T) {
 	ref := NewItemRef("com.example.books", "audiobook", "book-01_a.2~z")
 	if !ref.Valid() || ref.Plugin() != "com.example.books" || ref.Kind() != "audiobook" || ref.External() != "book-01_a.2~z" {

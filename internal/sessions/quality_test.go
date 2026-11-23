@@ -51,3 +51,131 @@ func TestQualityPolicyInvariants(t *testing.T) {
 		t.Fatal("quality planning resolved a source")
 	}
 }
+
+type qualityProfileTranscoder struct{ profileTranscoder }
+
+func (qualityProfileTranscoder) ProactiveFallbackAvailable() bool { return true }
+
+// TestQualityPlanDirectPlayReDecidesForHLSLadder locks the fix for a plain
+// direct-play decision (reason "") re-deciding for the HLS ladder with real
+// client capability profiles, for both catalogue titles and plugin items.
+// Without re-deciding, empty VideoCodec/AudioCodec fail profileDeliveryAllowed
+// and would drop the ladder or emit a broken Height-0 limitation.
+func TestQualityPlanDirectPlayReDecidesForHLSLadder(t *testing.T) {
+	info := core.MediaInfo{
+		Container:   "mp4",
+		Duration:    time.Hour,
+		BitrateKbps: 15000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080, Profile: "high", Level: 41},
+			{Index: 1, Type: "audio", Codec: "aac", Channels: 2, BitrateKbps: 192},
+		},
+	}
+	caps := core.ClientCaps{
+		Product:       "Vela",
+		Platform:      "Web",
+		Containers:    []string{"mp4"},
+		HLSContainers: []string{"fmp4"},
+		VideoCodecs:   []string{"h264"},
+		AudioCodecs:   []string{"aac"},
+		Profiles: &core.ClientCapabilityProfiles{
+			DirectPlay: []core.ClientDirectPlayProfile{
+				{MediaType: "video", Containers: []string{"mp4"}, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}},
+			},
+			Transcoding: []core.ClientTranscodeProfile{
+				{MediaType: "video", Delivery: "hls", Containers: []string{"fmp4"}, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}},
+			},
+		},
+	}
+	opts := core.DecideOptions{DirectPlay: true, DirectStream: true}
+	viewer := &core.Viewer{ID: 1}
+
+	for _, tc := range []struct {
+		name string
+		key  core.RatingKey
+	}{
+		{name: "catalogue", key: core.MovieKey(1)},
+		{name: "plugin", key: core.PluginKey(42)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			playback := &fakePlayback{sessions: map[string]*core.PlaySession{"source": {ID: "source", Info: info}}}
+			tx := qualityProfileTranscoder{}
+			b := &Broker{deps: BrokerDeps{
+				Playback:   playback,
+				Transcoder: tx,
+				Now:        time.Now,
+				Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
+					return &core.Title{Key: k, Type: core.TypeMovie}, nil
+				},
+			}}
+			// Exercise BOTH a plain DirectPlay decision (reason "", empty output
+			// codecs — as produced when direct-play profiles short-circuit) and
+			// the real transcode.Decide DirectPlay output.
+			plainDec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: "mp4", AudioStream: 1}
+			decidedDec := tx.Decide(info, caps, opts)
+			if decidedDec.Kind != core.DecisionDirectPlay {
+				t.Fatalf("unexpected initial decision: %+v", decidedDec)
+			}
+
+			for _, d := range []core.Decision{plainDec, decidedDec} {
+				s := &brokerSession{
+					public:   frontend.Session{Protocol: "vela", ViewerID: viewer.ID, Item: tc.key},
+					playID:   "source",
+					caps:     caps,
+					opts:     opts,
+					decision: d,
+				}
+
+				variants, limits, err := b.qualityPlan(context.Background(), s, viewer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(variants) == 0 {
+					t.Fatalf("direct-play qualityPlan (reason=%q) yielded no variants; limits=%+v", d.Reason, limits)
+				}
+				for _, v := range variants {
+					if v.Rung.Height <= 0 {
+						t.Fatalf("direct-play qualityPlan returned a Height-0 rung: %+v", v)
+					}
+				}
+				for _, l := range limits {
+					if l.Height <= 0 {
+						t.Fatalf("direct-play qualityPlan emitted a Height-0 limitation: %+v", l)
+					}
+				}
+				if ok, container := b.hlsPlanOutput(playback.sessions["source"], frontend.PlanRequest{
+					Viewer: viewer, Protocol: "vela", Item: tc.key, Caps: caps, Intent: frontend.PlayIntent{Options: opts},
+				}, d); !ok || container != "fmp4" {
+					t.Fatalf("hlsPlanOutput (reason=%q) = (%v, %q), want (true, fmp4)", d.Reason, ok, container)
+				}
+			}
+			if playback.prepares != 0 {
+				t.Fatal("quality planning resolved a source")
+			}
+
+			s := &brokerSession{
+				public:   frontend.Session{Protocol: "vela", ViewerID: viewer.ID, Item: tc.key},
+				playID:   "source",
+				caps:     caps,
+				opts:     opts,
+				decision: plainDec,
+			}
+
+			// Denied cases must never emit a Height-0 limitation.
+			denied := false
+			s.allowTranscoding = &denied
+			if v, l, err := b.qualityPlan(context.Background(), s, viewer); err != nil || len(v) != 0 || len(l) != 0 {
+				t.Fatalf("allowTranscoding=false: got (%v, %v, %v), want empty with no height-0 limitation", v, l, err)
+			}
+			s.allowTranscoding = nil
+			noHLS := caps
+			noHLS.Profiles = &core.ClientCapabilityProfiles{
+				DirectPlay: caps.Profiles.DirectPlay,
+			}
+			s.caps = noHLS
+			if v, l, err := b.qualityPlan(context.Background(), s, viewer); err != nil || len(v) != 0 || len(l) != 0 {
+				t.Fatalf("incompatible HLS profile: got (%v, %v, %v), want empty with no height-0 limitation", v, l, err)
+			}
+		})
+	}
+}

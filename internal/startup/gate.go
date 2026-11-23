@@ -33,6 +33,14 @@ type Gate struct {
 	// Console wraps every /ether/ handler the gate serves itself (the
 	// owner console's network policy). Nil leaves them as they are.
 	Console func(http.Handler) http.Handler
+	// DisableConsole, when set and returning true, stops this gate from
+	// serving /ether, StatusPath, and RecoveryPrefix (used on the main port
+	// while a dedicated console listener is bound and /ether on the main
+	// port is turned off).
+	DisableConsole func() bool
+	// RedirectRoot redirects GET/HEAD "/" to "/ether/" while starting (used
+	// on a dedicated console listener).
+	RedirectRoot bool
 
 	// Serving costs a ready server two atomic adds and a load per request.
 	app    atomic.Pointer[http.Handler]
@@ -72,8 +80,12 @@ func (g *Gate) Close(ctx context.Context) {
 // IsOpen reports whether the server is handling requests.
 func (g *Gate) IsOpen() bool { return g.app.Load() != nil }
 
+func (g *Gate) consoleDisabled() bool {
+	return g.DisableConsole != nil && g.DisableConsole()
+}
+
 func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == StatusPath {
+	if r.URL.Path == StatusPath && !g.consoleDisabled() {
 		g.console(http.HandlerFunc(g.serveStatus)).ServeHTTP(w, r)
 		return
 	}
@@ -118,24 +130,33 @@ func (g *Gate) serveStatus(w http.ResponseWriter, r *http.Request) {
 // serveStarting answers a request the server is not ready for.
 func (g *Gate) serveStarting(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
-	switch {
-	case path == "/ether":
-		http.Redirect(w, r, "/ether/", http.StatusFound)
-		return
-	case strings.HasPrefix(path, RecoveryPrefix):
-		if g.Recovery != nil && g.Tracker.Phase() == PhaseFailed {
-			g.console(g.Recovery).ServeHTTP(w, r)
+	if !g.consoleDisabled() {
+		switch {
+		case g.RedirectRoot && path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead):
+			g.console(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "/ether/", http.StatusFound)
+			})).ServeHTTP(w, r)
+			return
+		case path == "/ether":
+			g.console(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "/ether/", http.StatusFound)
+			})).ServeHTTP(w, r)
+			return
+		case strings.HasPrefix(path, RecoveryPrefix):
+			if g.Recovery != nil && g.Tracker.Phase() == PhaseFailed {
+				g.console(g.Recovery).ServeHTTP(w, r)
+				return
+			}
+		case strings.HasPrefix(path, "/ether/") && !strings.HasPrefix(path, "/ether/api/") &&
+			(r.Method == http.MethodGet || r.Method == http.MethodHead) && g.Shell != nil:
+			g.console(g.Shell).ServeHTTP(w, r)
 			return
 		}
-	case strings.HasPrefix(path, "/ether/") && !strings.HasPrefix(path, "/ether/api/") &&
-		(r.Method == http.MethodGet || r.Method == http.MethodHead) && g.Shell != nil:
-		g.console(g.Shell).ServeHTTP(w, r)
-		return
 	}
 	w.Header().Set("Retry-After", retryAfter)
 	w.Header().Set("Cache-Control", "no-store")
 	st := g.Tracker.Snapshot()
-	if strings.HasPrefix(path, "/ether/") {
+	if !g.consoleDisabled() && strings.HasPrefix(path, "/ether/") {
 		g.console(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)

@@ -37,6 +37,7 @@ const (
 
 // hlsFetch is one prefetched segment; fields are set before done closes.
 type hlsFetch struct {
+	list   string
 	seq    int64
 	url    string
 	done   chan struct{}
@@ -64,7 +65,7 @@ func (h *hlsInput) prefetchLocked(l *hlsList) {
 		if h.held >= hlsPrefetchBudget {
 			break
 		}
-		f := &hlsFetch{seq: sg.seq, url: sg.url, done: make(chan struct{})}
+		f := &hlsFetch{list: l.raw, seq: sg.seq, url: sg.url, done: make(chan struct{})}
 		h.fetches[sg.url] = f
 		h.queue = append(h.queue, f)
 	}
@@ -191,12 +192,13 @@ func (h *hlsInput) prefetched(raw string) *hlsFetch {
 	return h.fetches[raw]
 }
 
-// laterReady reports a completed fetch of a segment after seq.
-func (h *hlsInput) laterReady(seq int64) bool {
+// laterReady reports a completed fetch of a segment after seq on the same
+// playlist.
+func (h *hlsInput) laterReady(list string, seq int64) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, f := range h.fetches {
-		if f.seq > seq {
+		if f.list == list && f.seq > seq {
 			select {
 			case <-f.done:
 				if f.err == nil && f.status == http.StatusOK {
@@ -209,11 +211,11 @@ func (h *hlsInput) laterReady(seq int64) bool {
 	return false
 }
 
-// evictLocked drops fetches the reader is past (keeping the one before its
-// position, which a restarted decoder reads first).
-func (h *hlsInput) evictLocked(served int64) {
+// evictLocked drops fetches the reader is past on the same playlist (keeping
+// the one before its position, which a restarted decoder reads first).
+func (h *hlsInput) evictLocked(list string, served int64) {
 	for raw, f := range h.fetches {
-		if f.seq < served-1 {
+		if f.list == list && f.seq < served-1 {
 			select {
 			case <-f.done:
 				h.held -= len(f.body)
@@ -224,13 +226,27 @@ func (h *hlsInput) evictLocked(served int64) {
 	}
 }
 
-// servePrefetched answers a reader's segment request from a prefetch,
-// waiting for one still in flight. It reports false when the segment was
-// not prefetched.
+// servePrefetched answers a reader's segment request from a prefetch or
+// startup timestamp-probe cache, waiting for one still in flight. It reports
+// false when the segment was not prefetched.
 func (s *Service) servePrefetched(w http.ResponseWriter, r *http.Request, g *inputGrant, raw string) bool {
 	h := g.hlsIfAny()
 	if h == nil {
 		return false
+	}
+	if r.Header.Get("Range") == "" {
+		if cached, ok := h.getStartupCache(raw, true); ok {
+			if !cached.reusable {
+				h.servedSegment(raw)
+			}
+			if mt, params, err := mime.ParseMediaType(cached.ctype); err == nil {
+				w.Header().Set("Content-Type", mime.FormatMediaType(mt, params))
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(cached.body)))
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(cached.body)
+			return true
+		}
 	}
 	f := h.prefetched(raw)
 	if f == nil {
@@ -252,7 +268,7 @@ wait:
 			// Still in flight while a later segment is ready: skip this
 			// one (ffmpeg's demuxer moves on at once) rather than starve
 			// the decoder with its reserve sitting in memory.
-			if h.laterReady(f.seq) {
+			if h.laterReady(f.list, f.seq) {
 				h.servedSegment(raw)
 				h.segmentFailed()
 				http.Error(w, "segment late", http.StatusBadGateway)

@@ -25,18 +25,28 @@ func (a FrontendArtwork) cfg() frontend.ArtworkSourceConfig {
 	svc := s.svc()
 	stored, _ := s.catalog().(frontend.StoredTitleLookup)
 	return frontend.ArtworkSourceConfig{
-		Catalog:       stored,
-		Collections:   s.collections(),
-		Playlists:     s.playlists(),
-		Visibility:    s.visibility(),
-		LiveTV:        svc.liveTV,
-		Discovery:     s.discovery(),
-		Images:        svc.images,
-		ImageURL:      svc.imageURL,
-		Palettes:      svc.ultra,
-		Now:           s.now,
-		Variants:      a.Variants,
-		Metadata:      a.Metadata,
+		Catalog:     stored,
+		Collections: s.collections(),
+		Playlists:   s.playlists(),
+		Visibility:  s.visibility(),
+		LiveTV:      svc.liveTV,
+		Discovery:   s.discovery(),
+		Images:      svc.images,
+		ImageURL:    svc.imageURL,
+		Palettes:    svc.ultra,
+		Now:         s.now,
+		Variants:    a.Variants,
+		Metadata:    a.Metadata,
+		PluginItem: func(ctx context.Context, v *frontend.Viewer, d frontend.Device, key frontend.RatingKey) (*frontend.Title, []frontend.Image, error) {
+			t, err := s.kindItem(ctx, &Request{
+				User:     v,
+				ClientID: d.ID,
+				Product:  d.Product,
+				Platform: d.Platform,
+				Language: d.Language,
+			}, key)
+			return t, nil, err
+		},
 		VirtualSeason: a.VirtualSeason,
 		URLImages:     a.URLImages,
 		Raster:        a.Raster,
@@ -68,8 +78,8 @@ func (a FrontendArtwork) Read(ctx context.Context, req frontend.ArtworkRequest, 
 }
 
 func (a FrontendArtwork) Warm(t frontend.Title, d frontend.Device) {
-	if src := a.source(); src != nil {
-		src.Warm(t, d)
+	if src := a.source() != nil; src {
+		a.source().Warm(t, d)
 	}
 }
 
@@ -123,6 +133,9 @@ func withStoredPolicy(ctx context.Context) context.Context {
 // Ordinary Plex routes retain their existing catalogue Get refresh behavior.
 // Hub lists use the mirrored show for the playable check.
 func (s *Server) artworkTitle(ctx context.Context, key frontend.RatingKey) (*frontend.Title, error) {
+	if key.IsPluginKey() {
+		return s.kindItem(ctx, FromContext(ctx), key)
+	}
 	if ctx != nil && ctx.Value(storedPolicyKey{}) != nil {
 		if cached, ok := s.catalog().(frontend.CachedTitleReader); ok {
 			return cached.CachedGet(ctx, key)

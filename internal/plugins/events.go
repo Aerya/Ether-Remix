@@ -8,7 +8,51 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/events"
 )
+
+// LegacyToCanonicalEvent maps the 12 EPP/1 plugin event names to their
+// canonical domain.noun.verb event types on Ether's event bus.
+var LegacyToCanonicalEvent = map[string]string{
+	EventPlaybackStarted:   "playback.session.started",
+	EventPlaybackPaused:    "playback.session.paused",
+	EventPlaybackResumed:   "playback.session.resumed",
+	EventPlaybackStopped:   "playback.session.stopped",
+	EventPlaybackCompleted: "playback.session.completed",
+	EventPlaybackError:     "playback.session.failed",
+	EventPlaybackFailover:  "playback.source.failover",
+	EventTitleAvailable:    "library.title.available",
+	EventViewerAdded:       "viewer.account.joined",
+	EventViewerAccess:      "viewer.access.changed",
+	EventCollectionRebuilt: "library.collection.rebuilt",
+	EventServerHealth:      "system.health.changed",
+}
+
+// CanonicalToLegacyEvent maps canonical event types back to the 12 legacy
+// EPP/1 plugin event names so existing plugin subscriptions keep working
+// unchanged through the event bus.
+var CanonicalToLegacyEvent = map[string]string{
+	"playback.session.started":   EventPlaybackStarted,
+	"playback.session.paused":    EventPlaybackPaused,
+	"playback.session.resumed":   EventPlaybackResumed,
+	"playback.session.stopped":   EventPlaybackStopped,
+	"playback.session.completed": EventPlaybackCompleted,
+	"playback.session.failed":    EventPlaybackError,
+	"playback.source.failover":   EventPlaybackFailover,
+	"library.title.available":    EventTitleAvailable,
+	"viewer.account.joined":      EventViewerAdded,
+	"viewer.access.changed":      EventViewerAccess,
+	"library.collection.rebuilt": EventCollectionRebuilt,
+	"system.health.changed":      EventServerHealth,
+}
+
+// IsSubscribableEvent reports whether name is either one of the 12 legacy
+// EPP/1 event names or a valid canonical event type ("domain.noun.verb" or
+// "plugin:<pluginId>/<key>").
+func IsSubscribableEvent(name string) bool {
+	return KnownEvents[name] || events.ValidateType(name) == nil
+}
 
 func newEventID() string {
 	var b [8]byte
@@ -19,19 +63,17 @@ func newEventID() string {
 // Publish normalizes and fans out one Ether event: it is written to the
 // 7-day event log and queued for every enabled plugin that subscribed to
 // it (and was not revoked). Viewer identity is stripped per plugin unless
-// the plugin's grants allow it.
+// the plugin's grants allow it. Both legacy EPP/1 names and canonical
+// domain.noun.verb names are accepted and bridged to matching subscribers.
 func (m *Manager) Publish(ctx context.Context, ev Event) {
-	if !KnownEvents[ev.Name] {
+	if !IsSubscribableEvent(ev.Name) {
 		return
 	}
-	m.mu.Lock()
-	recs := make([]Record, 0, len(m.eventSubs[ev.Name]))
-	for _, r := range m.eventSubs[ev.Name] {
-		recs = append(recs, r)
-	}
-	m.mu.Unlock()
-	if len(recs) == 0 {
-		return
+	names := []string{ev.Name}
+	if canonical, ok := LegacyToCanonicalEvent[ev.Name]; ok {
+		names = append(names, canonical)
+	} else if legacy, ok := CanonicalToLegacyEvent[ev.Name]; ok {
+		names = append(names, legacy)
 	}
 	if ev.ID == "" {
 		ev.ID = newEventID()
@@ -39,16 +81,116 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 	if ev.At.IsZero() {
 		ev.At = m.now()
 	}
+	canonicalType := ev.Name
+	if c, ok := LegacyToCanonicalEvent[ev.Name]; ok {
+		canonicalType = c
+	}
+	m.fanOutEvent(ctx, canonicalType, names, ev)
+}
+
+// StartEventBridge subscribes the plugin host to Ether's events.Bus so plugins
+// receive both canonical event types and translated legacy 12 event names
+// without blocking publishers. Safe to call multiple times; returns a function
+// that detaches the bridge subscription.
+func (m *Manager) StartEventBridge(ctx context.Context) func() {
+	bus := m.flowsEventBus()
+	if bus == nil {
+		return func() {}
+	}
+	m.eventBridgeMu.Lock()
+	if m.eventBridgeSub != nil {
+		m.eventBridgeMu.Unlock()
+		return func() {}
+	}
+	sub := bus.SubscribeFunc(ctx, events.SubscriptionOptions{
+		Name:   "plugins.bridge",
+		Buffer: events.DefaultSubscriberBuffer,
+	}, m.HandleBusEvent)
+	m.eventBridgeSub = sub
+	m.eventBridgeMu.Unlock()
+	return func() {
+		m.eventBridgeMu.Lock()
+		if m.eventBridgeSub == sub {
+			m.eventBridgeSub = nil
+		}
+		m.eventBridgeMu.Unlock()
+		sub.Unsubscribe()
+	}
+}
+
+// HandleBusEvent delivers one events.Bus envelope to any enabled plugin
+// subscribed to its canonical type or mapped legacy EPP/1 event name.
+// When no plugin subscribes to either name it does zero database work.
+func (m *Manager) HandleBusEvent(ctx context.Context, env events.Envelope) {
+	if env.Meta.DryRun || env.Type == "" {
+		return
+	}
+	names := []string{env.Type}
+	if legacy, ok := CanonicalToLegacyEvent[env.Type]; ok {
+		names = append(names, legacy)
+	}
+	viewerID := env.Correlation.ViewerID
+	if viewerID == 0 {
+		viewerID = viewerIDFromPayload(env.Payload)
+	}
+	at := env.OccurredAt
+	if at.IsZero() {
+		at = m.now()
+	}
+	id := env.ID
+	if id == "" {
+		id = newEventID()
+	}
+	payload := env.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	m.fanOutEvent(ctx, env.Type, names, Event{
+		ID:       id,
+		Name:     env.Type,
+		At:       at,
+		ViewerID: viewerID,
+		Payload:  payload,
+	})
+}
+
+type eventDeliveryTarget struct {
+	rec  Record
+	name string
+}
+
+func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names []string, base Event) {
+	m.mu.Lock()
+	var targets []eventDeliveryTarget
+	for _, name := range names {
+		for _, r := range m.eventSubs[name] {
+			targets = append(targets, eventDeliveryTarget{rec: r, name: name})
+		}
+	}
+	m.mu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+
+	reg, _ := m.flowsRegistries()
+	var schema events.EventSchema
+	hasSchema := false
+	if reg != nil && canonicalType != "" {
+		schema, hasSchema = reg.Get(canonicalType)
+	}
+
 	logged := false
-	for _, r := range recs {
+	for _, target := range targets {
+		r := target.rec
 		if !r.Enabled || r.Manifest.Ether == nil || !r.Manifest.HasCapability(CapEvents) {
 			continue
 		}
 		sub := false
 		if evMeta := r.Manifest.Ether.Contributes.Events; evMeta != nil {
 			for _, n := range evMeta.Subscribe {
-				if n == ev.Name {
+				if n == target.name {
 					sub = true
+					break
 				}
 			}
 		}
@@ -59,15 +201,17 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 		if err != nil || g.revoked("events") {
 			continue
 		}
+		out := base
+		out.Name = target.name
 		if !logged {
-			m.store.logEvent(ctx, ev)
+			m.store.logEvent(ctx, out)
 			logged = true
 		}
-		out := ev
-		if !viewerOK(g, normLevel(r.Manifest.Ether.Permissions.Viewers.Identity), ev.ViewerID) {
+		allowViewer := viewerOK(g, normLevel(r.Manifest.Ether.Permissions.Viewers.Identity), base.ViewerID)
+		if !allowViewer {
 			out.ViewerID = 0
-			out.Payload = stripViewer(out.Payload)
 		}
+		out.Payload = sanitizePluginEventPayload(out.Payload, schema, hasSchema, allowViewer)
 		dropped, err := m.store.enqueue(ctx, r.ID, out)
 		if err == nil && dropped > 0 {
 			m.healthMu.Lock()
@@ -76,8 +220,54 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 				_ = m.store.putHealth(ctx, r.ID, h)
 			}
 			m.healthMu.Unlock()
+			m.emitBusEvent(events.EventPluginQuotaExceeded, r.ID, events.PluginQuotaExceededPayload{
+				PluginID:  r.ID,
+				Name:      r.Name,
+				QuotaKind: "events_outbox",
+				Used:      int64(OutboxCap),
+				Limit:     int64(OutboxCap),
+				Drops:     int64(dropped),
+			}, false)
 		}
 	}
+}
+
+func sanitizePluginEventPayload(raw json.RawMessage, schema events.EventSchema, hasSchema, allowViewer bool) json.RawMessage {
+	payload := raw
+	if hasSchema && len(payload) > 0 {
+		if m, err := (events.Envelope{Payload: payload}).PayloadMap(); err == nil {
+			redacted := schema.Redact(m, events.RedactOptions{StripPII: !allowViewer})
+			if b, err := json.Marshal(redacted); err == nil {
+				payload = b
+			}
+		}
+	}
+	if !allowViewer {
+		payload = stripViewer(payload)
+	}
+	return payload
+}
+
+func viewerIDFromPayload(raw json.RawMessage) int64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var doc struct {
+		ViewerID int64 `json:"viewerId"`
+		Viewer   *struct {
+			ID int64 `json:"id"`
+		} `json:"viewer"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return 0
+	}
+	if doc.ViewerID > 0 {
+		return doc.ViewerID
+	}
+	if doc.Viewer != nil && doc.Viewer.ID > 0 {
+		return doc.Viewer.ID
+	}
+	return 0
 }
 
 // indexEventSubscriptions is updated together with the plugin's descriptors.
@@ -91,7 +281,7 @@ func (m *Manager) indexEventSubscriptions(r Record) {
 		return
 	}
 	for _, name := range r.Manifest.Ether.Contributes.Events.Subscribe {
-		if !KnownEvents[name] {
+		if !IsSubscribableEvent(name) {
 			continue
 		}
 		if m.eventSubs[name] == nil {
@@ -228,8 +418,95 @@ func (m *Manager) DeliverOutbox(ctx context.Context, pluginID string) error {
 // Run drives health checks, scheduled jobs and outbox delivery until ctx
 // ends. Leader plugins run jobs and event delivery only on the leader;
 // every_node plugins run everywhere. Health checks run on every node.
+type scheduleFlight struct {
+	cancel context.CancelFunc
+}
+
+func (m *Manager) waitSchedule() {
+	m.scheduleWG.Wait()
+}
+
+func (m *Manager) scheduleBusyLocked(pluginID, callPath string) bool {
+	key := pluginID + "|" + callPath
+	if m.scheduleInFlight[key] != nil {
+		return true
+	}
+	if j := m.scheduleJobs[key]; j != nil {
+		if j.snapshot().State == "running" {
+			return true
+		}
+		delete(m.scheduleJobs, key)
+	}
+	if strings.HasPrefix(callPath, "/ether/job/") {
+		if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, pluginID, callPath, key string) {
+	defer m.scheduleWG.Done()
+	defer flight.cancel()
+	startedAt := m.now()
+	resp, err := m.Call(WithBackgroundCall(ctx), pluginID, Request{Method: "POST", Path: callPath})
+	var started *actionJob
+	var startErr error
+	if err == nil && ctx.Err() == nil && resp.Status >= 200 && resp.Status < 300 && len(resp.Body) > 0 {
+		started, startErr = m.startResolverJob(pluginID, resp.Body, nil, "")
+		if started != nil && ctx.Err() != nil {
+			started.cancel()
+			started = nil
+		}
+	}
+	var cancelStarted *actionJob
+	m.mu.Lock()
+	if m.scheduleInFlight[key] == flight {
+		delete(m.scheduleInFlight, key)
+		if started != nil {
+			if m.scheduleJobs == nil {
+				m.scheduleJobs = map[string]*actionJob{}
+			}
+			m.scheduleJobs[key] = started
+		}
+	} else if started != nil {
+		cancelStarted = started
+	}
+	m.mu.Unlock()
+	if cancelStarted != nil {
+		cancelStarted.cancel()
+	}
+	if startErr != nil {
+		m.log.Warn("plugin schedule: start job", "plugin", pluginID, "call", callPath, "err", startErr)
+	}
+	var jobErr string
+	switch {
+	case err != nil && ctx.Err() == nil:
+		jobErr = err.Error()
+	case startErr != nil:
+		jobErr = startErr.Error()
+	case err == nil && resp.Status >= 400:
+		jobErr = fmt.Sprintf("HTTP %d", resp.Status)
+	}
+	if jobErr != "" {
+		durMS := max(m.now().Sub(startedAt).Milliseconds(), int64(0))
+		m.emitBusEvent(events.EventPluginJobFailed, pluginID, events.PluginJobFailedPayload{
+			PluginID:   pluginID,
+			Name:       m.pluginDisplayName(context.Background(), pluginID),
+			Job:        callPath,
+			Kind:       "scheduled",
+			Error:      jobErr,
+			DurationMS: durMS,
+		}, false)
+	}
+}
+
 func (m *Manager) Run(ctx context.Context) {
+	stopBridge := m.StartEventBridge(ctx)
+	defer stopBridge()
+	defer m.scheduleWG.Wait()
 	defer m.cancelActionJobs("")
+	defer m.cancelRemoteHashes("")
 	defer func() {
 		m.hashMu.Lock()
 		defer m.hashMu.Unlock()
@@ -279,7 +556,7 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 				}
 			}
 		}
-		if !r.Enabled || r.Manifest.Ether == nil {
+		if !r.Enabled || r.Manifest.Ether == nil || m.sidecarWaiting(r) {
 			continue
 		}
 		interval := time.Minute
@@ -308,17 +585,47 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 			m.mu.Lock()
 			next, seen := m.nextRun[key]
 			if !seen {
-				m.nextRun[key] = now.Add(every)
-				m.mu.Unlock()
-				continue
+				last, err := m.store.scheduleLastRun(ctx, r.ID, job.Call)
+				if err != nil {
+					m.mu.Unlock()
+					m.log.Warn("plugin schedule: read last run", "plugin", r.ID, "call", job.Call, "err", err)
+					continue
+				}
+				if !last.IsZero() {
+					next = last.Add(every)
+					m.nextRun[key] = next
+				}
 			}
 			if now.Before(next) {
 				m.mu.Unlock()
 				continue
 			}
-			m.nextRun[key] = now.Add(every)
+			if ctx.Err() != nil {
+				m.mu.Unlock()
+				return
+			}
+			if m.scheduleBusyLocked(r.ID, job.Call) {
+				m.mu.Unlock()
+				continue
+			}
+			// Record dispatch before calling: failures (or a restart during a
+			// long job) must not produce a first-run storm on the next boot.
+			dispatched := m.now()
+			if err := m.store.markScheduleRun(ctx, r.ID, job.Call, dispatched); err != nil {
+				m.mu.Unlock()
+				m.log.Warn("plugin schedule: save last run", "plugin", r.ID, "call", job.Call, "err", err)
+				continue
+			}
+			m.nextRun[key] = dispatched.Add(every)
+			callCtx, cancel := context.WithCancel(ctx)
+			flight := &scheduleFlight{cancel: cancel}
+			if m.scheduleInFlight == nil {
+				m.scheduleInFlight = map[string]*scheduleFlight{}
+			}
+			m.scheduleInFlight[key] = flight
+			m.scheduleWG.Add(1)
 			m.mu.Unlock()
-			_, _ = m.Call(ctx, r.ID, Request{Method: "POST", Path: job.Call})
+			go m.runScheduledCall(callCtx, flight, r.ID, job.Call, key)
 		}
 		_ = m.DeliverOutbox(ctx, r.ID)
 		// Capability refreshes ride the schedule: list sources and

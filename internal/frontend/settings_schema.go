@@ -3,7 +3,10 @@ package frontend
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
+	"strings"
+	"unicode/utf8"
 )
 
 // SettingsSchema describes a frontend's owner-console settings so the Apps
@@ -32,8 +35,8 @@ type SettingsSection struct {
 
 // SettingsField is one setting. Kind is one of: serverName (read-only name
 // from General settings), port, bool, number, viewer (the DLNA browse-as
-// picker), rowKinds (personalized row kind switches), string, or note (static text
-// named by Key, for example "addon", "files" or "playlist").
+// picker), rowKinds (personalized row kind switches), string, wordmark, or
+// note (static text named by Key, for example "addon", "files" or "playlist").
 type SettingsField struct {
 	Key     string   `json:"key"`
 	Kind    string   `json:"kind"`
@@ -42,6 +45,9 @@ type SettingsField struct {
 	Max     *int     `json:"max,omitempty"`
 	Options []string `json:"options,omitempty"`
 }
+
+// Int returns a pointer to n for SettingsField Min/Max bounds.
+func Int(n int) *int { return &n }
 
 func intp(n int) *int { return &n }
 
@@ -155,7 +161,67 @@ func (s SettingsSchema) validate(settings Settings) error {
 func (f SettingsField) validateValue(v any) error {
 	switch f.Kind {
 	case "string":
-		if _, ok := v.(string); !ok {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		trimmed := strings.TrimSpace(s)
+		if f.Min != nil && utf8.RuneCountInString(trimmed) < *f.Min {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		if f.Max != nil && utf8.RuneCountInString(trimmed) > *f.Max {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		if len(f.Options) > 0 && !slices.Contains(f.Options, s) {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+	case "wordmark":
+		if v == nil {
+			return nil
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		for k := range m {
+			if k != "url" && k != "width" && k != "height" && k != "dark" {
+				return fmt.Errorf("invalid %s", f.Key)
+			}
+		}
+		urlVal, ok := m["url"].(string)
+		if !ok || strings.TrimSpace(urlVal) == "" {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		w, okW := schemaInt(m["width"])
+		h, okH := schemaInt(m["height"])
+		if !okW || !okH || w < 1 || w > 1024 || h < 1 || h > 256 {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		if darkRaw, exists := m["dark"]; exists && darkRaw != nil {
+			if _, ok := darkRaw.(string); !ok {
+				return fmt.Errorf("invalid %s", f.Key)
+			}
+		}
+	case "appIcon":
+		if v == nil {
+			return nil
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		for k := range m {
+			if k != "url" && k != "width" && k != "height" {
+				return fmt.Errorf("invalid %s", f.Key)
+			}
+		}
+		urlVal, ok := m["url"].(string)
+		if !ok || strings.TrimSpace(urlVal) == "" {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		w, okW := schemaInt(m["width"])
+		h, okH := schemaInt(m["height"])
+		if !okW || !okH || w < 1 || w > 1024 || h < 1 || h > 1024 || w != h {
 			return fmt.Errorf("invalid %s", f.Key)
 		}
 	case "bool":
@@ -193,4 +259,20 @@ func (f SettingsField) validateValue(v any) error {
 		}
 	}
 	return nil
+}
+
+func schemaInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) || n != math.Trunc(n) {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
 }

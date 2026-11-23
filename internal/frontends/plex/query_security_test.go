@@ -41,6 +41,7 @@ func TestRedactQueryEncodedNames(t *testing.T) {
 		"X%2dPlex%2dToken=secret&X-Plex-Token=secret",
 		"x-plex-%74oken=secret&X-Ether-Stream-%54oken=secret",
 		"unrelated=%zz&%58-Plex-Token=secret",
+		"x-ether-delivery-%74oken=secret",
 	} {
 		if got := redactQuery(q); strings.Contains(got, "secret") {
 			t.Errorf("redactQuery(%q) = %q", q, got)

@@ -18,6 +18,36 @@ import (
 	"github.com/braedonsaunders/ether/internal/mediaproc"
 )
 
+type mpdTimelineS struct {
+	T *int64 `xml:"t,attr"`
+	D int64  `xml:"d,attr"`
+	R int    `xml:"r,attr"`
+}
+
+type mpdSpan struct {
+	startMS int64
+	durMS   int64
+}
+
+func expandSegmentTimeline(t *testing.T, entries []mpdTimelineS) []mpdSpan {
+	t.Helper()
+	var out []mpdSpan
+	var cur int64
+	for _, s := range entries {
+		if s.T != nil {
+			cur = *s.T
+		}
+		if s.D <= 0 || s.R < 0 {
+			t.Fatalf("bad SegmentTimeline entry: %+v", s)
+		}
+		for k := 0; k <= s.R; k++ {
+			out = append(out, mpdSpan{startMS: cur, durMS: s.D})
+			cur += s.D
+		}
+	}
+	return out
+}
+
 // mpdDoc is the part of an MPD the tests check.
 type mpdDoc struct {
 	Type     string `xml:"type,attr"`
@@ -30,6 +60,9 @@ type mpdDoc struct {
 				Init        string `xml:"initialization,attr"`
 				Media       string `xml:"media,attr"`
 				StartNumber string `xml:"startNumber,attr"`
+				Timeline    struct {
+					S []mpdTimelineS `xml:"S"`
+				} `xml:"SegmentTimeline"`
 			} `xml:"SegmentTemplate"`
 			Reps []struct {
 				ID       string `xml:"id,attr"`
@@ -339,8 +372,13 @@ func (e *realEnv) playMPD(t *testing.T, mpdURL string, wantSeconds float64) {
 	var inputs []string
 	for _, set := range doc.Period.Sets {
 		tpl := set.Template
-		segDur := time.Duration(tpl.Duration) * time.Second / time.Duration(tpl.Timescale)
-		count := int((dur + segDur - 1) / segDur)
+		var count int
+		if len(tpl.Timeline.S) > 0 {
+			count = len(expandSegmentTimeline(t, tpl.Timeline.S))
+		} else {
+			segDur := time.Duration(tpl.Duration) * time.Second / time.Duration(tpl.Timescale)
+			count = int((dur + segDur - 1) / segDur)
+		}
 		for _, rep := range set.Reps {
 			expand := func(s string, n int) string {
 				s = strings.ReplaceAll(s, "$RepresentationID$", rep.ID)
@@ -406,5 +444,119 @@ func (e *realEnv) playMPD(t *testing.T, mpdURL string, wantSeconds float64) {
 		if b, err := mediaproc.CommandContext(t.Context(), 2*time.Minute, e.ffmpeg, "-hide_banner", "-v", "error", "-i", mpdURL, "-map", "0", "-f", "null", "-").CombinedOutput(); err != nil {
 			t.Errorf("ffmpeg DASH demuxer: %v\n%s", err, b)
 		}
+	}
+}
+
+// Reproduces the 23.976 fps / 2.002 s GOP (48-frame IDR) copy DASH stream
+// with B-frame reorder and transcoded audio: verifies the MPD publishes a
+// stable SegmentTimeline matching every served video/audio segment's real
+// timing (both sequentially and after a seek), while encoded DASH stays on
+// a fixed SegmentTemplate duration.
+func TestIntegrationDASHCopySegmentTimeline2002GOP(t *testing.T) {
+	e := newRealEnv(t, WithoutHWDetection())
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	srcPath := e.dir + "/gop2002.mkv"
+	cmd := mediaproc.CommandContext(ctx, 2*time.Minute, e.ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24000/1001",
+		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+		"-c:v", "libx264", "-preset", "ultrafast",
+		"-x264-params", "bframes=3:b-pyramid=normal:keyint=48:min-keyint=48:scenecut=0",
+		"-c:a", "eac3", "-ac", "6", "-b:a", "384k",
+		"-max_interleave_delta", "0", "-t", "26", srcPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cannot generate 2.002s GOP fixture: %v: %s", err, out)
+	}
+	info, err := e.m.Probe(ctx, e.url("gop2002.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Keyframes = e.keyframeIndex(t, "gop2002.mkv")
+	if len(info.Keyframes) < 12 {
+		t.Fatalf("expected >=12 keyframes for 26s @ 2.002s GOP, got %d", len(info.Keyframes))
+	}
+
+	d := core.Decision{Kind: core.DecisionRemux, Container: ContainerFMP4, VideoCopy: true, AudioCopy: false, AudioCodec: "aac", AudioChannels: 2, AudioStream: 1}
+	ds := startDASH(t, e.m, core.HLSRequest{
+		SessionID: "dash-kf2002", InputURL: e.url("gop2002.mkv"),
+		Info: *info, Decision: d, PMSDASH: true,
+	})
+	defer e.m.Stop("dash-kf2002")
+
+	rec1 := httptest.NewRecorder()
+	ds.ServeManifest(rec1, httptest.NewRequest(http.MethodGet, "/start.mpd", nil))
+	if rec1.Code != 200 {
+		t.Fatalf("MPD: %d %s", rec1.Code, rec1.Body.String())
+	}
+	var doc mpdDoc
+	if err := xml.Unmarshal(rec1.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("MPD XML: %v\n%s", err, rec1.Body.String())
+	}
+	if len(doc.Period.Sets) != 2 {
+		t.Fatalf("sets = %d, want 2", len(doc.Period.Sets))
+	}
+	vSpans := expandSegmentTimeline(t, doc.Period.Sets[0].Template.Timeline.S)
+	aSpans := expandSegmentTimeline(t, doc.Period.Sets[1].Template.Timeline.S)
+	if len(vSpans) == 0 || len(vSpans) != len(aSpans) {
+		t.Fatalf("timeline spans video=%d audio=%d", len(vSpans), len(aSpans))
+	}
+	if doc.Period.Sets[0].Template.Duration != 0 || doc.Period.Sets[0].Template.Timescale != 1000 {
+		t.Fatalf("unexpected template attrs: %+v", doc.Period.Sets[0].Template)
+	}
+	// Every full segment is 3 × 2.002 s = 6.006 s (6006 ms).
+	for n := 0; n < len(vSpans)-1; n++ {
+		if math.Abs(float64(vSpans[n].durMS)-6006) > 5 {
+			t.Errorf("seg %d MPD dur = %d ms, want ~6006", n, vSpans[n].durMS)
+		}
+	}
+
+	for n, sp := range vSpans {
+		segBytes := dashGet(t, ds, 0, n)
+		first, end := e.videoSpan(t, ContainerFMP4, nil, segBytes, "dash-kf2002-v-"+strconv.Itoa(n))
+		wantStart := float64(sp.startMS) / 1000
+		wantEnd := float64(sp.startMS+sp.durMS) / 1000
+		if math.Abs(first-wantStart) > 0.1 || math.Abs(end-wantEnd) > 0.15 {
+			t.Errorf("video seg %d spans %.3f-%.3f, MPD SegmentTimeline says %.3f-%.3f", n, first, end, wantStart, wantEnd)
+		}
+	}
+
+	// Seeking directly to segment 3 (18.018s) in a fresh session must start on
+	// that exact boundary without pulling in a preceding GOP.
+	seekDS := startDASH(t, e.m, core.HLSRequest{
+		SessionID: "dash-kf2002-seek", InputURL: e.url("gop2002.mkv"),
+		Info: *info, Decision: d, PMSDASH: true, StartOffset: 18500 * time.Millisecond,
+	})
+	defer e.m.Stop("dash-kf2002-seek")
+	seekSeg := dashGet(t, seekDS, 0, 3)
+	sFirst, sEnd := e.videoSpan(t, ContainerFMP4, nil, seekSeg, "dash-kf2002-seek-3")
+	wantStart := float64(vSpans[3].startMS) / 1000
+	wantEnd := float64(vSpans[3].startMS+vSpans[3].durMS) / 1000
+	if math.Abs(sFirst-wantStart) > 0.1 || math.Abs(sEnd-wantEnd) > 0.15 {
+		t.Errorf("sought video seg 3 spans %.3f-%.3f, MPD says %.3f-%.3f", sFirst, sEnd, wantStart, wantEnd)
+	}
+
+	// MPD stays byte-identical across repeated requests.
+	rec2 := httptest.NewRecorder()
+	ds.ServeManifest(rec2, httptest.NewRequest(http.MethodGet, "/start.mpd", nil))
+	if rec1.Body.String() != rec2.Body.String() {
+		t.Fatal("MPD changed across requests within the same session")
+	}
+
+	// Full presentation decodes cleanly end to end over HTTP.
+	srv := httptest.NewServer(dashTestHandler(ds, "dash-kf2002"))
+	defer srv.Close()
+	e.playMPD(t, srv.URL+"/start.mpd", 26)
+
+	// Encoded DASH on the same keyframe-indexed source keeps fixed duration.
+	encDec := core.Decision{Kind: core.DecisionTranscode, Container: ContainerFMP4, VideoCopy: false, VideoCodec: "h264", MaxHeight: 180, AudioCopy: false, AudioCodec: "aac", AudioChannels: 2, AudioStream: 1}
+	encDS := startDASH(t, e.m, core.HLSRequest{
+		SessionID: "dash-kf2002-enc", InputURL: e.url("gop2002.mkv"),
+		Info: *info, Decision: encDec, PMSDASH: true,
+	})
+	defer e.m.Stop("dash-kf2002-enc")
+	encDoc := dashManifest(t, encDS)
+	if len(encDoc.Period.Sets[0].Template.Timeline.S) != 0 || encDoc.Period.Sets[0].Template.Duration != 5 {
+		t.Fatalf("encoded DASH should keep fixed duration=5, got %+v", encDoc.Period.Sets[0].Template)
 	}
 }

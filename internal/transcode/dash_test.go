@@ -3,6 +3,7 @@ package transcode
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -863,5 +864,131 @@ func TestRunStartHintNamesTheSpanBeforeFFmpegReads(t *testing.T) {
 		case <-deadline:
 			t.Fatal("no hint for the seek run")
 		}
+	}
+}
+
+func TestDASHCopySegmentTimelineMPD(t *testing.T) {
+	gop := 2002 * time.Millisecond
+	kfs2002 := everyKeyframe(time.Minute, gop)
+	init, mediaURL := PlexDASHURLs("kf2002")
+	reps := []dashRep{
+		{ID: 0, Kind: "video", Codecs: "hvc1.2.4.L150.90", Bandwidth: 15000000, Width: 3840, Height: 2160},
+		{ID: 1, Kind: "audio", Codecs: "mp4a.40.2", Bandwidth: 192000, SampleRate: 48000, Channels: 2},
+	}
+
+	// 1) 2.002 s GOP copy timeline on a 5 s target: every full segment is
+	// 3 GOPs (6.006 s) plus the 5.946 s tail, sum matching 60.000 s exactly.
+	plan := buildTimeline(time.Minute, DefaultDASHSegmentDuration, timelineOptions{
+		steadyMode: ModeCopy, keyframes: kfs2002, snap: true,
+	})
+	mpd := renderMPDWithPlan(time.Minute, DefaultDASHSegmentDuration, 2*DefaultDASHSegmentDuration, plan, init, mediaURL, reps)
+	var doc mpdDoc
+	if err := xml.Unmarshal(mpd, &doc); err != nil {
+		t.Fatalf("MPD XML: %v\n%s", err, mpd)
+	}
+	if strings.Contains(string(mpd), `duration="5"`) {
+		t.Fatalf("SegmentTimeline MPD must omit SegmentTemplate@duration:\n%s", mpd)
+	}
+	if len(doc.Period.Sets) != 2 {
+		t.Fatalf("sets = %d, want 2", len(doc.Period.Sets))
+	}
+	for i, set := range doc.Period.Sets {
+		if set.Template.Timescale != 1000 || set.Template.Duration != 0 || set.Template.StartNumber != "0" {
+			t.Errorf("set %d template = %+v", i, set.Template)
+		}
+		spans := expandSegmentTimeline(t, set.Template.Timeline.S)
+		if len(spans) != plan.Total() || len(spans) != 10 {
+			t.Fatalf("set %d timeline segments = %d, want %d (plan %d)", i, len(spans), 10, plan.Total())
+		}
+		for n, sp := range spans {
+			wantDur := int64(6006)
+			if n == len(spans)-1 {
+				wantDur = 5946
+			}
+			if sp.startMS != int64(n)*6006 || sp.durMS != wantDur {
+				t.Errorf("set %d seg %d = (%d,%d), want (%d,%d)", i, n, sp.startMS, sp.durMS, int64(n)*6006, wantDur)
+			}
+		}
+		last := spans[len(spans)-1]
+		if totalMS := last.startMS + last.durMS; totalMS != 60000 {
+			t.Errorf("set %d total = %d ms, want 60000", i, totalMS)
+		}
+	}
+
+	// 2) Variable / long GOPs produce per-segment durations and raise
+	// maxSegmentDuration when a segment exceeds 2*segDur.
+	varKFs := []core.KeyframePoint{
+		{Time: 0},
+		{Time: 6006 * time.Millisecond},
+		{Time: 10010 * time.Millisecond}, // not reached (6.006+5=11.006)
+		{Time: 11512 * time.Millisecond}, // seg 1 = 5.506 s
+		{Time: 23524 * time.Millisecond}, // seg 2 = 12.012 s (> PT10S)
+		{Time: 29530 * time.Millisecond}, // seg 3 = 6.006 s
+	}
+	varPlan := buildTimeline(35*time.Second, DefaultDASHSegmentDuration, timelineOptions{
+		steadyMode: ModeCopy, keyframes: varKFs, snap: true,
+	})
+	varMPD := string(renderMPDWithPlan(35*time.Second, DefaultDASHSegmentDuration, 2*DefaultDASHSegmentDuration, varPlan, init, mediaURL, reps))
+	if !strings.Contains(varMPD, `maxSegmentDuration="PT12.012S"`) {
+		t.Fatalf("long GOP did not raise maxSegmentDuration:\n%s", varMPD)
+	}
+	var varDoc mpdDoc
+	if err := xml.Unmarshal([]byte(varMPD), &varDoc); err != nil {
+		t.Fatal(err)
+	}
+	varSpans := expandSegmentTimeline(t, varDoc.Period.Sets[0].Template.Timeline.S)
+	wantVar := []int64{6006, 5506, 12012, 6006, 5470}
+	if len(varSpans) != len(wantVar) {
+		t.Fatalf("variable timeline len = %d (%+v), want %d", len(varSpans), varSpans, len(wantVar))
+	}
+	for i, w := range wantVar {
+		if varSpans[i].durMS != w {
+			t.Errorf("variable seg %d dur = %d, want %d", i, varSpans[i].durMS, w)
+		}
+	}
+
+	// 3) Copy session uses the keyframe plan and keeps MPD stable; encoded
+	// and unindexed sessions keep fixed SegmentTemplate@duration.
+	fr := newFakeRunner()
+	m := newTestManager(t, fr, config.Transcode{})
+	req := dashRequest(t, "copy-kf", time.Minute)
+	req.PMSDASH = true
+	req.Info.Keyframes = kfs2002
+	s := startDASHSession(t, m, req)
+	if s.plan == nil || !s.plan.Keyframed() || s.total != 10 {
+		t.Fatalf("copy DASH session did not use keyframe plan: plan=%v total=%d", s.plan, s.total)
+	}
+	if got := s.segStart(3); got != 18018*time.Millisecond {
+		t.Errorf("segStart(3) = %v, want 18.018s", got)
+	}
+	s.mu.Lock()
+	seekSeg := s.segForOffsetLocked(20 * time.Second)
+	s.mu.Unlock()
+	if seekSeg != 3 {
+		t.Errorf("segForOffsetLocked(20s) = %d, want 3", seekSeg)
+	}
+	m1 := httptest.NewRecorder()
+	s.ServeManifest(m1, httptest.NewRequest(http.MethodGet, "/start.mpd", nil))
+	m2 := httptest.NewRecorder()
+	s.ServeManifest(m2, httptest.NewRequest(http.MethodGet, "/start.mpd", nil))
+	if m1.Code != 200 || m1.Body.String() != m2.Body.String() || !strings.Contains(m1.Body.String(), "<SegmentTimeline>") {
+		t.Fatalf("copy MPD unstable or missing SegmentTimeline:\n%s", m1.Body.String())
+	}
+
+	// Encoded session with the same keyframes keeps fixed duration.
+	encReq := dashRequest(t, "enc-kf", time.Minute)
+	encReq.PMSDASH = true
+	encReq.Info.Keyframes = kfs2002
+	encReq.Decision.Kind = core.DecisionTranscode
+	encReq.Decision.VideoCopy = false
+	encReq.Decision.VideoCodec = "h264"
+	enc := startDASHSession(t, m, encReq)
+	if enc.plan != nil {
+		t.Fatal("encoded DASH session should not use keyframe copy plan")
+	}
+	em := httptest.NewRecorder()
+	enc.ServeManifest(em, httptest.NewRequest(http.MethodGet, "/start.mpd", nil))
+	if em.Code != 200 || strings.Contains(em.Body.String(), "<SegmentTimeline>") || !strings.Contains(em.Body.String(), `timescale="1" duration="5"`) {
+		t.Fatalf("encoded DASH MPD should keep fixed duration:\n%s", em.Body.String())
 	}
 }

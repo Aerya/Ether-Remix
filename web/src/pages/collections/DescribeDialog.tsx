@@ -425,6 +425,7 @@ export function DescribeDialog({
         onClose={() => setBrowsing(false)}
         title={spec?.name || t("Untitled collection")}
         size="2xl"
+        bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {browsing && spec ? (
           <CatalogBrowser

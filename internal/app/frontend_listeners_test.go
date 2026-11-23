@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,6 +44,18 @@ func (i listenerInstance) Status(context.Context) frontend.Status {
 	return frontend.Status{TargetVersion: "1"}
 }
 func (i listenerInstance) Close(context.Context) error { *i.closed++; return nil }
+
+type namedListenerFrontend struct {
+	id   frontend.Protocol
+	addr string
+}
+
+func (f namedListenerFrontend) Describe() frontend.Descriptor { return frontend.Descriptor{ID: f.id} }
+func (f namedListenerFrontend) Mount(context.Context, frontend.Host) (frontend.Instance, error) {
+	closed := 0
+	return listenerInstance{addr: f.addr, closed: &closed}, nil
+}
+
 func TestFrontendListeners(t *testing.T) {
 	ctx := context.Background()
 	closed := 0
@@ -123,17 +136,88 @@ func TestFrontendDefaultFallback(t *testing.T) {
 	}
 }
 
+func TestFrontendBusyPortStatusAndHolder(t *testing.T) {
+	blocker, err := net.Listen("tcp", "127.0.0.1:8090")
+	if err != nil {
+		t.Skipf("port 8090 unavailable for test setup: %v", err)
+	}
+	defer blocker.Close()
+
+	prev := portHolderLookup
+	calls := 0
+	portHolderLookup = func(_ context.Context, port int) string {
+		calls++
+		if port == 8090 {
+			return "Jellyfin Server"
+		}
+		return ""
+	}
+	defer func() { portHolderLookup = prev }()
+
+	ctx := context.Background()
+	reg := frontend.NewRegistry(func(frontend.Protocol) frontend.Host { return frontend.Host{} })
+	if err := reg.Register(namedListenerFrontend{id: "silo", addr: "127.0.0.1:8090"}); err != nil {
+		t.Fatal(err)
+	}
+	m := newFrontendListeners(reg)
+	defer m.close(ctx)
+	if err := m.start(ctx, "silo"); err != nil {
+		t.Fatal(err)
+	}
+	st := m.status(ctx, "silo")
+	_, actualPortText, splitErr := net.SplitHostPort(st.Addresses[0])
+	if splitErr != nil {
+		t.Fatal(splitErr)
+	}
+	actualPort, _ := strconv.Atoi(actualPortText)
+	if st.BusyPort != 8090 || st.ActualPort != actualPort || st.BusyPortHolder != "Jellyfin Server" {
+		t.Fatalf("status = %+v, want BusyPort=8090 ActualPort=%d BusyPortHolder=Jellyfin Server", st, actualPort)
+	}
+	// Repeated status reads must never re-run OS process lookup.
+	_ = m.status(ctx, "silo")
+	if calls != 1 {
+		t.Fatalf("portHolderLookup called %d times, want 1", calls)
+	}
+}
+
+func TestPortHolderParsers(t *testing.T) {
+	if got := parseLsofHolder("p100\ncether\np200\ncJellyfin\\x20Server\n", 100); got != "Jellyfin Server" {
+		t.Fatalf("parseLsofHolder = %q", got)
+	}
+	netstatOut := "  TCP    0.0.0.0:8096           0.0.0.0:0              LISTENING       4242\r\n"
+	if pid := parseNetstatListeningPID(netstatOut, 8096, 100); pid != "4242" {
+		t.Fatalf("parseNetstatListeningPID = %q", pid)
+	}
+	if name := parseTasklistCSV("\"jellyfin.exe\",\"4242\",\"Services\",\"0\",\"120,000 K\"\r\n"); name != "jellyfin" {
+		t.Fatalf("parseTasklistCSV = %q", name)
+	}
+}
+
 func TestFrontendConnectionURLs(t *testing.T) {
-	addresses := []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.2"), Mask: net.CIDRMask(24, 32)}, &net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)}}
+	addresses := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("fd79:f184::1"), Mask: net.CIDRMask(64, 128)},
+		&net.IPNet{IP: net.ParseIP("10.255.0.2"), Mask: net.CIDRMask(32, 32)},
+		&net.IPNet{IP: net.ParseIP("192.168.1.2"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+	}
+	// An IPv4-only unspecified bind (0.0.0.0) omits IPv6 interface addresses and ranks 192.168/16 first.
 	got := connectionURLs("0.0.0.0:8090", "/silo", addresses)
-	if len(got) != 1 || got[0] != "http://192.168.1.2:8090/silo" {
+	if len(got) != 2 || got[0] != "http://192.168.1.2:8090/silo" || got[1] != "http://10.255.0.2:8090/silo" {
 		t.Fatal(got)
+	}
+	// A dual-stack unspecified bind ([::]) includes IPv6 interface addresses after IPv4.
+	dual := connectionURLs("[::]:8090", "/silo", addresses)
+	if len(dual) != 3 || dual[0] != "http://192.168.1.2:8090/silo" || dual[2] != "http://[fd79:f184::1]:8090/silo" {
+		t.Fatal(dual)
 	}
 	if got := connectionURLs("127.0.0.1:8090", "", addresses); len(got) != 0 {
 		t.Fatal(got)
 	}
 	if got := connectionURLs("[2001:db8::1]:8090", "", nil); len(got) != 1 || got[0] != "http://[2001:db8::1]:8090" {
 		t.Fatal(got)
+	}
+	if best := reachableAddress([]string{"http://192.168.1.2:32550/jellyfin", "http://192.168.1.2:8096"}); best != "http://192.168.1.2:8096" {
+		t.Fatalf("reachableAddress = %q, want dedicated listener port", best)
 	}
 }
 
@@ -336,7 +420,7 @@ func TestFrontendUnauthorizedLogThrottle(t *testing.T) {
 	for _, id := range []frontend.Protocol{"silo", "jellyfin"} {
 		// Recreating wrappers must not reset the protocol's failure budget.
 		for n := 0; n < 100; n++ {
-			h := m.observe(id, next)
+			h := m.observe(id, "", next)
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest("GET", "/secret?token=secret", nil))
 			if w.Code != 401 || w.Body.String() != "Unauthorized\n" {
@@ -356,7 +440,7 @@ func TestFrontendNon2xxLogsRouteStatusReason(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Playback unavailable", http.StatusServiceUnavailable)
 	})
-	h := m.observe("jellyfin", next)
+	h := m.observe("jellyfin", "", next)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("POST", "/Items/abc/PlaybackInfo?api_key=secret", nil))
 	if w.Code != http.StatusServiceUnavailable {
@@ -371,7 +455,7 @@ func TestFrontendNon2xxLogsRouteStatusReason(t *testing.T) {
 	}
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	before := logs.Len()
-	m.observe("jellyfin", ok).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/Items/abc", nil))
+	m.observe("jellyfin", "", ok).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/Items/abc", nil))
 	if logs.Len() != before {
 		t.Fatal(logs.String()[before:])
 	}

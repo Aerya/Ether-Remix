@@ -37,6 +37,9 @@ func (m *Manager) CheckFileAvailability(ctx context.Context, user *core.User, ke
 	if user == nil {
 		return false, core.ErrUnauthorized
 	}
+	if key.IsPluginKey() {
+		return false, errFileCheckInconclusive
+	}
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}

@@ -89,8 +89,10 @@ func (s *Service) UploadAsset(ctx context.Context, name, kind, license string, r
 		}
 		mime = "font/ttf"
 	case "image":
-		if strings.Contains(strings.ToLower(string(b[:min(512, len(b))])), "<svg") {
-			_, _, e = artwork.NewSVGRasterizer().Rasterize(ctx, "onair-upload", b, artwork.RasterOptions{})
+		if isSVGDocument(b) {
+			if _, _, e = artwork.NewSVGRasterizer().Rasterize(ctx, "onair-upload", b, artwork.RasterOptions{}); e != nil {
+				e = fmt.Errorf("this SVG uses features Ether can't draw safely (embedded images, styles, text or scripts, or it is too large); export it as a PNG or JPG and upload that")
+			}
 			mime = "image/svg+xml"
 		} else {
 			var c image.Config
@@ -335,4 +337,19 @@ func (s *Service) hasChannelAssets(ctx context.Context) (bool, error) {
 	var exists bool
 	err := s.db.QueryRowContext(ctx, query).Scan(&exists)
 	return exists, err
+}
+
+// isSVGDocument reports whether b is an SVG document: XML text whose root
+// is <svg>. A raster file is never one, even when its metadata quotes SVG
+// (design tools keep the source SVG or XMP in a PNG text chunk), and the
+// file name is not trusted.
+func isSVGDocument(b []byte) bool {
+	if strings.HasPrefix(http.DetectContentType(b), "image/") {
+		return false
+	}
+	head := bytes.TrimLeft(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), " \t\r\n")
+	if !bytes.HasPrefix(head, []byte("<")) {
+		return false
+	}
+	return bytes.Contains(bytes.ToLower(head[:min(4096, len(head))]), []byte("<svg"))
 }

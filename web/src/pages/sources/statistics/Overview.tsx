@@ -3,7 +3,7 @@ import { cn } from "@braedonsaunders/appkit-ui";
 import { useState } from "react";
 import { ComboChart, ComboSwatch, type ComboSeries } from "../../../components/charts";
 import { t } from "../../../i18n";
-import { fixed, formatNumber } from "../../../lib/format";
+import { fixed, formatCompactNumber, formatNumber } from "../../../lib/format";
 import {
   daily,
   dayLabel,
@@ -147,6 +147,7 @@ export function SourceOverview({ data }: { data: StatsData }) {
         leftUnit={t("Plays")}
         rightUnit={t("GB")}
         leftFormat={(v) => formatNumber(v, 0)}
+        leftTickFormat={formatCompactNumber}
         rightFormat={gb}
         detail={
           today || !visible("data")

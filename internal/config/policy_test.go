@@ -150,3 +150,56 @@ func TestPolicyLeaseWaitsForDurablePublication(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPolicyEpochBumpsOnVelaLivePreviewChange(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bumps := 0
+	s.SetPolicyEpoch(func() error { bumps++; return nil })
+
+	setVela := func(settings map[string]any) {
+		t.Helper()
+		if err := s.Update(func(c *Config) error {
+			if c.Frontends == nil {
+				c.Frontends = map[string]Frontend{}
+			}
+			fe := c.Frontends["vela"]
+			fe.Settings = settings
+			c.Frontends["vela"] = fe
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Default is "auto", so saving "auto" or unrelated skin settings does not bump.
+	setVela(map[string]any{"livePreview": "auto"})
+	setVela(map[string]any{"livePreview": "auto", "defaultSkinId": "lounge"})
+	if bumps != 0 {
+		t.Fatalf("no-op livePreview/skin save bumped policy epoch %d times", bumps)
+	}
+
+	// Changing to "on-click" bumps once; repeating "on-click" does not.
+	setVela(map[string]any{"livePreview": "on-click", "defaultSkinId": "lounge"})
+	if bumps != 1 {
+		t.Fatalf("expected 1 bump after switching to on-click, got %d", bumps)
+	}
+	setVela(map[string]any{"livePreview": "on-click", "defaultSkinId": "cinematic"})
+	if bumps != 1 {
+		t.Fatalf("repeating on-click bumped policy epoch to %d", bumps)
+	}
+
+	// Changing to "off" bumps again.
+	setVela(map[string]any{"livePreview": "off"})
+	if bumps != 2 {
+		t.Fatalf("expected 2 bumps after switching to off, got %d", bumps)
+	}
+
+	// Removing livePreview returns to default "auto", which bumps again.
+	setVela(map[string]any{"defaultSkinId": "cinematic"})
+	if bumps != 3 {
+		t.Fatalf("expected 3 bumps after returning to implicit auto, got %d", bumps)
+	}
+}

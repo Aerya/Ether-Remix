@@ -3,6 +3,7 @@ package livetv
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -991,4 +992,402 @@ func splitTS(b []byte, maxDur time.Duration) [][]byte {
 		prev = c
 	}
 	return append(parts, append(append(append([]byte(nil), pat...), pmt...), b[prev:]...))
+}
+
+func parsePESTime(t []byte) uint64 {
+	return uint64(t[0]>>1&7)<<30 | uint64(t[1])<<22 | uint64(t[2]>>1)<<15 | uint64(t[3])<<7 | uint64(t[4]>>1)
+}
+
+// ptsDiff returns the signed 90 kHz difference a - b modulo 2^33.
+func ptsDiff(a, b uint64) int64 {
+	d := int64((a - b) & (1<<33 - 1))
+	if d >= 1<<32 {
+		d -= 1 << 33
+	}
+	return d
+}
+
+// tsSegmentFirstPTS returns the earliest presentation timestamp (90 kHz) of a
+// transport stream segment, preferring video when present and otherwise audio.
+func tsSegmentFirstPTS(b []byte) (uint64, bool) {
+	if !isTS(b) {
+		return 0, false
+	}
+	pmtPID := -1
+	videoPID := -1
+	audioPIDs := map[int]bool{}
+	var haveV, haveA bool
+	var minV, minA uint64
+	for off := 0; off+tsPacket <= len(b); off += tsPacket {
+		p := b[off : off+tsPacket]
+		if p[0] != 0x47 || p[1]&0x40 == 0 {
+			continue
+		}
+		pid := int(p[1]&0x1f)<<8 | int(p[2])
+		payload := tsPayload(p)
+		if payload == nil {
+			continue
+		}
+		switch {
+		case pid == 0 && pmtPID < 0:
+			pmtPID = ownedParsePAT(payload)
+		case pid == pmtPID && videoPID < 0 && len(audioPIDs) == 0:
+			for spid, st := range ownedParsePMT(payload) {
+				switch st.kind {
+				case "video":
+					if videoPID < 0 {
+						videoPID = int(spid)
+					}
+				case "audio":
+					audioPIDs[int(spid)] = true
+				}
+			}
+		case len(payload) >= 14 && payload[0] == 0 && payload[1] == 0 && payload[2] == 1 && payload[7]&0x80 != 0:
+			pts := parsePESTime(payload[9:14])
+			if pid == videoPID {
+				if !haveV || ptsDiff(pts, minV) < 0 {
+					minV, haveV = pts, true
+				}
+			} else if audioPIDs[pid] {
+				if !haveA || ptsDiff(pts, minA) < 0 {
+					minA, haveA = pts, true
+				}
+			}
+		}
+	}
+	if haveV {
+		return minV, true
+	}
+	return minA, haveA
+}
+
+// mp4TrackMeta describes one track declared in an fMP4 initialization segment.
+type mp4TrackMeta struct {
+	kind  string // "video", "audio", or ""
+	scale uint32
+}
+
+func mp4TrackMetas(init []byte) map[uint32]mp4TrackMeta {
+	out := map[uint32]mp4TrackMeta{}
+	mp4Boxes(init, func(typ string, body, _ []byte) {
+		if typ != "moov" {
+			return
+		}
+		mp4Boxes(body, func(typ string, trak, _ []byte) {
+			if typ != "trak" {
+				return
+			}
+			var id, scale uint32
+			var kind string
+			mp4Boxes(trak, func(typ string, body, _ []byte) {
+				switch typ {
+				case "tkhd":
+					if len(body) >= 24 {
+						if body[0] == 1 {
+							id = binary.BigEndian.Uint32(body[20:])
+						} else {
+							id = binary.BigEndian.Uint32(body[12:])
+						}
+					}
+				case "mdia":
+					mp4Boxes(body, func(typ string, body, _ []byte) {
+						switch typ {
+						case "mdhd":
+							if len(body) >= 24 {
+								if body[0] == 1 {
+									scale = binary.BigEndian.Uint32(body[20:])
+								} else {
+									scale = binary.BigEndian.Uint32(body[12:])
+								}
+							}
+						case "hdlr":
+							if len(body) >= 12 {
+								switch string(body[8:12]) {
+								case "vide":
+									kind = "video"
+								case "soun":
+									kind = "audio"
+								}
+							}
+						}
+					})
+				}
+			})
+			if id != 0 && scale != 0 {
+				out[id] = mp4TrackMeta{kind: kind, scale: scale}
+			}
+		})
+	})
+	return out
+}
+
+// mp4SegmentStartSeconds extracts the earliest fragment decode time in seconds
+// from an fMP4 media segment using its init segment's track timescales.
+func mp4SegmentStartSeconds(initData, segData []byte) (float64, bool) {
+	scales := mp4Timescales(initData)
+	if len(scales) == 0 {
+		return 0, false
+	}
+	var soleScale uint32
+	if len(scales) == 1 {
+		for _, s := range scales {
+			soleScale = s
+		}
+	}
+	var best float64
+	found := false
+	mp4Boxes(segData, func(typ string, body, _ []byte) {
+		if typ != "moof" {
+			return
+		}
+		mp4Boxes(body, func(typ string, body, _ []byte) {
+			if typ != "traf" {
+				return
+			}
+			var track uint32
+			var decodeTime uint64
+			hasTFDT := false
+			mp4Boxes(body, func(typ string, body, _ []byte) {
+				switch typ {
+				case "tfhd":
+					if len(body) >= 8 {
+						track = binary.BigEndian.Uint32(body[4:])
+					}
+				case "tfdt":
+					if len(body) >= 12 && body[0] == 1 {
+						decodeTime = binary.BigEndian.Uint64(body[4:])
+						hasTFDT = true
+					} else if len(body) >= 8 && body[0] == 0 {
+						decodeTime = uint64(binary.BigEndian.Uint32(body[4:]))
+						hasTFDT = true
+					}
+				}
+			})
+			if !hasTFDT {
+				return
+			}
+			scale := scales[track]
+			if scale == 0 {
+				scale = soleScale
+			}
+			if scale == 0 {
+				return
+			}
+			sec := float64(decodeTime) / float64(scale)
+			if !found || sec < best {
+				best, found = sec, true
+			}
+		})
+	})
+	return best, found
+}
+
+// avAlignment summarizes the opening A/V alignment of a muxed segment.
+type avAlignment struct {
+	known        bool          // container declared both video and audio streams
+	hasVideo     bool          // at least one video packet with timestamp
+	hasAudio     bool          // at least one audio packet with timestamp
+	videoKeyOpen bool          // false only when a later video keyframe appears after a non-keyframe start
+	skew         time.Duration // start delta between video and audio
+	overlap      time.Duration // overlapping presentation span when both exist
+}
+
+// tsOpeningAVAlignment inspects a transport stream segment's PAT/PMT and PES
+// timestamps to detect missing streams, mid-GOP openings, or large A/V start
+// skew on a newly started copy relay producer.
+func tsOpeningAVAlignment(b []byte) avAlignment {
+	if !isTS(b) {
+		return avAlignment{}
+	}
+	pmtPID, videoPID := -1, -1
+	audioPIDs := map[int]bool{}
+	gotPMT := false
+	var haveVideo, haveAudio, hasFirstVDTS, firstVKey, laterVKey bool
+	var minVPTS, maxVPTS, firstVDTS, minAPTS, maxAPTS uint64
+	for off := 0; off+tsPacket <= len(b); off += tsPacket {
+		p := b[off : off+tsPacket]
+		if p[0] != 0x47 || p[1]&0x40 == 0 {
+			continue
+		}
+		pid := int(p[1]&0x1f)<<8 | int(p[2])
+		payload := tsPayload(p)
+		if payload == nil {
+			continue
+		}
+		switch {
+		case pid == 0 && pmtPID < 0:
+			pmtPID = ownedParsePAT(payload)
+		case pid == pmtPID && !gotPMT:
+			streams := ownedParsePMT(payload)
+			if streams == nil {
+				continue
+			}
+			for spid, st := range streams {
+				switch st.kind {
+				case "video":
+					if videoPID < 0 {
+						videoPID = int(spid)
+					}
+				case "audio":
+					audioPIDs[int(spid)] = true
+				}
+			}
+			if videoPID < 0 || len(audioPIDs) == 0 {
+				return avAlignment{}
+			}
+			gotPMT = true
+		case gotPMT && pid == videoPID && len(payload) >= 14 && payload[0] == 0 && payload[1] == 0 && payload[2] == 1 && payload[7]&0x80 != 0:
+			pts := parsePESTime(payload[9:14])
+			dts, hasDTS := pts, false
+			if payload[7]&0x40 != 0 && len(payload) >= 19 {
+				dts, hasDTS = parsePESTime(payload[14:19]), true
+			}
+			isKey := (p[3]>>4)&2 != 0 && p[4] > 0 && p[5]&0x40 != 0
+			if !haveVideo {
+				haveVideo = true
+				minVPTS, maxVPTS = pts, pts
+				firstVDTS, hasFirstVDTS = dts, hasDTS
+				firstVKey = isKey
+			} else {
+				if ptsDiff(pts, minVPTS) < 0 {
+					minVPTS = pts
+				}
+				if ptsDiff(pts, maxVPTS) > 0 {
+					maxVPTS = pts
+				}
+				if isKey {
+					laterVKey = true
+				}
+			}
+		case gotPMT && audioPIDs[pid] && len(payload) >= 14 && payload[0] == 0 && payload[1] == 0 && payload[2] == 1 && payload[7]&0x80 != 0:
+			pts := parsePESTime(payload[9:14])
+			if !haveAudio {
+				haveAudio = true
+				minAPTS, maxAPTS = pts, pts
+			} else {
+				if ptsDiff(pts, minAPTS) < 0 {
+					minAPTS = pts
+				}
+				if ptsDiff(pts, maxAPTS) > 0 {
+					maxAPTS = pts
+				}
+			}
+		}
+	}
+	if !gotPMT {
+		return avAlignment{}
+	}
+	res := avAlignment{
+		known:        true,
+		hasVideo:     haveVideo,
+		hasAudio:     haveAudio,
+		videoKeyOpen: firstVKey || !laterVKey,
+	}
+	if haveVideo && haveAudio {
+		bestTicks := absInt64(ptsDiff(minVPTS, minAPTS))
+		if hasFirstVDTS {
+			if reorder := ptsDiff(minVPTS, firstVDTS); reorder >= 0 && reorder <= 90000 {
+				if dtsTicks := absInt64(ptsDiff(firstVDTS, minAPTS)); dtsTicks < bestTicks {
+					bestTicks = dtsTicks
+				}
+			}
+		}
+		res.skew = time.Duration(bestTicks) * time.Second / 90000
+		start := minVPTS
+		if ptsDiff(minAPTS, start) > 0 {
+			start = minAPTS
+		}
+		end := maxVPTS
+		if ptsDiff(maxAPTS, end) < 0 {
+			end = maxAPTS
+		}
+		if ov := ptsDiff(end, start); ov > 0 {
+			res.overlap = time.Duration(ov) * time.Second / 90000
+		}
+	}
+	return res
+}
+
+// fmp4OpeningAVAlignment inspects an fMP4 segment and its initialization
+// segment for missing tracks or large A/V decode-time skew.
+func fmp4OpeningAVAlignment(initData, segData []byte) avAlignment {
+	tracks := mp4TrackMetas(initData)
+	var hasVideoTrack, hasAudioTrack bool
+	for _, tm := range tracks {
+		switch tm.kind {
+		case "video":
+			hasVideoTrack = true
+		case "audio":
+			hasAudioTrack = true
+		}
+	}
+	if !hasVideoTrack || !hasAudioTrack {
+		return avAlignment{}
+	}
+	var haveVideo, haveAudio bool
+	var minV, minA float64
+	mp4Boxes(segData, func(typ string, body, _ []byte) {
+		if typ != "moof" {
+			return
+		}
+		mp4Boxes(body, func(typ string, body, _ []byte) {
+			if typ != "traf" {
+				return
+			}
+			var track uint32
+			var decodeTime uint64
+			hasTFDT := false
+			mp4Boxes(body, func(typ string, body, _ []byte) {
+				switch typ {
+				case "tfhd":
+					if len(body) >= 8 {
+						track = binary.BigEndian.Uint32(body[4:])
+					}
+				case "tfdt":
+					if len(body) >= 12 && body[0] == 1 {
+						decodeTime = binary.BigEndian.Uint64(body[4:])
+						hasTFDT = true
+					} else if len(body) >= 8 && body[0] == 0 {
+						decodeTime = uint64(binary.BigEndian.Uint32(body[4:]))
+						hasTFDT = true
+					}
+				}
+			})
+			if !hasTFDT {
+				return
+			}
+			tm, ok := tracks[track]
+			if !ok || tm.scale == 0 {
+				return
+			}
+			sec := float64(decodeTime) / float64(tm.scale)
+			switch tm.kind {
+			case "video":
+				if !haveVideo || sec < minV {
+					minV, haveVideo = sec, true
+				}
+			case "audio":
+				if !haveAudio || sec < minA {
+					minA, haveAudio = sec, true
+				}
+			}
+		})
+	})
+	res := avAlignment{
+		known:        true,
+		hasVideo:     haveVideo,
+		hasAudio:     haveAudio,
+		videoKeyOpen: true,
+	}
+	if haveVideo && haveAudio {
+		res.skew = time.Duration(math.Round(math.Abs(minV-minA) * float64(time.Second)))
+	}
+	return res
+}
+
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

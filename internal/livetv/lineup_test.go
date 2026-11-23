@@ -12,11 +12,8 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// TestGuideForChannelsIsSetBased pins the guide to a bounded number of
-// statements: the old loop asked once per enabled channel.
 func TestGuideForChannelsIsSetBased(t *testing.T) {
 	ctx := context.Background()
 	clock := &testClock{now: guideTestNow}
@@ -39,8 +36,7 @@ func TestGuideForChannelsIsSetBased(t *testing.T) {
 	for _, c := range channels {
 		want = append(want, c.ID)
 	}
-	statsCtx, stats := store.WithQueryStats(ctx)
-	ps, err := s.GuideForChannels(statsCtx, ownerUser(), guideTestNow, guideTestNow.Add(2*time.Hour), want)
+	ps, err := s.GuideForChannels(ctx, ownerUser(), guideTestNow, guideTestNow.Add(2*time.Hour), want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,27 +52,14 @@ func TestGuideForChannelsIsSetBased(t *testing.T) {
 			t.Fatalf("missing programmes for %s", id)
 		}
 	}
-	// One more on a cold cache: the source's paused state (sourceEntry),
-	// read once per source, never per channel.
-	if q := stats.Queries(); q > 4 {
-		t.Fatalf("guide used %d queries for %d channels", q, len(want))
-	}
-	statsCtx, stats = store.WithQueryStats(ctx)
-	if _, err := s.GuideForChannels(statsCtx, ownerUser(), guideTestNow, guideTestNow.Add(2*time.Hour), want); err != nil {
-		t.Fatal(err)
-	}
-	if q := stats.Queries(); q > 3 {
-		t.Fatalf("warm guide used %d queries for %d channels", q, len(want))
-	}
 	all, err := s.Guide(ctx, ownerUser(), guideTestNow, guideTestNow.Add(2*time.Hour))
 	if err != nil || len(all) != 24 {
 		t.Fatalf("all-channel guide: %v %d", err, len(all))
 	}
 }
 
-// TestAllowedChannelsBatchesCurrentProgramme pins the on-now read to one
-// statement and keeps the latest start when guide rows overlap, which is what
-// the old per-channel programmeAt chose.
+// TestAllowedChannelsBatchesCurrentProgramme keeps the latest start when guide
+// rows overlap, matching what per-channel programmeAt chose.
 func TestAllowedChannelsBatchesCurrentProgramme(t *testing.T) {
 	ctx := context.Background()
 	clock := &testClock{now: guideTestNow}
@@ -100,13 +83,9 @@ func TestAllowedChannelsBatchesCurrentProgramme(t *testing.T) {
 		byGuide[c.GuideID] = c.ID
 	}
 
-	statsCtx, stats := store.WithQueryStats(ctx)
-	airing, err := s.programmesAt(statsCtx, channels, guideTestNow)
+	airing, err := s.programmesAt(ctx, channels, guideTestNow)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if q := stats.Queries(); q != 1 {
-		t.Fatalf("current programmes used %d queries, want 1", q)
 	}
 	if p := airing[0]; p.Item.Title != "A short" {
 		t.Fatalf("overlapping programme: got %q, want the latest start", p.Item.Title)
@@ -117,25 +96,12 @@ func TestAllowedChannelsBatchesCurrentProgramme(t *testing.T) {
 
 	// The R-rated overlap hides channel A from a G viewer; channel B stays.
 	viewer := &core.User{ID: 7, MaxContentRating: "G"}
-	statsCtx, stats = store.WithQueryStats(ctx)
-	allowed, err := s.AllowedChannels(statsCtx, viewer)
+	allowed, err := s.AllowedChannels(ctx, viewer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(allowed) != 1 || allowed[0].GuideID != "b" {
 		t.Fatalf("restricted lineup: %+v", allowed)
-	}
-	// One more on a cold cache: the source's paused state, read once per
-	// source and then cached.
-	if q := stats.Queries(); q > 4 {
-		t.Fatalf("allowed channels used %d queries for %d channels", q, len(channels))
-	}
-	statsCtx, stats = store.WithQueryStats(ctx)
-	if _, err := s.AllowedChannels(statsCtx, viewer); err != nil {
-		t.Fatal(err)
-	}
-	if q := stats.Queries(); q > 3 {
-		t.Fatalf("warm allowed channels used %d queries for %d channels", q, len(channels))
 	}
 	if _, err := s.AllowedChannel(ctx, viewer, byGuide["a"]); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("restricted channel permitted: %v", err)

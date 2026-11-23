@@ -74,6 +74,7 @@ func (s *Service) Handler() http.Handler {
 		}
 		reply(w, 200, p)
 	})
+	m.HandleFunc("GET /plays/{id}/timeline", s.servePlayTimeline)
 	m.HandleFunc("GET /summary", func(w http.ResponseWriter, r *http.Request) {
 		since, until, user := s.period(r)
 		tz, _ := strconv.Atoi(r.URL.Query().Get("tz"))

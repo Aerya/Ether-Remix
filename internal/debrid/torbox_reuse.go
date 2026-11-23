@@ -2,8 +2,6 @@ package debrid
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,23 +35,44 @@ func (p *torBox) rememberKnown(hash, id string) {
 // Matching by hash preserves episode/series identity and avoids duplicate
 // account entries without an unconditional account-wide request on Play.
 func (p *torBox) findFresh(ctx context.Context, hash string) (string, error) {
+	id, _, err := p.findDuplicate(ctx, hash)
+	return id, err
+}
+
+func (p *torBox) findDuplicate(ctx context.Context, hash string) (string, int, error) {
 	// D: a positive fresh/in-flight background snapshot already identifies
 	// this duplicate. A miss still needs the provider's fresh recovery read.
 	if id, err := p.list.reuse(ctx, p.opts.Now(), hash); id != "" || err != nil {
-		return id, err
+		return id, 0, err
 	}
-	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}}})
+	return p.findInMyList(ctx, hash)
+}
+
+func (p *torBox) findInMyList(ctx context.Context, hashes ...string) (string, int, error) {
+	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}, "files": {"false"}}})
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	var items []tbTorrent
-	if err := json.Unmarshal(data, &items); err != nil {
-		return "", errors.New("torbox: unexpected torrent list")
+	items, err := decodeTorBoxTorrents(data)
+	if err != nil {
+		return "", 0, err
 	}
+	var foundID string
+	active := 0
 	for _, it := range items {
-		if strings.EqualFold(it.Hash, hash) && it.ID.String() != "" {
-			return it.ID.String(), nil
+		if it.Active {
+			active++
+		}
+		id := tbID(it.ID)
+		if id == "" || !matchesQueuedHash(it.Hash, hashes...) {
+			continue
+		}
+		if it.DownloadPresent || it.DownloadFinished {
+			return id, active, nil
+		}
+		if foundID == "" {
+			foundID = id
 		}
 	}
-	return "", nil
+	return foundID, active, nil
 }

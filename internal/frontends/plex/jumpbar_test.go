@@ -135,7 +135,7 @@ func TestFirstCharacterJumpbarOffsetsMatchTitleSortEveryLetter(t *testing.T) {
 	if hashTitles != 1 {
 		t.Fatalf("jump bar titled %d entries #; tvOS adds every one into the A offset", hashTitles)
 	}
-	if dirs[0].Key != "%23" && dirs[0].Key != "#" || dirs[0].Title != "#" || dirs[0].Size == nil || *dirs[0].Size != 4 {
+	if dirs[0].Key != "%23" && dirs[0].Key != "#" || dirs[0].Title != "#" || dirs[0].Size == nil || *dirs[0].Size != 3 {
 		t.Fatalf("unexpected leading # bucket: %+v", dirs[0])
 	}
 	last := dirs[len(dirs)-1]
@@ -336,8 +336,11 @@ func TestFirstCharacterJumpbarRealDataOrderingAndExcludedKeys(t *testing.T) {
 	if len(dirs) != 27 {
 		t.Fatalf("expected 27 jump-bar buckets, got %d", len(dirs))
 	}
-	if dirs[0].Title != "#" || dirs[0].Size == nil || *dirs[0].Size != 6 {
-		t.Fatalf("expected # size=6 (excluding the 6 hidden # titles), got %+v", dirs[0])
+	// Leading non-alphanumerics are stripped from derived sort titles, so only
+	// "(500) Days of Summer" remains in "#" (while #Alive -> A and [REC]* -> R),
+	// and the 6 hidden numeric "#" titles must not inflate "#".
+	if dirs[0].Title != "#" || dirs[0].Size == nil || *dirs[0].Size != 1 {
+		t.Fatalf("expected # size=1 (excluding the 6 hidden # titles), got %+v", dirs[0])
 	}
 
 	offset := 0
@@ -350,8 +353,8 @@ func TestFirstCharacterJumpbarRealDataOrderingAndExcludedKeys(t *testing.T) {
 		}
 		landed := all[offset]
 		if d.Title == "A" {
-			if offset != 6 {
-				t.Fatalf("expected A offset=6, got %d", offset)
+			if offset != 1 {
+				t.Fatalf("expected A offset=1, got %d", offset)
 			}
 			if landed.Title != "A" {
 				t.Fatalf("selecting A landed on %q at offset %d (want \"A\")", landed.Title, offset)

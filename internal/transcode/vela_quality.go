@@ -40,7 +40,7 @@ func VelaQualityVariants(info core.MediaInfo, base core.Decision, caps core.Clie
 		if v.Height < step.height && v.Width < step.height*16/9 {
 			continue
 		}
-		w, h := fitRungBox(v.Width, v.Height, step.height)
+		w, h := fitRungBox(v, step.height)
 		ranges := []string{rangeSDR}
 		if keepHDR {
 			ranges = []string{sourceRange}

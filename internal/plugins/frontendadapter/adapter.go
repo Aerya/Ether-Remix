@@ -97,8 +97,14 @@ func (f *Frontend) Describe() frontend.Descriptor {
 	if name == "" {
 		name = f.decl.Meta.Label
 	}
+	auth := f.decl.Meta.Auth
+	if auth == "" {
+		auth = AuthEtherToken
+	}
 	return frontend.Descriptor{
 		ID:             f.ID(),
+		Auth:           auth,
+		PathPrefix:     f.decl.Meta.PathPrefix,
 		Name:           name,
 		Logo:           f.decl.Icon,
 		Version:        f.decl.Version,

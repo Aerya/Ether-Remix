@@ -97,13 +97,13 @@ size limits, codec-specific height/profile limits, output profile conditions,
 viewer/remote bitrate ceilings and allowTranscode remain authoritative. HEVC
 level-limited clients remain conservative (decoder_level_unverified): there is
 no enforced HEVC level contract yet, so estimated RFC6381 is not proof.
-qualityLimitations contains {height,reason} stable codes for absent candidates:
+qualityLimitations contains {height,reason} stable codes for absent rung
+candidates (always height > 0; never height 0):
 resolution_limit, decoder_resolution_limit, bitrate_limit,
 decoder_profile_limit, decoder_level_unverified, decoder_unavailable,
 encoder_tonemap_unavailable, encoder_dv5_tonemap_unavailable,
-encoder_hevc_hdr_unavailable, decoder_hevc_unavailable, display_hdr_undeclared,
-output_profile_unavailable, owner_policy, transcoding_disabled and
-quality_service_unavailable. Height 0 means the limitation affects the menu.
+encoder_hevc_hdr_unavailable, decoder_hevc_unavailable, and
+display_hdr_undeclared.
 
 Both on-demand path.quality and prepared qualities[] expose target width/height,
 videoBitrate, peakVideoBitrate, averageBitrate (video+selected audio), bitrate

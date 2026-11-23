@@ -2,7 +2,7 @@ import { Switch } from "@braedonsaunders/appkit-ui";
 import { t } from "../../i18n";
 
 /** The apps Ether lists Live TV channels in (livetv.Apps on the server). */
-export const LIVE_APPS = ["plex", "jellyfin", "emby", "silo", "xtream", "m3u"] as const;
+export const LIVE_APPS = ["plex", "jellyfin", "emby", "silo", "xtream", "m3u", "vela"] as const;
 export type LiveApp = (typeof LIVE_APPS)[number];
 
 export function liveAppName(app: LiveApp): string {
@@ -19,6 +19,48 @@ export function liveAppName(app: LiveApp): string {
       return t("IPTV apps (Xtream)");
     case "m3u":
       return t("M3U & XMLTV");
+    case "vela":
+      return "Vela";
+  }
+}
+
+export function liveAppChipLabel(app: LiveApp): string {
+  switch (app) {
+    case "plex":
+      return "Plex";
+    case "jellyfin":
+      return "Jellyfin";
+    case "emby":
+      return "Emby";
+    case "silo":
+      return "Silo";
+    case "xtream":
+      return t("IPTV apps");
+    case "m3u":
+      return "M3U";
+    case "vela":
+      return "Vela";
+  }
+}
+
+export function liveAppNote(app: LiveApp): string {
+  switch (app) {
+    case "plex":
+      return t(
+        "Plex shows each of your groups as its own Live TV source, which every Plex app can switch between, plus Favorites.",
+      );
+    case "jellyfin":
+      return t("Jellyfin shows Favorites first; your groups become channel tags.");
+    case "emby":
+      return t("Emby shows your groups as guide tag filters.");
+    case "silo":
+      return t("Silo lists the channels enabled for it alongside your library.");
+    case "xtream":
+      return t("IPTV apps show your groups as categories, like a provider's own.");
+    case "m3u":
+      return t("Your groups become group-title in the M3U playlist.");
+    case "vela":
+      return t("Vela shows each group as a guide tab.");
   }
 }
 

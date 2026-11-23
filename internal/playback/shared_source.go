@@ -56,12 +56,19 @@ func unwrapShared(src core.MediaSource) (core.MediaSource, func() error) {
 	return sharedInner(src), sharedClose(src)
 }
 
+func (m *Manager) openResolution(ctx context.Context, res *core.Resolution) (core.MediaSource, error) {
+	if m.deps.OpenResolution != nil {
+		return m.deps.OpenResolution(ctx, res)
+	}
+	return m.deps.Engine.Open(ctx, res.Release.ID, res.NZB)
+}
+
 func (m *Manager) openShared(ctx context.Context, res *core.Resolution) (core.MediaSource, error) {
 	if m == nil || m.deps.Engine == nil || res == nil {
 		return nil, errors.New("playback: backend returned no source")
 	}
 	if res.Release.ID == "" || len(res.NZB) == 0 {
-		return m.deps.Engine.Open(ctx, res.Release.ID, res.NZB)
+		return m.openResolution(ctx, res)
 	}
 	key := res.Release.ID + "\x00" + nzbHash(res.NZB)
 	for {
@@ -94,7 +101,7 @@ func (m *Manager) openShared(ctx context.Context, res *core.Resolution) (core.Me
 		m.shared[key] = h
 		m.sharedMu.Unlock()
 
-		src, err := m.deps.Engine.Open(ctx, res.Release.ID, res.NZB)
+		src, err := m.openResolution(ctx, res)
 		m.sharedMu.Lock()
 		h.src, h.err, h.ready = src, err, true
 		if err != nil || src == nil {

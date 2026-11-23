@@ -1,5 +1,13 @@
-import { Button, SettingsSection, Spinner, Switch, toast } from "@braedonsaunders/appkit-ui";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import {
+  Badge,
+  Button,
+  Input,
+  SettingsSection,
+  Spinner,
+  Switch,
+  toast,
+} from "@braedonsaunders/appkit-ui";
+import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { ErrorPanel } from "../../../components/feedback";
 import { NumberInput, SecretInput } from "../../../components/fields";
@@ -116,23 +124,185 @@ function FeedStatusLine({ status, sharedSet }: { status?: RSSFeedStatus; sharedS
     "{count} unmatched title",
     "{count} unmatched titles",
   );
+  const is429 = /\b429\b/.test(status.error ?? "");
+  const normalizedProblem =
+    status.problem === "upstream" && is429 ? "rate_limited" : status.problem;
   const problem =
-    status.problem && status.problem !== "upstream"
-      ? (RSS_PROBLEMS[status.problem] ?? RSS_PROBLEMS.network)
+    normalizedProblem && normalizedProblem !== "upstream"
+      ? (RSS_PROBLEMS[normalizedProblem] ?? RSS_PROBLEMS.network)
       : "";
+  const showDetails = Boolean(status.error) && normalizedProblem !== "rate_limited";
   return (
     <span className="mt-1.5 block space-y-1 text-xs text-fg-muted">
       <span className="block">
         {t("Last read: {when}", { when })} · {imported} · {unmatched}
       </span>
-      {problem || status.error ? (
+      {problem || showDetails ? (
         <span className="inline-flex items-center gap-1.5 text-warning">
           <AlertTriangle size={13} aria-hidden />
           {problem}
-          {status.error ? <span>{t("Details: {details}", { details: status.error })}</span> : null}
+          {showDetails ? <span>{t("Details: {details}", { details: status.error })}</span> : null}
         </span>
       ) : null}
     </span>
+  );
+}
+
+type FriendStatus = RSSFeedStatus & { id: string; username: string };
+
+function isFriendRateLimited(f: FriendStatus): boolean {
+  return f.problem === "rate_limited" || /\b429\b/.test(f.error ?? "");
+}
+
+function hasFriendIssue(f: FriendStatus): boolean {
+  return Boolean(f.problem || f.error);
+}
+
+function PlexFriendsStatusRow({
+  friends: rawFriends,
+  enabled,
+  onSyncFriends,
+  syncingFriends,
+}: {
+  friends: FriendStatus[];
+  enabled: boolean;
+  onSyncFriends: () => void;
+  syncingFriends: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [filter, setFilter] = useState<"all" | "issues" | "synced">("all");
+  const [query, setQuery] = useState("");
+
+  const friendsSummaryError = rawFriends.find((f) => f.id === "friends");
+  const friends = rawFriends.filter((f) => f.id !== "friends");
+  if (friends.length === 0 && !friendsSummaryError) return null;
+
+  const rateLimitedCount = friends.filter(isFriendRateLimited).length;
+  const issueCount = friends.filter(hasFriendIssue).length;
+  const syncedCount = friends.filter((f) => f.lastRead > 0 && !hasFriendIssue(f)).length;
+  const totalTitles = friends.reduce((sum, f) => sum + (f.imported || 0), 0);
+
+  const q = query.trim().toLowerCase();
+  const visible = friends.filter((f) => {
+    if (filter === "issues" && !hasFriendIssue(f)) return false;
+    if (filter === "synced" && (f.lastRead <= 0 || hasFriendIssue(f))) return false;
+    if (q && !f.username.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  return (
+    <div>
+      <SettingsRow
+        setting="plex-community-friends"
+        title={t("Plex friends' watchlists")}
+        description={
+          <div className="flex flex-wrap items-center gap-2">
+            {friends.length > 0 ? (
+              <span>
+                {t("{count} friends · {synced} synced · {titles} titles", {
+                  count: friends.length,
+                  synced: syncedCount,
+                  titles: totalTitles,
+                })}
+              </span>
+            ) : null}
+            {rateLimitedCount > 0 ? (
+              <Badge variant="warning">
+                {t("{count} rate-limited (HTTP 429)", { count: rateLimitedCount })}
+              </Badge>
+            ) : null}
+            {issueCount > rateLimitedCount ? (
+              <Badge variant="warning">
+                {t("{count} errors", { count: issueCount - rateLimitedCount })}
+              </Badge>
+            ) : null}
+            {friendsSummaryError && isFriendRateLimited(friendsSummaryError) ? (
+              <Badge variant="warning">{RSS_PROBLEMS.rate_limited}</Badge>
+            ) : friendsSummaryError?.error ? (
+              <span className="text-xs text-warning">{friendsSummaryError.error}</span>
+            ) : null}
+          </div>
+        }
+        control={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!enabled || syncingFriends}
+              onClick={onSyncFriends}
+            >
+              <RefreshCw size={14} className={syncingFriends ? "animate-spin" : undefined} />
+              {t("Sync friends now")}
+            </Button>
+            {friends.length > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-expanded={expanded}
+                onClick={() => setExpanded((v) => !v)}
+              >
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                {expanded
+                  ? t("Hide friends")
+                  : t("Show friends ({count})", { count: friends.length })}
+              </Button>
+            ) : null}
+          </div>
+        }
+      />
+      {expanded && friends.length > 0 ? (
+        <div className="border-t border-border bg-surface/40 px-5 py-3 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Input
+              aria-label={t("Filter Plex friends")}
+              placeholder={t("Filter by username…")}
+              className="h-8 w-full text-xs sm:w-64"
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+            />
+            <div className="flex flex-wrap items-center gap-1">
+              {(
+                [
+                  ["all", t("All ({count})", { count: friends.length })],
+                  ["issues", t("Issues ({count})", { count: issueCount })],
+                  ["synced", t("Synced ({count})", { count: syncedCount })],
+                ] as const
+              ).map(([key, label]) => (
+                <Button
+                  key={key}
+                  type="button"
+                  size="sm"
+                  variant={filter === key ? "secondary" : "ghost"}
+                  onClick={() => setFilter(key)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+            {visible.length === 0 ? (
+              <p className="py-2 text-xs text-fg-muted">{t("No matching friends.")}</p>
+            ) : (
+              visible.map((friend) => (
+                <div
+                  key={friend.id}
+                  className="rounded-md border border-border bg-surface px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-fg">{friend.username}</span>
+                    {isFriendRateLimited(friend) ? <Badge variant="warning">HTTP 429</Badge> : null}
+                  </div>
+                  <FeedStatusLine status={friend} sharedSet />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -140,6 +310,7 @@ function FeedStatusLine({ status, sharedSet }: { status?: RSSFeedStatus; sharedS
 export function WatchlistAlerts() {
   const s = useDiscoverySettings();
   const [syncingRss, setSyncingRss] = useState(false);
+  const [syncingFriends, setSyncingFriends] = useState(false);
   if (s.doc.error) return <ErrorPanel error={s.doc.error} onRetry={() => void s.doc.reload()} />;
   if (!s.draft)
     return (
@@ -171,6 +342,21 @@ export function WatchlistAlerts() {
       toast.error(errorMessage(e));
     } finally {
       setSyncingRss(false);
+    }
+  };
+  const syncFriendsNow = async () => {
+    setSyncingFriends(true);
+    try {
+      const next = await apiFetch<DiscoverySettings>("/discovery/friends/sync", {
+        method: "POST",
+        body: "{}",
+      });
+      s.doc.setData(next);
+      toast.success(t("Syncing Plex friends' watchlists in the background"));
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSyncingFriends(false);
     }
   };
   const hasSavedRss = Boolean(
@@ -228,12 +414,6 @@ export function WatchlistAlerts() {
                 "Paste the “Your Friends' Watchlist” RSS URL from plex.tv Watchlist settings. Plex doesn't say which friend added what, so it shows as a shared “Your friends want to watch” row.",
               )}
               <FeedStatusLine status={s.doc.data?.plexFriendsRssStatus} sharedSet />
-              {s.doc.data?.plexFriendsStatus?.map((friend) => (
-                <span key={friend.id} className="block">
-                  {friend.username}
-                  <FeedStatusLine status={friend} sharedSet />
-                </span>
-              ))}
             </>
           }
           control={
@@ -284,6 +464,12 @@ export function WatchlistAlerts() {
             </Button>
           </div>
         ) : null}
+        <PlexFriendsStatusRow
+          friends={s.doc.data?.plexFriendsStatus ?? []}
+          enabled={draft.enabled && draft.plex}
+          onSyncFriends={() => void syncFriendsNow()}
+          syncingFriends={syncingFriends}
+        />
         <SettingsRow
           title={
             <label htmlFor="watchlist-hours" data-setting="check-every">
@@ -305,50 +491,6 @@ export function WatchlistAlerts() {
               />
               <span className="text-sm text-fg-muted">{t("hours")}</span>
             </span>
-          }
-        />
-      </SettingsSection>
-      <SaveBar
-        dirty={s.dirty}
-        saving={s.saving}
-        error={s.error}
-        onSave={() => s.save(t("Watchlist settings saved"))}
-        onDiscard={s.discard}
-      />
-    </>
-  );
-}
-
-/**
- * Opening-minute prefetch for a watchlist title that just became playable.
- * That is cache behaviour, so it lives on Cache rather than with the alerts.
- */
-export function WarmNewArrivals() {
-  const s = useDiscoverySettings();
-  if (s.doc.error) return <ErrorPanel error={s.doc.error} onRetry={() => void s.doc.reload()} />;
-  if (!s.draft)
-    return (
-      <div className="py-6 text-center">
-        <Spinner size={18} label={t("Loading watchlist settings")} />
-      </div>
-    );
-  const draft = s.draft;
-  return (
-    <>
-      <SettingsSection title={t("New arrivals")}>
-        <SettingsRow
-          title={<label htmlFor="watchlist-prewarm">{t("Warm up new arrivals")}</label>}
-          description={t(
-            "Fetch the opening minutes as soon as a title becomes available, so it starts quickly. Needs watchlist monitoring in Viewers.",
-          )}
-          control={
-            <Switch
-              id="watchlist-prewarm"
-              aria-label={t("Warm up new arrivals")}
-              checked={draft.prewarm}
-              disabled={!draft.enabled || s.saving}
-              onChange={(e) => s.setDraft({ ...draft, prewarm: e.currentTarget.checked })}
-            />
           }
         />
       </SettingsSection>

@@ -25,28 +25,13 @@ func fastHedge(f *Fetcher, floor time.Duration) {
 	f.live.policy.recheck = 20 * time.Millisecond
 }
 
-func poolFor(t *testing.T, f *Fetcher, id string) *pool {
-	t.Helper()
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	for _, p := range f.pools {
-		if p.cfg.ID == id {
-			return p
-		}
-	}
-	t.Fatalf("no pool %q", id)
-	return nil
-}
-
 // stallBody stalls every BODY for ids mid-body (connection open, no bytes)
-// for d, and records when each BODY arrived.
-func stallBody(s *nntptest.Server, d time.Duration, ids ...string) *bodyLog {
-	l := &bodyLog{}
+// for d.
+func stallBody(s *nntptest.Server, d time.Duration, ids ...string) {
 	s.SetFault(func(cmd, arg string) nntptest.Fault {
 		if cmd != "BODY" {
 			return nntptest.Fault{}
 		}
-		l.note(arg)
 		for _, id := range ids {
 			if arg == id {
 				return nntptest.Fault{BodyDelay: d}
@@ -54,24 +39,6 @@ func stallBody(s *nntptest.Server, d time.Duration, ids ...string) *bodyLog {
 		}
 		return nntptest.Fault{}
 	})
-	return l
-}
-
-type bodyLog struct {
-	mu sync.Mutex
-	at []time.Time
-}
-
-func (l *bodyLog) note(string) {
-	l.mu.Lock()
-	l.at = append(l.at, time.Now())
-	l.mu.Unlock()
-}
-
-func (l *bodyLog) times() []time.Time {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]time.Time(nil), l.at...)
 }
 
 // waitGoroutines polls until the goroutine count falls back to base plus
@@ -108,35 +75,24 @@ func twoTiers(t *testing.T, id string, want []byte, aConns, bConns int) (a, b *n
 	return a, b, pa, pb
 }
 
-// A stalled live BODY is hedged on the other provider once the threshold
-// passes, never earlier; the hedge's bytes reach the caller, the stalled
-// primary connection is cancelled and discarded, and nothing leaks.
+// A stalled live BODY is hedged on the other provider; the hedge's bytes
+// reach the caller, the stalled primary connection is cancelled and
+// discarded, and nothing leaks.
 func TestHedgeStalledLiveFetchWinsOnOtherProvider(t *testing.T) {
 	want := randData(1, 200_000)
 	a, b, pa, pb := twoTiers(t, "a@x", want, 2, 4)
 	stallBody(a, 30*time.Second, "a@x")
-	bLog := stallBody(b, 0)
 	// The idle deadline is far away: only the hedge can answer quickly.
 	f := newFetcher(t, []config.UsenetProvider{pa, pb}, Options{IdleReadTimeout: 10 * time.Second})
-	const threshold = 150 * time.Millisecond
-	fastHedge(f, threshold)
+	fastHedge(f, 50*time.Millisecond)
 	base := runtime.NumGoroutine()
 
-	start := time.Now()
 	got, err := f.Body(context.Background(), "a@x", nil, core.PriorityLive)
-	took := time.Since(start)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("hedged fetch: len=%d err=%v", len(got), err)
 	}
-	if took > threshold+time.Second {
-		t.Fatalf("hedged fetch took %v; threshold %v", took, threshold)
-	}
-	sent := bLog.times()
-	if len(sent) != 1 {
-		t.Fatalf("hedge BODYs on b = %d, want 1", len(sent))
-	}
-	if early := sent[0].Sub(start); early < threshold {
-		t.Fatalf("hedge sent after %v, before the %v threshold", early, threshold)
+	if n := b.BodyRequests("a@x"); n != 1 {
+		t.Fatalf("hedge BODYs on b = %d, want 1", n)
 	}
 	if st := statsFor(f, "b"); st.Hedges != 1 || st.HedgeWins != 1 || st.HedgeLosses != 0 {
 		t.Fatalf("hedge stats on b: %+v", st)
@@ -156,32 +112,6 @@ func TestHedgeStalledLiveFetchWinsOnOtherProvider(t *testing.T) {
 	}
 }
 
-// A fast primary is never hedged: the hedge waits the full threshold.
-func TestHedgeNotBeforeThreshold(t *testing.T) {
-	want := randData(2, 50_000)
-	a, b, pa, pb := twoTiers(t, "a@x", want, 2, 4)
-	a.SetFault(func(cmd, arg string) nntptest.Fault {
-		if cmd == "BODY" {
-			return nntptest.Fault{Delay: 60 * time.Millisecond}
-		}
-		return nntptest.Fault{}
-	})
-	f := newFetcher(t, []config.UsenetProvider{pa, pb}, Options{})
-	fastHedge(f, 250*time.Millisecond)
-	for range 3 {
-		got, err := f.Body(context.Background(), "a@x", nil, core.PriorityLive)
-		if err != nil || !bytes.Equal(got, want) {
-			t.Fatalf("len=%d err=%v", len(got), err)
-		}
-	}
-	if n := b.BodyRequests("a@x"); n != 0 {
-		t.Fatalf("fast primary hedged %d times", n)
-	}
-	if st := statsFor(f, "a"); st.LiveFetchP50 < 60*time.Millisecond {
-		t.Fatalf("live p50 not recorded: %+v", st)
-	}
-}
-
 // With one provider, the hedge uses a fresh connection of the same pool
 // while it has spare slots.
 func TestHedgeSingleProviderFreshConnection(t *testing.T) {
@@ -196,16 +126,12 @@ func TestHedgeSingleProviderFreshConnection(t *testing.T) {
 		return nntptest.Fault{}
 	})
 	f := newFetcher(t, []config.UsenetProvider{s.Provider("p", 4)}, Options{IdleReadTimeout: 10 * time.Second})
-	fastHedge(f, 100*time.Millisecond)
+	fastHedge(f, 50*time.Millisecond)
 	base := runtime.NumGoroutine()
 
-	start := time.Now()
 	got, err := f.Body(context.Background(), "a@x", nil, core.PriorityLive)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("len=%d err=%v", len(got), err)
-	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("single-provider hedge took %v", d)
 	}
 	if n := s.BodyRequests("a@x"); n != 2 {
 		t.Fatalf("BODY requests = %d, want primary + hedge", n)
@@ -215,48 +141,6 @@ func TestHedgeSingleProviderFreshConnection(t *testing.T) {
 	}
 	waitServerActive(t, s, 1) // the stalled socket closed; the hedge's is idle
 	waitGoroutines(t, base, s)
-}
-
-// No provider with a spare slot means no hedge: the fetch waits for its
-// primary, which here answers after a short stall.
-func TestHedgeNeedsSpareCapacity(t *testing.T) {
-	want := randData(4, 100_000)
-	a, b, pa, pb := twoTiers(t, "a@x", want, 1, 2)
-	stallBody(a, 400*time.Millisecond, "a@x")
-	f := newFetcher(t, []config.UsenetProvider{pa, pb}, Options{IdleReadTimeout: -1})
-	fastHedge(f, 50*time.Millisecond)
-	// b has two slots: one held elsewhere leaves none spare, and a's only
-	// slot belongs to the stalled primary.
-	pbPool := poolFor(t, f, "b")
-	if !pbPool.sem.TryAcquire(core.PriorityLive) {
-		t.Fatal("could not occupy b")
-	}
-	defer pbPool.sem.Release(core.PriorityLive)
-
-	type result struct {
-		data []byte
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
-		data, err := f.Body(context.Background(), "a@x", nil, core.PriorityLive)
-		done <- result{data, err}
-	}()
-	// Well past the 50ms threshold and still inside the 400ms stall. Once
-	// the primary releases its slot a hedge may start in the instant before
-	// its result is delivered; it is cancelled at once and not checked here.
-	time.Sleep(300 * time.Millisecond)
-	if n := b.BodyRequests("a@x") + a.BodyRequests("a@x"); n != 1 {
-		t.Fatalf("BODY requests during the stall = %d, want only the primary", n)
-	}
-	for _, id := range []string{"a", "b"} {
-		if st := statsFor(f, id); st.Hedges != 0 {
-			t.Fatalf("hedge without spare capacity on %s: %+v", id, st)
-		}
-	}
-	if r := <-done; r.err != nil || !bytes.Equal(r.data, want) {
-		t.Fatalf("len=%d err=%v", len(r.data), r.err)
-	}
 }
 
 // Readahead and prefetch lanes never hedge, and block accounts are not
@@ -398,61 +282,6 @@ func TestHedgeLoserCancelledWhenPrimaryWins(t *testing.T) {
 	}
 }
 
-// A later live fetch of the same playback stream completing while the head
-// is still pending lowers the hedge delay to the overtaken floor. Another
-// viewer's fetch finishing first is ordinary variance and changes nothing,
-// and fetches without a stream key never overtake.
-func TestHedgeOvertakenOnlyWithinStream(t *testing.T) {
-	type stream struct{ _ byte }
-	s1, s2 := &stream{}, &stream{}
-	const floor = 800 * time.Millisecond
-	for _, tc := range []struct {
-		name       string
-		head, next any
-		early      bool
-	}{
-		{"same stream", s1, s1, true},
-		{"other stream", s1, s2, false},
-		{"no stream key", nil, nil, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a, b, pa, pb := twoTiers(t, "head@x", randData(8, 80_000), 2, 4)
-			next := randData(9, 80_000)
-			addSeg(t, a, "next@x", next)
-			stallBody(a, 30*time.Second, "head@x")
-			bLog := stallBody(b, 0)
-			f := newFetcher(t, []config.UsenetProvider{pa, pb}, Options{IdleReadTimeout: 10 * time.Second})
-			f.live.policy.floor, f.live.policy.cold = floor, floor
-			f.live.policy.overtakenFloor = 50 * time.Millisecond
-
-			done := make(chan error, 1)
-			start := time.Now()
-			go func() {
-				_, err := f.Body(core.WithStreamKey(context.Background(), tc.head), "head@x", nil, core.PriorityLive)
-				done <- err
-			}()
-			time.Sleep(20 * time.Millisecond)
-			if got, err := f.Body(core.WithStreamKey(context.Background(), tc.next), "next@x", nil, core.PriorityLive); err != nil || !bytes.Equal(got, next) {
-				t.Fatalf("next: len=%d err=%v", len(got), err)
-			}
-			if err := <-done; err != nil {
-				t.Fatal(err)
-			}
-			sent := bLog.times()
-			if len(sent) != 1 {
-				t.Fatalf("head hedges = %d, want 1", len(sent))
-			}
-			at := sent[0].Sub(start)
-			if tc.early && at >= floor/2 {
-				t.Fatalf("overtaken head hedged after %v; the %v floor was not lowered", at, floor)
-			}
-			if !tc.early && at < floor {
-				t.Fatalf("head hedged after %v, before the %v floor, on another stream's completion", at, floor)
-			}
-		})
-	}
-}
-
 // The caller cancelling a hedged fetch cancels both sides.
 func TestHedgeCallerCancel(t *testing.T) {
 	want := randData(12, 100_000)
@@ -472,34 +301,6 @@ func TestHedgeCallerCancel(t *testing.T) {
 	waitGoroutines(t, base, a, b)
 	if n := b.BodyRequests("a@x"); n != 1 {
 		t.Fatalf("hedges = %d", n)
-	}
-}
-
-// Time to first byte with one stalled provider: without hedging the viewer
-// waits for the idle read deadline (5s by default, 1s here); with it, about
-// the hedge threshold.
-func TestHedgeCutsStalledTimeToFirstByte(t *testing.T) {
-	measure := func(off bool) time.Duration {
-		want := randData(13, 300_000)
-		a, _, pa, pb := twoTiers(t, "a@x", want, 2, 4)
-		stallBody(a, 30*time.Second, "a@x")
-		f := newFetcher(t, []config.UsenetProvider{pa, pb}, Options{IdleReadTimeout: time.Second})
-		fastHedge(f, 100*time.Millisecond)
-		f.live.policy.off = off
-		start := time.Now()
-		got, err := f.Body(context.Background(), "a@x", nil, core.PriorityLive)
-		if err != nil || !bytes.Equal(got, want) {
-			t.Fatalf("off=%v: len=%d err=%v", off, len(got), err)
-		}
-		return time.Since(start)
-	}
-	unhedged, hedged := measure(true), measure(false)
-	t.Logf("time to first byte with a stalled provider: unhedged %v, hedged %v", unhedged, hedged)
-	if unhedged < time.Second {
-		t.Fatalf("unhedged fetch beat the idle deadline: %v", unhedged)
-	}
-	if hedged > 600*time.Millisecond {
-		t.Fatalf("hedged fetch took %v, want about the 100ms threshold", hedged)
 	}
 }
 

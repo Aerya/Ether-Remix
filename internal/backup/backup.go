@@ -51,6 +51,7 @@ CREATE TABLE backup_files(
 );
 CREATE INDEX backup_files_created ON backup_files(created);`)
 	store.Register("backup", 3, `ALTER TABLE backup_settings ADD COLUMN skip_onair_media INTEGER NOT NULL DEFAULT 0;`)
+	store.Register("backup", 4, `ALTER TABLE backup_settings ADD COLUMN skip_vault INTEGER NOT NULL DEFAULT 0;`)
 }
 
 const maxBundleFile int64 = 8 << 30
@@ -73,6 +74,41 @@ type Service struct {
 	restart func(reason string, whenIdle bool) error
 	// media lists and locates On Air asset files (SetOnAirMedia).
 	media atomic.Pointer[OnAirMedia]
+	// onEvent is an optional non-blocking observer for backup completions and failures.
+	onEvent atomic.Pointer[func(BackupEvent)]
+}
+
+// BackupEvent describes a completed or failed backup run.
+type BackupEvent struct {
+	Kind                string // "manual" or "scheduled"
+	SizeBytes           int64
+	DurationMS          int64
+	Destination         string
+	Encrypted           bool
+	Err                 error
+	ConsecutiveFailures int
+}
+
+// SetOnEvent installs an optional non-blocking observer notified when manual
+// or scheduled backups complete or fail.
+func (s *Service) SetOnEvent(fn func(BackupEvent)) {
+	if s == nil {
+		return
+	}
+	if fn == nil {
+		s.onEvent.Store(nil)
+		return
+	}
+	s.onEvent.Store(&fn)
+}
+
+func (s *Service) emitEvent(ev BackupEvent) {
+	if s == nil {
+		return
+	}
+	if fn := s.onEvent.Load(); fn != nil && *fn != nil {
+		(*fn)(ev)
+	}
 }
 
 // OnAirMedia is how a bundle finds the On Air asset files whose bytes are
@@ -137,6 +173,7 @@ type Snapshot struct {
 	Remote bool   `json:"remote,omitempty"`
 }
 type Settings struct {
+	SkipVault     bool  `json:"skipVault"`
 	IntervalHours int   `json:"intervalHours"`
 	Retain        int   `json:"retain"`
 	LastRun       int64 `json:"lastRun"`
@@ -150,9 +187,10 @@ type Settings struct {
 	SkipOnAirMedia bool `json:"skipOnAirMedia"`
 }
 type Manifest struct {
-	Version int               `json:"version"`
-	Created time.Time         `json:"created"`
-	SHA256  map[string]string `json:"sha256"`
+	VaultPacks map[string]packRef `json:"vaultPacks,omitempty"`
+	Version    int                `json:"version"`
+	Created    time.Time          `json:"created"`
+	SHA256     map[string]string  `json:"sha256"`
 	// Dialect is "postgres" for a logical dump; empty means SQLite.
 	Dialect string `json:"dialect,omitempty"`
 	// OnAirAssets are the On Air asset files in the bundle, each an
@@ -202,10 +240,17 @@ func exportLogical(ctx context.Context, db *sql.DB, path string) error {
 
 func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	var v Settings
-	var skip int
-	e := s.db.QueryRowContext(ctx, `SELECT interval_hours,retain,last_run,shared_dir,skip_onair_media FROM backup_settings WHERE id=1`).Scan(&v.IntervalHours, &v.Retain, &v.LastRun, &v.SharedDir, &skip)
+	var skip, skipVault int
+	e := s.db.QueryRowContext(ctx, `SELECT interval_hours,retain,last_run,shared_dir,skip_onair_media,skip_vault FROM backup_settings WHERE id=1`).Scan(&v.IntervalHours, &v.Retain, &v.LastRun, &v.SharedDir, &skip, &skipVault)
+	v.SkipVault = skipVault != 0
 	v.SkipOnAirMedia = skip != 0
 	return v, e
+}
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 func (s *Service) Configure(ctx context.Context, v Settings) error {
 	if v.IntervalHours < 0 || v.IntervalHours > 8760 || v.Retain < 1 || v.Retain > 365 {
@@ -225,7 +270,7 @@ func (s *Service) Configure(ctx context.Context, v Settings) error {
 	if v.SkipOnAirMedia {
 		skip = 1
 	}
-	_, e := s.db.ExecContext(ctx, `UPDATE backup_settings SET interval_hours=?,retain=?,shared_dir=?,skip_onair_media=? WHERE id=1`, v.IntervalHours, v.Retain, v.SharedDir, skip)
+	_, e := s.db.ExecContext(ctx, `UPDATE backup_settings SET interval_hours=?,retain=?,shared_dir=?,skip_onair_media=?,skip_vault=? WHERE id=1`, v.IntervalHours, v.Retain, v.SharedDir, skip, boolInt(v.SkipVault))
 	return e
 }
 
@@ -308,18 +353,59 @@ func hashFile(path string) (string, error) {
 }
 
 // Create takes a snapshot with everything, On Air media included.
-func (s *Service) Create(ctx context.Context) (Snapshot, error) { return s.create(ctx, true) }
+func (s *Service) Create(ctx context.Context) (Snapshot, error) {
+	started := time.Now()
+	snap, dest, encrypted, err := s.createDetailed(ctx, true)
+	durMS := max(time.Since(started).Milliseconds(), int64(0))
+	if err != nil {
+		s.emitEvent(BackupEvent{
+			Kind:                "manual",
+			DurationMS:          durMS,
+			Destination:         dest,
+			Encrypted:           encrypted,
+			Err:                 err,
+			ConsecutiveFailures: 1,
+		})
+		return snap, err
+	}
+	s.emitEvent(BackupEvent{
+		Kind:        "manual",
+		SizeBytes:   snap.Size,
+		DurationMS:  durMS,
+		Destination: dest,
+		Encrypted:   encrypted,
+	})
+	return snap, nil
+}
 
 func (s *Service) create(ctx context.Context, withMedia bool) (Snapshot, error) {
+	snap, _, _, err := s.createDetailed(ctx, withMedia)
+	return snap, err
+}
+
+func (s *Service) createDetailed(ctx context.Context, withMedia bool) (Snapshot, string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out Snapshot
 	settings, se := s.Settings(ctx)
 	dir, shared := s.dir, false
 	node := s.clusterNode()
 	if node != nil && se == nil && settings.SharedDir != "" {
 		dir, shared = settings.SharedDir, true
 	}
+	encrypted := false
+	if _, keyErr := os.Stat(filepath.Join(filepath.Dir(s.configPath), config.CredentialKeyFile)); keyErr == nil {
+		encrypted = true
+	}
+	snap, err := s.createLocked(ctx, withMedia, settings, se, dir, shared, node)
+	dest := dir
+	if err == nil && snap.Name != "" {
+		dest = filepath.Join(dir, snap.Name)
+	}
+	return snap, dest, encrypted, err
+}
+
+func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Settings, se error, dir string, shared bool, node *Node) (Snapshot, error) {
+	var out Snapshot
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return out, e
 	}
@@ -387,6 +473,15 @@ func (s *Service) create(ctx context.Context, withMedia bool) (Snapshot, error) 
 		}
 		manifest.SHA256[name] = h
 	}
+	root, e := packRoot(conf, filepath.Dir(s.configPath))
+	if e != nil {
+		return out, e
+	}
+	if !settings.SkipVault {
+		if e = snapshotPacks(ctx, root, filepath.Join(stage, "packs"), dir, &manifest); e != nil {
+			return out, e
+		}
+	}
 	b, e := json.Marshal(manifest)
 	if e != nil {
 		return out, e
@@ -435,6 +530,11 @@ func (s *Service) create(ctx context.Context, withMedia bool) (Snapshot, error) 
 		return out, e
 	}
 	target := filepath.Join(dir, name)
+	if len(manifest.VaultPacks) > 0 {
+		if e = os.Rename(filepath.Join(stage, "packs"), target+".packs"); e != nil {
+			return out, e
+		}
+	}
 	if e = os.Rename(temp, target); e != nil {
 		return out, e
 	}
@@ -455,6 +555,9 @@ func (s *Service) create(ctx context.Context, withMedia bool) (Snapshot, error) 
 		}
 		if i >= retain {
 			if e = os.Remove(filepath.Join(dir, snap.Name)); e != nil {
+				return out, e
+			}
+			if e = os.RemoveAll(filepath.Join(dir, snap.Name+".packs")); e != nil {
 				return out, e
 			}
 		}
@@ -631,6 +734,8 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 	defer gz.Close()
 	tr := tar.NewReader(gz)
 	seen := map[string]bool{}
+	packs := map[string]string{}
+	var vaultBytes int64
 	media := map[string]bool{}
 	for {
 		h, e := tr.Next()
@@ -639,6 +744,12 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 		}
 		if e != nil {
 			return e
+		}
+		if strings.HasPrefix(h.Name, packPrefix) {
+			if e = extractPack(tr, h, stage, packs, &vaultBytes); e != nil {
+				return e
+			}
+			continue
 		}
 		if d, ok := strings.CutPrefix(h.Name, onairEntryPrefix); ok {
 			if h.Typeflag != tar.TypeReg || !validDigest(d) || media[d] || h.Size < 0 || h.Size > maxBundleFile {
@@ -699,6 +810,11 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 	if (m.Version != 1 && m.Version != 2) || len(m.SHA256) != len(names) || len(seen) != len(names)+1 {
 		return errors.New("unsupported backup manifest")
 	}
+	for name, digest := range packs {
+		if m.VaultPacks[name].Digest != digest {
+			return errors.New("vault checksum mismatch")
+		}
+	}
 	if len(m.OnAirAssets) != len(media) {
 		return errors.New("backup bundle On Air media does not match its manifest")
 	}
@@ -749,6 +865,11 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 		}
 		if sealed {
 			return errors.New("bundle has encrypted data but no credential key")
+		}
+	}
+	if f, ok := r.(*os.File); ok && len(packs) == 0 && len(m.VaultPacks) > 0 {
+		if e = restoreLocalPacks(f.Name(), stage, m); e != nil {
+			return e
 		}
 	}
 	if finish != nil {
@@ -832,6 +953,12 @@ func (s *Service) runScheduled(ctx context.Context, now time.Time, r *retryState
 		return false, nil
 	}
 	limit := 24 * time.Hour
+	started := time.Now()
+	var (
+		snap      Snapshot
+		dest      string
+		encrypted bool
+	)
 	v, e := s.Settings(ctx)
 	if e == nil {
 		interval := time.Duration(v.IntervalHours) * time.Hour
@@ -839,10 +966,18 @@ func (s *Service) runScheduled(ctx context.Context, now time.Time, r *retryState
 			return false, nil
 		}
 		limit = interval
-		_, e = s.create(ctx, !v.SkipOnAirMedia)
+		snap, dest, encrypted, e = s.createDetailed(ctx, !v.SkipOnAirMedia)
 	}
+	durMS := max(time.Since(started).Milliseconds(), int64(0))
 	if e == nil {
 		*r = retryState{}
+		s.emitEvent(BackupEvent{
+			Kind:        "scheduled",
+			SizeBytes:   snap.Size,
+			DurationMS:  durMS,
+			Destination: dest,
+			Encrypted:   encrypted,
+		})
 		return true, nil
 	}
 	wait := firstBackupRetry << min(r.failures, 8)
@@ -851,6 +986,14 @@ func (s *Service) runScheduled(ctx context.Context, now time.Time, r *retryState
 	}
 	r.failures++
 	r.next = now.Add(wait)
+	s.emitEvent(BackupEvent{
+		Kind:                "scheduled",
+		DurationMS:          durMS,
+		Destination:         dest,
+		Encrypted:           encrypted,
+		Err:                 e,
+		ConsecutiveFailures: r.failures,
+	})
 	return true, e
 }
 

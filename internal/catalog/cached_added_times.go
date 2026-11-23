@@ -3,9 +3,13 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 // airAddedSQL is the owner date-added timestamp. Movies and episodes use
@@ -26,10 +30,74 @@ func airAddedArgs(now time.Time) []any {
 // Missing, unknown and future dates are omitted. A later aired episode
 // replaces a series or season premiere; an unaired episode does not.
 func (c *Catalog) CachedAddedTimes(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]time.Time, error) {
-	return cachedAirAddedTimes(ctx, c.db, keys, c.now())
+	return cachedAirAddedTimes(ctx, c.db, keys, c.now(), c.WriteGeneration())
 }
 
-func cachedAirAddedTimes(ctx context.Context, db *sql.DB, keys []core.RatingKey, now time.Time) (map[core.RatingKey]time.Time, error) {
+type airAddedMemo struct {
+	mu     sync.Mutex
+	loaded map[core.RatingKey]bool
+	times  map[core.RatingKey]time.Time
+}
+
+func cachedAirAddedTimes(ctx context.Context, db *sql.DB, keys []core.RatingKey, now time.Time, generation ...uint64) (map[core.RatingKey]time.Time, error) {
+	result := make(map[core.RatingKey]time.Time)
+	if len(keys) == 0 {
+		return result, nil
+	}
+	unique := make([]core.RatingKey, 0, len(keys))
+	seen := make(map[core.RatingKey]bool, len(keys))
+	for _, key := range keys {
+		if !seen[key] {
+			seen[key] = true
+			unique = append(unique, key)
+		}
+	}
+	if reqmemo.Active(ctx) {
+		memo, err := reqmemo.Do(ctx, fmt.Sprintf("catalog:air-added-memo:%p:%v:%d", db, generation, now.Unix()), func() (*airAddedMemo, error) {
+			return &airAddedMemo{
+				loaded: map[core.RatingKey]bool{},
+				times:  map[core.RatingKey]time.Time{},
+			}, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		var missing []core.RatingKey
+		memo.mu.Lock()
+		for _, k := range unique {
+			if !memo.loaded[k] {
+				missing = append(missing, k)
+			}
+		}
+		memo.mu.Unlock()
+		if len(missing) > 0 {
+			sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
+			fetched, err := queryAirAddedTimes(ctx, db, missing, now)
+			if err != nil {
+				return nil, err
+			}
+			memo.mu.Lock()
+			for _, k := range missing {
+				memo.loaded[k] = true
+				if ts, ok := fetched[k]; ok {
+					memo.times[k] = ts
+				}
+			}
+			memo.mu.Unlock()
+		}
+		memo.mu.Lock()
+		for _, k := range unique {
+			if ts, ok := memo.times[k]; ok {
+				result[k] = ts
+			}
+		}
+		memo.mu.Unlock()
+		return result, nil
+	}
+	return queryAirAddedTimes(ctx, db, unique, now)
+}
+
+func queryAirAddedTimes(ctx context.Context, db *sql.DB, keys []core.RatingKey, now time.Time) (map[core.RatingKey]time.Time, error) {
 	result := make(map[core.RatingKey]time.Time)
 	const chunk = 400
 	for start := 0; start < len(keys); start += chunk {
@@ -61,7 +129,7 @@ func cachedAirAddedTimes(ctx context.Context, db *sql.DB, keys []core.RatingKey,
 	return result, nil
 }
 
-func applyAirAddedTimes(ctx context.Context, db *sql.DB, items []core.Title, now time.Time) error {
+func applyAirAddedTimes(ctx context.Context, db *sql.DB, items []core.Title, now time.Time, generation ...uint64) error {
 	// Movies and episodes already carry the exact date used by airAddedSQL.
 	// Only containers need another query to find their latest aired child.
 	keys := make([]core.RatingKey, 0, len(items))
@@ -75,7 +143,7 @@ func applyAirAddedTimes(ctx context.Context, db *sql.DB, items []core.Title, now
 			keys = append(keys, items[i].Key)
 		}
 	}
-	times, err := cachedAirAddedTimes(ctx, db, keys, now)
+	times, err := cachedAirAddedTimes(ctx, db, keys, now, generation...)
 	if err != nil {
 		return err
 	}

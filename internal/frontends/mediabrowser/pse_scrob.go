@@ -1,14 +1,12 @@
 package mediabrowser
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -99,16 +97,8 @@ func (i *instance) pseItems(w http.ResponseWriter, r *http.Request, v *frontend.
 			return titles[a].SortTitle < titles[b].SortTitle
 		})
 	default:
-		value := strings.TrimSpace(firstQuery(r, "AnyProviderIdEquals"))
-		if value == "" {
-			return false
-		}
-		titles, err = scrobview.ByProviderID(r.Context(), value, q.Types, func(ctx context.Context, id string, typ frontend.MediaType) (frontend.RatingKey, error) {
-			if i.host.Experience == nil {
-				return 0, nil
-			}
-			return i.host.Experience.ResolveExternal(ctx, v, device(r), frontend.ExternalRequest{Source: "imdb", ID: id, Type: typ})
-		})
+		// Provider selectors use the host pipeline, including TVDB, episodes and ACL.
+		return false
 	}
 	if err != nil {
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)

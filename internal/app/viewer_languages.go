@@ -41,6 +41,20 @@ func sameLanguages(a, b []string) bool {
 	return true
 }
 
+// viewerAudioPreferences returns the viewer's ordered audio languages and
+// original-language preference from trackprefs, falling back to the empty
+// list and false when no rules are configured.
+func (a *App) viewerAudioPreferences(ctx context.Context, userID int64) ([]string, bool) {
+	if userID <= 0 || a.trackprefs == nil {
+		return nil, false
+	}
+	rules, err := a.trackprefs.GetRules(ctx, userID)
+	if err != nil {
+		return nil, false
+	}
+	return rules.AudioLanguages, rules.PreferOriginal
+}
+
 // effectiveAudioLanguages is the viewer's ordered audio languages as playback
 // resolves them: the stored trackprefs list, which layers the viewer's own
 // choice over user 0, the plex.tv account profile and the quality profile.
@@ -51,25 +65,28 @@ func (a *App) effectiveAudioLanguages(ctx context.Context, v *core.Viewer) []str
 	if v == nil || v.ID <= 0 {
 		return nil
 	}
-	if a.trackprefs != nil {
-		if rules, err := a.trackprefs.GetRules(ctx, v.ID); err == nil && len(rules.AudioLanguages) > 0 {
-			return rules.AudioLanguages
-		}
+	if langs, _ := a.viewerAudioPreferences(ctx, v.ID); len(langs) > 0 {
+		return langs
 	}
 	return v.AudioLanguages
 }
 
 // withEffectiveAudioLanguages copies the viewer with the resolved audio
-// languages so resolver calls rank and estimate against what playback picks.
+// languages and prefer-original setting so resolver calls rank and estimate
+// against what playback picks.
 func (a *App) withEffectiveAudioLanguages(ctx context.Context, v *core.Viewer) *core.Viewer {
 	if v == nil {
 		return nil
 	}
-	langs := a.effectiveAudioLanguages(ctx, v)
-	if len(langs) == 0 || sameLanguages(langs, v.AudioLanguages) {
+	langs, preferOriginal := a.viewerAudioPreferences(ctx, v.ID)
+	if len(langs) == 0 {
+		langs = v.AudioLanguages
+	}
+	if sameLanguages(langs, v.AudioLanguages) && preferOriginal == v.PreferOriginal {
 		return v
 	}
 	cp := *v
 	cp.AudioLanguages = append([]string(nil), langs...)
+	cp.PreferOriginal = preferOriginal
 	return &cp
 }

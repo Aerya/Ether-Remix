@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -66,6 +67,11 @@ type transcodeEntry struct {
 	offset      time.Duration
 	started     bool // StartHLS ran
 	updatedAt   time.Time
+	// manifestIP/manifestAt: the client address and time an authenticated
+	// start.mpd last received this session's manifest (see
+	// authenticateManifestRefetch).
+	manifestIP netip.Addr
+	manifestAt time.Time
 	// A failed decision for this binding (failKey, failErr at failedAt):
 	// the start request that follows it answers with the same error at
 	// once instead of resolving again, including media loader retries.
@@ -99,10 +105,10 @@ func newTranscodeTable() *transcodeTable {
 	return &transcodeTable{table: frontend.NewBindingTable[playRequest](), stopped: map[string]stoppedTranscode{}}
 }
 func (e *transcodeEntry) binding() *frontend.Binding[playRequest] {
-	return &frontend.Binding[playRequest]{ID: e.id, StreamToken: e.streamToken, PlayID: e.playID, PlaybackID: e.playbackID, UserID: e.userID, ClientID: e.clientID, Key: e.key, Requested: e.requested, Decision: e.decision, Info: e.info, Subtitle: e.subtitle, Caps: e.caps, Opts: e.opts, Offset: e.offset, Started: e.started, UpdatedAt: e.updatedAt, FailKey: e.failKey, FailErr: e.failErr, FailedAt: e.failedAt}
+	return &frontend.Binding[playRequest]{ID: e.id, StreamToken: e.streamToken, PlayID: e.playID, PlaybackID: e.playbackID, UserID: e.userID, ClientID: e.clientID, Key: e.key, Requested: e.requested, Decision: e.decision, Info: e.info, Subtitle: e.subtitle, Caps: e.caps, Opts: e.opts, Offset: e.offset, Started: e.started, UpdatedAt: e.updatedAt, FailKey: e.failKey, FailErr: e.failErr, FailedAt: e.failedAt, ManifestIP: e.manifestIP, ManifestAt: e.manifestAt}
 }
 func plexBinding(b *frontend.Binding[playRequest]) *transcodeEntry {
-	return &transcodeEntry{id: b.ID, streamToken: b.StreamToken, playID: b.PlayID, playbackID: b.PlaybackID, userID: b.UserID, clientID: b.ClientID, key: b.Key, requested: b.Requested, decision: b.Decision, info: b.Info, subtitle: b.Subtitle, caps: b.Caps, opts: b.Opts, offset: b.Offset, started: b.Started, updatedAt: b.UpdatedAt, failKey: b.FailKey, failErr: b.FailErr, failedAt: b.FailedAt}
+	return &transcodeEntry{id: b.ID, streamToken: b.StreamToken, playID: b.PlayID, playbackID: b.PlaybackID, userID: b.UserID, clientID: b.ClientID, key: b.Key, requested: b.Requested, decision: b.Decision, info: b.Info, subtitle: b.Subtitle, caps: b.Caps, opts: b.Opts, offset: b.Offset, started: b.Started, updatedAt: b.UpdatedAt, failKey: b.FailKey, failErr: b.FailErr, failedAt: b.FailedAt, manifestIP: b.ManifestIP, manifestAt: b.ManifestAt}
 }
 func (t *transcodeTable) put(e *transcodeEntry) {
 	b := e.binding()

@@ -3,9 +3,8 @@ import { Button } from "@braedonsaunders/appkit-ui";
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Drawer } from "../../components/Drawer";
 import { DomainPage } from "../../components/layout";
-import { ProwlarrImport } from "../../components/ProwlarrImport";
+import { ProwlarrImportDrawer } from "../../components/ProwlarrImport";
 import { IPTVProviders } from "./IPTV";
 import { DebridSources } from "./Debrid";
 import { HealthStrip } from "./form";
@@ -114,15 +113,11 @@ export default function Sources() {
       ) : null}
       {stats ? <SourceStatistics view={top} /> : null}
       <AddSourceGallery open={gallery} onClose={() => setGallery(false)} onPick={pick} />
-      <Drawer
+      <ProwlarrImportDrawer
         open={importing}
         onClose={() => setImporting(false)}
-        title={t("Import from Prowlarr")}
-        description={t("Sync indexers from Prowlarr.")}
-        size="lg"
-      >
-        <ProwlarrImport onImported={() => setVersion((v) => v + 1)} />
-      </Drawer>
+        onImported={() => setVersion((v) => v + 1)}
+      />
     </DomainPage>
   );
 }

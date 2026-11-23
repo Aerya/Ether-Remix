@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	kitimages "github.com/braedonsaunders/ether/internal/frontend/kit/images"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
@@ -27,7 +28,8 @@ func pseImageSize(r *http.Request) *http.Request {
 	if q.Get("w") != "" {
 		return r
 	}
-	poster := strings.EqualFold(r.PathValue("imageType"), "Primary")
+	_, itemErr := ids.ParseRatingKeyGUID(r.PathValue("itemId"))
+	poster := itemErr == nil && strings.EqualFold(r.PathValue("imageType"), "Primary")
 	width := pseQueryInt(r, "fillWidth", "maxWidth", "width")
 	if width == 0 && poster {
 		width = pseQueryInt(r, "fillHeight", "maxHeight", "height") * 2 / 3

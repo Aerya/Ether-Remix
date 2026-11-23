@@ -59,18 +59,27 @@ func (s *Server) handlePlaylistSorts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) playlistListingMetadata(ctx context.Context, pl *frontend.Playlist) model.Metadata {
+	var st frontend.WatchStatus
+	var hasState bool
+	pr := FromContext(ctx)
+	if s.state() != nil && pr != nil && pr.User != nil {
+		if loaded, err := s.state().Get(ctx, pr.User.ID, pl.Key); err == nil {
+			st, hasState = loaded, true
+		}
+	}
+	return s.playlistListingMetadataWithState(ctx, pl, st, hasState)
+}
+
+func (s *Server) playlistListingMetadataWithState(ctx context.Context, pl *frontend.Playlist, st frontend.WatchStatus, hasState bool) model.Metadata {
 	md := s.playlistMetadata(ctx, pl)
 	md.ViewCount = 1
 	md.LastViewedAt = md.AddedAt
-	pr := FromContext(ctx)
-	if s.state() != nil && pr != nil && pr.User != nil {
-		if st, err := s.state().Get(ctx, pr.User.ID, pl.Key); err == nil && (!st.UpdatedAt.IsZero() || st.ViewCount > 0 || !st.LastViewedAt.IsZero()) {
-			md.ViewCount = st.ViewCount
-			md.LastViewedAt = unixOrZero(st.LastViewedAt)
-			md.ViewOffset = st.ViewOffset.Milliseconds()
-			md.UserRating = st.UserRating
-			md.LastRatedAt = unixOrZero(st.LastRatedAt)
-		}
+	if hasState && (!st.UpdatedAt.IsZero() || st.ViewCount > 0 || !st.LastViewedAt.IsZero()) {
+		md.ViewCount = st.ViewCount
+		md.LastViewedAt = unixOrZero(st.LastViewedAt)
+		md.ViewOffset = st.ViewOffset.Milliseconds()
+		md.UserRating = st.UserRating
+		md.LastRatedAt = unixOrZero(st.LastRatedAt)
 	}
 	return md
 }

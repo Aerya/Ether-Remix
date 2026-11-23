@@ -63,7 +63,7 @@ func (b *Broker) ensureTrickplay(ctx context.Context, s *brokerSession, until ti
 		return
 	}
 	ps, ok := b.deps.Playback.Session(s.playID)
-	if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID == "" {
+	if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID == "" || (len(ps.Info.Streams) > 0 && ps.Info.Video() == nil) {
 		return
 	}
 	if !b.trickplayBindingCurrent(s, ps) {
@@ -162,7 +162,7 @@ func (b *Broker) trickplayReady(ctx context.Context, a frontend.SessionAccess, i
 			continue
 		}
 		ps, ok := b.deps.Playback.Session(s.playID)
-		if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID == "" || !b.trickplayBindingCurrent(s, ps) {
+		if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID == "" || (len(ps.Info.Streams) > 0 && ps.Info.Video() == nil) || !b.trickplayBindingCurrent(s, ps) {
 			continue
 		}
 		if best != nil && !s.public.StartedAt.After(best.public.StartedAt) {

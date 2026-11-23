@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins/remotetest"
 	"io"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/coder/websocket"
@@ -768,6 +770,7 @@ type fakeHost struct {
 	blobs       map[string][]byte
 	notices     []string
 	logs        []string
+	aiComplete  func(pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
 }
 
 func newFakeHost() *fakeHost {
@@ -805,6 +808,18 @@ func (f *fakeHost) KVDelete(_ context.Context, pluginID, key string) error {
 	return nil
 }
 
+func (f *fakeHost) BadgesSet(_ context.Context, _, _ string, _ []plugins.BadgeEntry) error {
+	return nil
+}
+
+func (f *fakeHost) BadgesClear(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (f *fakeHost) BadgesUsage(_ context.Context, _ string) (plugins.BadgeUsage, error) {
+	return plugins.BadgeUsage{Titles: 0, QuotaTitles: plugins.PosterBadgeQuotaTitles}, nil
+}
+
 func (f *fakeHost) KVList(_ context.Context, pluginID, prefix string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -816,6 +831,48 @@ func (f *fakeHost) KVList(_ context.Context, pluginID, prefix string) ([]string,
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func (f *fakeHost) KVUsage(_ context.Context, pluginID string) (plugins.KVUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var used int64
+	for _, v := range f.kv[pluginID] {
+		used += int64(len(v))
+	}
+	keys := int64(len(f.kv[pluginID]))
+	return plugins.KVUsage{
+		Bytes:      used + keys*plugins.KVKeyChargeBytes,
+		Keys:       keys,
+		QuotaBytes: plugins.KVQuotaBytes,
+		QuotaKeys:  plugins.KVQuotaKeys,
+	}, nil
+}
+
+func (f *fakeHost) SecretSet(_ context.Context, pluginID, name, value string, ttlSec int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kv == nil {
+		f.kv = map[string]map[string][]byte{}
+	}
+	if f.kv["__secret__"+pluginID] == nil {
+		f.kv["__secret__"+pluginID] = map[string][]byte{}
+	}
+	if value == "" {
+		delete(f.kv["__secret__"+pluginID], name)
+		return nil
+	}
+	f.kv["__secret__"+pluginID][name] = []byte(value)
+	return nil
+}
+
+func (f *fakeHost) SecretDelete(_ context.Context, pluginID, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kv != nil && f.kv["__secret__"+pluginID] != nil {
+		delete(f.kv["__secret__"+pluginID], name)
+	}
+	return nil
 }
 
 func (f *fakeHost) CatalogSearch(_ context.Context, _, query string, limit, offset int) (json.RawMessage, error) {
@@ -909,6 +966,50 @@ func (f *fakeHost) KindItems(_ context.Context, pluginID, kindKey, _ string, _ i
 	return core.KindPage{Items: append([]core.KindItem(nil), f.kindItems[pluginID+":"+kindKey]...)}, nil
 }
 
+func (f *fakeHost) KindVisible(_ context.Context, pluginID, viewerToken, kindKey string, ids []string) ([]string, error) {
+	if f.denyKinds || strings.TrimSpace(viewerToken) == "" {
+		return nil, ErrPermissionDenied
+	}
+	if len(ids) > plugins.MaxKindVisibleIDs {
+		return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "ids", Message: fmt.Sprintf("kinds.visible accepts at most %d ids", plugins.MaxKindVisibleIDs)}}}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	have := map[string]bool{}
+	for _, it := range f.kindItems[pluginID+":"+kindKey] {
+		have[it.ID] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if have[id] && id != "hidden-id" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeHost) KindBrowse(_ context.Context, pluginID, viewerToken, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	if f.denyKinds || strings.TrimSpace(viewerToken) == "" {
+		return core.KindPage{}, ErrPermissionDenied
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []core.KindItem
+	for _, it := range f.kindItems[pluginID+":"+kindKey] {
+		if it.ID == "hidden-id" {
+			continue
+		}
+		if q.Query != "" && !strings.Contains(strings.ToLower(it.Title), strings.ToLower(q.Query)) {
+			continue
+		}
+		out = append(out, it)
+	}
+	if out == nil {
+		out = []core.KindItem{}
+	}
+	return core.KindPage{Items: out}, nil
+}
+
 func (f *fakeHost) ResolveSources(_ context.Context, _ string, q core.SourceQuery) ([]core.SourceCandidate, error) {
 	if f.denySources {
 		return nil, ErrPermissionDenied
@@ -947,12 +1048,37 @@ func (f *fakeHost) CacheOpen(_ context.Context, _, blobRef string) (io.ReadSeekC
 	}{Reader: bytes.NewReader(data), Closer: io.NopCloser(nil)}, nil
 }
 
+func (f *fakeHost) CacheDelete(_ context.Context, _, blobRef string) error {
+	if f.denyCache {
+		return ErrPermissionDenied
+	}
+	f.mu.Lock()
+	delete(f.blobs, blobRef)
+	f.mu.Unlock()
+	return nil
+}
+
 func (f *fakeHost) Settings(_ context.Context, pluginID string) (map[string]any, error) {
 	return map[string]any{"plugin": pluginID}, nil
 }
 
 func (f *fakeHost) StreamURL(_ context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
 	return fmt.Sprintf("/ether/v1/kind-media/%s-%d-%s", pluginID, viewerID, itemRef), nil
+}
+
+func (f *fakeHost) PublishEvent(_ context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error {
+	return nil
+}
+
+func (f *fakeHost) AIComplete(_ context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	if f.aiComplete != nil {
+		return f.aiComplete(pluginID, viewerToken, req)
+	}
+	return plugins.AICompleteResponse{}, ErrNotConfigured
+}
+
+func (f *fakeHost) MediaProbe(_ context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error) {
+	return core.MediaProbeResult{}, ErrPermissionDenied
 }
 
 func (f *fakeHost) NotifyOwner(_ context.Context, pluginID, text string) error {
@@ -1120,6 +1246,14 @@ func TestPluginHostAPIEndpointsAuthAndGrants(t *testing.T) {
 	_ = cacheResp.Body.Close()
 	if cacheResp.StatusCode != http.StatusOK || string(cacheBody) != "ROMDATA" {
 		t.Fatalf("cache open = %d %q", cacheResp.StatusCode, cacheBody)
+	}
+	status, delOut := doHost(http.MethodDelete, "/ether/plugin-host/cache/blob:plugin.one:pk-plugin-one-rom", "cred-one", "")
+	if status != http.StatusOK || delOut["ok"] != true {
+		t.Fatalf("cache delete = %d %+v", status, delOut)
+	}
+	status, _ = doHost(http.MethodGet, "/ether/plugin-host/cache/blob:plugin.one:pk-plugin-one-rom", "cred-one", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("cache open after delete = %d, want 404", status)
 	}
 }
 
@@ -1358,7 +1492,7 @@ func TestTypeScriptReferencePairing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe := exec.Command(node, "--input-type=module", "-e", "if(typeof WebSocket==='undefined') process.exit(1); await import(process.argv[1])", "file://"+fixture)
+	probe := exec.Command(node, "--input-type=module", "-e", `const {pathToFileURL}=await import("node:url"); if(typeof WebSocket==='undefined') process.exit(1); await import(pathToFileURL(process.argv[1]).href)`, fixture)
 	if err := probe.Run(); err != nil {
 		t.Skip("node lacks native TypeScript or WebSocket support")
 	}
@@ -1378,10 +1512,10 @@ func TestTypeScriptReferencePairing(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	script := `const {Tunnel,json}=await import(process.argv[1]); const t=new Tunnel({url:process.argv[2],pairCode:"TESTCODE",handler:()=>json({ok:true})}); await t.serveOnce();`
+	script := `const {pathToFileURL}=await import("node:url"); const {Tunnel,json}=await import(pathToFileURL(process.argv[1]).href); const t=new Tunnel({url:process.argv[2],pairCode:"TESTCODE",handler:()=>json({ok:true})}); await t.serveOnce();`
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-e", script, "file://"+fixture, "ws"+strings.TrimPrefix(srv.URL, "http")+TunnelPath)
+	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-e", script, fixture, "ws"+strings.TrimPrefix(srv.URL, "http")+TunnelPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
@@ -1583,7 +1717,717 @@ func TestPlainStremioClientSendsHonestUserAgent(t *testing.T) {
 	if _, err := c.Call(context.Background(), Request{Path: "/stream/movie/tt1.json", RequestID: "req-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if ua != "Ether (+https://github.com/braedonsaunders/ether)" || ether != "" {
+	if ua != httpclient.UserAgent() || ether != "" {
 		t.Fatalf("user agent %q, X-Ether-Request-ID %q", ua, ether)
+	}
+}
+
+func TestRemoteHostKindVisibleAndBrowse(t *testing.T) {
+	var seenViewer int64
+	var seenKind string
+	var seenQuery core.KindBrowseRequest
+	const validToken = "tok-live-42"
+
+	adapter := HostAdapter{
+		ResolveAdapterViewerToken: func(pluginID, token string) (int64, bool) {
+			if pluginID == "plug.comics" && token == validToken {
+				return 42, true
+			}
+			return 0, false
+		},
+		HostFor: func(pluginID string) plugins.Host {
+			if pluginID != "plug.comics" {
+				return nil
+			}
+			return &adapterTestHost{
+				onVisible: func(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+					v, ok := plugins.ViewerFromContext(ctx)
+					if !ok {
+						return nil, plugins.ErrPermissionDenied
+					}
+					if len(ids) > plugins.MaxKindVisibleIDs {
+						return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "ids", Message: "too many ids"}}}
+					}
+					seenViewer = v
+					seenKind = kindKey
+					out := make([]string, 0, len(ids))
+					for _, id := range ids {
+						if id != "secret" {
+							out = append(out, id)
+						}
+					}
+					return out, nil
+				},
+				onBrowse: func(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+					v, ok := plugins.ViewerFromContext(ctx)
+					if !ok {
+						return core.KindPage{}, plugins.ErrPermissionDenied
+					}
+					seenViewer = v
+					seenKind = kindKey
+					seenQuery = q
+					return core.KindPage{Items: []core.KindItem{{ID: "public", Level: "series", Title: "Public"}}}, nil
+				},
+			}
+		},
+	}
+
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: adapter,
+		Auth: remotetest.Credentials{
+			"cred-comics": "plug.comics",
+		},
+	}))
+	defer srv.Close()
+
+	post := func(path, viewerToken string, body any) *http.Response {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req, err := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-comics")
+		req.Header.Set("Content-Type", "application/json")
+		if viewerToken != "" {
+			req.Header.Set(HeaderViewerToken, viewerToken)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// Missing viewer token is refused with 403 even if guest supplies viewerId in JSON body.
+	resp := post("/ether/plugin-host/kinds/comic/visible", "", map[string]any{"viewerId": 99, "ids": []string{"public"}})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing viewer token status = %d, want 403", resp.StatusCode)
+	}
+
+	// Invalid viewer token is refused with 403.
+	resp = post("/ether/plugin-host/kinds/comic/browse", "bad-token", map[string]any{"viewerId": 99, "query": "pub"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("invalid viewer token status = %d, want 403", resp.StatusCode)
+	}
+
+	// Valid viewer token resolves viewer 42 and ignores any guest-supplied viewerId (99).
+	resp = post("/ether/plugin-host/kinds/comic/visible", validToken, map[string]any{"viewerId": 99, "ids": []string{"public", "secret"}})
+	var visOut struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&visOut); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || seenViewer != 42 || seenKind != "comic" || len(visOut.IDs) != 1 || visOut.IDs[0] != "public" {
+		t.Fatalf("visible: status=%d viewer=%d kind=%q ids=%v", resp.StatusCode, seenViewer, seenKind, visOut.IDs)
+	}
+
+	// Batch larger than 500 returns 400 invalid_input.
+	tooMany := make([]string, plugins.MaxKindVisibleIDs+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("c-%d", i)
+	}
+	resp = post("/ether/plugin-host/kinds/comic/visible", validToken, map[string]any{"ids": tooMany})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized batch status = %d, want 400", resp.StatusCode)
+	}
+
+	// Browse with valid viewer token passes query and returns policy-filtered page.
+	resp = post("/ether/plugin-host/kinds/comic/browse", validToken, map[string]any{"query": "pub", "limit": 25, "desc": true})
+	var browseOut core.KindPage
+	if err := json.NewDecoder(resp.Body).Decode(&browseOut); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || seenViewer != 42 || seenQuery.Query != "pub" || seenQuery.Limit != 25 || !seenQuery.Desc || len(browseOut.Items) != 1 {
+		t.Fatalf("browse: status=%d viewer=%d q=%+v out=%+v", resp.StatusCode, seenViewer, seenQuery, browseOut)
+	}
+}
+
+type adapterTestHost struct {
+	plugins.Host
+	onVisible    func(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	onBrowse     func(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+	onAIComplete func(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+	onMediaProbe func(ctx context.Context, src core.PlayableSource) (core.MediaProbeResult, error)
+}
+
+func (a *adapterTestHost) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	return a.onVisible(ctx, kindKey, ids)
+}
+
+func (a *adapterTestHost) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	return a.onBrowse(ctx, kindKey, q)
+}
+
+func (a *adapterTestHost) AIComplete(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	return a.onAIComplete(ctx, req)
+}
+
+func (a *adapterTestHost) MediaProbe(ctx context.Context, src core.PlayableSource) (core.MediaProbeResult, error) {
+	if a.onMediaProbe == nil {
+		return core.MediaProbeResult{}, plugins.ErrPermissionDenied
+	}
+	return a.onMediaProbe(ctx, src)
+}
+
+func TestHostHandlerDerivedSecrets(t *testing.T) {
+	fh := &fakeHost{}
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: fh,
+		Auth: remotetest.Credentials{
+			"cred-sec": "plug.sec",
+		},
+	}))
+	defer srv.Close()
+
+	doReq := func(method, path string, body []byte) *http.Response {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			rd = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, srv.URL+path, rd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-sec")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// PUT stores derived secret.
+	resp := doReq(http.MethodPut, "/ether/plugin-host/secrets/session_cookie", []byte(`{"value":"sid=abc","ttlSec":300}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT derived secret status = %d, want 204", resp.StatusCode)
+	}
+	if got := string(fh.kv["__secret__plug.sec"]["session_cookie"]); got != "sid=abc" {
+		t.Fatalf("stored derived secret = %q, want sid=abc", got)
+	}
+
+	// GET remains absent (secret.get is hosted-only).
+	resp = doReq(http.MethodGet, "/ether/plugin-host/secrets/session_cookie", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET derived secret status = %d, want 404 or 405", resp.StatusCode)
+	}
+
+	// DELETE clears derived secret.
+	resp = doReq(http.MethodDelete, "/ether/plugin-host/secrets/session_cookie", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE derived secret status = %d, want 204", resp.StatusCode)
+	}
+	if _, exists := fh.kv["__secret__plug.sec"]["session_cookie"]; exists {
+		t.Fatal("derived secret still present after DELETE")
+	}
+}
+
+type fakeOptionsHost struct {
+	*fakeHost
+	gotPlugin string
+	gotViewer int64
+	gotItem   string
+	gotOpts   plugins.StreamURLOptions
+}
+
+func (f *fakeOptionsHost) StreamURLWithOptions(_ context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
+	f.gotPlugin = pluginID
+	f.gotViewer = viewerID
+	f.gotItem = itemRef
+	f.gotOpts = opts
+	return "/ether/v1/kind-media/remote-src", nil
+}
+
+func TestRemoteHostFrontendStreamURLSourceOption(t *testing.T) {
+	t.Parallel()
+
+	// Host without StreamURLWithOptions refuses source-scoped requests cleanly with 503.
+	plainSrv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: newFakeHost(),
+		Auth: remotetest.Credentials{"cred-1": "plug.a"},
+	}))
+	defer plainSrv.Close()
+
+	post := func(base, body string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, base+"/ether/plugin-host/frontend/stream-url", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-1")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	resp := post(plainSrv.URL, `{"viewerId":7,"itemRef":"pk:plug.a:book:1","source":"pdf"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("source without options host status = %d, want 503", resp.StatusCode)
+	}
+
+	optHost := &fakeOptionsHost{fakeHost: newFakeHost()}
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: optHost,
+		Auth: remotetest.Credentials{"cred-1": "plug.a"},
+	}))
+	defer srv.Close()
+
+	// Blank source is rejected with 400.
+	resp = post(srv.URL, `{"viewerId":7,"itemRef":"pk:plug.a:book:1","source":"   "}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("blank source status = %d, want 400", resp.StatusCode)
+	}
+
+	// Source + partIndex forwards to StreamURLWithOptions.
+	resp = post(srv.URL, `{"viewerId":7,"itemRef":"pk:plug.a:book:1","partIndex":1,"source":"epub"}`)
+	var out struct {
+		URL string `json:"url"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || out.URL != "/ether/v1/kind-media/remote-src" {
+		t.Fatalf("source+part response: status=%d out=%+v", resp.StatusCode, out)
+	}
+	if optHost.gotPlugin != "plug.a" || optHost.gotViewer != 7 || optHost.gotItem != "pk:plug.a:book:1" || optHost.gotOpts.PartIndex == nil || *optHost.gotOpts.PartIndex != 1 || optHost.gotOpts.Source != "epub" {
+		t.Fatalf("unexpected forwarded args: plugin=%q viewer=%d item=%q opts=%+v", optHost.gotPlugin, optHost.gotViewer, optHost.gotItem, optHost.gotOpts)
+	}
+}
+
+type fakeAIHost struct {
+	*fakeHost
+	fn func(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+}
+
+func (f *fakeAIHost) AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	return f.fn(ctx, pluginID, viewerToken, req)
+}
+
+func TestRemoteHostAIComplete(t *testing.T) {
+	t.Parallel()
+
+	var respErr error
+	var respVal plugins.AICompleteResponse
+	var lastViewerTok string
+	aiHost := &fakeAIHost{
+		fakeHost: newFakeHost(),
+		fn: func(_ context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+			if pluginID != "plug.ai" {
+				return plugins.AICompleteResponse{}, ErrPermissionDenied
+			}
+			lastViewerTok = viewerToken
+			if viewerToken == "vt-denied" {
+				return plugins.AICompleteResponse{}, ErrPermissionDenied
+			}
+			return respVal, respErr
+		},
+	}
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: aiHost,
+		Auth: remotetest.Credentials{"cred-ai": "plug.ai"},
+	}))
+	defer srv.Close()
+
+	post := func(body string, viewerTok string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/ai/complete", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-ai")
+		req.Header.Set("Content-Type", "application/json")
+		if viewerTok != "" {
+			req.Header.Set(HeaderViewerToken, viewerTok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	// Disallowed viewer-token call returns 403 permission_denied.
+	status, body := post(`{"messages":[{"role":"user","content":"hi"}]}`, "vt-denied")
+	if status != http.StatusForbidden || body["error"].(map[string]any)["code"] != "permission_denied" || lastViewerTok != "vt-denied" {
+		t.Fatalf("denied viewer token: status=%d tok=%q body=%+v", status, lastViewerTok, body)
+	}
+
+	// Unconfigured returns 501 not_configured.
+	respErr = ErrNotConfigured
+	status, body = post(`{"messages":[{"role":"user","content":"hi"}]}`, "")
+	if status != http.StatusNotImplemented || body["error"].(map[string]any)["code"] != "not_configured" {
+		t.Fatalf("not_configured: status=%d body=%+v", status, body)
+	}
+
+	// Schema mismatch returns 502 invalid_output.
+	respErr = ErrInvalidOutput
+	status, body = post(`{"messages":[{"role":"user","content":"hi"}]}`, "")
+	if status != http.StatusBadGateway || body["error"].(map[string]any)["code"] != "invalid_output" {
+		t.Fatalf("invalid_output: status=%d body=%+v", status, body)
+	}
+
+	// Success returns text + json (and forwards X-Ether-Viewer-Token when present).
+	respErr = nil
+	respVal = plugins.AICompleteResponse{Text: `{"tag":"noir"}`, JSON: json.RawMessage(`{"tag":"noir"}`)}
+	status, body = post(`{"messages":[{"role":"user","content":"hi"}],"searchQuery":"cozy noir"}`, "vt-search")
+	if status != http.StatusOK || body["text"] != `{"tag":"noir"}` || lastViewerTok != "vt-search" {
+		t.Fatalf("success: status=%d tok=%q body=%+v", status, lastViewerTok, body)
+	}
+}
+
+func TestRemoteHostAdapterAICompleteSearchToken(t *testing.T) {
+	t.Parallel()
+
+	var seenViewer int64
+	adapter := HostAdapter{
+		ResolveAdapterCallToken: func(pluginID, token string) (plugins.AdapterCallInfo, bool) {
+			if pluginID == "plug.ai" && token == "tok-search" {
+				return plugins.AdapterCallInfo{
+					ViewerID:    42,
+					Path:        "/ether/v1/frontend/stash/graphql",
+					SearchQuery: "",
+				}, true
+			}
+			return plugins.AdapterCallInfo{}, false
+		},
+		HostFor: func(pluginID string) plugins.Host {
+			if pluginID != "plug.ai" {
+				return nil
+			}
+			return &adapterTestHost{
+				onAIComplete: func(ctx context.Context, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+					v, ok := plugins.ViewerFromContext(ctx)
+					if !ok || v != 42 {
+						return plugins.AICompleteResponse{}, plugins.ErrPermissionDenied
+					}
+					seenViewer = v
+					return plugins.AICompleteResponse{Text: `{"q":"` + req.SearchQuery + `"}`}, nil
+				},
+			}
+		},
+	}
+
+	// Forged/unknown token is rejected before reaching plugins.Host.
+	if _, err := adapter.AIComplete(context.Background(), "plug.ai", "tok-bad", plugins.AICompleteRequest{
+		Messages:    []plugins.AIMessage{{Role: "user", Content: "noir"}},
+		SearchQuery: "noir",
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("invalid token: got %v, want ErrPermissionDenied", err)
+	}
+
+	// Valid active adapter token binds viewer + active route context.
+	resp, err := adapter.AIComplete(context.Background(), "plug.ai", "tok-search", plugins.AICompleteRequest{
+		Messages:    []plugins.AIMessage{{Role: "user", Content: "noir"}},
+		SearchQuery: "noir",
+	})
+	if err != nil {
+		t.Fatalf("valid search token: %v", err)
+	}
+	if seenViewer != 42 || resp.Text != `{"q":"noir"}` {
+		t.Fatalf("viewer=%d resp=%+v", seenViewer, resp)
+	}
+}
+
+type fakeMediaProbeHost struct {
+	*fakeHost
+	fn func(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error)
+}
+
+func (f *fakeMediaProbeHost) MediaProbe(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error) {
+	return f.fn(ctx, pluginID, viewerToken, src)
+}
+
+func TestRemoteHostMediaProbeAndViewerTokenRefusal(t *testing.T) {
+	t.Parallel()
+
+	adapter := HostAdapter{
+		HostFor: func(pluginID string) plugins.Host {
+			if pluginID != "plug.media" {
+				return nil
+			}
+			return &adapterTestHost{
+				onMediaProbe: func(_ context.Context, src core.PlayableSource) (core.MediaProbeResult, error) {
+					if src.Pattern != "range" {
+						return core.MediaProbeResult{}, errors.New("invalid pattern")
+					}
+					return core.MediaProbeResult{
+						DurationSec: 2345.5,
+						Container:   "mkv",
+						Width:       1920,
+						Height:      1080,
+						SizeBytes:   4096,
+					}, nil
+				},
+			}
+		},
+	}
+
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeMediaProbeHost{
+			fakeHost: newFakeHost(),
+			fn:       adapter.MediaProbe,
+		},
+		Auth: remotetest.Credentials{"cred-media": "plug.media"},
+	}))
+	defer srv.Close()
+
+	post := func(body, viewerTok string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/media/probe", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-media")
+		req.Header.Set("Content-Type", "application/json")
+		if viewerTok != "" {
+			req.Header.Set(HeaderViewerToken, viewerTok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	// Viewer-scoped remote calls MUST be refused with 403 permission_denied.
+	status, body := post(`{"pattern":"range","mime":"video/x-matroska","url":"https://media.example/a.mkv"}`, "vt-viewer")
+	if status != http.StatusForbidden || body["error"].(map[string]any)["code"] != "permission_denied" {
+		t.Fatalf("viewer token refusal: status=%d body=%+v", status, body)
+	}
+
+	// Job/action call without viewer token succeeds and returns all 5 fields.
+	status, body = post(`{"pattern":"range","mime":"video/x-matroska","url":"https://media.example/a.mkv"}`, "")
+	if status != http.StatusOK || body["durationSec"] != 2345.5 || body["container"] != "mkv" || body["width"] != float64(1920) || body["height"] != float64(1080) || body["sizeBytes"] != float64(4096) {
+		t.Fatalf("success probe: status=%d body=%+v", status, body)
+	}
+}
+
+type fakeSourcesResultHost struct {
+	*fakeHost
+	fn func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+}
+
+func (f *fakeSourcesResultHost) ResolveSourcesWithResult(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
+	return f.fn(ctx, pluginID, q)
+}
+
+func TestHostResolveSourcesWithResultEnvelope(t *testing.T) {
+	var got core.SourceQuery
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeSourcesResultHost{
+			fakeHost: newFakeHost(),
+			fn: func(_ context.Context, _ string, q core.SourceQuery) (core.SourceResolveResult, error) {
+				got = q
+				if q.Kind == "indexer_search" {
+					return core.SourceResolveResult{
+						Candidates: []core.SourceCandidate{{Title: q.Query, IndexerID: "a", Indexer: "Alpha"}},
+						Indexers: []core.IndexerSearchStatus{
+							{IndexerID: "a", Indexer: "Alpha", Status: core.IndexerStatusAnswered, Results: 1, MS: 15},
+							{IndexerID: "b", Indexer: "Beta", Status: core.IndexerStatusSkipped, MS: 0},
+						},
+					}, nil
+				}
+				return core.SourceResolveResult{
+					Candidates: []core.SourceCandidate{{InfoHash: q.InfoHash, Cached: true}},
+				}, nil
+			},
+		},
+		Auth: remotetest.Credentials{"cred-src": "plug.src"},
+	}))
+	defer srv.Close()
+
+	post := func(body string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/sources/resolve", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-src")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, out
+	}
+
+	status, body := post(`{"kind":"indexer_search","query":"Blade Runner","firstResults":true,"settleMs":200,"minResults":3,"onlyIndexers":["a"],"skipIndexers":["b"],"timeoutMs":2500}`)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%+v", status, body)
+	}
+	if !got.FirstResults || got.SettleMS == nil || *got.SettleMS != 200 || got.MinResults != 3 || got.TimeoutMS != 2500 || len(got.OnlyIndexers) != 1 || len(got.SkipIndexers) != 1 {
+		t.Fatalf("forwarded query = %+v", got)
+	}
+	if idxList, ok := body["indexers"].([]any); !ok || len(idxList) != 2 {
+		t.Fatalf("indexers = %#v, want 2 entries", body["indexers"])
+	}
+
+	status, body = post(`{"kind":"debrid_check","infoHash":"abcd"}`)
+	if status != http.StatusOK {
+		t.Fatalf("debrid_check status=%d body=%+v", status, body)
+	}
+	if _, has := body["indexers"]; has {
+		t.Fatalf("debrid_check unexpectedly included indexers: %#v", body)
+	}
+}
+
+func TestHostResolveSourcesStreamingAndIndexersEnvelope(t *testing.T) {
+	doneFalse := false
+	med, last := int64(200), int64(150)
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeSourcesResultHost{
+			fakeHost: newFakeHost(),
+			fn: func(_ context.Context, _ string, q core.SourceQuery) (core.SourceResolveResult, error) {
+				switch q.Kind {
+				case "indexer_search":
+					if q.Stream {
+						return core.SourceResolveResult{
+							Candidates: []core.SourceCandidate{},
+							SearchID:   "srch_1",
+							Done:       &doneFalse,
+							Pending:    []core.IndexerRef{{IndexerID: "slow", Indexer: "Slow"}},
+							Indexers:   []core.IndexerSearchStatus{{IndexerID: "slow", Indexer: "Slow", Status: core.IndexerStatusPending, MS: 0}},
+						}, nil
+					}
+				case "indexer_search_results":
+					if q.SearchID == "foreign" {
+						return core.SourceResolveResult{}, ErrNotFound
+					}
+				case "indexers":
+					return core.SourceResolveResult{
+						Candidates: []core.SourceCandidate{},
+						Indexers:   []core.IndexerSearchStatus{{IndexerID: "a", Indexer: "Alpha", Kind: "builtin", MedianMS: &med, LastMS: &last}},
+					}, nil
+				}
+				return core.SourceResolveResult{Candidates: []core.SourceCandidate{}}, nil
+			},
+		},
+		Auth: remotetest.Credentials{"cred-src": "plug.src"},
+	}))
+	defer srv.Close()
+
+	post := func(body string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/sources/resolve", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-src")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	status, body := post(`{"kind":"indexer_search","query":"Dune","stream":true}`)
+	if status != http.StatusOK || body["searchId"] != "srch_1" || body["done"] != false {
+		t.Fatalf("stream start = (%d, %+v)", status, body)
+	}
+	if pend, ok := body["pending"].([]any); !ok || len(pend) != 1 {
+		t.Fatalf("stream pending = %#v", body["pending"])
+	}
+
+	status, _ = post(`{"kind":"indexer_search_results","searchId":"foreign","waitMs":1000}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("foreign searchId status = %d, want 404", status)
+	}
+
+	status, body = post(`{"kind":"indexers"}`)
+	if status != http.StatusOK {
+		t.Fatalf("indexers status=%d body=%+v", status, body)
+	}
+	list, ok := body["indexers"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("indexers = %#v", body["indexers"])
+	}
+	entry := list[0].(map[string]any)
+	if entry["kind"] != "builtin" || entry["medianMs"] != float64(200) || entry["lastMs"] != float64(150) {
+		t.Fatalf("indexers[0] = %#v", entry)
+	}
+	if _, hasStatus := entry["status"]; hasStatus {
+		t.Fatalf("indexers[0] should omit status: %#v", entry)
+	}
+}
+
+func TestHostRateLimitRetryMetadata(t *testing.T) {
+	resetAt := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+	rlErr := fmt.Errorf("%w: %w", ErrRateLimited, &plugins.RateLimitError{
+		Message:    "background usenet_check daily allowance exhausted",
+		RetryAt:    resetAt,
+		RetryAfter: 3600 * time.Second,
+	})
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: &fakeSourcesResultHost{
+			fakeHost: newFakeHost(),
+			fn: func(_ context.Context, _ string, _ core.SourceQuery) (core.SourceResolveResult, error) {
+				return core.SourceResolveResult{}, rlErr
+			},
+		},
+		Auth: remotetest.Credentials{"cred-src": "plug.src"},
+	}))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/ether/plugin-host/sources/resolve", strings.NewReader(`{"kind":"usenet_check","nzbUrl":"https://idx.example/a.nzb"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(HeaderCredential, "cred-src")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "3600" {
+		t.Fatalf("Retry-After = %q, want 3600", got)
+	}
+	var doc struct {
+		Error struct {
+			Code          string `json:"code"`
+			Message       string `json:"message"`
+			RetryAfterSec int64  `json:"retryAfterSec"`
+			RetryAt       string `json:"retryAt"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Error.Code != "rate_limited" || doc.Error.RetryAfterSec != 3600 || doc.Error.RetryAt != resetAt.Format(time.RFC3339) {
+		t.Fatalf("rate_limited error body = %+v", doc.Error)
 	}
 }

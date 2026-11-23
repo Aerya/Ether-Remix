@@ -7,7 +7,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
-func (s *Service) membership(ctx context.Context, viewer *core.Viewer, key core.RatingKey, source func(context.Context, *core.User, core.RatingKey) (frontend.Membership, error)) (frontend.Membership, error) {
+func (s *Service) membership(ctx context.Context, viewer *core.Viewer, key core.RatingKey, source func(context.Context, *core.User, core.RatingKey) (frontend.Membership, error), omitPluginErrField string) (frontend.Membership, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
@@ -21,6 +21,10 @@ func (s *Service) membership(ctx context.Context, viewer *core.Viewer, key core.
 	}
 	result, err := source(ctx, v, key)
 	if err != nil {
+		if key.IsPluginKey() && omitPluginErrField != "" {
+			s.logPluginEnrichError(omitPluginErrField, key, err)
+			return frontend.Membership{}, nil
+		}
 		return frontend.Membership{}, err
 	}
 	// Membership is viewer-private: do not return a stored fact if policy or
@@ -40,12 +44,12 @@ func (s *Service) membership(ctx context.Context, viewer *core.Viewer, key core.
 
 func (s *Service) FavoriteItem(ctx context.Context, viewer *core.Viewer, _ core.Device, key core.RatingKey) (frontend.Membership, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
-	return s.membership(ctx, viewer, key, s.d.FavoriteMembership)
+	return s.membership(ctx, viewer, key, s.d.FavoriteMembership, "favorites")
 }
 
 func (s *Service) WatchlistItem(ctx context.Context, viewer *core.Viewer, _ core.Device, key core.RatingKey) (frontend.Membership, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
-	return s.membership(ctx, viewer, key, s.d.WatchlistMembership)
+	return s.membership(ctx, viewer, key, s.d.WatchlistMembership, "watchlist")
 }
 
 var _ frontend.MembershipReader = (*Service)(nil)

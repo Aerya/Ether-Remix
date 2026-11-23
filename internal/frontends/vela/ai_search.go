@@ -124,25 +124,46 @@ func (i *instance) startAISearch(w http.ResponseWriter, r *http.Request) {
 		i.aiMu.Unlock()
 		var page frontend.SearchPage
 		var e error
-		if progressive, ok := source.(frontend.ProgressiveAISearcher); ok {
-			page, e = progressive.AISearchProgress(ctx, v, d, j.query, frontend.ItemQuery{Limit: 50, NoTotal: true}, func(partial frontend.SearchPage) {
-				if ctx.Err() != nil {
-					return
-				}
-				partial.Page.Items = append([]frontend.Title(nil), partial.Page.Items[:min(50, len(partial.Page.Items))]...)
-				cards, err := i.titles(r.WithContext(i.host.Experience.NoProviderWait(ctx)), v, token, partial.Page.Items)
-				if err != nil {
-					return
-				} // The final projection still reports failures.
-				i.aiMu.Lock()
-				if j.status == "running" {
-					j.page, j.titles, j.status = partial, cards, "partial"
-				}
-				i.aiMu.Unlock()
-			})
-		} else {
-			page, e = source.AISearch(ctx, v, d, j.query, frontend.ItemQuery{Limit: 50, NoTotal: true})
+		// Shared descriptive workers can be occupied by superseded queries.
+		// Keep this admitted job alive through temporary contention, bounded
+		// by its existing deadline and cancellation; never report busy as a
+		// model failure. There are at most four admitted jobs.
+		for {
+			if progressive, ok := source.(frontend.ProgressiveAISearcher); ok {
+				page, e = progressive.AISearchProgress(ctx, v, d, j.query, frontend.ItemQuery{Limit: 50, NoTotal: true}, func(partial frontend.SearchPage) {
+					if ctx.Err() != nil {
+						return
+					}
+					partial.Page.Items = append([]frontend.Title(nil), partial.Page.Items[:min(50, len(partial.Page.Items))]...)
+					cards, err := i.titles(r.WithContext(i.host.Experience.NoProviderWait(ctx)), v, token, partial.Page.Items)
+					if err != nil {
+						return
+					} // The final projection still reports failures.
+					i.aiMu.Lock()
+					if j.status == "running" {
+						j.page, j.titles, j.status = partial, cards, "partial"
+					}
+					i.aiMu.Unlock()
+				})
+			} else {
+				page, e = source.AISearch(ctx, v, d, j.query, frontend.ItemQuery{Limit: 50, NoTotal: true})
+			}
+			if e != nil || page.Descriptive == nil || (page.Descriptive.State != frontend.DescriptiveBusy && page.Descriptive.State != frontend.DescriptivePending && page.Descriptive.State != frontend.DescriptivePartial) {
+				break
+			}
+			delay := time.Duration(max(1, min(30, page.Descriptive.RetryAfterSeconds))) * time.Second
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				e = ctx.Err()
+			case <-timer.C:
+			}
+			if e != nil {
+				break
+			}
 		}
+
 		var titles []object
 		if e == nil && (page.Descriptive == nil || page.Descriptive.State == frontend.DescriptiveReady) {
 			page.Page.Items = append([]frontend.Title(nil), page.Page.Items[:min(50, len(page.Page.Items))]...)

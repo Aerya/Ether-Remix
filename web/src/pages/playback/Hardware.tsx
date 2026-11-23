@@ -9,10 +9,12 @@ import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { Section } from "../../components/layout";
 import { t, tn } from "../../i18n";
 import { apiFetch } from "../../lib/api";
-import { useAsync, useInterval } from "../../lib/hooks";
+import { useAsync, useInterval, type AsyncState } from "../../lib/hooks";
 import { codecLabel, encodeCodecs } from "./hardwareCodecs";
 
-type Hardware = {
+export type Hardware = {
+  os?: string;
+  arch?: string;
   hwaccel?: { name: string; encoders: string[] | null; device?: string };
   /** GPU vendor of the VA-API render node: "intel", "amd", "nvidia". */
   vendor?: string;
@@ -21,6 +23,7 @@ type Hardware = {
   notice?: string;
   playbackError?: string;
   filtersProbed?: boolean;
+  hardwareToneMap?: boolean;
   toneMap?: string[];
   colour?: string[];
   enhancement?: {
@@ -33,6 +36,64 @@ type Hardware = {
     active: number;
   };
 };
+
+/** True when the server runs on Linux hardware that can use a VA-API render device. */
+export function canUseVaapi(hw?: Hardware | null): boolean {
+  if (!hw) return false;
+  const name = hw.hwaccel?.name;
+  if (name === "vaapi" || hw.hwaccel?.device?.startsWith("/dev/dri/")) return true;
+  if (hw.os && hw.os !== "linux") return false;
+  if (!hw.os) return false;
+  return name !== "nvenc" && hw.vendor !== "nvidia";
+}
+
+/** True when the server runs on Windows x64 with NVIDIA hardware that can use RTX Video. */
+export function canUseRtxVideo(hw?: Hardware | null): boolean {
+  if (!hw) return false;
+  const enh = hw.enhancement;
+  if (
+    enh?.available ||
+    enh?.setupState === "installing" ||
+    enh?.setupState === "checking" ||
+    (enh?.active ?? 0) > 0
+  ) {
+    return true;
+  }
+  const name = hw.hwaccel?.name;
+  if (name === "videotoolbox" || name === "vaapi" || hw.hwaccel?.device?.startsWith("/dev/dri/")) {
+    return false;
+  }
+  if ((hw.os && hw.os !== "windows") || (hw.arch && hw.arch !== "amd64")) {
+    return false;
+  }
+  if (
+    enh?.setupState === "unavailable" &&
+    enh.reason &&
+    /requires.*RTX|cannot detect.*RTX|requires.*Windows/i.test(enh.reason)
+  ) {
+    return false;
+  }
+  return name === "nvenc" || (hw.os === "windows" && hw.vendor === "nvidia");
+}
+
+export function useHardwareStatus(enabled = true): AsyncState<Hardware | null> {
+  const hw = useAsync(
+    async (signal) => {
+      if (!enabled) return null;
+      return (
+        (await apiFetch<{ value: Hardware | null }>("/status/hwaccel", { signal })).value ?? {}
+      );
+    },
+    [enabled],
+  );
+  useInterval(
+    () => {
+      if (!hw.loading) void hw.reload();
+    },
+    enabled ? 5000 : null,
+  );
+  return hw;
+}
 
 function BrandMark({ src, color }: { src: string; color: string }) {
   return (
@@ -107,6 +168,7 @@ function vendorCopy(name: string | undefined, vendor?: string): { title: string;
 function toneMapName(path: string): string {
   switch (path) {
     case "zscale":
+    case "tonemapx":
       return t("Software");
     case "libplacebo":
       return "libplacebo";
@@ -118,21 +180,17 @@ function toneMapName(path: string): string {
       return "VideoToolbox";
     case "cuda":
       return "NVIDIA";
+    case "qsv":
+      return "Quick Sync";
     default:
       return path;
   }
 }
 
 /** Detected transcoding hardware: the graphics vendor, codecs, and HDR paths. */
-export function HardwareStatus() {
-  const hw = useAsync(
-    async (signal) =>
-      (await apiFetch<{ value: Hardware | null }>("/status/hwaccel", { signal })).value ?? {},
-    [],
-  );
-  useInterval(() => {
-    if (!hw.loading) void hw.reload();
-  }, 5000);
+export function HardwareStatus({ state }: { state?: AsyncState<Hardware | null> } = {}) {
+  const own = useHardwareStatus(!state);
+  const hw = state ?? own;
   const data = hw.data;
   const accel = data?.hwaccel;
   const encoders = accel?.encoders ?? [];
@@ -140,6 +198,7 @@ export function HardwareStatus() {
   const ffmpeg = typeof data?.ffmpeg === "string" ? data.ffmpeg : "";
   const codecs = encodeCodecs(encoders);
   const toneMap = data?.toneMap ?? [];
+  const toneMapLabels = Array.from(new Set(toneMap.map(toneMapName)));
   const colour = data?.colour ?? [];
   const vendor = typeof data?.vendor === "string" ? data.vendor : undefined;
   const copy = vendorCopy(none ? "none" : accel?.name, vendor);
@@ -199,18 +258,28 @@ export function HardwareStatus() {
               <p className="text-xs font-medium text-fg-muted">{t("HDR")}</p>
               <div className="mt-2 flex flex-wrap gap-1.5" aria-label={t("HDR")}>
                 {toneMap.length ? (
-                  <Badge variant="secondary">{t("HDR10")}</Badge>
+                  <>
+                    <Badge variant="secondary">{t("HDR10")}</Badge>
+                    {data.hardwareToneMap === true ? (
+                      <Badge variant="secondary">{t("Hardware tone mapping")}</Badge>
+                    ) : null}
+                  </>
                 ) : (
                   <span className="text-sm text-fg-muted">
                     {t("No HDR conversion on this computer.")}
                   </span>
                 )}
               </div>
-              {toneMap.length ? (
+              {toneMapLabels.length ? (
                 <p className="mt-2 text-xs text-fg-muted">
                   {t("HDR to SDR uses {paths}.", {
-                    paths: toneMap.map(toneMapName).join(", "),
+                    paths: toneMapLabels.join(", "),
                   })}
+                </p>
+              ) : null}
+              {data.hardwareToneMap === false && !none ? (
+                <p className="mt-1 text-xs text-fg-muted">
+                  {t("Hardware HDR tone mapping is unavailable on this device.")}
                 </p>
               ) : null}
               {colour.length ? (
@@ -226,7 +295,7 @@ export function HardwareStatus() {
               {data.playbackError || data.notice}
             </p>
           ) : null}
-          {data.enhancement ? (
+          {data.enhancement && canUseRtxVideo(data) ? (
             <div
               className="rounded-lg border border-border p-3"
               aria-label={t("Server enhancement status")}

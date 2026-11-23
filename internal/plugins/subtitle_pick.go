@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/braedonsaunders/ether/internal/safefetch"
 	"time"
 )
 
@@ -86,18 +88,33 @@ func (m *Manager) FetchPickedSubtitle(ctx context.Context, plugin, title, subtit
 		if r.Manifest.SpeaksStremio() {
 			return true
 		} // safefetch still rejects private destinations on every redirect
-		return hostAllowed(r.Manifest.Ether.Permissions.Network, u.Hostname())
+		return networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) ||
+			g.allowsLocalURL(u) ||
+			(DeclaresOperatorHosts(r.Manifest) && g.allowsOperatorURL(u))
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || !allowed(u) {
+		if err == nil && u != nil && DeclaresOperatorHosts(r.Manifest) {
+			m.noteBlockedOperatorHost(ctx, plugin, urlHostPortDisplay(u))
+		}
 		return nil, ErrPermissionDenied
 	}
 	client := *m.client
+	priorRedirect := client.CheckRedirect
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 || !allowed(req.URL) {
+			if len(via) < 10 && req.URL != nil && DeclaresOperatorHosts(r.Manifest) {
+				m.noteBlockedOperatorHost(ctx, plugin, urlHostPortDisplay(req.URL))
+			}
 			return ErrPermissionDenied
 		}
+		if priorRedirect != nil {
+			return priorRedirect(req, via)
+		}
 		return nil
+	}
+	if trusted := trustedFetchHosts(r.Manifest, g); len(trusted) > 0 {
+		ctx = safefetch.WithTrustedHosts(ctx, trusted)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

@@ -617,3 +617,129 @@ func TestLoginStalledBodyDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestLockoutsAdminAPIAndLocalLoginReset(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	users, err := auth.New(ctx, db, auth.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, _ := identity.NewLocal(db)
+	grants, _ := identity.NewGrants(db, users, time.Hour, nil)
+	now := time.Unix(6000, 0)
+	limiter, _ := identity.NewLoginLimiter(db, 15*time.Minute, 5, 2, func() time.Time { return now })
+	pollLimiter, _ := identity.NewPollLimiter(db, time.Minute, 10, 2, func() time.Time { return now })
+	cfg := newStore(t, nil)
+	h := admin.NewHandler(admin.Deps{
+		Config:          cfg,
+		LocalIdentity:   local,
+		IdentityGrants:  grants,
+		IdentityLimiter: limiter,
+		PollLimiter:     pollLimiter,
+		RefreshViewers:  users.RefreshViewers,
+		LocalOwnerConfigured: func(ctx context.Context) bool {
+			x, err := users.Owner(ctx)
+			return err == nil && x.PlexID == 0
+		},
+	})
+
+	// Before owner setup, tokenless LAN access must still be denied on owner-only lockouts routes.
+	if res := serve(h, req("GET", "/ether/api/auth/lockouts", "")); res.Code != http.StatusForbidden {
+		t.Fatalf("tokenless setup GET lockouts: got %d, want 403", res.Code)
+	}
+
+	setup := serve(h, req("POST", "/ether/api/setup/local", `{"username":"owner","password":"owner-secret-12"}`))
+	if setup.Code != 200 {
+		t.Fatalf("setup: %d %s", setup.Code, setup.Body)
+	}
+	var tok struct {
+		Token string `json:"token"`
+	}
+	decode(t, setup, &tok)
+	ownerToken := tok.Token
+
+	// Local portal login: fail once, succeed once -> identity bucket resets (can fail twice more before locking out).
+	loginReq := func(user, pass string) *httptest.ResponseRecorder {
+		r := req("POST", "/ether/api/me/login", fmt.Sprintf(`{"username":%q,"password":%q}`, user, pass))
+		r.RemoteAddr = "198.51.100.7:1234"
+		return serve(h, r)
+	}
+	if res := loginReq("owner", "wrong-secret-12"); res.Code != http.StatusUnauthorized {
+		t.Fatalf("first fail: %d", res.Code)
+	}
+	okRes := loginReq("owner", "owner-secret-12")
+	if okRes.Code != http.StatusOK {
+		t.Fatalf("valid portal login: %d %s", okRes.Code, okRes.Body)
+	}
+	decode(t, okRes, &tok)
+	portalToken := tok.Token
+
+	// Non-owner portal token must be rejected on lockouts API.
+	r := req("GET", "/ether/api/auth/lockouts", "")
+	r.Header.Set("Authorization", "Bearer "+portalToken)
+	if res := serve(h, r); res.Code != http.StatusUnauthorized {
+		t.Fatalf("portal token on lockouts: got %d, want 401", res.Code)
+	}
+
+	// Because the valid login reset owner+IP, two more failures are allowed (IP=4/5, owner=2/2) before 429.
+	for i := 0; i < 2; i++ {
+		if res := loginReq("owner", "wrong-secret-12"); res.Code != http.StatusUnauthorized {
+			t.Fatalf("post-reset fail %d: got %d, want 401", i, res.Code)
+		}
+	}
+	if res := loginReq("owner", "wrong-secret-12"); res.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on 3rd failure after reset, got %d", res.Code)
+	}
+	// Also lock a poll bucket with an opaque secret to verify both namespaces appear and secret stays hidden.
+	pollIP, _ := identity.ClientNet(req("GET", "/", ""))
+	for i := 0; i < 3; i++ {
+		_, _ = pollLimiter.Allow(identity.WithRateLimitApp(ctx, "Jellyfin"), "opaque-poll-secret", pollIP)
+	}
+
+	ownerReq := func(method, path string) *httptest.ResponseRecorder {
+		r := req(method, path, "")
+		r.Header.Set("Authorization", "Bearer "+ownerToken)
+		return serve(h, r)
+	}
+	listRes := ownerReq("GET", "/ether/api/auth/lockouts")
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list lockouts: %d %s", listRes.Code, listRes.Body)
+	}
+	var listed struct {
+		Lockouts []identity.RateLockout `json:"lockouts"`
+	}
+	decode(t, listRes, &listed)
+	if len(listed.Lockouts) < 2 {
+		t.Fatalf("expected at least 2 lockouts (login + poll), got %+v", listed.Lockouts)
+	}
+	var ownerKey string
+	for _, lo := range listed.Lockouts {
+		if lo.Namespace == "poll" && lo.Identity != "" {
+			t.Fatalf("poll lockout exposed secret: %+v", lo)
+		}
+		if lo.Namespace == "login" && lo.Identity == "owner" {
+			ownerKey = lo.Key
+		}
+	}
+	if ownerKey == "" {
+		t.Fatalf("missing owner login lockout in %+v", listed.Lockouts)
+	}
+
+	// Clear just the owner identity lockout, then clear all remaining lockouts.
+	if res := ownerReq("DELETE", "/ether/api/auth/lockouts/"+ownerKey); res.Code != http.StatusOK {
+		t.Fatalf("clear one: %d %s", res.Code, res.Body)
+	}
+	if res := ownerReq("DELETE", "/ether/api/auth/lockouts"); res.Code != http.StatusOK {
+		t.Fatalf("clear all: %d %s", res.Code, res.Body)
+	}
+	after := ownerReq("GET", "/ether/api/auth/lockouts")
+	decode(t, after, &listed)
+	if len(listed.Lockouts) != 0 {
+		t.Fatalf("expected empty lockouts after clear all, got %+v", listed.Lockouts)
+	}
+	// Owner can sign in again immediately from the same IP.
+	if res := loginReq("owner", "owner-secret-12"); res.Code != http.StatusOK {
+		t.Fatalf("login after clear all: %d %s", res.Code, res.Body)
+	}
+}

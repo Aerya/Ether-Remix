@@ -23,7 +23,7 @@ func (s *Server) trackScope(ctx context.Context, key frontend.RatingKey) fronten
 		wanted = frontend.TypeShow
 		scope.Series = strconv.FormatInt(int64(frontend.ShowKey(key.TMDB())), 10)
 	}
-	for _, section := range s.LibrarySections() {
+	for _, section := range s.getSectionsCtx(ctx) {
 		if section.Type == wanted {
 			scope.Library = strconv.Itoa(section.ID)
 			break
@@ -107,6 +107,11 @@ func (s *Server) rememberStreamRequest(r *http.Request, user *frontend.Viewer, k
 				continue
 			}
 			if binding.Key != key || binding.Info.Type != kind {
+				continue
+			}
+			if kind == "audio" && binding.Estimated {
+				// Pre-probe placeholder audio IDs carry no real track identity
+				// and must not persist as a manual preference.
 				continue
 			}
 			track = &binding.Info
@@ -196,22 +201,85 @@ func (s *Server) showLanguage(ctx context.Context, show frontend.RatingKey) stri
 	return lang
 }
 
+// resumePagePreloader is an optional playback manager hook that batch-loads
+// resume records, probes, and blocklist checks for a list page.
+type resumePagePreloader interface {
+	PreloadResumes(context.Context, *frontend.User, []frontend.RatingKey) (context.Context, []frontend.RatingKey)
+}
+
+// preloadPageStreams preloads playback resumes, show languages, and remembered
+// audio/subtitle choices for every title that will emit Stream elements on
+// this render (detail items plus light list items with probed/resumed sources).
+func (s *Server) preloadPageStreams(ctx context.Context, pr *Request, ts []frontend.Title, o renderOpts) context.Context {
+	if pr == nil || pr.User == nil || !o.media {
+		return ctx
+	}
+	var playable []frontend.RatingKey
+	for i := range ts {
+		if isPlayable(ts[i].Type) {
+			playable = append(playable, ts[i].Key)
+		}
+	}
+	var probedKeys []frontend.RatingKey
+	if len(playable) > 0 && s.playback() != nil {
+		if pre, ok := s.playback().(resumePagePreloader); ok {
+			ctx, probedKeys = pre.PreloadResumes(ctx, pr.User, playable)
+		}
+		if !o.detail && !o.detailEpisodes {
+			seen := make(map[frontend.RatingKey]bool, len(probedKeys))
+			for _, k := range probedKeys {
+				seen[k] = true
+			}
+			wp, _ := s.playback().(frontend.WarmProber)
+			for i := range ts {
+				if !isPlayable(ts[i].Type) || seen[ts[i].Key] {
+					continue
+				}
+				if ps, ok := s.playback().SessionFor(pr.User.ID, pr.ClientID, ts[i].Key); ok && ps != nil && !ps.Info.Estimated && len(ps.Info.Streams) > 0 {
+					seen[ts[i].Key] = true
+					probedKeys = append(probedKeys, ts[i].Key)
+					continue
+				}
+				if wp != nil {
+					if _, warm := wp.WarmProbeInfo(pr.User, s.clientCapsForKey(pr, ts[i].Key), ts[i].Key); warm {
+						seen[ts[i].Key] = true
+						probedKeys = append(probedKeys, ts[i].Key)
+					}
+				}
+			}
+		}
+	}
+	s.preloadShowLanguages(ctx, pr, ts, o, probedKeys...)
+	s.preloadTrackChoices(ctx, pr, ts, o, probedKeys...)
+	return ctx
+}
+
 // preloadShowLanguages resolves, in one batch, the series of every episode
 // whose streams this render selects without a language of its own. A list
 // of episodes from distinct shows otherwise loaded each show on its own
 // (On Deck: hundreds). Shows the batch cannot vouch for are left to Get.
-func (s *Server) preloadShowLanguages(ctx context.Context, pr *Request, ts []frontend.Title, o renderOpts) {
-	if !reqmemo.Active(ctx) || s.svc().trackPrefs == nil || s.catalog() == nil || pr == nil || pr.User == nil || !o.media || (!o.detail && !o.detailEpisodes) {
+func (s *Server) preloadShowLanguages(ctx context.Context, pr *Request, ts []frontend.Title, o renderOpts, probedKeys ...frontend.RatingKey) {
+	if !reqmemo.Active(ctx) || s.svc().trackPrefs == nil || s.catalog() == nil || pr == nil || pr.User == nil || !o.media || (!o.detail && !o.detailEpisodes && len(probedKeys) == 0) {
 		return
 	}
 	resolver, ok := s.catalog().(frontend.ShowParentResolver)
 	if !ok {
 		return
 	}
+	var allowed map[frontend.RatingKey]bool
+	if !o.detail && !o.detailEpisodes {
+		allowed = make(map[frontend.RatingKey]bool, len(probedKeys))
+		for _, k := range probedKeys {
+			allowed[k] = true
+		}
+	}
 	seen := map[frontend.RatingKey]bool{}
 	var shows []frontend.RatingKey
 	for i := range ts {
 		if ts[i].Type != frontend.TypeEpisode || ts[i].Language != "" || ts[i].Key.TMDB() <= 0 {
+			continue
+		}
+		if allowed != nil && !allowed[ts[i].Key] {
 			continue
 		}
 		show := frontend.ShowKey(ts[i].Key.TMDB())
@@ -233,15 +301,23 @@ func (s *Server) preloadShowLanguages(ctx context.Context, pr *Request, ts []fro
 	}
 }
 
-// preloadTrackChoices keeps detailed list rendering from reading each title's
-// remembered audio and subtitle choices separately.
-func (s *Server) preloadTrackChoices(ctx context.Context, pr *Request, ts []frontend.Title, o renderOpts) {
-	if s.svc().trackPrefs == nil || pr == nil || pr.User == nil || !o.media || (!o.detail && !o.detailEpisodes) {
+// preloadTrackChoices keeps detailed or probed list rendering from reading
+// each title's remembered audio and subtitle choices separately.
+func (s *Server) preloadTrackChoices(ctx context.Context, pr *Request, ts []frontend.Title, o renderOpts, probedKeys ...frontend.RatingKey) {
+	if s.svc().trackPrefs == nil || pr == nil || pr.User == nil || !o.media {
 		return
 	}
-	keys := make([]frontend.RatingKey, 0, len(ts))
-	for _, t := range ts {
-		keys = append(keys, t.Key)
+	var keys []frontend.RatingKey
+	if o.detail || o.detailEpisodes {
+		keys = make([]frontend.RatingKey, 0, len(ts))
+		for _, t := range ts {
+			keys = append(keys, t.Key)
+		}
+	} else if len(probedKeys) > 0 {
+		keys = probedKeys
+	}
+	if len(keys) == 0 {
+		return
 	}
 	if err := s.svc().trackPrefs.PreloadChoices(ctx, pr.User.ID, keys); err != nil {
 		s.log.Warn("preload stream preferences", "err", err)

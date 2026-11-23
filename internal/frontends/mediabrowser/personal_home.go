@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strconv"
@@ -129,13 +130,15 @@ func personalViewNumber(viewerID int64, rowID string) int64 {
 }
 
 type personalShelf struct {
-	number int64
-	wireID string
-	name   string
-	kind   string
-	count  int
-	row    frontend.Row
-	titles []frontend.Title
+	number    int64
+	wireID    string
+	name      string
+	kind      string
+	count     int
+	placement frontend.Placement
+	viewID    string
+	row       frontend.Row
+	titles    []frontend.Title
 }
 
 type personalIdentitySlot struct {
@@ -150,10 +153,12 @@ type personalLoad struct {
 }
 
 type personalCredit struct {
-	viewer frontend.Viewer
-	device frontend.Device
-	rowID  string
-	row    frontend.Row
+	viewer    frontend.Viewer
+	device    frontend.Device
+	placement frontend.Placement
+	viewID    string
+	rowID     string
+	row       frontend.Row
 }
 
 type personalIdentityCache struct {
@@ -329,7 +334,7 @@ func decodeShelves(body []byte) ([]personalShelf, error) {
 		if shelf.WireID == "" || shelf.Name == "" {
 			continue
 		}
-		out = append(out, personalShelf{number: shelf.Number, wireID: shelf.WireID, name: shelf.Name, kind: shelf.Kind, count: shelf.Count, row: frontend.Row{PreviewOnFocus: shelf.PreviewOnFocus, RankedTop10: shelf.RankedTop10}})
+		out = append(out, personalShelf{number: shelf.Number, wireID: shelf.WireID, name: shelf.Name, kind: shelf.Kind, count: shelf.Count, placement: frontend.PlacementHome, row: frontend.Row{PreviewOnFocus: shelf.PreviewOnFocus, RankedTop10: shelf.RankedTop10}})
 	}
 	return out, nil
 }
@@ -439,6 +444,28 @@ func (i *instance) loadPersonalShelves(ctx context.Context, v *frontend.Viewer, 
 	if err != nil {
 		return nil
 	}
+	return shelvesFromRows(cfg, v, rows, frontend.PlacementHome, "")
+}
+
+func (i *instance) loadPersonalLibraryShelves(ctx context.Context, v *frontend.Viewer, dev frontend.Device, viewID string, budget int) ([]personalShelf, error) {
+	if v == nil || i.host.Experience == nil || viewID == "" {
+		return nil, nil
+	}
+	cfg := i.personalConfig()
+	if !cfg.enabled {
+		return []personalShelf{}, nil
+	}
+	if budget > cfg.count {
+		cfg.count = budget
+	}
+	rows, err := i.personalLibraryRows(ctx, v, dev, viewID)
+	if err != nil {
+		return nil, err
+	}
+	return shelvesFromRows(cfg, v, rows, frontend.PlacementLibrary, viewID), nil
+}
+
+func shelvesFromRows(cfg personalHomeConfig, v *frontend.Viewer, rows []frontend.Row, placement frontend.Placement, viewID string) []personalShelf {
 	if len(rows) == 0 {
 		return []personalShelf{}
 	}
@@ -473,12 +500,16 @@ func (i *instance) loadPersonalShelves(ctx context.Context, v *frontend.Viewer, 
 			continue
 		}
 		seen[row.ID] = true
-		number := personalViewNumber(v.ID, row.ID)
+		rowKey := row.ID
+		if viewID != "" {
+			rowKey = "library:" + viewID + ":" + row.ID
+		}
+		number := personalViewNumber(v.ID, rowKey)
 		wire, err := ids.GUID(ids.View, number)
 		if err != nil {
 			continue
 		}
-		shelf := personalShelf{number: number, wireID: wire, name: personalLibraryName(row), kind: personalCollectionType(titles), count: len(titles), row: row, titles: titles}
+		shelf := personalShelf{number: number, wireID: wire, name: personalLibraryName(row), kind: personalCollectionType(titles), count: len(titles), placement: placement, viewID: viewID, row: row, titles: titles}
 		if available {
 			copy := shelf
 			pinned = &copy
@@ -729,7 +760,7 @@ func (i *instance) writePersonalFolder(w http.ResponseWriter, r *http.Request, v
 
 func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf personalShelf, q frontend.ItemQuery, latest bool) ([]frontend.Title, int, error) {
 	titles := append([]frontend.Title(nil), shelf.titles...)
-	if len(q.Types) > 0 || q.Watched != nil || q.Favorite != nil || latest {
+	if len(q.Types) > 0 || q.Watched != nil || q.Favorite != nil || q.FilterByProviderIDs || latest {
 		keys := make([]frontend.RatingKey, 0, len(titles))
 		for _, title := range titles {
 			keys = append(keys, title.Key)
@@ -741,6 +772,9 @@ func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf 
 		played, filterPlayed := frontend.LatestPlayedFilter(r.Context())
 		kept := titles[:0]
 		for _, title := range titles {
+			if q.FilterByProviderIDs && !titleMatchesProviderIDs(title, q.ProviderIDs) {
+				continue
+			}
 			state := states[title.Key]
 			watched := state.ViewCount > 0
 			if latest && filterPlayed && watched != played {
@@ -759,6 +793,13 @@ func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf 
 		}
 		titles = kept
 	}
+	if !latest && !shelf.row.RankedTop10 {
+		if sortByRandom(r) {
+			rand.Shuffle(len(titles), func(a, b int) { titles[a], titles[b] = titles[b], titles[a] })
+		} else if personalSortAsked(r, q) {
+			sortPersonalTitles(titles, q)
+		}
+	}
 	if shelf.row.RankedTop10 {
 		titles = titles[:min(10, len(titles))]
 	}
@@ -768,6 +809,60 @@ func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf 
 		limit = total
 	}
 	return paging.Slice(titles, offset, limit), total, nil
+}
+
+// personalSortAsked reports whether the app picked a sort for a personal row
+// opened as a folder. Apps open every view folder with SortBy=SortName
+// ascending, so that default keeps the row's own (curated) order; any other
+// choice from the app's sort menu reorders the row.
+func personalSortAsked(r *http.Request, q frontend.ItemQuery) bool {
+	if r == nil || q.Sort == "" || len(route.Query(r.URL.Query(), "SortBy")) == 0 {
+		return false
+	}
+	return !(q.Sort == frontend.SortTitle && !q.Desc)
+}
+
+// sortPersonalTitles orders a row's titles in place by the facts the titles
+// already carry. Orders that need viewer state keep the row's order.
+func sortPersonalTitles(titles []frontend.Title, q frontend.ItemQuery) {
+	var less func(a, b *frontend.Title) int
+	cmpFloat := func(x, y float64) int {
+		switch {
+		case x < y:
+			return -1
+		case x > y:
+			return 1
+		}
+		return 0
+	}
+	switch q.Sort {
+	case frontend.SortTitle:
+		less = func(a, b *frontend.Title) int {
+			return strings.Compare(frontend.EffectiveSortTitle(a.Title, a.SortTitle), frontend.EffectiveSortTitle(b.Title, b.SortTitle))
+		}
+	case frontend.SortRating:
+		less = func(a, b *frontend.Title) int { return cmpFloat(a.Rating, b.Rating) }
+	case frontend.SortPopularity:
+		less = func(a, b *frontend.Title) int { return cmpFloat(a.Popularity, b.Popularity) }
+	case frontend.SortDuration:
+		less = func(a, b *frontend.Title) int { return cmpFloat(float64(a.Runtime), float64(b.Runtime)) }
+	case frontend.SortReleased, frontend.SortAdded, frontend.SortYear:
+		less = func(a, b *frontend.Title) int {
+			if c := a.Released.Compare(b.Released); c != 0 {
+				return c
+			}
+			return cmpFloat(float64(a.Year), float64(b.Year))
+		}
+	default:
+		return
+	}
+	sort.SliceStable(titles, func(x, y int) bool {
+		c := less(&titles[x], &titles[y])
+		if q.Desc {
+			return c > 0
+		}
+		return c < 0
+	})
 }
 
 func titleTypeMatches(typ frontend.MediaType, types []frontend.MediaType) bool {
@@ -787,13 +882,43 @@ func (i *instance) personalHomeRows(ctx context.Context, v *frontend.Viewer, dev
 	return i.host.Experience.Rows(ctx, req)
 }
 
+func (i *instance) personalLibraryRows(ctx context.Context, v *frontend.Viewer, dev frontend.Device, viewID string) ([]frontend.Row, error) {
+	req := frontend.RowRequest{Viewer: v, Device: dev, Placement: frontend.PlacementLibrary, ViewID: viewID, Limit: personalRowFetch}
+	if snap, ok := i.host.Experience.(rowSnapshotter); ok {
+		return snap.SnapshotRows(ctx, req)
+	}
+	return i.host.Experience.Rows(ctx, req)
+}
+
+// parseLibraryParentView extracts a library ViewID from a ParentId query
+// parameter when present. scoped is false when ParentId is absent or names the
+// root folder; valid is false when duplicate ParentId parameters are supplied.
+func parseLibraryParentView(r *http.Request) (viewID string, scoped bool, valid bool) {
+	values := route.Query(r.URL.Query(), "ParentId")
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) > 1 {
+		return "", true, false
+	}
+	raw := strings.TrimSpace(values[0])
+	if raw == "" || strings.EqualFold(raw, jellyfinRootID()) {
+		return "", false, true
+	}
+	n, err := ids.ParseGUID(ids.View, raw)
+	if err != nil || n <= 0 || ids.PersonalView(n) || n == collectionsViewNumber || n == liveTVViewNumber {
+		return "", true, true
+	}
+	return ids.Decimal(n), true, true
+}
+
 func (i *instance) notePersonalDelivery(r *http.Request, v *frontend.Viewer, shelf personalShelf, titles []frontend.Title) {
 	if len(titles) == 0 {
 		return
 	}
 	dev := device(r)
 	if shelf.row.Handle == "" {
-		i.queuePersonalCredit(v, dev, shelf.row, titles)
+		i.queuePersonalCredit(v, dev, shelf.placement, shelf.viewID, shelf.row, titles)
 		return
 	}
 	i.reportPersonalImpression(r.Context(), v, dev, shelf.row.Handle)
@@ -813,10 +938,13 @@ func (i *instance) reportPersonalImpression(ctx context.Context, v *frontend.Vie
 	}
 }
 
-func (i *instance) queuePersonalCredit(v *frontend.Viewer, dev frontend.Device, row frontend.Row, titles []frontend.Title) {
+func (i *instance) queuePersonalCredit(v *frontend.Viewer, dev frontend.Device, placement frontend.Placement, viewID string, row frontend.Row, titles []frontend.Title) {
 	rowID := row.ID
 	if v == nil || dev.ID == "" || rowID == "" || len(titles) == 0 || i.host.Experience == nil {
 		return
+	}
+	if placement == "" {
+		placement = frontend.PlacementHome
 	}
 	// Keep only the title entries actually sent in this response.
 	row.Entries = make([]frontend.RowEntry, 0, min(len(titles), personalRowFetch))
@@ -824,11 +952,11 @@ func (i *instance) queuePersonalCredit(v *frontend.Viewer, dev frontend.Device, 
 		title := titles[n]
 		row.Entries = append(row.Entries, frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &title})
 	}
-	credit := personalCredit{viewer: *v, device: dev, rowID: rowID, row: row}
+	credit := personalCredit{viewer: *v, device: dev, placement: placement, viewID: viewID, rowID: rowID, row: row}
 	i.personal.mu.Lock()
 	// Repeated Latest requests for the same shelf share one pending receipt.
 	for n, pending := range i.personal.pending {
-		if pending.viewer.ID == v.ID && pending.device.ID == dev.ID && pending.rowID == rowID {
+		if pending.viewer.ID == v.ID && pending.device.ID == dev.ID && pending.placement == placement && pending.viewID == viewID && pending.rowID == rowID {
 			i.personal.pending[n] = credit
 			i.personal.mu.Unlock()
 			return
@@ -855,13 +983,17 @@ func (i *instance) flushPersonalCredits() {
 	}
 	groups := map[string][]personalCredit{}
 	for _, credit := range pending {
-		key := personalCacheKey(string(i.protocol), &credit.viewer, credit.device, i.personalConfig())
+		key := personalCacheKey(string(i.protocol), &credit.viewer, credit.device, i.personalConfig()) + "\n" + string(credit.placement) + "\n" + credit.viewID
 		groups[key] = append(groups[key], credit)
 	}
 	for _, credits := range groups {
 		viewer := credits[0].viewer
+		placement := credits[0].placement
+		if placement == "" {
+			placement = frontend.PlacementHome
+		}
 		ctx, cancel := context.WithTimeout(i.life, 15*time.Second)
-		req := frontend.RowRequest{Viewer: &viewer, Device: credits[0].device, Placement: frontend.PlacementHome, Limit: personalRowFetch}
+		req := frontend.RowRequest{Viewer: &viewer, Device: credits[0].device, Placement: placement, ViewID: credits[0].viewID, Limit: personalRowFetch}
 		var rows []frontend.Row
 		var err error
 		if issuer, ok := i.host.Experience.(frontend.RowReceiptIssuer); ok {
@@ -960,18 +1092,14 @@ func (i *instance) writePersonalActivity(w http.ResponseWriter, r *http.Request,
 	i.writeListedTitles(w, withRankedRow(withPreviewRowArtwork(r, shelf.row.PreviewOnFocus), shelf.row.RankedTop10, page, offset), v, page, nil, total, true, offset, latest)
 }
 
-func (i *instance) personalViewOrder(r *http.Request, v *frontend.Viewer) []string {
+func (i *instance) personalViewOrderWithViews(r *http.Request, v *frontend.Viewer, views []frontend.View) []string {
 	shelves := i.personalShelves(r, v)
 	if len(shelves) == 0 || i.host.Experience == nil {
 		return nil
 	}
-	order := make([]string, 0, len(shelves))
+	order := make([]string, 0, len(shelves)+len(views))
 	for _, shelf := range shelves {
 		order = append(order, shelf.wireID)
-	}
-	views, err := i.host.Experience.Views(r.Context(), v)
-	if err != nil {
-		return order
 	}
 	for _, view := range views {
 		n, err := ids.ParseDecimal(view.ID)
@@ -984,6 +1112,113 @@ func (i *instance) personalViewOrder(r *http.Request, v *frontend.Viewer) []stri
 		}
 	}
 	return order
+}
+
+const subsetLatestCompareLimit = 12
+
+func latestTitleIdentity(t frontend.Title) frontend.RatingKey {
+	if (t.Type == frontend.TypeEpisode || t.Type == frontend.TypeSeason) && t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	return t.Key
+}
+
+// redundantSubsetViews reports which rule/catalogue subset views repeat their
+// parent library's Latest Home row without differing meaningfully.
+func (i *instance) redundantSubsetViews(r *http.Request, v *frontend.Viewer, views []frontend.View, hidePlayed bool) map[string]bool {
+	if v == nil || i.host.Experience == nil || len(views) < 2 {
+		return nil
+	}
+	parents := frontend.SubsetParents(views)
+	if len(parents) == 0 {
+		return nil
+	}
+	activity, ok := i.host.Experience.(frontend.LibraryActivity)
+	if !ok {
+		return nil
+	}
+	ctx := frontend.WithLatestPlayed(r.Context(), !hidePlayed)
+	dev := device(r)
+	loadLatest := func(viewID string) ([]frontend.LatestItem, error) {
+		if grouped, ok := i.host.Experience.(frontend.LibraryActivityGrouping); ok {
+			return grouped.LatestAddedGrouped(ctx, v, dev, viewID, subsetLatestCompareLimit, true)
+		}
+		return activity.LatestAdded(ctx, v, dev, viewID, subsetLatestCompareLimit)
+	}
+	parentCache := map[string]map[frontend.RatingKey]bool{}
+	var redundant map[string]bool
+	for _, view := range views {
+		parentID, isSubset := parents[view.ID]
+		if !isSubset {
+			continue
+		}
+		parentKeys, cached := parentCache[parentID]
+		if !cached {
+			pItems, err := loadLatest(parentID)
+			if err != nil {
+				parentCache[parentID] = nil
+				continue
+			}
+			parentKeys = make(map[frontend.RatingKey]bool, len(pItems))
+			for _, it := range pItems {
+				if k := latestTitleIdentity(it.Title); k != 0 {
+					parentKeys[k] = true
+				}
+			}
+			parentCache[parentID] = parentKeys
+		}
+		if parentKeys == nil {
+			continue
+		}
+		cItems, err := loadLatest(view.ID)
+		if err != nil {
+			continue
+		}
+		cKeys := make([]frontend.RatingKey, 0, len(cItems))
+		for _, it := range cItems {
+			if k := latestTitleIdentity(it.Title); k != 0 {
+				cKeys = append(cKeys, k)
+			}
+		}
+		if !frontend.SubsetRowDistinct(cKeys, parentKeys, nil) {
+			if redundant == nil {
+				redundant = map[string]bool{}
+			}
+			redundant[view.ID] = true
+		}
+	}
+	return redundant
+}
+
+func (i *instance) redundantSubsetLatestExcludes(r *http.Request, v *frontend.Viewer, views []frontend.View, hidePlayed bool) []string {
+	if v == nil || i.host.Experience == nil {
+		return nil
+	}
+	if views == nil {
+		var err error
+		views, err = i.host.Experience.Views(r.Context(), v)
+		if err != nil {
+			return nil
+		}
+	}
+	redundant := i.redundantSubsetViews(r, v, views, hidePlayed)
+	if len(redundant) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(redundant))
+	for _, view := range views {
+		if !redundant[view.ID] {
+			continue
+		}
+		n, err := ids.ParseDecimal(view.ID)
+		if err != nil || ids.PersonalView(n) {
+			continue
+		}
+		if wire, err := ids.GUID(ids.View, n); err == nil {
+			out = append(out, wire)
+		}
+	}
+	return out
 }
 
 const (
@@ -1021,10 +1256,26 @@ func (i *instance) applyOrderedViews(r *http.Request, v *frontend.Viewer, config
 			}
 			configuration[key] = value
 		}
+		if _, hasExcludes := stored["LatestItemsExcludes"]; !hasExcludes {
+			hidePlayed := true
+			if hp, ok := stored["HidePlayedInLatest"].(bool); ok {
+				hidePlayed = hp
+			}
+			if excludes := i.redundantSubsetLatestExcludes(r, v, nil, hidePlayed); len(excludes) > 0 {
+				configuration["LatestItemsExcludes"] = excludes
+			}
+		}
 		return
 	}
-	if order := i.personalViewOrder(r, v); len(order) > 0 {
+	var views []frontend.View
+	if i.host.Experience != nil && v != nil {
+		views, _ = i.host.Experience.Views(r.Context(), v)
+	}
+	if order := i.personalViewOrderWithViews(r, v, views); len(order) > 0 {
 		configuration["OrderedViews"] = order
+	}
+	if excludes := i.redundantSubsetLatestExcludes(r, v, views, true); len(excludes) > 0 {
+		configuration["LatestItemsExcludes"] = excludes
 	}
 }
 
@@ -1156,11 +1407,33 @@ func (i *instance) recommendations(w http.ResponseWriter, r *http.Request, want 
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	shelves := i.loadPersonalShelves(r.Context(), v, device(r))
+	viewID, scoped, valid := parseLibraryParentView(r)
+	if !valid {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
 	// Jellyfin and Emby answer five categories of eight items unless asked
 	// otherwise (categoryLimit = 5, itemLimit = 8 on both servers).
 	categoryLimit := queryInt(r, "CategoryLimit", 5)
 	itemLimit := queryInt(r, "ItemLimit", queryInt(r, "Limit", 8))
+	var shelves []personalShelf
+	if scoped {
+		if viewID == "" {
+			jsonReply(w, []any{})
+			return
+		}
+		shelves, err = i.loadPersonalLibraryShelves(r.Context(), v, device(r), viewID, categoryLimit)
+		if errors.Is(err, frontend.ErrNotFound) {
+			jsonReply(w, []any{})
+			return
+		}
+		if err != nil {
+			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		shelves = i.loadPersonalShelves(r.Context(), v, device(r))
+	}
 	categories := make([]any, 0, len(shelves))
 	for _, shelf := range shelves {
 		if len(categories) >= categoryLimit {
@@ -1187,6 +1460,20 @@ func (i *instance) recommendations(w http.ResponseWriter, r *http.Request, want 
 		if err != nil {
 			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 			return
+		}
+		// Genre wire IDs still use per-title authorization, but load the page's
+		// current policy/genre facts once instead of two cold reads per title.
+		if facets, ok := i.host.Experience.(interface {
+			PrefetchNamedFacetIDs(context.Context, *frontend.Viewer, []frontend.RatingKey, string) error
+		}); ok && (fieldSet(r)["genres"] || !jellyfinListFile(r)) {
+			var genreKeys []frontend.RatingKey
+			for _, title := range titles {
+				if len(title.Genres) > 0 {
+					genreKeys = append(genreKeys, title.Key)
+				}
+			}
+			// Prefetch is optional; a failure keeps the scalar authorization path.
+			_ = facets.PrefetchNamedFacetIDs(r.Context(), v, genreKeys, "genre")
 		}
 		items := make([]any, 0, len(titles))
 		images := i.gridImagesFor(withRankedRow(r, shelf.row.RankedTop10, titles, 0), titles)

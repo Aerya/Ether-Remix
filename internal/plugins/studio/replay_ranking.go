@@ -453,7 +453,9 @@ func buildReplayCandidates(row historyRow, prof core.QualityProfile, policy *rel
 
 		verified := (ct.HealthChecked && ct.Healthy) || strings.Contains(ct.CompatibilityReason, "recently verified playable")
 		bandwidth := 1
-		if strings.Contains(ct.CompatibilityReason, "larger than the client's connection carries") {
+		if strings.Contains(ct.CompatibilityReason, "larger than the client's connection carries") ||
+			strings.Contains(ct.CompatibilityReason, "recent reads from") ||
+			strings.Contains(ct.CompatibilityReason, "debrid account recently delivered") {
 			bandwidth = -1
 		}
 		langOK := !strings.Contains(ct.CompatibilityReason, "ranked after releases in an accepted audio language")

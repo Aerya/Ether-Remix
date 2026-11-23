@@ -2,6 +2,7 @@ package admin_test
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -64,6 +65,50 @@ func TestFrontendAPI(t *testing.T) {
 	w = serve(h, call("PUT", "/ether/api/frontends/plex/enabled", `{}`))
 	if w.Code != 400 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestFrontendListIncludesPublishedPortalURL(t *testing.T) {
+	fetchPortal := func(t *testing.T, mut func(*config.Config)) string {
+		t.Helper()
+		store := newStore(t, func(c *config.Config) {
+			seededConfig(c)
+			c.SetupComplete = true
+			mut(c)
+		})
+		h := admin.NewHandler(admin.Deps{Config: store, IsOwnerToken: storedOwner(store), Frontends: &frontendsFake{enabled: true}})
+		r := req("GET", "/ether/api/frontends", "")
+		r.Header.Set("X-Plex-Token", ownerToken)
+		w := serve(h, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /frontends: %d %s", w.Code, w.Body.String())
+		}
+		var list []admin.FrontendInfo
+		if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || len(list) == 0 {
+			t.Fatalf("unmarshal: err=%v len=%d body=%s", err, len(list), w.Body.String())
+		}
+		return list[0].PortalURL
+	}
+
+	if got := fetchPortal(t, func(c *config.Config) {
+		c.Plex.CustomURLs = []string{"https://watch.example.com/"}
+	}); got != "https://watch.example.com/ether/me" {
+		t.Fatalf("CustomURLs portalUrl = %q", got)
+	}
+	if got := fetchPortal(t, func(c *config.Config) {
+		c.Plex.PublicHost = "media.example.com"
+	}); got != "https://media.example.com/ether/me" {
+		t.Fatalf("PublicHost portalUrl = %q", got)
+	}
+	if got := fetchPortal(t, func(c *config.Config) {
+		c.Plex.CustomURLs = []string{"https://watch.example.com"}
+		c.Server.ConsolePort = 8099
+		c.Server.DisableConsoleOnMainPort = true
+	}); got != "" {
+		t.Fatalf("DisableConsoleOnMainPort portalUrl = %q, want empty", got)
+	}
+	if got := fetchPortal(t, func(*config.Config) {}); got != "" {
+		t.Fatalf("unconfigured portalUrl = %q, want empty", got)
 	}
 }
 

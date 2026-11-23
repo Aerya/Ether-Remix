@@ -1,7 +1,9 @@
 package plex
 
 import (
+	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -52,39 +54,45 @@ func modelDevice(d frontend.StatisticsDevice) model.Device {
 // handleStatisticsBandwidth answers this node's bandwidth series. There is
 // no cluster pin; the client reads the node it connected to.
 func (s *Server) handleStatisticsBandwidth(w http.ResponseWriter, r *http.Request) {
-	q, ok := s.parseStatQuery(w, r, bandwidthSpans, bandwidthSort)
+	ctx := r.Context()
+	dir := s.newPlexAccountDir(ctx, FromContext(ctx).User, true)
+	q, ok := s.parseStatQuery(w, r, bandwidthSpans, bandwidthSort, dir)
 	if !ok {
 		return
 	}
 	page := s.dashboard().Bandwidth(q)
-	mc := statisticsContainer(page.TotalSize, len(page.Rows)+len(page.Devices)+len(page.Accounts), q.Offset)
+	mc := statisticsContainer(page.TotalSize, 0, q.Offset)
 	for _, row := range page.Rows {
 		mc.StatisticsBandwidth = append(mc.StatisticsBandwidth, model.StatisticsBandwidth{
-			AccountID: row.AccountID, DeviceID: row.DeviceID, Timespan: row.Timespan, At: row.At, Lan: row.Lan == 1, Bytes: row.Bytes,
+			AccountID: dir.wireID(ctx, row.AccountID), DeviceID: row.DeviceID, Timespan: row.Timespan, At: row.At, Lan: row.Lan == 1, Bytes: row.Bytes,
 		})
 	}
-	appendLookups(mc, page)
+	appendLookups(ctx, mc, page, dir)
+	mc.Size = len(mc.StatisticsBandwidth) + len(mc.Device) + len(mc.Account)
 	s.write(w, r, mc)
 }
 
 func (s *Server) handleStatisticsMedia(w http.ResponseWriter, r *http.Request) {
-	q, ok := s.parseStatQuery(w, r, mediaSpans, mediaSort)
+	ctx := r.Context()
+	dir := s.newPlexAccountDir(ctx, FromContext(ctx).User, true)
+	q, ok := s.parseStatQuery(w, r, mediaSpans, mediaSort, dir)
 	if !ok {
 		return
 	}
 	page := s.dashboard().Media(q)
-	mc := statisticsContainer(page.TotalSize, len(page.Media)+len(page.Devices)+len(page.Accounts), q.Offset)
+	mc := statisticsContainer(page.TotalSize, 0, q.Offset)
 	for _, row := range page.Media {
 		mc.StatisticsMedia = append(mc.StatisticsMedia, model.StatisticsMedia{
-			AccountID: row.AccountID, DeviceID: row.DeviceID, Timespan: row.Timespan, At: row.At, MetadataType: row.MetadataType, Count: row.Count, Duration: row.Duration,
+			AccountID: dir.wireID(ctx, row.AccountID), DeviceID: row.DeviceID, Timespan: row.Timespan, At: row.At, MetadataType: row.MetadataType, Count: row.Count, Duration: row.Duration,
 		})
 	}
-	appendLookups(mc, page)
+	appendLookups(ctx, mc, page, dir)
+	mc.Size = len(mc.StatisticsMedia) + len(mc.Device) + len(mc.Account)
 	s.write(w, r, mc)
 }
 
 func (s *Server) handleStatisticsResources(w http.ResponseWriter, r *http.Request) {
-	q, ok := s.parseStatQuery(w, r, resourceSpans, resourceSort)
+	q, ok := s.parseStatQuery(w, r, resourceSpans, resourceSort, nil)
 	if !ok {
 		return
 	}
@@ -122,16 +130,29 @@ func statisticsContainer(total, size, offset int) *model.MediaContainer {
 	return mc
 }
 
-func appendLookups(mc *model.MediaContainer, page frontend.StatisticsPage) {
+func appendLookups(ctx context.Context, mc *model.MediaContainer, page frontend.StatisticsPage, dir *plexAccountDir) {
 	for _, d := range page.Devices {
 		mc.Device = append(mc.Device, modelDevice(d))
 	}
+	seen := make(map[int64]bool, len(page.Accounts))
 	for _, a := range page.Accounts {
-		mc.Account = append(mc.Account, model.Account{ID: a.ID, Key: "/accounts/" + strconv.FormatInt(a.ID, 10), Name: a.Name})
+		wireID := dir.wireID(ctx, a.ID)
+		if seen[wireID] {
+			continue
+		}
+		seen[wireID] = true
+		name := a.Name
+		if name == "" {
+			if entry, ok := dir.user(ctx, a.ID); ok {
+				name = plexAccountName(entry.user)
+			}
+		}
+		mc.Account = append(mc.Account, model.Account{ID: wireID, Key: "/accounts/" + strconv.FormatInt(wireID, 10), Name: name})
 	}
+	sort.Slice(mc.Account, func(i, j int) bool { return mc.Account[i].ID < mc.Account[j].ID })
 }
 
-func (s *Server) parseStatQuery(w http.ResponseWriter, r *http.Request, kept []int, keys map[string]bool) (frontend.StatisticsQuery, bool) {
+func (s *Server) parseStatQuery(w http.ResponseWriter, r *http.Request, kept []int, keys map[string]bool, dir *plexAccountDir) (frontend.StatisticsQuery, bool) {
 	var q frontend.StatisticsQuery
 	values := r.URL.Query()
 	if raw, present := firstQuery(values, "timespan"); present {
@@ -158,6 +179,11 @@ func (s *Server) parseStatQuery(w http.ResponseWriter, r *http.Request, kept []i
 		if !ok {
 			writeHTTPError(w, http.StatusBadRequest)
 			return q, false
+		}
+		if dir != nil {
+			if entry, found := dir.resolve(r.Context(), n); found {
+				n = entry.user.ID
+			}
 		}
 		q.AccountID, q.HasAccount = n, true
 	}
@@ -393,7 +419,7 @@ func (s *Server) noteStreamBytes(r *http.Request, n int64) {
 	name := ""
 	if pr.User != nil {
 		account = pr.User.ID
-		name = pr.User.Username
+		name = plexAccountName(*pr.User)
 	}
 	s.dashboard().RecordBytes(account, name, pr.ClientID, pr.DeviceName, pr.Platform, !pr.Remote, n)
 }

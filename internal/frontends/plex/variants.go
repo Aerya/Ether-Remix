@@ -75,7 +75,7 @@ func (s *Server) partTitle(partID int64) (key frontend.RatingKey, releaseID stri
 // Ordinary details can gain versions as discovery completes. Explicit
 // pre-play and the selected queue item freeze a short-lived flow. Clustered
 // flows adopt the committed snapshot before returning metadata.
-func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.Title, stamp int64, probed frontend.MediaInfo, probedRelease string, ps *frontend.PlaySession) ([]model.Media, string) {
+func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.Title, stamp int64, probed frontend.MediaInfo, probedRelease, playedSelector string, playedRec *frontend.Release, ps *frontend.PlaySession) ([]model.Media, string) {
 	if s.svc().variants == nil || pr.User == nil {
 		return nil, ""
 	}
@@ -127,14 +127,16 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 			}
 		}
 		// The resolver names Auto after the release Auto actually opened.
-		// Ask once for the admitted release, not again after a failover.
+		// Ask once for the admitted release, not again after a failover —
+		// and never promote an explicit non-Auto version pick into Auto.
 		rel := pin.admittedRelease
 		if rel == "" {
 			rel = probedRelease
 		}
-		if rel != "" && pin.autoAligned != rel && vs[0].Auto && vs[0].Release.ID != rel {
+		autoPlayed := !(pin.frozen && pin.selected != 0 && pin.selected != int64(t.Key)) && frontend.IsAutoVersionSelector(playedSelector)
+		if autoPlayed && rel != "" && pin.autoAligned != rel && vs[0].Auto && vs[0].Release.ID != rel {
 			vctx, cancel := detailVariantContext(ctx, pr)
-			resolved, err := s.svc().variants.Variants(vctx, frontend.ResolveRequest{Title: t, Client: caps, User: pr.User, PlayedRelease: rel}, frontend.MaxVariants)
+			resolved, err := s.svc().variants.Variants(vctx, frontend.ResolveRequest{Title: t, Client: caps, User: pr.User, PlayedRelease: rel, PlayedSelector: playedSelector, PlayedReleaseRecord: playedRec}, frontend.MaxVariants)
 			cancel()
 			var auto *frontend.ReleaseVariant
 			if err == nil && len(resolved) > 0 && resolved[0].Auto && resolved[0].Release.ID == rel {
@@ -145,7 +147,7 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 		}
 	} else {
 		vctx, cancel := detailVariantContext(ctx, pr)
-		resolved, err := s.svc().variants.Variants(vctx, frontend.ResolveRequest{Title: t, Client: caps, User: pr.User, PlayedRelease: probedRelease}, frontend.MaxVariants)
+		resolved, err := s.svc().variants.Variants(vctx, frontend.ResolveRequest{Title: t, Client: caps, User: pr.User, PlayedRelease: probedRelease, PlayedSelector: playedSelector, PlayedReleaseRecord: playedRec}, frontend.MaxVariants)
 		cancel()
 		if err != nil {
 			s.log.Debug("variants unavailable", "key", t.Key, "err", err)
@@ -190,7 +192,9 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 	if pin.frozen && pin.admittedRelease != "" {
 		alignRelease = pin.admittedRelease
 	}
-	alignPlayedAutoVariant(vs, alignRelease)
+	if !(pin.frozen && pin.selected != 0 && pin.selected != int64(t.Key)) && frontend.IsAutoVersionSelector(playedSelector) {
+		alignPlayedAutoVariant(vs, alignRelease)
+	}
 	probedReady := !probed.Estimated && len(probed.Streams) > 0 && probed.Video() != nil
 	// playedIdx is the Media the session plays: the one it was admitted on
 	// when known, otherwise the version whose release is playing (Auto
@@ -207,10 +211,12 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 	}
 	admittedIdx := playedIdx
 	if playedIdx < 0 && probedRelease != "" {
-		playedIdx = 0
-		if probedReady && probedRelease != vs[0].Release.ID {
+		if frontend.IsAutoVersionSelector(playedSelector) {
+			playedIdx = 0
+		}
+		if probedReady && (playedIdx < 0 || probedRelease != vs[0].Release.ID) {
 			for i, v := range vs {
-				if !v.Auto && v.Release.ID == probedRelease {
+				if !v.Auto && (v.Release.ID == probedRelease || (!frontend.IsAutoVersionSelector(playedSelector) && v.ID == playedSelector)) {
 					playedIdx = i
 					break
 				}
@@ -546,9 +552,9 @@ func primaryAudioCodec(info frontend.MediaInfo) string {
 	return fallback
 }
 
-// probedAutoTitle keeps the release-name metadata (source, group, audio
+// probedReleaseInfo keeps the release-name metadata (source, group, audio
 // details that still match) and replaces only what the probe proves wrong.
-func probedAutoTitle(rel frontend.Release, claimed, probed frontend.MediaInfo) string {
+func probedReleaseInfo(rel frontend.Release, claimed, probed frontend.MediaInfo) frontend.ReleaseInfo {
 	info := rel.Info
 	probedClass := streamResolutionClass(probed)
 	if streamResolutionClass(claimed) != probedClass || info.Height <= 0 {
@@ -569,7 +575,44 @@ func probedAutoTitle(rel frontend.Release, claimed, probed frontend.MediaInfo) s
 		info.Atmos = false
 		info.Channels = ""
 	}
-	return plexAutoLabel(info)
+	return info
+}
+
+func probedAutoTitle(rel frontend.Release, claimed, probed frontend.MediaInfo) string {
+	return plexAutoLabel(probedReleaseInfo(rel, claimed, probed))
+}
+
+// probedVariantTitle formats a descriptive title for a probed version slot:
+// Auto uses plexAutoLabel ("Auto · 1080p WEB-DL · DD+ 5.1 · FLUX"), while
+// explicit versions include size ("4K Dolby Vision WEB-DL · DD+ 5.1 · 8.5 GB · FLUX").
+func probedVariantTitle(auto bool, rel frontend.Release, claimed, probed frontend.MediaInfo) string {
+	if auto {
+		return probedAutoTitle(rel, claimed, probed)
+	}
+	info := probedReleaseInfo(rel, claimed, probed)
+	parts := []string{plexQualityPhrase(info)}
+	if a := plexAudioPhrase(info); a != "" {
+		parts = append(parts, a)
+	}
+	size := probed.Size
+	if size <= 0 {
+		size = rel.Size
+	}
+	if size > 0 {
+		parts = append(parts, plexSizePhrase(size))
+	}
+	if g := strings.TrimSpace(info.Group); g != "" {
+		parts = append(parts, g)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func plexSizePhrase(size int64) string {
+	const gb = 1 << 30
+	if size >= gb {
+		return strconv.FormatFloat(float64(size)/gb, 'f', 1, 64) + " GB"
+	}
+	return strconv.FormatInt((size+(1<<20)/2)>>20, 10) + " MB"
 }
 
 func plexAutoLabel(info frontend.ReleaseInfo) string {
@@ -632,16 +675,17 @@ func plexAudioPhrase(info frontend.ReleaseInfo) string {
 // preparePlayback prepares a play session, honouring a "Play Version"
 // pick when the playback manager supports it.
 func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playRequest) (*frontend.PlaySession, error) {
-	// A plugin kind item has no catalogue versions: skip the variant flow and
-	// open it through the shared KindPlayback pipeline (spec §15.1).
-	if p.key.IsPluginKey() {
-		caps := s.clientCapsForKey(pr, p.key)
-		return s.prepareForRelease(ctx, pr.User, p.key, caps, "")
-	}
 	configured := false
 	if source, ok := s.svc().variants.(frontend.VersionSlots); ok {
-		if titles := s.getTitles(ctx, []frontend.RatingKey{p.key}); len(titles) == 1 {
-			plan, err := source.VersionSlots(ctx, frontend.ResolveRequest{Title: &titles[0], Client: s.clientCapsForKey(pr, p.key), User: pr.User}, frontend.MaxVariants, false)
+		if titles := s.getTitles(withRequest(ctx, pr), []frontend.RatingKey{p.key}); len(titles) == 1 {
+			// Plugin items populate their version menu on detail/play intent
+			// (labels=true), never on cold list renders. Tag explicit Play so
+			// playback resolves are never gated by discovery shares or LocalResponse.
+			vctx := ctx
+			if p.key.IsPluginKey() {
+				vctx = frontend.WithoutLocalResponse(frontend.WithIndexerPurpose(vctx, frontend.IndexerPurposePlayback))
+			}
+			plan, err := source.VersionSlots(vctx, frontend.ResolveRequest{Title: &titles[0], Client: s.clientCapsForKey(pr, p.key), User: pr.User}, frontend.MaxVariants, p.key.IsPluginKey())
 			if err != nil {
 				return nil, err
 			}
@@ -674,7 +718,7 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 	}
 	releaseID := s.resolveVariantSelection(ctx, pr, p)
 	p.variantRelease = releaseID
-	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.caps, releaseID)
+	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.sourceSelectionCaps(), releaseID)
 	if err != nil {
 		s.endVersionFlow(ctx, s.playIdentityFor(pr, p.key))
 	}
@@ -725,7 +769,7 @@ type variantWatches struct {
 // a library timeline entry tells the open page to reload, as PMS does on a
 // metadata change, so Play Version is there without leaving the page.
 func (s *Server) watchVariants(pr *Request, t *frontend.Title) {
-	if s.svc().variants == nil || pr == nil || pr.User == nil || t == nil {
+	if s.svc().variants == nil || pr == nil || pr.User == nil || t == nil || t.Key.IsPluginKey() {
 		return
 	}
 	key := fmt.Sprintf("%d|%s|%d", pr.User.ID, pr.ClientID, t.Key)

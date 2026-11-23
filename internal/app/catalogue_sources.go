@@ -73,8 +73,12 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 					src.Health = "unknown"
 					if c.app.pluginsRT.pluginitems != nil {
 						if state, err := c.app.pluginsRT.pluginitems.SyncStateOf(r.Context(), rec.ID, kind.Key); err == nil {
-							src.LastError = state.LastError
-							if state.LastError != "" {
+							if state.DeleteGuard != nil {
+								src.LastError = state.DeleteGuard.PlainMessage()
+							} else {
+								src.LastError = state.LastError
+							}
+							if state.LastError != "" || state.DeleteGuard != nil {
 								src.Health = "error"
 							} else if !state.LastOK.IsZero() {
 								src.Health = "ok"
@@ -123,6 +127,8 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 				if refreshed > 0 {
 					out[i].ItemCount = &count
 					out[i].Health = "ok"
+				} else if count > 0 {
+					out[i].ItemCount = &count
 				}
 				if out[i].LastError != "" {
 					out[i].Health = "error"
@@ -160,7 +166,7 @@ func (c *librariesConsole) handleCatalogueSourceSync(w http.ResponseWriter, r *h
 		return
 	}
 	status := c.app.catalogueSync.start(id, func(ctx context.Context) error {
-		return c.app.catalog.BrowseSourceLibrary(context.WithValue(ctx, catalogueForceKey{}, true), []string{id})
+		return c.app.catalog.BrowseSourceLibrary(withForceCatalogueSync(ctx), []string{id})
 	})
 	libJSON(w, http.StatusAccepted, status)
 }

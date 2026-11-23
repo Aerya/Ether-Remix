@@ -93,6 +93,39 @@ func TestRemoteIdleFreshnessPinsAndDrain(t *testing.T) {
 	}
 }
 
+func TestRemotePausedRetentionOptionAndLiveUpdate(t *testing.T) {
+	cases := []struct {
+		name      string
+		retention time.Duration
+		stillOpen time.Duration
+		expireAt  time.Duration
+	}{
+		{"default-zero-30m", 0, 29 * time.Minute, 30*time.Minute + time.Nanosecond},
+		{"short-5m", 5 * time.Minute, 4 * time.Minute, 5*time.Minute + time.Nanosecond},
+		{"above-30m-60m", 60 * time.Minute, 35 * time.Minute, 60*time.Minute + time.Nanosecond},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(1000, 0)
+			p, e := lifecycleFixture(&now)
+			p.SetPauseRetention(tc.retention)
+			e.state = "paused"
+
+			now = e.activity.Add(tc.stillOpen)
+			p.expireLocked(e, now)
+			if e.retiring {
+				t.Fatalf("paused remote session expired early at %v", tc.stillOpen)
+			}
+
+			now = e.activity.Add(tc.expireAt)
+			p.expireLocked(e, now)
+			if !e.retiring {
+				t.Fatalf("paused remote session survived past %v", tc.expireAt)
+			}
+		})
+	}
+}
+
 func TestRemoteStopWaitsForAdmittedUse(t *testing.T) {
 	now := time.Unix(1000, 0)
 	p, e := lifecycleFixture(&now)

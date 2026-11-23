@@ -43,15 +43,25 @@ type homeRevisionSource interface {
 	HomeRevision(context.Context, *frontend.Viewer) (frontend.HomeRevision, bool, error)
 }
 
+func (i *instance) viewerSpoilerFree(ctx context.Context, v *frontend.Viewer) (bool, error) {
+	if i.host.LiveEvents == nil || v == nil {
+		return false, nil
+	}
+	sf, err := i.host.LiveEvents.SpoilerFree(ctx, v)
+	if errors.Is(err, frontend.ErrNotAvailable) {
+		return false, nil
+	}
+	return sf, err
+}
+
 func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	v, token, err := i.viewer(r)
 	if err != nil {
 		fail(w, err, r)
 		return
 	}
-	// Credentials scope the image grants and cursor scope includes the complete
-	// viewer policy. Do not reuse wire responses between refresh families/devices.
-	scope := hashJSON([]any{v, requestDevice(r), token, r.URL.RequestURI(), i.appearanceDocument().etag})
+	dev := requestDevice(r)
+	avatar := i.viewerAvatar(r, v, token, dev)
 	if local, ok := i.host.Experience.(interface {
 		NoProviderWait(context.Context) context.Context
 	}); ok {
@@ -59,6 +69,15 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	source, hasRevision := i.host.Experience.(homeRevisionSource)
 	for attempt := 0; attempt < bootstrapAttempts; attempt++ {
+		spoilerFree, err := i.viewerSpoilerFree(r.Context(), v)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		// Credentials scope the image grants and cursor scope includes the complete
+		// viewer policy. Do not reuse wire responses between refresh families/devices,
+		// certificate-region preferences, or viewer spoiler-free preferences.
+		scope := hashJSON([]any{v, dev, token, avatar, spoilerFree, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.extrasAvailable(), i.extraPlaybackAvailable(), i.previewAvailable(), i.themeAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration()})
 		freshness := i.bootstrapFreshness()
 		var before frontend.HomeRevision
 		cacheable := false
@@ -86,6 +105,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 			if entry != nil && time.Now().Before(entry.expires) && entry.revision == before && entry.freshness == freshness {
 				payload := entry.payload
 				i.bootstrapMu.Unlock()
+				varyLanguage(w)
 				cache(w, r, payload)
 				return
 			}
@@ -112,16 +132,26 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 		lease := &bootstrapDeadline{expires: time.Now().Add(bootstrapTTL)}
 		buildRequest := r.WithContext(context.WithValue(r.Context(), bootstrapDeadlineKey{}, lease))
-		out, buildErr := i.buildBootstrap(buildRequest, v, token, attempt > 0)
+		if cacheable {
+			if source, ok := i.host.Experience.(interface {
+				BeginBootstrapRead(context.Context, *frontend.Viewer, frontend.HomeRevision) context.Context
+			}); ok {
+				buildRequest = buildRequest.WithContext(source.BeginBootstrapRead(buildRequest.Context(), v, before))
+			}
+		}
+		out, buildErr := i.buildBootstrap(buildRequest, v, token, avatar, spoilerFree, attempt > 0)
 		var payload json.RawMessage
 		if buildErr == nil {
 			payload, buildErr = json.Marshal(out)
 		}
 		if buildErr == nil && cacheable {
 			after, available, revisionErr := source.HomeRevision(r.Context(), v)
+			afterSpoilerFree, sfErr := i.viewerSpoilerFree(r.Context(), v)
 			if revisionErr != nil {
 				buildErr = revisionErr
-			} else if !available || before != after || freshness != i.bootstrapFreshness() {
+			} else if sfErr != nil {
+				buildErr = sfErr
+			} else if !available || before != after || freshness != i.bootstrapFreshness() || afterSpoilerFree != spoilerFree {
 				buildErr = frontend.ErrRowViewStale
 			}
 		}
@@ -152,6 +182,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 			fail(w, buildErr, r)
 			return
 		}
+		varyLanguage(w)
 		cache(w, r, payload)
 		return
 	}
@@ -166,5 +197,5 @@ func (i *instance) bootstrapFreshness() frontend.PageFreshness {
 		return frontend.PageFreshness{}
 	}
 	f := i.host.PageFreshness()
-	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, KindSync: f.KindSync, ArtBucket: f.ArtBucket}
+	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, Images: f.Images, KindSync: f.KindSync, Screens: f.Screens}
 }

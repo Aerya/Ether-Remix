@@ -3,8 +3,10 @@ package adapters_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/extend"
@@ -204,5 +206,88 @@ func TestXperienceDefaultsCreateValidSeriesCollection(t *testing.T) {
 	}
 	if _, ok := h.reg.Get(extend.KindCollectionSource, kind); ok {
 		t.Fatal("removed source still advertised")
+	}
+}
+
+func TestAddonCatalogForeignIDFallbackPartialSkipAndHomeDesignerRow(t *testing.T) {
+	h := newListTestHarness(t)
+	ctx := context.Background()
+
+	// Add-on declares "meta" restricted to "mdblist:" IDs, while its catalog
+	// returns standard IMDb/TMDB IDs and moviedb_id fields.
+	raw := json.RawMessage(`{
+		"id": "org.mdblist.addon", "name": "MDBList Addon", "version": "1.0.0",
+		"resources": ["catalog", {"name": "meta", "types": ["movie", "series"], "idPrefixes": ["mdblist:"]}],
+		"types": ["movie", "series"],
+		"catalogs": [
+			{"type": "movie", "id": "watchlist", "name": "Watchlist", "extra": [{"name": "skip"}]}
+		]
+	}`)
+	preview, err := h.mgr.PreviewInstall(ctx, plugins.Source{Kind: "url", URL: "https://mdblist.example/manifest.json", Manifest: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := h.mgr.Install(ctx, preview, plugins.InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchlist := addonCatalogKind(rec, "movie", "watchlist")
+
+	h.rt.routes["/catalog/movie/watchlist.json"] = func(plugins.Request) (plugins.Response, error) {
+		return plugins.Response{Status: 200, Body: json.RawMessage(`{"metas":[
+			{"id":"tt0133093","type":"movie","name":"The Matrix"},
+			{"id":"custom:999","moviedb_id":102,"type":"movie","name":"The Matrix Reloaded"},
+			{"id":"tmdb:103","type":"movie","name":"The Matrix Revolutions"}
+		]}`)}, nil
+	}
+	// Deep page fails with 502; first page items must still be kept with a warning.
+	h.rt.routes["/catalog/movie/watchlist/skip=3.json"] = func(plugins.Request) (plugins.Response, error) {
+		return plugins.Response{}, errors.New("upstream gateway timeout")
+	}
+
+	// Place the plugin catalog row directly on Home via Home Designer.
+	layout := core.HomeLayout{
+		Global: []core.LayoutPage{{
+			Section: "home",
+			Rows:    []core.RowPolicy{{Row: watchlist, Status: "always"}},
+		}},
+	}
+	if _, err := h.pers.SetHomeLayout(ctx, layout); err != nil {
+		t.Fatal(err)
+	}
+	user := &core.User{ID: 1, Username: "owner", IsOwner: true}
+	// First read triggers the non-blocking background build; once built,
+	// SetOnBuilt invalidates personalize owner-row caches so Home serves it.
+	var foundRow *core.HomeRow
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		homePrev, err := h.pers.PreviewHome(ctx, user, core.HubContext{Device: "tv"}, "home", 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range homePrev.Rows {
+			if homePrev.Rows[i].HubID == watchlist && len(homePrev.Rows[i].Items) == 3 {
+				foundRow = &homePrev.Rows[i]
+				break
+			}
+		}
+		if foundRow != nil {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if foundRow == nil || len(foundRow.Items) != 3 {
+		t.Fatalf("expected Home Designer plugin row %s with 3 items after async build invalidation, got %+v", watchlist, foundRow)
+	}
+
+	// Backing row must not pollute Studio collection list.
+	specs, err := h.cols.ListSpecs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range specs {
+		if strings.HasPrefix(s.ID, "plugin:") {
+			t.Fatalf("hidden plugin layout row leaked into ListSpecs: %+v", s)
+		}
 	}
 }

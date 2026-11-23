@@ -3,6 +3,7 @@ package pluginitems
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 const (
@@ -22,6 +24,7 @@ const (
 
 // SyncOptions controls a single SyncKind invocation.
 type SyncOptions struct {
+	Manual      bool   // owner-started sync from the console
 	Force       bool   // bypass the 50%-delete guard (admin override)
 	FullWalk    bool   // force a full browse walk even if a change cursor exists
 	Concurrency int    // max concurrent child browse requests (default MaxSyncConcurrency = 4)
@@ -33,13 +36,230 @@ type SyncResult struct {
 	Upserted   int
 	Deleted    int
 	Skipped    int
+	Protected  int
 	NextCursor string
 	RetryAfter time.Duration
+}
+
+// SyncRunResult is delivered when an asynchronous manual sync completes.
+type SyncRunResult struct {
+	Result SyncResult
+	Err    error
 }
 
 type syncWorker struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+}
+
+type syncProgress struct {
+	running     bool
+	phase       string
+	syncedItems int
+	pages       int
+	itemsTotal  int
+}
+
+func (s *Service) setSyncProgress(pluginID, kindKey string, p syncProgress) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	if s.syncProgress == nil {
+		s.syncProgress = map[string]syncProgress{}
+	}
+	s.syncProgress[key] = p
+	s.workersMu.Unlock()
+}
+
+func (s *Service) clearSyncProgressIfPhase(pluginID, kindKey, phase string) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	if cur, ok := s.syncProgress[key]; ok && cur.phase == phase {
+		delete(s.syncProgress, key)
+	}
+	s.workersMu.Unlock()
+}
+
+func (s *Service) getSyncProgress(pluginID, kindKey string) (syncProgress, bool) {
+	if s == nil {
+		return syncProgress{}, false
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	p, ok := s.syncProgress[key]
+	s.workersMu.Unlock()
+	return p, ok
+}
+
+func (s *Service) setSyncOutcome(pluginID, kindKey string, out SyncOutcome) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	if s.lastOutcome == nil {
+		s.lastOutcome = map[string]SyncOutcome{}
+	}
+	s.lastOutcome[key] = out
+	s.workersMu.Unlock()
+}
+
+func (s *Service) getSyncOutcome(pluginID, kindKey string) (SyncOutcome, bool) {
+	if s == nil {
+		return SyncOutcome{}, false
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	out, ok := s.lastOutcome[key]
+	s.workersMu.Unlock()
+	return out, ok
+}
+
+// IsSyncRunning reports whether a sync or reindex pass is active for (pluginID, kindKey).
+func (s *Service) IsSyncRunning(pluginID, kindKey string) bool {
+	if p, ok := s.getSyncProgress(pluginID, kindKey); ok && p.running {
+		return true
+	}
+	return false
+}
+
+// StartManualSync launches an owner-started SyncKind on the service's
+// long-lived background context (never tied to an HTTP request) so switching
+// console tabs or proxies timing out never cancel the walk. If a sync is
+// already running for (pluginID, kindKey), alreadyRunning is true.
+func (s *Service) StartManualSync(pluginID, kindKey string, opts SyncOptions) (<-chan SyncRunResult, bool) {
+	opts.Manual = true
+	key := workerKey(pluginID, kindKey)
+
+	s.workersMu.Lock()
+	if cur, ok := s.syncProgress[key]; ok && cur.running {
+		s.workersMu.Unlock()
+		return nil, true
+	}
+	if mw, ok := s.manualSyncs[key]; ok && mw != nil {
+		s.workersMu.Unlock()
+		return nil, true
+	}
+	if s.syncProgress == nil {
+		s.syncProgress = map[string]syncProgress{}
+	}
+	if s.manualSyncs == nil {
+		s.manualSyncs = map[string]*syncWorker{}
+	}
+	s.syncProgress[key] = syncProgress{running: true, phase: "syncing"}
+	baseCtx := s.bgCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(baseCtx)
+	workerDone := make(chan struct{})
+	s.manualSyncs[key] = &syncWorker{cancel: cancel, done: workerDone}
+	s.workersMu.Unlock()
+
+	resCh := make(chan SyncRunResult, 1)
+	go func() {
+		defer close(workerDone)
+		defer s.clearSyncProgressIfPhase(pluginID, kindKey, "syncing")
+		defer func() {
+			s.workersMu.Lock()
+			if cur, ok := s.manualSyncs[key]; ok && cur.done == workerDone {
+				delete(s.manualSyncs, key)
+			}
+			s.workersMu.Unlock()
+			cancel()
+		}()
+		res, err := s.SyncKind(ctx, pluginID, kindKey, opts)
+		resCh <- SyncRunResult{Result: res, Err: err}
+		close(resCh)
+	}()
+	return resCh, false
+}
+
+// KeepExistingItems acknowledges a paused 50%-delete guard without removing any
+// stored items: it clears the persisted guard/error state and resets
+// missed_walks so existing items remain intact.
+func (s *Service) KeepExistingItems(ctx context.Context, pluginID, kindKey string) (SyncState, error) {
+	if s == nil || s.db == nil {
+		return SyncState{}, fmt.Errorf("pluginitems: nil service")
+	}
+	syncMu := s.syncLock(pluginID, kindKey)
+	syncMu.Lock()
+	defer syncMu.Unlock()
+
+	if _, err := s.GetKind(ctx, pluginID, kindKey); err != nil {
+		return SyncState{}, err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE plugin_sync_state SET last_error = '', guard_json = '' WHERE plugin_id = ? AND kind_key = ?`,
+		pluginID, kindKey); err != nil {
+		return SyncState{}, err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE plugin_items SET missed_walks = 0 WHERE plugin_id = ? AND kind_key = ? AND missed_walks <> 0`,
+		pluginID, kindKey); err != nil {
+		return SyncState{}, err
+	}
+	total, _ := s.countKindItems(ctx, pluginID, kindKey)
+	outcome := SyncOutcome{
+		Mode:       "keep",
+		Total:      total,
+		Summary:    fmt.Sprintf("Kept all %d existing %s", total, pluralItems(total)),
+		FinishedAt: s.now(),
+	}
+	s.setSyncOutcome(pluginID, kindKey, outcome)
+	if tracker := s.jobTracker(); tracker != nil {
+		tracker.UpdateSyncJob(pluginID, kindKey, "done", "", outcome.Summary, "")
+	}
+	return s.SyncStateOf(ctx, pluginID, kindKey)
+}
+
+func pluralItems(n int) string {
+	if n == 1 {
+		return "item"
+	}
+	return "items"
+}
+
+func formatSyncOutcome(mode string, res SyncResult, totalAfter int) string {
+	var parts []string
+	if res.Deleted > 0 {
+		parts = append(parts, fmt.Sprintf("Removed %d missing %s", res.Deleted, pluralItems(res.Deleted)))
+	}
+	if res.Upserted > 0 {
+		parts = append(parts, fmt.Sprintf("updated %d %s", res.Upserted, pluralItems(res.Upserted)))
+	}
+	if len(parts) == 0 {
+		if res.Protected > 0 {
+			return fmt.Sprintf("Up to date · %d %s (%d kept by viewer activity)", totalAfter, pluralItems(totalAfter), res.Protected)
+		}
+		return fmt.Sprintf("Up to date · %d %s", totalAfter, pluralItems(totalAfter))
+	}
+	summary := strings.ToUpper(parts[0][:1]) + parts[0][1:]
+	if len(parts) > 1 {
+		summary += ", " + strings.Join(parts[1:], ", ")
+	}
+	summary += fmt.Sprintf(" · %d %s in library", totalAfter, pluralItems(totalAfter))
+	if res.Protected > 0 {
+		summary += fmt.Sprintf(" (%d kept by viewer activity)", res.Protected)
+	}
+	_ = mode
+	return summary
+}
+
+func syncJobLabel(libName string, opts SyncOptions) string {
+	switch {
+	case opts.Force:
+		return "Remove missing items · " + libName
+	case opts.FullWalk:
+		return "Full re-sync · " + libName
+	default:
+		return "Sync · " + libName
+	}
 }
 
 // SyncKind executes a pull sync for a registered plugin kind (spec §3.5, §4.4).
@@ -78,6 +298,13 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		return SyncResult{}, fmt.Errorf("pluginitems: nil plugin route caller")
 	}
 
+	syncMu := s.syncLock(pluginID, kindKey)
+	syncMu.Lock()
+	defer syncMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return SyncResult{}, err
+	}
+
 	rec, err := s.GetKind(ctx, pluginID, kindKey)
 	if err != nil {
 		return SyncResult{}, err
@@ -95,10 +322,46 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		return SyncResult{}, err
 	}
 
-	nowStart := s.now().Unix()
-	_, _ = s.db.ExecContext(ctx,
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	startedAt := s.now()
+	nowStart := startedAt.Unix()
+	_, _ = s.db.ExecContext(runCtx,
 		`UPDATE plugin_sync_state SET last_started = ? WHERE plugin_id = ? AND kind_key = ?`,
 		nowStart, pluginID, kindKey)
+	s.setSyncProgress(pluginID, kindKey, syncProgress{
+		running:    true,
+		phase:      "syncing",
+		itemsTotal: storedCount,
+	})
+	defer s.clearSyncProgressIfPhase(pluginID, kindKey, "syncing")
+	libName := rec.Decl.Label
+	if libName == "" {
+		libName = rec.Decl.Library.Name
+	}
+	if libName == "" {
+		libName = kindKey
+	}
+	trigger := "scheduled"
+	if opts.Manual || opts.FullWalk || opts.Force {
+		trigger = "manual"
+	}
+	var job SyncJobHandle
+	if tracker := s.jobTracker(); tracker != nil {
+		job = tracker.BeginSyncJob(pluginID, kindKey, "/ether/v1/kinds/"+kindKey+"/sync", syncJobLabel(libName, opts), cancelRun)
+		if job != nil {
+			job.SetProgress("Starting sync…")
+		}
+	}
+	s.emitSyncEvent(SyncEvent{
+		Phase:       "started",
+		PluginID:    pluginID,
+		KindKey:     kindKey,
+		LibraryID:   int64(rec.LibraryID),
+		LibraryName: libName,
+		Trigger:     trigger,
+	})
 
 	var (
 		res     SyncResult
@@ -107,22 +370,55 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 	switch {
 	case !opts.FullWalk && state.Cursor != "" && storedCount > 0:
 		var notSupported bool
-		res, notSupported, syncErr = s.syncViaChanges(ctx, caller, rec, state.Cursor, storedCount, opts)
+		res, notSupported, syncErr = s.syncViaChanges(runCtx, caller, rec, state.Cursor, storedCount, opts, job)
 		if notSupported {
-			res, syncErr = s.syncRewalkDiff(ctx, caller, rec, storedCount, opts)
+			res, syncErr = s.syncRewalkDiff(runCtx, caller, rec, storedCount, opts, job)
 		}
-	case storedCount == 0:
-		res, syncErr = s.syncInitialWalk(ctx, caller, rec, opts)
+	case storedCount == 0 || (state.Cursor == "" && state.LastOK.IsZero()):
+		res, syncErr = s.syncInitialWalk(runCtx, caller, rec, opts, job)
 	default:
-		res, syncErr = s.syncRewalkDiff(ctx, caller, rec, storedCount, opts)
+		res, syncErr = s.syncRewalkDiff(runCtx, caller, rec, storedCount, opts, job)
 	}
 
 	nowEnd := s.now().Unix()
+	durMS := max(s.now().Sub(startedAt).Milliseconds(), int64(0))
 	if syncErr != nil {
-		_, _ = s.db.ExecContext(ctx,
-			`UPDATE plugin_sync_state SET last_error = ? WHERE plugin_id = ? AND kind_key = ?`,
-			syncErr.Error(), pluginID, kindKey)
-		s.noteAttention(ctx, pluginID, syncErr.Error())
+		var guardErr *DeleteGuardError
+		switch {
+		case errors.As(syncErr, &guardErr):
+			guardJSON, _ := json.Marshal(guardErr.State())
+			_, _ = s.db.ExecContext(context.Background(),
+				`UPDATE plugin_sync_state SET last_error = ?, guard_json = ? WHERE plugin_id = ? AND kind_key = ?`,
+				syncErr.Error(), string(guardJSON), pluginID, kindKey)
+			s.noteAttention(context.Background(), pluginID, guardErr.PlainMessage())
+			if job != nil {
+				job.Finish("error", "delete_guard", "", guardErr.PlainMessage())
+			}
+		case errors.Is(syncErr, context.Canceled):
+			if job != nil {
+				job.Finish("canceled", "", "", "Cancelled")
+			}
+		default:
+			_, _ = s.db.ExecContext(context.Background(),
+				`UPDATE plugin_sync_state SET last_error = ?, guard_json = '' WHERE plugin_id = ? AND kind_key = ?`,
+				syncErr.Error(), pluginID, kindKey)
+			if !errors.Is(syncErr, plugins.ErrBusy) {
+				s.noteAttention(context.Background(), pluginID, syncErr.Error())
+			}
+			if job != nil {
+				job.Finish("error", "", "", syncErr.Error())
+			}
+		}
+		s.emitSyncEvent(SyncEvent{
+			Phase:       "failed",
+			PluginID:    pluginID,
+			KindKey:     kindKey,
+			LibraryID:   int64(rec.LibraryID),
+			LibraryName: libName,
+			Trigger:     trigger,
+			DurationMS:  durMS,
+			Error:       syncErr.Error(),
+		})
 		return res, syncErr
 	}
 
@@ -130,14 +426,47 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 	if nextCursor == "" {
 		nextCursor = state.Cursor
 	}
-	totalAfter, _ := s.countKindItems(ctx, pluginID, kindKey)
+	totalAfter, _ := s.countKindItems(runCtx, pluginID, kindKey)
 	gen := int64(s.syncGen.Add(1))
-	_, _ = s.db.ExecContext(ctx, `
+	_, _ = s.db.ExecContext(runCtx, `
 		UPDATE plugin_sync_state
-		SET cursor = ?, generation = ?, last_ok = ?, last_error = '', items = ?
+		SET cursor = ?, generation = ?, last_ok = ?, last_error = '', guard_json = '', items = ?
 		WHERE plugin_id = ? AND kind_key = ?`,
 		nextCursor, gen, nowEnd, int64(totalAfter), pluginID, kindKey,
 	)
+	mode := "sync"
+	if opts.Force {
+		mode = "force"
+	} else if opts.FullWalk {
+		mode = "full"
+	}
+	outcome := SyncOutcome{
+		Mode:       mode,
+		Upserted:   res.Upserted,
+		Deleted:    res.Deleted,
+		Skipped:    res.Skipped,
+		Protected:  res.Protected,
+		Total:      totalAfter,
+		Summary:    formatSyncOutcome(mode, res, totalAfter),
+		FinishedAt: s.now(),
+	}
+	s.setSyncOutcome(pluginID, kindKey, outcome)
+	if job != nil {
+		job.Finish("done", "", outcome.Summary, "")
+	}
+	firstSync := state.LastOK.IsZero() || storedCount == 0
+	s.noteLibraryItems(rec.LibraryID, int64(totalAfter), firstSync)
+	s.emitSyncEvent(SyncEvent{
+		Phase:       "completed",
+		PluginID:    pluginID,
+		KindKey:     kindKey,
+		LibraryID:   int64(rec.LibraryID),
+		LibraryName: libName,
+		Trigger:     trigger,
+		Added:       res.Upserted,
+		Removed:     res.Deleted,
+		DurationMS:  durMS,
+	})
 	return res, nil
 }
 
@@ -160,24 +489,62 @@ func exceedsDeleteGuard(storedCount, deleteCount int, force bool) bool {
 	return float64(deleteCount)/float64(storedCount) > DeleteGuardRatio
 }
 
-// syncInitialWalk performs the initial breadth-first walk over /browse and seeds
+// syncInitialWalk performs the initial breadth-first walk over /browse,
+// persisting each fetched page incrementally so items appear in frontends
+// immediately and partial progress survives errors or restarts, then seeds
 // cursor if the kind implements /changes.
-func (s *Service) syncInitialWalk(ctx context.Context, caller Caller, rec KindRecord, opts SyncOptions) (SyncResult, error) {
-	var res SyncResult
-	walked, retryAfter, err := s.walkBrowseTree(ctx, caller, rec, opts.Concurrency)
+func (s *Service) syncInitialWalk(ctx context.Context, caller Caller, rec KindRecord, opts SyncOptions, job SyncJobHandle) (SyncResult, error) {
+	var (
+		res        SyncResult
+		progressMu sync.Mutex
+		pages      int
+		firstNoted bool
+	)
+	onPage := func(batch []core.KindItem) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		var pageUpserted int
+		for start := 0; start < len(batch); start += MaxUpsertBatch {
+			end := min(start+MaxUpsertBatch, len(batch))
+			n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, batch[start:end])
+			if err != nil {
+				return err
+			}
+			pageUpserted += n
+		}
+		totalNow, _ := s.countKindItems(ctx, rec.PluginID, rec.KindKey)
+		progressMu.Lock()
+		res.Upserted += pageUpserted
+		pages++
+		upsertedSoFar := res.Upserted
+		pagesSoFar := pages
+		notifyFirst := !firstNoted && totalNow > 0
+		if notifyFirst {
+			firstNoted = true
+		}
+		progressMu.Unlock()
+
+		s.setSyncProgress(rec.PluginID, rec.KindKey, syncProgress{
+			running:     true,
+			phase:       "syncing",
+			syncedItems: upsertedSoFar,
+			pages:       pagesSoFar,
+			itemsTotal:  totalNow,
+		})
+		if job != nil {
+			job.SetProgress(fmt.Sprintf("Page %d · %d %s synced", pagesSoFar, upsertedSoFar, pluralItems(upsertedSoFar)))
+		}
+		if notifyFirst {
+			s.noteLibraryItems(rec.LibraryID, int64(totalNow), true)
+		}
+		return nil
+	}
+
+	_, retryAfter, err := s.walkBrowseTreeStream(ctx, caller, rec, opts.Concurrency, false, onPage)
 	res.RetryAfter = retryAfter
 	if err != nil {
 		return res, err
-	}
-	if len(walked) > 0 {
-		for start := 0; start < len(walked); start += MaxUpsertBatch {
-			end := min(start+MaxUpsertBatch, len(walked))
-			n, err := s.UpsertItems(ctx, rec.PluginID, rec.KindKey, walked[start:end])
-			if err != nil {
-				return res, err
-			}
-			res.Upserted += n
-		}
 	}
 	// Probe /changes with empty cursor to capture baseline NextCursor if supported.
 	page, notSupp, _, err := s.callKindChanges(ctx, caller, rec.PluginID, rec.KindKey, "", 1)
@@ -188,7 +555,7 @@ func (s *Service) syncInitialWalk(ctx context.Context, caller Caller, rec KindRe
 }
 
 // syncViaChanges chains /changes pages from sinceCursor until Complete is true.
-func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRecord, sinceCursor string, storedCount int, opts SyncOptions) (SyncResult, bool, error) {
+func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRecord, sinceCursor string, storedCount int, opts SyncOptions, job SyncJobHandle) (SyncResult, bool, error) {
 	var (
 		res        SyncResult
 		cursor     = sinceCursor
@@ -197,6 +564,9 @@ func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRec
 	)
 	for pageIdx := 0; pageIdx < 1000; pageIdx++ {
 		page, notSupp, retryAfter, err := s.callKindChanges(ctx, caller, rec.PluginID, rec.KindKey, cursor, DefaultChangesLimit)
+		for attempt := 0; err != nil && waitRetryAfter(ctx, retryAfter, attempt); attempt++ {
+			page, notSupp, retryAfter, err = s.callKindChanges(ctx, caller, rec.PluginID, rec.KindKey, cursor, DefaultChangesLimit)
+		}
 		if retryAfter > res.RetryAfter {
 			res.RetryAfter = retryAfter
 		}
@@ -208,6 +578,17 @@ func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRec
 		}
 		allUpserts = append(allUpserts, page.Upserts...)
 		allDeletes = append(allDeletes, page.Deletes...)
+		seenChanges := len(allUpserts) + len(allDeletes)
+		s.setSyncProgress(rec.PluginID, rec.KindKey, syncProgress{
+			running:     true,
+			phase:       "syncing",
+			syncedItems: seenChanges,
+			pages:       pageIdx + 1,
+			itemsTotal:  storedCount,
+		})
+		if job != nil {
+			job.SetProgress(fmt.Sprintf("Page %d · %d changes checked", pageIdx+1, seenChanges))
+		}
 		if page.NextCursor != "" {
 			cursor = page.NextCursor
 			res.NextCursor = page.NextCursor
@@ -218,13 +599,18 @@ func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRec
 	}
 
 	if exceedsDeleteGuard(storedCount, len(allDeletes), opts.Force) {
-		return res, false, fmt.Errorf("%w: attempting to delete %d of %d items in %s/%s",
-			ErrDeleteGuard, len(allDeletes), storedCount, rec.PluginID, rec.KindKey)
+		return res, false, &DeleteGuardError{
+			PluginID: rec.PluginID,
+			KindKey:  rec.KindKey,
+			Source:   "changes",
+			Missing:  len(allDeletes),
+			Total:    storedCount,
+		}
 	}
 
 	for start := 0; start < len(allUpserts); start += MaxUpsertBatch {
 		end := min(start+MaxUpsertBatch, len(allUpserts))
-		n, err := s.UpsertItems(ctx, rec.PluginID, rec.KindKey, allUpserts[start:end])
+		n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, allUpserts[start:end])
 		if err != nil {
 			return res, false, err
 		}
@@ -242,19 +628,52 @@ func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRec
 	return res, false, nil
 }
 
-// syncRewalkDiff re-walks /browse, diffs items by etag, and deletes items unseen
-// in 2 consecutive complete walks (subject to the 50%-delete guard).
-func (s *Service) syncRewalkDiff(ctx context.Context, caller Caller, rec KindRecord, storedCount int, opts SyncOptions) (SyncResult, error) {
-	var res SyncResult
-	walked, retryAfter, err := s.walkBrowseTree(ctx, caller, rec, opts.Concurrency)
+// syncRewalkDiff re-walks /browse, diffs items by etag, and deletes unpinned,
+// unengaged items unseen in 2 consecutive complete walks (subject to the
+// 50%-delete guard). Items that were live-searched, expanded, opened, played,
+// favourited, watchlisted, playlisted, or resolved are protected from
+// missed-walk pruning so search-API plugins never drop viewer-engaged items.
+func (s *Service) syncRewalkDiff(ctx context.Context, caller Caller, rec KindRecord, storedCount int, opts SyncOptions, job SyncJobHandle) (SyncResult, error) {
+	var (
+		res         SyncResult
+		progressMu  sync.Mutex
+		walkedPages int
+		walkedItems int
+	)
+	onPage := func(batch []core.KindItem) error {
+		progressMu.Lock()
+		walkedPages++
+		walkedItems += len(batch)
+		p := walkedPages
+		n := walkedItems
+		progressMu.Unlock()
+		s.setSyncProgress(rec.PluginID, rec.KindKey, syncProgress{
+			running:     true,
+			phase:       "syncing",
+			syncedItems: n,
+			pages:       p,
+			itemsTotal:  storedCount,
+		})
+		if job != nil {
+			job.SetProgress(fmt.Sprintf("Page %d · %d %s checked", p, n, pluralItems(n)))
+		}
+		return nil
+	}
+	walked, retryAfter, err := s.walkBrowseTreeStream(ctx, caller, rec, opts.Concurrency, true, onPage)
 	res.RetryAfter = retryAfter
 	if err != nil {
 		return res, err
 	}
 
-	existingEtags, existingMissed, err := s.loadExistingEtagsAndMissed(ctx, rec.PluginID, rec.KindKey)
+	existingRows, err := s.loadExistingSyncRows(ctx, rec.PluginID, rec.KindKey)
 	if err != nil {
 		return res, err
+	}
+	byExt := make(map[string]existingSyncRow, len(existingRows))
+	byRef := make(map[core.ItemRef]existingSyncRow, len(existingRows))
+	for _, r := range existingRows {
+		byExt[r.extID] = r
+		byRef[r.ref] = r
 	}
 
 	seen := make(map[string]bool, len(walked))
@@ -267,10 +686,10 @@ func (s *Service) syncRewalkDiff(ctx context.Context, caller Caller, rec KindRec
 			continue
 		}
 		seen[extID] = true
-		oldEtag, exists := existingEtags[extID]
-		if exists && item.ETag != "" && oldEtag == item.ETag {
+		old, exists := byExt[extID]
+		if exists && item.ETag != "" && old.etag == item.ETag {
 			res.Skipped++
-			if existingMissed[extID] > 0 {
+			if old.missed > 0 {
 				seenUnchanged = append(seenUnchanged, extID)
 			}
 			continue
@@ -278,31 +697,85 @@ func (s *Service) syncRewalkDiff(ctx context.Context, caller Caller, rec KindRec
 		toUpsert = append(toUpsert, item)
 	}
 
-	// Determine unseen items and which ones hit 2 consecutive missed walks.
+	// Identify unseen items and protect any item that is pinned (live-searched,
+	// expanded, or opened) or has user engagement (played, favourited,
+	// watchlisted, playlisted, resolved, or manually matched), plus ancestors
+	// of any seen or protected item so parent deletion cannot cascade to them.
+	protected := make(map[string]bool)
+	var unpinnedUnseen []existingSyncRow
+	for _, r := range existingRows {
+		if seen[r.extID] {
+			continue
+		}
+		if r.pinned {
+			protected[r.extID] = true
+		} else {
+			unpinnedUnseen = append(unpinnedUnseen, r)
+		}
+	}
+	if len(unpinnedUnseen) > 0 {
+		engaged, err := s.findEngagedUnseen(ctx, unpinnedUnseen)
+		if err != nil {
+			return res, err
+		}
+		for extID := range engaged {
+			protected[extID] = true
+		}
+	}
+	// Protect unseen ancestors of any seen or protected item.
+	protectAncestors := func(parentRef core.ItemRef) {
+		cur := parentRef
+		for depth := 0; depth < 6 && cur != ""; depth++ {
+			parent, ok := byRef[cur]
+			if !ok {
+				break
+			}
+			if !seen[parent.extID] {
+				protected[parent.extID] = true
+			}
+			cur = parent.parentRef
+		}
+	}
+	for _, r := range existingRows {
+		if seen[r.extID] || protected[r.extID] {
+			protectAncestors(r.parentRef)
+		}
+	}
+
+	// Partition unseen prunable items into deletions and missed-walk increments.
 	var (
 		toIncrement []string
 		toDelete    []string
 	)
-	for extID, prevMissed := range existingMissed {
-		if seen[extID] {
+	for _, r := range existingRows {
+		if seen[r.extID] || protected[r.extID] {
 			continue
 		}
-		if prevMissed+1 >= 2 {
-			toDelete = append(toDelete, extID)
+		if opts.Force || r.missed+1 >= 2 {
+			toDelete = append(toDelete, r.extID)
 		} else {
-			toIncrement = append(toIncrement, extID)
+			toIncrement = append(toIncrement, r.extID)
 		}
 	}
 
+	protectedCount := len(protected)
+	prunableTotal := len(existingRows) - protectedCount
 	unseenCount := len(toIncrement) + len(toDelete)
-	if exceedsDeleteGuard(storedCount, len(toDelete), opts.Force) || exceedsDeleteGuard(storedCount, unseenCount, opts.Force) {
-		return res, fmt.Errorf("%w: %d of %d items missing in walk for %s/%s",
-			ErrDeleteGuard, unseenCount, storedCount, rec.PluginID, rec.KindKey)
+	res.Protected = protectedCount
+	if exceedsDeleteGuard(prunableTotal, len(toDelete), opts.Force) || exceedsDeleteGuard(prunableTotal, unseenCount, opts.Force) {
+		return res, &DeleteGuardError{
+			PluginID:  rec.PluginID,
+			KindKey:   rec.KindKey,
+			Source:    "walk",
+			Missing:   unseenCount,
+			Total:     prunableTotal,
+			Protected: protectedCount,
+		}
 	}
 
 	for start := 0; start < len(toUpsert); start += MaxUpsertBatch {
 		end := min(start+MaxUpsertBatch, len(toUpsert))
-		n, err := s.UpsertItems(ctx, rec.PluginID, rec.KindKey, toUpsert[start:end])
+		n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, toUpsert[start:end])
 		if err != nil {
 			return res, err
 		}
@@ -330,30 +803,215 @@ func (s *Service) syncRewalkDiff(ctx context.Context, caller Caller, rec KindRec
 	return res, nil
 }
 
-func (s *Service) loadExistingEtagsAndMissed(ctx context.Context, pluginID, kindKey string) (map[string]string, map[string]int, error) {
+type existingSyncRow struct {
+	ref       core.ItemRef
+	parentRef core.ItemRef
+	extID     string
+	seq       int64
+	etag      string
+	missed    int
+	pinned    bool
+}
+
+func (s *Service) loadExistingSyncRows(ctx context.Context, pluginID, kindKey string) ([]existingSyncRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT external_id, etag, missed_walks
+		SELECT item_ref, parent_ref, external_id, seq, etag, missed_walks, pinned
 		FROM plugin_items
 		WHERE plugin_id = ? AND kind_key = ?`,
 		pluginID, kindKey,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer rows.Close()
 
-	etags := make(map[string]string)
-	missed := make(map[string]int)
+	var out []existingSyncRow
 	for rows.Next() {
-		var extID, etag string
-		var m int
-		if err := rows.Scan(&extID, &etag, &m); err != nil {
-			return nil, nil, err
+		var r existingSyncRow
+		var refStr, parentStr string
+		var pinned int
+		if err := rows.Scan(&refStr, &parentStr, &r.extID, &r.seq, &r.etag, &r.missed, &pinned); err != nil {
+			return nil, err
 		}
-		etags[extID] = etag
-		missed[extID] = m
+		r.ref = core.ItemRef(refStr)
+		r.parentRef = core.ItemRef(parentStr)
+		r.pinned = pinned != 0
+		out = append(out, r)
 	}
-	return etags, missed, rows.Err()
+	return out, rows.Err()
+}
+
+func (s *Service) hasTableDB(ctx context.Context, table string) bool {
+	var n int
+	if store.DialectOf(s.db) == store.Postgres {
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?`,
+			table).Scan(&n)
+		return n > 0
+	}
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`,
+		table).Scan(&n)
+	return n > 0
+}
+
+// findEngagedUnseen returns the external IDs among candidates that have viewer
+// engagement in watch/read state, play history, playlists, remembered sources,
+// watchlists, favourites, resolutions, or owner-pinned matches. Queries are
+// chunked over unseen unpinned items only and skip optional tables absent in
+// isolated unit-test schemas.
+func (s *Service) findEngagedUnseen(ctx context.Context, candidates []existingSyncRow) (map[string]bool, error) {
+	engaged := make(map[string]bool)
+	if len(candidates) == 0 {
+		return engaged, nil
+	}
+	refToExt := make(map[string]string, len(candidates))
+	keyToExt := make(map[int64]string, len(candidates))
+	strKeyToExt := make(map[string]string, len(candidates))
+	refs := make([]string, 0, len(candidates))
+	keys := make([]int64, 0, len(candidates))
+	strKeys := make([]string, 0, len(candidates))
+	for _, r := range candidates {
+		rs := string(r.ref)
+		refToExt[rs] = r.extID
+		refs = append(refs, rs)
+		if r.seq > 0 && r.seq < core.PluginKeyMaxSeq {
+			k := int64(core.PluginKey(r.seq))
+			keyToExt[k] = r.extID
+			keys = append(keys, k)
+			sk := strconv.FormatInt(k, 10)
+			strKeyToExt[sk] = r.extID
+			strKeys = append(strKeys, sk)
+		}
+	}
+
+	const chunkSize = 250
+	queryRefs := func(table, queryPrefix string) error {
+		if !s.hasTableDB(ctx, table) {
+			return nil
+		}
+		for start := 0; start < len(refs); start += chunkSize {
+			end := min(start+chunkSize, len(refs))
+			chunk := refs[start:end]
+			marks := make([]string, len(chunk))
+			args := make([]any, len(chunk))
+			for i, v := range chunk {
+				marks[i] = "?"
+				args[i] = v
+			}
+			rows, err := s.db.QueryContext(ctx, queryPrefix+"("+strings.Join(marks, ",")+")", args...)
+			if err != nil {
+				return err
+			}
+			for rows.Next() {
+				var ref string
+				if err := rows.Scan(&ref); err != nil {
+					rows.Close()
+					return err
+				}
+				if ext, ok := refToExt[ref]; ok {
+					engaged[ext] = true
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+		}
+		return nil
+	}
+
+	queryIntKeys := func(table, col string) error {
+		if len(keys) == 0 || !s.hasTableDB(ctx, table) {
+			return nil
+		}
+		for start := 0; start < len(keys); start += chunkSize {
+			end := min(start+chunkSize, len(keys))
+			chunk := keys[start:end]
+			marks := make([]string, len(chunk))
+			args := make([]any, len(chunk))
+			for i, v := range chunk {
+				marks[i] = "?"
+				args[i] = v
+			}
+			rows, err := s.db.QueryContext(ctx,
+				fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IN (%s)", col, table, col, strings.Join(marks, ",")),
+				args...)
+			if err != nil {
+				return err
+			}
+			for rows.Next() {
+				var k int64
+				if err := rows.Scan(&k); err != nil {
+					rows.Close()
+					return err
+				}
+				if ext, ok := keyToExt[k]; ok {
+					engaged[ext] = true
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+		}
+		return nil
+	}
+
+	if err := queryRefs("plugin_resolutions", `SELECT DISTINCT item_ref FROM plugin_resolutions WHERE item_ref IN `); err != nil {
+		return nil, err
+	}
+	if err := queryRefs("plugin_matches", `SELECT DISTINCT item_ref FROM plugin_matches WHERE chosen = 1 AND item_ref IN `); err != nil {
+		return nil, err
+	}
+	for _, tc := range [][2]string{
+		{"state_watch", "rating_key"},
+		{"state_history", "rating_key"},
+		{"state_playlist_items", "rating_key"},
+		{"state_last_source", "rating_key"},
+		{"watchlist_items", "item_key"},
+	} {
+		if err := queryIntKeys(tc[0], tc[1]); err != nil {
+			return nil, err
+		}
+	}
+	if len(strKeys) > 0 && s.hasTableDB(ctx, "favorites_items") {
+		for start := 0; start < len(strKeys); start += chunkSize {
+			end := min(start+chunkSize, len(strKeys))
+			chunk := strKeys[start:end]
+			marks := make([]string, len(chunk))
+			args := make([]any, 0, len(chunk)+1)
+			args = append(args, "title")
+			for i, v := range chunk {
+				marks[i] = "?"
+				args = append(args, v)
+			}
+			rows, err := s.db.QueryContext(ctx,
+				`SELECT DISTINCT subject_id FROM favorites_items WHERE kind = ? AND subject_id IN (`+strings.Join(marks, ",")+`)`,
+				args...)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var sid string
+				if err := rows.Scan(&sid); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				if ext, ok := strKeyToExt[sid]; ok {
+					engaged[ext] = true
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rows.Close()
+		}
+	}
+	return engaged, nil
 }
 
 func (s *Service) setMissedWalks(ctx context.Context, pluginID, kindKey string, externalIDs []string, val int) error {
@@ -397,110 +1055,143 @@ func (s *Service) incrementMissedWalks(ctx context.Context, pluginID, kindKey st
 // (parentId="") with limit=200, then breadth-first into child levels with bounded
 // concurrency (default MaxSyncConcurrency = 4).
 func (s *Service) walkBrowseTree(ctx context.Context, caller Caller, rec KindRecord, concurrency int) ([]core.KindItem, time.Duration, error) {
+	return s.walkBrowseTreeStream(ctx, caller, rec, concurrency, true, nil)
+}
+
+func (s *Service) walkBrowseTreeStream(ctx context.Context, caller Caller, rec KindRecord, concurrency int, collectAll bool, onPage func([]core.KindItem) error) ([]core.KindItem, time.Duration, error) {
 	if concurrency <= 0 {
 		concurrency = MaxSyncConcurrency
 	}
-	childLevelOf := make(map[string]string, len(rec.Decl.Levels))
+	childLevelsOf := make(map[string][]string, len(rec.Decl.Levels))
 	rootLevel := "item"
 	if len(rec.Decl.Levels) > 0 {
 		rootLevel = rec.Decl.Levels[0].Key
-		for i := 0; i+1 < len(rec.Decl.Levels); i++ {
-			childLevelOf[rec.Decl.Levels[i].Key] = rec.Decl.Levels[i+1].Key
+		for i := 1; i < len(rec.Decl.Levels); i++ {
+			lv := rec.Decl.Levels[i]
+			parent := rec.Decl.LevelParent(lv.Key)
+			if parent != "" {
+				childLevelsOf[parent] = append(childLevelsOf[parent], lv.Key)
+			}
 		}
 	}
 
-	rootItems, maxRetry, err := s.fetchAllBrowsePages(ctx, caller, rec.PluginID, rec.KindKey, rootLevel, "")
+	rootHasChildren := len(childLevelsOf[rootLevel]) > 0
+	keepRoot := collectAll || rootHasChildren
+	rootItems, maxRetry, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, rootLevel, "", keepRoot, onPage)
 	if err != nil {
 		return nil, maxRetry, err
 	}
 
-	allItems := make([]core.KindItem, 0, len(rootItems))
-	allItems = append(allItems, rootItems...)
+	var allItems []core.KindItem
+	if collectAll {
+		allItems = make([]core.KindItem, 0, len(rootItems))
+		allItems = append(allItems, rootItems...)
+	}
 
-	currentWave := rootItems
-	currentLevel := rootLevel
+	type levelWave struct {
+		level string
+		items []core.KindItem
+	}
+	queue := []levelWave{{level: rootLevel, items: rootItems}}
 
-	for {
-		nextLevel, hasChildren := childLevelOf[currentLevel]
-		if !hasChildren || len(currentWave) == 0 {
-			break
+	for len(queue) > 0 {
+		wave := queue[0]
+		queue = queue[1:]
+
+		nextLevels := childLevelsOf[wave.level]
+		if len(nextLevels) == 0 || len(wave.items) == 0 {
+			continue
 		}
 
-		type parentTask struct {
-			parentExtID string
-		}
-		tasks := make([]parentTask, 0, len(currentWave))
-		for _, p := range currentWave {
-			if p.ID != "" {
-				tasks = append(tasks, parentTask{parentExtID: p.ID})
+		for _, nextLevel := range nextLevels {
+			nextHasChildren := len(childLevelsOf[nextLevel]) > 0
+			keepNext := collectAll || nextHasChildren
+
+			type parentTask struct {
+				parentExtID string
 			}
-		}
-		if len(tasks) == 0 {
-			break
-		}
-
-		type taskResult struct {
-			idx        int
-			items      []core.KindItem
-			retryAfter time.Duration
-			err        error
-		}
-		results := make([]taskResult, len(tasks))
-		sem := make(chan struct{}, concurrency)
-		var wg sync.WaitGroup
-
-		for i, t := range tasks {
-			i, t := i, t
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				select {
-				case sem <- struct{}{}:
-				case <-ctx.Done():
-					results[i] = taskResult{idx: i, err: ctx.Err()}
-					return
-				}
-				defer func() { <-sem }()
-
-				children, ra, err := s.fetchAllBrowsePages(ctx, caller, rec.PluginID, rec.KindKey, nextLevel, t.parentExtID)
-				results[i] = taskResult{
-					idx:        i,
-					items:      children,
-					retryAfter: ra,
-					err:        err,
-				}
-			}()
-		}
-		wg.Wait()
-
-		var nextWave []core.KindItem
-		for _, r := range results {
-			if r.retryAfter > maxRetry {
-				maxRetry = r.retryAfter
-			}
-			if r.err != nil {
-				return nil, maxRetry, r.err
-			}
-			for j := range r.items {
-				if r.items[j].ParentID == "" {
-					r.items[j].ParentID = tasks[r.idx].parentExtID
-				}
-				if r.items[j].Level == "" {
-					r.items[j].Level = nextLevel
+			tasks := make([]parentTask, 0, len(wave.items))
+			for _, p := range wave.items {
+				if p.ID != "" {
+					tasks = append(tasks, parentTask{parentExtID: p.ID})
 				}
 			}
-			allItems = append(allItems, r.items...)
-			nextWave = append(nextWave, r.items...)
-		}
+			if len(tasks) == 0 {
+				continue
+			}
 
-		currentWave = nextWave
-		currentLevel = nextLevel
+			type taskResult struct {
+				idx        int
+				items      []core.KindItem
+				retryAfter time.Duration
+				err        error
+			}
+			results := make([]taskResult, len(tasks))
+			sem := make(chan struct{}, concurrency)
+			var wg sync.WaitGroup
+
+			for i, t := range tasks {
+				i, t := i, t
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					select {
+					case sem <- struct{}{}:
+					case <-ctx.Done():
+						results[i] = taskResult{idx: i, err: ctx.Err()}
+						return
+					}
+					defer func() { <-sem }()
+
+					children, ra, err := s.fetchAllBrowsePagesStream(ctx, caller, rec.PluginID, rec.KindKey, nextLevel, t.parentExtID, keepNext, onPage)
+					results[i] = taskResult{
+						idx:        i,
+						items:      children,
+						retryAfter: ra,
+						err:        err,
+					}
+				}()
+			}
+			wg.Wait()
+
+			var nextWave []core.KindItem
+			for _, r := range results {
+				if r.retryAfter > maxRetry {
+					maxRetry = r.retryAfter
+				}
+				if r.err != nil {
+					return nil, maxRetry, r.err
+				}
+				for j := range r.items {
+					if r.items[j].ParentID == "" {
+						r.items[j].ParentID = tasks[r.idx].parentExtID
+					}
+					if r.items[j].Level == "" {
+						r.items[j].Level = nextLevel
+					}
+				}
+				if collectAll {
+					allItems = append(allItems, r.items...)
+				}
+				if nextHasChildren {
+					nextWave = append(nextWave, r.items...)
+				}
+			}
+
+			if nextHasChildren && len(nextWave) > 0 {
+				queue = append(queue, levelWave{level: nextLevel, items: nextWave})
+			}
+		}
 	}
 
 	return allItems, maxRetry, nil
 }
 
 func (s *Service) fetchAllBrowsePages(ctx context.Context, caller Caller, pluginID, kindKey, level, parentID string) ([]core.KindItem, time.Duration, error) {
+	return s.fetchAllBrowsePagesStream(ctx, caller, pluginID, kindKey, level, parentID, true, nil)
+}
+
+func (s *Service) fetchAllBrowsePagesStream(ctx context.Context, caller Caller, pluginID, kindKey, level, parentID string, collect bool, onPage func([]core.KindItem) error) ([]core.KindItem, time.Duration, error) {
 	var (
 		all        []core.KindItem
 		cursor     string
@@ -515,6 +1206,9 @@ func (s *Service) fetchAllBrowsePages(ctx context.Context, caller Caller, plugin
 			Limit:    DefaultWalkPageLimit,
 		}
 		page, ra, err := s.callKindBrowse(ctx, caller, pluginID, kindKey, req)
+		for attempt := 0; err != nil && waitRetryAfter(ctx, ra, attempt); attempt++ {
+			page, ra, err = s.callKindBrowse(ctx, caller, pluginID, kindKey, req)
+		}
 		if ra > maxRetry {
 			maxRetry = ra
 		}
@@ -529,7 +1223,14 @@ func (s *Service) fetchAllBrowsePages(ctx context.Context, caller Caller, plugin
 				page.Items[i].ParentID = parentID
 			}
 		}
-		all = append(all, page.Items...)
+		if onPage != nil && len(page.Items) > 0 {
+			if err := onPage(page.Items); err != nil {
+				return nil, maxRetry, err
+			}
+		}
+		if collect {
+			all = append(all, page.Items...)
+		}
 		next := strings.TrimSpace(page.NextCursor)
 		if next == "" || len(page.Items) == 0 || seenCursor[next] {
 			break
@@ -545,7 +1246,7 @@ func (s *Service) callKindBrowse(ctx context.Context, caller Caller, pluginID, k
 	if err != nil {
 		return core.KindPage{}, 0, err
 	}
-	resp, err := caller.Call(ctx, pluginID, plugins.Request{
+	resp, err := caller.Call(plugins.WithBackgroundCall(ctx), pluginID, plugins.Request{
 		PluginID: pluginID,
 		Method:   http.MethodPost,
 		Path:     fmt.Sprintf("/ether/v1/kinds/%s/browse", kindKey),
@@ -585,7 +1286,7 @@ func (s *Service) callKindChanges(ctx context.Context, caller Caller, pluginID, 
 	if err != nil {
 		return core.KindChangePage{}, false, 0, err
 	}
-	resp, err := caller.Call(ctx, pluginID, plugins.Request{
+	resp, err := caller.Call(plugins.WithBackgroundCall(ctx), pluginID, plugins.Request{
 		PluginID: pluginID,
 		Method:   http.MethodPost,
 		Path:     fmt.Sprintf("/ether/v1/kinds/%s/changes", kindKey),
@@ -621,6 +1322,30 @@ type pluginErrorEnvelope struct {
 	RetryAfterSnake   int    `json:"retry_after_seconds"`
 }
 
+// maxSyncRetryWait and maxSyncRetries bound how long one sync waits out a
+// plugin's rate limit (a 429 or 503 with Retry-After) before giving up.
+const (
+	maxSyncRetryWait = 2 * time.Minute
+	maxSyncRetries   = 8
+)
+
+// waitRetryAfter waits out a short Retry-After so a rate-limited page is
+// retried in place instead of failing the whole sync. It reports whether
+// the caller should try the same request again.
+func waitRetryAfter(ctx context.Context, ra time.Duration, attempt int) bool {
+	if ra <= 0 || ra > maxSyncRetryWait || attempt >= maxSyncRetries {
+		return false
+	}
+	t := time.NewTimer(ra)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
 func checkPluginResponseError(resp plugins.Response) error {
 	if resp.Status >= 200 && resp.Status < 300 {
 		return nil
@@ -653,12 +1378,14 @@ func parseRetryAfter(resp plugins.Response) time.Duration {
 	return 0
 }
 
-// StartKindSync starts (or restarts) a background pull-sync worker for a kind.
+// StartKindSync starts (or restarts) a background pull-sync worker for a kind
+// without blocking the caller on an in-flight previous pass. Any superseded
+// worker is cancelled immediately and drained by the new worker goroutine
+// before starting the next pass, preserving strict per-kind serialization.
 func (s *Service) StartKindSync(parentCtx context.Context, pluginID, kindKey string, interval time.Duration) {
 	if s == nil {
 		return
 	}
-	s.StopKindSync(pluginID, kindKey)
 	if interval <= 0 {
 		interval = 15 * time.Minute
 	}
@@ -668,11 +1395,38 @@ func (s *Service) StartKindSync(parentCtx context.Context, pluginID, kindKey str
 	key := workerKey(pluginID, kindKey)
 
 	s.workersMu.Lock()
+	var prevDone chan struct{}
+	if prev, ok := s.workers[key]; ok && prev != nil {
+		prev.cancel()
+		prevDone = prev.done
+	} else if d, ok := s.draining[key]; ok {
+		prevDone = d
+	}
+	var reindexDone chan struct{}
+	if rw, ok := s.reindexers[key]; ok && rw != nil {
+		reindexDone = rw.done
+	}
+	delete(s.draining, key)
 	s.workers[key] = &syncWorker{cancel: cancel, done: done}
 	s.workersMu.Unlock()
 
 	go func() {
 		defer close(done)
+		if prevDone != nil {
+			// prev was already cancelled; wait for it to finish so Close/StopKindSync
+			// transitively drain every superseded worker before returning.
+			<-prevDone
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if reindexDone != nil {
+			select {
+			case <-reindexDone:
+			case <-ctx.Done():
+				return
+			}
+		}
 		res, _ := s.SyncKind(ctx, pluginID, kindKey, SyncOptions{})
 		wait := interval
 		if res.RetryAfter > wait {
@@ -697,8 +1451,28 @@ func (s *Service) StartKindSync(parentCtx context.Context, pluginID, kindKey str
 	}()
 }
 
-// StopKindSync stops the background sync worker for (pluginID, kindKey) and waits
-// for any in-flight pass to exit.
+// CancelKindSync cancels any running background sync worker for (pluginID,
+// kindKey) without blocking the caller on an in-flight network or plugin call.
+// Subsequent StartKindSync, StopKindSync, PurgeKind, or Close calls still wait
+// for the cancelled worker to exit.
+func (s *Service) CancelKindSync(pluginID, kindKey string) {
+	if s == nil {
+		return
+	}
+	key := workerKey(pluginID, kindKey)
+	s.workersMu.Lock()
+	if w, ok := s.workers[key]; ok {
+		delete(s.workers, key)
+		if w != nil {
+			s.draining[key] = w.done
+			w.cancel()
+		}
+	}
+	s.workersMu.Unlock()
+}
+
+// StopKindSync stops the background sync and reindex workers for (pluginID,
+// kindKey) and waits for any in-flight pass to exit.
 func (s *Service) StopKindSync(pluginID, kindKey string) {
 	if s == nil {
 		return
@@ -709,14 +1483,31 @@ func (s *Service) StopKindSync(pluginID, kindKey string) {
 	if ok {
 		delete(s.workers, key)
 	}
+	mw := s.manualSyncs[key]
+	delete(s.manualSyncs, key)
+	drain := s.draining[key]
+	delete(s.draining, key)
+	rw := s.reindexers[key]
+	delete(s.reindexers, key)
 	s.workersMu.Unlock()
 	if ok && w != nil {
 		w.cancel()
 		<-w.done
 	}
+	if mw != nil {
+		mw.cancel()
+		<-mw.done
+	}
+	if drain != nil {
+		<-drain
+	}
+	if rw != nil {
+		rw.cancel()
+		<-rw.done
+	}
 }
 
-// StopPluginSync stops all background sync workers belonging to pluginID.
+// StopPluginSync stops all background sync and reindex workers belonging to pluginID.
 func (s *Service) StopPluginSync(pluginID string) {
 	if s == nil {
 		return
@@ -724,31 +1515,71 @@ func (s *Service) StopPluginSync(pluginID string) {
 	prefix := pluginID + "\x00"
 	s.workersMu.Lock()
 	var toWait []*syncWorker
+	var drains []chan struct{}
 	for k, w := range s.workers {
 		if strings.HasPrefix(k, prefix) {
 			delete(s.workers, k)
 			toWait = append(toWait, w)
 		}
 	}
+	for k, mw := range s.manualSyncs {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.manualSyncs, k)
+			toWait = append(toWait, mw)
+		}
+	}
+	for k, d := range s.draining {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.draining, k)
+			drains = append(drains, d)
+		}
+	}
+	for k, rw := range s.reindexers {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.reindexers, k)
+			toWait = append(toWait, rw)
+		}
+	}
 	s.workersMu.Unlock()
 	for _, w := range toWait {
 		if w != nil {
 			w.cancel()
 			<-w.done
+		}
+	}
+	for _, d := range drains {
+		if d != nil {
+			<-d
 		}
 	}
 }
 
-// Close stops all background sync workers.
+// Close stops all background sync workers, reindexers, and planner statistics refreshes.
 func (s *Service) Close() {
 	if s == nil {
 		return
 	}
+	if s.bgCancel != nil {
+		s.bgCancel()
+	}
 	s.workersMu.Lock()
 	var toWait []*syncWorker
+	var drains []chan struct{}
 	for k, w := range s.workers {
 		delete(s.workers, k)
 		toWait = append(toWait, w)
+	}
+	for k, mw := range s.manualSyncs {
+		delete(s.manualSyncs, k)
+		toWait = append(toWait, mw)
+	}
+	for k, d := range s.draining {
+		delete(s.draining, k)
+		drains = append(drains, d)
+	}
+	for k, rw := range s.reindexers {
+		delete(s.reindexers, k)
+		toWait = append(toWait, rw)
 	}
 	s.workersMu.Unlock()
 	for _, w := range toWait {
@@ -757,6 +1588,15 @@ func (s *Service) Close() {
 			<-w.done
 		}
 	}
+	for _, d := range drains {
+		if d != nil {
+			<-d
+		}
+	}
+	if s.pinDone != nil {
+		<-s.pinDone
+	}
+	s.stats.close()
 }
 
 func workerKey(pluginID, kindKey string) string {

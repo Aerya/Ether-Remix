@@ -19,10 +19,15 @@ const (
 )
 
 type transcodeSlot struct {
-	priority SlotPriority
-	cancel   context.CancelFunc
-	released bool
+	priority       SlotPriority
+	cancel         context.CancelFunc
+	released       bool
+	multiviewGroup string
 }
+
+// maxMultiviewGroupEncoders bounds concurrent encoders within a single
+// multiview group (4 active tiles plus up to 4 concurrent handovers/replans).
+const maxMultiviewGroupEncoders = 8
 
 // AcquireTranscodeSlot reserves the shared encoder budget. Run the job under
 // jobCtx, and always release after its process has stopped. Viewers preempt the
@@ -33,8 +38,13 @@ func (m *Manager) AcquireTranscodeSlot(ctx context.Context, p SlotPriority) (con
 }
 
 func (m *Manager) acquirePrioritySlot(ctx context.Context, p SlotPriority, wait bool) (jobCtx context.Context, release func(), err error) {
+	jobCtx, _, release, err = m.acquirePrioritySlotForGroup(ctx, p, wait, "")
+	return jobCtx, release, err
+}
+
+func (m *Manager) acquirePrioritySlotForGroup(ctx context.Context, p SlotPriority, wait bool, multiviewGroup string) (jobCtx context.Context, holder *transcodeSlot, release func(), err error) {
 	if p != SlotViewer && p != SlotBackground && p != SlotLivePrep {
-		return nil, nil, errors.New("transcode: invalid slot priority")
+		return nil, nil, nil, errors.New("transcode: invalid slot priority")
 	}
 	m.mu.Lock()
 	if m.slotChanged == nil {
@@ -56,18 +66,19 @@ func (m *Manager) acquirePrioritySlot(ctx context.Context, p SlotPriority, wait 
 	defer ticker.Stop()
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if m.closed {
-			return nil, nil, errors.New("transcode: manager closed")
+			return nil, nil, nil, errors.New("transcode: manager closed")
 		}
-		full := m.cfg.MaxTranscodes > 0 && m.encodingLocked("") >= m.cfg.MaxTranscodes
+		full := m.transcodeFullLocked(multiviewGroup, "")
 		if p == SlotLivePrep {
 			full = m.livePrepEncodes >= 1
 		}
 		if full && p == SlotViewer {
-			m.preemptBackgroundLocked()
-			full = m.cfg.MaxTranscodes > 0 && m.encodingLocked("") >= m.cfg.MaxTranscodes
+			for full && m.preemptBackgroundLocked() {
+				full = m.transcodeFullLocked(multiviewGroup, "")
+			}
 		}
 		if !full && (p == SlotViewer || p == SlotLivePrep || m.slotViewers == 0) {
 			jobCtx = ctx
@@ -75,7 +86,7 @@ func (m *Manager) acquirePrioritySlot(ctx context.Context, p SlotPriority, wait 
 			if p == SlotBackground || p == SlotLivePrep {
 				jobCtx, cancel = context.WithCancel(ctx)
 			}
-			holder := &transcodeSlot{priority: p, cancel: cancel}
+			holder = &transcodeSlot{priority: p, cancel: cancel, multiviewGroup: multiviewGroup}
 			m.slotHolders = append(m.slotHolders, holder)
 			if p == SlotLivePrep {
 				m.livePrepEncodes++
@@ -84,10 +95,10 @@ func (m *Manager) acquirePrioritySlot(ctx context.Context, p SlotPriority, wait 
 			}
 			var once sync.Once
 			release = func() { once.Do(func() { m.mu.Lock(); m.releaseSlotLocked(holder); m.mu.Unlock() }) }
-			return jobCtx, release, nil
+			return jobCtx, holder, release, nil
 		}
 		if !wait {
-			return nil, nil, ErrTooManyTranscodes
+			return nil, nil, nil, ErrTooManyTranscodes
 		}
 		changed := m.slotChanged
 		m.mu.Unlock()
@@ -99,6 +110,18 @@ func (m *Manager) acquirePrioritySlot(ctx context.Context, p SlotPriority, wait 
 		}
 		m.mu.Lock()
 	}
+}
+
+func (m *Manager) setSlotGroup(h *transcodeSlot, multiviewGroup string) {
+	if m == nil || h == nil {
+		return
+	}
+	m.mu.Lock()
+	if !h.released && h.multiviewGroup != multiviewGroup {
+		h.multiviewGroup = multiviewGroup
+		m.notifySlotsLocked()
+	}
+	m.mu.Unlock()
 }
 func (m *Manager) notifySlotsLocked() {
 	if m.slotChanged != nil {

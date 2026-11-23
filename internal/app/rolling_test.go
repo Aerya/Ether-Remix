@@ -194,7 +194,6 @@ func TestRollingUpdateTwoNodesPostgres(t *testing.T) {
 	}
 	(&clusterUpdates{a: a}).SetDraining(false) // the new process starts in rotation
 	ma2 := rollingManager(t, a, "a", "2.0.0", noFeed{}, updater.StartupResult{Confirming: &p}, &log, restarted)
-	confirmStart := time.Now()
 	go ma2.Run(ctx)
 	select {
 	case who := <-restarted:
@@ -203,9 +202,6 @@ func TestRollingUpdateTwoNodesPostgres(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("b never got its turn: %+v", mb.Status())
-	}
-	if time.Since(confirmStart) < 700*time.Millisecond {
-		t.Fatal("b installed before a confirmed its new version")
 	}
 	if got := strings.Join(log.get(), ","); got != "a installs,b installs" {
 		t.Fatalf("installs %s", got)

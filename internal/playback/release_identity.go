@@ -38,6 +38,13 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 	if episode <= 0 {
 		return true
 	}
+	origSeason, origEpisode := season, episode
+	absolute := playbackAbsoluteEpisode(title, season, episode)
+	var valid bool
+	season, episode, valid = targetEpisodeNumbers(p.Target, season, episode)
+	if !valid {
+		return false
+	}
 	if season == 0 {
 		if p.Target == nil || p.Target.Season != 0 || p.Target.Episode != episode {
 			return false
@@ -58,11 +65,38 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 	if len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) > 0 {
 		baseInfo.Seasons = fullInfo.Seasons
 	}
-	if len(baseInfo.Episodes) > 0 || len(baseInfo.AbsoluteEpisodes) > 0 {
-		return releaseparse.EpisodeMatchesNumbering(baseInfo, season, episode, playbackAbsoluteEpisode(title, season, episode))
+	matchesEpisode := func(info core.ReleaseInfo) bool {
+		if releaseparse.AbsoluteConflict(info, absolute) {
+			return false
+		}
+		if releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute) {
+			return true
+		}
+		if p.Target != nil && p.Target.CanonicalSeason == origSeason && p.Target.CanonicalEpisode == origEpisode {
+			if releaseparse.EpisodeMatches(info, origSeason, origEpisode) {
+				return true
+			}
+			for _, n := range p.Target.Aliases {
+				if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
+					return true
+				}
+			}
+		}
+		if season > 0 && !info.FullSeason && releaseparse.EpisodeMatchesAirDate(info, title.Released) {
+			if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
+				return true
+			}
+			if season > 1 && absolute <= 0 && len(info.Seasons) == 0 && len(info.AbsoluteEpisodes) == 0 && len(info.Episodes) == 1 && info.Episodes[0] > episode {
+				return true
+			}
+		}
+		return false
 	}
-	if len(fullInfo.Episodes) > 0 || len(fullInfo.AbsoluteEpisodes) > 0 {
-		return releaseparse.EpisodeMatchesNumbering(fullInfo, season, episode, playbackAbsoluteEpisode(title, season, episode))
+	if len(baseInfo.Episodes) > 0 || len(baseInfo.AbsoluteEpisodes) > 0 || baseInfo.AirDate != "" {
+		return matchesEpisode(baseInfo)
+	}
+	if len(fullInfo.Episodes) > 0 || len(fullInfo.AbsoluteEpisodes) > 0 || fullInfo.AirDate != "" {
+		return matchesEpisode(fullInfo)
 	}
 	return true
 }
@@ -97,6 +131,13 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 			episode = title.Key.Episode()
 		}
 	}
+	origSeason, origEpisode := season, episode
+	absolute := playbackAbsoluteEpisode(title, season, episode)
+	var valid bool
+	season, episode, valid = targetEpisodeNumbers(rel.Target, season, episode)
+	if !valid {
+		return false
+	}
 	// Zero season denotes a special only when an episode number is known.
 	// Partially hydrated titles still carry usable series/year identity.
 	if season == 0 && episode > 0 {
@@ -110,22 +151,47 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 		}
 	}
 	info := rel.Info
-	if len(info.Episodes) == 0 && !info.FullSeason {
+	if len(info.Episodes) == 0 && !info.FullSeason && info.AirDate == "" {
 		info = releaseparse.Parse(rel.Name)
 	}
-	if episode > 0 && (len(info.Episodes) > 0 || len(info.AbsoluteEpisodes) > 0 || info.FullSeason) {
+	if episode > 0 && (len(info.Episodes) > 0 || len(info.AbsoluteEpisodes) > 0 || info.FullSeason || info.AirDate != "") {
 		if info.FullSeason {
 			if len(info.Seasons) > 0 {
 				found := false
 				for _, n := range info.Seasons {
 					found = found || n == season
 				}
+				if !found && rel.Target != nil && rel.Target.CanonicalSeason == origSeason && rel.Target.CanonicalEpisode == origEpisode {
+					for _, alias := range rel.Target.Aliases {
+						for _, n := range info.Seasons {
+							found = found || n == alias.Season
+						}
+					}
+				}
 				if !found {
 					return false
 				}
 			}
-		} else if !releaseparse.EpisodeMatchesNumbering(info, season, episode, playbackAbsoluteEpisode(title, season, episode)) {
-			return false
+		} else {
+			matched := releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute)
+			if !matched && !releaseparse.AbsoluteConflict(info, absolute) && rel.Target != nil && rel.Target.CanonicalSeason == origSeason && rel.Target.CanonicalEpisode == origEpisode {
+				for _, alias := range rel.Target.Aliases {
+					if releaseparse.EpisodeMatches(info, alias.Season, alias.Episode) {
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched && season > 0 && !releaseparse.AbsoluteConflict(info, absolute) && releaseparse.EpisodeMatchesAirDate(info, title.Released) {
+				if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
+					matched = true
+				} else if season > 1 && absolute <= 0 && len(info.Seasons) == 0 && len(info.AbsoluteEpisodes) == 0 && len(info.Episodes) == 1 && info.Episodes[0] > episode {
+					matched = true
+				}
+			}
+			if !matched {
+				return false
+			}
 		}
 	}
 	if rel.Target != nil && episode > 0 &&
@@ -176,4 +242,16 @@ func (m *Manager) ownerPinAllows(s *session, releaseID string) bool {
 		return id == "" || id == releaseID
 	}
 	return true
+}
+
+// Alternate file numbers are valid only for the canonical episode the resolver
+// explicitly attached them to. Plain targets retain the existing checks.
+func targetEpisodeNumbers(target *core.ReleaseTarget, season, episode int) (int, int, bool) {
+	if target == nil || target.CanonicalEpisode <= 0 {
+		return season, episode, true
+	}
+	if target.CanonicalSeason != season || target.CanonicalEpisode != episode || target.Episode <= 0 {
+		return season, episode, false
+	}
+	return target.Season, target.Episode, true
 }

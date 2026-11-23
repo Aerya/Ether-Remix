@@ -47,6 +47,8 @@ CREATE INDEX playback_resume_hash ON playback_resume(nzb_hash);
 	// stored `Name|<16 hex>` profile column.
 	// Released main owns playback/3. Payload incarnations are playback/4.
 	store.Register("playback", 3, `ALTER TABLE playback_resume ADD COLUMN original_language TEXT NOT NULL DEFAULT '';`)
+	store.RegisterAfter("playback_resume_selector", "playback")
+	store.Register("playback_resume_selector", 1, `ALTER TABLE playback_resume ADD COLUMN version_selector TEXT NOT NULL DEFAULT '';`)
 	// Keep the existing playback migration immutable; indexes have their own
 	// component history.
 	store.Register("playback_index", 1, `CREATE TABLE playback_index (
@@ -61,15 +63,16 @@ const maxResumeKeyframes = 8192
 // (or a prefetched next episode) opens the same release and hits cached
 // segments without asking the indexer again.
 type ResumePoint struct {
-	UserID    int64
-	Key       core.RatingKey
-	Release   core.Release
-	NZB       []byte
-	Profile   string        // quality profile name it was resolved for
-	Size      int64         // media file size, 0 if never opened
-	Duration  time.Duration // probed duration, 0 if unknown
-	Keyframes []core.KeyframePoint
-	UpdatedAt time.Time
+	UserID          int64
+	Key             core.RatingKey
+	Release         core.Release
+	VersionSelector string // non-Auto configured slot selector this play fulfilled, "" for Auto
+	NZB             []byte
+	Profile         string        // quality profile name it was resolved for
+	Size            int64         // media file size, 0 if never opened
+	Duration        time.Duration // probed duration, 0 if unknown
+	Keyframes       []core.KeyframePoint
+	UpdatedAt       time.Time
 
 	// profileKey is the stored `Name|<key>` value (a plain name on
 	// legacy records); Profile above exposes the name only.
@@ -145,6 +148,7 @@ type resumeRecord struct {
 	nzbHash          string
 	profile          string
 	originalLanguage string
+	versionSelector  string
 	size             int64
 	duration         time.Duration
 	updatedAt        time.Time
@@ -195,6 +199,7 @@ type resumeStore struct {
 type resumeLive struct {
 	profile          string
 	originalLanguage string
+	versionSelector  string
 	releaseID        string
 	size             int64
 	duration         time.Duration
@@ -207,6 +212,7 @@ type resumeFresh struct {
 	release          string
 	profile          string
 	originalLanguage string
+	versionSelector  string
 	size             int64
 	duration         time.Duration
 	probe            bool
@@ -424,7 +430,7 @@ func (s *resumeStore) resumeCurrent(ctx context.Context, rec resumeRecord, hash 
 	if err != nil || got == nil || got.release.ID == "" {
 		return false
 	}
-	if got.nzbHash != hash || got.release.ID != rec.release.ID || got.profile != rec.profile || got.originalLanguage != rec.originalLanguage || got.size != rec.size || got.duration != rec.duration {
+	if got.nzbHash != hash || got.release.ID != rec.release.ID || got.profile != rec.profile || got.originalLanguage != rec.originalLanguage || got.versionSelector != rec.versionSelector || got.size != rec.size || got.duration != rec.duration {
 		return false
 	}
 	if _, ok := persistedProbeFacts(probe); ok {
@@ -447,7 +453,7 @@ func (s *resumeStore) freshHit(rec resumeRecord, hash string, probe core.MediaIn
 	s.freshMu.Lock()
 	defer s.freshMu.Unlock()
 	got, ok := s.fresh[resumeKey{rec.userID, rec.key}]
-	if !ok || got.hash != hash || got.release != rec.release.ID || got.profile != rec.profile || got.originalLanguage != rec.originalLanguage || got.size != rec.size || got.duration != rec.duration {
+	if !ok || got.hash != hash || got.release != rec.release.ID || got.profile != rec.profile || got.originalLanguage != rec.originalLanguage || got.versionSelector != rec.versionSelector || got.size != rec.size || got.duration != rec.duration {
 		return false
 	}
 	if _, ok := persistedProbeFacts(probe); ok && !got.probe {
@@ -465,7 +471,7 @@ func (s *resumeStore) rememberFresh(rec resumeRecord, hash string, probe core.Me
 	}
 	s.fresh[resumeKey{rec.userID, rec.key}] = resumeFresh{
 		hash: hash, release: rec.release.ID, profile: rec.profile, originalLanguage: rec.originalLanguage,
-		size: rec.size, duration: rec.duration, probe: probeOK, points: points,
+		versionSelector: rec.versionSelector, size: rec.size, duration: rec.duration, probe: probeOK, points: points,
 	}
 }
 
@@ -478,7 +484,7 @@ func (s *resumeStore) bumpLiveGenLocked(k resumeKey) uint64 {
 }
 
 func (s *resumeStore) storeLiveLocked(rec resumeRecord, nzb []byte, probe ...*probeCache) {
-	res := &core.Resolution{Title: rec.key, Release: rec.release, NZB: append([]byte(nil), nzb...), ResolvedAt: rec.updatedAt}
+	res := &core.Resolution{Title: rec.key, Release: rec.release, NZB: append([]byte(nil), nzb...), ResolvedAt: rec.updatedAt, VersionSelector: rec.versionSelector}
 	if s.live == nil {
 		s.live = map[resumeKey]resumeLive{}
 	}
@@ -490,7 +496,7 @@ func (s *resumeStore) storeLiveLocked(rec resumeRecord, nzb []byte, probe ...*pr
 		pc = prev.probe
 	}
 	s.live[k] = resumeLive{
-		profile: rec.profile, originalLanguage: rec.originalLanguage, releaseID: rec.release.ID,
+		profile: rec.profile, originalLanguage: rec.originalLanguage, versionSelector: rec.versionSelector, releaseID: rec.release.ID,
 		size: rec.size, duration: rec.duration, res: res, probe: pc,
 	}
 }
@@ -588,7 +594,7 @@ func (s *resumeStore) livePoint(userID int64, key core.RatingKey) *ResumePoint {
 		return nil
 	}
 	return &ResumePoint{
-		UserID: userID, Key: key, Release: got.res.Release, NZB: append([]byte(nil), got.res.NZB...),
+		UserID: userID, Key: key, Release: got.res.Release, VersionSelector: got.versionSelector, NZB: append([]byte(nil), got.res.NZB...),
 		Profile: profileName(got.profile), Size: got.size, Duration: got.duration, UpdatedAt: got.res.ResolvedAt,
 		profileKey: got.profile, originalLanguage: got.originalLanguage,
 	}
@@ -756,13 +762,13 @@ func saveResumeRowTx(ctx context.Context, tx *sql.Tx, rec resumeRecord, hash str
 		return "", err
 	}
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO playback_resume (user_id, rating_key, release_id, release_json, nzb_hash, profile, original_language, size, duration_ms, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO playback_resume (user_id, rating_key, release_id, release_json, nzb_hash, profile, original_language, version_selector, size, duration_ms, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (user_id, rating_key) DO UPDATE SET
 	release_id=excluded.release_id, release_json=excluded.release_json, nzb_hash=excluded.nzb_hash,
-	profile=excluded.profile, original_language=excluded.original_language, size=excluded.size,
-	duration_ms=excluded.duration_ms, updated_at=excluded.updated_at`,
-		rec.userID, int64(rec.key), rec.release.ID, string(rel), hash, rec.profile, rec.originalLanguage, rec.size,
+	profile=excluded.profile, original_language=excluded.original_language, version_selector=excluded.version_selector,
+	size=excluded.size, duration_ms=excluded.duration_ms, updated_at=excluded.updated_at`,
+		rec.userID, int64(rec.key), rec.release.ID, string(rel), hash, rec.profile, rec.originalLanguage, rec.versionSelector, rec.size,
 		rec.duration.Milliseconds(), rec.updatedAt.UnixMilli())
 	if err != nil {
 		return "", err
@@ -770,7 +776,7 @@ ON CONFLICT (user_id, rating_key) DO UPDATE SET
 	return oldHash, nil
 }
 
-const resumeColumns = `user_id, rating_key, release_id, release_json, nzb_hash, profile, original_language, size, duration_ms, updated_at`
+const resumeColumns = `user_id, rating_key, release_id, release_json, nzb_hash, profile, original_language, version_selector, size, duration_ms, updated_at`
 
 func scanResume(sc interface{ Scan(...any) error }) (resumeRecord, error) {
 	var (
@@ -779,7 +785,7 @@ func scanResume(sc interface{ Scan(...any) error }) (resumeRecord, error) {
 		relJSON      string
 		durMS, updMS int64
 	)
-	if err := sc.Scan(&rec.userID, &key, &rec.releaseID, &relJSON, &rec.nzbHash, &rec.profile, &rec.originalLanguage, &rec.size, &durMS, &updMS); err != nil {
+	if err := sc.Scan(&rec.userID, &key, &rec.releaseID, &relJSON, &rec.nzbHash, &rec.profile, &rec.originalLanguage, &rec.versionSelector, &rec.size, &durMS, &updMS); err != nil {
 		return rec, err
 	}
 	rec.key = core.RatingKey(key)
@@ -827,6 +833,7 @@ func (s *resumeStore) manyLookups(ctx context.Context, userID int64) bool {
 func forgetResume(ctx context.Context, userID int64, key core.RatingKey) {
 	reqmemo.Forget(ctx, resumeMemoKey(userID, key))
 	reqmemo.Forget(ctx, resumeKeysMemoKey(userID))
+	reqmemo.ForgetPrefix(ctx, resumeMemoKey(userID, key)+":probe:")
 }
 
 // resumeKeySetAfter is how many titles a read request looks up one by one
@@ -838,29 +845,29 @@ const resumeKeySetAfter = 8
 // reads which titles have a record at all, once: a Home or list page asks
 // for every title it shows, and most have none.
 func (s *resumeStore) get(ctx context.Context, userID int64, key core.RatingKey) (*resumeRecord, error) {
-	if reqmemo.Active(ctx) && s.manyLookups(ctx, userID) {
-		set, err := reqmemo.Do(ctx, resumeKeysMemoKey(userID), func() (resumeKeySet, error) {
-			rows, err := s.db.QueryContext(ctx, `SELECT rating_key FROM playback_resume WHERE user_id=? LIMIT ?`, userID, resumeKeySetMax+1)
-			if err != nil {
-				return resumeKeySet{}, err
-			}
-			defer rows.Close()
-			set := resumeKeySet{has: map[core.RatingKey]bool{}}
-			for rows.Next() {
-				var k int64
-				if err := rows.Scan(&k); err != nil {
+	rec, err := reqmemo.Do(ctx, resumeMemoKey(userID, key), func() (*resumeRecord, error) {
+		if reqmemo.Active(ctx) && s.manyLookups(ctx, userID) {
+			set, err := reqmemo.Do(ctx, resumeKeysMemoKey(userID), func() (resumeKeySet, error) {
+				rows, err := s.db.QueryContext(ctx, `SELECT rating_key FROM playback_resume WHERE user_id=? LIMIT ?`, userID, resumeKeySetMax+1)
+				if err != nil {
 					return resumeKeySet{}, err
 				}
-				set.has[core.RatingKey(k)] = true
+				defer rows.Close()
+				set := resumeKeySet{has: map[core.RatingKey]bool{}}
+				for rows.Next() {
+					var k int64
+					if err := rows.Scan(&k); err != nil {
+						return resumeKeySet{}, err
+					}
+					set.has[core.RatingKey(k)] = true
+				}
+				set.complete = len(set.has) <= resumeKeySetMax
+				return set, rows.Err()
+			})
+			if err == nil && set.complete && !set.has[key] {
+				return nil, nil
 			}
-			set.complete = len(set.has) <= resumeKeySetMax
-			return set, rows.Err()
-		})
-		if err == nil && set.complete && !set.has[key] {
-			return nil, nil
 		}
-	}
-	rec, err := reqmemo.Do(ctx, resumeMemoKey(userID, key), func() (*resumeRecord, error) {
 		row := s.db.QueryRowContext(ctx, `SELECT `+resumeColumns+` FROM playback_resume WHERE user_id=? AND rating_key=?`,
 			userID, int64(key))
 		rec, err := scanResume(row)
@@ -1001,15 +1008,16 @@ func (s *resumeStore) gcNZB(ctx context.Context, hash string) {
 
 func (rec *resumeRecord) point(nzb []byte) *ResumePoint {
 	return &ResumePoint{
-		nzbHash:   rec.nzbHash,
-		UserID:    rec.userID,
-		Key:       rec.key,
-		Release:   rec.release,
-		NZB:       nzb,
-		Profile:   profileName(rec.profile),
-		Size:      rec.size,
-		Duration:  rec.duration,
-		UpdatedAt: rec.updatedAt,
+		nzbHash:         rec.nzbHash,
+		UserID:          rec.userID,
+		Key:             rec.key,
+		Release:         rec.release,
+		VersionSelector: rec.versionSelector,
+		NZB:             nzb,
+		Profile:         profileName(rec.profile),
+		Size:            rec.size,
+		Duration:        rec.duration,
+		UpdatedAt:       rec.updatedAt,
 
 		profileKey:       rec.profile,
 		originalLanguage: rec.originalLanguage,

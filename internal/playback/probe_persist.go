@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -74,14 +75,53 @@ func persistedProbeFacts(info core.MediaInfo) (core.MediaInfo, bool) {
 		s.ExternalURL = ""
 		out.Streams = append(out.Streams, s)
 	}
-	if len(out.Streams) == 0 || out.Video() == nil {
+	if len(out.Streams) == 0 || !out.HasPlayableMedia() {
 		return core.MediaInfo{}, false
 	}
 	out.Chapters = append([]core.Chapter(nil), info.Chapters...)
 	return out, true
 }
 
+func probeInfoMemoKey(userID int64, key core.RatingKey, releaseID, hash string) string {
+	return resumeMemoKey(userID, key) + ":probe:" + releaseID + ":" + hash
+}
+
+func decodeStoredProbeRow(releaseID, hash string, size int64, raw string) *probeCache {
+	if hash == "" || len(raw) > maxPersistedProbeBytes {
+		return nil
+	}
+	info, ok := decodePersistedProbe(raw)
+	if !ok {
+		return nil // a corrupt or old-generation row is a cache miss
+	}
+	facts, ok := persistedProbeFacts(info)
+	if !ok || facts.Size != size {
+		return nil
+	}
+	return &probeCache{
+		releaseID:    releaseID,
+		info:         facts,
+		needsAugment: true,
+		nzbHash:      hash,
+	}
+}
+
+func cloneProbeCache(src *probeCache) *probeCache {
+	if src == nil {
+		return nil
+	}
+	return &probeCache{
+		warmReads:    src.warmReads,
+		releaseID:    src.releaseID,
+		info:         core.CloneMediaInfo(src.info),
+		points:       append([]IndexPoint(nil), src.points...),
+		needsAugment: src.needsAugment,
+		nzbHash:      src.nzbHash,
+	}
+}
+
 func saveProbeWith(ctx context.Context, exec resumeExecer, userID int64, key core.RatingKey, releaseID string, nzb []byte, info core.MediaInfo, at time.Time) error {
+	reqmemo.ForgetPrefix(ctx, resumeMemoKey(userID, key)+":probe:")
 	facts, ok := persistedProbeFacts(info)
 	if !ok || releaseID == "" || len(nzb) == 0 {
 		return nil
@@ -107,45 +147,46 @@ ON CONFLICT(user_id,rating_key,release_id) DO UPDATE SET nzb_hash=excluded.nzb_h
 	return err
 }
 
-// loadProbeHash is loadProbe for the payload with this hash.
-func (s *resumeStore) loadProbeHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) (*probeCache, error) {
+// loadProbeInfoHash loads persisted stream/container facts without querying
+// playback_index keyframes. Callers that only check codec compatibility or
+// render track lists avoid reading keyframe blobs.
+func (s *resumeStore) loadProbeInfoHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) (*probeCache, error) {
 	if hash == "" {
 		return nil, nil
 	}
-	var (
-		raw  string
-		size int64
-	)
-	err := s.db.QueryRowContext(ctx, `SELECT size, info_json FROM playback_probe WHERE user_id=? AND rating_key=? AND release_id=? AND nzb_hash=?`,
-		userID, int64(key), releaseID, hash).Scan(&size, &raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
+	cached, err := reqmemo.Do(ctx, probeInfoMemoKey(userID, key, releaseID, hash), func() (*probeCache, error) {
+		var (
+			raw  string
+			size int64
+		)
+		err := s.db.QueryRowContext(ctx, `SELECT size, info_json FROM playback_probe WHERE user_id=? AND rating_key=? AND release_id=? AND nzb_hash=?`,
+			userID, int64(key), releaseID, hash).Scan(&size, &raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return decodeStoredProbeRow(releaseID, hash, size, raw), nil
+	})
+	if err != nil || cached == nil {
 		return nil, err
 	}
-	if len(raw) > maxPersistedProbeBytes {
-		return nil, nil
-	}
-	info, ok := decodePersistedProbe(raw)
-	if !ok {
-		return nil, nil // a corrupt or old-generation row is a cache miss
-	}
-	facts, ok := persistedProbeFacts(info)
-	if !ok || facts.Size != size {
-		return nil, nil
+	return cloneProbeCache(cached), nil
+}
+
+// loadProbeHash is loadProbe for the payload with this hash.
+func (s *resumeStore) loadProbeHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) (*probeCache, error) {
+	facts, err := s.loadProbeInfoHash(ctx, userID, key, releaseID, hash)
+	if err != nil || facts == nil {
+		return nil, err
 	}
 	points, err := s.loadIndex(ctx, userID, key, releaseID)
 	if err != nil {
 		return nil, err
 	}
-	return &probeCache{
-		releaseID:    releaseID,
-		info:         facts,
-		points:       indexPointsOf(points),
-		needsAugment: true,
-		nzbHash:      hash,
-	}, nil
+	facts.points = indexPointsOf(points)
+	return facts, nil
 }
 
 // persistedProbe is loadProbe as a cache lookup: any failure is a miss.
@@ -176,6 +217,23 @@ func (m *Manager) persistedProbe(ctx context.Context, userID int64, key core.Rat
 	}
 	facts.nzbHash = hash // probeGeneration still binds reuse to this opened payload and size
 	m.log.Debug("reusing torrent file probe after link renewal", "key", key, "release", releaseID)
+	return facts
+}
+
+// persistedProbeInfoHash returns persisted stream/container facts without
+// loading playback_index keyframes.
+func (m *Manager) persistedProbeInfoHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) *probeCache {
+	if m.resume == nil || releaseID == "" {
+		return nil
+	}
+	if live := m.resume.liveProbeHash(userID, key, releaseID, hash); live != nil {
+		return live
+	}
+	facts, err := m.resume.loadProbeInfoHash(ctx, userID, key, releaseID, hash)
+	if err != nil {
+		m.log.Debug("persisted probe info lookup failed", "key", key, "release", releaseID, "err", err)
+		return nil
+	}
 	return facts
 }
 
@@ -219,20 +277,126 @@ func (m *Manager) CachedVariantInfo(ctx context.Context, userID int64, key core.
 	return persistedProbeFacts(info)
 }
 
+// cachedVariantProbes loads the bounded per-viewer playback_probe set (up to 4
+// releases per title) in a single request-memoized query.
+func (m *Manager) cachedVariantProbes(ctx context.Context, userID int64, key core.RatingKey) map[string]core.MediaInfo {
+	if m.resume == nil || userID <= 0 || key == 0 {
+		return nil
+	}
+	got, err := reqmemo.Do(ctx, resumeMemoKey(userID, key)+":probe:all", func() (map[string]core.MediaInfo, error) {
+		rows, err := m.resume.db.QueryContext(ctx, `SELECT release_id, info_json FROM playback_probe WHERE user_id=? AND rating_key=?`, userID, int64(key))
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := map[string]core.MediaInfo{}
+		for rows.Next() {
+			var relID, raw string
+			if err := rows.Scan(&relID, &raw); err != nil || relID == "" || len(raw) > maxPersistedProbeBytes {
+				continue
+			}
+			if info, ok := decodePersistedProbe(raw); ok {
+				if facts, ok := persistedProbeFacts(info); ok {
+					out[relID] = facts
+				}
+			}
+		}
+		return out, rows.Err()
+	})
+	if err != nil {
+		return nil
+	}
+	return got
+}
+
+func probeReleaseForTitle(rel core.Release, title *core.Title) core.Release {
+	if title == nil || title.Type != core.TypeEpisode || title.Episode <= 0 {
+		return rel
+	}
+	if rel.Protocol != core.ProtocolTorrent && strings.TrimSpace(rel.InfoHash) == "" {
+		return rel
+	}
+	if rel.HasFileOrEpisodeScope() {
+		return rel
+	}
+	t := core.ReleaseTarget{Season: title.Season, Episode: title.Episode}
+	if rel.Target != nil {
+		t = *rel.Target
+		t.Season, t.Episode = title.Season, title.Episode
+	}
+	rel.Target = &t
+	return rel
+}
+
 // WithCachedVariantInfo enriches only the bounded list of offered versions.
+// It checks what Ether already knows first (durable content-ID probes, NZB
+// vault tracks, per-viewer playback probes, and already-fetched debrid file
+// metadata) without performing any indexer or network calls.
 func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, title *core.Title, variants []core.ReleaseVariant) []core.ReleaseVariant {
-	if user == nil || title == nil {
+	if title == nil {
 		return variants
 	}
 	out := append([]core.ReleaseVariant(nil), variants...)
+	var viewerProbes map[string]core.MediaInfo
+	viewerProbesLoaded := false
 	for i := range out {
 		// Menu identity may be a logical slot; probes belong to its concrete source.
 		release := out[i].Release.ID
 		if release == "" {
 			release = out[i].ID
 		}
-		if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, release); ok {
-			out[i].Info = info
+		placeholder := release == "" || strings.HasPrefix(release, core.VersionSelectorPrefix)
+		if !placeholder {
+			probeRel := probeReleaseForTitle(out[i].Release, title)
+			// Content-ID probe cache and vault tracks work across viewers and
+			// indexers in O(1) memory without touching the database.
+			if info, ok := m.CachedReleaseProbe(probeRel); ok {
+				out[i].Info = info
+			} else if user != nil && user.ID > 0 {
+				var found bool
+				if m.resume != nil {
+					if live := m.resume.liveProbeHash(user.ID, title.Key, release, ""); live != nil {
+						out[i].Info = core.CloneMediaInfo(live.info)
+						found = true
+					}
+				}
+				if !found {
+					if !viewerProbesLoaded {
+						viewerProbes = m.cachedVariantProbes(ctx, user.ID, title.Key)
+						viewerProbesLoaded = true
+					}
+					if info, ok := viewerProbes[release]; ok {
+						out[i].Info = core.CloneMediaInfo(info)
+						found = true
+					}
+				}
+				if !found && m.deps.DebridFileMeta != nil {
+					if filePath, size, ok := m.deps.DebridFileMeta(probeRel); ok {
+						enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+					}
+				}
+			} else if m.deps.DebridFileMeta != nil {
+				if filePath, size, ok := m.deps.DebridFileMeta(probeRel); ok {
+					enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+				}
+			}
+			if !out[i].Info.Estimated && out[i].Info.Size > 0 && out[i].Release.Size <= 0 {
+				out[i].Release.Size = out[i].Info.Size
+			}
+		}
+		if out[i].Availability != core.VersionUnavailable {
+			relID := out[i].Release.ID
+			var uid int64
+			if user != nil {
+				uid = user.ID
+			}
+			if relID != "" && relID != out[i].ID && m.hasLiveOrCachedRelease(uid, title.Key, relID) {
+				out[i].Availability = core.VersionInstant
+				out[i].AvailabilityNote = ""
+			} else if !out[i].Info.Estimated && len(out[i].Info.Streams) > 0 && (out[i].Availability == "" || out[i].Availability == core.VersionFetch) {
+				out[i].Availability = core.VersionCached
+				out[i].AvailabilityNote = ""
+			}
 		}
 	}
 	return out

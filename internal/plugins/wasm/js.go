@@ -1,7 +1,10 @@
 package wasm
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fastschema/qjs"
 )
@@ -21,7 +25,7 @@ import (
 const faultPrefix = "__ETHER_FAULT__"
 
 func encodeFault(f *Fault) string {
-	b, _ := json.Marshal(map[string]string{"code": f.Code, "message": f.Message})
+	b, _ := json.Marshal(f)
 	return faultPrefix + string(b)
 }
 
@@ -33,14 +37,9 @@ func decodeFault(msg string) *Fault {
 	var f Fault
 	// The payload may be followed by a JS stack trace; decode one value.
 	dec := json.NewDecoder(strings.NewReader(msg[at+len(faultPrefix):]))
-	var raw struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-	if dec.Decode(&raw) != nil || raw.Code == "" {
+	if dec.Decode(&f) != nil || f.Code == "" {
 		return nil
 	}
-	f.Code, f.Message = raw.Code, raw.Message
 	return &f
 }
 
@@ -63,6 +62,181 @@ func ensureQJS() {
 	})
 }
 
+// codecPrelude installs __ether_text_decode, __ether_text_encode, TextDecoder,
+// and TextEncoder backed by native Go UTF-8 helpers so guest plugins never pay
+// per-byte JavaScript loops when decoding or encoding UTF-8 buffers.
+const codecPrelude = `
+"use strict";
+(() => {
+  const rawDecode = __ether_raw_text_decode;
+  const rawEncode = __ether_raw_text_encode;
+  delete globalThis.__ether_raw_text_decode;
+  delete globalThis.__ether_raw_text_encode;
+
+  const utf8Labels = new Set([
+    "utf-8",
+    "utf8",
+    "unicode-1-1-utf-8",
+    "unicode11utf8",
+    "unicode20utf8",
+    "x-unicode20utf8",
+  ]);
+
+  const toView = (input, fnName) => {
+    if (ArrayBuffer.isView(input)) {
+      return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    }
+    if (input instanceof ArrayBuffer) {
+      return new Uint8Array(input);
+    }
+    throw new TypeError(fnName + ": input must be an ArrayBuffer or ArrayBufferView");
+  };
+
+  const decodeBuf = (ab, offset, length, fatal) => {
+    try {
+      return rawDecode(ab, offset, length, fatal);
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (fatal && msg.indexOf("not valid for encoding") >= 0) {
+        throw new TypeError(msg);
+      }
+      if (msg.indexOf("detached") >= 0 || msg.indexOf("ArrayBuffer") >= 0) {
+        throw new TypeError(msg);
+      }
+      throw e;
+    }
+  };
+
+  globalThis.__ether_text_decode = (input) => {
+    if (input === undefined) return "";
+    if (ArrayBuffer.isView(input)) {
+      return decodeBuf(input.buffer, input.byteOffset, input.byteLength, false);
+    }
+    if (input instanceof ArrayBuffer) {
+      return decodeBuf(input, 0, input.byteLength, false);
+    }
+    throw new TypeError("__ether_text_decode: input must be an ArrayBuffer or ArrayBufferView");
+  };
+
+  globalThis.__ether_text_encode = (input) => {
+    const s = input === undefined ? "" : String(input);
+    return s.indexOf("\x00") < 0 ? rawEncode(s, false) : rawEncode(JSON.stringify(s), true);
+  };
+
+  const validSecondByte = (lead, b1) => {
+    if (lead === 0xe0) return b1 >= 0xa0 && b1 <= 0xbf;
+    if (lead === 0xed) return b1 >= 0x80 && b1 <= 0x9f;
+    if (lead === 0xf0) return b1 >= 0x90 && b1 <= 0xbf;
+    if (lead === 0xf4) return b1 >= 0x80 && b1 <= 0x8f;
+    return b1 >= 0x80 && b1 <= 0xbf;
+  };
+
+  const trailingIncomplete = (u8) => {
+    const len = u8.byteLength;
+    if (len === 0) return 0;
+    const b0 = u8[len - 1];
+    if (b0 >= 0xc2 && b0 <= 0xf4) return 1;
+    if (len >= 2 && b0 >= 0x80 && b0 <= 0xbf) {
+      const p1 = u8[len - 2];
+      if (p1 >= 0xe0 && p1 <= 0xf4 && validSecondByte(p1, b0)) return 2;
+      if (len >= 3) {
+        const p2 = u8[len - 3];
+        if (p2 >= 0xf0 && p2 <= 0xf4 && validSecondByte(p2, p1)) return 3;
+      }
+    }
+    return 0;
+  };
+
+  if (typeof globalThis.TextDecoder !== "function") {
+    class TextDecoder {
+      constructor(label = "utf-8", options = undefined) {
+        const norm = String(label).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "").toLowerCase();
+        if (!utf8Labels.has(norm)) {
+          throw new RangeError("TextDecoder: unsupported encoding \"" + label + "\"");
+        }
+        if (options !== undefined && options !== null && typeof options !== "object") {
+          throw new TypeError("TextDecoder: options must be an object");
+        }
+        this._fatal = Boolean(options && options.fatal);
+        this._ignoreBOM = Boolean(options && options.ignoreBOM);
+        this._pending = null;
+        this._bomSeen = false;
+      }
+      get encoding() { return "utf-8"; }
+      get fatal() { return this._fatal; }
+      get ignoreBOM() { return this._ignoreBOM; }
+      decode(input = undefined, options = undefined) {
+        if (options !== undefined && options !== null && typeof options !== "object") {
+          throw new TypeError("TextDecoder.decode: options must be an object");
+        }
+        const stream = Boolean(options && options.stream);
+        if (!stream && !this._pending) {
+          const hadBomSeen = this._bomSeen;
+          this._bomSeen = false;
+          if (input === undefined) return "";
+          let out;
+          if (ArrayBuffer.isView(input)) {
+            out = decodeBuf(input.buffer, input.byteOffset, input.byteLength, this._fatal);
+          } else if (input instanceof ArrayBuffer) {
+            out = decodeBuf(input, 0, input.byteLength, this._fatal);
+          } else {
+            throw new TypeError("TextDecoder.decode: input must be an ArrayBuffer or ArrayBufferView");
+          }
+          if (!this._ignoreBOM && !hadBomSeen && out.length > 0 && out.charCodeAt(0) === 0xfeff) {
+            return out.slice(1);
+          }
+          return out;
+        }
+        const view = input === undefined ? new Uint8Array(0) : toView(input, "TextDecoder.decode");
+        if (input !== undefined && view.byteLength === 0) {
+          decodeBuf(view.buffer, view.byteOffset, 0, this._fatal);
+        }
+        let combined = view;
+        if (this._pending) {
+          combined = new Uint8Array(this._pending.length + view.byteLength);
+          combined.set(this._pending, 0);
+          combined.set(view, this._pending.length);
+          this._pending = null;
+        }
+        let decodeLen = combined.byteLength;
+        if (stream && decodeLen > 0) {
+          const keep = trailingIncomplete(combined);
+          if (keep > 0) {
+            decodeLen -= keep;
+            this._pending = combined.slice(decodeLen);
+          }
+        }
+        const rawOut = decodeLen > 0
+          ? decodeBuf(combined.buffer, combined.byteOffset, decodeLen, this._fatal)
+          : "";
+        let res = rawOut;
+        if (rawOut.length > 0) {
+          if (!this._ignoreBOM && !this._bomSeen && rawOut.charCodeAt(0) === 0xfeff) {
+            res = rawOut.slice(1);
+          }
+          this._bomSeen = true;
+        }
+        if (!stream) {
+          this._bomSeen = false;
+        }
+        return res;
+      }
+    }
+    globalThis.TextDecoder = TextDecoder;
+  }
+
+  if (typeof globalThis.TextEncoder !== "function") {
+    class TextEncoder {
+      get encoding() { return "utf-8"; }
+      encode(input = "") {
+        return new Uint8Array(globalThis.__ether_text_encode(input === undefined ? "" : String(input)));
+      }
+    }
+    globalThis.TextEncoder = TextEncoder;
+  }
+})();
+`
+
 // servicePrelude builds the ether global for request-ABI instances. Host
 // calls are synchronous functions backed by __ether_host, charged by the
 // Go side; a Fault comes back as a thrown Error whose message carries the
@@ -70,15 +244,40 @@ func ensureQJS() {
 const servicePrelude = `
 "use strict";
 globalThis.ether = (() => {
-  const call = (name, args) => JSON.parse(__ether_host(name, JSON.stringify(args)));
+  const call = (name, args) => {
+    try { return JSON.parse(__ether_host(name, JSON.stringify(args))); }
+    catch (e) {
+      const message = String(e && e.message || e);
+      const at = message.indexOf("__ETHER_FAULT__");
+      if (at >= 0) {
+        try {
+          const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length));
+          e.code = fault.code || fault.Code;
+          if (typeof fault.retryAfterSec === "number") e.retryAfterSec = fault.retryAfterSec;
+          if (typeof fault.retryAt === "string") e.retryAt = fault.retryAt;
+        } catch (_) {}
+      }
+      throw e;
+    }
+  };
   const ether = {
     log: (...a) => { try { __ether_host("log", JSON.stringify(a.map(String))); } catch (e) {} },
     abort: (msg) => { throw new Error("__ETHER_FAULT__" + JSON.stringify({ code: "aborted", message: String(msg == null ? "aborted" : msg) })); },
+    runtime: { limits: () => call("runtime.limits", []) },
     kv: { get: (k) => call("kv.get", [k]), put: (k, v) => call("kv.put", [k, v]),
-          delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]) },
+          delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]),
+          usage: () => call("kv.usage", []) },
+    badges: { set: (setKey, entries) => call("badges.set", [setKey, entries == null ? [] : entries]),
+              clear: (setKey) => call("badges.clear", [setKey]),
+              usage: () => call("badges.usage", []) },
     settings: { get: () => call("settings.get", []) },
-    secret: { get: (n) => call("secret.get", [n]) },
-    http: { fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
+    secret: { get: (n) => call("secret.get", [n]),
+              set: (n, v, ttlSec) => call("secret.set", ttlSec === undefined ? [n, v] : [n, v, ttlSec]),
+              delete: (n) => call("secret.delete", [n]) },
+    http: { hash: (req) => call("http.hash", [req]),
+            fetch: (req) => call("http.fetch", [req]),
+            fetchMany: (reqs, opts) => call("http.fetchMany", opts == null ? [reqs == null ? [] : reqs] : [reqs == null ? [] : reqs, opts]),
+            fetchToCache: (req) => call("http.fetchToCache", [req]) },
     catalog: { search: (q) => call("catalog.search", [q]), get: (id) => call("catalog.get", [id]) },
     addon: { get: (route) => call("addon.get", [route]) },
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),
@@ -86,18 +285,25 @@ globalThis.ether = (() => {
     collections: { upsert: (c) => call("collections.upsert", [c]) },
     kinds: { upsert: (kind, items) => call("kinds.upsert", [kind, items == null ? [] : items]),
              delete: (kind, ids) => call("kinds.delete", [kind, ids == null ? [] : ids]),
-             items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]) },
+             items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),
+             visible: (kind, ids) => call("kinds.visible", [kind, ids == null ? [] : ids]),
+             browse: (kind, query) => call("kinds.browse", [kind, query == null ? {} : query]) },
     sources: { resolve: (q) => call("sources.resolve", [q == null ? {} : q]) },
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
-             open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]) },
-    archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]) },
-    frontend: { streamURL: (itemRef) => call("frontend.streamURL", [itemRef]) },
+             open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]),
+             rasterize: (lib, name, blobRef, opts) => call("cache.rasterize", opts == null ? [lib, name, blobRef] : [lib, name, blobRef, opts]),
+             delete: (blobRef) => call("cache.delete", [blobRef]) },
+    archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
+    frontend: { streamURL: (itemRef, opts) => call("frontend.streamURL", opts == null ? [itemRef] : [itemRef, opts]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
                hashStart: (root, path) => call("folders.hashStart", [root, path]),
                hashPoll: (id) => call("folders.hashPoll", [id]),
                hashCancel: (id) => call("folders.hashCancel", [id]),
                hash: (root, path) => call("folders.hash", [root, path]),
                stat: (root, path) => call("folders.stat", [root, path]) },
+    events: { publish: (key, payload, correlation) => call("events.publish", correlation == null ? [key, payload == null ? {} : payload] : [key, payload == null ? {} : payload, correlation]) },
+    ai: { complete: (req) => call("ai.complete", [req == null ? {} : req]) },
+    media: { probe: (source) => call("media.probe", [source == null ? {} : source]) },
     notify: { owner: (text) => call("notify.owner", [text]) },
   };
   return ether;
@@ -252,6 +458,242 @@ type jsInstance struct {
 	cs           *callState // set for the duration of one call
 }
 
+func newJSArrayBuffer(qc *qjs.Context, data []byte) (*qjs.Value, error) {
+	if len(data) == 0 {
+		v := qc.Call("QJS_NewArrayBufferCopy", qc.Raw(), 0, 0)
+		if qc.HasException() {
+			return nil, qc.Exception()
+		}
+		return v, nil
+	}
+	ptr := qc.Malloc(uint64(len(data)))
+	if ptr == 0 {
+		return nil, errors.New("out of guest memory")
+	}
+	defer qc.FreeHandle(ptr)
+	qc.MemWrite(uint32(ptr), data)
+	v := qc.Call("QJS_NewArrayBufferCopy", qc.Raw(), ptr, uint64(len(data)))
+	if qc.HasException() {
+		return nil, qc.Exception()
+	}
+	return v, nil
+}
+
+// whatwgDecodeUTF8 implements the WHATWG Encoding Standard UTF-8 decoder,
+// replacing each maximal ill-formed byte subpart with U+FFFD (or returning an
+// error when fatal is true). Valid UTF-8 returns b without allocating.
+func whatwgDecodeUTF8(b []byte, fatal bool) ([]byte, error) {
+	if utf8.Valid(b) {
+		return b, nil
+	}
+	if fatal {
+		return nil, errors.New("The encoded data was not valid for encoding utf-8")
+	}
+	out := make([]byte, 0, len(b)+16)
+	var (
+		cp            rune
+		bytesSeen     int
+		bytesNeeded   int
+		lowerBoundary byte = 0x80
+		upperBoundary byte = 0xBF
+	)
+	for i := 0; i < len(b); i++ {
+		ch := b[i]
+		if bytesNeeded == 0 {
+			switch {
+			case ch <= 0x7F:
+				out = append(out, ch)
+			case ch >= 0xC2 && ch <= 0xDF:
+				bytesNeeded = 1
+				cp = rune(ch & 0x1F)
+			case ch >= 0xE0 && ch <= 0xEF:
+				if ch == 0xE0 {
+					lowerBoundary = 0xA0
+				} else if ch == 0xED {
+					upperBoundary = 0x9F
+				}
+				bytesNeeded = 2
+				cp = rune(ch & 0x0F)
+			case ch >= 0xF0 && ch <= 0xF4:
+				if ch == 0xF0 {
+					lowerBoundary = 0x90
+				} else if ch == 0xF4 {
+					upperBoundary = 0x8F
+				}
+				bytesNeeded = 3
+				cp = rune(ch & 0x07)
+			default:
+				out = append(out, 0xEF, 0xBF, 0xBD)
+			}
+			continue
+		}
+		if ch < lowerBoundary || ch > upperBoundary {
+			cp, bytesNeeded, bytesSeen = 0, 0, 0
+			lowerBoundary, upperBoundary = 0x80, 0xBF
+			out = append(out, 0xEF, 0xBF, 0xBD)
+			i--
+			continue
+		}
+		lowerBoundary, upperBoundary = 0x80, 0xBF
+		cp = (cp << 6) | rune(ch&0x3F)
+		bytesSeen++
+		if bytesSeen == bytesNeeded {
+			out = utf8.AppendRune(out, cp)
+			cp, bytesNeeded, bytesSeen = 0, 0, 0
+		}
+	}
+	if bytesNeeded != 0 {
+		out = append(out, 0xEF, 0xBF, 0xBD)
+	}
+	return out, nil
+}
+
+// wtf8ToUTF8 converts QuickJS's WTF-8 C string output (where lone UTF-16
+// surrogates appear as 3-byte 0xED 0xA0..0xBF 0x80..0xBF sequences) into valid
+// UTF-8 with one U+FFFD per lone surrogate, matching WHATWG TextEncoder.
+func wtf8ToUTF8(b []byte) []byte {
+	if utf8.Valid(b) {
+		return b
+	}
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); {
+		if b[i] < 0x80 {
+			out = append(out, b[i])
+			i++
+			continue
+		}
+		r, width := utf8.DecodeRune(b[i:])
+		if r != utf8.RuneError || width > 1 {
+			out = append(out, b[i:i+width]...)
+			i += width
+			continue
+		}
+		if i+2 < len(b) && b[i] == 0xED && b[i+1] >= 0xA0 && b[i+1] <= 0xBF && b[i+2] >= 0x80 && b[i+2] <= 0xBF {
+			out = append(out, 0xEF, 0xBF, 0xBD)
+			i += 3
+			continue
+		}
+		out = append(out, 0xEF, 0xBF, 0xBD)
+		i++
+	}
+	return out
+}
+
+// newJSStringUTF8 constructs a QuickJS string from valid UTF-8 bytes without
+// leaking the temporary WASM buffer, preserving embedded NUL code units.
+func newJSStringUTF8(qc *qjs.Context, b []byte) (*qjs.Value, error) {
+	if bytes.IndexByte(b, 0) >= 0 {
+		jb, err := json.Marshal(string(b))
+		if err != nil {
+			return nil, err
+		}
+		ptr := qc.Malloc(uint64(len(jb) + 1))
+		if ptr == 0 {
+			return nil, errors.New("out of guest memory")
+		}
+		defer qc.FreeHandle(ptr)
+		dst := qc.MemRead(uint32(ptr), uint64(len(jb)+1))
+		copy(dst, jb)
+		dst[len(jb)] = 0
+		v := qc.Call("QJS_ParseJSON", qc.Raw(), ptr)
+		if qc.HasException() {
+			return nil, qc.Exception()
+		}
+		return v, nil
+	}
+	ptr := qc.Malloc(uint64(len(b) + 1))
+	if ptr == 0 {
+		return nil, errors.New("out of guest memory")
+	}
+	defer qc.FreeHandle(ptr)
+	dst := qc.MemRead(uint32(ptr), uint64(len(b)+1))
+	copy(dst, b)
+	dst[len(b)] = 0
+	v := qc.Call("QJS_NewString", qc.Raw(), ptr)
+	if qc.HasException() {
+		return nil, qc.Exception()
+	}
+	return v, nil
+}
+
+func registerTextCodecs(qc *qjs.Context) {
+	qc.SetFunc("__ether_raw_text_decode", func(this *qjs.This) (*qjs.Value, error) {
+		args := this.Args()
+		for _, a := range args {
+			defer a.Free()
+		}
+		if len(args) < 3 {
+			return nil, errors.New("invalid text decode arguments")
+		}
+		offset := args[1].Int64()
+		length := args[2].Int64()
+		fatal := len(args) >= 4 && args[3].Bool()
+		packed := qc.Call("QJS_GetArrayBuffer", qc.Raw(), args[0].Raw())
+		rawPtr := packed.Raw()
+		if rawPtr == 0 {
+			if qc.HasException() {
+				return nil, qc.Exception()
+			}
+			if offset != 0 || length != 0 {
+				return nil, errors.New("byte range out of bounds")
+			}
+			return newJSStringUTF8(qc, nil)
+		}
+		defer qc.FreeHandle(rawPtr)
+		hdr := qc.MemRead(uint32(rawPtr), 8)
+		pv := binary.LittleEndian.Uint64(hdr)
+		bufAddr := uint32(pv >> 32)
+		bufSize := int64(uint32(pv))
+		if offset < 0 || length < 0 || offset > bufSize || length > bufSize-offset {
+			return nil, errors.New("byte range out of bounds")
+		}
+		if length == 0 {
+			return newJSStringUTF8(qc, nil)
+		}
+		decoded, err := whatwgDecodeUTF8(qc.MemRead(bufAddr+uint32(offset), uint64(length)), fatal)
+		if err != nil {
+			return nil, err
+		}
+		return newJSStringUTF8(qc, decoded)
+	})
+	qc.SetFunc("__ether_raw_text_encode", func(this *qjs.This) (*qjs.Value, error) {
+		args := this.Args()
+		for _, a := range args {
+			defer a.Free()
+		}
+		if len(args) < 1 {
+			return newJSArrayBuffer(qc, nil)
+		}
+		isJSON := len(args) >= 2 && args[1].Bool()
+		cstr := qc.Call("QJS_ToCString", qc.Raw(), args[0].Raw())
+		rawPtr := cstr.Raw()
+		if rawPtr == 0 {
+			if qc.HasException() {
+				return nil, qc.Exception()
+			}
+			return newJSArrayBuffer(qc, nil)
+		}
+		hdr := qc.MemRead(uint32(rawPtr), 8)
+		pv := binary.LittleEndian.Uint64(hdr)
+		strAddr := uint32(pv >> 32)
+		strLen := uint32(pv)
+		qc.FreeHandle(rawPtr)
+		defer qc.Call("JS_FreeCString", qc.Raw(), uint64(strAddr))
+		if strLen == 0 {
+			return newJSArrayBuffer(qc, nil)
+		}
+		rawBytes := qc.MemRead(strAddr, uint64(strLen))
+		if isJSON {
+			var s string
+			if err := json.Unmarshal(rawBytes, &s); err != nil {
+				return nil, err
+			}
+			return newJSArrayBuffer(qc, []byte(s))
+		}
+		return newJSArrayBuffer(qc, wtf8ToUTF8(rawBytes))
+	})
+}
+
 func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, logger *slog.Logger, pluginID string) (in *jsInstance, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -271,8 +713,12 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 	}
 	in = &jsInstance{rt: rt, qc: rt.Context(), swap: swap, hot: hot}
 	qc := in.qc
+	registerTextCodecs(qc)
 	qc.SetFunc("__ether_host", func(this *qjs.This) (*qjs.Value, error) {
 		args := this.Args()
+		for _, a := range args {
+			defer a.Free()
+		}
 		if in.cs == nil || len(args) != 2 {
 			return nil, errors.New(encodeFault(Forbidden("host call outside a plugin call")))
 		}
@@ -292,26 +738,129 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 			}
 			return qc.NewFloat64(budgetMs(d)), nil
 		})
+	} else {
+		// Native base64 -> ArrayBuffer and direct binary host crossings avoid
+		// multi-megabyte JSON.parse + base64 copies inside QuickJS on wazero.
+		qc.SetFunc("__ether_b64_decode", func(this *qjs.This) (*qjs.Value, error) {
+			args := this.Args()
+			for _, a := range args {
+				defer a.Free()
+			}
+			if len(args) != 1 {
+				return nil, errors.New("Invalid base64 host result")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(args[0].String())
+			if err != nil {
+				return nil, errors.New("Invalid base64 host result")
+			}
+			return newJSArrayBuffer(qc, decoded)
+		})
+		qc.SetFunc("__ether_host_binary", func(this *qjs.This) (*qjs.Value, error) {
+			args := this.Args()
+			for _, a := range args {
+				defer a.Free()
+			}
+			if in.cs == nil || len(args) != 2 {
+				return nil, errors.New(encodeFault(Forbidden("host call outside a plugin call")))
+			}
+			name := args[0].String()
+			out, fault := in.cs.dispatch(name, json.RawMessage(args[1].String()))
+			if fault != nil {
+				return nil, errors.New(encodeFault(fault))
+			}
+			switch name {
+			case "archive.open", "cache.read":
+				var res struct {
+					BodyBase64 string `json:"bodyBase64"`
+				}
+				if err := json.Unmarshal(out, &res); err != nil {
+					return nil, err
+				}
+				decoded, err := base64.StdEncoding.DecodeString(res.BodyBase64)
+				if err != nil {
+					return nil, err
+				}
+				return newJSArrayBuffer(qc, decoded)
+			case "archive.read":
+				var rows []struct {
+					Index      int    `json:"index"`
+					Member     int    `json:"member"`
+					Size       int    `json:"size"`
+					BodyBase64 string `json:"bodyBase64"`
+				}
+				if err := json.Unmarshal(out, &rows); err != nil {
+					return nil, err
+				}
+				type itemMeta struct {
+					Index  int `json:"index"`
+					Member int `json:"member"`
+					Size   int `json:"size"`
+					Offset int `json:"offset"`
+				}
+				meta := make([]itemMeta, len(rows))
+				totalLen := 0
+				for _, r := range rows {
+					totalLen += base64.StdEncoding.DecodedLen(len(r.BodyBase64))
+				}
+				concat := make([]byte, totalLen)
+				pos := 0
+				for i, r := range rows {
+					n, err := base64.StdEncoding.Decode(concat[pos:], []byte(r.BodyBase64))
+					if err != nil {
+						return nil, err
+					}
+					meta[i] = itemMeta{Index: r.Index, Member: r.Member, Size: n, Offset: pos}
+					pos += n
+				}
+				ab, err := newJSArrayBuffer(qc, concat[:pos])
+				if err != nil {
+					return nil, err
+				}
+				metaBytes, err := json.Marshal(meta)
+				if err != nil {
+					ab.Free()
+					return nil, err
+				}
+				obj := qc.NewObject()
+				obj.SetPropertyStr("metaJson", qc.NewString(string(metaBytes)))
+				obj.SetPropertyStr("buffer", ab)
+				return obj, nil
+			default:
+				return nil, errors.New("unsupported binary host call")
+			}
+		})
 	}
-	if _, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
+	if v, err := qc.Eval("ether-codecs.js", qjs.Code(codecPrelude)); err != nil {
+		in.closeInstance()
+		return nil, &Error{Status: StatusError, Message: "codecs prelude: " + err.Error(), Trap: true}
+	} else {
+		v.Free()
+	}
+	if v, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "prelude: " + err.Error(), Trap: true}
+	} else {
+		v.Free()
 	}
-	if _, err := qc.Eval("plugin.js", qjs.Code(source)); err != nil {
+	if v, err := qc.Eval("plugin.js", qjs.Code(source)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "load plugin: " + firstLine(err.Error()), Trap: false}
+	} else {
+		v.Free()
 	}
 	v, err := qc.Eval("ether-probe.js", qjs.Code(exportProbe))
 	if err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "probe exports: " + err.Error(), Trap: true}
 	}
+	probeJSON := v.String()
+	v.Free()
 	var found struct {
 		Handle    bool `json:"handle"`
 		RankKey   bool `json:"rank_key"`
 		CondMatch bool `json:"cond_match"`
 	}
-	if err := json.Unmarshal([]byte(v.String()), &found); err != nil {
+	if err := json.Unmarshal([]byte(probeJSON), &found); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "probe exports: " + err.Error(), Trap: true}
 	}
@@ -344,7 +893,11 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 		if r := recover(); r != nil {
 			val = nil
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				callErr = &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
+				return
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				callErr = &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
 				return
 			}
 			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
@@ -352,20 +905,23 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 	}()
 	v, err := fn()
 	if err != nil {
-		return nil, classifyJSError(ctx, err)
+		return nil, classifyJSError(ctx, cs, err)
 	}
 	if v != nil && v.IsPromise() {
 		v, err = v.Await()
 		if err != nil {
-			return nil, classifyJSError(ctx, err)
+			return nil, classifyJSError(ctx, cs, err)
 		}
 	}
 	return v, nil
 }
 
-func classifyJSError(ctx context.Context, err error) *Error {
+func classifyJSError(ctx context.Context, cs *callState, err error) *Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
 	}
 	msg := err.Error()
 	if f := decodeFault(msg); f != nil {
@@ -373,7 +929,7 @@ func classifyJSError(ctx context.Context, err error) *Error {
 		return &Error{Status: st, Message: f.Message, Trap: st == StatusAborted}
 	}
 	if strings.Contains(msg, "module closed") || strings.Contains(msg, "interrupted") {
-		return &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 	}
 	return &Error{Status: StatusError, Message: firstLine(msg)}
 }
@@ -382,18 +938,46 @@ func (in *jsInstance) globalFn(name string) *qjs.Value {
 	return in.qc.Global().GetPropertyStr(name)
 }
 
-func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte) ([]byte, *Error) {
-	v, err := in.jsCall(ctx, cs, func() (*qjs.Value, error) {
-		g := in.qc.Global()
-		return in.qc.Invoke(in.globalFn("__ether_dispatch_handle"), g, in.qc.NewString(string(reqJSON)))
-	})
+func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte) (out []byte, callErr *Error) {
+	in.cs = cs
+	in.swap.set(ctx)
+	defer func() {
+		in.cs = nil
+		in.swap.reset()
+		if r := recover(); r != nil {
+			out = nil
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
+				return
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				callErr = &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+				return
+			}
+			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
+		}
+	}()
+	g := in.qc.Global()
+	fn := in.globalFn("__ether_dispatch_handle")
+	reqVal := in.qc.NewString(string(reqJSON))
+	v, err := in.qc.Invoke(fn, g, reqVal)
+	reqVal.Free()
+	fn.Free()
 	if err != nil {
-		// Fall back to calling handle directly with a parsed object; the
-		// dispatch wrapper is installed by installDispatch at load. If it is
-		// missing this error is the real one.
-		return nil, err
+		return nil, classifyJSError(ctx, cs, err)
 	}
-	return []byte(v.String()), nil
+	if v != nil && v.IsPromise() {
+		v, err = v.Await()
+		if err != nil {
+			return nil, classifyJSError(ctx, cs, err)
+		}
+	}
+	if v == nil {
+		return []byte("{}"), nil
+	}
+	res := v.String()
+	v.Free()
+	return []byte(res), nil
 }
 
 func (in *jsInstance) rankOne(ctx context.Context, cs *callState, cand, cfg []byte) (int64, *Error) {
@@ -420,10 +1004,19 @@ func (in *jsInstance) loadBatch(ctx context.Context, cs *callState, cands [][]by
 	}
 	loadCtx, cancel := context.WithTimeout(ctx, lim.hotKill())
 	defer cancel()
-	_, err := in.jsCall(loadCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_load_batch"), in.qc.Global(),
-			in.qc.NewString(string(candsJSON)), in.qc.NewString(string(arg)))
+	v, err := in.jsCall(loadCtx, cs, func() (*qjs.Value, error) {
+		fn := in.globalFn("__ether_load_batch")
+		candsVal := in.qc.NewString(string(candsJSON))
+		argVal := in.qc.NewString(string(arg))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), candsVal, argVal)
+		argVal.Free()
+		candsVal.Free()
+		fn.Free()
+		return res, err
 	})
+	if v != nil {
+		v.Free()
+	}
 	return err
 }
 
@@ -436,14 +1029,22 @@ func (in *jsInstance) rankBatch(ctx context.Context, cs *callState, cands [][]by
 	runtime.LockOSThread() // the budget reads this thread's CPU clock
 	defer runtime.UnlockOSThread()
 	v, err := in.jsCall(runCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_rank_batch"), in.qc.Global(),
-			in.qc.NewFloat64(budgetMs(lim.RankPerCandidate)), in.qc.NewFloat64(budgetMs(lim.RankBatch)))
+		fn := in.globalFn("__ether_rank_batch")
+		perVal := in.qc.NewFloat64(budgetMs(lim.RankPerCandidate))
+		batchVal := in.qc.NewFloat64(budgetMs(lim.RankBatch))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), perVal, batchVal)
+		batchVal.Free()
+		perVal.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return nil, err
 	}
+	raw := v.String()
+	v.Free()
 	var out []*int64
-	if uerr := json.Unmarshal([]byte(v.String()), &out); uerr != nil {
+	if uerr := json.Unmarshal([]byte(raw), &out); uerr != nil {
 		return nil, &Error{Status: StatusError, Message: "rank_key returned a non-numeric result: " + uerr.Error()}
 	}
 	if len(out) != len(cands) {
@@ -483,14 +1084,24 @@ func (in *jsInstance) condBatch(ctx context.Context, cs *callState, cands [][]by
 	runtime.LockOSThread() // the budget reads this thread's CPU clock
 	defer runtime.UnlockOSThread()
 	v, err := in.jsCall(runCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_cond_batch"), in.qc.Global(), in.qc.NewString(op),
-			in.qc.NewFloat64(budgetMs(lim.RankPerCandidate)), in.qc.NewFloat64(budgetMs(lim.RankBatch)))
+		fn := in.globalFn("__ether_cond_batch")
+		opVal := in.qc.NewString(op)
+		perVal := in.qc.NewFloat64(budgetMs(lim.RankPerCandidate))
+		batchVal := in.qc.NewFloat64(budgetMs(lim.RankBatch))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), opVal, perVal, batchVal)
+		batchVal.Free()
+		perVal.Free()
+		opVal.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return nil, err
 	}
+	raw := v.String()
+	v.Free()
 	var out []*bool
-	if err := json.Unmarshal([]byte(v.String()), &out); err != nil || len(out) != len(cands) {
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out) != len(cands) {
 		return nil, &Error{Status: StatusError, Message: "invalid condition batch result"}
 	}
 	return out, nil
@@ -499,14 +1110,23 @@ func (in *jsInstance) condBatch(ctx context.Context, cs *callState, cands [][]by
 func (in *jsInstance) condOne(ctx context.Context, cs *callState, cand []byte, op string, val []byte) (bool, *Error) {
 	v, err := in.jsCall(ctx, cs, func() (*qjs.Value, error) {
 		g := in.qc.Global()
+		fn := in.globalFn("cond_match")
 		c := in.qc.ParseJSON(string(cand))
+		opVal := in.qc.NewString(op)
 		value := in.qc.ParseJSON(string(val))
-		return in.qc.Invoke(in.globalFn("cond_match"), g, c, in.qc.NewString(op), value)
+		res, err := in.qc.Invoke(fn, g, c, opVal, value)
+		value.Free()
+		opVal.Free()
+		c.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return false, err
 	}
-	return v.Bool(), nil
+	b := v.Bool()
+	v.Free()
+	return b, nil
 }
 
 // LoadJS loads a JavaScript plugin (TypeScript authors go through Compile
@@ -530,8 +1150,7 @@ func (e *Engine) LoadJS(id, version, source string, host Host, lim Limits) (*Plu
 	makeHot := func(ctx context.Context) (instance, error) {
 		return newJSInstance(ctx, source, &p.lim, true, e.logger, id)
 	}
-	p.svc = newPool(lim.PoolSize, makeSvc)
-	p.hot = newWarmPool(lim.PoolSize, makeHot)
+	p.initPools(makeSvc, makeHot)
 	probe, err := p.svc.get(context.Background())
 	if err != nil {
 		p.Close()
@@ -555,7 +1174,7 @@ func (in *jsInstance) installDispatch() (err error) {
 			err = &Error{Status: StatusError, Message: fmt.Sprintf("install dispatch: %v", r), Trap: true}
 		}
 	}()
-	_, err2 := in.qc.Eval("ether-dispatch.js", qjs.Code(`
+	v, err2 := in.qc.Eval("ether-dispatch.js", qjs.Code(`
 globalThis.__ether_dispatch_handle = (reqJson) => {
   const res = handle(JSON.parse(reqJson));
   if (res && typeof res.then === "function") return res.then((r) => JSON.stringify(r == null ? {} : r));
@@ -564,5 +1183,6 @@ globalThis.__ether_dispatch_handle = (reqJson) => {
 	if err2 != nil {
 		return &Error{Status: StatusError, Message: "install dispatch: " + err2.Error(), Trap: true}
 	}
+	v.Free()
 	return nil
 }

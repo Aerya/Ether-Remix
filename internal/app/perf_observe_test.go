@@ -143,3 +143,22 @@ func TestPerfObserverRetainsLateRequestWork(t *testing.T) {
 		t.Fatalf("late request work lost: queries=%d rows=%d", rec.Queries, rec.Rows)
 	}
 }
+
+func TestStreamingResponseClassifiesLiveSoftSubtitles(t *testing.T) {
+	cases := []struct {
+		ct, path string
+		want     bool
+	}{
+		{"text/x-ssa", "/subtitles/:/transcode/universal/start", true},
+		{"application/x-subrip", "/subtitles/:/transcode/universal/start", true},
+		{"text/vtt", "/video/:/transcode/universal/subtitles", true},
+		{"application/x-subrip", "/library/streams/123", false},
+		{"application/json", "/subtitles/:/transcode/universal/start", false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		if got := streamingResponse(tc.ct, req); got != tc.want {
+			t.Errorf("streamingResponse(%q, %q) = %v, want %v", tc.ct, tc.path, got, tc.want)
+		}
+	}
+}

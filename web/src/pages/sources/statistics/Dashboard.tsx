@@ -9,7 +9,7 @@ import {
 } from "../../../components/charts";
 import { Kpi, KpiRow } from "../../../components/Kpi";
 import { t, tn } from "../../../i18n";
-import { fixed, formatNumber, formatPercent } from "../../../lib/format";
+import { fixed, formatCompactNumber, formatNumber, formatPercent } from "../../../lib/format";
 import {
   daily,
   dayLabel,
@@ -305,6 +305,7 @@ export function SourceDashboard({ data, rows }: { data: StatsData; rows: SourceR
               aLabel={t("Found releases")}
               bLabel={t("Nothing found")}
               valueFormat={(v) => formatNumber(v, 0)}
+              tickFormat={formatCompactNumber}
               data={days.map((day, i) => {
                 const d = indexers.filter((x) => x.day === day);
                 const ok = sum(d, (x) => x.successes);
@@ -331,6 +332,7 @@ export function SourceDashboard({ data, rows }: { data: StatsData; rows: SourceR
               aLabel={t("From cache")}
               bLabel={t("Downloaded")}
               valueFormat={(v) => formatNumber(v, 0)}
+              tickFormat={formatCompactNumber}
               data={days.map((day, i) => {
                 const d = stream.filter((x) => x.day === day);
                 return {

@@ -1,8 +1,10 @@
 package studio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
@@ -396,6 +399,7 @@ type dryRunHost struct {
 	grants        plugins.Grants
 	secrets       map[string]string
 	kv            map[string][]byte
+	badges        map[string]map[string][]string
 	deps          ReplayDeps
 	writes        []RecordedWrite
 	notifications []RecordedNotification
@@ -512,6 +516,134 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 		}
 		return marshalResult(keys)
 
+	case "kv.usage":
+		h.mu.Lock()
+		var used int64
+		for _, v := range h.kv {
+			used += int64(len(v))
+		}
+		keys := int64(len(h.kv))
+		h.mu.Unlock()
+		return marshalResult(plugins.KVUsage{
+			Bytes:      used + keys*plugins.KVKeyChargeBytes,
+			Keys:       keys,
+			QuotaBytes: plugins.KVQuotaBytes,
+			QuotaKeys:  plugins.KVQuotaKeys,
+		})
+	case "badges.set":
+		var entries []plugins.BadgeEntry
+		if len(args) > 1 && len(args[1]) > 0 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &entries); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "badges.set takes (setKey, entries[])"}
+			}
+		}
+		norm, err := plugins.ValidateBadgeSetCall(h.manifest, str(0), entries)
+		if err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		rawEntries, _ := json.Marshal(norm)
+		h.mu.Lock()
+		if h.badges == nil {
+			h.badges = map[string]map[string][]string{}
+		}
+		if h.badges[str(0)] == nil {
+			h.badges[str(0)] = map[string][]string{}
+		}
+		for _, e := range norm {
+			tmdbK, imdbK := plugins.ExternalBadgeKeys(e.Title)
+			k := tmdbK
+			if k == "" {
+				k = imdbK
+			}
+			if len(e.Labels) == 0 {
+				delete(h.badges[str(0)], k)
+			} else {
+				h.badges[str(0)][k] = e.Labels
+			}
+		}
+		h.writes = append(h.writes, RecordedWrite{Op: "badges.set", Target: str(0), Value: rawEntries})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
+
+	case "badges.clear":
+		if err := plugins.ValidateBadgeClearCall(h.manifest, str(0)); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.mu.Lock()
+		delete(h.badges, str(0))
+		h.writes = append(h.writes, RecordedWrite{Op: "badges.clear", Target: str(0)})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
+
+	case "badges.usage":
+		if !h.manifest.HasCapability(plugins.CapPosterBadges) {
+			return nil, wasm.Forbidden("poster_badges capability is required")
+		}
+		h.mu.Lock()
+		distinct := map[string]bool{}
+		for _, setMap := range h.badges {
+			for k := range setMap {
+				distinct[k] = true
+			}
+		}
+		h.mu.Unlock()
+		return marshalResult(plugins.BadgeUsage{Titles: int64(len(distinct)), QuotaTitles: plugins.PosterBadgeQuotaTitles})
+
+	case "events.publish":
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		if _, _, err := plugins.ValidatePublishEventCall(h.manifest, str(0), payload); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.mu.Lock()
+		h.writes = append(h.writes, RecordedWrite{Op: "events.publish", Target: str(0), Value: payload})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
+
+	case "ai.complete":
+		if h.manifest.Ether == nil || !plugins.AIPermissionAllowsComplete(h.manifest.Ether.Permissions.AI) {
+			return nil, wasm.Forbidden("ai: complete permission not declared in manifest")
+		}
+		var req plugins.AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		if _, err := plugins.ValidateAICompleteRequest(req); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		return nil, &wasm.Fault{Code: "not_configured", Message: "language model is not available in dry-run replay"}
+
+	case "media.probe":
+		if h.manifest.Ether == nil || !plugins.MediaPermissionAllowsProbe(h.manifest.Ether.Permissions.Media) {
+			return nil, wasm.Forbidden("media: probe permission not declared in manifest")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.MediaProbeAllowedPath(h.manifest, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("media.probe cannot run on viewer or client request path " + callPath)
+		}
+		var src core.PlayableSource
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &src); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "media.probe argument must be a playable source object"}
+			}
+		}
+		if err := plugins.ValidateMediaProbeSource(src); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		return nil, &wasm.Fault{Code: "unavailable", Message: "media.probe is not available in dry-run replay"}
+
 	case "secret.get":
 		secName := str(0)
 		if !h.secretDeclared(secName) {
@@ -524,6 +656,36 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 			v = "dry-run-secret-" + secName
 		}
 		return marshalResult(v)
+
+	case "secret.set":
+		secName := str(0)
+		if !h.secretDeclared(secName) {
+			return nil, wasm.Forbidden("secret not declared in manifest: " + secName)
+		}
+		secVal := str(1)
+		h.mu.Lock()
+		if h.secrets == nil {
+			h.secrets = map[string]string{}
+		}
+		if secVal == "" {
+			delete(h.secrets, secName)
+		} else {
+			h.secrets[secName] = secVal
+		}
+		h.writes = append(h.writes, RecordedWrite{Op: "secret.set", Target: secName, Value: json.RawMessage(`"[redacted]"`)})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
+
+	case "secret.delete":
+		secName := str(0)
+		if !h.secretDeclared(secName) {
+			return nil, wasm.Forbidden("secret not declared in manifest: " + secName)
+		}
+		h.mu.Lock()
+		delete(h.secrets, secName)
+		h.writes = append(h.writes, RecordedWrite{Op: "secret.delete", Target: secName})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
 
 	case "http.fetch":
 		var req struct {
@@ -567,6 +729,51 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 			"headers": map[string]string{"Content-Type": "application/json"},
 			"body":    `{"ok":true,"dryRun":true}`,
 		})
+
+	case "http.fetchMany":
+		reqs, _, fault := plugins.ParseFetchManyArgs(args)
+		if fault != nil {
+			return nil, fault
+		}
+		if len(reqs) > 1 {
+			if err := wasm.ChargeUnits(ctx, int64(len(reqs)-1)*wasm.FetchManyUnitsPerRequest); err != nil {
+				return nil, err
+			}
+		}
+		out := make([]map[string]any, len(reqs))
+		for i, req := range reqs {
+			u, err := url.Parse(req.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+				out[i] = map[string]any{"error": map[string]any{"code": "forbidden", "message": "invalid fetch url"}}
+				continue
+			}
+			if !h.networkAllowed(u.Hostname()) {
+				out[i] = map[string]any{"error": map[string]any{"code": "forbidden", "message": "network host not declared in manifest: " + u.Hostname()}}
+				continue
+			}
+			bodyStr := string(req.Body)
+			h.mu.Lock()
+			h.outbound = append(h.outbound, RecordedOutbound{
+				Method: req.Method,
+				URL:    req.URL,
+				Body:   bodyStr,
+			})
+			if req.Method != http.MethodGet && req.Method != http.MethodHead {
+				h.notifications = append(h.notifications, RecordedNotification{
+					Kind:    "webhook",
+					Target:  req.URL,
+					Text:    bodyStr,
+					Payload: json.RawMessage(bodyStr),
+				})
+			}
+			h.mu.Unlock()
+			out[i] = map[string]any{
+				"status":  200,
+				"headers": map[string]string{"Content-Type": "application/json"},
+				"body":    `{"ok":true,"dryRun":true}`,
+			}
+		}
+		return marshalResult(out)
 
 	case "catalog.search":
 		if !h.catalogAllowed() {

@@ -13,9 +13,10 @@ import (
 // uses a lease and a deadline shorter than the lease; it never advances the
 // snapshot after a partial pull.
 type Service struct {
-	Auth   AuthClient
-	Tokens TokenStore
-	State  *state.State
+	Auth           AuthClient
+	Tokens         TokenStore
+	State          *state.State
+	OnTokenExpired func(userID int64, reason string)
 }
 type SyncResult struct {
 	Imported int `json:"imported"`

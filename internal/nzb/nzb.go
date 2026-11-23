@@ -8,6 +8,7 @@ package nzb
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -56,8 +57,12 @@ type File struct {
 	// number wins, later message-IDs for it become its Alternates.
 	Segments []Segment
 
-	// Name is the file name derived from the subject (may be obfuscated).
+	// Name is the active file name: initially derived from Subject, and
+	// potentially updated later from PAR2 or yEnc probing.
 	Name string
+	// SubjectName is the original name derived from Subject before any
+	// PAR2/yEnc rename or re-encoding, preserved across Subset/SubsetMeta.
+	SubjectName string
 	// Obfuscated reports that Name looks random (hashes, missing extension),
 	// so it says nothing about the content.
 	Obfuscated bool
@@ -93,6 +98,52 @@ func (f *File) Bytes() int64 {
 		n += s.Bytes
 	}
 	return n
+}
+
+// OriginalName returns the original subject-derived file name before any
+// PAR2/yEnc rename or re-encoding.
+func (f *File) OriginalName() string {
+	if f == nil {
+		return ""
+	}
+	if f.SubjectName != "" {
+		return f.SubjectName
+	}
+	return NameFromSubject(f.Subject)
+}
+
+// StableName returns a stable selection/listing name for f that does not flip
+// between a readable subject-derived name and a probed PAR2/yEnc name:
+// non-obfuscated files keep their original subject-derived name, while
+// obfuscated files prefer a learned name when known.
+func (f *File) StableName() string {
+	if f == nil {
+		return ""
+	}
+	orig := f.OriginalName()
+	if orig != "" && !IsObfuscated(orig) {
+		return orig
+	}
+	if f.Name != "" {
+		return f.Name
+	}
+	return orig
+}
+
+// EstimatedDecodedBytes estimates the decoded payload length from the listed
+// yEnc-encoded segment byte sizes, removing the ~3.1% yEnc escaping and CRLF
+// expansion (1.5625% byte-escaping + 1.5625% line breaks). Callers that rely
+// on this estimate must treat it as approximate rather than exact.
+func (f *File) EstimatedDecodedBytes() int64 {
+	n := f.Bytes()
+	if n <= 0 {
+		return 0
+	}
+	est := n - (n*31)/1031
+	if est < 1 {
+		return 1
+	}
+	return est
 }
 
 // SegmentCount is the number of part slots the file has: the highest
@@ -218,6 +269,18 @@ func ParseReader(r io.Reader) (*NZB, error) {
 	if len(out.Files) == 0 {
 		return nil, fmt.Errorf("%w: no files with segments", ErrInvalid)
 	}
+	if raw := out.MetaValue(MetaSubjectNames); raw != "" {
+		var origNames map[int]string
+		if err := json.Unmarshal([]byte(raw), &origNames); err == nil {
+			for idx, name := range origNames {
+				if idx >= 0 && idx < len(out.Files) {
+					if trimmed := strings.TrimSpace(name); trimmed != "" {
+						out.Files[idx].SubjectName = trimmed
+					}
+				}
+			}
+		}
+	}
 	mergeReposts(out.Files)
 	return out, nil
 }
@@ -292,6 +355,7 @@ func buildFile(xf xmlFile) *File {
 	f.Segments = dedup
 
 	f.Name = NameFromSubject(f.Subject)
+	f.SubjectName = f.Name
 	f.SubjectIndex, f.SubjectCount = subjectFileCounter(f.Subject)
 	f.ExpectedSegments = subjectSegmentCount(f.Subject)
 	if f.ExpectedSegments > len(dedup)*2+10 {

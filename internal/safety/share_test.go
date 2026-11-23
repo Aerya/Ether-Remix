@@ -6,6 +6,7 @@ import (
 
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -178,5 +179,58 @@ func TestAllowSyncRefusesDownloads(t *testing.T) {
 	owner := &core.User{ID: 1, IsOwner: true}
 	if !s.AllowDownloads(owner) {
 		t.Fatal("owner always downloads")
+	}
+}
+
+func TestForeignAndUncertifiedAdultShareAndPolicyEnforcement(t *testing.T) {
+	u := &core.User{ID: 21}
+	denyAdult := shareService(t, PlexShare{
+		FilterMovies:     "contentRating!=R%2CNC-17",
+		FilterTelevision: "contentRating!=TV-MA",
+	})
+	allowPG13WithUnrated := shareService(t, PlexShare{
+		FilterMovies: "contentRating=G%2CPG%2CPG-13%2CNone",
+	})
+
+	blockedMovies := []*core.Title{
+		{Type: core.TypeMovie, ContentRating: "ph/R-18", EnforcementRating: "NC-17"},
+		{Type: core.TypeMovie, ContentRating: "", EnforcementRating: "NC-17"}, // e.g. PH "X"
+		{Type: core.TypeMovie, ContentRating: "ph/X"},
+		{Type: core.TypeMovie, ContentRating: "de/18"},
+		{Type: core.TypeMovie, ContentRating: "gb/R18"},
+		{Type: core.TypeMovie, ContentRating: "au/MA 15+"},
+		{Type: core.TypeMovie, ContentRating: "in/A"},
+		{Type: core.TypeMovie, ContentRating: "", EnforcementRating: contentrating.UncertifiedAdult},
+		{Type: core.TypeMovie, ContentRating: "NR", Keywords: []string{"softcore"}},
+		{Type: core.TypeMovie, ContentRating: "", Keywords: []string{"nudity", "seduction"}},
+	}
+	for _, m := range blockedMovies {
+		if denyAdult.Allowed(u, m) {
+			t.Fatalf("denyAdult allowed %+v", m)
+		}
+		if allowPG13WithUnrated.Allowed(u, m) {
+			t.Fatalf("allowPG13WithUnrated allowed %+v", m)
+		}
+		if AllowedWithPolicy(&core.User{ID: 22, MaxContentRating: "PG-13"}, m, Policy{}) {
+			t.Fatalf("MaxContentRating=PG-13 allowed %+v", m)
+		}
+	}
+
+	if denyAdult.Allowed(u, &core.Title{Type: core.TypeShow, ContentRating: "kr/청소년 관람불가", EnforcementRating: "NC-17"}) {
+		t.Fatal("FilterTelevision!=TV-MA must block foreign 18+/19 TV show")
+	}
+
+	allowedMovies := []*core.Title{
+		{Type: core.TypeMovie, ContentRating: "gb/12A", EnforcementRating: "PG-13"},
+		{Type: core.TypeMovie, ContentRating: "de/12", EnforcementRating: "PG-13"},
+		{Type: core.TypeMovie, ContentRating: "", Keywords: []string{"nudity"}}, // single secondary tag stays unrated
+	}
+	for _, m := range allowedMovies {
+		if !denyAdult.Allowed(u, m) {
+			t.Fatalf("denyAdult rejected %+v", m)
+		}
+		if !allowPG13WithUnrated.Allowed(u, m) {
+			t.Fatalf("allowPG13WithUnrated rejected %+v", m)
+		}
 	}
 }

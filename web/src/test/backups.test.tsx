@@ -69,6 +69,8 @@ describe("Backups & import", () => {
     await waitFor(() => expect(calls.some((c) => c.url.endsWith("/users"))).toBe(true));
     await choose("Ether viewer", "Alex");
     await waitFor(() => expect(screen.getByRole("button", { name: "Server" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Server" })).toHaveTextContent("Select a server…");
+    expect(screen.getAllByText(/Choose a server from Plex Media Server Sync\./)).toHaveLength(1);
     await choose("Server", "Source Plex");
     expect(screen.queryByLabelText("Plex server URL")).toBeNull();
     expect(screen.getByRole("link", { name: "Manage Plex Media Server Sync" })).toHaveAttribute(
@@ -99,7 +101,11 @@ describe("Backups & import", () => {
     await choose("CSV viewer", "Alex");
     expect(screen.getByRole("button", { name: "CSV viewer" })).toHaveTextContent("Alex");
     expect(screen.getByRole("button", { name: "Ether viewer" })).toHaveTextContent("Sam");
-    expect(screen.getByRole("button", { name: /Export CSV/ })).toBeEnabled();
+    const csvCard = screen
+      .getByRole("heading", { name: "Trakt and Letterboxd files" })
+      .closest("section")!;
+    expect(within(csvCard).getByRole("button", { name: /Export CSV/ })).toBeEnabled();
+    expect(within(csvCard).getByText("Preview a CSV import")).toBeInTheDocument();
   });
 
   it("edits the backup schedule in place and saves it from the save bar", async () => {

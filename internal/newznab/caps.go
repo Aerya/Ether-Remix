@@ -19,6 +19,7 @@ type Caps struct {
 	TVAvail      bool     `json:"tvSearchAvailable"`
 	TVParams     []string `json:"tvParams,omitempty"`
 	Categories   []int    `json:"categories,omitempty"`
+	NewznabPath  bool     `json:"newznabPath,omitempty"`
 }
 
 type capsXML struct {

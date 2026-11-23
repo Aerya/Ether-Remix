@@ -6,6 +6,11 @@
  * extension with a page, a list source and an attention health.
  */
 import type { Descriptor } from "../../lib/extend";
+import type {
+  CatalogueEntry,
+  DeclaredPermissions,
+  PluginLiveEventsOverview,
+} from "../../pages/plugins/types";
 import type { ExtendHandler } from "./index";
 import { createStudioMock } from "./studio";
 
@@ -49,10 +54,20 @@ interface PluginDetail extends PluginSummary {
   permissions: {
     lines: string[];
     declared: Record<string, unknown>;
-    grants: { viewers?: number[]; folders?: string[]; revoked?: string[]; lan?: boolean };
+    grants: {
+      viewers?: number[];
+      folders?: string[];
+      revoked?: string[];
+      lan?: boolean;
+      localHosts?: string[];
+      operatorHosts?: string[];
+    };
     needsViewers: boolean;
     needsFolders: boolean;
+    needsOperatorHosts?: boolean;
   };
+  blockedLocalHosts?: string[];
+  pendingOperatorHosts?: string[];
   healthDetail: PluginHealth;
   privacy: {
     declaredHosts: string[];
@@ -74,25 +89,8 @@ interface PluginDetail extends PluginSummary {
   changelog?: string;
 }
 
-interface CatalogueEntry {
-  id: string;
-  name: string;
-  version: string;
-  kind: string;
-  category: string;
-  summary: string;
-  description?: string;
-  author?: { name?: string; url?: string };
-  repo?: string;
-  icon?: string;
-  verified: boolean;
-  capabilities?: string[];
-  permissions: string[];
-  needsViewers?: boolean;
-  needsFolders?: boolean;
-  screenshots?: string[];
-  limits?: string[];
-  url: string;
+interface CatalogueFixture {
+  item: Omit<CatalogueEntry, "installed" | "installedVersion" | "updateAvailable">;
   manifest: Record<string, unknown>;
 }
 
@@ -109,9 +107,74 @@ interface Fixture {
 
 const NOW = 1_762_000_000;
 
-function catalogueFixtures(): CatalogueEntry[] {
+function makeCatalogueFixture(spec: {
+  id: string;
+  name: string;
+  version: string;
+  kind: string;
+  category: string;
+  summary: string;
+  description?: string;
+  author: string;
+  repo: string;
+  license?: string;
+  capabilities: string[];
+  permissions: DeclaredPermissions;
+  permissionLines: string[];
+  sha256: string;
+  contributes?: Record<string, unknown>;
+}): CatalogueFixture {
+  const artifactUrl = `${spec.repo}/releases/download/v${spec.version}/${spec.id}-${spec.version}.etherpkg`;
+  return {
+    item: {
+      id: spec.id,
+      name: spec.name,
+      summary: spec.summary,
+      description: spec.description,
+      kind: spec.kind,
+      category: spec.category,
+      repo: spec.repo,
+      author: spec.author,
+      license: spec.license ?? "MIT",
+      capabilities: spec.capabilities,
+      permissions: spec.permissions,
+      versions: [
+        {
+          version: spec.version,
+          url: artifactUrl,
+          sha256: spec.sha256,
+          releasedAt: "2026-11-16T00:00:00Z",
+          minEther: "0.3.14",
+        },
+      ],
+      latestVersion: spec.version,
+      artifactUrl,
+      sha256: spec.sha256,
+      permissionLines: spec.permissionLines,
+    },
+    manifest: {
+      id: spec.id,
+      version: spec.version,
+      name: spec.name,
+      description: spec.description,
+      ether: {
+        protocol: 1,
+        kind: spec.kind,
+        summary: spec.summary,
+        author: { name: spec.author, url: spec.repo },
+        repo: spec.repo,
+        license: spec.license ?? "MIT",
+        capabilities: spec.capabilities,
+        permissions: spec.permissions,
+        contributes: spec.contributes ?? {},
+      },
+    },
+  };
+}
+
+function catalogueFixtures(): CatalogueFixture[] {
   return [
-    {
+    makeCatalogueFixture({
       id: "community.plutotv.ether",
       name: "Pluto TV",
       version: "1.3.0",
@@ -119,30 +182,15 @@ function catalogueFixtures(): CatalogueEntry[] {
       category: "live_tv",
       summary: "Free Pluto TV channels with their guide",
       description: "Adds regional Pluto TV live channels and a six-day programme guide.",
-      author: { name: "Ether Community", url: "https://github.com/ether-plugins/pluto" },
+      author: "Ether Community",
       repo: "https://github.com/ether-plugins/pluto",
-      verified: true,
       capabilities: ["livetv_channels"],
-      permissions: ["Connects to api.pluto.tv", "Connects to *.pluto.tv"],
-      url: "https://plugins.ether.video/plutotv/manifest.json",
-      manifest: {
-        id: "community.plutotv.ether",
-        version: "1.3.0",
-        name: "Pluto TV",
-        description: "Free Pluto TV channels with their guide.",
-        ether: {
-          protocol: 1,
-          kind: "livetv_source",
-          summary: "Free Pluto TV channels with their guide",
-          author: { name: "Ether Community", url: "https://github.com/ether-plugins/pluto" },
-          repo: "https://github.com/ether-plugins/pluto",
-          capabilities: ["livetv_channels"],
-          permissions: { network: ["api.pluto.tv", "*.pluto.tv"] },
-          contributes: { channels: { refresh: "6h", test: true } },
-        },
-      },
-    },
-    {
+      permissions: { network: ["api.pluto.tv", "*.pluto.tv"] },
+      permissionLines: ["Connects to api.pluto.tv", "Connects to *.pluto.tv"],
+      sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+      contributes: { channels: { refresh: "6h", test: true } },
+    }),
+    makeCatalogueFixture({
       id: "community.subdl.subtitles",
       name: "SubDL Subtitles",
       version: "1.1.0",
@@ -150,38 +198,23 @@ function catalogueFixtures(): CatalogueEntry[] {
       category: "subtitles",
       summary: "Regional subtitles fetched on demand when picked",
       description: "Searches SubDL for subtitles in your preferred languages when a viewer asks.",
-      author: { name: "Ether Community", url: "https://github.com/ether-plugins/subdl" },
+      author: "Ether Community",
       repo: "https://github.com/ether-plugins/subdl",
-      verified: true,
       capabilities: ["subtitles"],
-      permissions: ["Connects to api.subdl.com", "Stores an access token"],
-      limits: ["Requires a free SubDL API key", "Rate limited to 60 lookups per minute"],
-      url: "https://plugins.ether.video/subdl/manifest.json",
-      manifest: {
-        id: "community.subdl.subtitles",
-        version: "1.1.0",
-        name: "SubDL Subtitles",
-        ether: {
-          protocol: 1,
-          kind: "integration",
-          summary: "Regional subtitles fetched on demand when picked",
-          author: { name: "Ether Community", url: "https://github.com/ether-plugins/subdl" },
-          repo: "https://github.com/ether-plugins/subdl",
-          capabilities: ["subtitles"],
-          permissions: { network: ["api.subdl.com"], secrets: ["apiKey"] },
-          contributes: {
-            subtitles: { languages: "any", formats: ["srt", "vtt"] },
-            integration: {
-              category: "subtitles",
-              adds: ["On-demand regional subtitles"],
-              connect: "fields",
-              test: true,
-            },
-          },
+      permissions: { network: ["api.subdl.com"], secrets: ["apiKey"] },
+      permissionLines: ["Connects to api.subdl.com", "Stores an access token"],
+      sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+      contributes: {
+        subtitles: { languages: "any", formats: ["srt", "vtt"] },
+        integration: {
+          category: "subtitles",
+          adds: ["On-demand regional subtitles"],
+          connect: "fields",
+          test: true,
         },
       },
-    },
-    {
+    }),
+    makeCatalogueFixture({
       id: "community.local.folders",
       name: "Local folders",
       version: "1.0.2",
@@ -189,36 +222,18 @@ function catalogueFixtures(): CatalogueEntry[] {
       category: "sources",
       summary: "Plays media files from folders you pick on this server",
       description: "Scans folders you choose and matches files to titles in your catalogue.",
-      author: { name: "Ether Community", url: "https://github.com/ether-plugins/local-folders" },
+      author: "Ether Community",
       repo: "https://github.com/ether-plugins/local-folders",
-      verified: true,
       capabilities: ["stream_source", "ui"],
-      permissions: ["Reads folders you choose", "Reads your catalogue"],
-      needsFolders: true,
-      url: "https://plugins.ether.video/local-folders/manifest.json",
-      manifest: {
-        id: "community.local.folders",
-        version: "1.0.2",
-        name: "Local folders",
-        ether: {
-          protocol: 1,
-          kind: "source",
-          summary: "Plays media files from folders you pick on this server",
-          author: {
-            name: "Ether Community",
-            url: "https://github.com/ether-plugins/local-folders",
-          },
-          repo: "https://github.com/ether-plugins/local-folders",
-          capabilities: ["stream_source", "ui"],
-          permissions: { folders: "read", catalog: "read" },
-          contributes: {
-            source: { class: "direct", abilities: ["movies", "tv"] },
-            pages: [{ key: "unmatched", label: "Unmatched files", route: "/ether/view/unmatched" }],
-          },
-        },
+      permissions: { folders: "read", catalog: "read" },
+      permissionLines: ["Reads folders you choose", "Reads your catalogue"],
+      sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+      contributes: {
+        source: { class: "direct", abilities: ["movies", "tv"] },
+        pages: [{ key: "unmatched", label: "Unmatched files", route: "/ether/view/unmatched" }],
       },
-    },
-    {
+    }),
+    makeCatalogueFixture({
       id: "community.homeassistant.notify",
       name: "Home Assistant",
       version: "0.9.0",
@@ -226,33 +241,21 @@ function catalogueFixtures(): CatalogueEntry[] {
       category: "automation",
       summary: "Sends household alerts and playback events to Home Assistant",
       description: "Delivers playback and release events to your Home Assistant webhook.",
-      author: { name: "Ether Community", url: "https://github.com/ether-plugins/homeassistant" },
+      author: "Ether Community",
       repo: "https://github.com/ether-plugins/homeassistant",
-      verified: true,
       capabilities: ["notify", "events"],
-      permissions: [
+      permissions: { network: ["homeassistant.local"], secrets: ["webhookToken"] },
+      permissionLines: [
         "Connects to homeassistant.local",
         "Gets play and new-release events",
         "Stores an access token",
       ],
-      url: "https://plugins.ether.video/homeassistant/manifest.json",
-      manifest: {
-        id: "community.homeassistant.notify",
-        version: "0.9.0",
-        name: "Home Assistant",
-        ether: {
-          protocol: 1,
-          kind: "notification_channel",
-          summary: "Sends household alerts and playback events to Home Assistant",
-          capabilities: ["notify", "events"],
-          permissions: { network: ["homeassistant.local"], secrets: ["webhookToken"] },
-          contributes: {
-            notification: { sendTest: true, formats: ["text"] },
-            events: { subscribe: ["playback.started", "playback.stopped"] },
-          },
-        },
+      sha256: "4444444444444444444444444444444444444444444444444444444444444444",
+      contributes: {
+        notification: { sendTest: true, formats: ["text"] },
+        events: { subscribe: ["playback.started", "playback.stopped"] },
       },
-    },
+    }),
   ];
 }
 
@@ -587,8 +590,139 @@ function fixturePlugins(): Fixture[] {
     logs: [],
     calls: [],
   } as unknown as Fixture;
+
+  const sports: PluginDetail = {
+    id: "org.ether.sports",
+    name: "Sports",
+    version: "1.0.0",
+    kind: "extension",
+    summary: "Live scores, standings and schedules across your followed leagues.",
+    enabled: true,
+    verified: true,
+    shadow: false,
+    autoUpdate: true,
+    health: "ok",
+    capabilities: ["live_events"],
+    roles: [{ role: "live_events", on: true }],
+    installedAt: NOW - 86400 * 3,
+    manifest: {
+      id: "org.ether.sports",
+      version: "1.0.0",
+      name: "Sports",
+      description: "Live scores, standings and schedules across your followed leagues.",
+      ether: {
+        protocol: 1,
+        kind: "extension",
+        summary: "Live scores, standings and schedules across your followed leagues.",
+        capabilities: ["live_events"],
+        author: { name: "Ether" },
+        license: "MIT",
+        runtime: { kind: "hosted", entry: "src/plugin.ts", limits: { memoryBytes: 67108864 } },
+        permissions: {
+          network: ["site.api.espn.com", "site.web.api.espn.com"],
+        },
+        contributes: {
+          liveFeeds: [
+            {
+              id: "sports",
+              title: "Live scores",
+              minIntervalSec: 15,
+              entityKinds: ["team", "driver"],
+            },
+          ],
+          screens: [
+            {
+              id: "sports",
+              title: "Sports",
+              icon: "trophy",
+              frontends: ["vela"],
+              sections: [
+                { id: "leagues", type: "leagues", feed: "sports" },
+                { id: "live", type: "events", title: "Live now", feed: "sports" },
+                { id: "today", type: "events", title: "Today", feed: "sports" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    permissions: {
+      lines: [
+        "Connects to site.api.espn.com, site.web.api.espn.com",
+        "Adds a screen: Sports",
+        "Provides live event feeds",
+      ],
+      declared: { network: ["site.api.espn.com", "site.web.api.espn.com"] },
+      grants: {},
+      needsViewers: false,
+      needsFolders: false,
+    },
+    healthDetail: {
+      status: "ok",
+      restarts: 0,
+      slow: 0,
+      drops: 0,
+      lastOk: new Date(Date.now() - 12_000).toISOString(),
+      observed: { "site.api.espn.com": 84, "site.web.api.espn.com": 14 },
+      egressBytes: 428_000,
+    },
+    privacy: {
+      declaredHosts: ["site.api.espn.com", "site.web.api.espn.com"],
+      observedHosts: { "site.api.espn.com": 84, "site.web.api.espn.com": 14 },
+    },
+    impact: {
+      calls: 98,
+      errors: 0,
+      p50Ms: 145,
+      p95Ms: 410,
+      egressBytes: 428_000,
+      kvBytes: 24_576,
+      slow: 0,
+      eventDrops: 0,
+      restarts: 0,
+    },
+  };
+
   return [
     streamAddon,
+    {
+      detail: sports,
+      settings: { leagues: ["nfl", "nba", "nhl", "f1", "epl", "mlb"] },
+      schema: {
+        fields: [
+          {
+            key: "leagues",
+            kind: "list",
+            label: "Leagues",
+            help: "Leagues included in the live event feed.",
+          },
+        ],
+      },
+      descriptors: [],
+      journal: [],
+      shadowJournal: [],
+      logs: ["info: polled 6 leagues (21 events cached)", "info: loaded 144 entities"],
+      calls: [
+        {
+          id: 12,
+          plugin: sports.id,
+          route: "/ether/v1/live/sports/events",
+          method: "GET",
+          status: 200,
+          ms: 142,
+          created: new Date(Date.now() - 12_000).toISOString(),
+        },
+        {
+          id: 11,
+          plugin: sports.id,
+          route: "/ether/v1/live/sports/entities",
+          method: "GET",
+          status: 200,
+          ms: 215,
+          created: new Date(Date.now() - 4 * 60_000).toISOString(),
+        },
+      ],
+    },
     {
       detail: hass,
       settings: {},
@@ -765,6 +899,8 @@ function summary(d: PluginDetail): PluginSummary {
   const {
     manifest: _m,
     permissions: _p,
+    blockedLocalHosts: _bl,
+    pendingOperatorHosts: _po,
     healthDetail,
     privacy: _pr,
     impact: _i,
@@ -773,6 +909,85 @@ function summary(d: PluginDetail): PluginSummary {
     ...s
   } = d;
   return { ...s, health: healthDetail.status };
+}
+
+function mockOperatorHostCovers(approved: string[], candidate: string): boolean {
+  const target = candidate.toLowerCase();
+  const targetName = target.split(":")[0]!;
+  return approved.some((entry) => {
+    const clean = entry.toLowerCase();
+    if (clean === target || clean === targetName) return true;
+    if (clean.startsWith("*.")) {
+      const suffix = clean.slice(1);
+      return targetName.endsWith(suffix) && targetName.length > suffix.length;
+    }
+    return false;
+  });
+}
+
+function extractMockSettingsHosts(
+  settings: Record<string, unknown>,
+  schema: Record<string, unknown>,
+): string[] {
+  const secretKeys = new Set(
+    ((schema as { fields?: { key: string; kind?: string }[] }).fields ?? [])
+      .filter((f) => f.kind === "secret")
+      .map((f) => f.key),
+  );
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (host: string) => {
+    const clean = host.trim().toLowerCase();
+    if (!clean || clean === "*" || clean === "operator" || seen.has(clean)) return;
+    seen.add(clean);
+    out.push(clean);
+  };
+  for (const key of Object.keys(settings).sort()) {
+    if (secretKeys.has(key)) continue;
+    const raw = settings[key];
+    const values = Array.isArray(raw) ? raw : [raw];
+    for (const item of values) {
+      if (typeof item !== "string" || !item.trim()) continue;
+      if (/^https?:\/\//i.test(item.trim())) {
+        try {
+          const u = new URL(item.trim());
+          if (u.host) add(u.host);
+        } catch {
+          // ignore malformed URL
+        }
+      } else if (/url|host|server|endpoint|address|domain/i.test(key)) {
+        const candidate = item.trim().split(/[/?#\s]/)[0] ?? "";
+        if (candidate.includes(".") || candidate.includes(":")) add(candidate);
+      }
+    }
+  }
+  return out;
+}
+
+function recomputePendingOperatorHosts(
+  d: PluginDetail,
+  settings: Record<string, unknown>,
+  schema: Record<string, unknown>,
+  blockedOperatorHosts: string[] = [],
+) {
+  if (!d.permissions.needsOperatorHosts) {
+    d.pendingOperatorHosts = undefined;
+    return;
+  }
+  const declaredFixed = ((d.permissions.declared.network as string[] | undefined) ?? []).filter(
+    (h) => h !== "operator",
+  );
+  const approved = [...declaredFixed, ...(d.permissions.grants.operatorHosts ?? [])];
+  const candidates = [...extractMockSettingsHosts(settings, schema), ...blockedOperatorHosts];
+  const pending: string[] = [];
+  const seen = new Set<string>();
+  for (const host of candidates) {
+    const lower = host.toLowerCase();
+    if (seen.has(lower) || mockOperatorHostCovers(approved, lower)) continue;
+    seen.add(lower);
+    pending.push(lower);
+  }
+  d.pendingOperatorHosts = pending.length > 0 ? pending : undefined;
 }
 
 function descriptorsFromManifest(
@@ -916,21 +1131,56 @@ export function createPluginsMock(): {
     ...cinema.manifest,
     catalogs: [
       { type: "movie", id: "popular", name: "Popular movies" },
+      { type: "series", id: "popular", name: "Popular series" },
       { type: "movie", id: "classics", name: "Classic movies" },
     ],
     resources: ["catalog"],
   };
-  for (const detail of [books, cinema])
-    fixtures.push({
-      detail,
-      settings: {},
-      schema: {},
-      descriptors: [],
-      journal: [],
-      shadowJournal: [],
-      logs: [],
-      calls: [],
-    });
+  fixtures.push({
+    detail: books,
+    settings: {},
+    schema: {},
+    descriptors: [],
+    journal: [],
+    shadowJournal: [],
+    logs: [],
+    calls: [],
+  });
+  fixtures.push({
+    detail: cinema,
+    settings: {},
+    schema: {},
+    descriptors: [
+      {
+        kind: "collectionSource",
+        id: "plugin:cinemeta/movie/popular",
+        owner: "cinemeta",
+        group: "Cinemeta",
+        label: { resolved: "Popular movies · movie" },
+        meta: { editor: "plugin", catalog: "movie/popular" },
+      },
+      {
+        kind: "collectionSource",
+        id: "plugin:cinemeta/series/popular",
+        owner: "cinemeta",
+        group: "Cinemeta",
+        label: { resolved: "Popular series · series" },
+        meta: { editor: "plugin", catalog: "series/popular" },
+      },
+      {
+        kind: "collectionSource",
+        id: "plugin:cinemeta/movie/classics",
+        owner: "cinemeta",
+        group: "Cinemeta",
+        label: { resolved: "Classic movies · movie" },
+        meta: { editor: "plugin", catalog: "movie/classics" },
+      },
+    ],
+    journal: [],
+    shadowJournal: [],
+    logs: [],
+    calls: [],
+  });
   const pairings = new Map<
     string,
     { id: string; created: number; lastUsed: number; expires: number }[]
@@ -940,22 +1190,80 @@ export function createPluginsMock(): {
   const byId = (id: string) => fixtures.find((f) => f.detail.id === id);
   const studio = createStudioMock(() => bump());
 
+  function searchCatalogue(q: URLSearchParams): CatalogueEntry[] {
+    const query = (q.get("q") ?? q.get("query") ?? q.get("search") ?? "").trim().toLowerCase();
+    const kind = (q.get("kind") ?? "").trim().toLowerCase();
+    const category = (q.get("category") ?? "").trim().toLowerCase();
+    const capability = (q.get("capability") ?? "").trim().toLowerCase();
+    const out: CatalogueEntry[] = [];
+    for (const entry of catalogue) {
+      const e = entry.item;
+      if (kind && e.kind.toLowerCase() !== kind) continue;
+      if (category && (e.category ?? "").toLowerCase() !== category) continue;
+      if (capability && !(e.capabilities ?? []).some((c) => c.toLowerCase() === capability))
+        continue;
+      if (query) {
+        const hay = [e.id, e.name, e.summary, e.description ?? "", e.category ?? "", e.author ?? ""]
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(query)) continue;
+      }
+      const existing = byId(e.id);
+      const installed = Boolean(existing);
+      const installedVersion = existing?.detail.version;
+      const updateAvailable = Boolean(
+        existing && e.latestVersion && existing.detail.version !== e.latestVersion,
+      );
+      out.push({
+        ...e,
+        installed,
+        installedVersion,
+        updateAvailable: updateAvailable || undefined,
+      });
+    }
+    return out;
+  }
+
   function buildPreview(body: unknown) {
     const req = (body && typeof body === "object" ? body : {}) as {
+      id?: string;
+      version?: string;
       url?: string;
       kind?: string;
       manifest?: Record<string, unknown>;
     };
     const rawUrl = (req.url ?? "").trim();
-    const catMatch = catalogue.find((c) => c.url === rawUrl || c.id === rawUrl);
+    const lookupKey = req.kind === "catalogue" ? (req.id ?? rawUrl).trim() : rawUrl;
+    const catMatch = lookupKey
+      ? catalogue.find(
+          (c) =>
+            c.item.id === lookupKey ||
+            c.item.artifactUrl === lookupKey ||
+            (c.item.repo && c.item.repo.toLowerCase() === lookupKey.toLowerCase()),
+        )
+      : undefined;
+    if (req.kind === "catalogue" && !catMatch) {
+      return null;
+    }
     if (catMatch) {
-      const existing = byId(catMatch.id);
+      const existing = byId(catMatch.item.id);
+      const perms = catMatch.item.permissions ?? {};
+      const needsViewers = Boolean(
+        (perms.viewers?.identity && perms.viewers.identity !== "none") ||
+        (perms.viewers?.watch_history && perms.viewers.watch_history !== "none") ||
+        (perms.viewers?.write_watch_state && perms.viewers.write_watch_state !== "none"),
+      );
+      const needsFolders = perms.folders === "read";
+      const needsOperatorHosts = Boolean(perms.network?.includes("operator"));
       return {
         manifest: catMatch.manifest,
-        permissions: catMatch.permissions,
-        needsViewers: Boolean(catMatch.needsViewers),
-        needsFolders: Boolean(catMatch.needsFolders),
-        verified: catMatch.verified,
+        summary: catMatch.item.summary,
+        icon: catMatch.item.icon,
+        permissions: catMatch.item.permissionLines ?? [],
+        needsViewers,
+        needsFolders,
+        needsOperatorHosts: needsOperatorHosts || undefined,
+        verified: req.kind === "catalogue",
         stremioOnly: false,
         alreadyInstalled: Boolean(existing),
         installedVersion: existing?.detail.version,
@@ -988,14 +1296,17 @@ export function createPluginsMock(): {
     }
     const isFolderUrl = rawUrl.includes("folder");
     const isViewerUrl = rawUrl.includes("viewer");
+    const isOperatorUrl = rawUrl.includes("operator");
     const host = safeHost(rawUrl);
-    const permissions = [`Connects to ${host}`];
+    const permissions = [
+      isOperatorUrl ? "Connects to addresses you approve" : `Connects to ${host}`,
+    ];
     if (isViewerUrl) permissions.push("Reads watch history");
     if (isFolderUrl) permissions.push("Reads folders you choose");
     const man = req.manifest ?? {
-      id: "community.example.preview",
+      id: isOperatorUrl ? "community.example.selfhosted" : "community.example.preview",
       version: "1.0.0",
-      name: "Preview plugin",
+      name: isOperatorUrl ? "Self-hosted connector" : "Preview plugin",
       ether: {
         protocol: 1,
         kind: "extension",
@@ -1003,7 +1314,7 @@ export function createPluginsMock(): {
         author: { name: "Community author", url: rawUrl },
         capabilities: ["ui"],
         permissions: {
-          network: [host],
+          network: [isOperatorUrl ? "operator" : host],
           ...(isViewerUrl ? { viewers: { watch_history: "granted_viewers" } } : {}),
           ...(isFolderUrl ? { folders: "read" } : {}),
         },
@@ -1012,11 +1323,19 @@ export function createPluginsMock(): {
         },
       },
     };
+    const declaredNet =
+      (man as { ether?: { permissions?: { network?: string[] } } }).ether?.permissions?.network ??
+      [];
+    const needsOperatorHosts = declaredNet.includes("operator");
+    const pendingOperatorHosts =
+      needsOperatorHosts && rawUrl.includes("default") ? ["library.example.com"] : undefined;
     return {
       manifest: man,
       permissions,
       needsViewers: isViewerUrl,
       needsFolders: isFolderUrl,
+      needsOperatorHosts: needsOperatorHosts || undefined,
+      pendingOperatorHosts,
       verified: false,
       stremioOnly: rawUrl.includes("stremio"),
     };
@@ -1029,9 +1348,17 @@ export function createPluginsMock(): {
     if (method === "GET" && seg.length === 1) {
       return json({ plugins: fixtures.map((f) => summary(f.detail)) });
     }
-    if (method === "GET" && seg[1] === "catalogue" && seg.length === 2) {
-      if (q.get("empty") === "1") return json({ entries: [] });
-      return json({ entries: catalogue });
+    if (
+      (method === "GET" && seg[1] === "catalogue" && seg.length === 2) ||
+      (method === "POST" && seg[1] === "catalogue" && seg[2] === "refresh" && seg.length === 3)
+    ) {
+      if (q.get("unconfigured") === "1") {
+        return json({ entries: [], configured: false, fetchedAt: 0 });
+      }
+      if (q.get("empty") === "1") {
+        return json({ entries: [], configured: true, fetchedAt: NOW });
+      }
+      return json({ entries: searchCatalogue(q), configured: true, fetchedAt: NOW });
     }
     if (method === "POST" && seg[1] === "addons" && seg[2] === "preview") {
       const url = String((body as { url?: string })?.url ?? "").trim();
@@ -1117,12 +1444,20 @@ export function createPluginsMock(): {
           400,
         );
       }
-      return json(buildPreview(body));
+      const prev = buildPreview(body);
+      if (!prev) {
+        return json(
+          { error: { code: "not_found", message: "That plugin is not in the catalogue." } },
+          404,
+        );
+      }
+      return json(prev);
     }
     if (method === "POST" && seg[1] === "install" && seg.length === 2) {
       const options =
         body instanceof FormData ? JSON.parse(String(body.get("options") ?? "{}")) : body;
       const req = (options && typeof options === "object" ? options : {}) as {
+        id?: string;
         url?: string;
         kind?: string;
         lan?: boolean;
@@ -1143,7 +1478,13 @@ export function createPluginsMock(): {
           400,
         );
       }
-      const prev = buildPreview(body);
+      const prev = buildPreview(options);
+      if (!prev) {
+        return json(
+          { error: { code: "not_found", message: "That plugin is not in the catalogue." } },
+          404,
+        );
+      }
       const man = prev.manifest as {
         id: string;
         version: string;
@@ -1159,13 +1500,14 @@ export function createPluginsMock(): {
       const id = man.id || "community.example.preview";
       const name = man.name || "Preview plugin";
       const declared = (man.ether?.permissions ?? {}) as { network?: string[] };
+      const rawIcon = (prev as { icon?: string }).icon ?? man.ether?.icon;
       const detail: PluginDetail = {
         id,
         name,
         version: man.version || "1.0.0",
         kind: man.ether?.kind ?? "extension",
         summary: man.ether?.summary ?? "A plugin from a link",
-        icon: man.ether?.icon,
+        icon: rawIcon && /^(https?:|data:|\/)/.test(rawIcon) ? rawIcon : undefined,
         enabled: true,
         verified: prev.verified,
         shadow: Boolean(req.shadow),
@@ -1182,6 +1524,7 @@ export function createPluginsMock(): {
           grants: req.grants ?? {},
           needsViewers: prev.needsViewers,
           needsFolders: prev.needsFolders,
+          needsOperatorHosts: (prev as { needsOperatorHosts?: boolean }).needsOperatorHosts,
         },
         healthDetail: {
           status: "ok",
@@ -1208,10 +1551,24 @@ export function createPluginsMock(): {
         },
       };
       const existingIdx = fixtures.findIndex((f) => f.detail.id === id);
+      const defaultSchema = detail.permissions.needsOperatorHosts
+        ? {
+            fields: [
+              { key: "serverUrl", kind: "url", label: "Server URL" },
+              { key: "apiKey", kind: "secret", label: "API token" },
+            ],
+          }
+        : {};
+      recomputePendingOperatorHosts(
+        detail,
+        req.settings ?? {},
+        defaultSchema,
+        (prev as { pendingOperatorHosts?: string[] }).pendingOperatorHosts ?? [],
+      );
       const newFixture: Fixture = {
         detail,
         settings: req.settings ?? {},
-        schema: {},
+        schema: defaultSchema,
         descriptors: descriptorsFromManifest(id, name, prev.manifest),
         journal: [],
         shadowJournal: [],
@@ -1295,6 +1652,7 @@ export function createPluginsMock(): {
         }
       }
       f.settings = nextSettings;
+      recomputePendingOperatorHosts(d, f.settings, f.schema, d.pendingOperatorHosts ?? []);
       return json({ status: "saved" });
     }
     if (method === "GET" && seg[2] === "options") {
@@ -1320,7 +1678,30 @@ export function createPluginsMock(): {
       return json({ status: "disabled" });
     }
     if (method === "PUT" && seg[2] === "grants") {
-      d.permissions.grants = (body ?? {}) as PluginDetail["permissions"]["grants"];
+      const next = (body ?? {}) as PluginDetail["permissions"]["grants"];
+      if (
+        next.operatorHosts?.some(
+          (h) => !h.trim() || h.trim() === "*" || h.trim().toLowerCase() === "operator",
+        )
+      ) {
+        return json(
+          {
+            error: {
+              code: "validation",
+              message: "Approve a specific server address, not a wildcard.",
+            },
+          },
+          400,
+        );
+      }
+      if (next.localHosts && d.blockedLocalHosts?.length) {
+        const allowed = new Set(next.localHosts.map((h) => h.toLowerCase()));
+        d.blockedLocalHosts = d.blockedLocalHosts.filter(
+          (b) => !allowed.has(b.toLowerCase()) && !allowed.has(b.toLowerCase().split(":")[0]!),
+        );
+      }
+      d.permissions.grants = next;
+      recomputePendingOperatorHosts(d, f.settings, f.schema, d.pendingOperatorHosts ?? []);
       return json({ status: "saved", grants: d.permissions.grants });
     }
     if (method === "POST" && seg[2] === "shadow") {
@@ -1346,6 +1727,15 @@ export function createPluginsMock(): {
     }
     if (method === "GET" && seg[2] === "logs") return json({ lines: f.logs });
     if (method === "GET" && seg[2] === "calls") return json({ calls: f.calls });
+    if (method === "GET" && seg[2] === "jobs") return json([]);
+    if (method === "GET" && seg[2] === "live-events") {
+      const limit = Math.max(1, Math.min(50, Number(q.get("limit")) || 12));
+      const failing =
+        q.get("fail") === "1" ||
+        (typeof window !== "undefined" &&
+          new URLSearchParams(window.location.search).get("mockLiveFeedFail") === "1");
+      return json(mockLiveEventsOverview(d, limit, failing));
+    }
     if (method === "POST" && seg[2] === "update" && seg[3] === "check") {
       return json({
         updateAvailable: Boolean(d.updateVersion),
@@ -1420,6 +1810,197 @@ export function createPluginsMock(): {
     handle,
     descriptors: () => fixtures.filter((f) => f.detail.enabled).flatMap((f) => f.descriptors),
     version: () => version,
+  };
+}
+
+function mockLiveEventsOverview(
+  d: PluginDetail,
+  limit: number,
+  failing: boolean,
+): PluginLiveEventsOverview {
+  const roleOff = Boolean(d.roles?.some((r) => r.role === "live_events" && !r.on));
+  const published = d.enabled && !d.shadow && !roleOff;
+  const reason = !d.enabled
+    ? "plugin_disabled"
+    : d.shadow
+      ? "shadow"
+      : roleOff
+        ? "capability_off"
+        : "published";
+
+  const ether = (d.manifest.ether ?? {}) as {
+    contributes?: {
+      liveFeeds?: { id: string; title?: string; minIntervalSec?: number; entityKinds?: string[] }[];
+      screens?: {
+        id: string;
+        title?: string;
+        icon?: string;
+        feed?: string;
+        frontends?: string[];
+      }[];
+    };
+  };
+  const declaredScreens = ether.contributes?.screens ?? [];
+  const declaredFeeds = ether.contributes?.liveFeeds ?? [];
+
+  const screens = declaredScreens.map((sc) => ({
+    id: sc.id,
+    title: sc.title || sc.id,
+    icon: sc.icon,
+    feed: sc.feed,
+    frontends: (sc.frontends?.length ? sc.frontends : ["vela"]).map((feId) => ({
+      id: feId,
+      name: feId === "vela" ? "Vela" : feId,
+      published,
+      reason,
+    })),
+  }));
+
+  if (d.id !== "org.ether.sports") {
+    return {
+      pluginId: d.id,
+      feeds: declaredFeeds.map((lf) => ({
+        id: lf.id,
+        title: lf.title || lf.id,
+        minIntervalSec: lf.minIntervalSec ?? 15,
+        entityKinds: lf.entityKinds,
+        active: published,
+        health: { consecutiveErrors: 0, subscribers: 0, polling: false },
+        eventCount: 0,
+        liveCount: 0,
+        upcomingCount: 0,
+        leagues: [],
+        entityTotal: 0,
+      })),
+      screens,
+      events: [],
+      totalEvents: 0,
+      liveCount: 0,
+      upcomingCount: 0,
+    };
+  }
+
+  const nowMs = Date.now();
+  const events: PluginLiveEventsOverview["events"] = [
+    {
+      id: "nfl-kc-buf",
+      feed: "sports",
+      title: "Kansas City Chiefs vs Buffalo Bills",
+      league: { id: "nfl", name: "National Football League", abbr: "NFL" },
+      status: { state: "in", detail: "4th · 2:14", period: 4, clock: "2:14", close: true },
+      start: new Date(nowMs - 2 * 3600_000).toISOString(),
+      competitors: [
+        { id: "team:kc", name: "Kansas City Chiefs", abbr: "KC", score: "24", home: false },
+        { id: "team:buf", name: "Buffalo Bills", abbr: "BUF", score: "21", home: true },
+      ],
+      watchCount: 2,
+    },
+    {
+      id: "nba-bos-lal",
+      feed: "sports",
+      title: "Boston Celtics vs Los Angeles Lakers",
+      league: { id: "nba", name: "National Basketball Association", abbr: "NBA" },
+      status: { state: "in", detail: "Q3 · 4:32", period: 3, clock: "4:32", close: true },
+      start: new Date(nowMs - 75 * 60_000).toISOString(),
+      competitors: [
+        { id: "team:bos", name: "Boston Celtics", abbr: "BOS", score: "88", home: false },
+        { id: "team:lal", name: "Los Angeles Lakers", abbr: "LAL", score: "84", home: true },
+      ],
+      watchCount: 1,
+    },
+    {
+      id: "f1-lv-gp",
+      feed: "sports",
+      title: "Las Vegas Grand Prix",
+      league: { id: "f1", name: "Formula 1", abbr: "F1" },
+      status: { state: "in", detail: "Lap 38 / 50" },
+      start: new Date(nowMs - 50 * 60_000).toISOString(),
+      competitors: [],
+      ranking: [
+        { pos: 1, name: "Max Verstappen", detail: "1:33.412" },
+        { pos: 2, name: "Lando Norris", detail: "+1.842s" },
+      ],
+      watchCount: 1,
+    },
+    {
+      id: "nhl-tor-mtl",
+      feed: "sports",
+      title: "Toronto Maple Leafs vs Montreal Canadiens",
+      league: { id: "nhl", name: "National Hockey League", abbr: "NHL" },
+      status: { state: "pre", detail: "Tonight · 7:00 PM" },
+      start: new Date(nowMs + 2 * 3600_000).toISOString(),
+      competitors: [
+        { id: "team:tor", name: "Toronto Maple Leafs", abbr: "TOR", home: false },
+        { id: "team:mtl", name: "Montreal Canadiens", abbr: "MTL", home: true },
+      ],
+      watchCount: 2,
+    },
+    {
+      id: "nba-gsw-den",
+      feed: "sports",
+      title: "Golden State Warriors vs Denver Nuggets",
+      league: { id: "nba", name: "National Basketball Association", abbr: "NBA" },
+      status: { state: "pre", detail: "Tonight · 9:30 PM" },
+      start: new Date(nowMs + 4 * 3600_000).toISOString(),
+      competitors: [
+        { id: "team:gsw", name: "Golden State Warriors", abbr: "GSW", home: false },
+        { id: "team:den", name: "Denver Nuggets", abbr: "DEN", home: true },
+      ],
+      watchCount: 0,
+    },
+  ];
+
+  const feedHealth = failing
+    ? {
+        lastPollAt: new Date(nowMs - 95_000).toISOString(),
+        lastOkAt: new Date(nowMs - 12 * 60_000).toISOString(),
+        lastError: "liveevents: upstream HTTP 503: site.api.espn.com unavailable",
+        consecutiveErrors: 3,
+        nextPollSec: 120,
+        nextPollAt: new Date(nowMs + 25_000).toISOString(),
+        subscribers: 1,
+        polling: true,
+      }
+    : {
+        lastPollAt: new Date(nowMs - 12_000).toISOString(),
+        lastOkAt: new Date(nowMs - 12_000).toISOString(),
+        consecutiveErrors: 0,
+        nextPollSec: 15,
+        nextPollAt: new Date(nowMs + 3_000).toISOString(),
+        subscribers: 1,
+        polling: published,
+      };
+
+  return {
+    pluginId: d.id,
+    feeds: [
+      {
+        id: "sports",
+        title: "Live scores",
+        minIntervalSec: 15,
+        entityKinds: ["team", "driver"],
+        active: published,
+        health: feedHealth,
+        eventCount: 21,
+        liveCount: 3,
+        upcomingCount: 2,
+        leagues: [
+          { id: "nba", name: "National Basketball Association", abbr: "NBA", eventCount: 6 },
+          { id: "nhl", name: "National Hockey League", abbr: "NHL", eventCount: 5 },
+          { id: "nfl", name: "National Football League", abbr: "NFL", eventCount: 4 },
+          { id: "epl", name: "Premier League", abbr: "EPL", eventCount: 3 },
+          { id: "mlb", name: "Major League Baseball", abbr: "MLB", eventCount: 2 },
+          { id: "f1", name: "Formula 1", abbr: "F1", eventCount: 1 },
+        ],
+        entityCounts: { team: 124, driver: 20 },
+        entityTotal: 144,
+      },
+    ],
+    screens,
+    events: events.slice(0, limit),
+    totalEvents: 21,
+    liveCount: 3,
+    upcomingCount: 2,
   };
 }
 

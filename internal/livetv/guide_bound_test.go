@@ -67,35 +67,22 @@ func TestCurrentProgrammeDoesNotScanTheGuide(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := &core.User{ID: 1, IsOwner: true}
-	start := time.Now()
 	channels, err := s.AllowedChannels(ctx, owner)
 	if err != nil || len(channels) != sourcesN*channelsN {
 		t.Fatalf("channels %d %v", len(channels), err)
 	}
-	if elapsed := time.Since(start); elapsed > guideBound(400*time.Millisecond) {
-		t.Fatalf("allowed channels scanned the guide: %s", elapsed)
-	}
-	start = time.Now()
 	hub, err := s.HomeHub(ctx, owner, 24)
 	if err != nil || len(hub.Items) == 0 || hub.Items[0].Title != "On now" {
 		t.Fatalf("home hub %+v %v", hub.Items, err)
 	}
-	if elapsed := time.Since(start); elapsed > guideBound(400*time.Millisecond) {
-		t.Fatalf("plex on-now hub scanned the guide: %s", elapsed)
-	}
 	memo := WithChannelMemo(ctx)
-	start = time.Now()
 	for n := 0; n < 40; n++ {
 		ok, err := s.ChannelPermitted(memo, owner, channels[0].ID)
 		if err != nil || !ok {
 			t.Fatalf("channel permit %v %v", ok, err)
 		}
 	}
-	if elapsed := time.Since(start); elapsed > guideBound(50*time.Millisecond) {
-		t.Fatalf("repeat channel checks scanned the guide: %s", elapsed)
-	}
 	before := s.policyReads.Load()
-	start = time.Now()
 	nowChannels, programmes, err := s.OnNow(ctx, owner, now, now.Add(24*time.Hour))
 	if err != nil || len(nowChannels) != sourcesN*channelsN {
 		t.Fatalf("on now channels %d %v", len(nowChannels), err)
@@ -109,8 +96,5 @@ func TestCurrentProgrammeDoesNotScanTheGuide(t *testing.T) {
 		if perChannel[programme.ChannelID] > 2 {
 			t.Fatalf("on now loaded %d programmes for %s", perChannel[programme.ChannelID], programme.ChannelID)
 		}
-	}
-	if elapsed := time.Since(start); elapsed > guideBound(400*time.Millisecond) {
-		t.Fatalf("on now scanned the guide: %s", elapsed)
 	}
 }

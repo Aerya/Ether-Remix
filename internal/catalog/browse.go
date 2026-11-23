@@ -13,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -20,6 +21,7 @@ import (
 // in-memory count and page caching so repeated library/recommendation reads
 // return without hitting disk.
 func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, error) {
+	q.Filter.MovieFilter, q.Filter.EpisodeFilter = nil, nil
 	if err := c.ensureCatalogueSources(ctx, q.Filter); err != nil {
 		return core.Page{}, err
 	}
@@ -62,9 +64,9 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	}
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
-	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback)
-	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal)
-	cacheable := !groupHasState(q.Filter.Group)
+	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s|tab:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback, q.Filter.TabRules, q.Filter.TabFallback)
+	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal, q.CheapTotal)
+	cacheable := !filterHasViewerState(q.Filter) && q.Filter.CollectionMembers == 0
 	// An export page holds partial titles (ListRows) and is read once per
 	// export: it neither serves from nor fills the page cache.
 	listRows := q.ListRows != nil && q.Sort == core.SortKey
@@ -85,8 +87,8 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			items[i] = cloneTitle(ent.page.Items[i])
 		}
 		c.cacheMu.RUnlock()
-		c.kickMovieYears(ctx, items) // PSE-HOOK: listes légères, ctx transmis — voir docs/pse/FORK.fr.md
-		return core.Page{Items: items, Total: ent.page.Total}, nil
+		c.kickMovieYears(ctx, items)
+		return core.Page{Items: items, Total: ent.page.Total, TotalExact: ent.page.TotalExact}, nil
 	}
 	if ent, ok := c.browseCache[rkey]; rank != nil && pageCacheable && !q.SortLastViewed && ok && ent.gen == gen && ent.minute == minBucket {
 		items := make([]core.Title, len(ent.page.Items))
@@ -99,7 +101,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			return core.Page{}, err
 		}
 		c.kickMovieYears(ctx, items)
-		return core.Page{Items: items, Total: ent.page.Total}, nil
+		return core.Page{Items: items, Total: ent.page.Total, TotalExact: ent.page.TotalExact}, nil
 	}
 	cntEnt, hasCnt := c.countCache[ckey]
 	if !cacheable {
@@ -113,6 +115,9 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			return core.Page{}, err
 		}
 		if empty {
+			if q.CheapTotal {
+				return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+			}
 			return core.Page{Items: []core.Title{}, Total: offset}, nil
 		}
 	}
@@ -121,12 +126,22 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		return core.Page{}, err
 	}
 	var total int
+	totalExact := true
 	switch {
-	case q.NoTotal:
+	case q.NoTotal && !q.CheapTotal:
 		// The page query alone; the total is set from the page below.
 		total = offset + limit
+		totalExact = false
 	case hasCnt && cntEnt.gen == gen && cntEnt.minute == minBucket:
 		total = cntEnt.total
+	case q.NoTotal && q.CheapTotal:
+		total, totalExact, err = c.countBrowseCheap(ctx, q.Filter, ckey, where, args, cacheable)
+		if err != nil {
+			return core.Page{}, err
+		}
+		if !totalExact {
+			total = offset + limit
+		}
 	default:
 		if !cacheable {
 			// A viewer's state filter is never cached, but an unwatched
@@ -142,8 +157,8 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			return core.Page{}, err
 		}
 	}
-	if total == 0 || offset >= total {
-		page := core.Page{Items: []core.Title{}, Total: total}
+	if totalExact && (total == 0 || offset >= total) {
+		page := core.Page{Items: []core.Title{}, Total: total, TotalExact: true}
 		if pageCacheable && !q.SortLastViewed && c.writeGen.Load() == gen {
 			c.cacheMu.Lock()
 			if len(c.browseCache) >= 512 {
@@ -159,27 +174,40 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if err != nil {
 			return core.Page{}, err
 		}
-		if q.NoTotal {
+		if q.NoTotal && !totalExact {
 			total = offset + len(items)
 		}
-		return core.Page{Items: items, Total: total}, nil
+		return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 	}
 	if q.AfterKey > 0 && seekableBrowse(q) {
 		items, err := c.seekPage(ctx, q, where, args, offset, limit)
 		if err != nil {
 			return core.Page{}, err
 		}
-		if q.NoTotal {
+		if q.NoTotal && !totalExact {
 			total = offset + len(items)
 		}
 		c.kickMovieYears(ctx, items)
-		return core.Page{Items: items, Total: total}, nil
+		return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 	}
 	if q.Filter.CollectionMembers != 0 {
 		// A collection library reads its page straight from the semi-join:
 		// the cached page keys cannot promise to follow a rebuild, and the
 		// count always comes from the predicates above.
-		items, err := c.queryPagedTitles(ctx, `SELECT `+prefixedCols("t")+` FROM catalog_titles t WHERE `+where+` ORDER BY `+browseOrder(q)+`, t.key ASC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+		order := browseOrder(q)
+		if q.Sort == core.SortAdded {
+			dir := "ASC"
+			if q.Desc {
+				dir = "DESC"
+			}
+			switch q.Filter.Type {
+			case core.TypeShow:
+				order = "t.show_added_ts " + dir + browseSecondaryOrder("t", q.SecondarySorts)
+			case "":
+				order = "CASE WHEN t.type='show' THEN t.show_added_ts ELSE t.released_ts END " + dir + browseSecondaryOrder("t", q.SecondarySorts)
+			}
+		}
+		items, err := c.queryPagedTitles(ctx, `SELECT `+prefixedCols("t")+` FROM catalog_titles t WHERE `+where+` ORDER BY `+order+`, t.key ASC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
 		if err != nil {
 			return core.Page{}, err
 		}
@@ -191,8 +219,11 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if items == nil {
 			items = []core.Title{}
 		}
+		if q.NoTotal && !totalExact {
+			total = offset + len(items)
+		}
 		c.kickMovieYears(ctx, items)
-		return core.Page{Items: items, Total: total}, nil
+		return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 	}
 	pageWhere, pageArgs := where, args
 	// A title-sorted page probes a positive studio filter per row instead of
@@ -333,7 +364,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	if items == nil {
 		items = []core.Title{}
 	}
-	if q.NoTotal {
+	if q.NoTotal && !totalExact {
 		total = offset + len(items)
 	}
 	key := bkey
@@ -351,11 +382,11 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if len(c.browseCache) >= 512 {
 			c.browseCache = map[string]cachedBrowse{}
 		}
-		c.browseCache[key] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total}, gen: gen, minute: minBucket, partial: partial}
+		c.browseCache[key] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total, TotalExact: totalExact}, gen: gen, minute: minBucket, partial: partial}
 		c.cacheMu.Unlock()
 	}
 	c.kickMovieYears(ctx, items)
-	return core.Page{Items: items, Total: total}, nil
+	return core.Page{Items: items, Total: total, TotalExact: totalExact}, nil
 }
 
 func prefixedCols(prefix string) string {
@@ -487,7 +518,7 @@ func (c *Catalog) LibraryPosters(ctx context.Context, typ core.MediaType, limit 
 // rules, so every such viewer's identical filter shares one cached page and
 // total. A viewer with rules of their own keeps their id and revision.
 func (c *Catalog) policyKeyFilter(f core.Filter) core.Filter {
-	if f.CatalogViewerID == 0 || c.localMedia.Load() {
+	if f.CatalogViewerID == 0 || filterHasViewerState(f) || c.localMedia.Load() {
 		return f
 	}
 	c.viewerRules.RLock()
@@ -503,6 +534,7 @@ func (c *Catalog) policyKeyFilter(f core.Filter) core.Filter {
 // browseFilterKey distinguishes a nil IncludeKeys (no restriction) from an
 // empty list (match nothing). fmt %+v prints both as [].
 func browseFilterKey(f core.Filter) string {
+	f.MovieFilter, f.EpisodeFilter = nil, nil
 	f = normalizeGateCacheFilter(f)
 	group := f.Group
 	f.Group = nil
@@ -526,7 +558,7 @@ func browseFilterKey(f core.Filter) string {
 			return ""
 		}
 		if groupHasOwnState(g) {
-			return fmt.Sprintf("state:%d:%v:%v:%d:%d:%v:%s:%s:%d", g.UserID, boolValue(g.Unwatched), boolValue(g.InProgress), g.LastViewedAfter, g.LastViewedBefore, g.ParentOnly, g.StateField, g.StateOperator, g.StateValue) + fmt.Sprintf("|watchlist:%s", boolValue(g.OnWatchlist))
+			return fmt.Sprintf("state:%d:%v:%v:%v:%v:%v:%v:%d:%d:%v:%s:%s:%d", g.UserID, boolValue(g.Watched), boolValue(g.Unwatched), boolValue(g.InProgress), boolValue(g.History), boolValue(g.Favorite), boolValue(g.Watchlist), g.LastViewedAfter, g.LastViewedBefore, g.ParentOnly, g.StateField, g.StateOperator, g.StateValue) + fmt.Sprintf("|watchlist:%s", boolValue(g.OnWatchlist))
 		}
 		if g.Filter != nil {
 			return fmt.Sprintf("leaf:%v(", g.ParentOnly) + browseFilterKey(*g.Filter) + ")"
@@ -555,7 +587,28 @@ func boolValue(v *bool) string {
 }
 
 func groupHasOwnState(g *core.FilterGroup) bool {
-	return g.OnWatchlist != nil || g.StateField != "" || g.Unwatched != nil || g.InProgress != nil || g.LastViewedAfter != 0 || g.LastViewedBefore != 0
+	return g.OnWatchlist != nil || g.Watchlist != nil || g.Favorite != nil || g.StateField != "" ||
+		g.Watched != nil || g.Unwatched != nil || g.InProgress != nil || g.History != nil ||
+		g.LastViewedAfter != 0 || g.LastViewedBefore != 0
+}
+
+func hasRestrictedCatalogueSources(sources []string) bool {
+	if len(sources) == 0 {
+		return false
+	}
+	for _, id := range sources {
+		if id == "tmdb-movies" || id == "tmdb-tv" {
+			return false
+		}
+	}
+	return true
+}
+
+func filterHasViewerState(f core.Filter) bool {
+	return groupHasState(f.Group) ||
+		libraryfilter.RulesHaveViewerState(f.TabRules) ||
+		libraryfilter.RulesHaveViewerState(f.ExtraRules) ||
+		libraryfilter.RulesHaveViewerState(f.PreviewRules)
 }
 
 func groupHasState(g *core.FilterGroup) bool {
@@ -596,6 +649,24 @@ func flagInt(b bool) int {
 // (viewer, date windows, rule preview, availability keys) left zero so
 // membership is a property of the saved filter alone, not of who is asking.
 func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.RatingKey) (bool, error) {
+	members, err := c.TitlesInFilter(ctx, f, []core.RatingKey{key})
+	return members[key], err
+}
+
+// TitlesInFilter is TitleInFilter for a batch of keys: one indexed query per
+// chunk over the same membership SQL, never a per-title round trip or a walk
+// of the library. The result holds exactly the keys that are members.
+func (c *Catalog) TitlesInFilter(ctx context.Context, f core.Filter, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+	out := make(map[core.RatingKey]bool, len(keys))
+	for start := 0; start < len(keys); start += 400 {
+		if err := c.titlesInFilterChunk(ctx, f, keys[start:min(start+400, len(keys))], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (c *Catalog) titlesInFilterChunk(ctx context.Context, f core.Filter, keys []core.RatingKey, out map[core.RatingKey]bool) error {
 	f.LocalOnly = true
 	// Membership protects direct lookup and playback. Discovery-only hides
 	// affect browse pages, never whether a title belongs to an allowed source.
@@ -608,9 +679,20 @@ func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.Rat
 		}
 		f.ExtraRules = rules
 	}
-	f.IncludeKeys = []core.RatingKey{key}
+	if len(f.TabRules) > 0 {
+		rules := make([]core.LibraryExclusion, 0, len(f.TabRules))
+		for _, rule := range f.TabRules {
+			if rule.Scope != core.VisibilityDiscovery {
+				rules = append(rules, rule)
+			}
+		}
+		f.TabRules = rules
+	}
+	f.IncludeKeys = keys
 	f.ExcludeKeys = nil
-	f.CatalogViewerID = 0
+	if !libraryfilter.RulesHaveViewerState(f.TabRules) && !libraryfilter.RulesHaveViewerState(f.ExtraRules) {
+		f.CatalogViewerID = 0
+	}
 	f.RuleVisibility = ""
 	f.PreviewRules = nil
 	f.PreviewFallback = ""
@@ -623,13 +705,21 @@ func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.Rat
 	f.DigitalDateEvidence = false
 	where, args, err := c.browseWhereMode(f, true)
 	if err != nil {
-		return false, err
+		return err
 	}
-	var n int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles AS t WHERE `+where, args...).Scan(&n); err != nil {
-		return false, err
+	rows, err := c.db.QueryContext(ctx, `SELECT t.key FROM catalog_titles AS t WHERE `+where, args...)
+	if err != nil {
+		return err
 	}
-	return n > 0, nil
+	defer rows.Close()
+	for rows.Next() {
+		var k core.RatingKey
+		if err := rows.Scan(&k); err != nil {
+			return err
+		}
+		out[k] = true
+	}
+	return rows.Err()
 }
 
 func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
@@ -638,6 +728,7 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 
 // Membership evaluates saved predicates independently of presentation/release gates.
 func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, []any, error) {
+	f.MovieFilter, f.EpisodeFilter = nil, nil
 	// Positive metadata flags retain their source meaning; absence is unknown.
 	if f.Anime {
 		f.Keywords = append(append([]string{}, f.Keywords...), "anime")
@@ -736,7 +827,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 			}
 		}
 		if f.RuleVisibility != "all" {
-			policy, err := c.compileLibraryRules(f.PreviewRules, f.PreviewFallback)
+			policy, err := c.compileLibraryRulesModeForViewer(f.PreviewRules, f.PreviewFallback, false, f.CatalogViewerID)
 			if err != nil {
 				return "", nil, err
 			}
@@ -762,12 +853,23 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		}
 	}
 	if len(f.ExtraRules) > 0 || f.ExtraFallback != "" {
-		extra, err := c.compileLibraryRulesMode(f.ExtraRules, f.ExtraFallback, membershipOnly)
+		extra, err := c.compileLibraryRulesModeForViewer(f.ExtraRules, f.ExtraFallback, membershipOnly, f.CatalogViewerID)
 		if err != nil {
 			return "", nil, err
 		}
 		if !extra.Passive() {
 			clause, values := extra.SQLShown()
+			conds = append(conds, "("+clause+")")
+			args = append(args, values...)
+		}
+	}
+	if len(f.TabRules) > 0 || f.TabFallback != "" {
+		tabPolicy, err := c.compileLibraryRulesModeForViewer(f.TabRules, f.TabFallback, membershipOnly, f.CatalogViewerID)
+		if err != nil {
+			return "", nil, err
+		}
+		if !tabPolicy.Passive() {
+			clause, values := tabPolicy.SQLShown()
 			conds = append(conds, "("+clause+")")
 			args = append(args, values...)
 		}
@@ -803,28 +905,21 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 			args = append(args, key)
 		}
 	}
-	if len(f.CatalogueSources) > 0 {
-		all := false
-		for _, id := range f.CatalogueSources {
-			if id == "tmdb-movies" || id == "tmdb-tv" {
-				all = true
-			}
+	if hasRestrictedCatalogueSources(f.CatalogueSources) {
+		marks := make([]string, len(f.CatalogueSources))
+		for i, id := range f.CatalogueSources {
+			marks[i] = "?"
+			args = append(args, id)
 		}
-		if !all {
-			marks := make([]string, len(f.CatalogueSources))
-			for i, id := range f.CatalogueSources {
-				marks[i] = "?"
-				args = append(args, id)
-			}
-			conds = append(conds, "t.key IN (SELECT lcm.key FROM libraries_catalogue_members lcm WHERE lcm.source_id IN ("+strings.Join(marks, ",")+"))")
-		}
+		conds = append(conds, "t.key IN (SELECT lcm.key FROM libraries_catalogue_members lcm WHERE lcm.source_id IN ("+strings.Join(marks, ",")+"))")
 	}
 	if f.CollectionMembers != 0 {
 		// A collection library is a semi-join on the collection's
-		// materialised members, never a list of keys in memory. Only a
-		// shared member is shown to everyone; per-viewer rules are the
-		// collection engine's business, not this page's.
-		conds = append(conds, "EXISTS (SELECT 1 FROM collections_members cm WHERE cm.spec_id=? AND cm.key=t.key AND cm.shared=1)")
+		// materialised members, never a list of keys in memory. Using IN lets
+		// SQLite and PostgreSQL drive from collections_members instead of
+		// scanning catalog_titles. Only a shared member is shown to everyone;
+		// per-viewer rules are the collection engine's business, not this page's.
+		conds = append(conds, "t.key IN (SELECT cm.key FROM collections_members cm WHERE cm.spec_id=? AND cm.shared=1)")
 		args = append(args, f.CollectionMembers)
 	}
 	if f.IncludeKeys != nil {
@@ -971,7 +1066,11 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		args = append(args, f.MinRating)
 	}
 	if f.MaxRating > 0 {
-		conds = append(conds, "t.rating>0 AND t.rating<=?")
+		if f.MaxRatingExclusive {
+			conds = append(conds, "t.rating>0 AND t.rating<?")
+		} else {
+			conds = append(conds, "t.rating>0 AND t.rating<=?")
+		}
 		args = append(args, f.MaxRating)
 	}
 	if len(f.ExcludeRatings) > 0 {
@@ -1012,20 +1111,25 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 			args = append(args, v)
 		}
 	}
+	if len(f.ContentRatings) > 0 || len(f.ExcludeContentRatings) > 0 {
+		conds = append(conds, sqlBlockUncertifiedAdult("t"))
+	}
 	if len(f.ContentRatings) > 0 {
-		conds = append(conds, "t.content_rating IN ("+placeholders(len(f.ContentRatings))+")")
-		for _, v := range f.ContentRatings {
-			args = append(args, v)
-		}
+		sql, vals := sqlMatchRatings("LOWER(TRIM(t.content_rating))", "t.content_rating_rank", f.ContentRatings)
+		conds = append(conds, sql)
+		args = append(args, vals...)
 	}
 	if len(f.ExcludeContentRatings) > 0 {
 		conds = append(conds, "t.content_rating NOT IN ("+placeholders(len(f.ExcludeContentRatings))+")")
 		for _, v := range f.ExcludeContentRatings {
 			args = append(args, v)
 		}
+		sql, vals := sqlMatchRatings("LOWER(TRIM(t.content_rating))", "t.content_rating_rank", f.ExcludeContentRatings)
+		conds = append(conds, "NOT "+sql)
+		args = append(args, vals...)
 	}
 	if f.MaxContentRating != "" {
-		if level := contentrating.LevelOf(f.MaxContentRating); level != contentrating.Unrated {
+		if level := contentrating.EnforceLevelOf(f.MaxContentRating); level != contentrating.Unrated {
 			conds = append(conds, "t.content_rating_rank>0 AND t.content_rating_rank<=?")
 			args = append(args, int(level))
 			if f.SaferPlexRating && c.saferRating != nil {
@@ -1037,7 +1141,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		}
 	}
 	if f.MinContentRating != "" {
-		if level := contentrating.LevelOf(f.MinContentRating); level != contentrating.Unrated {
+		if level := contentrating.EnforceLevelOf(f.MinContentRating); level != contentrating.Unrated {
 			conds = append(conds, "t.content_rating_rank>0 AND t.content_rating_rank>=?")
 			args = append(args, int(level))
 		} else {
@@ -1229,7 +1333,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		args = append(args, nowTS)
 	}
 	if f.Group != nil {
-		clause, values, err := c.compileBrowseGroup(f.Group, "t", 0)
+		clause, values, err := c.compileBrowseGroup(f.Group, "t", 0, f.Type)
 		if err != nil {
 			return "", nil, err
 		}
@@ -1254,6 +1358,42 @@ var recountEvery = 30 * time.Second
 // countBrowse counts a browse filter's matches and caches the total. Library
 // listings are answered from the maintained tally (browse_tally.go); other
 // filters count their matches.
+// cheapCountableFilter reports whether counting f directly via SELECT COUNT(*)
+// is bounded by an indexed small membership set rather than scaling with the
+// full catalogue.
+func cheapCountableFilter(f core.Filter) bool {
+	return f.IncludeKeys != nil || f.CollectionMembers != 0 || f.Collection > 0 || f.Person > 0 || (f.Group != nil && watchedOnly(*f.Group))
+}
+
+func (c *Catalog) countBrowseCheap(ctx context.Context, f core.Filter, ckey, where string, args []any, cacheable bool) (int, bool, error) {
+	if f.IncludeKeys != nil && len(f.IncludeKeys) == 0 {
+		return 0, true, nil
+	}
+	gen := c.writeGen.Load()
+	minBucket := c.minuteBucket()
+	total, ok, err := c.tallyTotal(ctx, f, where, args)
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		if !cheapCountableFilter(f) {
+			return 0, false, nil
+		}
+		if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t`+c.topicIndexHint(f)+` WHERE `+where, args...).Scan(&total); err != nil {
+			return 0, false, err
+		}
+	}
+	if cacheable {
+		c.cacheMu.Lock()
+		if len(c.countCache) >= 1024 {
+			c.countCache = map[string]cachedCount{}
+		}
+		c.countCache[ckey] = cachedCount{total: total, gen: gen, minute: minBucket, counted: time.Now()}
+		c.cacheMu.Unlock()
+	}
+	return total, true, nil
+}
+
 func (c *Catalog) countBrowse(ctx context.Context, f core.Filter, ckey, where string, args []any) (int, error) {
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()

@@ -25,6 +25,7 @@ const (
 // sectionScopes classifies every top-level key of Config whose whole value
 // shares one scope.
 var sectionScopes = map[string]Scope{
+	"vela":           Local, // installs and optional file:// release channels belong to this node
 	"frontends":      Shared,
 	"frontendPorts":  Local,
 	"posters":        Shared,
@@ -44,6 +45,7 @@ var sectionScopes = map[string]Scope{
 	"plexServers":    Shared,
 	"openSubtitles":  Shared,
 	"subdl":          Shared,
+	"subsource":      Shared,
 	"llm":            Shared,
 	"updates":        Shared, // incl. maxDrain: every node drains the same way
 	"markers":        Shared,
@@ -65,18 +67,22 @@ var sectionScopes = map[string]Scope{
 // and node-local settings.
 var mixedSections = map[string]map[string]Scope{
 	"server": {
-		"trustedProxyCIDRs":  Local,
-		"port":               Local,
-		"portExplicit":       Local,
-		"bindAddress":        Local,
-		"logLevel":           Local,
-		"friendlyName":       Shared,
-		"webFrameOrigins":    Shared,
-		"allowRemoteConsole": Shared,
-		"startupAnimation":   Shared, // console preference, the same on every node
-		"machineIdentifier":  Shared, // one server identity for the cluster
-		"defaultStreamLimit": Shared,
-		"maxStreams":         Shared,
+		"trustedProxyCIDRs":        Local,
+		"port":                     Local,
+		"consolePort":              Local,
+		"disableConsoleOnMainPort": Local,
+		"portExplicit":             Local,
+		"bindAddress":              Local,
+		"logLevel":                 Local,
+		"friendlyName":             Shared,
+		"resumeAfterSeconds":       Shared,
+		"pausedStreamMinutes":      Shared,
+		"webFrameOrigins":          Shared,
+		"allowRemoteConsole":       Shared,
+		"startupAnimation":         Shared, // console preference, the same on every node
+		"machineIdentifier":        Shared, // one server identity for the cluster
+		"defaultStreamLimit":       Shared,
+		"maxStreams":               Shared,
 		// This node's part of account-wide budgets in a cluster.
 		"clusterWeight":   Local,
 		"nodeRoles":       Local,
@@ -97,6 +103,7 @@ var mixedSections = map[string]map[string]Scope{
 		"certHash":                   Shared,
 		"secureConnections":          Shared,
 		"usePlexMetadata":            Shared,
+		"delivery":                   Shared,
 		// Each node is reached through its own port forward.
 		"useUpnp":    Local,
 		"publicPort": Local,
@@ -110,6 +117,7 @@ var mixedSections = map[string]map[string]Scope{
 		"storage":                  Local,
 		"dir":                      Local,
 		"budgetBytes":              Local,
+		"libraryBudgetBytes":       Local, // release library (NZB vault) cap, sized to this node's disk
 		"mode":                     Local,
 		"preloadEnabled":           Local,
 		"preloadBudgetBytes":       Local,
@@ -139,24 +147,27 @@ var mixedSections = map[string]map[string]Scope{
 		"inProgressPinPercent":     Shared,
 	},
 	"transcode": {
-		"rtxVideo":             Local, // executable, GPU and enhancement resource limits are node-specific
-		"ffmpegPath":           Local,
-		"ffprobePath":          Local,
-		"hwAccel":              Local,
-		"vaapiDevice":          Local,
-		"tempDir":              Local,
-		"maxTranscodes":        Local, // sized to this node's hardware
-		"remoteMaxBitrateKbps": Shared,
-		"fastStart":            Shared,
-		"fastStartSegments":    Shared,
-		"fastStartSegment":     Shared,
-		"fastStartMaxHeight":   Shared,
-		"abrLadder":            Shared,
-		"abrLadderUnderCopy":   Shared,
-		"vbvReservoir":         Shared,
-		"vbvBufferSeconds":     Shared,
-		"spikeGovernor":        Shared,
-		"spikeMarginPercent":   Shared,
+		"rtxVideo":               Local, // executable, GPU and enhancement resource limits are node-specific
+		"videoTranscoding":       Local, // node-local transcode policy like maxTranscodes
+		"ffmpegPath":             Local,
+		"ffprobePath":            Local,
+		"hwAccel":                Local,
+		"vaapiDevice":            Local,
+		"tempDir":                Local,
+		"maxTranscodes":          Local, // sized to this node's hardware
+		"remoteMaxBitrateKbps":   Shared,
+		"remoteUploadBudgetKbps": Shared,
+		"fastStart":              Shared,
+		"fastStartSegments":      Shared,
+		"fastStartSegment":       Shared,
+		"fastStartMaxHeight":     Shared,
+		"abrLadder":              Shared,
+		"abrLadderUnderCopy":     Shared,
+		"vbvReservoir":           Shared,
+		"vbvBufferSeconds":       Shared,
+		"throttleSeconds":        Shared,
+		"spikeGovernor":          Shared,
+		"spikeMarginPercent":     Shared,
 	},
 	"downloads": {
 		"enabled":              Shared,
@@ -164,6 +175,10 @@ var mixedSections = map[string]map[string]Scope{
 		"maxConcurrentPerUser": Shared,
 		"expiry":               Shared,
 		"maxHeight":            Shared,
+		"limitUnit":            Shared,
+		"limitAmount":          Shared,
+		"limitPeriod":          Shared,
+		"noTranscode":          Shared,
 		// Remuxes run on and are stored by the node serving them.
 		"maxConcurrent":   Local,
 		"diskBudgetBytes": Local,
@@ -175,9 +190,10 @@ var mixedSections = map[string]map[string]Scope{
 		"flareSolverrUrl": Local,
 	},
 	"extras": {
-		"themeMusic":   Shared,
-		"enabled":      Shared,
-		"prewarmBytes": Shared,
+		"themeMusic":        Shared,
+		"enabled":           Shared,
+		"defaultOnMigrated": Shared,
+		"prewarmBytes":      Shared,
 		// Trailer bytes live under this node's cache directory.
 		"trailerCacheMaxBytes": Local,
 		// The resolver tool is a binary on this node's disk.
@@ -337,7 +353,10 @@ func mergeShared(local Config, sharedJSON []byte) (Config, []string, error) {
 		return Config{}, nil, err
 	}
 	stripRetiredLiveTV(shared)
+	upgradeClientIdentity(shared)
+	upgradeFrontendPublishedAddresses(shared)
 	keepStoredAutoUpdate(shared)
+	migrateExtrasDefaultOn(shared)
 	resetPreStandardQuality(shared)
 	settled := normalizeSharedDocument(shared)
 	base, _ := splitDoc(toDoc(Defaults("")))

@@ -314,7 +314,7 @@ func (s *Service) Remember(ctx context.Context, user int64, key core.RatingKey, 
 			return errors.New("stream type does not match")
 		}
 		c.Language = rememberedTrackLanguage(*track)
-		c.Forced = track.Forced
+		c.Forced = forced(*track)
 		c.SDH = sdh(*track)
 	}
 	b, _ := json.Marshal(c)
@@ -426,6 +426,10 @@ func (s *Service) choice(ctx context.Context, user int64, key core.RatingKey, ki
 // title, as pick ranks it).
 func SDH(t core.StreamInfo) bool { return sdh(t) }
 
+func forced(t core.StreamInfo) bool {
+	return t.Forced || (t.Type == "subtitle" && langtag.ForcedSubtitleTitle(t.Title))
+}
+
 func sdh(t core.StreamInfo) bool {
 	v := strings.ToLower(t.Title)
 	return strings.Contains(v, "sdh") || strings.Contains(v, "hearing impaired") || strings.Contains(v, "[cc]") || v == "cc"
@@ -456,13 +460,13 @@ func rankStreamLanguage(t core.StreamInfo, want []string) int {
 func pick(streams []core.StreamInfo, kind string, want []string, style string, forcedOnly bool, memory *Choice, original string) int {
 	best, score := -1, -100000
 	for i, t := range streams {
-		if t.Type != kind || (forcedOnly && !t.Forced) {
+		if t.Type != kind || (forcedOnly && !forced(t)) {
 			continue
 		}
 		matched := rankStreamLanguage(t, want)
 		// A release's default flag cannot make an unrelated language a
 		// viewer preference. Audio may fall back; unwanted subtitles stay off.
-		remembered := memory != nil && rememberedTrackLanguage(t) == langtag.Normalize(memory.Language) && t.Forced == memory.Forced && sdh(t) == memory.SDH
+		remembered := memory != nil && rememberedTrackLanguage(t) == langtag.Normalize(memory.Language) && forced(t) == memory.Forced && sdh(t) == memory.SDH
 		if kind == "subtitle" && matched == 0 && !remembered {
 			continue
 		}
@@ -476,11 +480,14 @@ func pick(streams []core.StreamInfo, kind string, want []string, style string, f
 			// file's default flag.
 			n += 2
 		}
+		if kind == "audio" && langtag.TrackRole(t.Title, t.Commentary, t.VisualImpaired) != langtag.RoleMain {
+			n -= 150
+		}
 		if kind == "subtitle" {
 			if (style == "sdh") == sdh(t) {
 				n += 10
 			}
-			if (style == "forced") == t.Forced {
+			if (style == "forced") == forced(t) {
 				n += 10
 			}
 		}
@@ -560,6 +567,12 @@ func (s *Service) selectRules(ctx context.Context, user int64, key core.RatingKe
 	}
 	var bm *Choice
 	if hasB {
+		// A signs-only fallback on one episode must not pin partial subtitles
+		// on later episodes when this viewer asks for full dialogue. Apply this
+		// to old stored choices too, without erasing the viewer's language.
+		if b.Forced && r.SubtitleStyle == "normal" && r.SubtitleMode != "forced-only" {
+			b.Forced, b.SDH = false, false
+		}
 		bm = &b
 	}
 	style := r.SubtitleStyle

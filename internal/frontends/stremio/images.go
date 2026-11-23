@@ -18,17 +18,27 @@ func (i *instance) image(w http.ResponseWriter, r *http.Request) {
 	i.host.ImageGrants.Serve(w, r, r.PathValue("secret"))
 }
 
-// imageBase obtains an owner-selected reachable address, not an untrusted Host header.
+// imageBase derives a reachable Stremio image/stream base URL from the
+// request first (HTTPS via direct TLS or trusted reverse proxy, or verified
+// loopback HTTP), falling back to SecurePortalURL when an HTTP LAN request
+// needs a plex.direct HTTPS address.
 func (i *instance) imageBase(r *http.Request) *url.URL {
-	if i.host.ClientIP != nil && i.host.SurfaceURL != nil {
-		if peer, ok := i.host.ClientIP(r); ok && peer.IsLoopback() {
-			base, err := i.host.SurfaceURL(r.Context(), r)
-			u, parseErr := url.Parse(base)
-			if err == nil && parseErr == nil && u.Scheme == "http" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && strings.HasSuffix(u.Path, "/stremio") {
-				if ip := net.ParseIP(u.Hostname()); ip != nil && ip.IsLoopback() {
-					u.Path += "/image/"
+	if i.host.SurfaceURL != nil {
+		if base, err := i.host.SurfaceURL(r.Context(), r); err == nil {
+			if u, parseErr := url.Parse(base); parseErr == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" {
+				if u.Scheme == "https" {
+					u.Path = strings.TrimRight(u.Path, "/") + "/image/"
 					u.RawPath = ""
 					return u
+				}
+				if u.Scheme == "http" && strings.HasSuffix(u.Path, "/stremio") && i.host.ClientIP != nil {
+					if peer, ok := i.host.ClientIP(r); ok && peer.IsLoopback() {
+						if ip := net.ParseIP(u.Hostname()); ip != nil && ip.IsLoopback() {
+							u.Path += "/image/"
+							u.RawPath = ""
+							return u
+						}
+					}
 				}
 			}
 		}

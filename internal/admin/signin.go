@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
+	"github.com/braedonsaunders/ether/internal/identity"
 )
 
 // pinHandles maps random handles to plex.tv PIN ids. The browser that
@@ -70,11 +72,16 @@ func (h *Handler) handleSignInStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "csrf", "mutating requests require the X-Ether-Request: 1 header and a JSON content type")
 		return
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	forward := ""
+	if origin, ok := clientnet.Origin(r, h.proxyPrefixes()...); ok {
+		forward = origin.BaseURL("/ether") + "/"
+	} else {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		forward = scheme + "://" + r.Host + "/ether/"
 	}
-	forward := scheme + "://" + r.Host + "/ether/"
 	id, code, authURL, err := h.deps.SignIn.StartPIN(r.Context(), forward)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "plextv", "Could not reach plex.tv: "+err.Error())
@@ -105,18 +112,30 @@ func (h *Handler) handleSignInPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.isOwner(r, token) {
 		h.pins.remove(handle)
+		ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
+		h.emitLoginFailed("", "plex", "not_owner", "Ether browser", "Web", ip.String())
 		writeError(w, http.StatusForbidden, "not_owner", "That Plex account doesn't own this server. Sign in as the owner.")
 		return
 	}
 	// This is a completed external owner sign-in, not ordinary token use.
 	// Record it before exchanging the plex.tv credential for a console session.
+	var signedIn *core.User
 	if h.deps.IdentityGrants != nil && h.deps.AuthenticatePlex != nil {
 		if viewer, e := h.deps.AuthenticatePlex(r.Context(), token); e == nil && viewer != nil {
+			signedIn = viewer
 			_ = h.deps.IdentityGrants.ViewerTimes().RecordOwnerLogin(r.Context(), viewer.ID)
 		}
 	}
 	if !h.writeSession(w, r, token) {
 		return
+	}
+	if signedIn != nil {
+		ip, _ := identity.ClientNet(r, h.proxyPrefixes()...)
+		name := signedIn.Username
+		if name == "" {
+			name = signedIn.Title
+		}
+		h.emitLoginSucceeded(signedIn.ID, name, "plex", "Ether browser", "Web", ip.String())
 	}
 	h.pins.remove(handle)
 }

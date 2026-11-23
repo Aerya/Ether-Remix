@@ -16,7 +16,7 @@ import (
 // an owner session; this method never makes network calls or changes acceptance.
 func (s *Service) DurableOwnerToken(ctx context.Context, token string) (*core.User, error) {
 	token = strings.TrimSpace(token)
-	if s == nil || s.db == nil || token == "" || core.IsGrantCredential(token) || IsOwnerSession(token) {
+	if s == nil || s.db == nil || token == "" || core.IsGrantCredential(token) || core.IsAPIKeyCredential(token) || IsOwnerSession(token) {
 		return nil, core.ErrUnauthorized
 	}
 	row, err := scanRow(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM auth_users WHERE active=1 AND is_owner=1 AND id=(SELECT user_id FROM auth_tokens WHERE token_hash=?)`, HashToken(token)))

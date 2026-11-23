@@ -25,6 +25,9 @@ func (a *App) favoriteAllowed(ctx context.Context, u *core.User, subject favorit
 			return a.livetv.ChannelPermitted(ctx, viewer, id)
 		}
 	}
+	if subject.Kind == favorites.KindEntity {
+		sources.EntityAllowed = a.favoriteEntityAllowed
+	}
 	return experience.FavoriteAllowed(ctx, u, experience.FavoriteSubject{Kind: experience.FavoriteKind(subject.Kind), ID: subject.ID}, visibility, sources)
 }
 
@@ -46,7 +49,27 @@ func (a *App) favoriteAllowedStored(ctx context.Context, u *core.User, subject f
 			return a.livetv.ChannelPermitted(ctx, viewer, id)
 		}
 	}
+	if subject.Kind == favorites.KindEntity {
+		sources.EntityAllowed = a.favoriteEntityAllowed
+	}
 	return experience.FavoriteAllowed(ctx, u, experience.FavoriteSubject{Kind: experience.FavoriteKind(subject.Kind), ID: subject.ID}, visibility, sources)
+}
+
+func (a *App) favoriteEntityAllowed(ctx context.Context, viewer *core.User, rawKey string) (bool, error) {
+	if a == nil || viewer == nil || a.pluginsRT == nil {
+		return false, nil
+	}
+	if a.pluginsRT.screens != nil {
+		return a.pluginsRT.screens.Registry().EntityAllowed(ctx, viewer, rawKey), nil
+	}
+	if a.pluginsRT.mgr == nil {
+		return false, nil
+	}
+	key, ok := favorites.ParseEntityKey(rawKey)
+	if !ok {
+		return false, nil
+	}
+	return a.screenPluginViewerAllowed(ctx, a.pluginsRT.mgr, viewer, key.PluginID), nil
 }
 
 func (a *App) favoritePersonPage(ctx context.Context, person int64, offset, limit int) ([]core.Title, error) {

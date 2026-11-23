@@ -345,3 +345,44 @@ func TestOrdinaryPlaylistUnaffectedWithoutFavorites(t *testing.T) {
 		t.Fatalf("ordinary playlist created favorites marker: %v", err)
 	}
 }
+
+func TestFavoritesPlaylistsEditPlaylist(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	base := state.New(db, state.Options{}).Playlists()
+	s, err := New(Options{
+		DB:      db,
+		Marked:  base.(core.TransactionalMarkedPlaylists),
+		Active:  func(_ context.Context, id int64) (*core.User, error) { return &core.User{ID: id}, nil },
+		Allowed: func(context.Context, *core.User, Subject) bool { return true },
+		Changed: func(context.Context, int64, Subject) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := NewPlaylists(base, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, err := wrapper.Create(ctx, 1, "Before", []core.RatingKey{core.MovieKey(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed := "After"
+	updated, err := wrapper.EditPlaylist(ctx, 1, pl.Key, core.PlaylistEdit{Title: &renamed})
+	if err != nil || updated.Title != "After" || len(updated.Items) != 1 || updated.Items[0] != core.MovieKey(10) {
+		t.Fatalf("ordinary EditPlaylist = %+v %v", updated, err)
+	}
+	if _, err := s.Set(ctx, &core.User{ID: 1}, Subject{Kind: KindTitle, ID: core.MovieKey(20).String()}, true); err != nil {
+		t.Fatal(err)
+	}
+	fav, err := base.(core.MarkedPlaylists).MarkedPlaylist(ctx, 1, "favorites")
+	if err != nil {
+		t.Fatal(err)
+	}
+	favTitle := "My Favs"
+	updatedFav, err := wrapper.EditPlaylist(ctx, 1, fav.Key, core.PlaylistEdit{Title: &favTitle})
+	if err != nil || updatedFav.Title != "My Favs" || len(updatedFav.Items) != 1 || updatedFav.Items[0] != core.MovieKey(20) {
+		t.Fatalf("favorites EditPlaylist = %+v %v", updatedFav, err)
+	}
+}

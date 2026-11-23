@@ -15,6 +15,7 @@ import {
   normalizeRules,
   sameRules,
   StreamRulesFields,
+  trackLanguageName,
   type ShowMemory,
   type StreamRules,
 } from "./shared";
@@ -22,7 +23,7 @@ import {
 function choiceText(m: ShowMemory): string {
   if (m.choice.off) return t("Off");
   return [
-    m.choice.language || t("Unknown language"),
+    m.choice.language ? trackLanguageName(m.choice.language) : t("Unknown language"),
     m.choice.forced ? t("forced") : "",
     m.choice.sdh ? "SDH" : "",
   ]

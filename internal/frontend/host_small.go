@@ -2,9 +2,13 @@ package frontend
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"path/filepath"
 
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/datafs"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -49,4 +53,25 @@ func DetachQueryStats(ctx context.Context) context.Context {
 
 func SQLPlaceholders(n int) string {
 	return store.Placeholders(n)
+}
+
+// DiskUsage reports the total and free bytes on the volume holding path. If a
+// subdirectory has not been created yet, it inspects the nearest existing
+// ancestor on the same path.
+func DiskUsage(path string) (total, free int64, err error) {
+	if path == "" {
+		return 0, 0, fs.ErrNotExist
+	}
+	cur := filepath.Clean(path)
+	for {
+		total, free, err = datafs.Usage(cur)
+		if !errors.Is(err, fs.ErrNotExist) {
+			return total, free, err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return 0, 0, err
+		}
+		cur = parent
+	}
 }

@@ -74,7 +74,7 @@ func (a Atom) Free() {
 
 func (a Atom) String() string {
 	result := a.context.Call("QJS_AtomToCString", a.context.Raw(), a.Raw())
-	defer result.handle.Free()
+	defer freePackedCString(a.context, result)
 
 	return result.handle.String()
 }
@@ -293,6 +293,8 @@ func (v *Value) GetPropertyStr(name string) *Value {
 func (v *Value) SetPropertyStr(name string, val *Value) {
 	if val != nil {
 		nameVal := v.context.NewStringHandle(name)
+		defer nameVal.handle.Free()
+
 		v.Call("JS_SetPropertyStr", v.Ctx(), v.Raw(), nameVal.Raw(), val.Raw())
 	}
 }
@@ -590,9 +592,21 @@ func (v *Value) Bytes() []byte {
 	return v.handle.Bytes()
 }
 
+// freePackedCString releases a packed C string result: the string JS_ToCString
+// allocated (JS_FreeCString), then the 8-byte pack that points at it.
+func freePackedCString(c *Context, result *Value) {
+	if result == nil || result.handle == nil || result.handle.IsFreed() || result.handle.raw == 0 {
+		return
+	}
+	if addr, _ := c.runtime.mem.UnpackPtr(result.handle.raw); addr != 0 {
+		c.runtime.call("JS_FreeCString", c.Raw(), uint64(addr))
+	}
+	result.handle.Free()
+}
+
 func (v *Value) String() string {
 	result := v.Call("QJS_ToCString", v.Ctx(), v.Raw())
-	defer result.handle.Free()
+	defer freePackedCString(v.context, result)
 
 	return result.handle.String()
 }
@@ -606,6 +620,8 @@ func (v *Value) JSONStringify() (_ string, err error) {
 		}
 	}()
 
+	// QJS_JSONStringify already calls JS_FreeCString before returning the
+	// 8-byte pack, so only the pack itself is freed here.
 	result := v.Call("QJS_JSONStringify", v.Ctx(), v.Raw())
 	defer result.handle.Free()
 

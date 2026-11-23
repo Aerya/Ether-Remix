@@ -134,6 +134,88 @@ func TestExperienceWindowMetricsAndCause(t *testing.T) {
 	}
 }
 
+func TestPlayByIDResolvesLiveAndCoalescedSessions(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	live := map[string]*core.PlaySession{}
+	svc := New(db, Options{
+		Now:     func() time.Time { return now },
+		Session: func(id string) (*core.PlaySession, bool) { p, ok := writerCopy(live[id]); return p, ok },
+	})
+	t0 := now.Add(-5 * time.Minute)
+	part1 := core.PlaySession{
+		ID: "part-1", UserID: 7, Username: "Sam", Key: 900, TitleName: "Harbor Lights", ClientID: "appletv",
+		StartedAt: t0, Decision: core.DecisionDirectPlay, BytesServed: 10 << 20, Origin: "Usenet",
+		Info:       core.MediaInfo{BitrateKbps: 18000, Duration: 60 * time.Minute},
+		Experience: &core.PlayExperience{Requested: true, RequestedAt: t0, Pictured: true, PicturedAt: t0.Add(2 * time.Second), StartTime: 2 * time.Second, BufferEvents: 1, Buffering: 3 * time.Second},
+	}
+	if err := svc.Record(ctx, &part1, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE stats_plays SET watched_ms=180000 WHERE id='part-1'`); err != nil {
+		t.Fatal(err)
+	}
+	// A reopened session after a track change gets a new ID while continuing part-1's row.
+	part2 := core.PlaySession{
+		ID: "part-2", UserID: 7, Username: "Sam", Key: 900, TitleName: "Harbor Lights", ClientID: "appletv",
+		StartedAt: t0.Add(3 * time.Minute), Decision: core.DecisionTranscode,
+		DecisionReason: "transcode; audio codec dts not supported; video -> h264 1080p",
+		BytesServed:    6 << 20, Origin: "Real-Debrid",
+		Client:     core.ClientCaps{DeviceName: "Living Room", Platform: "tvOS", ClientIP: "192.168.1.50"},
+		Resolution: &core.Resolution{Release: core.Release{Name: "Harbor.Lights.2025.1080p.WEB-DL"}},
+		Info:       core.MediaInfo{BitrateKbps: 18000, Duration: 60 * time.Minute},
+		Experience: &core.PlayExperience{Requested: true, RequestedAt: t0.Add(3 * time.Minute), Pictured: true, PicturedAt: t0.Add(3*time.Minute + time.Second), StartTime: time.Second, BufferEvents: 2, Buffering: 4 * time.Second},
+	}
+	live["part-2"] = &part2
+	if err := svc.Record(ctx, &part2, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Additional bytes and a buffer stall occur before the next 30s sample.
+	part2.BytesServed = 12 << 20
+	part2.Experience.BufferEvents = 3
+
+	w := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/plays/part-2", nil))
+	var got map[string]any
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil {
+		t.Fatalf("coalesced live session: %d %s", w.Code, w.Body)
+	}
+	if got["id"] != "part-2" || got["watchedMs"] != 180000.0 || got["bytes"] != float64(22<<20) || got["bufferEvents"] != 4.0 || got["reasonKind"] != "audio_codec" || got["reasonDetail"] != "dts" || got["release"] != "Harbor.Lights.2025.1080p.WEB-DL" || got["ip"] != "192.168.1.50" || got["networkReason"] != "Home network (source 192.168.1.50)" {
+		t.Fatalf("unexpected coalesced detail: %v", got)
+	}
+
+	// A brand-new live session that has not yet written a stats_plays row still loads.
+	fresh := core.PlaySession{
+		ID: "fresh-1", UserID: 12, Username: "Alex", Key: 901, TitleName: "Live News", ClientID: "phone",
+		StartedAt: now.Add(-5 * time.Second), Decision: core.DecisionRemux, DecisionReason: "Live channel playout",
+		Client: core.ClientCaps{DeviceName: "iPhone", Remote: true, ClientIP: "203.0.113.9"}, Origin: "IPTV",
+		Experience: &core.PlayExperience{Requested: true, Pictured: true, StartTime: 1500 * time.Millisecond},
+	}
+	live["fresh-1"] = &fresh
+	w2 := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(w2, httptest.NewRequest("GET", "/plays/fresh-1", nil))
+	var gotFresh map[string]any
+	if w2.Code != 200 || json.Unmarshal(w2.Body.Bytes(), &gotFresh) != nil {
+		t.Fatalf("fresh live session: %d %s", w2.Code, w2.Body)
+	}
+	if gotFresh["id"] != "fresh-1" || gotFresh["username"] != "Alex" || gotFresh["startMs"] != 1500.0 || gotFresh["bufferEvents"] != 0.0 || gotFresh["remote"] != true || gotFresh["ip"] != "203.0.113.9" || gotFresh["networkReason"] != "Remote network (source 203.0.113.9)" {
+		t.Fatalf("unexpected fresh detail: %v", gotFresh)
+	}
+}
+
+func writerCopy(p *core.PlaySession) (*core.PlaySession, bool) {
+	if p == nil {
+		return nil, false
+	}
+	cp := *p
+	return &cp, true
+}
+
 func TestClassifyTranscodeReason(t *testing.T) {
 	for reason, want := range map[string][2]string{
 		"transcode; audio codec truehd not supported; video -> h264 1080p":          {"audio_codec", "truehd"},

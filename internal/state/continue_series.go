@@ -45,3 +45,6 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 	}
 	return out, rows.Err()
 }
+
+const continueSeriesQuery = continueSeriesHistoryQuery
+const continueSeriesIndex = `CREATE INDEX state_history_continue_viewer ON state_history(user_id,completed,rating_key,viewed_at DESC,id DESC);`

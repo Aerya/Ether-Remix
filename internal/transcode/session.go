@@ -6,6 +6,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,7 +65,8 @@ type Session struct {
 	log                 *slog.Logger
 	created             time.Time
 	lastAccess          atomic.Int64 // unix nanos
-	pauseUntil          atomic.Int64 // bounded authenticated player pause
+	lastMediaAccess     atomic.Int64 // unix nanos of last non-HEAD segment/init delivery (0 until media served)
+	pausedAt            atomic.Int64 // unix nanos when authenticated player paused (0 when not paused)
 	stoppedAt           atomic.Int64 // authenticated player stop; fetches after it do not revive
 	mu                  sync.Mutex
 	closed              bool
@@ -91,6 +93,7 @@ type sessionInput struct {
 	rtxDiscontinuities     map[int]bool
 	loopInput              bool
 	liveInput              bool
+	noVideoTranscode       bool
 	liveFromBacklog        bool
 	inputLease             core.EncoderInputLease
 	inputHeaders           map[string]string
@@ -101,17 +104,32 @@ type sessionInput struct {
 	clockInput          string
 	info                core.MediaInfo
 	decision            core.Decision
+	softwareDecode      bool // decoder failed; retain hardware encoder
 	forceCPU            bool // hardware encoder failed; stay on CPU
 	copyFallback        bool // copied video failed its packet conversion; encode this session
 	copyDiscontinuities map[int]bool
-	noPause             bool // platform cannot suspend ffmpeg
-	inputFailed         bool // exhausted this input; HTTP retries cannot restart it
+	noPause             bool            // platform cannot suspend ffmpeg
+	inputFailed         bool            // exhausted this input; HTTP retries cannot restart it
+	failedInputs        map[string]bool // inputs that exhausted encoder failure; never swap back
+	lastFailStderr      string
+	totalFailures       int          // lifetime failed ffmpeg runs in this session (hard cap; survives swaps)
+	segFailures         map[int]int  // failed ffmpeg runs per segment across this session
+	skippedSegs         map[int]bool // damaged segments aliased and skipped
+	damagedSkips        int          // total damaged segments skipped in this session
+	damagedStreak       int          // consecutive damaged segments skipped without new output
+	lastFailureAt       time.Time
+	retryRecovering     bool   // sleeping in failure backoff; blocks concurrent restarts
+	retryGen            uint64 // invalidates stale backoff goroutines on swap
+	skipProbing         bool   // SkipDamagedSegment is probing the segment past a damaged range
+	sessionExhausted    bool   // hard cap or client-gone ended failure recovery
 	stallRestarts       []time.Time
 	liveRestarts        restartBudget
 	liveFailures        int
 	liveRecovering      bool
 	liveDiscontinuities map[int]bool
-	liveDurations       map[int]time.Duration // live: each published segment's real length (session_playlist.go)
+	liveTarget          time.Duration                 // fixed before the first live media playlist
+	liveRejected        map[string]bool               // sources that exceeded this session target
+	liveDurations       map[int]map[int]time.Duration // live: each published segment's real length (session_playlist.go)
 
 	// Header recovery survives input swaps and HTTP retries.
 	headerInputs          map[string]int // deterministic header attempts, retained across swaps
@@ -129,6 +147,16 @@ type sessionInput struct {
 	audioMatch     audioMatchState
 	swapBoundary   int
 	swapSeekAt     time.Time
+}
+
+// videoTranscodingOff reports whether video re-encoding is forbidden for this
+// session by either the per-viewer switch or the server-wide setting. Live TV
+// sessions are unaffected.
+func (s *Session) videoTranscodingOff() bool {
+	if s == nil || s.liveInput {
+		return false
+	}
+	return s.noVideoTranscode || (s.m != nil && s.m.VideoTranscodingOff())
 }
 
 // sessionEncoding owns one aspect of the session. Fields are guarded by Session.mu.
@@ -217,6 +245,8 @@ type sessionAdaptation struct {
 	segSizes          map[int]int64 // primary-track segment sizes (spike governor)
 	governorOn        bool          // plan may change ahead of the player
 	seekRampSeg       int           // segment a seek restarted at (preset ramp); -1 none
+	budgetCapKbps     int           // active shared upload budget cap (0 = uncapped)
+	budgetRung        int           // target rung index for MPEG-TS budget step-down (0 = base)
 }
 
 // mkvDelivery keeps a retried segment on the same representation: a seek
@@ -234,31 +264,43 @@ type run struct {
 	rtx          bool
 	rtxConfirmed atomic.Bool
 
-	seq           int
-	reason        string
-	startSeg      int
-	spec          runSpec
-	proc          Process
-	watchWork     *encoderWork
-	stopWork      *encoderWork
-	hw            bool
-	maxDone       int // last segment finished (DASH: on every track)
-	produced      int // segments finished (DASH: on the slowest track)
-	finished      bool
-	stopped       bool // stopped deliberately, not a failure
-	stalled       bool // watchdog interrupted a run with no progress
-	paused        bool
-	pausedDone    int // maxDone when Pause was applied; later growth means it did not hold
-	err           error
-	stderr        *tailBuffer
-	started       time.Time
-	traceBufferAt time.Time // rate limit optional playback buffer telemetry
-	mode          SegMode   // plan mode this run produces
-	planEnd       int       // first segment NOT produced by this run (mode change); -1 none
-	track         int       // session track (HLS rung / DASH video rep) encoded
+	seq                int
+	reason             string
+	startSeg           int
+	spec               runSpec
+	proc               Process
+	watchWork          *encoderWork
+	stopWork           *encoderWork
+	hw                 bool
+	maxDone            int // last segment finished (DASH: on every track)
+	produced           int // segments finished (DASH: on the slowest track)
+	leadDone           int // furthest segment finished on any track (DASH)
+	hasLead            bool
+	dashDiskSeg        int // furthest uncollected chunk slot on disk (DASH)
+	hasDashDiskSeg     bool
+	dashBacklogBytes   int64 // total bytes of uncollected chunks in run-N/ (DASH)
+	pausedBacklogBytes int64
+	minDrainedSeg      int // lowest last segment among tracks with no chunk waiting on disk (DASH)
+	hasMinDrained      bool
+	finished           bool
+	stopped            bool // stopped deliberately, not a failure
+	stalled            bool // watchdog interrupted a run with no progress
+	paused             bool
+	pausedDone         int // maxDone when Pause was applied; later growth means it did not hold
+	pausedLead         int // encoderSeg when Pause was applied
+	hasPausedLead      bool
+	err                error
+	stderr             *tailBuffer
+	started            time.Time
+	traceBufferAt      time.Time // rate limit optional playback buffer telemetry
+	mode               SegMode   // plan mode this run produces
+	planEnd            int       // first segment NOT produced by this run (mode change); -1 none
+	track              int       // session track (HLS rung / DASH video rep) encoded
 
-	progressMu sync.Mutex
-	progress   Progress
+	progressMu      sync.Mutex
+	progress        Progress
+	outTimeSeen     bool
+	outTimeRelative bool
 
 	dash   *dashRun  // DASH runs only; owned by the run's watch goroutine
 	chunks *chunkRun // chunked HLS runs only (chunks.go); likewise
@@ -278,29 +320,58 @@ func (s *Session) ID() string { return s.id }
 // LastAccess implements core.HLSSession.
 func (s *Session) LastAccess() time.Time { return time.Unix(0, s.lastAccess.Load()) }
 
+// LastMediaAccess implements core.MediaAccessTracker. It stays zero until a
+// client-facing media/init segment is served (creation, playlists, and paused
+// timelines do not advance it).
+func (s *Session) LastMediaAccess() time.Time {
+	ns := s.lastMediaAccess.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+var _ core.MediaAccessTracker = (*Session)(nil)
+
+func (s *Session) touchMediaAccess() {
+	now := s.m.now().UnixNano()
+	s.lastAccess.Store(now)
+	s.lastMediaAccess.Store(now)
+}
+
 // Touch marks the session as in use (e.g. on a Plex timeline ping while the
 // client is paused) so the idle reaper keeps it.
-func (s *Session) Touch() { s.lastAccess.Store(time.Now().UnixNano()) }
+func (s *Session) Touch() { s.lastAccess.Store(s.m.now().UnixNano()) }
+
+func (s *Session) pauseDeadline() int64 {
+	at := s.pausedAt.Load()
+	if at <= 0 {
+		return 0
+	}
+	return at + int64(s.m.effectivePauseRetention())
+}
 
 var _ core.SessionActivity = (*Session)(nil)
 
 func (s *Session) PlaybackState(state string) {
+	now := s.m.now()
 	switch state {
 	case "paused":
 		s.stoppedAt.Store(0)
-		if s.pauseUntil.Swap(time.Now().Add(core.PausedSessionRetention).UnixNano()) == 0 {
-			s.log.Info("player paused; retaining output", "retention", core.PausedSessionRetention)
+		retention := s.m.effectivePauseRetention()
+		if s.pausedAt.Swap(now.UnixNano()) == 0 {
+			s.log.Info("player paused; retaining output", "retention", retention)
 		}
-		s.Touch()
+		s.lastAccess.Store(now.UnixNano())
 	case "playing":
 		s.stoppedAt.Store(0)
-		s.Touch()
-		if s.pauseUntil.Swap(0) != 0 {
+		s.lastAccess.Store(now.UnixNano())
+		if s.pausedAt.Swap(0) != 0 {
 			s.log.Info("player resumed")
 		}
 	case "stopped":
-		s.pauseUntil.Store(0)
-		if s.stoppedAt.Swap(time.Now().UnixNano()) == 0 {
+		s.pausedAt.Store(0)
+		if s.stoppedAt.Swap(now.UnixNano()) == 0 {
 			s.log.Info("player stopped")
 		}
 	}
@@ -355,29 +426,96 @@ func (s *Session) EncoderStatus() *core.EncoderStatus {
 		phase = "running"
 	}
 	processor, filters := "none", "none"
-	if !r.spec.Decision.VideoCopy {
+	var hwDecoder, hwEncoder string
+	if r.spec.Decision.EncodesVideo(r.spec.Info) {
 		processor, filters = "cpu", "cpu"
 		if r.hw {
 			processor = "gpu"
+			hwEncoder = plexHWEncoderName(r.spec.Accel.Name)
 		}
 		v := r.spec.Info.Video()
-		graph := planVideo(r.spec, v).graph
+		vp := planVideo(r.spec, v)
 		for _, f := range []string{"tonemap_cuda", "scale_cuda", "scale_vt", "tonemap_vaapi", "scale_vaapi", "vpp_qsv"} {
-			if strings.Contains(graph, f+"=") {
+			if strings.Contains(vp.graph, f+"=") {
 				filters = "gpu"
 				break
 			}
 		}
+		if r.hw && !r.spec.SoftwareDecode {
+			hwDecoder = plexHWDecoderName(vp.inputArgs)
+		}
 	}
 	b := s.recoveryBufferLocked()
+	var minOffset time.Duration
+	if b.ReadyUntil > 0 {
+		minOffset = b.Position
+	}
 	rung, i := "", r.track
 	if s.isDASH() {
 		i = rungForDashTrack(i) // DASH track 1 is audio: rung 0
 	}
 	if i > 0 && i < len(s.rungs) {
 		rung = s.rungs[i].id
+	} else if s.budgetCapKbps > 0 && s.budgetRung > 0 && s.budgetRung < len(s.rungs) {
+		rung = s.rungs[s.budgetRung].id
 	}
-	return &core.EncoderStatus{Decision: r.spec.Decision, Rung: rung, Processor: processor, Filters: filters, Phase: phase, Reason: r.reason, StartedAt: r.started, UpdatedAt: p.Updated, Speed: p.Speed, OutputTime: p.OutTime, ReadyUntil: b.ReadyUntil}
+	return &core.EncoderStatus{
+		Decision:           r.spec.Decision,
+		Rung:               rung,
+		Processor:          processor,
+		Filters:            filters,
+		Phase:              phase,
+		Reason:             r.reason,
+		StartedAt:          r.started,
+		UpdatedAt:          p.Updated,
+		Speed:              p.Speed,
+		OutputTime:         p.OutTime,
+		ReadyUntil:         b.ReadyUntil,
+		MinOffsetAvailable: minOffset,
+		HWDecoder:          hwDecoder,
+		HWEncoder:          hwEncoder,
+	}
+}
+
+func plexHWEncoderName(accel string) string {
+	switch accel {
+	case AccelVideoToolbox:
+		return "videotoolbox"
+	case AccelNVENC:
+		return "nvenc"
+	case AccelVAAPI:
+		return "vaapi"
+	case AccelQSV:
+		return "qsv"
+	default:
+		return ""
+	}
+}
+
+func plexHWDecoderName(inputArgs []string) string {
+	for i := 0; i+1 < len(inputArgs); i++ {
+		if inputArgs[i] != "-hwaccel" {
+			continue
+		}
+		switch strings.ToLower(inputArgs[i+1]) {
+		case "cuda", "nvdec":
+			return "nvdec"
+		case "videotoolbox":
+			return "videotoolbox"
+		case "vaapi":
+			return "vaapi"
+		case "qsv":
+			if runtime.GOOS == "windows" {
+				return "d3d11va"
+			}
+			return "vaapi"
+		case "d3d11va":
+			return "d3d11va"
+		case "dxva2":
+			return "dxva2"
+		}
+	}
+	return ""
 }
 
 // HWAccelerated reports whether the current run encodes on hardware.
@@ -438,7 +576,7 @@ func (s *Session) trackSegPath(t, n int) string {
 }
 
 func (s *Session) segStart(n int) time.Duration {
-	if s.plan != nil && !s.isDASH() {
+	if s.plan != nil {
 		return s.base + s.plan.Start(n)
 	}
 	return s.base + time.Duration(n)*s.segDur

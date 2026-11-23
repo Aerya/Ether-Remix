@@ -150,14 +150,46 @@ func (c *Catalog) facetFromTally(ctx context.Context, f core.Filter, facet, wher
 	if !known {
 		return nil, false, nil
 	}
-	s, ok := c.tallyShape(f)
+	var extraKeySQL, extraHiddenSQL string
+	var extraKeyArgs, extraHiddenArgs []any
+	baseFilter := f
+	if len(f.ExtraRules) > 0 && (f.ExtraFallback == "" || f.ExtraFallback == "show") {
+		base := f
+		base.ExtraRules = nil
+		base.ExtraFallback = ""
+		if _, ok := c.tallyShape(base); ok {
+			extra, err := c.compileLibraryRulesModeForViewer(f.ExtraRules, f.ExtraFallback, false, f.CatalogViewerID)
+			if err != nil {
+				return nil, false, err
+			}
+			keySQL, keyArgs, ok := extra.SQLHiddenKeys(f.Type)
+			if !ok {
+				return nil, false, nil
+			}
+			baseWhere, baseArgs, err := c.browseWhere(base)
+			if err != nil {
+				return nil, false, err
+			}
+			baseFilter = base
+			where, args = baseWhere, baseArgs
+			if !extra.Passive() && keySQL != "" {
+				extraKeySQL, extraKeyArgs = keySQL, keyArgs
+				if f.Type != "" {
+					extraHiddenSQL, extraHiddenArgs = extra.SQLHiddenForType(f.Type)
+				} else {
+					extraHiddenSQL, extraHiddenArgs = extra.SQLHidden()
+				}
+			}
+		}
+	}
+	s, ok := c.tallyShape(baseFilter)
 	if !ok || s.genre != "" || s.country != "" || s.years || s.yearSet != nil || s.first != nil {
 		return nil, false, nil
 	}
-	if facet == "studio" {
+	if facet == "studio" && extraKeySQL == "" {
 		// The most-counted studios from the presence's count index, not a
 		// sum over every studio (facet_presence.go).
-		if out, ok, err := c.topFromPresence(ctx, s, f, tf.facet, where, args, 200); err != nil || ok {
+		if out, ok, err := c.topFromPresence(ctx, s, baseFilter, tf.facet, where, args, 200); err != nil || ok {
 			return out, ok, err
 		}
 	}
@@ -178,17 +210,25 @@ func (c *Catalog) facetFromTally(ctx context.Context, f core.Filter, facet, wher
 		member += ` AND t.year>0`
 		where = "(" + where + ") AND t.year>0"
 	}
-	unsettled, unsettledArgs := c.tallyUnsettled(s, f)
+	unsettled, unsettledArgs := c.tallyUnsettled(s, baseFilter)
 	order := tf.order
 	if facet == "firstCharacter" && store.DialectOf(c.db) == store.Postgres {
 		order = `ORDER BY value COLLATE "C" ASC`
 	}
+	extraArm := ""
+	if extraKeySQL != "" {
+		extraArm = `
+ UNION ALL SELECT ` + tf.titleValue + `, -1 FROM catalog_titles t ` + tf.join + ` WHERE t.key IN (` + extraKeySQL + `) AND (` + where + `) AND (` + extraHiddenSQL + `)`
+	}
 	q := `SELECT value, CAST(SUM(n) AS BIGINT) FROM (
  SELECT ` + tf.value + ` AS value, n FROM ` + tf.table + ` WHERE ` + dims + `
  UNION ALL SELECT ` + tf.value + `, d FROM ` + tf.table + `_delta WHERE ` + dims + `
- UNION ALL SELECT ` + tf.titleValue + `, (CASE WHEN ` + where + ` THEN 1 ELSE 0 END) - (CASE WHEN ` + member + ` THEN 1 ELSE 0 END) FROM catalog_titles t ` + tf.join + ` WHERE t.key IN (` + unsettled + `)
+ UNION ALL SELECT ` + tf.titleValue + `, (CASE WHEN ` + where + ` THEN 1 ELSE 0 END) - (CASE WHEN ` + member + ` THEN 1 ELSE 0 END) FROM catalog_titles t ` + tf.join + ` WHERE t.key IN (` + unsettled + `)` + extraArm + `
 ) s GROUP BY value HAVING SUM(n)>0 ` + order
 	all := append(append(append(append(append([]any{}, dimArgs...), dimArgs...), args...), memberArgs...), unsettledArgs...)
+	if extraKeySQL != "" {
+		all = append(append(append(all, extraKeyArgs...), args...), extraHiddenArgs...)
+	}
 	rows, err := c.db.QueryContext(ctx, q, all...)
 	if err != nil {
 		return nil, false, err

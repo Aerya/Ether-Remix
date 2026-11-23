@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 // SkipDBSource is the name this remote source stores its cached ranges
@@ -48,7 +49,7 @@ func FetchSkipDB(ctx context.Context, baseURL, apiKey, imdb string, season, epis
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Ether/1")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -132,7 +133,7 @@ func ProbeSkipDB(ctx context.Context, baseURL, apiKey string) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Ether/1")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

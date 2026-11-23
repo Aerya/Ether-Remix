@@ -14,11 +14,11 @@ import (
 
 // The fill fetches titles the export lists and the mirror lacks, one id a
 // request, most popular first. It asks for the lean /movie/{id} and
-// /tv/{id} (no append_to_response) and stores a summary row, the shape a
-// /discover result gives: title, original title, overview, release date,
+// /tv/{id} (with title translations and aliases only) and stores a summary
+// row, the shape a /discover result gives: title, original title, overview, release date,
 // popularity, votes, rating, adult, original language, genres, poster and
 // backdrop, plus the IMDb id, runtime and status. Credits, keywords,
-// content rating, logos, collections, alternative titles, TVDB ids and
+// content rating, logos, collections, TVDB ids and
 // seasons arrive when WarmDetails or a Get fetches details, as for any
 // discovered title.
 //
@@ -284,6 +284,7 @@ func (c *Catalog) fetchSummary(ctx context.Context, tv bool, id int64) (core.Tit
 // movieSummaryToTitle is a /discover-shaped row from a lean movie fetch.
 func (c *Catalog) movieSummaryToTitle(ctx context.Context, d *tmdb.MovieDetails) core.Title {
 	t := c.movieToTitle(ctx, d.Movie)
+	c.applyTranslatedNames(&t, d.Translations, d.AlternativeTitles)
 	t.IDs.IMDB = d.IMDBID
 	t.Status = d.Status
 	if d.Runtime > 0 {
@@ -295,6 +296,7 @@ func (c *Catalog) movieSummaryToTitle(ctx context.Context, d *tmdb.MovieDetails)
 // tvSummaryToTitle is a /discover-shaped row from a lean series fetch.
 func (c *Catalog) tvSummaryToTitle(ctx context.Context, d *tmdb.TVDetails) core.Title {
 	t := c.tvToTitle(ctx, d.TVShow)
+	c.applyTranslatedNames(&t, d.Translations, d.AlternativeTitles)
 	t.Status = d.Status
 	t.LastAirDate = tmdb.ParseDate(d.LastAirDate)
 	if len(d.EpisodeRunTime) > 0 && d.EpisodeRunTime[0] > 0 {
@@ -361,6 +363,10 @@ func (w *syncWriter) flush(ctx context.Context) error {
 		}
 		w.c.syncBatch.Store(int64(nextSyncBatch(w.limit(), n, time.Since(started))))
 		added := len(w.show)
+		var addedTitles []core.Title
+		if w.c.onTitlesAdded != nil && added > 0 {
+			addedTitles = append([]core.Title(nil), w.show...)
+		}
 		if w.onStored != nil {
 			for _, t := range w.show {
 				w.onStored(t)
@@ -372,6 +378,9 @@ func (w *syncWriter) flush(ctx context.Context) error {
 		w.show, w.hide = w.show[:0], w.hide[:0]
 		w.c.setProgress(func(p *SyncProgress) { p.TitlesAdded += added })
 		w.c.clearSyncError(ctx)
+		if len(addedTitles) > 0 && w.c.onTitlesAdded != nil {
+			w.c.onTitlesAdded(addedTitles)
+		}
 	}
 	if w.onFlush != nil {
 		return w.onFlush(ctx)

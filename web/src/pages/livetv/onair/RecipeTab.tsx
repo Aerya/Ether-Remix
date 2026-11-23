@@ -1,4 +1,4 @@
-import { MultiSelect, Select, Switch, Tooltip } from "@braedonsaunders/appkit-ui";
+import { MultiSelect, SearchSelect, Switch, Tooltip } from "@braedonsaunders/appkit-ui";
 import { Info } from "lucide-react";
 import { Artwork } from "../../../components/Artwork";
 import { MoreOptions } from "../../../components/ConfigSection";
@@ -38,6 +38,17 @@ export function RecipeTab({
     newReleases: t("New releases they'd like"),
     collections: t("Your picks (collections)"),
   };
+  const nameFormatOptions = [
+    { value: "{viewer} TV", label: t("Viewer's name + TV") },
+    { value: "{viewer} Live", label: t("Viewer's name + Live") },
+    { value: "Made for {viewer}", label: t("Made for + viewer's name") },
+  ];
+  if (recipe.nameFormat && !nameFormatOptions.some((opt) => opt.value === recipe.nameFormat)) {
+    nameFormatOptions.push({
+      value: recipe.nameFormat,
+      label: recipe.nameFormat.replaceAll("{viewer}", t("Viewer's name")),
+    });
+  }
   const set = (patch: Partial<PersonalRecipe>) => onChange({ ...recipe, ...patch });
   const ingredient = (i: number, patch: Partial<PersonalRecipe["ingredients"][number]>) =>
     set({ ingredients: recipe.ingredients.map((v, n) => (n === i ? { ...v, ...patch } : v)) });
@@ -45,7 +56,7 @@ export function RecipeTab({
     <div className="space-y-5">
       <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
         {recipe.ingredients.map((v, i) => {
-          const pick = rundown[i % Math.max(1, rundown.length)];
+          const pick = rundown.length ? rundown[i % rundown.length] : undefined;
           return (
             <div
               key={v.kind}
@@ -53,14 +64,16 @@ export function RecipeTab({
             >
               <Artwork
                 src={pick?.item.thumb}
-                title={pick?.item.title || labels[v.kind] || ""}
+                title=""
                 alt=""
                 className="h-12 w-20 shrink-0 rounded-lg"
                 imgClassName="object-cover"
               />
               <div className="min-w-0 flex-1 sm:w-48 sm:flex-none">
                 <p className="text-sm font-medium text-fg">{labels[v.kind]}</p>
-                <p className="truncate text-xs text-fg-muted">{pick?.item.title}</p>
+                {pick?.item.title ? (
+                  <p className="truncate text-xs text-fg-muted">{pick.item.title}</p>
+                ) : null}
               </div>
               <div className="order-last flex w-full items-center gap-3 sm:order-none sm:w-auto sm:flex-1">
                 <input
@@ -125,18 +138,19 @@ export function RecipeTab({
         />
         <SettingsRow
           title={t("Channel name")}
+          description={t("How this channel appears in each viewer's guide, using their name.")}
           control={
-            <Select
-              aria-label={t("Channel name")}
-              value={recipe.nameFormat}
-              onChange={(e) => set({ nameFormat: e.currentTarget.value })}
-            >
-              {["{viewer} TV", "{viewer} Live", "Made for {viewer}"].map((value) => (
-                <option key={value} value={value}>
-                  {t(value)}
-                </option>
-              ))}
-            </Select>
+            <div className="w-60 max-w-full">
+              <SearchSelect
+                value={recipe.nameFormat}
+                onChange={(nameFormat) => set({ nameFormat })}
+                options={nameFormatOptions}
+                ariaLabel={t("Channel name")}
+                searchable={false}
+                selectLabel={t("Select")}
+                closeLabel={t("Close")}
+              />
+            </div>
           }
         />
       </div>

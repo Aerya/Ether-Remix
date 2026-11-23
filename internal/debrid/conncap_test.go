@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 func TestConnCapNeverExceedsHostLimit(t *testing.T) {
@@ -136,5 +138,75 @@ func TestHostGateUrgentFirst(t *testing.T) {
 	g.mu.Unlock()
 	if busy != 0 || waiting != 0 {
 		t.Fatalf("leaked busy=%d waiting=%d", busy, waiting)
+	}
+}
+
+// Foreground dials bypass queued background work, including when a detached
+// warm-up is promoted while waiting. Background work retains FIFO order and
+// proceeds once the foreground queue drains.
+func TestConnCapPriorityOrdering(t *testing.T) {
+	c := newConnCap(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	const addr = "cdn:443"
+	if err := c.acquire(ctx, addr); err != nil {
+		t.Fatal(err)
+	}
+	type grant struct {
+		name string
+		err  error
+	}
+	grants := make(chan grant, 4)
+	enqueue := func(name string, request context.Context, count int) {
+		t.Helper()
+		go func() { grants <- grant{name, c.acquire(request, addr)} }()
+		for {
+			c.mu.Lock()
+			n := len(c.waiters[addr])
+			c.mu.Unlock()
+			if n == count {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal("dial did not queue")
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	background := context.WithValue(ctx, fetchModeKey{}, fetchPrefetch)
+	enqueue("background-1", background, 1)
+	enqueue("background-2", background, 2)
+	warm, promote := core.WithSpeculative(ctx)
+	// This is how block workers retain admission without inheriting a
+	// caller's cancellation. Keep this test bounded by ctx independently.
+	warm = inheritReadPriority(ctx, warm)
+	warm = context.WithValue(warm, fetchModeKey{}, fetchDurable)
+	if gateUrgent(warm) {
+		t.Fatal("warm-up lost background priority when detached")
+	}
+	enqueue("promoted", warm, 3)
+	demand := new(atomic.Bool)
+	joined := context.WithValue(background, playheadDemandKey{}, demand)
+	enqueue("foreground", joined, 4)
+	// A viewer now needs the queued read-ahead at the playhead.
+	demand.Store(true)
+	promote()
+	for _, want := range []string{"promoted", "foreground", "background-1", "background-2"} {
+		c.release(addr)
+		select {
+		case got := <-grants:
+			if got.err != nil || got.name != want {
+				t.Fatalf("grant = %s, %v; want %s", got.name, got.err, want)
+			}
+		case <-ctx.Done():
+			t.Fatal("queued dial did not proceed")
+		}
+	}
+	c.release(addr)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.waiters) != 0 || len(c.open) != 0 {
+		t.Fatalf("admission leaked: waiters=%v open=%v", c.waiters, c.open)
 	}
 }

@@ -33,6 +33,58 @@
   }
 }
 
+/* Styled checkboxes across dark and light surfaces (AppKit Checkbox and
+ * selection controls in Browse, New library, Home › Rows, Live TV). */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  border-radius: 0.25rem;
+  border: 1px solid var(--color-border-strong);
+  background-color: var(--color-surface);
+  cursor: pointer;
+  vertical-align: middle;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+input[type="checkbox"]:hover:not(:disabled):not(:checked):not(:indeterminate) {
+  border-color: var(--color-fg-subtle);
+}
+input[type="checkbox"]:checked,
+input[type="checkbox"]:indeterminate {
+  border-color: var(--color-primary);
+  background-color: var(--color-primary);
+}
+input[type="checkbox"]:checked::before {
+  content: "";
+  width: 0.625rem;
+  height: 0.625rem;
+  background-color: var(--color-primary-fg);
+  clip-path: polygon(14% 48%, 0 62%, 38% 100%, 100% 20%, 85% 6%, 37% 69%);
+}
+input[type="checkbox"]:indeterminate::before {
+  content: "";
+  width: 0.625rem;
+  height: 0.125rem;
+  border-radius: 1px;
+  background-color: var(--color-primary-fg);
+}
+input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--color-bg),
+    0 0 0 4px color-mix(in srgb, var(--color-ring, var(--color-primary)) 55%, transparent);
+}
+input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 @theme inline {
   --color-on-scrim: var(--on-scrim);
   --color-series-down: var(--series-down);
@@ -48,6 +100,22 @@
       @slot;
     }
   }
+}
+
+/* Prevent horizontal overflow of the document, app shell, and slide-in drawer
+ * portals so focusing an input while a drawer slides in on phone cannot shift
+ * or clip the console sideways. */
+html,
+body {
+  overflow-x: clip;
+  max-width: 100%;
+}
+.ether-shell > div {
+  overflow-x: clip;
+  max-width: 100vw;
+}
+[data-drawer-layer] {
+  overflow: clip;
 }
 
 /* The page scroller is the containing block for absolutely positioned content
@@ -413,6 +481,12 @@
    rule under the logo; without that rule the logo, navigation and version
    read as one column. */
 .ether-setup aside {
+  display: none;
+}
+/* Mobile and tablet screens already expose Menu in the bottom tab bar; hide
+   AppShell's top-left hamburger whenever that tab bar is present so there is
+   only one menu trigger. */
+.ether-shell > div > div > header:has(~ nav) > button:first-child {
   display: none;
 }
 .ether-settle {

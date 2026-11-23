@@ -2,24 +2,27 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/cipher"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
+
+const immutableImageCacheControl = "private, max-age=31536000, immutable"
 
 func init() {
 	store.Register("frontend_image_grants", 1, `CREATE TABLE frontend_image_grants (hash TEXT PRIMARY KEY, source_hash TEXT NOT NULL REFERENCES identity_grants(hash) ON DELETE CASCADE, viewer_id INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE, surface TEXT NOT NULL, item INTEGER NOT NULL, device TEXT NOT NULL, image_kind TEXT NOT NULL, image_path TEXT NOT NULL, image_tag TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0); CREATE INDEX frontend_image_grants_source ON frontend_image_grants(source_hash);`)
@@ -28,7 +31,7 @@ func init() {
 	store.Register("frontend_image_grants", 3, `ALTER TABLE frontend_image_grants ADD COLUMN image_subject TEXT NOT NULL DEFAULT '';`)
 	store.Register("frontend_image_grants", 4, `CREATE INDEX frontend_image_grants_scope_expiry ON frontend_image_grants(viewer_id,surface,expires,hash);`)
 	store.Register("frontend_image_grants", 5, `CREATE INDEX frontend_image_grants_expiry ON frontend_image_grants(expires,hash);`)
-	// The expression and cleanup query use the established 64-shard layout.
+	// Historical migration step before frontend_image_grants v8 retired the table.
 	store.Register("frontend_image_grants", 6, `CREATE INDEX frontend_image_grants_shard_expiry ON frontend_image_grants((viewer_id % 64),expires,hash);`)
 }
 
@@ -40,6 +43,7 @@ type ImageSource interface {
 type ImageGrantOptions struct {
 	Token             func(*http.Request) string
 	PublicContentTags bool
+	LibraryLiveThumbs frontend.LibraryLiveThumbAuthorizer
 }
 
 type ImageGrantService struct {
@@ -51,42 +55,25 @@ type ImageGrantService struct {
 	images         ImageSource
 	artwork        frontend.Artwork
 	now            func() time.Time
-	ttl            time.Duration
-	admission      imageAdmission
-	// beforeImageCleanup is test-only. It runs after the shard lock and the
-	// source recheck, and before expired-row deletion.
-	beforeImageCleanup func(*sql.Tx)
-	pageMu             sync.Mutex
-	pageKeyBytes       []byte
-	imageGen           func() uint64
-	artMu              sync.Mutex
-	artGen             uint64
-	art                map[pageArtKey][]frontend.Image
-	shortMu            sync.Mutex
-	short              map[string]pageClaims
-	// denied maps revoked grant digests to when the entry may be dropped
-	// (Unix ms); see deny.
-	denied      sync.Map
-	deniedSwept atomic.Int64
-	gen         atomic.Uint64
-	// cleaned is when each viewer's expired image rows were last pruned
-	// on the issue path (imageCleanupDue).
-	cleanMu sync.Mutex
-	cleaned map[int64]time.Time
+	pageMu         sync.Mutex
+	pageKeyBytes   []byte
+	macKeyBytes    []byte
+	encBlock       cipher.Block
+	imageGen       func() uint64
+	artMu          sync.Mutex
+	artGen         uint64
+	art            map[pageArtKey][]frontend.Image
 }
 
-// Generation changes when an image grant is revoked, so a cached page stops
-// repeating that grant.
+// Generation is constant because signed image grants carry no per-grant
+// revocation state and change only when the image path or tag changes.
 func (s *ImageGrantService) Generation() uint64 {
-	if s == nil {
-		return 0
-	}
-	return s.gen.Load()
+	return 0
 }
 
 // NewArtworkImageGrantService serves descriptors through the authorized
 // artwork source. The source is consulted again for every fetch, after the
-// session, viewer and Experience policy checks performed by Serve.
+// viewer and Experience policy checks performed by Serve.
 func NewArtworkImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants, experience func() frontend.Experience, artwork frontend.Artwork, ttl time.Duration, now func() time.Time, options ...ImageGrantOptions) (*ImageGrantService, error) {
 	if artwork == nil {
 		return nil, errors.New("identity: missing artwork source")
@@ -105,8 +92,8 @@ func (unavailableImageSource) Get(context.Context, string, int) ([]byte, string,
 	return nil, "", core.ErrNotAvailable
 }
 
-func NewImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants, experience func() frontend.Experience, images ImageSource, ttl time.Duration, now func() time.Time, options ...ImageGrantOptions) (*ImageGrantService, error) {
-	if db == nil || surface == "" || grants == nil || experience == nil || images == nil || ttl < time.Second {
+func NewImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants, experience func() frontend.Experience, images ImageSource, _ time.Duration, now func() time.Time, options ...ImageGrantOptions) (*ImageGrantService, error) {
+	if db == nil || surface == "" || grants == nil || experience == nil || images == nil {
 		return nil, errors.New("identity: invalid image grant dependencies")
 	}
 	if now == nil {
@@ -116,22 +103,34 @@ func NewImageGrantService(db *sql.DB, surface frontend.Protocol, grants *Grants,
 	if len(options) > 0 {
 		requestOptions = options[0]
 	}
-	return &ImageGrantService{requestOptions: requestOptions, db: db, surface: surface, grants: grants, experience: experience, images: images, now: now, ttl: ttl, admission: defaultImageAdmission()}, nil
+	return &ImageGrantService{requestOptions: requestOptions, db: db, surface: surface, grants: grants, experience: experience, images: images, now: now}, nil
 }
-func validImageSecret(secret string) (string, bool) {
-	b, e := base64.RawURLEncoding.Strict().DecodeString(secret)
-	if e != nil || len(b) != 32 || base64.RawURLEncoding.EncodeToString(b) != secret {
-		return "", false
-	}
-	h := sha256.Sum256([]byte(secret))
-	return hex.EncodeToString(h[:]), true
-}
+
 func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer, device core.Device, item core.RatingKey, channel string, image frontend.Image) error {
 	base, _, _, rankErr := frontend.UnrankArtwork(image)
 	if rankErr != nil {
 		return rankErr
 	}
 	image = base
+	if strings.HasPrefix(image.Path, frontend.ViewerAvatarPrefix) {
+		if item != 0 || channel != "" {
+			return core.ErrUnauthorized
+		}
+		current, ok := frontend.ViewerAvatarImage(viewer)
+		if !ok || !frontend.SameImage(current, image) {
+			return core.ErrUnauthorized
+		}
+		return nil
+	}
+	if strings.HasPrefix(image.Path, frontend.LibraryLiveThumbPrefix) {
+		if s.requestOptions.LibraryLiveThumbs == nil {
+			return core.ErrNotAvailable
+		}
+		if _, err := s.requestOptions.LibraryLiveThumbs.AuthorizeLibraryLiveThumb(core.WithLiveApp(ctx, string(s.surface)), viewer, image.Subject, image.Path); err != nil {
+			return err
+		}
+		return nil
+	}
 	if strings.HasPrefix(image.Path, frontend.LibraryCollagePrefix) {
 		experience := s.experience()
 		if experience == nil {
@@ -203,16 +202,50 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 	}
 	return core.ErrUnauthorized
 }
+
+func (s *ImageGrantService) resolveCredential(ctx context.Context, credential string) (*core.Viewer, string, error) {
+	source, ok := grantHash(credential)
+	if !ok {
+		return nil, "", core.ErrUnauthorized
+	}
+	memoKey := "image-grant:" + string(s.surface) + ":" + source + ":" + strconv.FormatUint(s.grants.Generation(), 10)
+	viewer, err := reqmemo.Do(ctx, memoKey, func() (*core.Viewer, error) {
+		return s.grants.Resolve(ctx, string(s.surface), credential)
+	})
+	if err != nil || viewer == nil {
+		if err == nil {
+			err = core.ErrUnauthorized
+		}
+		return nil, "", err
+	}
+	return viewer, source, nil
+}
+
+func (s *ImageGrantService) sourceStillLive(ctx context.Context, viewerID int64, source string) error {
+	var live int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM identity_grants g JOIN auth_users u ON u.id=g.viewer_id WHERE g.hash=? AND g.viewer_id=? AND g.surface=? AND g.revoked=0 AND g.expires>? AND u.active=1`, source, viewerID, string(s.surface), s.now().UnixMilli()).Scan(&live)
+	if err != nil {
+		return core.ErrUnauthorized
+	}
+	return nil
+}
+
 func (s *ImageGrantService) Issue(ctx context.Context, req frontend.ImageGrantRequest) (string, error) {
-	viewer, err := s.grants.Resolve(ctx, string(s.surface), req.Credential)
+	viewer, _, err := s.resolveCredential(ctx, req.Credential)
 	if err != nil {
 		return "", err
 	}
-	source, ok := grantHash(req.Credential)
-	if !ok {
-		return "", core.ErrUnauthorized
+	claims := imageClaims{
+		Viewer:   viewer.ID,
+		Item:     int64(req.Item),
+		Channel:  req.Channel,
+		Kind:     req.Image.Kind,
+		Path:     req.Image.Path,
+		Tag:      req.Image.Tag,
+		Subject:  req.Image.Subject,
+		Language: req.Device.Language,
 	}
-	if (req.Item == 0) == (req.Channel == "") || len(req.Channel) > 512 || req.Image.Path == "" || req.Image.Kind == "" || len(req.Image.Path) > 1024 || len(req.Image.Kind) > 128 || len(req.Image.Tag) > 256 || len(req.Image.Subject) > 256 {
+	if !validateImageClaims(claims) {
 		return "", core.ErrUnauthorized
 	}
 	if req.Image.Kind != frontend.ImagePerson {
@@ -221,54 +254,14 @@ func (s *ImageGrantService) Issue(ctx context.Context, req frontend.ImageGrantRe
 	if err := s.authorized(ctx, viewer, req.Device, req.Item, req.Channel, req.Image); err != nil {
 		return "", err
 	}
-	device, err := json.Marshal(req.Device)
-	if err != nil || len(device) > 4096 {
-		return "", core.ErrUnauthorized
-	}
-	var random [32]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", err
-	}
-	secret := base64.RawURLEncoding.EncodeToString(random[:])
-	hash, _ := validImageSecret(secret)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-	row := imageBatchRow{hash: hash, item: req.Item, image: req.Image}
-	if err = s.insertAdmitted(ctx, tx, viewer.ID, source, req.Device.ID, string(device), req.Channel, []imageBatchRow{row}); err != nil {
-		return "", err
-	}
-	if err = tx.Commit(); err != nil {
-		return "", err
-	}
-	return secret, nil
+	return s.sealClaims(claims)
 }
-func (s *ImageGrantService) Revoke(ctx context.Context, credential, secret string) error {
-	viewer, err := s.grants.Resolve(ctx, string(s.surface), credential)
-	if err != nil {
-		return err
-	}
-	source, ok := grantHash(credential)
-	if !ok {
-		return core.ErrUnauthorized
-	}
-	if isShortImageTag(secret) {
-		err = s.revokeShortGrant(ctx, viewer.ID, source, secret)
-	} else if strings.HasPrefix(secret, pageGrantPrefix) {
-		err = s.revokePageGrant(ctx, viewer.ID, source, secret)
-	} else {
-		var hash string
-		hash, ok = validImageSecret(secret)
-		if !ok {
-			return core.ErrUnauthorized
-		}
-		if err = s.revokeAdmitted(ctx, viewer.ID, source, hash); err == nil {
-			s.gen.Add(1)
-		}
-	}
-	return err
+
+// Revoke is a documented no-op: stateless image grants store no per-grant
+// rows and re-authorize active viewer membership and current item or channel
+// visibility on every Serve.
+func (s *ImageGrantService) Revoke(context.Context, string, string) error {
+	return nil
 }
 
 // ServePublic serves one title image to a request carrying no
@@ -308,11 +301,26 @@ func (s *ImageGrantService) ServePublic(w http.ResponseWriter, r *http.Request, 
 	}
 	for _, candidate := range images {
 		if frontend.SameImage(candidate, base) {
-			s.writeGrantedImage(w, r, reader, device, item, "", img, "", "", "")
+			s.writeGrantedImage(w, r, reader, device, item, "", img)
 			return
 		}
 	}
 	http.NotFound(w, r)
+}
+
+func (s *ImageGrantService) requestCredential(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if s.requestOptions.Token != nil {
+		if token := s.requestOptions.Token(r); token != "" {
+			return token
+		}
+	}
+	if token, ok := authhdr.Bearer(r.Header.Get("Authorization")); ok {
+		return token
+	}
+	return ""
 }
 
 func (s *ImageGrantService) Serve(w http.ResponseWriter, r *http.Request, secret string) {
@@ -321,44 +329,36 @@ func (s *ImageGrantService) Serve(w http.ResponseWriter, r *http.Request, secret
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if isShortImageTag(secret) {
-		s.serveShortTag(w, r, secret)
-		return
-	}
-	if strings.HasPrefix(secret, pageGrantPrefix) {
-		s.servePageGrant(w, r, secret)
-		return
-	}
-	hash, ok := validImageSecret(secret)
-	if !ok {
+	claims, err := s.openClaims(secret)
+	if err != nil || !claimMatchesURL(claims, r) {
 		http.NotFound(w, r)
 		return
 	}
-	now := s.now().UnixMilli()
-	var viewerID, item int64
-	var deviceJSON, channel, sourceHash string
-	var img frontend.Image
-	err := s.db.QueryRowContext(r.Context(), `SELECT i.viewer_id,i.item,i.device,i.image_kind,i.image_path,i.image_tag,i.channel,i.image_subject,i.source_hash FROM frontend_image_grants i JOIN capability_headers h ON h.namespace='image' AND h.digest=i.hash AND h.viewer_id=i.viewer_id AND h.surface=i.surface AND h.expires=i.expires JOIN identity_grants g ON g.hash=i.source_hash AND g.viewer_id=i.viewer_id AND g.surface=i.surface JOIN auth_users u ON u.id=i.viewer_id WHERE i.hash=? AND i.surface=? AND i.revoked=0 AND i.expires>? AND g.revoked=0 AND g.expires>? AND u.active=1`, hash, string(s.surface), now, now).Scan(&viewerID, &item, &deviceJSON, &img.Kind, &img.Path, &img.Tag, &channel, &img.Subject, &sourceHash)
-	if err != nil {
+	if cred := s.requestCredential(r); cred != "" {
+		reqViewer, err := s.grants.Resolve(r.Context(), string(s.surface), cred)
+		if err != nil || reqViewer == nil || reqViewer.ID != claims.Viewer {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	var active int
+	if err := s.db.QueryRowContext(r.Context(), `SELECT active FROM auth_users WHERE id=?`, claims.Viewer).Scan(&active); err != nil || active != 1 {
 		http.NotFound(w, r)
 		return
 	}
-	viewer, err := s.grants.viewers.ActiveUser(r.Context(), viewerID)
-	if err != nil {
+	viewer, err := s.grants.viewers.ActiveUser(r.Context(), claims.Viewer)
+	if err != nil || viewer == nil {
 		http.NotFound(w, r)
 		return
 	}
-	var device core.Device
-	if json.Unmarshal([]byte(deviceJSON), &device) != nil {
-		http.NotFound(w, r)
-		return
-	}
+	device := core.Device{Language: claims.Language}
+	img := frontend.Image{Kind: claims.Kind, Path: claims.Path, Tag: claims.Tag, Subject: claims.Subject}
 	r = artworkRowsRequest(r, img)
-	if err = s.authorized(r.Context(), viewer, device, core.RatingKey(item), channel, img); err != nil {
+	if err = s.authorized(r.Context(), viewer, device, core.RatingKey(claims.Item), claims.Channel, img); err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	s.writeGrantedImage(w, r, viewer, device, core.RatingKey(item), channel, img, hash, sourceHash, deviceJSON)
+	s.writeGrantedImage(w, r, viewer, device, core.RatingKey(claims.Item), claims.Channel, img)
 }
 
 // artworkRowsRequest lets an image read authorize and list its title from
@@ -388,7 +388,20 @@ func imageETag(img frontend.Image, width, height int, format string, blur bool) 
 	return `"` + hex.EncodeToString(sum[:16]) + `"`
 }
 
-func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Request, viewer *core.Viewer, device core.Device, item core.RatingKey, channel string, img frontend.Image, hash, sourceHash, deviceJSON string) {
+func ifNoneMatchMatches(header, etag string) bool {
+	if header == "" || etag == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "*" || trimmed == etag || strings.TrimPrefix(trimmed, "W/") == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Request, viewer *core.Viewer, device core.Device, item core.RatingKey, channel string, img frontend.Image) {
 	width := grantedImageWidth(r, s.surface)
 	mediaBrowser := s.surface == "jellyfin" || s.surface == "emby"
 	quality := 0
@@ -423,6 +436,11 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 			format = ""
 		}
 	}
+	if s.surface == "silo" && channel != "" && format == "" {
+		// Channel artwork is often a generated SVG tile, which the Silo apps
+		// cannot draw: every live card was blank. Rasterize it for Silo.
+		format = "png"
+	}
 	blur := r.URL.Query().Get("blur") == "1"
 	if s.artwork != nil {
 		if height < 0 || height > 4000 {
@@ -440,8 +458,12 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 	}
 	if etag := imageETag(img, width, height, format+strconv.Itoa(quality), blur); etag != "" {
 		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", "private, max-age=86400")
-		if r.Header.Get("If-None-Match") == etag {
+		if strings.HasPrefix(img.Path, frontend.LibraryLiveThumbPrefix) {
+			w.Header().Set("Cache-Control", "private, max-age=60")
+		} else {
+			w.Header().Set("Cache-Control", immutableImageCacheControl)
+		}
+		if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -450,7 +472,9 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 	var contentType string
 	var err error
 	if s.artwork != nil {
-		data, contentType, err = s.artwork.Read(core.WithLiveApp(r.Context(), string(s.surface)), grantedArtworkRequest(viewer, device, item, channel, img), img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur, Quality: quality, Fit: mediaBrowser || s.surface == "vela"})
+		q := r.URL.Query()
+		siloPluginResize := s.surface == "silo" && item.IsPluginKey() && (q.Get("w") != "" || q.Get("maxWidth") != "" || q.Get("fillWidth") != "" || q.Get("h") != "")
+		data, contentType, err = s.artwork.Read(core.WithLiveApp(r.Context(), string(s.surface)), grantedArtworkRequest(viewer, device, item, channel, img), img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur, Quality: quality, Fit: mediaBrowser || s.surface == "vela" || siloPluginResize})
 	} else {
 		data, contentType, err = s.images.Get(r.Context(), img.Path, width)
 	}
@@ -458,13 +482,36 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 		data, contentType, err = fitGrantedImage(data, contentType, width, height)
 	}
 	if err != nil {
+		// A missing image is a 404, never a gateway error: clients treat
+		// 502 as a server fault and retry in a loop (#614). Only a
+		// failure that is not "the image does not exist" stays 502.
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, artwork.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "image unavailable", 502)
 		return
 	}
-	// A portrait fetch may cross I/O after its first authorization. Check
-	// current credited membership and fresh policy again before publishing bytes.
-	if (s.surface == "silo" || s.surface == "vela") && img.Kind == frontend.ImagePerson {
-		if err := s.authorizePersonGrant(r.Context(), viewer, device, item, channel, img, hash, sourceHash, deviceJSON); err != nil {
+	// A portrait or viewer-avatar fetch may cross I/O after its first
+	// authorization. Check current membership and fresh policy again before
+	// publishing bytes.
+	if strings.HasPrefix(img.Path, frontend.ViewerAvatarPrefix) {
+		var stillActive int
+		if err := s.db.QueryRowContext(r.Context(), `SELECT active FROM auth_users WHERE id=?`, viewer.ID).Scan(&stillActive); err != nil || stillActive != 1 {
+			http.NotFound(w, r)
+			return
+		}
+		freshViewer, err := s.grants.viewers.ActiveUser(r.Context(), viewer.ID)
+		if err != nil || freshViewer == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if current, ok := frontend.ViewerAvatarImage(freshViewer); !ok || !frontend.SameImage(current, img) {
+			http.NotFound(w, r)
+			return
+		}
+	} else if (s.surface == "silo" || s.surface == "vela") && img.Kind == frontend.ImagePerson {
+		if err := s.authorizePersonGrant(r.Context(), viewer, device, item, img); err != nil {
 			http.NotFound(w, r)
 			return
 		}
@@ -508,9 +555,9 @@ func grantedImageWidth(r *http.Request, surface frontend.Protocol) int {
 	return width
 }
 
-// Programme descriptors use the existing channel capability and persist the
-// exact airing identity in image_subject. Both admission and reads re-enumerate
-// that airing under current channel/programme policy, without a library scan.
+// Programme descriptors seal the channel and the exact airing identity in
+// Subject so both issue and reads re-enumerate that airing under current
+// channel/programme policy, without a library scan.
 func channelImageRequest(viewer *core.Viewer, device core.Device, channel string, image frontend.Image) frontend.ArtworkRequest {
 	req := frontend.ArtworkRequest{Viewer: viewer, Device: device, Channel: channel}
 	if image.Kind == frontend.ImageStill || image.Kind == frontend.ImageBackdrop {

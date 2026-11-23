@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
 func pseImageRequest(t *testing.T, imageType, query string) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/Items/abc/Images/"+imageType+"?"+query, nil)
-	r.SetPathValue("itemId", "abc")
+	r.SetPathValue("itemId", ids.RatingKeyGUID(frontend.MovieKey(550)))
 	r.SetPathValue("imageType", imageType)
 	return r
 }
@@ -40,7 +41,7 @@ func TestPSEImageSize(t *testing.T) {
 		if got := out.URL.Query().Get("w"); got != c.want {
 			t.Errorf("%s ?%s : w=%q, attendu %q", c.imageType, c.query, got, c.want)
 		}
-		if out.URL.Query().Get("tag") != "x" || out.PathValue("itemId") != "abc" || out.PathValue("imageType") != c.imageType {
+		if out.URL.Query().Get("tag") != "x" || out.PathValue("itemId") != ids.RatingKeyGUID(frontend.MovieKey(550)) || out.PathValue("imageType") != c.imageType {
 			t.Errorf("%s ?%s : la demande a perdu son étiquette ou son chemin", c.imageType, c.query)
 		}
 		if out.URL.Path != r.URL.Path {

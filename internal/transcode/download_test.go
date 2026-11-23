@@ -705,3 +705,125 @@ func TestCleanStaleRemovesOnlyEtherOrphans(t *testing.T) {
 		}
 	}
 }
+
+func TestRemuxDownloadHonorsSelectedAudioTrackInCopyAndConvert(t *testing.T) {
+	dualAudio := func() core.MediaInfo {
+		return core.MediaInfo{
+			Container:   "mkv",
+			Duration:    100 * time.Second,
+			Size:        1000,
+			BitrateKbps: 8000,
+			Streams: []core.StreamInfo{
+				{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+				{Index: 1, Type: "audio", Codec: "eac3", Channels: 6, Language: "jpn", Default: true},
+				{Index: 2, Type: "audio", Codec: "eac3", Channels: 6, Language: "eng"},
+				{Index: 3, Type: "subtitle", Codec: "subrip", Language: "eng"},
+			},
+		}
+	}
+
+	// Copy remux maps the non-default requested audio stream (even when only
+	// Options.AudioStream is set), marks it default and preserves language.
+	for name, req := range map[string]core.DownloadRemuxRequest{
+		"request audio": {
+			InputURL: "http://x", Info: dualAudio(), AudioStream: 2,
+			Options: core.DecideOptions{AudioStream: 2, SubtitleStream: 3},
+		},
+		"options audio overrides -1": {
+			InputURL: "http://x", Info: dualAudio(), AudioStream: -1,
+			Options: core.DecideOptions{AudioStream: 2, SubtitleStream: -1},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fr := newFakeRunner()
+			var got []string
+			fr.runFunc = func(ctx context.Context, cmd Command) error {
+				if !hasArg(cmd.Args, "-movflags") {
+					return errUnhandled
+				}
+				got = cmd.Args
+				return os.WriteFile(cmd.Args[len(cmd.Args)-1], []byte("mp4"), 0o644)
+			}
+			d := newDownloadRemuxer(t, fr, config.Downloads{})
+			path, _, err := d.RemuxDownload(context.Background(), req, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.ReleaseDownload(path)
+			joined := strings.Join(got, " ")
+			for _, want := range []string{"-c copy", "-map 0:0", "-map 0:2", "-disposition:a:0 default", "-metadata:s:a:0 language=eng"} {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("args %q missing %q", joined, want)
+				}
+			}
+			if strings.Contains(joined, "-map 0:1") {
+				t.Fatalf("args %q mapped default Japanese track instead of selected English track", joined)
+			}
+		})
+	}
+
+	// Convert path (e.g. non-copyable audio) also keeps track 2.
+	fr := newFakeRunner()
+	var got []string
+	fr.runFunc = func(ctx context.Context, cmd Command) error {
+		if !hasArg(cmd.Args, "-movflags") {
+			return errUnhandled
+		}
+		got = cmd.Args
+		return os.WriteFile(cmd.Args[len(cmd.Args)-1], []byte("mp4"), 0o644)
+	}
+	d := newDownloadRemuxer(t, fr, config.Downloads{})
+	info := dualAudio()
+	info.Streams[2].Codec = "truehd"
+	path, _, err := d.RemuxDownload(context.Background(), core.DownloadRemuxRequest{
+		InputURL: "http://x", Info: info, AudioStream: -1, ViewerID: 11,
+		Options: core.DecideOptions{AudioStream: 2, SubtitleStream: 3},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.ReleaseDownload(path)
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"-map 0:2", "-disposition:a:0 default", "-metadata:s:a:0 language=eng", "-map 0:3", "-c:s mov_text"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("convert args %q missing %q", joined, want)
+		}
+	}
+	if strings.Contains(joined, "-map 0:1") {
+		t.Fatalf("convert args %q mapped default Japanese track instead of selected English track", joined)
+	}
+}
+
+func TestRemuxDownloadQualityConversionRespectsNoVideoTranscode(t *testing.T) {
+	fr := newFakeRunner()
+	called := false
+	fr.runFunc = func(ctx context.Context, cmd Command) error {
+		if !hasArg(cmd.Args, "-movflags") {
+			return errUnhandled
+		}
+		called = true
+		return os.WriteFile(cmd.Args[len(cmd.Args)-1], []byte("mp4"), 0o644)
+	}
+	d := newDownloadRemuxer(t, fr, config.Downloads{})
+	info := core.MediaInfo{
+		Container:   "mkv",
+		Duration:    time.Hour,
+		BitrateKbps: 8000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "aac", Channels: 2},
+		},
+	}
+	_, _, err := d.RemuxDownload(context.Background(), core.DownloadRemuxRequest{
+		InputURL: "http://x",
+		Info:     info,
+		Caps:     core.ClientCaps{NoVideoTranscode: true, MaxHeight: 720},
+		Options:  core.DecideOptions{MaxHeight: 720, AudioStream: 1, SubtitleStream: -1},
+	}, nil)
+	if !errors.Is(err, ErrVideoTranscodingDisabled) {
+		t.Fatalf("RemuxDownload qualityConversion with NoVideoTranscode err = %v, want ErrVideoTranscodingDisabled", err)
+	}
+	if called {
+		t.Fatal("RemuxDownload fell back to remuxing uncapped 1080p source instead of failing with ErrVideoTranscodingDisabled")
+	}
+}

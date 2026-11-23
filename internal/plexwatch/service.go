@@ -213,22 +213,26 @@ type Options struct {
 	// Continue mirrors a Continue Watching removal (removed) or restore
 	// read from the account into stores beyond state (optional).
 	Continue func(ctx context.Context, userID int64, key core.RatingKey, removed bool) error
+	// OnTokenExpired is an optional non-blocking callback invoked when Plex
+	// rejects a viewer's stored account token.
+	OnTokenExpired func(userID int64, reason string)
 }
 
 // Service is one server's Plex account watch-state integration.
 type Service struct {
-	db        *sql.DB
-	state     *state.State
-	sealer    config.FieldSealer
-	guid      AccountGUIDs
-	client    *Client
-	watchlist func(ctx context.Context, userID int64) ([]core.RatingKey, error)
-	continued func(ctx context.Context, userID int64, key core.RatingKey, removed bool) error
-	node      string
-	log       *slog.Logger
-	now       func() time.Time
-	claimFor  time.Duration
-	pace      time.Duration
+	db             *sql.DB
+	state          *state.State
+	sealer         config.FieldSealer
+	guid           AccountGUIDs
+	client         *Client
+	watchlist      func(ctx context.Context, userID int64) ([]core.RatingKey, error)
+	continued      func(ctx context.Context, userID int64, key core.RatingKey, removed bool) error
+	onTokenExpired func(userID int64, reason string)
+	node           string
+	log            *slog.Logger
+	now            func() time.Time
+	claimFor       time.Duration
+	pace           time.Duration
 	// importBudget caps the Plex reads of one import pass.
 	importBudget int
 	mu           sync.Mutex
@@ -260,7 +264,8 @@ func New(opts Options) (*Service, error) {
 	return &Service{
 		db: opts.DB, state: opts.State, sealer: opts.Sealer, guid: opts.GUID,
 		client: c, watchlist: opts.Watchlist, continued: opts.Continue,
-		node: node, log: log, now: now, claimFor: 2 * time.Minute,
+		onTokenExpired: opts.OnTokenExpired,
+		node:           node, log: log, now: now, claimFor: 2 * time.Minute,
 		pace: 250 * time.Millisecond, importBudget: importRequests, closed: make(chan struct{}),
 	}, nil
 }
@@ -612,6 +617,9 @@ func (s *Service) revoke(ctx context.Context, userID, generation int64) error {
 	}
 	if revoked {
 		s.log.Info("plex account needs to be connected again", "user", userID)
+		if s.onTokenExpired != nil {
+			s.onTokenExpired(userID, ErrRevoked.Error())
+		}
 		return ErrRevoked
 	}
 	return nil

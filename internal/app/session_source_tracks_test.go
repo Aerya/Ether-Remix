@@ -63,20 +63,20 @@ func TestSourceTrackAdmissionThroughAppPreferences(t *testing.T) {
 	}
 	defer b.Close(ctx)
 	viewer := &core.Viewer{ID: 1}
-	audio, subtitle := 1, 2
-	request := frontend.PlanRequest{Viewer: viewer, Device: core.Device{ID: "explicit"}, Protocol: "silo", Item: core.MovieKey(1), Intent: frontend.PlayIntent{AudioOrdinal: &audio, SubtitleStreamIndex: &subtitle, Options: core.DecideOptions{DirectPlay: true, AudioStream: -1, SubtitleStream: -1}}}
+	audio, subtitle := 1, 0
+	request := frontend.PlanRequest{Viewer: viewer, Device: core.Device{ID: "explicit"}, Protocol: "silo", Item: core.MovieKey(1), Intent: frontend.PlayIntent{AudioOrdinal: &audio, SubtitleOrdinal: &subtitle, Options: core.DecideOptions{DirectPlay: true, AudioStream: -1, SubtitleStream: -1}}}
 	if _, err := b.Plan(ctx, request); err != nil || !selectedAudio || !selectedSubtitle || selected.AudioStream != 3 || selected.SubtitleStream != 2 {
 		t.Fatalf("explicit audio=%v subtitle=%v opts=%+v err=%v", selectedAudio, selectedSubtitle, selected, err)
 	}
 	off := -1
 	request.Device.ID = "off"
 	request.Intent.AudioOrdinal = nil
-	request.Intent.SubtitleStreamIndex = &off
+	request.Intent.SubtitleOrdinal = &off
 	if _, err := b.Plan(ctx, request); err != nil || selectedAudio || !selectedSubtitle || selected.SubtitleStream != -1 {
 		t.Fatalf("subtitle off audio=%v subtitle=%v opts=%+v err=%v", selectedAudio, selectedSubtitle, selected, err)
 	}
 	request.Device.ID = "preferences"
-	request.Intent.SubtitleStreamIndex = nil
+	request.Intent.SubtitleOrdinal = nil
 	if _, err := b.Plan(ctx, request); err != nil || selectedAudio || selectedSubtitle || selected.AudioStream != 1 || selected.SubtitleStream != 2 {
 		t.Fatalf("saved preferences audio=%v subtitle=%v opts=%+v err=%v", selectedAudio, selectedSubtitle, selected, err)
 	}

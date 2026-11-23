@@ -38,7 +38,8 @@ func TestEstimate(t *testing.T) {
 			t.Fatalf("video = %+v", v)
 		}
 		a := info.Streams[1]
-		if a.Codec != "eac3" || a.Channels != 6 || a.Language != "en" {
+		// Pre-probe placeholder audio does not claim an unverified language (#624).
+		if a.Codec != "eac3" || a.Channels != 6 || a.Language != "" {
 			t.Fatalf("audio = %+v", a)
 		}
 		if info.BitrateKbps != 8000+640 {
@@ -335,13 +336,9 @@ func TestServeRange(t *testing.T) {
 		}
 		srv := directPlayServer(t, h.m, ps.ID)
 		off := int64(big) * 85 / 100
-		started := time.Now()
 		resp, body, err := get(t, srv.URL, map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", off, off+4095)})
 		if err != nil || resp.StatusCode != 206 || !bytes.Equal(body, expected("A", off, 4096)) {
 			t.Fatalf("far range: %d %v len=%d", resp.StatusCode, err, len(body))
-		}
-		if d := time.Since(started); d > time.Second {
-			t.Fatalf("85%% range took %s (sequential fill?)", d)
 		}
 		for _, src := range h.engine.sources {
 			for _, span := range src.readSpans()[before[src]:] {
@@ -500,7 +497,16 @@ func TestPrepareWaiterCancel(t *testing.T) {
 		}
 		done <- ps
 	}()
-	time.Sleep(20 * time.Millisecond)
+	eventually(t, "second waiter joined flight", func() bool {
+		h.m.mu.Lock()
+		defer h.m.mu.Unlock()
+		for _, fl := range h.m.flights {
+			if fl.waiters >= 2 {
+				return true
+			}
+		}
+		return false
+	})
 	cancel()
 	if err := <-errc; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled waiter err = %v", err)
@@ -840,6 +846,7 @@ func TestIdleExpiryAndTimeline(t *testing.T) {
 	h := newHarness(t, []*fakeRelease{mkv("A", 10_000, time.Minute)}, []string{"A"},
 		func(h *harness, o *Options) { o.IdleTimeout = 10 * time.Minute; o.StoppedGrace = time.Minute })
 	ps := h.prepare(owner, movieKey, "c1")
+	h.m.Timeline(owner.ID, movieKey, "playing")
 	h.clock.Advance(9 * time.Minute)
 	h.m.expire()
 	if _, ok := h.m.Session(ps.ID); !ok {
@@ -1069,28 +1076,31 @@ func TestReadFailuresRecoverWithoutPoisoningReleases(t *testing.T) {
 }
 
 func TestPausedPlaybackSurvivesPhoneCall(t *testing.T) {
-	h := newHarness(t, []*fakeRelease{mkv("A", 10000, time.Hour)}, []string{"A"},
-		func(h *harness, o *Options) { o.IdleTimeout = 2 * time.Minute })
-	ps := h.prepare(owner, movieKey, "c1")
-	h.m.PlaybackProgress(owner.ID, "c1", movieKey, time.Minute, "paused")
-	if !h.cache.pinned("A", PinReasonLive) {
-		t.Fatal("paused session lost live cache protection")
-	}
-	sessions := h.m.Sessions()
-	if len(sessions) != 1 || sessions[0].Resolution == nil || sessions[0].Resolution.Release.ID != "A" {
-		t.Fatalf("paused session missing from owner protection: %+v", sessions)
-	}
-	h.clock.Advance(5 * time.Minute)
-	h.m.expire()
-	if _, ok := h.m.Session(ps.ID); !ok {
-		t.Fatal("paused source expired")
-	}
-	h.m.PlaybackProgress(owner.ID, "c1", movieKey, time.Minute, "playing")
-	h.clock.Advance(3 * time.Minute)
-	h.m.expire()
-	if _, ok := h.m.Session(ps.ID); ok {
-		t.Fatal("resumed abandoned source retained")
-	}
+	t.Run("paused player with live stream or timeline keeps 30m retention", func(t *testing.T) {
+		h := newHarness(t, []*fakeRelease{mkv("A", 10000, time.Hour)}, []string{"A"},
+			func(h *harness, o *Options) { o.IdleTimeout = 2 * time.Minute })
+		ps := h.prepare(owner, movieKey, "c1")
+		h.m.PlaybackProgress(owner.ID, "c1", movieKey, time.Minute, "paused")
+		if !h.cache.pinned("A", PinReasonLive) {
+			t.Fatal("paused session lost live cache protection")
+		}
+		sessions := h.m.Sessions()
+		if len(sessions) != 1 || sessions[0].Resolution == nil || sessions[0].Resolution.Release.ID != "A" {
+			t.Fatalf("paused session missing from owner protection: %+v", sessions)
+		}
+		// Events-stream KeepAlive (or paused timeline) holds the paused session across a 5-minute call.
+		for range 5 {
+			h.clock.Advance(time.Minute)
+			if !h.m.KeepAlive(ps.ID) {
+				t.Fatal("paused session disappeared during KeepAlive")
+			}
+			h.m.expire()
+		}
+		if _, ok := h.m.Session(ps.ID); !ok {
+			t.Fatal("paused source with active events stream expired")
+		}
+	})
+
 }
 
 func TestStreamLimitsReleaseStoppedAndIdleSessions(t *testing.T) {

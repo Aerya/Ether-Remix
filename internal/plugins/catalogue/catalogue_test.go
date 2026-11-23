@@ -694,3 +694,19 @@ func TestSignedIndexCannotRollBackAfterRestart(t *testing.T) {
 		t.Fatal("accepted conflicting index with same timestamp")
 	}
 }
+
+func TestEntryIconReturnsActiveCatalogueIconOnly(t *testing.T) {
+	s := &Service{idx: Index{Entries: []Entry{
+		{ID: "community.plutotv.ether", Icon: "https://catalogue.example/icons/pluto.svg"},
+		{ID: "community.revoked.ether", Icon: "https://catalogue.example/icons/revoked.svg", Revoked: true},
+	}}}
+	if got := s.EntryIcon("community.plutotv.ether"); got != "https://catalogue.example/icons/pluto.svg" {
+		t.Fatalf("EntryIcon(active) = %q", got)
+	}
+	if got := s.EntryIcon("community.revoked.ether"); got != "" {
+		t.Fatalf("EntryIcon(revoked) = %q, want empty", got)
+	}
+	if got := s.EntryIcon("community.unknown.ether"); got != "" {
+		t.Fatalf("EntryIcon(unknown) = %q, want empty", got)
+	}
+}

@@ -84,6 +84,7 @@ func (p *passthroughProducer) wantSteady(ctx context.Context, class string) {
 	// current source (it may have failed over since that viewer tuned).
 	viewer.mu.Lock()
 	rep := &session{info: viewer.info, user: viewer.user, caps: viewer.caps, ctx: viewer.ctx, steadyRefused: viewer.steadyRefused,
+		ephemeral: viewer.ephemeral, direct: p.direct, sniffedManifest: p.manifestFor(p.raw),
 		inputURL: p.raw, inputSource: p.src, inputHeaders: p.headers.Clone()}
 	viewer.mu.Unlock()
 	rep.info.Channel = p.c

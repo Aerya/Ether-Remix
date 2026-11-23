@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { UpdatesStatus } from "../pages/settings/sections";
+import { describeUpdaterMessage, UpdatesStatus } from "../pages/settings/sections";
 import type { UpdateStatus } from "../lib/types";
 
 const base: UpdateStatus = {
@@ -60,6 +60,35 @@ describe("update availability confidence", () => {
     expect(screen.getByText("No update feed configured")).toBeInTheDocument();
     expect(screen.queryByText("Ether is up to date")).not.toBeInTheDocument();
   });
+
+  it("maps internal Go updater errors to plain owner language and disables manual check", async () => {
+    await show({
+      enabled: false,
+      capability: "disabled",
+      disabledReason: "updater: no release public key configured",
+    });
+    expect(screen.getByText("This build can't check for signed updates.")).toBeInTheDocument();
+    expect(screen.queryByText(/updater:/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Check for updates" })).toBeDisabled();
+  });
+
+  it("never leaks raw updater: prefixes from Go error messages", () => {
+    expect(describeUpdaterMessage("updater: no release public key configured")).toBe(
+      "This build can't check for signed updates.",
+    );
+    expect(
+      describeUpdaterMessage(
+        "updater: updates are disabled in this build: updater: no release public key configured",
+      ),
+    ).toBe("This build can't check for signed updates.");
+    expect(describeUpdaterMessage("check: updater: manifest signature verification failed")).toBe(
+      "The update feed's signature couldn't be verified.",
+    );
+    expect(describeUpdaterMessage("updater: stat target: permission denied")).not.toMatch(
+      /updater:/i,
+    );
+  });
+
   it("preserves the skipped rollback explanation", async () => {
     await show({ state: "rolled-back", failedVersion: "0.2.44" });
     expect(

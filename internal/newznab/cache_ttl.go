@@ -17,6 +17,7 @@ const (
 )
 
 type cacheAgeKey struct{}
+type recentSearchCacheKey struct{}
 
 // withCacheAge carries the searched title's release time to cachePut.
 func withCacheAge(ctx context.Context, released time.Time) context.Context {
@@ -29,6 +30,17 @@ func withCacheAge(ctx context.Context, released time.Time) context.Context {
 func cacheAge(ctx context.Context) time.Time {
 	t, _ := ctx.Value(cacheAgeKey{}).(time.Time)
 	return t
+}
+
+// withRecentSearchCache bounds cachePut for category-only recent-release
+// searches so new uploads appear without waiting out the 6-hour title TTL.
+func withRecentSearchCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, recentSearchCacheKey{}, true)
+}
+
+func isRecentSearchCache(ctx context.Context) bool {
+	ok, _ := ctx.Value(recentSearchCacheKey{}).(bool)
+	return ok
 }
 
 // searchCacheTTL is how long to keep a search's results, from the client's

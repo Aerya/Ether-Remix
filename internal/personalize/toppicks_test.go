@@ -40,7 +40,7 @@ func TestContinueWatchingOpensEveryPage(t *testing.T) {
 		row("movie.world.ko", KindWorld, 10),
 		row("movie.toprated", KindTopRated, 10),
 	}
-	got := order(arrangeLayout(rows, core.HomeLayout{}, 1, hc, "movies", 16))
+	got := order(arrangeLayout(rows, core.HomeLayout{}, 1, hc, "library:1", 16))
 	if got[0] != "movie.inprogress.1" || got[1] != "movie.top10" {
 		t.Fatalf("page head = %v", got)
 	}
@@ -60,27 +60,27 @@ func TestContinueWatchingOpensEveryPage(t *testing.T) {
 	// A viewer the taste model doesn't know yet gets the server's Top 10.
 	cold := append([]core.HomeRow{}, rows[:5]...)
 	cold = append(cold, row("movie.top10.today", KindTop10Today, 10))
-	if got := order(arrangeLayout(cold, core.HomeLayout{}, 1, hc, "movies", 16)); got[0] != "movie.inprogress.1" || got[1] != "movie.top10.today" {
+	if got := order(arrangeLayout(cold, core.HomeLayout{}, 1, hc, "library:1", 16)); got[0] != "movie.inprogress.1" || got[1] != "movie.top10.today" {
 		t.Fatalf("cold page head = %v", got)
 	}
 	// An empty Top 10 can't lead.
 	empty := append([]core.HomeRow{}, rows...)
 	empty[5] = row("movie.top10", KindTop10, 0)
-	if got := order(arrangeLayout(empty, core.HomeLayout{}, 1, hc, "movies", 16)); got[0] == "movie.top10" {
+	if got := order(arrangeLayout(empty, core.HomeLayout{}, 1, hc, "library:1", 16)); got[0] == "movie.top10" {
 		t.Fatalf("empty top picks led: %v", got)
 	}
 
 	// The owner's layout wins: an anchor at slot 1, or a policy on the row.
-	anchored := core.HomeLayout{Global: []core.LayoutPage{{Section: "movies", Rows: []core.RowPolicy{{Row: KindEra, Status: "always", Slot: 1}}}}}
-	if got := order(arrangeLayout(rows, anchored, 1, hc, "movies", 16)); got[0] != "movie.era.1990" {
+	anchored := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", Rows: []core.RowPolicy{{Row: KindEra, Status: "always", Slot: 1}}}}}
+	if got := order(arrangeLayout(rows, anchored, 1, hc, "library:1", 16)); got[0] != "movie.era.1990" {
 		t.Fatalf("owner anchor lost slot 1: %v", got)
 	}
-	ra := core.HomeLayout{Global: []core.LayoutPage{{Section: "movies", Rows: []core.RowPolicy{{Row: KindRecentlyAdded, Status: "always", Slot: 2}}}}}
-	if got := order(arrangeLayout(rows, ra, 1, hc, "movies", 16)); got[0] != "movie.inprogress.1" || got[1] != "movie.recentlyadded.1" {
+	ra := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1", Rows: []core.RowPolicy{{Row: KindRecentlyAdded, Status: "always", Slot: 2}}}}}
+	if got := order(arrangeLayout(rows, ra, 1, hc, "library:1", 16)); got[0] != "movie.inprogress.1" || got[1] != "movie.recentlyadded.1" {
 		t.Fatalf("owner policy on Recently Added ignored: %v", got)
 	}
 	// A short page still keeps the feed at the bottom rather than dropping the picks.
-	if got := order(arrangeLayout(rows, core.HomeLayout{}, 1, hc, "movies", 4)); got[0] != "movie.inprogress.1" || len(got) != 4 {
+	if got := order(arrangeLayout(rows, core.HomeLayout{}, 1, hc, "library:1", 4)); got[0] != "movie.inprogress.1" || len(got) != 4 {
 		t.Fatalf("short page = %v", got)
 	}
 }
@@ -126,11 +126,8 @@ func TestRowsNeverShowAHandfulOfTitles(t *testing.T) {
 	u := core.User{ID: 1}
 	sciFiFan(h, u.ID)
 	h.rebuild(u)
-	for _, section := range []string{"home", "movies", "shows"} {
+	for _, section := range []string{"home", "library:1", "library:2"} {
 		hc := hubContext(testNow, core.DeviceTV)
-		if section == "shows" {
-			hc.SectionID = 2
-		}
 		p, err := h.e.PreviewHome(context.Background(), &u, hc, section, 12)
 		if err != nil {
 			t.Fatal(err)
@@ -154,7 +151,7 @@ func TestRowsNeverShowAHandfulOfTitles(t *testing.T) {
 }
 
 func TestContinueWatchingFirstAcrossSurfaces(t *testing.T) {
-	for _, section := range []string{"home", "movies", "shows"} {
+	for _, section := range []string{"home", "library:1", "library:2"} {
 		for _, n := range []int{0, 1, 8} {
 			rows := []core.HomeRow{row("top", KindTop10, 10), row("continue", KindContinue, n), row("new", KindNewReleases, 24)}
 			got := order(arrangeLayout(rows, core.HomeLayout{}, 1, hubContext(testNow, core.DeviceTV), section, 16))

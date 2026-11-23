@@ -140,6 +140,13 @@ func (p *premiumize) directdl(ctx context.Context, magnet string) ([]File, error
 }
 
 func (p *premiumize) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, error) {
+	if req.Private && !req.privateChecked {
+		var perr error
+		req, perr = prepareAcquire(ctx, p, req, false)
+		if perr != nil {
+			return nil, perr
+		}
+	}
 	cached, err := p.CheckCached(ctx, []string{req.InfoHash})
 	if err != nil {
 		return nil, err
@@ -166,6 +173,11 @@ func (p *premiumize) Acquire(ctx context.Context, req AcquireRequest) (*Acquired
 }
 
 func (p *premiumize) Link(ctx context.Context, h Handle) (DirectLink, error) {
+	var herr error
+	h, herr = prepareHandle(h)
+	if herr != nil {
+		return DirectLink{}, herr
+	}
 	if h.Magnet == "" {
 		return DirectLink{}, errors.New("premiumize: payload has no magnet")
 	}

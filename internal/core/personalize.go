@@ -29,10 +29,15 @@ type HubContext struct {
 	Weekend   bool      `json:"weekend"`
 	Now       time.Time `json:"now"`
 	SectionID int       `json:"sectionId,omitempty"`
-	Product   string    `json:"product,omitempty"`  // X-Plex-Product
-	Platform  string    `json:"platform,omitempty"` // X-Plex-Platform
-	SessionID string    `json:"sessionId,omitempty"`
-	ClientID  string    `json:"clientId,omitempty"`
+	// HomeScoped marks a library-scoped Home request (such as Plex
+	// /hubs/promoted?contentDirectoryID=N): rows remain scoped to the
+	// section's media type and library membership, while layout policies and
+	// collection targeting use the Home ("home") surface.
+	HomeScoped bool   `json:"-"`
+	Product    string `json:"product,omitempty"`  // X-Plex-Product
+	Platform   string `json:"platform,omitempty"` // X-Plex-Platform
+	SessionID  string `json:"sessionId,omitempty"`
+	ClientID   string `json:"clientId,omitempty"`
 }
 
 // ContextualRecommender is implemented by recommenders that adapt rows to

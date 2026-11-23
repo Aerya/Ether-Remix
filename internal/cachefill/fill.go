@@ -123,9 +123,20 @@ type Manager struct {
 
 // failure is a title's consecutive failed fills and the last one's time.
 type failure struct {
-	count int
-	at    time.Time
+	count     int
+	at        time.Time
+	need      int64 // reservation that did not fit below higher-ranked titles
+	watchlist bool  // watchlist fills reserve only a prefix, not the full source
 }
+
+// minOverhead is the least a reservation adds to its source size.
+const minOverhead = 32 << 20
+
+// roomError is a source that would not fit even after evicting every
+// lower-ranked shelf entry.
+type roomError struct{ need int64 }
+
+func (roomError) Error() string { return "higher-ranked sources already fill the allocation" }
 
 func New(dir string, d Deps) (*Manager, error) {
 	if d.Catalog == nil || d.Resolver == nil || d.Engine == nil || d.Cache == nil || d.Config == nil || d.Owner == nil || d.FreeBytes == nil {
@@ -387,17 +398,30 @@ func releaseLabel(r core.Release) string {
 	return r.Indexer
 }
 
+func shelfOrigin(src core.MediaSource, protocol string) string {
+	if o, ok := src.(core.OriginSource); ok {
+		return o.Origin()
+	}
+	if protocol == core.ProtocolTorrent {
+		return "Debrid"
+	}
+	if protocol == core.ProtocolHTTP {
+		return "HTTP"
+	}
+	return "Usenet"
+}
+
 // noteShelf records the selection reason and file behind a shelf entry.
-func (m *Manager) noteShelf(r core.Release, file, title string, size int64, detail core.CacheShelfDetail) {
+func (m *Manager) noteShelf(key core.RatingKey, r core.Release, src core.MediaSource, file, title string, size int64, detail core.CacheShelfDetail) {
 	rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder)
 	if !ok {
 		return
 	}
-	rec.RecordProvenance(core.CacheProvenance{ReleaseID: r.ID, File: file, Size: size, Source: releaseLabel(r), Title: title, Cause: core.CacheCauseShelf, Shelf: &detail})
+	rec.RecordProvenance(core.CacheProvenance{ReleaseID: r.ID, RatingKey: key, File: file, Size: size, Source: releaseLabel(r), Indexer: r.Indexer, Origin: shelfOrigin(src, r.Protocol), Title: title, Cause: core.CacheCauseShelf, Shelf: &detail})
 }
 
 // fail keeps a failed title in the manifest so the selection list can show it.
-func (m *Manager) fail(key core.RatingKey, c candidate) error {
+func (m *Manager) fail(key core.RatingKey, c candidate, cause error) error {
 	m.mu.Lock()
 	it := m.items[key]
 	it.Key = key
@@ -409,7 +433,13 @@ func (m *Manager) fail(key core.RatingKey, c candidate) error {
 	if m.failed == nil {
 		m.failed = map[core.RatingKey]failure{}
 	}
-	m.failed[key] = failure{count: m.failed[key].count + 1, at: m.deps.Now()}
+	f := failure{count: m.failed[key].count + 1, at: m.deps.Now()}
+	var room roomError
+	if errors.As(cause, &room) {
+		f.need = room.need
+		f.watchlist = c.intent != nil
+	}
+	m.failed[key] = f
 	m.items[key] = it
 	m.mu.Unlock()
 	if it.ReleaseID != "" {
@@ -424,6 +454,9 @@ func (m *Manager) forget(key core.RatingKey) error {
 	m.mu.Lock()
 	it := m.items[key]
 	if it.ReleaseID == "" {
+		// A title that failed before choosing a source holds no pin or bytes.
+		// The manifest load drops it too, so no write is needed here.
+		delete(m.items, key)
 		m.mu.Unlock()
 		return nil
 	}
@@ -467,7 +500,11 @@ func (m *Manager) pass(ctx context.Context) error {
 		m.failed = nil
 	}
 	for k, f := range m.failed {
-		if m.deps.Now().Sub(f.at) > 2*failureBackoff(f.count) {
+		keep := 2 * failureBackoff(f.count)
+		if f.need > 0 {
+			keep = 48 * time.Hour // a pass can wait hours behind one long fill
+		}
+		if m.deps.Now().Sub(f.at) > keep {
 			delete(m.failed, k) // no longer a candidate: keep the map bounded
 		}
 	}
@@ -477,8 +514,11 @@ func (m *Manager) pass(ctx context.Context) error {
 	// become ordinary retention candidates, never a forced deletion.
 	snapshot := m.localStatus()
 	sort.Slice(snapshot.Items, func(i, j int) bool { return snapshot.Items[i].Updated.Before(snapshot.Items[j].Updated) })
-	allocated, count := snapshot.Allocated, len(snapshot.Items)
+	allocated, count := snapshot.Allocated, reserved(snapshot.Items)
 	for _, it := range snapshot.Items {
+		if it.ReleaseID == "" {
+			continue // a failed title without a source reserves nothing
+		}
 		if !m.enabled(cfg) || (!contentAllowed(cfg, it.Key) && !keptWarm(cfg, it.Key)) || allocated > limit || count > maxTitles || m.deps.Cache.ReleaseBytes(it.ReleaseID) == 0 {
 			allocated -= max(it.Size, m.deps.Cache.ReleaseBytes(it.ReleaseID))
 			count--
@@ -568,6 +608,25 @@ func (m *Manager) pass(ctx context.Context) error {
 		if waiting && m.deps.Now().Before(f.at.Add(failureBackoff(f.count))) {
 			continue
 		}
+		// A watchlist event changes a full-source fill into a small prefix fill.
+		// Its old reservation is not evidence that the new job cannot fit.
+		if f.watchlist != (candidate.intent != nil) {
+			f.need = 0
+		}
+		// Resolving searches indexers and may grab an NZB. Skip a title that
+		// cannot be admitted even after evicting every lower-ranked entry:
+		// no source fits in its bare overhead, nor in less than the
+		// reservation its last source needed.
+		if _, err := m.victims(title.Key, max(minOverhead+1, f.need), limit, maxTitles, ranks); err != nil {
+			if waiting {
+				m.mu.Lock()
+				f.at = m.deps.Now() // still waiting for room, not a new failure
+				m.failed[title.Key] = f
+				m.mu.Unlock()
+			}
+			m.deps.Logger.Debug("preload deferred until higher-ranked sources leave room", "key", title.Key, "need", max(minOverhead+1, f.need))
+			continue
+		}
 		if err := m.allowed(); err != nil {
 			return err
 		}
@@ -607,7 +666,7 @@ func (m *Manager) pass(ctx context.Context) error {
 			m.status.Failed++
 			m.mu.Unlock()
 			m.deps.Logger.Debug("preload skipped", "key", title.Key, "err", err)
-			if dropErr := m.fail(title.Key, candidate); dropErr != nil {
+			if dropErr := m.fail(title.Key, candidate, err); dropErr != nil {
 				return dropErr
 			}
 		}
@@ -646,8 +705,18 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 			size = min(size, int64(8<<20))
 		}
 	}
-	if size <= 0 || size > limit {
-		return errors.New("source size unknown or larger than the preload allocation")
+	if size <= 0 {
+		return errors.New("source size unknown")
+	}
+	// Remember all positive sizes that cannot fit, including sources larger
+	// than the entire allocation. Check before retiring an existing source.
+	overhead := max(size/20, minOverhead)
+	if size > (1<<63-1)-overhead {
+		return errors.New("source reservation overflow")
+	}
+	reservation := size + overhead
+	if reservation > limit {
+		return roomError{need: reservation}
 	}
 	if previous.ReleaseID != "" && previous.ReleaseID != res.Release.ID {
 		if err := m.forget(title.Key); err != nil {
@@ -655,11 +724,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 		}
 		previous = Item{}
 	}
-	// Reserve source overhead and make room only after a real source opens.
-	reservation := size + max(size/20, 32<<20)
-	if reservation < 0 || reservation > limit {
-		return errors.New("source does not fit preload allocation")
-	}
+	// Make room only after a real source opens and its reservation fits.
 	if err := m.makeRoom(title.Key, reservation, limit, maxTitles, ranks); err != nil {
 		return err
 	}
@@ -675,7 +740,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 		_ = m.pin(res.Release.ID, false)
 		return err
 	}
-	m.noteShelf(res.Release, src.Name(), displayTitle(*title), size, shelf)
+	m.noteShelf(title.Key, res.Release, src, src.Name(), displayTitle(*title), size, shelf)
 	m.state("filling", "Fetching complete source at background priority")
 	for off := int64(0); off < size; {
 		if err := ctx.Err(); err != nil {
@@ -722,7 +787,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 		return err
 	}
 	shelf.State = "fetched"
-	m.noteShelf(res.Release, src.Name(), displayTitle(*title), size, shelf)
+	m.noteShelf(title.Key, res.Release, src, src.Name(), displayTitle(*title), size, shelf)
 	if m.deps.Remember != nil {
 		if err := m.deps.Remember(ctx, owner, title.Key, caps, res); err != nil {
 			m.deps.Logger.Warn("remember preloaded source", "err", err)
@@ -734,8 +799,23 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 // makeRoom rotates out lower-ranked shelf entries, never better ones. Removing
 // a preload reservation leaves its bytes available to ordinary cache retention.
 func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitles int, ranks map[core.RatingKey]int) error {
+	victims, err := m.victims(key, reservation, limit, maxTitles, ranks)
+	if err != nil {
+		return err
+	}
+	for _, it := range victims {
+		if err := m.forget(it.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// victims lists the lowest-ranked shelf entries that must leave for key to
+// reserve reservation bytes and a title slot, without changing anything.
+func (m *Manager) victims(key core.RatingKey, reservation, limit int64, maxTitles int, ranks map[core.RatingKey]int) ([]Item, error) {
 	s := m.localStatus()
-	allocated, count := s.Allocated, len(s.Items)
+	allocated, count := s.Allocated, reserved(s.Items)
 	rank := func(k core.RatingKey) int {
 		if n, ok := ranks[k]; ok {
 			return n
@@ -744,6 +824,9 @@ func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitl
 	}
 	var victims []Item
 	for _, it := range s.Items {
+		if it.ReleaseID == "" {
+			continue // failed titles keep no reservation and free nothing
+		}
 		if it.Key == key {
 			allocated -= max(it.Size, m.deps.Cache.ReleaseBytes(it.ReleaseID))
 			count--
@@ -757,19 +840,26 @@ func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitl
 	need := 0
 	for reservation > limit-allocated || count >= maxTitles {
 		if need >= len(victims) {
-			return errors.New("higher-ranked sources already fill the allocation")
+			return nil, roomError{need: reservation}
 		}
 		it := victims[need]
 		allocated -= max(it.Size, m.deps.Cache.ReleaseBytes(it.ReleaseID))
 		count--
 		need++
 	}
-	for _, it := range victims[:need] {
-		if err := m.forget(it.Key); err != nil {
-			return err
+	return victims[:need], nil
+}
+
+// reserved counts shelf entries that hold a source. Failed titles stay in the
+// manifest for the selection list but take no title slot.
+func reserved(items []Item) int {
+	n := 0
+	for _, it := range items {
+		if it.ReleaseID != "" {
+			n++
 		}
 	}
-	return nil
+	return n
 }
 
 func (m *Manager) loadDocument(b []byte) error {

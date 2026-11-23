@@ -47,6 +47,7 @@ func (a *App) pruners() []pruner {
 	add("ratings", a.ratings != nil, func(ctx context.Context) (int64, error) { return a.ratings.Prune(ctx) })
 	add("collections", a.collections != nil, func(ctx context.Context) (int64, error) { return a.collections.Prune(ctx) })
 	add("plexmeta", a.plexMeta != nil, func(ctx context.Context) (int64, error) { return a.plexMeta.Prune(ctx) })
+	add("extras", a.extras != nil, func(ctx context.Context) (int64, error) { return a.extras.Prune(ctx) })
 	add("livetv", a.livetv != nil, func(ctx context.Context) (int64, error) { return a.livetv.Prune(ctx) })
 	add("state_sync", a.state != nil, func(ctx context.Context) (int64, error) { return 0, a.state.CompactSync(ctx, time.Now()) })
 	add("identity", a.db != nil, func(ctx context.Context) (int64, error) {

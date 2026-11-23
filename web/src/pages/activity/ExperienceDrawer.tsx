@@ -411,6 +411,7 @@ export function ExperienceDrawer({
       onClose={onClose}
       size="lg"
       title={d?.username || name || t("Viewer")}
+      documentTitle={d?.username || name || t("Viewer")}
       description={tn(
         days,
         "Experience over the last {count} day",

@@ -202,3 +202,72 @@ func TestPrepareKindRespectsStreamLimit(t *testing.T) {
 		t.Fatalf("second PrepareKind succeeded despite the stream limit")
 	}
 }
+
+// PrepareKind scopes deferred sessions by (PreferSourceID, Exact) so version
+// switches never reuse a mismatched live session, and crossing the real-play
+// threshold on an explicit plugin version records a viewer choice.
+func TestPrepareKindVersionSelectionAndRememberedChoice(t *testing.T) {
+	rel4K := mkv("K4K", 200000, 100*time.Second)
+	rel1080 := mkv("K1080", 150000, 100*time.Second)
+	h := newHarness(t, []*fakeRelease{rel4K, rel1080}, nil)
+	rec := &recordingChoiceResolver{Resolver: h.resolver}
+	h.m.deps.Resolver = rec
+	title := &core.Title{Key: pluginKindKey, Type: core.TypeMovie, Title: "Plugin Multi", Runtime: 100 * time.Second}
+	mkInput := func(prefer string, exact, deferSup bool) core.KindInput {
+		in := core.KindInput{
+			Title:             title,
+			SourceID:          "multi",
+			PreferSourceID:    prefer,
+			Exact:             exact,
+			DeferSupersession: deferSup,
+		}
+		in.OpenCandidate = func(_ context.Context, _ []string) (core.MediaSource, core.Release, error) {
+			if in.PreferSourceID == "kind:K1080" {
+				return &kindSource{rel: rel1080}, core.Release{ID: "kind:K1080", Name: "Movie 1080p WEB-DL", Protocol: core.ProtocolHTTP}, nil
+			}
+			return &kindSource{rel: rel4K}, core.Release{ID: "kind:K4K", Name: "Movie 2160p Remux", Protocol: core.ProtocolHTTP}, nil
+		}
+		return in
+	}
+
+	caps := defaultCaps("vela-1")
+	caps.Protocol = "vela"
+	psAuto, err := h.m.PrepareKind(context.Background(), owner, mkInput("", false, true), caps)
+	if err != nil {
+		t.Fatalf("PrepareKind(Auto): %v", err)
+	}
+	if psAuto.Resolution == nil || psAuto.Resolution.Release.ID != "kind:K4K" {
+		t.Fatalf("Auto resolution = %+v, want kind:K4K", psAuto.Resolution)
+	}
+	if !h.m.MarkSurfaceOpened(psAuto.ID) {
+		t.Fatal("MarkSurfaceOpened(Auto) failed")
+	}
+
+	// Preparing an explicit alternative version with DeferSupersession must NOT
+	// reuse the live Auto session, and must leave Auto open until admitted.
+	ps1080, err := h.m.PrepareKind(context.Background(), owner, mkInput("kind:K1080", true, true), caps)
+	if err != nil {
+		t.Fatalf("PrepareKind(1080p): %v", err)
+	}
+	if ps1080.ID == psAuto.ID || ps1080.Resolution == nil || ps1080.Resolution.Release.ID != "kind:K1080" {
+		t.Fatalf("picked 1080p reused Auto or opened wrong release: id=%s rel=%+v", ps1080.ID, ps1080.Resolution)
+	}
+	if _, ok := h.m.Session(psAuto.ID); !ok {
+		t.Fatal("deferred version prepare prematurely closed Auto session")
+	}
+	if !h.m.MarkSurfaceOpened(ps1080.ID) {
+		t.Fatal("MarkSurfaceOpened(1080p) failed")
+	}
+
+	// Advancing playback past 5% on the explicitly chosen plugin version records
+	// the viewer's choice in the resolver.
+	h.m.NoteStartPosition(ps1080.ID, 0)
+	s := h.m.lookup(ps1080.ID)
+	h.m.observeViewerVersionChoice(s, 10*time.Second, "playing", "playing")
+	rec.mu.Lock()
+	got := append([]recordedChoice(nil), rec.records...)
+	rec.mu.Unlock()
+	if len(got) != 1 || got[0].release.ID != "kind:K1080" || got[0].key != pluginKindKey {
+		t.Fatalf("recorded viewer choices = %+v, want kind:K1080 for %s", got, pluginKindKey)
+	}
+}

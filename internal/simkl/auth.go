@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 // AUTH V2 device flow: https://api.simkl.org/api-reference/oauth2-device
@@ -68,7 +70,7 @@ func (c AuthClient) post(ctx context.Context, path string, form url.Values, dst 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "Ether/1.0")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	hc := c.HTTP
 	if hc == nil {
 		hc = metadataClient()

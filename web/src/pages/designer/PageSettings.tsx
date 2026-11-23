@@ -2,8 +2,21 @@ import { Button, Input, cn } from "@braedonsaunders/appkit-ui";
 import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { t } from "../../i18n";
-import type { Device, HomeLayout, LayoutSection, Viewer } from "../../lib/contract";
-import { DEVICES, SECTIONS, lengthIn, setPageLength, type LayerKey } from "../../lib/layout";
+import type {
+  Device,
+  HomeLayout,
+  LayoutDefaultsMaxRows,
+  LayoutSection,
+  Viewer,
+} from "../../lib/contract";
+import {
+  DEVICES,
+  defaultRowsForSection,
+  lengthIn,
+  sectionLabelOf,
+  setPageLength,
+  type LayerKey,
+} from "../../lib/layout";
 
 /**
  * Page length (rows the engine arranges; Plex's own rows not counted), for
@@ -16,15 +29,18 @@ export function PageSettings({
   layer,
   section,
   defaults,
+  label,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
   layer: LayerKey;
   section: LayoutSection;
   viewers: Viewer[];
-  defaults: Record<LayoutSection, number>;
+  defaults: LayoutDefaultsMaxRows;
+  label?: string;
 }) {
-  const sectionLabel = SECTIONS.find((s) => s.value === section)?.label ?? section;
+  const sectionLabel = label ?? sectionLabelOf(section);
+  const defaultMax = defaultRowsForSection(defaults, section);
   const anyDevice = DEVICES.some((d) => lengthIn(draft, layer, section, d.value));
   const [perDevice, setPerDevice] = useState(false);
   const showDevices = perDevice || anyDevice;
@@ -39,13 +55,13 @@ export function PageSettings({
       }
       const g = lengthIn(draft, "global", section, null);
       if (g) return { n: g, from: t("Everyone") };
-      return { n: defaults[section], from: t("engine default") };
+      return { n: defaultMax, from: t("engine default") };
     }
     if (device) {
       const g = lengthIn(draft, "global", section, null);
       if (g) return { n: g, from: t("all devices") };
     }
-    return { n: defaults[section], from: t("engine default") };
+    return { n: defaultMax, from: t("engine default") };
   };
   const row = (device: Device | null, label: string) => {
     const own = lengthIn(draft, layer, section, device);

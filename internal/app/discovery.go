@@ -10,6 +10,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/personalize"
 	"github.com/braedonsaunders/ether/internal/plexguid"
 	"github.com/braedonsaunders/ether/internal/ratings"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/watchlist"
 	"net/http"
 	"path/filepath"
@@ -66,6 +67,7 @@ func (a *App) buildDiscovery() {
 				a.log.Warn("queue watchlist warm intent", "err", err)
 			}
 			a.cachefill.Wake()
+			a.onWatchlistAvailable(ctx, userID, key)
 			if a.sessionEvents == nil {
 				return
 			}
@@ -73,6 +75,8 @@ func (a *App) buildDiscovery() {
 				a.log.Warn("watchlist available event", "err", err)
 			}
 		},
+		OnUnavailable: a.onWatchlistUnavailable,
+		OnSynced:      a.onWatchlistSynced,
 		OnFriendsRSSChanged: func(ctx context.Context) {
 			if a.collections != nil {
 				if err := a.collections.SyncFriendsWatchlist(ctx); err != nil && a.log != nil {
@@ -93,7 +97,7 @@ func (a *App) buildDiscovery() {
 	}
 	a.discoveryPersonal = personalize.NewDiscovery(a.db, a.catalog, a.state, a.safety.Allowed)
 	a.discoveryPersonal.NotInterested = a.notInterestedSignals
-	a.overlays = overlays.New(a.db, overlays.Options{CacheDir: filepath.Join(a.opts.DataDir, "cache", "overlays"), Images: a.images, Allowed: a.safety.Allowed, Ratings: a.ratings, FactsFor: a.overlayFacts, Variants: a.artworkVariants, Taste: func(ctx context.Context, u *core.User) []string {
+	a.overlays = overlays.New(a.db, overlays.Options{CacheDir: filepath.Join(a.opts.DataDir, "cache", "overlays"), Images: a.images, Allowed: a.safety.Allowed, Ratings: a.ratings, FactsFor: a.overlayFacts, PreparePage: a.prepareOverlayPage, Variants: a.artworkVariants, PluginBadges: a.overlayPluginBadgeSets, Taste: func(ctx context.Context, u *core.User) []string {
 		p, err := a.personalize.Taste(ctx, u)
 		if err != nil {
 			return nil
@@ -129,8 +133,148 @@ func (a *App) buildDiscovery() {
 	a.discoveryFeatures.OverviewTranslate = a.lang.Overview
 	a.discoveryFeatures.PrepareArtworkPage = a.prepareArtworkPage
 }
+
+type overlayPageFactsKey struct {
+	app    *App
+	userID int64
+}
+
+type overlayShowStatus struct {
+	newEpisode bool
+	newSeason  bool
+}
+
+type overlayPageFacts struct {
+	showChecked    map[core.RatingKey]bool
+	showStatus     map[core.RatingKey]overlayShowStatus
+	qualityChecked map[core.RatingKey]bool
+	qualityInfo    map[core.RatingKey]core.MediaInfo
+}
+
+func (a *App) prepareOverlayPage(ctx context.Context, u *core.User, titles []core.Title, status, quality bool) context.Context {
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	if u == nil || len(titles) == 0 {
+		return ctx
+	}
+	key := overlayPageFactsKey{app: a, userID: u.ID}
+	prev, _ := ctx.Value(key).(overlayPageFacts)
+	next := overlayPageFacts{
+		showChecked:    make(map[core.RatingKey]bool, len(prev.showChecked)),
+		showStatus:     make(map[core.RatingKey]overlayShowStatus, len(prev.showStatus)),
+		qualityChecked: make(map[core.RatingKey]bool, len(prev.qualityChecked)),
+		qualityInfo:    make(map[core.RatingKey]core.MediaInfo, len(prev.qualityInfo)),
+	}
+	for k, v := range prev.showChecked {
+		next.showChecked[k] = v
+	}
+	for k, v := range prev.showStatus {
+		next.showStatus[k] = v
+	}
+	for k, v := range prev.qualityChecked {
+		next.qualityChecked[k] = v
+	}
+	for k, v := range prev.qualityInfo {
+		next.qualityInfo[k] = v
+	}
+
+	if status && a.catalog != nil && a.state != nil {
+		var shows []core.RatingKey
+		seenShow := make(map[core.RatingKey]bool)
+		for i := range titles {
+			if titles[i].Type == core.TypeShow && titles[i].Key > 0 && !next.showChecked[titles[i].Key] && !seenShow[titles[i].Key] {
+				seenShow[titles[i].Key] = true
+				shows = append(shows, titles[i].Key)
+			}
+		}
+		if len(shows) > 0 {
+			epByShow, err := a.catalog.RecentEpisodesMany(ctx, shows, time.Now().Add(-30*24*time.Hour))
+			if err == nil {
+				var epKeys []core.RatingKey
+				seenEp := make(map[core.RatingKey]bool)
+				for _, eps := range epByShow {
+					for _, ep := range eps {
+						if ep.Key > 0 && !seenEp[ep.Key] {
+							seenEp[ep.Key] = true
+							epKeys = append(epKeys, ep.Key)
+						}
+					}
+				}
+				var watched map[core.RatingKey]core.WatchStatus
+				if len(epKeys) > 0 {
+					watched, err = a.state.GetMany(ctx, u.ID, epKeys)
+				}
+				if err == nil {
+					for _, sk := range shows {
+						next.showChecked[sk] = true
+						var st overlayShowStatus
+						for _, ep := range epByShow[sk] {
+							if watched[ep.Key].ViewCount == 0 {
+								st.newEpisode = true
+								if ep.Episode == 1 {
+									st.newSeason = true
+								}
+							}
+						}
+						if st.newEpisode || st.newSeason {
+							next.showStatus[sk] = st
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if quality {
+		var qKeys []core.RatingKey
+		seenQ := make(map[core.RatingKey]bool)
+		for i := range titles {
+			k := titles[i].Key
+			if k > 0 && !next.qualityChecked[k] && !seenQ[k] {
+				seenQ[k] = true
+				qKeys = append(qKeys, k)
+			}
+		}
+		if len(qKeys) > 0 {
+			if a.playback != nil {
+				if obs, err := a.playback.ObservedMediaInfoMany(ctx, u.ID, qKeys); err == nil {
+					for _, k := range qKeys {
+						next.qualityChecked[k] = true
+						if o := obs[k]; o != nil {
+							next.qualityInfo[k] = o.Info
+						}
+					}
+				}
+			} else if a.brokerPlayback != nil {
+				wanted := make(map[core.RatingKey]bool, len(qKeys))
+				for _, k := range qKeys {
+					wanted[k] = true
+					next.qualityChecked[k] = true
+				}
+				for _, session := range a.brokerPlayback.Sessions() {
+					if session != nil && session.UserID == u.ID && wanted[session.Key] && !session.Info.Estimated {
+						if _, exists := next.qualityInfo[session.Key]; !exists {
+							next.qualityInfo[session.Key] = session.Info
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return context.WithValue(ctx, key, next)
+}
+
 func (a *App) overlayFacts(ctx context.Context, u *core.User, t *core.Title, status, quality bool) overlays.Facts {
 	f := overlays.Facts{}
+	var (
+		pf    overlayPageFacts
+		hasPF bool
+	)
+	if u != nil {
+		pf, hasPF = ctx.Value(overlayPageFactsKey{app: a, userID: u.ID}).(overlayPageFacts)
+	}
 	if status {
 		if expiry, err := a.collections.LastChance(ctx, u, t.Key); err == nil {
 			f.LastChance = expiry
@@ -139,18 +283,24 @@ func (a *App) overlayFacts(ctx context.Context, u *core.User, t *core.Title, sta
 	if page, ok := ctx.Value(episodeBadgePageKey{}).(episodeBadgePage); status && ok && u != nil && page.viewer == u.ID && page.covers(t.Key) {
 		f.NewEpisode, f.NewSeason = page.facts[t.Key].NewEpisode, page.facts[t.Key].NewSeason
 	} else if status && t.Type == core.TypeShow && u != nil {
-		episodes, err := a.catalog.RecentEpisodes(ctx, t.Key, time.Now().Add(-30*24*time.Hour))
-		if err == nil {
-			keys := make([]core.RatingKey, len(episodes))
-			for i, ep := range episodes {
-				keys[i] = ep.Key
-			}
-			if watched, err := a.state.GetMany(ctx, u.ID, keys); err == nil {
-				for _, ep := range episodes {
-					if watched[ep.Key].ViewCount == 0 {
-						f.NewEpisode = true
-						if ep.Episode == 1 {
-							f.NewSeason = true
+		if hasPF && pf.showChecked[t.Key] {
+			st := pf.showStatus[t.Key]
+			f.NewEpisode = st.newEpisode
+			f.NewSeason = st.newSeason
+		} else {
+			episodes, err := a.catalog.RecentEpisodes(ctx, t.Key, time.Now().Add(-30*24*time.Hour))
+			if err == nil {
+				keys := make([]core.RatingKey, len(episodes))
+				for i, ep := range episodes {
+					keys[i] = ep.Key
+				}
+				if watched, err := a.state.GetMany(ctx, u.ID, keys); err == nil {
+					for _, ep := range episodes {
+						if watched[ep.Key].ViewCount == 0 {
+							f.NewEpisode = true
+							if ep.Episode == 1 {
+								f.NewSeason = true
+							}
 						}
 					}
 				}
@@ -161,7 +311,11 @@ func (a *App) overlayFacts(ctx context.Context, u *core.User, t *core.Title, sta
 	// poster. Historical probes survive a restart and are bound to the current
 	// resume release by the playback package; no resolving/probing happens here.
 	if quality && u != nil {
-		if a.playback != nil {
+		if hasPF && pf.qualityChecked[t.Key] {
+			if info, ok := pf.qualityInfo[t.Key]; ok {
+				applyOverlayQuality(&f, info)
+			}
+		} else if a.playback != nil {
 			if observed, err := a.playback.ObservedMediaInfo(ctx, u.ID, t.Key); err == nil && observed != nil {
 				applyOverlayQuality(&f, observed.Info)
 			}
@@ -254,4 +408,26 @@ func applyOverlayQuality(f *overlays.Facts, info core.MediaInfo) {
 			}
 		}
 	}
+}
+
+func (a *App) overlayPluginBadgeSets(ctx context.Context) []overlays.PluginBadgeSet {
+	if a == nil || a.pluginsRT == nil || a.pluginsRT.mgr == nil {
+		return nil
+	}
+	active := a.pluginsRT.mgr.ActivePosterBadgeSets(ctx)
+	if len(active) == 0 {
+		return nil
+	}
+	out := make([]overlays.PluginBadgeSet, len(active))
+	for i, ps := range active {
+		out[i] = overlays.PluginBadgeSet{
+			PluginID:    ps.PluginID,
+			PluginName:  ps.PluginName,
+			Key:         ps.Key,
+			LayerKey:    ps.LayerKey,
+			Label:       ps.Label,
+			Description: ps.Description,
+		}
+	}
+	return out
 }

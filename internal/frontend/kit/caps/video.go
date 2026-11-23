@@ -1,6 +1,7 @@
 package caps
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,7 @@ func deriveVideo(c *core.ClientCaps, p DeviceProfile) {
 	profileDV := false
 	profileDVEnhancement := false
 	height := 0
+	heightCond := ""
 	for _, dp := range p.DirectPlayProfiles {
 		if !strings.EqualFold(dp.Type, "video") && dp.Type != "" {
 			continue
@@ -21,6 +23,7 @@ func deriveVideo(c *core.ClientCaps, p DeviceProfile) {
 		for _, codec := range add(nil, dp.VideoCodec) {
 			declared = true
 			limit := 0
+			limitCond := ""
 			dvDeclared := false
 			ranges := map[string]bool{"SDR": true, "HDR10": true, "HDR10PLUS": true, "HLG": true, "DOVI": true, "DOVIWITHHDR10": true, "DOVIWITHHLG": true, "DOVIWITHSDR": true, "DOVIWITHEL": true, "DOVIWITHELHDR10PLUS": true}
 			for _, cp := range p.CodecProfiles {
@@ -58,6 +61,7 @@ func deriveVideo(c *core.ClientCaps, p DeviceProfile) {
 						}
 						if n > 0 && (limit == 0 || n < limit) {
 							limit = n
+							limitCond = fmt.Sprintf("%s %s %s", cond.Property, cond.Condition, cond.Value)
 						}
 					}
 					if prop == "videoprofile" && (op == "equals" || op == "equalsany") && (codec == "hevc" || codec == "h265") && !strings.Contains(strings.ToLower(cond.Value), "main 10") && !strings.Contains(strings.ToLower(cond.Value), "main10") {
@@ -101,8 +105,10 @@ func deriveVideo(c *core.ClientCaps, p DeviceProfile) {
 			// An unrestricted alternative makes the aggregate height unrestricted.
 			if limit == 0 {
 				height = -1
+				heightCond = ""
 			} else if height >= 0 && limit > height {
 				height = limit
+				heightCond = limitCond
 			}
 			if codec == "hevc" || codec == "h265" || codec == "av1" || codec == "vp9" {
 				c.HDR10 = c.HDR10 || ranges["HDR10"] || ranges["HDR10PLUS"] || ranges["HLG"] || (dvDeclared && (ranges["DOVIWITHHDR10"] || ranges["DOVIWITHHLG"]))
@@ -127,6 +133,11 @@ func deriveVideo(c *core.ClientCaps, p DeviceProfile) {
 		c.ExplicitMaxHeight = true
 		if height > 0 && (c.MaxHeight == 0 || height < c.MaxHeight) {
 			c.MaxHeight = height
+			if heightCond != "" {
+				c.MaxHeightSource = fmt.Sprintf("DeviceProfile CodecProfiles (%s)", heightCond)
+			} else {
+				c.MaxHeightSource = "DeviceProfile CodecProfiles"
+			}
 		}
 	}
 }

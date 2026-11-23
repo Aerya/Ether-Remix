@@ -187,33 +187,86 @@ func (b *builder) genUpNext() []*candRow {
 		}
 	}
 	seenShow := map[int64]bool{}
-	var items []candItem
+	var recent []core.RatingKey
 	for _, h := range hist {
 		if !h.Completed || h.Key.Kind() != core.KindEpisode || seenShow[h.Key.TMDB()] {
 			continue
 		}
 		seenShow[h.Key.TMDB()] = true
-		next, err := nextStoredEpisode(b.ctx, b.e.catalog, h.Key)
-		if err != nil || next == nil {
-			continue
+		recent = append(recent, h.Key)
+	}
+	var items []candItem
+	if batch, ok := b.e.catalog.(interface {
+		NextUnwatchedStoredEpisodes(context.Context, int64, []core.RatingKey) (map[core.RatingKey]*core.Title, error)
+	}); ok && len(recent) > 1 {
+		// Batch stored successor lookups and watch-state checks instead of
+		// walking each watched show one episode and one state query at a time.
+		const window = 60
+		for start := 0; start < len(recent) && len(items) < 30; start += window {
+			part := recent[start:min(start+window, len(recent))]
+			nextByFrom, err := batch.NextUnwatchedStoredEpisodes(b.ctx, b.user.ID, part)
+			if err != nil {
+				break
+			}
+			nextKeys := make([]core.RatingKey, 0, len(nextByFrom))
+			for _, from := range part {
+				if next := nextByFrom[from]; next != nil {
+					nextKeys = append(nextKeys, next.Key)
+				}
+			}
+			var statuses map[core.RatingKey]core.WatchStatus
+			if len(nextKeys) > 0 {
+				statuses, _ = b.e.state.GetMany(b.ctx, b.user.ID, nextKeys)
+			}
+			for _, from := range part {
+				next := nextByFrom[from]
+				if next == nil {
+					continue
+				}
+				if !next.Released.IsZero() && next.Released.After(b.now) {
+					continue
+				}
+				if ws := statuses[next.Key]; ws.ViewCount > 0 || ws.ViewOffset > 0 {
+					continue
+				}
+				if !contentrating.Allowed(next.ContentRating, b.user.MaxContentRating) {
+					continue
+				}
+				show := next.ShowTitle
+				if show == "" {
+					show = "this show"
+				}
+				items = append(items, candItem{t: *next, base: 1 - float64(len(items))*0.02, qual: 0.6,
+					reason: fmt.Sprintf("Next episode of %s", show)})
+				if len(items) >= 30 {
+					break
+				}
+			}
 		}
-		if !next.Released.IsZero() && next.Released.After(b.now) {
-			continue
-		}
-		if ws, err := b.e.state.Get(b.ctx, b.user.ID, next.Key); err == nil && (ws.ViewCount > 0 || ws.ViewOffset > 0) {
-			continue
-		}
-		if !contentrating.Allowed(next.ContentRating, b.user.MaxContentRating) {
-			continue
-		}
-		show := next.ShowTitle
-		if show == "" {
-			show = "this show"
-		}
-		items = append(items, candItem{t: *next, base: 1 - float64(len(items))*0.02, qual: 0.6,
-			reason: fmt.Sprintf("Next episode of %s", show)})
-		if len(items) >= 30 {
-			break
+	} else {
+		for _, from := range recent {
+			next, err := nextStoredEpisode(b.ctx, b.e.catalog, from)
+			if err != nil || next == nil {
+				continue
+			}
+			if !next.Released.IsZero() && next.Released.After(b.now) {
+				continue
+			}
+			if ws, err := b.e.state.Get(b.ctx, b.user.ID, next.Key); err == nil && (ws.ViewCount > 0 || ws.ViewOffset > 0) {
+				continue
+			}
+			if !contentrating.Allowed(next.ContentRating, b.user.MaxContentRating) {
+				continue
+			}
+			show := next.ShowTitle
+			if show == "" {
+				show = "this show"
+			}
+			items = append(items, candItem{t: *next, base: 1 - float64(len(items))*0.02, qual: 0.6,
+				reason: fmt.Sprintf("Next episode of %s", show)})
+			if len(items) >= 30 {
+				break
+			}
 		}
 	}
 	r := newRow(KindUpNext, "ondeck", "Up Next", "The next episode of shows you're following.", items)

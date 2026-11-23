@@ -28,9 +28,9 @@ const (
 	typeNumPhoto  = 13
 )
 
-// publishedKindSections projects the live published libraries, including built-ins.
-// A nil result means the host has no library store; an empty non-nil result
-// means every library is hidden or unpublished.
+// publishedKindSections returns one Section per Plex-published plugin or
+// catalogue library, including the preseeded catalogues. A non-nil empty list
+// is authoritative; nil is reserved for legacy hosts without stored libraries.
 func (s *Server) publishedKindSections(ctx context.Context) []Section {
 	exp := s.exp()
 	if exp == nil {
@@ -38,8 +38,10 @@ func (s *Server) publishedKindSections(ctx context.Context) []Section {
 	}
 	views, err := exp.PublishedViews(ctx)
 	if err != nil {
-		// A failed refresh must not resurrect hidden built-in libraries.
-		return append([]Section{}, s.getSections()...)
+		if previous := s.sectionsPtr.Load(); previous != nil {
+			return append([]Section{}, (*previous)...)
+		}
+		return []Section{}
 	}
 	if views == nil {
 		return nil
@@ -55,12 +57,15 @@ func (s *Server) publishedKindSections(ctx context.Context) []Section {
 			continue
 		}
 		out = append(out, Section{
-			ID:        id,
-			Type:      frontend.MediaType(base),
-			Title:     v.Name,
-			LibraryID: frontend.LibraryID(id),
-			PluginID:  v.PluginID,
-			KindKey:   v.KindKey,
+			ID:           id,
+			Type:         frontend.MediaType(base),
+			Title:        v.Name,
+			LibraryID:    frontend.LibraryID(id),
+			PluginID:     v.PluginID,
+			KindKey:      v.KindKey,
+			Subset:       v.Subset,
+			PluginSorts:  append([]string(nil), v.Sorts...),
+			PluginFacets: append([]frontend.ViewFacet(nil), v.Facets...),
 		})
 	}
 	return out
@@ -86,7 +91,11 @@ func plexBaseForView(v frontend.View) (string, bool) {
 
 // sectionForLibrary returns the section for a library id (spec §6.4).
 func (s *Server) sectionForLibrary(id frontend.LibraryID) (Section, bool) {
-	for _, sec := range s.withLibraryTitles(s.getSections()) {
+	return s.sectionForLibraryCtx(context.Background(), id)
+}
+
+func (s *Server) sectionForLibraryCtx(ctx context.Context, id frontend.LibraryID) (Section, bool) {
+	for _, sec := range s.withLibraryTitles(s.getSectionsCtx(ctx)) {
 		if sec.LibraryID == id || frontend.LibraryID(sec.ID) == id {
 			return sec, true
 		}
@@ -94,9 +103,9 @@ func (s *Server) sectionForLibrary(id frontend.LibraryID) (Section, bool) {
 	return Section{}, false
 }
 
-// isKindSection reports whether sec is a plugin or filter library section,
-// i.e. one whose items come from the Experience's plugin store rather than
-// the TMDB catalogue.
+// isKindSection reports whether sec is a non-builtin library section (either a
+// catalogue-backed custom library or a plugin library) served via
+// Experience.LibraryItems.
 func isKindSection(sec Section) bool {
 	return sec.LibraryID != frontend.LibraryMovies && sec.LibraryID != frontend.LibraryShows && sec.LibraryID != 0
 }

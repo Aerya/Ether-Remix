@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -44,6 +45,10 @@ func (s surfaceCapabilities) Build(ctx context.Context, req frontend.CapabilityR
 	// Otherwise fill only missing codec lists; an explicit declaration wins.
 	if !s.policy.NativePlaybackCapabilities {
 		declared = playbackFloor(declared, overrides)
+	} else {
+		if transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, declared.Device, declared.DeviceName, "", declared.Version, overrides).AlwaysEncodeVideo {
+			declared.AlwaysEncodeVideo = true
+		}
 	}
 	policy := transcode.ResolvePolicy(declared, overrides)
 	if declared.SubtitleCodecs == nil {
@@ -52,6 +57,10 @@ func (s surfaceCapabilities) Build(ctx context.Context, req frontend.CapabilityR
 	if len(declared.DVProfiles) == 0 {
 		declared.DVProfiles = append([]int(nil), policy.DolbyVisionProfiles...)
 	}
+	if policy.AlwaysEncodeVideo {
+		declared.AlwaysEncodeVideo = true
+	}
+	declared = transcode.ApplyForcedOverrides(declared, "", overrides)
 	declared.PreserveEmptyVideoCodecs = s.policy.NativePlaybackCapabilities
 	qualityCaps := declared
 	declared = resolver.ApplyClientRules(cfg.Quality, declared, req.Viewer)
@@ -127,7 +136,10 @@ func playbackFloor(declared core.ClientCaps, overrides []core.ClientCapabilityOv
 	if device == "" {
 		device = declared.DeviceName
 	}
-	defaults := transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, device, "", declared.Version, overrides)
+	defaults := transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, declared.Device, declared.DeviceName, "", declared.Version, overrides)
+	if defaults.AlwaysEncodeVideo {
+		declared.AlwaysEncodeVideo = true
+	}
 	if defaults.ID == "" || defaults.ID == "generic" {
 		return declared
 	}
@@ -142,6 +154,11 @@ func playbackFloor(declared core.ClientCaps, overrides []core.ClientCapabilityOv
 	}
 	if declared.MaxHeight == 0 && !declared.ExplicitMaxHeight && defaults.MaxHeight > 0 {
 		declared.MaxHeight = defaults.MaxHeight
+		if defaults.HeightLocked {
+			declared.MaxHeightSource = "App compatibility override"
+		} else {
+			declared.MaxHeightSource = fmt.Sprintf("registry preset %q", defaults.ID)
+		}
 	}
 	// An app that plays through its own native player (registry quirk
 	// native-player-dynamic-range: Stremio desktop/Android, Nuvio) renders

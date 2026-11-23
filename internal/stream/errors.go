@@ -5,17 +5,24 @@ import (
 	"fmt"
 
 	"github.com/braedonsaunders/ether/internal/archive"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
 )
+
+type noPlayableFileError struct{}
+
+func (noPlayableFileError) Error() string { return "stream: no playable file in release" }
+func (noPlayableFileError) Unwrap() error { return core.ErrNoUsableFile }
 
 // Typed errors returned by Open, Prefetch and Check. They are re-exported
 // from the packages that detect them so callers (the resolver, playback)
 // only need to import stream. Errors are wrapped with context; use
 // errors.Is.
 var (
-	// ErrNoPlayableFile: the release has no video file the engine can serve
+	// ErrNoPlayableFile: the release has no playable file the engine can serve
 	// (only samples/extras, unsupported containers, or nothing recognisable).
-	ErrNoPlayableFile = errors.New("stream: no playable video file in release")
+	// Unwraps to core.ErrNoUsableFile.
+	ErrNoPlayableFile error = noPlayableFileError{}
 	// ErrCompressed: the video sits in a compressed (non-store) archive.
 	ErrCompressed = archive.ErrCompressed
 	// ErrEncrypted: the archive is password protected (headers or data).

@@ -1,6 +1,8 @@
 package plex
 
 import (
+	"bytes"
+	"image"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -33,6 +35,10 @@ func rankedMetadataOffset(items []model.Metadata, offset int) {
 }
 
 func (s *Server) serveRankedArtwork(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, width int) {
+	if width < 0 || width > 4000 {
+		writeHTTPError(w, 404)
+		return
+	}
 	rank, err := strconv.Atoi(r.URL.Query().Get("ranked"))
 	shape := r.URL.Query().Get("rankshape")
 	if err != nil || rank < 1 || rank > 10 || (shape != "" && shape != "wide") || (key.Kind() != frontend.KindMovie && key.Kind() != frontend.KindShow) {
@@ -48,31 +54,43 @@ func (s *Server) serveRankedArtwork(w http.ResponseWriter, r *http.Request, key 
 	req := frontend.ArtworkRequest{Viewer: pr.User, Item: key, Device: frontend.Device{Language: pr.Language, Product: pr.Product, Platform: pr.Platform}}
 	images, complete, err := art.List(r.Context(), req)
 	if err != nil || !complete {
-		// Upcoming collections use a scoped placeholder proof instead of the
-		// released-title artwork list. Reuse that authorization before reading art.
+		// Upcoming titles use collection authorization instead of the
+		// released-title artwork list, including canonical Home image URLs.
 		if s.serveRankedPlaceholder(w, r, key, rank, shape == "wide", width) {
 			return
 		}
 		writeHTTPError(w, 404)
 		return
 	}
+	// Wide cards use the authorized backdrop, never a stretched poster. A
+	// missing or unavailable backdrop falls back to the portrait rank variant.
+	if shape == "wide" {
+		if discovery := s.discovery(); discovery != nil && discovery.Overlays != nil {
+			for _, img := range images {
+				if img.Kind != frontend.ImageBackdrop {
+					continue
+				}
+				data, _, err := art.Read(r.Context(), req, img, frontend.ArtworkTransform{Width: 960})
+				if err != nil || !rankedBackdrop(data) {
+					continue
+				}
+				data, ct, err := discovery.Overlays.Ranked(r.Context(), data, rank, true)
+				if err == nil && s.writeRankedImage(w, r, data, ct, width) {
+					return
+				}
+			}
+		}
+	}
 	for _, img := range images {
-		if img.Kind == frontend.ImagePoster {
-			data, ct, err := art.Read(r.Context(), req, frontend.RankedArtwork(img, rank, shape == "wide"), frontend.ArtworkTransform{Width: width})
-			if err != nil {
-				writeHTTPError(w, 404)
-				return
-			}
-			setArtworkHeaders(w.Header(), ct)
-			w.Header().Set("Cache-Control", "private, max-age=3600")
-			w.Header().Add("Vary", "X-Plex-Token")
-			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-			if r.Method != http.MethodHead {
-				_, _ = w.Write(data)
-			}
+		if img.Kind != frontend.ImagePoster {
+			continue
+		}
+		data, ct, err := art.Read(r.Context(), req, frontend.RankedArtwork(img, rank, false), frontend.ArtworkTransform{Width: width})
+		if err == nil && len(data) > 0 && s.writeRankedImage(w, r, data, ct, 0) {
 			return
 		}
 	}
+
 	writeHTTPError(w, 404)
 }
 
@@ -97,16 +115,15 @@ func paintRankedCollection(mc *model.MediaContainer, offset int) {
 }
 
 // serveRankedPlaceholder preserves the existing upcoming-collection artwork
-// flow. rv contributes only its collection proof; never an arbitrary fetch URL.
+// flow. rv contributes only an optional collection proof, never a fetch URL.
+// Home uses canonical URLs: resolve those through the same bounded, viewer-
+// authorized membership lookup as ordinary artwork.
 func (s *Server) serveRankedPlaceholder(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, rank int, wide bool, width int) bool {
 	original, err := url.Parse(r.URL.Query().Get("rv"))
 	if err != nil {
 		return false
 	}
 	proof := original.Query().Get("collection")
-	if proof == "" {
-		return false
-	}
 	title, _, err := s.lookupPlaceholder(r.Context(), FromContext(r.Context()), key, proof)
 	if err != nil || title == nil {
 		return false
@@ -114,6 +131,15 @@ func (s *Server) serveRankedPlaceholder(w http.ResponseWriter, r *http.Request, 
 	discovery := s.discovery()
 	if discovery == nil || discovery.Overlays == nil {
 		return false
+	}
+	if wide && title.BackdropPath != "" && s.svc().images != nil {
+		img, err := s.svc().images.Get(r.Context(), s.svc().imageURL(title.BackdropPath, "w1280"), s.now())
+		if err == nil && rankedBackdrop(img.Data) {
+			data, ct, err := discovery.Overlays.Ranked(r.Context(), img.Data, rank, true)
+			if err == nil && s.writeRankedImage(w, r, data, ct, width) {
+				return true
+			}
+		}
 	}
 	var data []byte
 	if title.PosterPath != "" && s.svc().images != nil {
@@ -129,10 +155,20 @@ func (s *Server) serveRankedPlaceholder(w http.ResponseWriter, r *http.Request, 
 		}
 		data = generated
 	}
-	data, ct, err := discovery.Overlays.Ranked(r.Context(), data, rank, wide)
+	data, ct, err := discovery.Overlays.Ranked(r.Context(), data, rank, false)
 	if err != nil {
 		return false
 	}
+	return s.writeRankedImage(w, r, data, ct, width)
+}
+
+func rankedBackdrop(data []byte) bool {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	return err == nil && cfg.Width > cfg.Height && cfg.Height > 0
+}
+
+func (s *Server) writeRankedImage(w http.ResponseWriter, r *http.Request, data []byte, ct string, width int) bool {
+	var err error
 	// The standard transform respects this request's output bound.
 	if width < 0 || width > 4000 {
 		return false

@@ -116,16 +116,10 @@ func (m *Manager) maintainReserve(s *session, position time.Duration, state stri
 	}
 	reserve := min(m.swapLatency.target(), cfg.PlaybackReadAhead())
 	tm := g.timeMapSnapshot()
-	lo := tm.KeyframeOffsetAt(position)
-	if len(tm.Points) == 0 {
-		lo = tm.OffsetAt(max(0, position-6*time.Second))
-	}
-	// A byte cap can cover much less media time at high bitrates. Never
-	// record the full requested horizon when the admitted bytes cannot reach
-	// it, and do not spend the entire cap behind the current playhead.
-	currentOffset := tm.OffsetAt(position)
-	if currentOffset-lo >= maxBytes {
-		lo = currentOffset
+	lo := tm.WarmOffsetAt(position)
+	// A small configured reserve must still reach the current position.
+	if current := tm.OffsetAt(position); current-lo >= maxBytes {
+		lo = current
 	}
 	wantedUntil := min(info.Duration, position+reserve)
 	hi := tm.OffsetAt(min(info.Duration, wantedUntil+4*time.Second))
@@ -151,7 +145,7 @@ func (m *Manager) maintainReserve(s *session, position time.Duration, state stri
 	if r.cancel != nil {
 		r.cancel()
 	}
-	ctx, cancel := context.WithTimeout(g.ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(core.WithWarmReadWindow(core.WithReadOrigin(g.ctx, "playback.reserve", "resume"), g.warmReads), 45*time.Second)
 	r.generation = g
 	r.until = until
 	r.running = true
@@ -190,6 +184,7 @@ func (m *Manager) maintainReserve(s *session, position time.Duration, state stri
 		defer g.release()
 		// These are source-byte hints, not proof that output has been decoded
 		// or received. RecoveryBuffer reports contiguous published segments.
+		m.log.Debug("source reserve planned", "session", s.id, "position", position, "offset", lo, "bytes", n, "indexPoints", len(tm.Points), "estimatedOffset", tm.OffsetAt(position))
 		err := m.deps.Engine.Prefetch(ctx, g.releaseID(), g.res.NZB, lo, n)
 		r.mu.Lock()
 		if r.generation == g && r.until == until {
@@ -207,7 +202,7 @@ func (m *Manager) maintainReserve(s *session, position time.Duration, state stri
 // transfers once to failover; otherwise the parent/session cancellation closes
 // it and revokes its loopback grant. Speculation never changes watch state.
 func (m *Manager) prepareSpeedAlternate(g *generation) {
-	if m.config().Cache.DisableSpeculation {
+	if m.config().Cache.DisableSpeculation || g.sess.isKind() {
 		return
 	}
 	d := &g.standby
@@ -279,7 +274,7 @@ func (m *Manager) prepareSpeedAlternate(g *generation) {
 		if prepared == nil {
 			tried = append(tried, failed...)
 			for attempt := 0; attempt < min(m.failoverAttempts(), failoverRaceWidth) && ctx.Err() == nil; attempt++ {
-				res, err := m.nextResolution(ctx, s, tried, alts)
+				res, err := m.nextResolutionTracking(ctx, s, &tried, nil, alts)
 				if err != nil {
 					break
 				}

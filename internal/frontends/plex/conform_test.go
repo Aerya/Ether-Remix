@@ -2,6 +2,7 @@ package plex
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	pmsconform "github.com/braedonsaunders/ether/internal/conform"
 	conformplex "github.com/braedonsaunders/ether/internal/conform/plex"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/plexguid"
 	"github.com/braedonsaunders/ether/internal/plexmeta"
 )
 
@@ -39,8 +41,12 @@ var burbs = core.Title{
 		{TMDB: 31, Name: "Tom Hanks", Role: "Ray Peterson", ThumbPath: "/hanks.jpg"},
 		{TMDB: 1150, Name: "Bruce Dern", Role: "Lt. Mark Rumsfield", ThumbPath: "/dern.jpg"},
 	},
-	Directors:    []core.Person{{TMDB: 11218, Name: "Joe Dante", ThumbPath: "/dante.jpg"}},
-	Writers:      []core.Person{{TMDB: 70939, Name: "Dana Olsen"}},
+	Directors: []core.Person{{TMDB: 11218, Name: "Joe Dante", ThumbPath: "/dante.jpg"}},
+	Writers:   []core.Person{{TMDB: 70939, Name: "Dana Olsen"}},
+	Crew: []core.Person{
+		{TMDB: 17654, Name: "Larry Brezner", Role: "Producer"},
+		{TMDB: 10945, Name: "Michael Finnell", Role: "Producer"},
+	},
 	CollectionID: 9999, CollectionName: "Suburbia",
 	UpdatedAt: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
 }
@@ -55,10 +61,10 @@ var burbsInfo = core.MediaInfo{
 }
 
 // pmsOnlyRE are paths of data PMS has and Ether doesn't: Common Sense
-// Media, critic ratings, extras, locked fields, labels, producers and
-// similar-title tags, deep analysis, preview thumbnails and probe details
-// that the virtual media can't know before a release is opened.
-var pmsOnlyRE = regexp.MustCompile(`(@|/)(chapterSource|contentRatingAge|primaryExtraKey|rating|ratingImage|CommonSenseMedia|Field|Label|Producer|Similar|deepAnalysisVersion|indexes|requiredBandwidths|bitrateMode|chromaLocation|codedHeight|codedWidth|colorPrimaries|colorRange|colorSpace|level|refFrames|titleSort)$`)
+// Media block, critic ratings, extras, locked fields, labels, similar-title
+// tags, deep analysis, preview thumbnails and probe details that the virtual
+// media can't know before a release is opened.
+var pmsOnlyRE = regexp.MustCompile(`(@|/)(chapterSource|primaryExtraKey|rating|ratingImage|CommonSenseMedia|Field|Label|Similar|deepAnalysisVersion|indexes|requiredBandwidths|bitrateMode|chromaLocation|codedHeight|codedWidth|colorPrimaries|colorRange|colorSpace|level|refFrames|titleSort)$`)
 
 // etherOnlyRE are paths Ether legitimately adds: TMDB has writer photos,
 // and Ether lists the TMDB audience rating on episodes too (PMS does when
@@ -69,21 +75,70 @@ func pmsFixtureName(profile, path string, jsonMode bool) string {
 	return pmsconform.FixtureName(profile, path, jsonMode) + ".json"
 }
 
-// Seed provider identities and slugs from the PMS corpus. The production
-// renderer deliberately cannot derive a provider identity from a title label.
+// Seed provider identities, slugs and verified provider credits from the PMS
+// corpus. The production renderer deliberately cannot derive a provider
+// identity or person tagKey from a title or TMDB id.
 func newConformanceFixture(t *testing.T) *fixture {
 	f, _ := plexMetaFixture(t, true, &plexMetaRoundTrip{body: `{}`})
+	pg := f.srv.libraryGUIDs().(*plexguid.Service)
 	for _, row := range []struct {
 		title      core.Title
 		guid, slug string
+		credits    plexguid.TitleCredits
 	}{
-		{burbs, "plex://movie/5d7768374de0ee001fccc04a", "the-burbs"},
-		{nineShow, "plex://show/5d9c08e9705e7a001e6e645b", "9-1-1"},
+		{
+			title: burbs,
+			guid:  "plex://movie/5d7768374de0ee001fccc04a",
+			slug:  "the-burbs",
+			credits: plexguid.TitleCredits{
+				Slug:             "the-burbs",
+				ContentRatingAge: 13,
+				Director:         []plexguid.Credit{{TagKey: "5d7768253c3c2a001fbcace5", Name: "Joe Dante"}},
+				Writer:           []plexguid.Credit{{TagKey: "5d776836880197001ec938c9", Name: "Dana Olsen"}},
+				Role: []plexguid.Credit{
+					{TagKey: "5d77682654f42c001f8c2650", Name: "Tom Hanks", Role: "Ray Peterson"},
+					{TagKey: "5d7768263c3c2a001fbcb0b0", Name: "Bruce Dern", Role: "Lt. Mark Rumsfield"},
+				},
+				Producer: []plexguid.Credit{
+					{TagKey: "5d7768284de0ee001fcc8dc8", Name: "Larry Brezner", Thumb: "https://metadata-static.plex.tv/9/people/910324f7fb4e7c61f84ab1507253652e.jpg"},
+					{TagKey: "5d776837880197001ec939a1", Name: "Michael Finnell"},
+				},
+			},
+		},
+		{
+			title: nineShow,
+			guid:  "plex://show/5d9c08e9705e7a001e6e645b",
+			slug:  "9-1-1",
+			credits: plexguid.TitleCredits{
+				Slug:             "9-1-1",
+				ContentRatingAge: 14,
+				Role:             []plexguid.Credit{{TagKey: "5d776825880197001ec901d8", Name: "Angela Bassett", Role: "Athena Grant"}},
+			},
+		},
+		{
+			title: nineE1,
+			guid:  "plex://episode/5d9c128946115600200b9e9c",
+			credits: plexguid.TitleCredits{
+				Director: []plexguid.Credit{{TagKey: "5d7768684de0ee001fcd359a", Name: "Bradley Buecker"}},
+				Writer:   []plexguid.Credit{{TagKey: "5d77682e4de0ee001fcc9f7f", Name: "Brad Falchuk"}},
+				Role:     []plexguid.Credit{{TagKey: "5d7768504de0ee001fccfdd5", Name: "Alyvia Alyn Lind", Role: "Young Christina"}},
+			},
+		},
 	} {
 		if err := storeVerifiedGUID(f.srv.runtimeDB(), row.title.Key, row.guid, int64(row.title.Key.TMDB()), row.title.Title, row.title.Year); err != nil {
 			t.Fatal(err)
 		}
-		storePlexOverlay(t, f.srv.runtimeDB(), row.title.Key, row.guid, plexmeta.Overlay{Slug: row.slug})
+		if row.title.Type == core.TypeEpisode {
+			if _, err := f.srv.runtimeDB().Exec(`INSERT OR REPLACE INTO plexguid_parentage(rating_key,parent_key,parent_guid) VALUES(?,?,?)`, int64(row.title.Key), int64(nineS1.Key), "plex://season/602e5e2194f08e002d001122"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if row.slug != "" {
+			storePlexOverlay(t, f.srv.runtimeDB(), row.title.Key, row.guid, plexmeta.Overlay{Slug: row.slug})
+		}
+		if err := pg.StoreCredits(context.Background(), row.title.Key, row.guid, row.credits); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return f
 }

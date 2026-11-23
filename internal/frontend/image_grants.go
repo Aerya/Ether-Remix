@@ -2,9 +2,14 @@ package frontend
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -20,8 +25,10 @@ type ImageGrantRequest struct {
 	Image      Image
 }
 
-// ImageGrants issues and validates short-lived opaque image capabilities.
+// ImageGrants issues and validates signed, stateless opaque image capabilities.
 // Serve requires a capability, even when the client cannot send account tokens.
+// Revoke is retained as a documented no-op for callers; serve-time checks
+// enforce viewer status and current item/channel/image policy on every read.
 type ImageGrants interface {
 	Issue(context.Context, ImageGrantRequest) (string, error)
 	Revoke(context.Context, string, string) error
@@ -92,7 +99,7 @@ type ImagePageRequest struct {
 }
 
 // ImagePageSigner is the list path for image URLs. Serve still rechecks the
-// credential, expiry, revocation and current artwork policy.
+// active viewer and current artwork policy on every read.
 type ImagePageSigner interface {
 	SignPage(context.Context, ImagePageRequest) ([]ImageBatchItem, error)
 }
@@ -105,10 +112,8 @@ type ImagePageRenewal struct {
 	Items      []ImageBatchItem
 }
 
-// ImagePageRenewer keeps a cached listing's image URLs valid past the page
-// grant lifetime: each renewal starts a full lifetime for Credential. It
-// authorizes nothing by itself; Serve still rechecks the credential,
-// expiry, revocation and current artwork policy.
+// ImagePageRenewer is an optional listing-cache extension for implementations
+// whose page image tokens require periodic renewal.
 type ImagePageRenewer interface {
 	RenewPage(context.Context, ImagePageRenewal) error
 }
@@ -158,11 +163,33 @@ func ArtworkTitle(ctx context.Context, key core.RatingKey) (*core.Title, bool) {
 	return nil, false
 }
 
+type artworkCollectionKey struct{}
+
+// WithArtworkCollection carries a collection the caller already loaded,
+// authorized, and resolved fallback artwork for. Artwork listing must not
+// reload the collection or its members.
+func WithArtworkCollection(ctx context.Context, collection *core.Collection) context.Context {
+	if collection == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, artworkCollectionKey{}, collection)
+}
+
+// ArtworkCollection returns the preloaded collection stored by
+// WithArtworkCollection when it matches key.
+func ArtworkCollection(ctx context.Context, key core.RatingKey) (*core.Collection, bool) {
+	col, _ := ctx.Value(artworkCollectionKey{}).(*core.Collection)
+	if col != nil && col.Key == key {
+		return col, true
+	}
+	return nil, false
+}
+
 // ArtworkRows holds the titles an artwork request read as visibility rows:
 // the row, with the facts the viewer's policy reads, and no credits. Only a
 // request that never lists credited people's portraits (a grant of a
 // title's own images: poster, art, logo...) reads titles this way; its
-// authorization and its image read then share them (ArtworkTitle).
+// authorization and its image read then share them (ArtworkRows).
 type ArtworkRows struct {
 	mu     sync.Mutex
 	titles map[core.RatingKey]core.Title
@@ -220,4 +247,43 @@ const LibraryCollagePrefix = "library-collage/"
 // the view GUID. A change in the child posters produces a different image.
 type LibraryCollageSource interface {
 	LibraryCollage(context.Context, *Viewer, Device, string) (Image, error)
+}
+
+// LibraryLiveThumbPrefix marks a proxied plugin-library live-item thumbnail.
+// The remainder is an opaque hash scoped to the library view in Image.Subject.
+const LibraryLiveThumbPrefix = "library-live/"
+
+// LibraryLiveThumbAuthorizer checks that viewer may access a live thumbnail in
+// viewID and returns the verified upstream URL for Ether's image proxy to fetch.
+type LibraryLiveThumbAuthorizer interface {
+	AuthorizeLibraryLiveThumb(ctx context.Context, viewer *Viewer, viewID string, path string) (string, error)
+}
+
+// ViewerAvatarPrefix marks a viewer's Plex account or Plex Home profile avatar.
+// The remainder is an opaque hash of the avatar URL; the raw upstream URL never
+// appears in wire artwork descriptors or signed grants.
+const ViewerAvatarPrefix = "viewer-avatar/"
+
+// ViewerAvatarImage returns the shared artwork descriptor for a Plex-linked
+// viewer's avatar, or false when the viewer has no Plex link or valid avatar URL.
+func ViewerAvatarImage(v *Viewer) (Image, bool) {
+	if v == nil || v.ID <= 0 || v.PlexID <= 0 {
+		return Image{}, false
+	}
+	raw := strings.TrimSpace(v.Thumb)
+	if raw == "" {
+		return Image{}, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return Image{}, false
+	}
+	sum := sha256.Sum256([]byte("viewer-avatar-v1\x00" + raw))
+	digest := hex.EncodeToString(sum[:16])
+	return Image{
+		Kind:    ImagePerson,
+		Path:    ViewerAvatarPrefix + digest,
+		Tag:     digest,
+		Subject: "viewer:" + strconv.FormatInt(v.ID, 10),
+	}, true
 }

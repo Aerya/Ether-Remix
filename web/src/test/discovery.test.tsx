@@ -69,6 +69,9 @@ function discoveryRoutes(
       };
       return settings;
     }
+    if (method === "POST" && path === "/discovery/friends/sync") {
+      return settings;
+    }
     const m = /^\/discovery\/users\/\d+\/(.*)$/.exec(path);
     if (!m) return undefined;
     const rest = m[1]!;
@@ -204,6 +207,54 @@ describe("Watchlists (Viewers)", () => {
       screen.getByText("Plex asked Ether to slow down. Ether will try again."),
     ).toBeInTheDocument();
   });
+
+  it("summarizes Plex friends' watchlists in a collapsible panel and filters rate-limited friends", async () => {
+    const { fake } = renderAppWith(
+      "/viewers",
+      discoveryRoutes({
+        enabled: true,
+        extra: {
+          plexFriendsStatus: [
+            {
+              id: "1",
+              username: "deharryson1",
+              configured: true,
+              lastRead: 1_700_000_000,
+              imported: 47,
+              unmatchedTitles: 0,
+            },
+            {
+              id: "2",
+              username: "ehr.jm",
+              configured: true,
+              lastRead: 1_700_000_000,
+              imported: 38,
+              unmatchedTitles: 0,
+              problem: "upstream",
+              error: "Plex community: HTTP 429",
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(
+      await screen.findByText(/2 friends · 1 synced · 85 titles/, {}, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/1 rate-limited \(HTTP 429\)/)).toBeInTheDocument();
+    expect(screen.queryByText("deharryson1")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Sync friends now/ }));
+    await waitFor(() => expect(calls(fake, "POST", "/discovery/friends/sync")).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /Show friends \(2\)/ }));
+    expect(screen.getByText("deharryson1")).toBeInTheDocument();
+    expect(screen.getByText("ehr.jm")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Issues \(1\)/ }));
+    expect(screen.queryByText("deharryson1")).toBeNull();
+    expect(screen.getByText("ehr.jm")).toBeInTheDocument();
+  });
 });
 
 describe("Warm up new arrivals (Cache › Preloading)", () => {
@@ -282,7 +333,11 @@ describe("Metadata › Ratings", () => {
     const toggle = await screen.findByLabelText("External ratings", {}, WAIT);
     expect(screen.queryByRole("button", { name: /Edit rating sources/ })).toBeNull();
     expect(screen.queryByLabelText("Viewer")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Plex rating fields" })).toBeNull();
+    expect(screen.getByText("Off: apps show the catalogue rating.")).toBeInTheDocument();
     fireEvent.click(toggle);
+    expect(screen.getByText("On: apps show the scores chosen below.")).toBeInTheDocument();
+    expect(screen.queryByText("Off: apps show the catalogue rating.")).toBeNull();
     expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
     expect(
@@ -290,10 +345,13 @@ describe("Metadata › Ratings", () => {
         .getAllByRole("link", { name: "Integrations" })
         .map((link) => link.getAttribute("href")),
     ).toContain("/services/ratings");
+    fireEvent.click(screen.getByRole("button", { name: "Plex rating" }));
+    fireEvent.click(await screen.findByRole("option", { name: "IMDb" }, WAIT));
     fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(calls(fake, "PUT", "/discovery/ratings/settings").at(-1)?.body).toMatchObject({
         enabled: true,
+        critic: "imdb",
         apiKey: "",
       }),
     );
@@ -349,7 +407,8 @@ describe("Metadata › Artwork", () => {
     );
     const drawer = await screen.findByRole("dialog", { name: title.title });
     fireEvent.click(await within(drawer).findByRole("button", { name: "Pin poster (en)" }));
-    fireEvent.change(within(drawer).getByLabelText("Backdrop"), { target: { value: "/bd.jpg" } });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Backdrop" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Backdrop 1/ }, WAIT));
     fireEvent.click(within(drawer).getByRole("button", { name: "Save title artwork" }));
     await waitFor(() =>
       expect(

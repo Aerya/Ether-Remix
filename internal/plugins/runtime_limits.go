@@ -13,12 +13,24 @@ type runtimeCeilings struct {
 	memory                  uint64
 	deadline                time.Duration
 	units                   int64
+	poolSize                int
 	fetch, member, expanded int64
 	members                 int
+	maxItems                int
 }
 
 func defaultRuntimeCeilings() runtimeCeilings {
-	return runtimeCeilings{memory: 2 << 30, deadline: 12 * time.Hour, units: 1 << 60, fetch: 8 << 30, member: 8 << 30, expanded: 32 << 30, members: 65535}
+	return runtimeCeilings{
+		memory:   2 << 30,
+		deadline: 12 * time.Hour,
+		units:    1 << 60,
+		poolSize: wasm.DefaultPoolCeiling,
+		fetch:    8 << 30,
+		member:   8 << 30,
+		expanded: 32 << 30,
+		members:  65535,
+		maxItems: DefaultMaxPluginItems,
+	}
 }
 func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runtimeCeilings {
 	if l.MemoryBytes > 0 {
@@ -29,6 +41,9 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	}
 	if l.UnitBudget > 0 {
 		c.units = l.UnitBudget
+	}
+	if l.PoolSize > 0 {
+		c.poolSize = min(l.PoolSize, wasm.MaxPoolSize)
 	}
 	if l.FetchBytes > 0 {
 		c.fetch = min(l.FetchBytes, int64(1<<60))
@@ -42,10 +57,13 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	if l.ArchiveMembers > 0 {
 		c.members = min(l.ArchiveMembers, 1000000)
 	}
+	if l.MaxItems > 0 {
+		c.maxItems = l.MaxItems
+	}
 	return c
 }
 func (m *Manager) runtimeConfig() config.Plugins {
-	if m.deps.ReadRuntimeConfig != nil {
+	if m != nil && m.deps.ReadRuntimeConfig != nil {
 		return m.deps.ReadRuntimeConfig()
 	}
 	return config.Plugins{}
@@ -55,8 +73,40 @@ func (m *Manager) runtimeCeilings(id string) runtimeCeilings {
 	c := applyRuntimeCeilings(defaultRuntimeCeilings(), cfg.RuntimeLimits)
 	return applyRuntimeCeilings(c, cfg.RuntimeOverrides[id])
 }
+func (m *Manager) grantedMaxItems(man Manifest, c runtimeCeilings) int {
+	n := c.maxItems
+	if m != nil && m.runtimeConfig().RuntimeOverrides[man.ID].MaxItems > 0 {
+		return n
+	}
+	if man.Ether != nil && man.Ether.Runtime.Limits != nil && man.Ether.Runtime.Limits.MaxItems > 0 {
+		n = min(n, man.Ether.Runtime.Limits.MaxItems)
+	}
+	return n
+}
+
+// MaxPluginItems returns the effective stored-item ceiling across all content
+// libraries owned by id (default 2,000,000; owner-configurable globally and per
+// plugin with no upper bound).
+func (m *Manager) MaxPluginItems(id string) int {
+	if m == nil {
+		return DefaultMaxPluginItems
+	}
+	c := m.runtimeCeilings(id)
+	if m.store != nil && id != "" {
+		if rec, err := m.store.record(context.Background(), id); err == nil {
+			return m.grantedMaxItems(rec.Manifest, c)
+		}
+	}
+	return c.maxItems
+}
 func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
-	l := wasm.Limits{MemoryBytes: min(uint64(32<<20), c.memory), Deadline: c.deadline, UnitBudget: c.units}
+	l := wasm.Limits{
+		MemoryBytes: min(uint64(32<<20), c.memory),
+		Deadline:    c.deadline,
+		UnitBudget:  c.units,
+		PoolSize:    min(wasm.DefaultPoolSize, c.poolSize),
+		Stremio:     m.SpeaksStremio(),
+	}
 	if m.Ether != nil && m.Ether.Runtime.Limits != nil {
 		r := m.Ether.Runtime.Limits
 		if r.MemoryBytes > 0 {
@@ -68,20 +118,41 @@ func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
 		if r.UnitBudget > 0 {
 			l.UnitBudget = min(r.UnitBudget, c.units)
 		}
+		if r.PoolSize > 0 {
+			l.PoolSize = min(r.PoolSize, c.poolSize)
+		}
 	}
 	return l
 }
+func (m *Manager) grantedPoolSize(man Manifest, c runtimeCeilings) int {
+	if m != nil && m.runtimeConfig().RuntimeOverrides[man.ID].PoolSize > 0 {
+		return c.poolSize
+	}
+	n := min(wasm.DefaultPoolSize, c.poolSize)
+	if man.Ether != nil && man.Ether.Runtime.Limits != nil && man.Ether.Runtime.Limits.PoolSize > 0 {
+		n = min(man.Ether.Runtime.Limits.PoolSize, c.poolSize)
+	}
+	return n
+}
+
 func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 	if man.RuntimeKind() != "hosted" {
 		return nil
 	}
 	c := m.runtimeCeilings(man.ID)
 	l := runtimeLimitsWithCeilings(man, c)
-	r := &RuntimeLimits{MemoryBytes: l.MemoryBytes, Deadline: l.Deadline.String(), UnitBudget: l.UnitBudget}
+	r := &RuntimeLimits{
+		MemoryBytes: l.MemoryBytes,
+		ReadBytes:   wasm.DataReadBytes(l.MemoryBytes),
+		Deadline:    l.Deadline.String(),
+		UnitBudget:  l.UnitBudget,
+		PoolSize:    m.grantedPoolSize(man, c),
+	}
 	r.FetchBytes = c.fetch
 	r.ArchiveMemberBytes = c.member
 	r.ArchiveExpandedBytes = c.expanded
 	r.ArchiveMembers = c.members
+	r.MaxItems = m.grantedMaxItems(man, c)
 	if req := man.Ether.Runtime.Limits; req != nil {
 		if req.FetchBytes > 0 {
 			r.FetchBytes = min(r.FetchBytes, req.FetchBytes)
@@ -108,13 +179,13 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			m.fail(w, err)
 			return
 		}
-		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 {
-			m.fail(w, fmt.Errorf("memory must be at most 4 GiB and work units must not be negative"))
+		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
+			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("Memory must be at most 4 GiB, instances at most %d, and resource limits must not be negative.", wasm.MaxPoolSize), nil)
 			return
 		}
 		if req.Limits.Deadline != "" {
 			if d, err := time.ParseDuration(req.Limits.Deadline); err != nil || d <= 0 || d > 365*24*time.Hour {
-				m.fail(w, fmt.Errorf("time limit must be positive and at most one year"))
+				writeErr(w, http.StatusBadRequest, "validation", "Time limit must be positive and at most one year.", nil)
 				return
 			}
 		}
@@ -148,14 +219,54 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.runtimeConfig())
 }
 
+type callRecordKey struct{}
+
+type cachedCallRecord struct {
+	m      *Manager
+	plugin string
+	rec    Record
+}
+
+func withCallRecord(ctx context.Context, h Host) context.Context {
+	ph, ok := h.(*host)
+	if !ok {
+		return ctx
+	}
+	rec, err := ph.m.store.record(ctx, ph.plugin)
+	if err != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, callRecordKey{}, cachedCallRecord{m: ph.m, plugin: ph.plugin, rec: rec})
+}
+
+func (h *host) callRecord(ctx context.Context) (Record, error) {
+	if cached, ok := ctx.Value(callRecordKey{}).(cachedCallRecord); ok && cached.m == h.m && cached.plugin == h.plugin {
+		return cached.rec, nil
+	}
+	return h.m.store.record(ctx, h.plugin)
+}
+
 // DataLimits exposes owner grants to shared hosted/remote data services.
 func (h *host) DataLimits(ctx context.Context) RuntimeLimits {
-	rec, err := h.m.Get(ctx, h.plugin)
+	rec, err := h.callRecord(ctx)
 	if err == nil {
 		if l := h.m.grantedRuntimeLimits(rec.Manifest); l != nil {
 			return *l
 		}
 	}
 	c := h.m.runtimeCeilings(h.plugin)
-	return RuntimeLimits{FetchBytes: c.fetch, ArchiveMemberBytes: c.member, ArchiveExpandedBytes: c.expanded, ArchiveMembers: c.members, Deadline: c.deadline.String()}
+	maxItems := c.maxItems
+	if err == nil {
+		maxItems = h.m.grantedMaxItems(rec.Manifest, c)
+	}
+	return RuntimeLimits{
+		FetchBytes:           c.fetch,
+		ArchiveMemberBytes:   c.member,
+		ArchiveExpandedBytes: c.expanded,
+		ArchiveMembers:       c.members,
+		MaxItems:             maxItems,
+		MemoryBytes:          c.memory,
+		ReadBytes:            wasm.DataReadBytes(c.memory),
+		Deadline:             c.deadline.String(),
+	}
 }

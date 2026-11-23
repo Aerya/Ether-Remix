@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -19,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"github.com/braedonsaunders/ether/internal/frontends/silo"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/plextv"
@@ -494,7 +494,7 @@ func TestSiloPeoplePrefetchDoesNotReachArtworkQueues(t *testing.T) {
 type hiddenPeopleExperience struct{ frontend.Experience }
 
 func TestSiloPortraitDeniesMissingReaderAndGrantChangesDuringRead(t *testing.T) {
-	for _, change := range []string{"missing_reader", "image_revoke", "source_revoke", "header_delete", "image_expiry", "source_expiry", "cancel"} {
+	for _, change := range []string{"missing_reader", "viewer_deactivated", "credit_removed", "cancel"} {
 		t.Run(change, func(t *testing.T) {
 			exp, state, artwork := peopleHTTPFixture(t)
 			ctx := context.Background()
@@ -545,18 +545,10 @@ func TestSiloPortraitDeniesMissingReaderAndGrantChangesDuringRead(t *testing.T) 
 				switch change {
 				case "missing_reader":
 					current = hiddenPeopleExperience{exp}
-				case "image_revoke":
-					err = images.Revoke(ctx, credential, secret)
-				case "source_revoke":
-					err = grants.RevokeDevice(ctx, 1, device.ID)
-				case "header_delete":
-					_, err = db.ExecContext(ctx, `DELETE FROM capability_headers WHERE namespace='image'`)
-				case "image_expiry":
-					// Issued image expiry is immutable. Advance the service clock
-					// past the one-minute grant instead of rewriting the row.
-					clock = clock.Add(2 * time.Minute)
-				case "source_expiry":
-					_, err = db.ExecContext(ctx, `UPDATE identity_grants SET expires=1 WHERE viewer_id=1`)
+				case "viewer_deactivated":
+					_, err = db.ExecContext(ctx, `UPDATE auth_users SET active=0 WHERE id=1`)
+				case "credit_removed":
+					state.update(key, func(title *core.Title) { title.Cast = nil })
 				case "cancel":
 					cancel()
 				}

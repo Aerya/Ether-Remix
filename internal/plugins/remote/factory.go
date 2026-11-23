@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
@@ -30,6 +32,8 @@ type Factory struct {
 	// TrustedLAN reports whether the owner confirmed the plugin's
 	// URL as a LAN origin at install (Manager grants carry it).
 	TrustedLAN func(pluginID string) bool
+	// LocalHosts returns the owner-granted local network hosts for one plugin.
+	LocalHosts func(pluginID string) []string
 	// Credential returns the credential Ether presents to the plugin
 	// on URL calls, or "" for none (plain Stremio add-ons).
 	Credential func(pluginID string) string
@@ -80,6 +84,10 @@ func (f *Factory) RuntimeFactory() plugins.RuntimeFactory {
 			}
 			if f.TrustedLAN != nil && f.TrustedLAN(inst.ID) {
 				opts.TrustedOrigin = base
+			}
+			if f.LocalHosts != nil {
+				pluginID := inst.ID
+				opts.TrustedHosts = func() []string { return f.LocalHosts(pluginID) }
 			}
 			client, err := NewURLClient(opts)
 			if err != nil {
@@ -226,12 +234,20 @@ func toRequest(req plugins.Request) Request {
 	for k, v := range req.Headers {
 		headers[k] = []string{v}
 	}
+	body := []byte(req.Body)
+	if len(body) == 0 && req.BodyBase64 != "" {
+		// A non-JSON body travels only base64-encoded; remote transports
+		// carry raw bytes, so restore them here.
+		if raw, err := base64.StdEncoding.DecodeString(req.BodyBase64); err == nil {
+			body = raw
+		}
+	}
 	return Request{
 		Method:  req.Method,
 		Path:    req.Path,
 		Query:   query,
 		Headers: headers,
-		Body:    []byte(req.Body),
+		Body:    body,
 		Locale:  req.Locale,
 	}
 }
@@ -256,6 +272,14 @@ type HostAdapter struct {
 	// secret.get, so this is how it recovers configuration after a
 	// restart or reconnect. Without it only non-secret settings are served.
 	SettingsWithSecrets func(ctx context.Context, pluginID string) (map[string]any, error)
+	// ResolveAdapterViewerToken verifies an X-Ether-Viewer-Token minted for an
+	// active frontend adapter call for pluginID and returns its authenticated
+	// viewer ID (Manager.ResolveAdapterViewerToken).
+	ResolveAdapterViewerToken func(pluginID, token string) (int64, bool)
+	// ResolveAdapterCallToken verifies an X-Ether-Viewer-Token minted for an
+	// active frontend adapter call for pluginID and returns its viewer, route
+	// path, and extracted search query (Manager.ResolveAdapterCallToken).
+	ResolveAdapterCallToken func(pluginID, token string) (plugins.AdapterCallInfo, bool)
 }
 
 func (a HostAdapter) host(pluginID string) (plugins.Host, error) {
@@ -279,12 +303,19 @@ func mapHostErr(err error) error {
 		return fmt.Errorf("%w: %v", ErrNotFound, err)
 	case errors.Is(err, plugins.ErrUnavailable):
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	case errors.Is(err, plugins.ErrNotConfigured):
+		return fmt.Errorf("%w: %v", ErrNotConfigured, err)
+	case errors.Is(err, plugins.ErrInvalidOutput):
+		return fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	case errors.Is(err, plugins.ErrQuotaExceeded):
-		return fmt.Errorf("%w: %v", ErrTooLarge, err)
+		return fmt.Errorf("%w: %w", ErrTooLarge, err)
+	case errors.Is(err, plugins.ErrRateLimited):
+		return fmt.Errorf("%w: %w", ErrRateLimited, err)
 	default:
 		var ve *plugins.ValidationError
 		var collectionInput *plugins.CollectionInputError
-		if errors.As(err, &ve) || errors.As(err, &collectionInput) {
+		var unsafeMember *plugins.UnsafeArchiveMemberError
+		if errors.As(err, &ve) || errors.As(err, &collectionInput) || errors.As(err, &unsafeMember) {
 			return fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
 		return err
@@ -323,6 +354,56 @@ func (a HostAdapter) KVList(ctx context.Context, pluginID, prefix string) ([]str
 	}
 	keys, err := h.KVList(ctx, prefix)
 	return keys, mapHostErr(err)
+}
+
+func (a HostAdapter) KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.KVUsage{}, err
+	}
+	usage, err := h.KVUsage(ctx)
+	return usage, mapHostErr(err)
+}
+
+func (a HostAdapter) SecretSet(ctx context.Context, pluginID, name, value string, ttlSec int64) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.SecretSet(ctx, name, value, ttlSec))
+}
+
+func (a HostAdapter) SecretDelete(ctx context.Context, pluginID, name string) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.SecretDelete(ctx, name))
+}
+
+func (a HostAdapter) BadgesSet(ctx context.Context, pluginID, setKey string, entries []plugins.BadgeEntry) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.BadgesSet(ctx, setKey, entries))
+}
+
+func (a HostAdapter) BadgesClear(ctx context.Context, pluginID, setKey string) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.BadgesClear(ctx, setKey))
+}
+
+func (a HostAdapter) BadgesUsage(ctx context.Context, pluginID string) (plugins.BadgeUsage, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.BadgeUsage{}, err
+	}
+	usage, err := h.BadgesUsage(ctx)
+	return usage, mapHostErr(err)
 }
 
 func (a HostAdapter) CatalogSearch(ctx context.Context, pluginID, query string, limit, offset int) (json.RawMessage, error) {
@@ -386,6 +467,23 @@ func (a HostAdapter) KindUpsert(ctx context.Context, pluginID, kindKey string, i
 	return n, mapHostErr(err)
 }
 
+// KindUpsertWithResult additionally reports the added/updated/unchanged
+// split when the plugin host provides it (#646).
+func (a HostAdapter) KindUpsertWithResult(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (plugins.KindUpsertResult, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.KindUpsertResult{}, err
+	}
+	if wh, ok := h.(interface {
+		KindUpsertWithResult(context.Context, string, []core.KindItem) (plugins.KindUpsertResult, error)
+	}); ok {
+		result, err := wh.KindUpsertWithResult(ctx, kindKey, items)
+		return result, mapHostErr(err)
+	}
+	n, err := h.KindUpsert(ctx, kindKey, items)
+	return plugins.KindUpsertResult{Accepted: n}, mapHostErr(err)
+}
+
 func (a HostAdapter) KindDelete(ctx context.Context, pluginID, kindKey string, externalIDs []string) error {
 	h, err := a.host(pluginID)
 	if err != nil {
@@ -403,6 +501,43 @@ func (a HostAdapter) KindItems(ctx context.Context, pluginID, kindKey, cursor st
 	return page, mapHostErr(err)
 }
 
+func (a HostAdapter) resolveAdapterViewer(pluginID, viewerToken string) (int64, error) {
+	if a.ResolveAdapterViewerToken == nil {
+		return 0, ErrPermissionDenied
+	}
+	viewerID, ok := a.ResolveAdapterViewerToken(pluginID, viewerToken)
+	if !ok || viewerID <= 0 {
+		return 0, ErrPermissionDenied
+	}
+	return viewerID, nil
+}
+
+func (a HostAdapter) KindVisible(ctx context.Context, pluginID, viewerToken, kindKey string, ids []string) ([]string, error) {
+	viewerID, err := a.resolveAdapterViewer(pluginID, viewerToken)
+	if err != nil {
+		return nil, err
+	}
+	h, err := a.host(pluginID)
+	if err != nil {
+		return nil, err
+	}
+	visible, err := h.KindVisible(plugins.WithViewer(ctx, viewerID), kindKey, ids)
+	return visible, mapHostErr(err)
+}
+
+func (a HostAdapter) KindBrowse(ctx context.Context, pluginID, viewerToken, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	viewerID, err := a.resolveAdapterViewer(pluginID, viewerToken)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	h, err := a.host(pluginID)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	page, err := h.KindBrowse(plugins.WithViewer(ctx, viewerID), kindKey, q)
+	return page, mapHostErr(err)
+}
+
 func (a HostAdapter) ResolveSources(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error) {
 	h, err := a.host(pluginID)
 	if err != nil {
@@ -410,6 +545,23 @@ func (a HostAdapter) ResolveSources(ctx context.Context, pluginID string, q core
 	}
 	cands, err := h.ResolveSources(ctx, q)
 	return cands, mapHostErr(err)
+}
+
+// ResolveSourcesWithResult additionally reports per-indexer search statuses
+// when the plugin host provides them (#733).
+func (a HostAdapter) ResolveSourcesWithResult(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return core.SourceResolveResult{}, err
+	}
+	if rh, ok := h.(interface {
+		ResolveSourcesWithResult(context.Context, core.SourceQuery) (core.SourceResolveResult, error)
+	}); ok {
+		res, err := rh.ResolveSourcesWithResult(ctx, q)
+		return res, mapHostErr(err)
+	}
+	cands, err := h.ResolveSources(ctx, q)
+	return core.SourceResolveResult{Candidates: cands}, mapHostErr(err)
 }
 
 func (a HostAdapter) CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error) {
@@ -430,12 +582,28 @@ func (a HostAdapter) CacheOpen(ctx context.Context, pluginID, blobRef string) (i
 	return rc, mapHostErr(err)
 }
 
+func (a HostAdapter) CacheDelete(ctx context.Context, pluginID, blobRef string) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.CacheDelete(ctx, blobRef))
+}
+
 func (a HostAdapter) StreamURL(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
+	return a.StreamURLWithOptions(ctx, pluginID, viewerID, itemRef, plugins.StreamURLOptions{})
+}
+
+func (a HostAdapter) StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error) {
+	return a.StreamURLWithOptions(ctx, pluginID, viewerID, itemRef, plugins.StreamURLOptions{PartIndex: partIndex})
+}
+
+func (a HostAdapter) StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error) {
 	h, err := a.host(pluginID)
 	if err != nil {
 		return "", err
 	}
-	u, err := h.StreamURL(plugins.WithViewer(ctx, viewerID), itemRef)
+	u, err := h.StreamURLWithOptions(plugins.WithViewer(ctx, viewerID), itemRef, opts)
 	return u, mapHostErr(err)
 }
 
@@ -453,6 +621,50 @@ func (a HostAdapter) Settings(ctx context.Context, pluginID string) (map[string]
 	}
 	v, err := h.Settings(ctx)
 	return v, mapHostErr(err)
+}
+
+func (a HostAdapter) PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.PublishEvent(ctx, key, payload, corr))
+}
+
+func (a HostAdapter) AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error) {
+	if viewerToken != "" {
+		if a.ResolveAdapterCallToken == nil {
+			return plugins.AICompleteResponse{}, ErrPermissionDenied
+		}
+		info, ok := a.ResolveAdapterCallToken(pluginID, viewerToken)
+		if !ok || info.Path == "" {
+			return plugins.AICompleteResponse{}, ErrPermissionDenied
+		}
+		ctx = plugins.WithCallContext(ctx, info.Path, info.SearchQuery)
+		if info.ViewerID > 0 {
+			ctx = plugins.WithViewer(ctx, info.ViewerID)
+		}
+	}
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.AICompleteResponse{}, err
+	}
+	resp, err := h.AIComplete(ctx, req)
+	return resp, mapHostErr(err)
+}
+
+func (a HostAdapter) MediaProbe(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error) {
+	if viewerToken != "" {
+		// media.probe is restricted to jobs, actions, and background routes
+		// and never runs on an interactive viewer request.
+		return core.MediaProbeResult{}, fmt.Errorf("%w: media.probe cannot run on viewer request", ErrPermissionDenied)
+	}
+	h, err := a.host(pluginID)
+	if err != nil {
+		return core.MediaProbeResult{}, err
+	}
+	resp, err := h.MediaProbe(ctx, src)
+	return resp, mapHostErr(err)
 }
 
 func (a HostAdapter) NotifyOwner(ctx context.Context, pluginID, text string) error {
@@ -484,6 +696,22 @@ func GrantsLAN(grantsOf func(ctx context.Context, pluginID string) (plugins.Gran
 		defer cancel()
 		g, err := grantsOf(ctx, pluginID)
 		return err == nil && g.LAN
+	}
+}
+
+// GrantsLocalHosts adapts a Manager-like grants lookup to Factory.LocalHosts.
+func GrantsLocalHosts(grantsOf func(ctx context.Context, pluginID string) (plugins.Grants, error)) func(string) []string {
+	if grantsOf == nil {
+		return nil
+	}
+	return func(pluginID string) []string {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		g, err := grantsOf(ctx, pluginID)
+		if err != nil {
+			return nil
+		}
+		return g.LocalHosts
 	}
 }
 

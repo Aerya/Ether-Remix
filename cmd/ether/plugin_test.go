@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +20,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/agent/tools"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/plugins/catalogue"
 	"github.com/braedonsaunders/ether/internal/plugins/kit"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -130,14 +134,47 @@ func TestPluginCLINewCheckTestPackInstallRoundTrip(t *testing.T) {
 		t.Fatalf("installed ID = %q, want %q", rec.ID, rep.PluginID)
 	}
 
-	// 8. ether plugin publish x
+	// 8. ether plugin publish x (without --url prints instructions and writes <id>-<version>.etherpkg)
 	out.Reset()
 	errBuf.Reset()
 	if code := runPlugin([]string{"publish", plugDir}, &out, &errBuf); code != 0 {
 		t.Fatalf("plugin publish exited %d: stderr=%s", code, errBuf.String())
 	}
-	if !strings.Contains(out.String(), "Package digest:") || !strings.Contains(out.String(), "catalogue") {
-		t.Fatalf("unexpected publish output: %s", out.String())
+	defaultPkgPath := filepath.Join(tmp, fmt.Sprintf("%s-%s.etherpkg", rep.PluginID, rep.Version))
+	publishedBytes, err := os.ReadFile(defaultPkgPath)
+	if err != nil {
+		t.Fatalf("expected %s written next to plugin: %v", defaultPkgPath, err)
+	}
+	wantSHA := sha256.Sum256(publishedBytes)
+	wantHex := hex.EncodeToString(wantSHA[:])
+	if !strings.Contains(out.String(), "SHA-256: "+wantHex) || !strings.Contains(out.String(), "https://github.com/braedonsaunders/ether-plugins") {
+		t.Fatalf("unexpected publish instructions output: %s", out.String())
+	}
+
+	// 9. ether plugin publish --url <asset-url> x prints validated plugins/<id>.yaml
+	out.Reset()
+	errBuf.Reset()
+	assetURL := fmt.Sprintf("https://github.com/example/x/releases/download/v%s/%s-%s.etherpkg", rep.Version, rep.PluginID, rep.Version)
+	if code := runPlugin([]string{"publish", "--url", assetURL, plugDir}, &out, &errBuf); code != 0 {
+		t.Fatalf("plugin publish --url exited %d: stderr=%s", code, errBuf.String())
+	}
+	pubOut := out.String()
+	marker := fmt.Sprintf("# plugins/%s.yaml\n", rep.PluginID)
+	start := strings.Index(pubOut, marker)
+	end := strings.Index(pubOut, "\n\nPull request steps:")
+	if start < 0 || end <= start {
+		t.Fatalf("missing YAML entry or PR steps in publish output:\n%s", pubOut)
+	}
+	yamlSection := pubOut[start+len(marker) : end]
+	parsedEntry, err := catalogue.ParseEntryYAML([]byte(yamlSection))
+	if err != nil {
+		t.Fatalf("ParseEntryYAML failed on printed YAML: %v\n%s", err, yamlSection)
+	}
+	if parsedEntry.ID != rep.PluginID || len(parsedEntry.Versions) != 1 {
+		t.Fatalf("unexpected parsed entry: %+v", parsedEntry)
+	}
+	if parsedEntry.Versions[0].URL != assetURL || parsedEntry.Versions[0].SHA256 != wantHex || parsedEntry.Versions[0].MinEther != "0.3.14" {
+		t.Fatalf("unexpected version entry: %+v (want sha256=%s)", parsedEntry.Versions[0], wantHex)
 	}
 }
 

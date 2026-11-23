@@ -69,15 +69,22 @@ func (s *Service) checkHealth(ctx context.Context, releaseID string, nzb []byte)
 // checkHealthCached is checkHealth that also reports whether the answer
 // came from the verified cache rather than a check that just ran.
 func (s *Service) checkHealthCached(ctx context.Context, releaseID string, nzb []byte) (ok, cached bool, err error) {
+	return s.checkHealthCachedKeys(ctx, releaseID, []string{releaseID}, nzb)
+}
+
+func (s *Service) checkHealthCachedKeys(ctx context.Context, releaseID string, verifyKeys []string, nzb []byte) (ok, cached bool, err error) {
 	if s.health == nil {
 		return true, true, nil
 	}
-	if s.recentlyVerified(ctx, releaseID) {
+	if len(verifyKeys) == 0 && releaseID != "" {
+		verifyKeys = []string{releaseID}
+	}
+	if s.recentlyVerifiedKeys(ctx, verifyKeys) {
 		return true, true, nil
 	}
 	ok, err = core.CheckReleaseHealth(ctx, s.health, releaseID, nzb)
 	if ok && err == nil && ctx.Value(speculativeHealthKey{}) == nil {
-		s.markVerified(ctx, releaseID)
+		s.markVerifiedKeys(ctx, verifyKeys)
 	}
 	return ok, false, err
 }
@@ -92,11 +99,15 @@ func (s *Service) markVerified(ctx context.Context, releaseID string) {
 	s.boundVerifiedLocked(now)
 	s.verified[releaseID] = now
 	delete(s.verifiedMiss, releaseID)
+	delete(s.failedHealth, releaseID)
+	delete(s.failedGrabs, releaseID)
 	s.mu.Unlock()
-	if s.db != nil {
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO resolver_verified(release_id, checked_at, sample_version) VALUES (?, ?, 1)
+	s.persistBookkeeping(ctx, func(ctx context.Context) {
+		if s.db != nil {
+			_, _ = s.db.ExecContext(ctx, `INSERT INTO resolver_verified(release_id, checked_at, sample_version) VALUES (?, ?, 1)
 			ON CONFLICT(release_id) DO UPDATE SET checked_at=excluded.checked_at, sample_version=excluded.sample_version`, releaseID, now.Unix())
-	}
+		}
+	})
 }
 
 func (s *Service) recentlyVerified(ctx context.Context, releaseID string) bool {
@@ -179,7 +190,7 @@ func (s *Service) verifiedAmong(ctx context.Context, ids []string) map[string]bo
 		for i, id := range batch {
 			args[i] = id
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT release_id, checked_at FROM resolver_verified WHERE release_id IN (`+store.Placeholders(len(batch))+`)`, args...)
+		rows, err := s.db.QueryContext(ctx, `SELECT release_id, checked_at FROM resolver_verified WHERE sample_version=1 AND release_id IN (`+store.Placeholders(len(batch))+`)`, args...)
 		if err != nil {
 			continue
 		}

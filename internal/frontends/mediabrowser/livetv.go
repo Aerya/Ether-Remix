@@ -72,7 +72,7 @@ func (i *instance) channelDTO(r *http.Request, token string, ch frontend.LiveCha
 		return nil, false
 	}
 	tags := []string{}
-	for _, g := range ch.Guides {
+	for _, g := range ch.Groups {
 		tags = append(tags, g.Name)
 	}
 	item := map[string]any{
@@ -81,7 +81,7 @@ func (i *instance) channelDTO(r *http.Request, token string, ch frontend.LiveCha
 		"Id":       id, "Name": ch.Name, "Number": ch.Number, "Type": "TvChannel",
 		"ChannelType": "TV", "MediaType": "Video", "IsFolder": false,
 		"MediaSources": []any{i.liveChannelMediaSourceDTO(id, ch.Name)},
-		"UserData":     map[string]any{"Key": id, "IsFavorite": ch.Favorite},
+		"UserData":     map[string]any{"Key": dashedGUID(id), "ItemId": id, "PlaybackPositionTicks": int64(0), "PlayCount": 0, "IsFavorite": ch.Favorite, "Played": false},
 	}
 	if i.host.ImageGrants != nil {
 		for _, img := range ch.Images {
@@ -305,12 +305,20 @@ func (i *instance) writeLiveChannelItems(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	q := itemQuery(r)
-	sort.SliceStable(channels, func(a, b int) bool {
-		if q.Desc {
-			return channels[a].Name > channels[b].Name
+	if q.Sort == frontend.SortTitle {
+		channels = append([]frontend.LiveChannel(nil), channels...)
+		sort.SliceStable(channels, func(a, b int) bool {
+			if q.Desc {
+				return channels[a].Name > channels[b].Name
+			}
+			return channels[a].Name < channels[b].Name
+		})
+	} else if q.Desc {
+		channels = append([]frontend.LiveChannel(nil), channels...)
+		for l, h := 0, len(channels)-1; l < h; l, h = l+1, h-1 {
+			channels[l], channels[h] = channels[h], channels[l]
 		}
-		return channels[a].Name < channels[b].Name
-	})
+	}
 	token := authhdr.MediaBrowserToken(r)
 	offset := q.Offset
 	limit := q.Limit
@@ -354,7 +362,7 @@ func (i *instance) programmeDTO(p frontend.LiveProgramme, channel frontend.LiveC
 		"StartDate": wireTime(p.Start), "EndDate": wireTime(p.End), "OfficialRating": contentrating.Prefixed(p.Rating),
 		"IndexNumber": p.Episode, "ParentIndexNumber": p.Season, "Genres": append([]string{}, p.Genres...), "IsMovie": frontend.LiveCategory(p.Genres, "movie", p.MediaType), "IsSeries": frontend.LiveCategory(p.Genres, "series", p.MediaType) || p.Episode > 0 || p.Season > 0,
 		"IsSports": frontend.LiveCategory(p.Genres, "sports", p.MediaType), "IsNews": frontend.LiveCategory(p.Genres, "news", p.MediaType), "IsKids": frontend.LiveCategory(p.Genres, "kids", p.MediaType),
-		"MediaType": "Video", "IsFolder": false, "UserData": map[string]any{"Key": id, "PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": false, "Played": false},
+		"MediaType": "Video", "IsFolder": false, "UserData": map[string]any{"Key": dashedGUID(id), "ItemId": id, "PlaybackPositionTicks": int64(0), "PlayCount": 0, "IsFavorite": false, "Played": false},
 	}
 	if channel.ID != "" {
 		item["ChannelName"] = channel.Name

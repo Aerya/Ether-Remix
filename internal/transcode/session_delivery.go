@@ -26,7 +26,16 @@ func (s *Session) ServeSegment(w http.ResponseWriter, r *http.Request, n int) {
 // serveSegment writes segment n of track t, waiting for ffmpeg and
 // restarting it when n is behind or far ahead of the encoder.
 func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int) {
-	s.Touch()
+	s.mu.Lock()
+	touchAlive := !s.closed && !s.inputFailed && !s.sessionExhausted && s.stoppedAt.Load() == 0
+	s.mu.Unlock()
+	if touchAlive {
+		if r == nil || r.Method != http.MethodHead {
+			s.touchMediaAccess()
+		} else {
+			s.Touch()
+		}
+	}
 	if warm := s.resumeSession(n); warm != nil {
 		warm.serveSegment(w, r, t, n)
 		return
@@ -391,12 +400,33 @@ func (s *Session) endFetchLocked(n int) {
 		delete(s.inflight, n)
 	}
 	prev := s.lastReq
-	if oldest := s.oldestFetchLocked(); oldest >= 0 && !s.encoderHeadLocked(oldest) {
+	if oldest := s.oldestFetchLocked(); oldest >= 0 && (!s.encoderHeadLocked(oldest) || s.blockedSeekLocked(oldest)) {
 		s.lastReq = oldest
 	}
 	if s.lastReq != prev {
 		s.broadcastLocked()
 	}
+}
+
+// blockedSeekLocked reports that fetch n is where the player now is,
+// although the encoder-head rule would hold the playhead: no track has
+// published n, nothing older is open, and n is past the playhead's restart
+// window. A seek that lands inside a copy's lead is served from disk and
+// leaves the playhead behind; the first segment the paused run has not
+// written is then the one the player waits on. Holding the playhead there
+// keeps the throttle pausing the run that must write it, and the fetch
+// never completes. A published head fetch (the client still on an earlier
+// segment) does not qualify, so it still cannot evict the playhead.
+func (s *Session) blockedSeekLocked(n int) bool {
+	if n <= s.lastReq+s.restartLimit() || n != s.oldestFetchLocked() {
+		return false
+	}
+	for t := range s.done {
+		if s.segmentPublishedLocked(t, n) {
+			return false
+		}
+	}
+	return true
 }
 
 // notePlayheadLocked follows the oldest fetch still open. A segment the
@@ -414,6 +444,9 @@ func (s *Session) notePlayheadLocked(t, n int) {
 	if !published && restart && !head {
 		s.lastReq = n
 		decision = "seek"
+	} else if s.blockedSeekLocked(n) {
+		s.lastReq = n
+		decision = "blocked"
 	} else if oldest := s.oldestFetchLocked(); oldest >= 0 && !s.encoderHeadLocked(oldest) {
 		s.lastReq = oldest
 		decision = "oldest"
@@ -519,7 +552,7 @@ func (s *Session) restartLimit() int {
 // restarting it at n: wait when n is at or a little ahead of the encoder,
 // restart when n is behind the run's start, far ahead, or nothing runs.
 func (s *Session) needsRestartLocked(n int) bool {
-	if s.liveRecovering || s.headerRecovering {
+	if s.liveRecovering || s.headerRecovering || s.retryRecovering || s.skipProbing {
 		return false
 	}
 	if s.pendingStart && s.pendingSegment == n && s.pendingTrack == s.wantTrack {
@@ -575,7 +608,16 @@ func (s *Session) rungDwellLocked(media bool, n int) time.Duration {
 // serveInit writes the init segment of track t, waiting for ffmpeg to
 // write it.
 func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
-	s.Touch()
+	s.mu.Lock()
+	touchAlive := !s.closed && !s.inputFailed && !s.sessionExhausted && s.stoppedAt.Load() == 0
+	s.mu.Unlock()
+	if touchAlive {
+		if r == nil || r.Method != http.MethodHead {
+			s.touchMediaAccess()
+		} else {
+			s.Touch()
+		}
+	}
 	if !hasInitSegment(s.container) || t < 0 || t >= len(s.done) {
 		http.NotFound(w, r)
 		return
@@ -637,7 +679,9 @@ func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
 		// guard; non-GET requests stay probes on both protocols.
 		probe := r.Method != http.MethodGet || (s.isDASH() && r.Header.Get("Range") != "" && (s.cur != nil || s.runSeq > 0))
 		selectTrack := !s.isDASH() || t != s.audioTrackLocked()
-		if probe && (s.cur == nil || s.cur.finished || s.cur.stopped || (selectTrack && s.cur.track != t)) {
+		activeTrack := (s.cur != nil && !s.cur.finished && !s.cur.stopped && (!selectTrack || s.cur.track == t)) ||
+			(s.pendingStart && (!selectTrack || s.pendingTrack == t))
+		if probe && !activeTrack {
 			s.mu.Unlock()
 			http.Error(w, "initialization not ready", http.StatusServiceUnavailable)
 			return
@@ -647,7 +691,7 @@ func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
 			s.wantTrack = t
 		}
 		var dwell *time.Timer
-		if (s.cur == nil || s.cur.finished || s.cur.stopped || (selectTrack && s.cur.track != t)) && !restarted && !probe && !s.pendingStart && !s.headerRecovering {
+		if (s.cur == nil || s.cur.finished || s.cur.stopped || (selectTrack && s.cur.track != t)) && !restarted && !probe && !s.pendingStart && !s.headerRecovering && !s.retryRecovering && !s.skipProbing {
 			left := s.rungDwellLocked(false, s.lastReq)
 			if s.isDASH() && selectTrack && !s.videoRequested && s.runSeq <= 1 {
 				// No video was requested yet: the initial quality choice
@@ -766,15 +810,51 @@ func (s *Session) serveCounted(w http.ResponseWriter, r *http.Request, name stri
 	if _, err = content.Seek(0, io.SeekStart); err != nil {
 		return
 	}
-	cw := &countingWriter{ResponseWriter: w}
+	cw := &countingWriter{ResponseWriter: w, ctx: r.Context()}
+	cw.beginTCP()
 	start := s.goodput.now()
 	http.ServeContent(cw, r, name, mod, content)
 	dur := s.goodput.now().Sub(start)
+	backlog, stall := cw.finishTCP()
 	if cw.status != http.StatusOK || cw.err != nil || cw.bytes != size || size == 0 || r.Context().Err() != nil {
 		return
 	}
 	if remoteDelivery(r) {
 		s.goodput.add(cw.bytes, dur)
+		if s.m != nil {
+			s.mu.Lock()
+			segDur := s.segDur
+			if s.plan != nil {
+				if d := s.plan.Dur(n); d > 0 {
+					segDur = d
+				}
+			}
+			mediaKbps := 0
+			idx := t
+			if s.isDASH() {
+				idx = rungForDashTrack(t)
+			}
+			if idx >= 0 && idx < len(s.rungs) {
+				mediaKbps = s.rungs[idx].avgKbps
+			}
+			if mediaKbps <= 0 && segDur > 0 {
+				mediaKbps = int(float64(cw.bytes*8) / segDur.Seconds() / 1000)
+			}
+			isAudio := s.isDASH() && t == s.audioTrackLocked()
+			bufferFilling := !isAudio && (s.deliveredCount < 3 || (s.deliveredTrack == t && n != s.deliveredSeg+1))
+			s.mu.Unlock()
+			s.m.notifyRemoteDelivery(RemoteDeliveryEvent{
+				SessionID:        s.id,
+				RemoteAddr:       r.RemoteAddr,
+				Bytes:            cw.bytes,
+				Duration:         dur,
+				SegDuration:      segDur,
+				MediaBitrateKbps: mediaKbps,
+				TCPBacklogBytes:  backlog,
+				TCPStall:         stall,
+				BufferFilling:    bufferFilling,
+			})
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

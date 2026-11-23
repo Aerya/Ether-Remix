@@ -244,6 +244,11 @@ func (c *stmtConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.T
 	} else {
 		tx, err = c.inner.Begin() //nolint:staticcheck // driver wrapper: fall back to the inner driver's legacy method
 	}
+	if err == nil && !opts.ReadOnly {
+		if rec := recorderFrom(ctx); rec != nil {
+			rec.beganWrite()
+		}
+	}
 	if !gated {
 		return tx, err
 	}

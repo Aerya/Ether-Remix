@@ -1,0 +1,63 @@
+{
+  "fields": [
+    {
+      "key": "leagues",
+      "kind": "multiSelect",
+      "label": "$t:setting_leagues_label",
+      "hint": "$t:setting_leagues_hint",
+      "default": [
+        "nfl",
+        "nba",
+        "nhl",
+        "mlb",
+        "mls",
+        "epl",
+        "laliga",
+        "bundesliga",
+        "seriea",
+        "ligue1",
+        "ucl",
+        "ncaaf",
+        "ncaam",
+        "wnba",
+        "f1",
+        "ufc",
+        "pga"
+      ],
+      "options": [
+        { "value": "nfl", "label": "$t:league_nfl" },
+        { "value": "nba", "label": "$t:league_nba" },
+        { "value": "nhl", "label": "$t:league_nhl" },
+        { "value": "mlb", "label": "$t:league_mlb" },
+        { "value": "mls", "label": "$t:league_mls" },
+        { "value": "epl", "label": "$t:league_epl" },
+        { "value": "laliga", "label": "$t:league_laliga" },
+        { "value": "bundesliga", "label": "$t:league_bundesliga" },
+        { "value": "seriea", "label": "$t:league_seriea" },
+        { "value": "ligue1", "label": "$t:league_ligue1" },
+        { "value": "ucl", "label": "$t:league_ucl" },
+        { "value": "ncaaf", "label": "$t:league_ncaaf" },
+        { "value": "ncaam", "label": "$t:league_ncaam" },
+        { "value": "wnba", "label": "$t:league_wnba" },
+        { "value": "f1", "label": "$t:league_f1" },
+        { "value": "ufc", "label": "$t:league_ufc" },
+        { "value": "pga", "label": "$t:league_pga" }
+      ]
+    },
+    {
+      "key": "region",
+      "kind": "select",
+      "label": "$t:setting_region_label",
+      "hint": "$t:setting_region_hint",
+      "default": "us",
+      "options": [
+        { "value": "us", "label": "$t:region_us" },
+        { "value": "ca", "label": "$t:region_ca" },
+        { "value": "gb", "label": "$t:region_gb" },
+        { "value": "eu", "label": "$t:region_eu" },
+        { "value": "au", "label": "$t:region_au" },
+        { "value": "all", "label": "$t:region_all" }
+      ]
+    }
+  ]
+}

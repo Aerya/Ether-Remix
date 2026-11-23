@@ -47,7 +47,7 @@ type KindSampleItem struct {
 
 // KindProjection says, in owner words, how one protocol shows the kind.
 type KindProjection struct {
-	Protocol string `json:"protocol"` // plex|mediaBrowser|stremio|xtream|silo|adapter
+	Protocol string `json:"protocol"` // vela|plex|mediaBrowser|stremio|xtream|silo|adapter
 	Summary  string `json:"summary"`
 }
 
@@ -190,6 +190,9 @@ func kindProjections(decl plugins.MediaKindMeta, man plugins.Manifest) []KindPro
 	var out []KindProjection
 	levels := len(decl.Levels)
 	p := decl.Present
+	if p.Vela != nil {
+		out = append(out, KindProjection{Protocol: "vela", Summary: fmt.Sprintf("Shows as a %s library in Vela", p.Vela.Type)})
+	}
 	if p.Plex != nil {
 		summary := fmt.Sprintf("Shows as a %s library", plexBaseName(p.Plex.Base))
 		if (p.Plex.Base == "show" || p.Plex.Base == "artist") && levels > 3 {

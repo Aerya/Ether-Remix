@@ -1,0 +1,19 @@
+{
+  "summary": "Dim or restore room lighting scenes from Flows and emit scene change events.",
+  "setting_room_label": "Default room",
+  "setting_brightness_label": "Default brightness",
+  "event_scene_changed_label": "Lighting scene changed",
+  "event_scene_changed_desc": "Emitted when a room switches to a new lighting scene.",
+  "action_set_scene_label": "Set lighting scene",
+  "action_set_scene_desc": "Apply a lighting scene and brightness level to a room.",
+  "field_room_label": "Room",
+  "field_scene_label": "Scene",
+  "field_brightness_label": "Brightness",
+  "field_previous_scene_label": "Previous scene",
+  "field_applied_label": "Applied",
+  "field_deduplicated_label": "Deduplicated",
+  "scene_cinema": "Cinema",
+  "scene_warm": "Warm",
+  "scene_bright": "Bright",
+  "scene_off": "Off"
+}

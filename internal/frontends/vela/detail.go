@@ -10,11 +10,21 @@ import (
 // mediaSummary reports only facts already present on the authorized detail.
 // Reading a title must not resolve a source just to fill a badge.
 func mediaSummary(d frontend.ItemDetail) object {
+	tracks := d.Tracks
 	if d.TracksEstimated {
-		return nil
+		tracks = nil
+		for _, v := range d.Versions {
+			if !v.Media.Estimated && len(v.Media.Streams) > 0 {
+				tracks = v.Media.Streams
+				break
+			}
+		}
+		if len(tracks) == 0 {
+			return nil
+		}
 	}
 	video, audio := []object{}, []object{}
-	for _, s := range d.Tracks {
+	for _, s := range tracks {
 		entry := object{}
 		if s.Codec != "" {
 			entry["codec"] = s.Codec
@@ -65,6 +75,21 @@ func mediaSummary(d frontend.ItemDetail) object {
 	return object{"video": video, "audio": audio}
 }
 
+// detailChapters surfaces already-known chapters (probed container chapters,
+// declared plugin chapters, or part-derived chapters) on title detail without
+// triggering a network probe.
+func detailChapters(d frontend.ItemDetail) []object {
+	if len(d.Chapters) > 0 {
+		return chapters(frontend.MediaInfo{Chapters: d.Chapters})
+	}
+	for _, v := range d.Versions {
+		if !v.Media.Estimated && len(v.Media.Chapters) > 0 {
+			return chapters(v.Media)
+		}
+	}
+	return []object{}
+}
+
 func crewPeople(t frontend.Title) []frontend.Person {
 	out := []frontend.Person{}
 	seen := map[string]bool{}
@@ -94,26 +119,39 @@ func crewPeople(t frontend.Title) []frontend.Person {
 
 // Detail children are bounded first pages in the neutral service's order.
 // Subsequent selections use /titles/:id/children; no episode is inferred.
+// For a branching container (e.g. artist -> album + concert), the season-like
+// list is the primary child level only; secondary branches are queried via
+// /titles/:id/children?role=.
 func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token string, d frontend.ItemDetail, out object) error {
 	key := d.Title.Key
-	if key.Kind() != frontend.KindShow && key.Kind() != frontend.KindSeason {
+	isShow := key.Kind() == frontend.KindShow || d.Title.Type == frontend.TypeShow
+	isSeason := key.Kind() == frontend.KindSeason || d.Title.Type == frontend.TypeSeason
+	if !isShow && !isSeason {
 		return nil
 	}
-	page, err := i.host.Experience.Children(r.Context(), v, requestDevice(r), key, frontend.ItemQuery{Limit: 50, NoTotal: true})
+	childQuery := frontend.ItemQuery{Limit: 50, NoTotal: true}
+	if isShow && d.Title.PrimaryChildLevel != "" {
+		childQuery.Level = d.Title.PrimaryChildLevel
+	}
+	page, err := i.host.Experience.Children(r.Context(), v, requestDevice(r), key, childQuery)
 	if err != nil {
 		return err
 	}
-	converted, err := i.titles(r, v, token, page.Items)
+	items := page.Items
+	if isShow && d.Title.PrimaryChildLevel == "" {
+		items = filterPrimaryBranchItems(d.Title, items)
+	}
+	converted, err := i.titles(r, v, token, items)
 	if err != nil {
 		return err
 	}
-	if key.Kind() == frontend.KindSeason {
+	if isSeason {
 		out["episodes"] = converted
 		return nil
 	}
 	out["seasons"] = converted
-	for _, season := range page.Items {
-		if season.Key.Kind() != frontend.KindSeason {
+	for _, season := range items {
+		if season.Key.Kind() != frontend.KindSeason && season.Type != frontend.TypeSeason {
 			continue
 		}
 		episodes, err := i.host.Experience.Children(r.Context(), v, requestDevice(r), season.Key, frontend.ItemQuery{Limit: 50, NoTotal: true})
@@ -130,26 +168,136 @@ func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token str
 	return nil
 }
 
-// cast and crew use only portraits selected with the authorized title detail.
-func (i *instance) cast(r *http.Request, token string, d frontend.ItemDetail) ([]object, error) {
-	out := make([]object, 0, len(d.Title.Cast))
-	for _, person := range d.Title.Cast {
-		out = append(out, object{"name": person.Name, "role": person.Role})
+// filterPrimaryBranchItems narrows a mixed-branch child slice to the parent's
+// primary child level when PrimaryChildLevel was not pre-populated by the
+// catalog (preferring items sharing the parent's media class, else the first
+// observed child level).
+func filterPrimaryBranchItems(parent frontend.Title, items []frontend.Title) []frontend.Title {
+	if len(items) <= 1 {
+		return items
 	}
-	return i.creditArtwork(r, token, d, d.Title.Cast, out)
+	var levels []string
+	seenLevel := make(map[string]bool, 2)
+	var matchingLevel string
+	for _, it := range items {
+		if it.KindLevel == "" {
+			continue
+		}
+		if !seenLevel[it.KindLevel] {
+			seenLevel[it.KindLevel] = true
+			levels = append(levels, it.KindLevel)
+		}
+		if matchingLevel == "" && parent.MediaClass != "" && it.MediaClass == parent.MediaClass {
+			matchingLevel = it.KindLevel
+		}
+	}
+	if len(levels) > 1 {
+		keep := matchingLevel
+		if keep == "" {
+			keep = levels[0]
+		}
+		out := make([]frontend.Title, 0, len(items))
+		for _, it := range items {
+			if it.KindLevel == keep {
+				out = append(out, it)
+			}
+		}
+		return out
+	}
+	if parent.MediaClass != "" {
+		hasMatch, hasOther := false, false
+		for _, it := range items {
+			if it.MediaClass == "" {
+				continue
+			}
+			if it.MediaClass == parent.MediaClass {
+				hasMatch = true
+			} else {
+				hasOther = true
+			}
+		}
+		if hasMatch && hasOther {
+			out := make([]frontend.Title, 0, len(items))
+			for _, it := range items {
+				if it.MediaClass == parent.MediaClass {
+					out = append(out, it)
+				}
+			}
+			return out
+		}
+	}
+	return items
 }
 
-func (i *instance) crew(r *http.Request, token string, d frontend.ItemDetail) ([]object, error) {
-	people := crewPeople(d.Title)
+func (i *instance) creditIDs(r *http.Request, v *frontend.Viewer, d frontend.ItemDetail) map[int64]string {
+	var ids []int64
+	seen := map[int64]bool{}
+	for _, group := range [][]frontend.Person{d.Title.Cast, d.Title.Crew, d.Title.Directors, d.Title.Writers} {
+		for _, person := range group {
+			if person.TMDB > 0 && !seen[person.TMDB] {
+				seen[person.TMDB] = true
+				ids = append(ids, person.TMDB)
+			}
+		}
+	}
+	for _, credit := range d.Title.MediaCredits {
+		if credit.TMDB > 0 && !seen[credit.TMDB] {
+			seen[credit.TMDB] = true
+			ids = append(ids, credit.TMDB)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	result := make(map[int64]string, len(ids))
+	for start := 0; start < len(ids); start += 256 {
+		allowed, err := i.host.Experience.PersonFacetIDs(r.Context(), v, requestDevice(r), d.Title.Key, ids[start:min(start+256, len(ids))])
+		if err != nil {
+			return nil
+		}
+		for id, value := range allowed {
+			if seen[id] && value != "" {
+				result[id] = value
+			}
+		}
+	}
+	return result
+}
+
+// Cast and crew share one current-credit proof and admission transaction.
+func (i *instance) credits(r *http.Request, v *frontend.Viewer, token string, d frontend.ItemDetail) ([]object, []object, error) {
+	facetIDs := i.creditIDs(r, v, d)
+	people := append([]frontend.Person(nil), d.Title.Cast...)
 	out := make([]object, 0, len(people))
 	for _, person := range people {
+		entry := object{"name": person.Name, "role": person.Role}
+		if id := facetIDs[person.TMDB]; id != "" {
+			entry["id"] = id
+		}
+		out = append(out, entry)
+	}
+	castCount := len(out)
+	crew := crewPeople(d.Title)
+	people = append(people, crew...)
+	for _, person := range crew {
 		entry := object{"name": person.Name}
+		if id := facetIDs[person.TMDB]; id != "" {
+			entry["id"] = id
+		}
 		if person.Role != "" {
 			entry["role"] = person.Role
 		}
 		out = append(out, entry)
 	}
-	return i.creditArtwork(r, token, d, people, out)
+	out, err := i.creditArtwork(r, token, d, people, out)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Keep empty groups as JSON arrays.
+	castOut, crewOut := []object{}, []object{}
+	castOut = append(castOut, out[:castCount]...)
+	crewOut = append(crewOut, out[castCount:]...)
+	return castOut, crewOut, nil
 }
 
 // Each batch proves current credit membership and admits portrait grants;

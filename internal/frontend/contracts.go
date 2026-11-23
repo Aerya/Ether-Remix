@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -60,6 +61,175 @@ type View struct {
 	// Native is the protocol-native presentation string on the bound protocol
 	// (for example, MediaBrowser CollectionType or Plex base type).
 	Native string
+	// Subset is true when the library narrows a broader canonical catalogue
+	// with rules, visibility defaults, narrower sources, or a collection.
+	Subset bool
+	// Plugin library presentation metadata (optional; populated for plugin libraries).
+	Media       core.MediaClass `json:"media,omitempty"`
+	Card        string          `json:"card,omitempty"`
+	DateDisplay string          `json:"dateDisplay,omitempty"`
+	Tabs        []ViewTab       `json:"tabs,omitempty"`
+	Sorts       []string        `json:"sorts,omitempty"`
+	Facets      []ViewFacet     `json:"facets,omitempty"`
+}
+
+// ViewTab describes one sub-tab of a library view.
+type ViewTab struct {
+	ID                string          `json:"id"`
+	Label             string          `json:"label"`
+	Kind              string          `json:"kind"`
+	Level             string          `json:"level,omitempty"`
+	Facet             string          `json:"facet,omitempty"`
+	Order             string          `json:"order,omitempty"`
+	Sort              string          `json:"sort,omitempty"`
+	Direction         string          `json:"direction,omitempty"`
+	Card              string          `json:"card,omitempty"`
+	Layout            string          `json:"layout,omitempty"`
+	Search            bool            `json:"search,omitempty"`
+	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"`
+	Filters           *core.TabFilter `json:"filters,omitempty"`
+}
+
+// LibraryLiveRequest asks a plugin library's live tab for currently live items.
+type LibraryLiveRequest struct {
+	Tab    string
+	Query  string
+	Filter string
+	Cursor string
+	Limit  int
+}
+
+// LibraryLiveItem is one live stream item returned by a plugin library live tab.
+// ThumbRef is an opaque Ether image reference (LibraryLiveThumbPrefix + hash),
+// never a raw upstream URL.
+type LibraryLiveItem struct {
+	ID       string
+	Title    string
+	Subtitle string
+	Badge    string
+	Viewers  *int
+	Tags     []string
+	ThumbRef string
+	Live     bool
+}
+
+// LibraryLiveFilter is one optional filter chip returned with a live tab page.
+type LibraryLiveFilter struct {
+	Key   string
+	Label string
+}
+
+// LibraryLivePage is one page of live items from a plugin library live tab.
+type LibraryLivePage struct {
+	Items      []LibraryLiveItem
+	Filters    []LibraryLiveFilter
+	NextCursor string
+}
+
+// LibraryLiveStream is the server-side resolved direct stream for one live item.
+type LibraryLiveStream struct {
+	URL     string
+	Headers map[string]string
+	MIME    string
+	Title   string
+}
+
+// LibraryLive lists and resolves live streams for plugin libraries that declare
+// a "live" tab. Nil means plugin library live tabs are not wired.
+type LibraryLive interface {
+	ListLive(ctx context.Context, viewer *core.Viewer, viewID string, req LibraryLiveRequest) (LibraryLivePage, error)
+	ResolveLive(ctx context.Context, viewer *core.Viewer, viewID string, tab string, itemID string) (LibraryLiveStream, error)
+}
+
+// LibraryScopeReader exposes a library view's browse-scope filter and indexed
+// membership check for frontends that query the catalogue directly for built-in
+// sections or filter search/hub results inside one library view.
+type LibraryScopeReader interface {
+	LibraryBrowseFilter(ctx context.Context, viewer *core.Viewer, viewID string, req core.Filter) (core.Filter, bool, error)
+	LibraryMembers(ctx context.Context, libraryID core.LibraryID, keys []core.RatingKey) (map[core.RatingKey]bool, bool, error)
+}
+
+// DirectLiveTarget identifies an ephemeral direct-URL live stream tuned through
+// the session broker without registering a Live TV channel.
+type DirectLiveTarget struct {
+	LibraryID core.LibraryID
+	Tab       string
+	ItemID    string
+	Title     string
+	URL       string
+	Headers   map[string]string
+	MIME      string
+}
+
+// ViewFacet describes one plugin-declared filter facet on a library view.
+type ViewFacet struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
+	Multi bool   `json:"multi"`
+}
+
+// FacetBucket is one discrete filter bucket for a plugin library facet.
+type FacetBucket struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+// FacetCollection is one facet-backed collection entry with its newest item.
+type FacetCollection struct {
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	ItemCount  int         `json:"itemCount"`
+	NewestItem *core.Title `json:"-"`
+}
+
+// FacetCollectionPage is one page of facet-backed collections.
+type FacetCollectionPage struct {
+	Items []FacetCollection
+	More  bool
+}
+
+// LibraryFacetBuckets is an optional Experience capability returning discrete
+// filter buckets for a plugin library's declared facet field.
+type LibraryFacetBuckets interface {
+	LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field string) ([]FacetBucket, error)
+}
+
+// LibraryFacetBucketsAtLevel is an optional Experience capability returning
+// discrete filter buckets scoped to a specific plugin hierarchy level.
+type LibraryFacetBucketsAtLevel interface {
+	LibraryFacetBucketsAtLevel(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, level, field string) ([]FacetBucket, error)
+}
+
+// LevelFacetReader is an optional Experience capability returning facet values
+// scoped to a specific plugin hierarchy level or protocol item type.
+type LevelFacetReader interface {
+	FacetsAtLevel(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, level, name string) ([]core.FacetValue, error)
+}
+
+// LibraryFacetCollections is an optional Experience capability returning a
+// single page of facet-backed collections ordered by count (default) or name.
+type LibraryFacetCollections interface {
+	LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field, order string, page PageQuery) (FacetCollectionPage, error)
+}
+
+// CollectionPager is an optional Collections capability returning one page
+// of a library type's collections plus the total, without listing them all.
+type CollectionPager interface {
+	ListPage(ctx context.Context, user *User, typ MediaType, offset, limit int) ([]Collection, int, error)
+}
+
+// PluginLibraryRowsReader is an optional Experience capability returning the
+// Recommended tab shelves for a plugin library.
+type PluginLibraryRowsReader interface {
+	PluginLibraryRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID string) ([]Row, error)
+}
+
+// PluginLibraryTabRowsReader is an optional Experience capability returning the
+// shelves for a specific recommended tab of a plugin library.
+type PluginLibraryTabRowsReader interface {
+	PluginLibraryTabRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, tabID string) ([]Row, error)
 }
 
 // RowEntryKind identifies a neutral entry independently of wire formats.
@@ -193,6 +363,7 @@ const (
 	FavoritePerson     FavoriteKind = "person"
 	FavoriteCollection FavoriteKind = "collection"
 	FavoriteChannel    FavoriteKind = "channel"
+	FavoriteEntity     FavoriteKind = "entity"
 )
 
 // FavoriteRef identifies an entity in its own namespace.
@@ -209,6 +380,13 @@ type ItemRequest struct {
 
 // DateFilter is the date predicate accepted by the shared catalogue boundary.
 type DateFilter = core.DateFilter
+
+// ProviderID is one external provider identifier requested by a client
+// (for example Jellyfin/Emby AnyProviderIdEquals=tmdb.872585).
+type ProviderID struct {
+	Provider string // lowercased provider name: "tmdb", "imdb", "tvdb", ...
+	ID       string // trimmed provider-specific id value
+}
 
 type ItemQuery struct {
 	// AdjacentTo selects the anchor and its immediately neighboring visible items.
@@ -231,16 +409,36 @@ type ItemQuery struct {
 	UnservedTypes []string
 	// ExcludedTypes contains core media type names excluded by the client.
 	ExcludedTypes []core.MediaType
+	// Level selects a specific declared hierarchy level key on a plugin library.
+	Level string
+	// Role selects children matching a semantic role (or role-less level key) on a plugin library.
+	Role          string
 	Recursive     bool
 	Season        *int // Optional presented season number.
+	CollectionKey core.RatingKey
 	Filter        core.Filter
 	Watched       *bool
 	Favorite      *bool
+	// ProviderIDs holds external provider identifiers to match (OR semantics:
+	// an item matches if it carries any listed provider id). When
+	// FilterByProviderIDs is true, only matching items are returned; an empty
+	// or unknown-provider list returns an empty page (Total 0) rather than
+	// dropping the filter.
+	ProviderIDs         []ProviderID
+	FilterByProviderIDs bool
 	// NoTotal is for clients that page without a total. A library page
 	// answered from the catalogue's indexes then skips counting the matches,
 	// which reads every title the filter admits; Page.Total is Offset plus
 	// the items returned. Other pages still report their exact total.
 	NoTotal bool
+	// CheapTotal, when paired with NoTotal, populates Page.Total and sets
+	// Page.TotalExact only when an exact count is available cheaply (tallies,
+	// cached counts, or bounded index counts); otherwise Page.TotalExact stays
+	// false and no full-library count runs.
+	CheapTotal bool
+	// SuppressExpand disables on-demand background plugin facet/person expansion
+	// for internal shelf probes and search fan-out.
+	SuppressExpand bool
 }
 
 // Continuation distinguishes a known next page from exhaustion and a
@@ -344,10 +542,12 @@ type ExtraStreams interface {
 type KindMedia struct {
 	io.ReaderAt
 	io.Closer
-	Size     int64
-	MIME     string
-	Duration time.Duration
-	Name     string
+	Size        int64
+	MIME        string
+	Duration    time.Duration
+	Name        string
+	Release     core.Release
+	MediaSource core.MediaSource
 }
 
 // KindLeaf is one playable leaf entry within a plugin kind container item.
@@ -366,6 +566,23 @@ type KindLeaf struct {
 type KindStreams interface {
 	OpenKind(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept []string) (*KindMedia, error)
 	KindLeaves(ctx context.Context, viewer *core.Viewer, parent core.RatingKey) ([]KindLeaf, error)
+}
+
+// KindPart is one addressable file/part of a multi-part plugin kind item (#576).
+type KindPart struct {
+	Index    int
+	Name     string
+	MIME     string
+	Size     int64
+	Duration time.Duration
+}
+
+// KindPartStreams opens individual parts of a multi-part plugin kind item and
+// lists declared parts without opening bytes (#576). Frontends and kind-media
+// type-assert for it when serving per-part URLs.
+type KindPartStreams interface {
+	OpenKindPart(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept []string) (*KindMedia, error)
+	KindParts(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]KindPart, error)
 }
 
 // KindRefKeys maps between plugin RatingKeys and their ItemRefs for a viewer
@@ -501,6 +718,9 @@ type ItemDetail struct {
 	// verified peer or policy result is unavailable. It does not guarantee a
 	// source, codec, stream slot or transcode capacity will be available.
 	CanPlay *bool
+	// CanRead reflects current reading authorization for book items when known.
+	// Nil on non-book items.
+	CanRead *bool
 	Tracks  []core.StreamInfo
 	// TracksEstimated marks a set containing synthesized playback estimates.
 	// These streams must not be presented as facts about a resolved source.
@@ -510,8 +730,11 @@ type ItemDetail struct {
 	// authorized artwork. Background discovery may add alternatives later.
 	ImagesAuthoritative bool
 	Versions            []Version
-	Markers             []Marker
-	Extras              []Extra
+	// Chapters carries probed or declared chapter markers for the item (for
+	// example embedded audiobook chapters or part-derived chapters).
+	Chapters []core.Chapter
+	Markers  []Marker
+	Extras   []Extra
 }
 
 // ResolvedEventSubject is viewer-authorized current data for an event entity.
@@ -538,7 +761,11 @@ type CollectionQuery struct {
 	NavigationOnly  bool
 	NavigationGroup string
 	// ExistsOnly stops after the first visible collection; Total is then 0 or 1.
-	ExistsOnly    bool
+	ExistsOnly bool
+	// NoTotal skips computing an exact total when the caller pages by cursor
+	// or limit+1 (e.g. Vela's continuation token).
+	NoTotal       bool
+	ViewID        string
 	Query         string
 	Types         []core.MediaType
 	Offset, Limit int
@@ -549,7 +776,11 @@ type CollectionPage struct {
 }
 
 // PageQuery defaults nonpositive Limit to 50 and caps it at 500.
-type PageQuery struct{ Offset, Limit int }
+type PageQuery struct {
+	Offset, Limit int
+	Query         string
+	Level         string
+}
 
 // PlaylistPage is one viewer's own playlists. Item keys are titles that
 // viewer is allowed to see, in playlist order.
@@ -560,6 +791,63 @@ type PlaylistPage struct {
 
 // ErrBadPlaylist is an invalid playlist name, index, or empty change.
 var ErrBadPlaylist = errors.New("invalid playlist request")
+
+// MaxPlaylistEntries is the maximum number of entries permitted in a viewer
+// playlist created or extended through the ViewerPlaylists contract.
+const MaxPlaylistEntries = 5000
+
+var (
+	// ErrPlaylistReadOnly marks mutations on read-only playlists (such as smart
+	// playlists or protected system playlists). It wraps ErrUnauthorized so
+	// existing surfaces that reject protected mutations as unauthorized keep
+	// their behavior while newer surfaces can report a read-only conflict.
+	ErrPlaylistReadOnly = fmt.Errorf("%w: playlist read only", ErrUnauthorized)
+	// ErrPlaylistTooLarge rejects playlist creation or additions that would
+	// exceed MaxPlaylistEntries.
+	ErrPlaylistTooLarge = errors.New("playlist exceeds maximum entry count")
+	// ErrPlaylistUnsupportedKind rejects playlist entries whose title kind is
+	// neither playable nor expandable to playable episodes.
+	ErrPlaylistUnsupportedKind = errors.New("unsupported playlist entry kind")
+)
+
+// PlaylistEntry pairs a stable entry identifier with a visible playlist title.
+type PlaylistEntry struct {
+	EntryID string
+	Title   core.Title
+}
+
+// PlaylistContents is a viewer's playlist metadata paired with its visible
+// entries in playlist order.
+type PlaylistContents struct {
+	Playlist core.Playlist
+	Entries  []PlaylistEntry
+}
+
+// TitlePlaylistMembership reports one viewer playlist and every visible entry
+// identifier within it that references the queried title.
+type TitlePlaylistMembership struct {
+	Playlist core.Playlist
+	EntryIDs []string
+}
+
+// PlaylistAvailability reports whether viewer playlists are backed by storage.
+type PlaylistAvailability interface {
+	PlaylistsAvailable() bool
+}
+
+// ViewerPlaylists exposes viewer-owned playlists with stable entry identities,
+// show/season expansion, rename, and per-title membership lookup. All reads
+// and mutations enforce viewer visibility policy before counting or indexing.
+type ViewerPlaylists interface {
+	PlaylistLibrary
+	ViewerPlaylistContents(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (PlaylistContents, error)
+	CreateViewerPlaylist(ctx context.Context, viewer *core.Viewer, name string, items []core.RatingKey) (*core.Playlist, error)
+	RenameViewerPlaylist(ctx context.Context, viewer *core.Viewer, key core.RatingKey, name string) (*core.Playlist, error)
+	AddViewerPlaylistEntries(ctx context.Context, viewer *core.Viewer, key core.RatingKey, items []core.RatingKey) (int, error)
+	RemoveViewerPlaylistEntry(ctx context.Context, viewer *core.Viewer, key core.RatingKey, entryID string) error
+	MoveViewerPlaylistEntry(ctx context.Context, viewer *core.Viewer, key core.RatingKey, entryID, afterEntryID string) error
+	TitlePlaylists(ctx context.Context, viewer *core.Viewer, titleKey core.RatingKey) ([]TitlePlaylistMembership, error)
+}
 
 // PlaylistLibrary is the viewer's playlists. Remove and move indexes are
 // positions in the visible item list, never raw storage positions that
@@ -654,6 +942,19 @@ type Experience interface {
 	RemoveFromContinue(context.Context, *core.Viewer, core.RatingKey) error
 }
 
+// ReadingProgressWriter is an optional interface implemented by Experience
+// hosts that persist book reading progress alongside video/audio watch state.
+type ReadingProgressWriter interface {
+	SetReadingProgress(ctx context.Context, viewer *core.Viewer, key core.RatingKey, progress core.ReadingProgress) error
+}
+
+// TitleBatchReader is an optional interface implemented by Experience hosts
+// that batch-authorize and return titles for a list of rating keys without
+// per-item detail enrichment, user-data, or artwork queries.
+type TitleBatchReader interface {
+	BatchTitles(ctx context.Context, viewer *core.Viewer, keys []core.RatingKey) ([]core.Title, error)
+}
+
 type PlayIntent struct {
 	// OriginalPlayback declares an installed demux/decoder runtime independently
 	// of native media element capabilities. Originals are pinned for byte reads.
@@ -668,14 +969,16 @@ type PlayIntent struct {
 	// an explicit subtitle-off choice (SubtitleStream == -1).
 	AudioSet    bool
 	SubtitleSet bool
-	// AudioOrdinal selects a zero-based audio-only position from the opened,
-	// probed source. SubtitleStreamIndex is an absolute source stream index;
-	// -1 explicitly disables subtitles. Nil preserves normal preferences.
-	AudioOrdinal        *int
-	SubtitleStreamIndex *int
-	Position            time.Duration
-	ClientSessionID     string
-	PlaybackID          string
+	// AudioOrdinal and SubtitleOrdinal select a zero-based position among the
+	// opened, probed source's audio or subtitle streams, in source order (the
+	// order a client's track inventory lists them). SubtitleOrdinal -1
+	// explicitly disables subtitles. Nil preserves normal preferences. A
+	// position the source cannot honour is no choice: viewer rules pick.
+	AudioOrdinal    *int
+	SubtitleOrdinal *int
+	Position        time.Duration
+	ClientSessionID string
+	PlaybackID      string
 	// AllowTranscoding is nil for the existing default; false forbids video
 	// or audio transcoding while retaining any allowed direct-stream remux.
 	AllowTranscoding *bool
@@ -739,10 +1042,22 @@ type StreamRequest struct {
 	// into segmented output even when the client could draw it from the
 	// original file: HLS cannot carry image subtitles.
 	BurnImageSubtitles bool
+	// ReencodeVideo replaces a copied video stream with an encoded one: the
+	// client could not play the copy (a transcode rung of a replan ladder).
+	ReencodeVideo bool
+	// MaxHeight is a viewer's quality pick for a segmented stream: the video
+	// is encoded no taller than it. A pick of 0 lifts an earlier cap. Nil
+	// leaves the session's quality as it is.
+	MaxHeight *int
 	// LazyStart leaves the encoder idle until a rendition is requested.
 	LazyStart bool
 	// Continuous uses one uniform segment clock, without adaptive discontinuities.
-	Continuous      bool
+	Continuous bool
+	// FullTimeline publishes an HLS playlist that spans the whole title from
+	// zero, as Jellyfin does, even when Position is a resume point. The client
+	// seeks its player to Position; the encoder starts at the segment it asks
+	// for. Position still records where the viewer starts.
+	FullTimeline    bool
 	Format          StreamFormat
 	Position        time.Duration
 	SegmentDuration time.Duration
@@ -766,11 +1081,13 @@ type PlanRequest struct {
 	Device       core.Device
 	Protocol     Protocol
 	Item         core.RatingKey
-	// Channel is the stable Host.LiveTV channel ID. Exactly one of Item and
-	// Channel must be supplied.
-	Channel string
-	Caps    core.ClientCaps
-	Intent  PlayIntent
+	// Channel is the stable Host.LiveTV channel ID. Exactly one of Item,
+	// Channel, or DirectLive must be supplied.
+	Channel    string
+	DirectLive *DirectLiveTarget
+	Multiview  *MultiviewTarget
+	Caps       core.ClientCaps
+	Intent     PlayIntent
 }
 type PlayPlan struct {
 	SourceChosenAt, DecisionAt time.Time
@@ -778,9 +1095,17 @@ type PlayPlan struct {
 	Estimated                  bool
 	Media                      core.MediaInfo
 	Decision                   core.Decision
+	// SelectedSubtitle holds the text subtitle stream selected for the client
+	// to render beside the video when Decision.SubtitleStream was cleared to
+	// -1 so the video encoder never burns it in. Nil means
+	// Decision.SubtitleStream is already the authoritative selection.
+	SelectedSubtitle *int
 	// Alternatives are evaluated against this same source and client policy.
 	// DirectPlay, DirectStream, Transcoding are evaluated against this same source.
 	DirectPlay, DirectStream, Transcoding bool
+	// VideoTranscodingOff reports that video re-encoding is disabled for movies
+	// and shows (audio/subtitle conversion and remuxing may still run).
+	VideoTranscodingOff bool
 	// HLS reports whether this resolved source can be delivered as HLS under
 	// the declared client profile. Encoder capacity is checked at stream start.
 	HLS bool
@@ -788,11 +1113,34 @@ type PlayPlan struct {
 	// output decision (mpegts, fmp4, or mkv). Empty means unknown or ineligible;
 	// it is not the source container or an encoder-capacity reservation.
 	HLSContainer string
+	// HTTP reports whether this resolved source can be delivered as a
+	// progressive HTTP transcode stream under the declared client profile.
+	HTTP bool
+	// HTTPContainer is the authoritative container from the resolved HTTP
+	// progressive transcode decision (for example mp4, aac, mp3, ogg, mkv).
+	HTTPContainer string
 	// ETag identifies the resolved immutable source when available; it is
 	// empty when the backend cannot prove a stable source identity.
 	ETag string
 	// DetailSource is a scoped, expiring handle for the resolved source.
 	DetailSource string
+	// VersionHandle is the opaque VersionHandles ID for the admitted version
+	// when one was resolved or matched for this plan.
+	VersionHandle string
+	// ReleaseID is the internal resolved release identity used by frontends
+	// to correlate the admitted source with offered VersionSlots (never
+	// exposed directly on external APIs).
+	ReleaseID string
+}
+
+// SubtitleStream reports the subtitle stream selected for this play plan,
+// preserving a side-rendered text track when Decision.SubtitleStream was
+// cleared to keep the video decision burn-free.
+func (p PlayPlan) SubtitleStream() int {
+	if p.SelectedSubtitle != nil {
+		return *p.SelectedSubtitle
+	}
+	return p.Decision.SubtitleStream
 }
 
 // DetailPlanner resolves a playable single item within a bounded admission
@@ -802,6 +1150,25 @@ type DetailPlanner interface {
 	DetailPlan(ctx context.Context, request PlanRequest) (PlayPlan, error)
 	ResolveDetailSource(ctx context.Context, scope VersionScope, handle string) (DetailSourceTarget, error)
 	MatchDetailSession(ctx context.Context, scope VersionScope, handle, sessionID string) error
+}
+
+// StaleDetailResolver identifies an expired detail-source handle that belonged
+// to the same authenticated viewer, device, and surface for an accessible item.
+type StaleDetailResolver interface {
+	ResolveStaleDetailParent(ctx context.Context, scope VersionScope, handle string) (RatingKey, error)
+}
+
+// SubtitleURLRequest describes one subtitle stream URL to authorize in a batch.
+type SubtitleURLRequest struct {
+	Index  int
+	Format string
+}
+
+// SubtitleURLBatch authorizes multiple subtitle stream URLs for one session
+// with a single viewer and policy check. Entries that cannot be delivered are
+// returned as empty strings in the corresponding slice position.
+type SubtitleURLBatch interface {
+	SubtitleURLs(ctx context.Context, access SessionAccess, sessionID string, reqs []SubtitleURLRequest) ([]string, error)
 }
 
 type DetailSourceTarget struct {
@@ -824,6 +1191,7 @@ type Session struct {
 	Device          core.Device
 	Item            core.RatingKey
 	Channel         string
+	Multiview       *MultiviewTarget
 	Media           *core.MediaInfo
 	StartedAt       time.Time
 	Capabilities    *SessionCapabilities
@@ -936,6 +1304,10 @@ type SessionAccess struct {
 	Device   core.Device
 	Protocol Protocol
 	Owner    bool
+	// VisibleOnly restricts Sessions() to actively playing or explicitly
+	// paused sessions (for activity/device lists), hiding freshly opened
+	// Starting sessions before their first media byte.
+	VisibleOnly bool
 }
 
 // ScopedMedia serves a stream only to the authenticated device that owns it.
@@ -971,6 +1343,8 @@ type Sessions interface {
 	Markers(context.Context, SessionAccess, string) (SessionMarkers, error)
 	// ServeMedia authorizes the scoped grant and serves direct, HLS or DASH data.
 	ServeMedia(http.ResponseWriter, *http.Request)
+	// KeepAlive renews activity for an existing authorized session without changing playback or cancelling a stop.
+	KeepAlive(context.Context, SessionAccess, string) error
 	Report(context.Context, SessionAccess, string, Timeline) error
 	Stop(context.Context, SessionAccess, string) error
 	Command(context.Context, *core.Viewer, string, Command) error
@@ -997,6 +1371,13 @@ type ItemProgress interface {
 // PlaybackSourceKeyer reports the resolved source identity for a playback session.
 type PlaybackSourceKeyer interface {
 	SourceKey(playID string) string
+}
+
+// PlaybackSourceReader opens a session's current source for direct reads;
+// release ends the hold. A subtitle extraction uses it to read an indexed
+// text track line by line instead of the whole file.
+type PlaybackSourceReader interface {
+	SourceReader(playID string) (src io.ReaderAt, size int64, release func(), ok bool)
 }
 
 // SoftSubtitleServer serves soft ASS subtitles directly from an active HLS remux session.
@@ -1030,3 +1411,16 @@ type QualitySessions interface {
 
 // NavigationGroups defines the shared ordering and labels of discovery collection shelves.
 var NavigationGroups = navigationGroups()
+
+// VideoTranscodingPolicy reports the owner's per-viewer "No video
+// transcoding" switch, so a frontend can offer only rungs and releases that
+// play without re-encoding video for that viewer.
+type VideoTranscodingPolicy interface {
+	VideoTranscodingDisabled(*User) bool
+}
+
+// PosterGenerationSource reports the poster presentation generation, which
+// advances each time the owner saves poster settings so apps refetch posters.
+type PosterGenerationSource interface {
+	PosterGeneration() uint64
+}

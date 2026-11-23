@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"cmp"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -30,13 +31,50 @@ const (
 )
 
 type viewingKey struct {
-	user   int64
-	client string
-	key    core.RatingKey
+	user    int64
+	client  string
+	key     core.RatingKey
+	channel string
+	mvGroup string
+	mvTile  int
+}
+
+func makeViewingKey(p core.PlaySession) viewingKey {
+	k := viewingKey{
+		user:   p.UserID,
+		client: cmp.Or(p.ClientID, p.Client.ClientID),
+		key:    p.Key,
+	}
+	if p.Client.MultiviewGroup != "" {
+		k.mvGroup = p.Client.MultiviewGroup
+		k.mvTile = p.Client.MultiviewTile
+	}
+	if p.LiveChannel != nil {
+		k.key = 0
+		k.channel = cmp.Or(p.LiveChannel.ID, p.LiveChannel.Name, p.TitleName)
+	} else if k.key == 0 {
+		k.channel = p.TitleName
+	}
+	return k
+}
+
+func liveWatchedMS(p core.PlaySession, end time.Time) int64 {
+	if p.LiveChannel == nil || (p.ViewerState != "playing" && p.BytesServed <= 0) {
+		return 0
+	}
+	start := p.StartedAt
+	if e := p.Experience; e != nil && e.Pictured && !e.PicturedAt.IsZero() && (start.IsZero() || e.PicturedAt.After(start)) {
+		start = e.PicturedAt
+	}
+	if start.IsZero() {
+		return 0
+	}
+	return max(0, end.Sub(start).Milliseconds())
 }
 
 type viewingPart struct {
 	bytes         int64
+	watchedMS     int64
 	failovers     int
 	downFailovers int
 	// Mid-play buffering of the session (its counters only grow).
@@ -46,6 +84,7 @@ type viewingPart struct {
 
 func (p viewingPart) add(o viewingPart) viewingPart {
 	p.bytes += o.bytes
+	p.watchedMS += o.watchedMS
 	p.failovers += o.failovers
 	p.downFailovers += o.downFailovers
 	p.bufferEvents += o.bufferEvents
@@ -130,6 +169,15 @@ func (v *viewing) endedPart(id string) bool {
 	return false
 }
 
+// liveViewing snapshots a live session's coalesced row and totals without
+// mutating viewing state on a read request.
+type liveViewing struct {
+	row     string
+	started time.Time
+	totals  viewingPart
+	exp     *core.PlayExperience
+}
+
 // viewings maps playback sessions onto rows. The caller holds Service.vmu.
 type viewings struct {
 	byKey     map[viewingKey]*viewing
@@ -140,24 +188,81 @@ func newViewings() *viewings {
 	return &viewings{byKey: map[viewingKey]*viewing{}, bySession: map[string]*viewing{}}
 }
 
+// lookup finds the viewing a live session belongs to (by session id, or by
+// viewer/client/title when a live session has not yet been sampled). Ended
+// secondary sessions return ok=false so they never masquerade as rows.
+func (vs *viewings) lookup(id string, live *core.PlaySession, now time.Time) (liveViewing, bool) {
+	v := vs.bySession[id]
+	if v == nil && live != nil {
+		k := makeViewingKey(*live)
+		if cur := vs.byKey[k]; cur != nil && !cur.endedPart(id) && !now.After(cur.last.Add(viewingWindow)) {
+			v = cur
+		}
+	}
+	if v == nil {
+		return liveViewing{}, false
+	}
+	t := v.ended
+	seen := false
+	for sid, part := range v.live {
+		if live != nil && sid == live.ID {
+			seen = true
+			part.bytes = max(part.bytes, live.BytesServed)
+			part.watchedMS = max(part.watchedMS, liveWatchedMS(*live, now))
+			part.failovers = max(part.failovers, live.Failovers)
+			part.downFailovers = max(part.downFailovers, live.DownFailovers)
+			if e := live.Experience; e != nil {
+				part.bufferEvents = max(part.bufferEvents, e.BufferEvents)
+				part.buffering = max(part.buffering, e.Buffering)
+			}
+		}
+		t = t.add(part)
+	}
+	if live != nil && !seen {
+		part := viewingPart{
+			bytes:         live.BytesServed,
+			watchedMS:     liveWatchedMS(*live, now),
+			failovers:     live.Failovers,
+			downFailovers: live.DownFailovers,
+		}
+		if e := live.Experience; e != nil {
+			part.bufferEvents = e.BufferEvents
+			part.buffering = e.Buffering
+		}
+		t = t.add(part)
+	}
+	start := v.start
+	if live != nil {
+		start.observe(live.Experience)
+	}
+	started := v.started
+	if live != nil && !live.StartedAt.IsZero() && (started.IsZero() || live.StartedAt.Before(started)) {
+		started = live.StartedAt
+	}
+	return liveViewing{row: v.row, started: started, totals: t, exp: start.experience(t)}, true
+}
+
 // observe folds one session observation into its viewing. It returns the
-// row-level record to write, or ok=false when nothing should be written
-// yet (a probe, a prepared source nobody read) or the observation is
-// stale (a sample of a session that already stopped).
-func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, problem string) (playRecord, bool) {
+// row-level record to write, the viewing's canonical row ID, and ok=false
+// when nothing should be written yet (a probe, a prepared source nobody
+// read) or the observation is stale (a sample of a session that already
+// stopped).
+func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, problem string) (playRecord, string, bool) {
+	isLive := p.LiveChannel != nil
 	begin := p.StartedAt
 	if begin.IsZero() {
 		begin = now
 	}
+	at := now
+	if isLive && ended && !p.LastActive.IsZero() && p.LastActive.Before(at) && !p.LastActive.Before(begin) {
+		at = p.LastActive
+	}
 	v := vs.bySession[p.ID]
 	if v == nil {
-		k := viewingKey{user: p.UserID, client: p.ClientID, key: p.Key}
-		if k.client == "" {
-			k.client = p.Client.ClientID
-		}
+		k := makeViewingKey(p)
 		if cur := vs.byKey[k]; cur != nil {
 			if cur.endedPart(p.ID) {
-				return playRecord{}, false
+				return playRecord{}, cur.row, false
 			}
 			if !begin.Before(cur.started.Add(-viewingWindow)) && !begin.After(cur.last.Add(viewingWindow)) {
 				v = cur
@@ -168,7 +273,7 @@ func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, probl
 				vs.forget(cur)
 			}
 			vs.evict()
-			v = &viewing{row: p.ID, k: k, started: begin, last: now, live: map[string]viewingPart{}}
+			v = &viewing{row: p.ID, k: k, started: begin, last: at, live: map[string]viewingPart{}}
 			vs.byKey[k] = v
 		}
 		// A stop can be the first word of a session that started and ended
@@ -180,11 +285,14 @@ func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, probl
 	if begin.Before(v.started) {
 		v.started = begin
 	}
-	if now.After(v.last) {
-		v.last = now
+	if at.After(v.last) {
+		v.last = at
 	}
 	part := v.live[p.ID]
 	part.bytes = max(part.bytes, p.BytesServed)
+	if isLive {
+		part.watchedMS = max(part.watchedMS, liveWatchedMS(p, at))
+	}
 	part.failovers = max(part.failovers, p.Failovers)
 	part.downFailovers = max(part.downFailovers, p.DownFailovers)
 	if e := p.Experience; e != nil {
@@ -213,7 +321,7 @@ func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, probl
 	if !v.written && !v.problem && !v.watched && t.bytes < viewingMinBytes {
 		// A probe or an unread preparation: no history yet. The viewing is
 		// kept for the window so the open that plays continues it.
-		return playRecord{}, false
+		return playRecord{}, v.row, false
 	}
 	v.written = true
 	row := p
@@ -221,8 +329,15 @@ func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, probl
 	row.StartedAt = v.started
 	row.BytesServed, row.Failovers, row.DownFailovers = t.bytes, t.failovers, t.downFailovers
 	row.Experience = v.start.experience(t)
+	if isLive {
+		row.Key = 0
+		row.Info.Duration = 0
+		if row.TitleName == "" {
+			row.TitleName = p.LiveChannel.Name
+		}
+	}
 	row.Source, row.Resolution = nil, nil
-	return playRecord{p: row, at: now, ended: len(v.live) == 0, problem: problem}, true
+	return playRecord{p: row, at: at, ended: len(v.live) == 0, problem: problem, watchedMS: t.watchedMS}, v.row, true
 }
 
 func (vs *viewings) forget(v *viewing) {

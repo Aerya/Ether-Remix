@@ -20,6 +20,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/flight"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"golang.org/x/net/html"
 )
 
@@ -103,7 +104,7 @@ func NewTrashGuides(o TrashOptions) *TrashGuides {
 	if o.Client == nil {
 		o.Client = &http.Client{Timeout: 20 * time.Second}
 	}
-	o.UserAgent = cmpOr(o.UserAgent, "Ether (+https://github.com/braedonsaunders/ether)")
+	o.UserAgent = cmpOr(o.UserAgent, httpclient.UserAgent())
 	if o.TTL <= 0 {
 		o.TTL = time.Hour
 	}

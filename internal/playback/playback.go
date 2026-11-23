@@ -28,13 +28,16 @@ import (
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 // Deps are the components playback orchestrates. Resolver, Engine,
 // Transcoder, Catalog and SelectProfile are required.
 type Deps struct {
-	AugmentMedia func(context.Context, *core.Title, *core.User, *core.Resolution, core.MediaSource, *core.MediaInfo) // synchronous enrichment before publishing a generation
+	OpenResolution func(context.Context, *core.Resolution) (core.MediaSource, error)
+	AugmentMedia   func(context.Context, *core.Title, *core.User, *core.Resolution, core.MediaSource, *core.MediaInfo) // synchronous enrichment before publishing a generation
 	// NativeProbe, when set, reads stream parameters straight from the
 	// source's container headers before falling back to Transcoder.Probe.
 	// It must return an error unless every decision-relevant field is
@@ -65,8 +68,9 @@ type Deps struct {
 	// duration-based AlignTime.
 	Aligner core.TimelineAligner
 	// DB holds the playback_resume table; nil disables resume records.
-	DB     *sql.DB
-	Logger *slog.Logger
+	DB       *sql.DB
+	Logger   *slog.Logger
+	Timeline func(TimelineEvent)
 	// Cluster, when set (clustered nodes only; requires DB), mirrors this
 	// node's sessions into playback_live_sessions and applies stream limits
 	// across the cluster. Nil keeps everything in this process.
@@ -79,6 +83,41 @@ type Deps struct {
 	// held and written later, and admission skips the cluster-wide check
 	// while the database is down (failing open) instead of waiting on it.
 	Availability *store.Availability
+	// SeasonRevealer, when set, checks an in-progress TV season in the
+	// background for streaming-dropped episodes on non-burst detail opens.
+	SeasonRevealer func(core.RatingKey)
+	// Vault holds already-stored NZBs and probed tracks (never triggers grabs).
+	Vault vault.Store
+	// OpenVaulted opens a vaulted Usenet release for low-priority header
+	// probing without touching any indexer. Returns (nil, nil, nil) when absent.
+	OpenVaulted func(ctx context.Context, rel core.Release) (core.MediaSource, []byte, error)
+	// OpenCachedDebrid opens a debrid-cached or non-on-demand HTTP release for
+	// low-priority header probing without touching any indexer or adding
+	// uncached torrents. Returns (nil, nil) when not freely reachable.
+	OpenCachedDebrid func(ctx context.Context, rel core.Release) (core.MediaSource, error)
+	// DebridFileMeta returns already-fetched debrid file path and size from
+	// memory without any database or API calls.
+	DebridFileMeta func(rel core.Release) (path string, size int64, ok bool)
+	// ContentIDOf maps a release ID to its known W116 content ID in memory.
+	ContentIDOf func(releaseID string) string
+	// OnVersionProbed notifies listeners when a background header probe stores
+	// new container tracks for a release.
+	OnVersionProbed func(key core.RatingKey, rel core.Release)
+	// ViewerAudioPreferences returns the viewer's saved audio language list
+	// and prefer-original flag (for probed-audio checks and release ranking).
+	// When nil, playback falls back to the fields on core.User.
+	ViewerAudioPreferences func(ctx context.Context, userID int64) (audioLanguages []string, preferOriginal bool)
+	// HeaderProbeBudget bounds bytes read per low-priority container header
+	// probe (0 uses transcode.DefaultHeaderProbeBudget).
+	HeaderProbeBudget int
+	// Events receives playback domain events when non-nil.
+	Events *events.Bus
+	// EnrichEventContext optionally enriches PlaybackSessionContext with
+	// app-level metadata (library, viewer tags, transcode HW, network locality).
+	EnrichEventContext func(ps *core.PlaySession, title *core.Title, base events.PlaybackSessionContext) events.PlaybackSessionContext
+	// CachedMarkers optionally supplies cached marker spans for a title/media
+	// without performing network or blocking I/O.
+	CachedMarkers func(key core.RatingKey, info core.MediaInfo) []MarkerSpan
 }
 
 // Options tune the manager. Zero values take the defaults noted.
@@ -89,6 +128,9 @@ type Options struct {
 	DataDir string
 	// IdleTimeout ends sessions without viewer activity (default 2m).
 	IdleTimeout time.Duration
+	// PauseRetention bounds how long an explicitly paused session is kept
+	// before expiring. Zero follows Server.PausedStreamMinutes (default 30m).
+	PauseRetention time.Duration
 	// StreamActivityTimeout is how long a session without active reads or
 	// segment requests continues to count against stream limits and active
 	// session listings (default 12s).
@@ -203,9 +245,6 @@ func (o *Options) defaults() {
 	if o.ConnectionsPerStream <= 0 {
 		o.ConnectionsPerStream = 8
 	}
-	if o.MaxAttempts <= 0 {
-		o.MaxAttempts = 4
-	}
 	if o.MaxFailovers <= 0 {
 		o.MaxFailovers = 6
 	}
@@ -252,6 +291,7 @@ type Manager struct {
 	analysisBufs         sync.Pool
 	swapLatency          swapLatencyWindow
 	reserveConfigVersion atomic.Uint64
+	remoteDelivery       atomic.Pointer[func(RemoteDeliveryEvent)]
 
 	cfgMu sync.RWMutex
 	cfg   config.Config
@@ -279,9 +319,10 @@ type Manager struct {
 	// by warm-ups (onDemandWarmAdmit); lazily created under mu.
 	onDemandWarmAt      map[int64]time.Time
 	onDemandWarmByAddon map[string][]time.Time
-	stalePrefers        map[stalePreferKey]time.Time     // picked releases that fell back (stalePreferTTL)
-	prepareFailures     map[prepareFailKey]recentFailure // failed preparations, answered for retryFailureWindow
-	namesake            map[core.RatingKey]bool          // cached namesake lookups (namesake.go)
+	stalePrefers        map[stalePreferKey]stalePreference // picked releases that fell back (stalePreferTTL)
+	namesake            map[core.RatingKey]bool            // cached namesake lookups (namesake.go)
+	probedRuntimes      map[core.RatingKey]time.Duration   // consensus probed runtimes overriding stale metadata (namesake.go)
+	prepareFailures     map[prepareFailKey]recentFailure
 
 	pinMu        sync.Mutex
 	livePins     map[string]int
@@ -293,6 +334,18 @@ type Manager struct {
 	// sessions keep their own ids and stop independently.
 	sharedMu sync.Mutex
 	shared   map[string]*sharedHold
+
+	releaseProbeMu      sync.RWMutex
+	releaseProbes       map[string]core.MediaInfo
+	releaseProbeKeys    map[string]string
+	releaseProbesLoaded bool
+
+	versionProbeMu     sync.Mutex
+	versionProbeClosed bool
+	versionProbes      map[core.RatingKey]*versionProbeState
+	versionProbeCancel context.CancelFunc
+	versionProbeSem    chan struct{}
+	versionProbeWG     sync.WaitGroup
 
 	srv     *http.Server
 	baseURL string
@@ -323,14 +376,19 @@ type warmBudgetKey struct {
 	reason string
 }
 
-// hasFlightLocked reports whether any Prepare for id is in flight.
-func (m *Manager) hasFlightLocked(id identity) bool {
-	for k := range m.flights {
+// activeFlightLocked returns an in-flight Prepare for id, if any.
+func (m *Manager) activeFlightLocked(id identity) *flight {
+	for k, f := range m.flights {
 		if k.id == id {
-			return true
+			return f
 		}
 	}
-	return false
+	return nil
+}
+
+// hasFlightLocked reports whether any Prepare for id is in flight.
+func (m *Manager) hasFlightLocked(id identity) bool {
+	return m.activeFlightLocked(id) != nil
 }
 
 // flight is one in-progress Prepare shared by concurrent callers.
@@ -348,9 +406,10 @@ type flight struct {
 	playAt time.Time
 	// abandoned counts the times the last caller left; a grace timer
 	// acts only if no caller joined since it was armed.
-	abandoned int
-	sess      *session
-	err       error
+	abandoned  int
+	sess       *session
+	failedSess *session
+	err        error
 	// kind, when set, makes this flight open a non-catalogue plugin item
 	// instead of resolving a catalogue title (spec §15.1).
 	kind *core.KindInput
@@ -362,6 +421,12 @@ func releaseLabel(r core.Release) string {
 		return r.Name
 	}
 	return r.Indexer
+}
+
+// attemptAllowed reports whether a zero-based candidate attempt is within
+// the configured Remix release-attempt cap.
+func (m *Manager) attemptAllowed(attempt int) bool {
+	return attempt < m.failoverAttempts()
 }
 
 // cacheTitle is the display title stored with cache metadata.
@@ -403,7 +468,7 @@ func (m *Manager) noteWarmCause(res *core.Resolution, src core.MediaSource, reas
 		return
 	}
 	if rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder); ok {
-		rec.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, File: src.Name(), Size: src.Size(), Source: releaseLabel(res.Release), Title: title, Cause: cause})
+		rec.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, RatingKey: res.Title, File: src.Name(), Size: src.Size(), Source: releaseLabel(res.Release), Indexer: res.Release.Indexer, Origin: sourceOrigin(src, res.Release.Protocol), Title: title, Cause: cause})
 	}
 }
 
@@ -449,9 +514,13 @@ func New(deps Deps, cfg config.Config, opts Options) (*Manager, error) {
 		pending:  map[int64]int{},
 		lastCaps: map[int64]core.ClientCaps{},
 		warm:     map[identity]*warmEntry{}, warmRequests: map[warmBudgetKey][]time.Time{}, warmMisses: map[identity]time.Time{},
-		livePins:     map[string]int{},
-		progressPins: map[string]bool{},
-		pinKick:      make(chan struct{}, 1),
+		livePins:         map[string]int{},
+		progressPins:     map[string]bool{},
+		pinKick:          make(chan struct{}, 1),
+		releaseProbes:    map[string]core.MediaInfo{},
+		releaseProbeKeys: map[string]string{},
+		versionProbes:    map[core.RatingKey]*versionProbeState{},
+		versionProbeSem:  make(chan struct{}, 1),
 	}
 	m.resumeSaveCond = sync.NewCond(&m.resumeSaveMu)
 	chunk := opts.ChunkSize
@@ -469,6 +538,7 @@ func New(deps Deps, cfg config.Config, opts Options) (*Manager, error) {
 			rs.hold(deps.Availability, m.log)
 		}
 		m.resume = rs
+		m.preloadReleaseProbes()
 	}
 	if deps.Cluster != nil {
 		if deps.DB == nil {
@@ -539,11 +609,13 @@ func (m *Manager) Close() error {
 		m.Stop(id)
 	}
 	m.cancel()
+	m.closeVersionProbes()
 	err := m.srv.Close()
 	// Loops exit on cancellation. Source cleanup is a separate budget: it
 	// must not be extended by pin reconcile, registry sync, or resume flush,
 	// and it must not wait for a backend Close that is still blocked.
 	m.wg.Wait()
+	m.versionProbeWG.Wait()
 	cleanupCtx, cleanupCancel := m.sourceCleanupContext()
 	cleanupErr := m.drainSourceCleanup(cleanupCtx)
 	// Canceling the budget makes Err return Canceled even when the deadline
@@ -722,6 +794,16 @@ func UserStreamLimit(cfg config.Config, u *core.User) int {
 // ServerStreamLimit is the server-wide stream cap: Server.MaxStreams, or the
 // total connections of enabled primary (non-backfill) Usenet providers
 // divided by connsPerStream, at least 1. 0 means unlimited (no providers).
+// serverStreamLimit is ServerStreamLimit plus whether it was derived from
+// Usenet connections (no explicit Server.MaxStreams). A derived limit counts
+// only streams that resolve a release.
+func serverStreamLimit(cfg config.Config, connsPerStream int) (int, bool) {
+	if cfg.Server.MaxStreams > 0 {
+		return cfg.Server.MaxStreams, false
+	}
+	return ServerStreamLimit(cfg, connsPerStream), true
+}
+
 func ServerStreamLimit(cfg config.Config, connsPerStream int) int {
 	if cfg.Server.MaxStreams > 0 {
 		return cfg.Server.MaxStreams
@@ -748,10 +830,10 @@ func ServerStreamLimit(cfg config.Config, connsPerStream int) int {
 // server-wide limits. Sessions of the same user and client count as
 // replaceable: a client plays one thing at a time. A clustered node then
 // checks the same limits against the whole cluster (see registry.admit).
-func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) error {
+func (m *Manager) reserve(ctx context.Context, user *core.User, caps core.ClientCaps, id identity) error {
 	cfg := m.config()
 	userLimit := UserStreamLimit(cfg, user)
-	serverLimit := ServerStreamLimit(cfg, m.opts.ConnectionsPerStream)
+	serverLimit, derived := serverStreamLimit(cfg, m.opts.ConnectionsPerStream)
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -761,7 +843,11 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 		m.mu.Unlock()
 		return errDraining
 	}
-	userN, total, children := m.reservationCountsLocked(id)
+	userN, total, children, sourced := m.reservationCountsLocked(id)
+	limited := total
+	if derived {
+		limited = sourced
+	}
 	group := m.channelGroups[id]
 	if strings.HasPrefix(group, "broadcast-") {
 		userLimit = 0
@@ -772,10 +858,12 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 	}
 	if userLimit > 0 && userN >= userLimit {
 		m.mu.Unlock()
+		m.emitConcurrencyExceeded(user, caps, id.key, userLimit, userN)
 		return fmt.Errorf("%w: %s is using %d of %d streams", core.ErrStreamLimit, userLabel(user), userN, userLimit)
 	}
-	if serverLimit > 0 && total >= serverLimit {
+	if serverLimit > 0 && limited >= serverLimit {
 		m.mu.Unlock()
+		m.emitConcurrencyExceeded(user, caps, id.key, serverLimit, limited)
 		return fmt.Errorf("%w: server is at its limit of %d streams", core.ErrStreamLimit, serverLimit)
 	}
 	if m.reservations == nil {
@@ -785,6 +873,9 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 	m.pending[user.ID]++
 	m.pendingN++
 	m.mu.Unlock()
+	// Yield any background version header probes immediately so playback
+	// preparation never competes for connections or I/O.
+	m.cancelVersionProbes()
 	if m.reg == nil {
 		return nil
 	}
@@ -794,11 +885,18 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 		return nil
 	}
 	claim := unitRow{id: pendingID(m.reg.self, id), user: id.userID, client: clusterClientID(id), grp: group, kind: unitPending}
-	if err := m.reg.admit(ctx, user, id, claim, userN, total, userLimit, serverLimit); err != nil {
+	if err := m.reg.admit(ctx, user, id, claim, userN, limited, userLimit, serverLimit); err != nil {
 		m.mu.Lock()
 		m.unreserveLocked(id)
 		m.mu.Unlock()
 		m.reg.poke()
+		if errors.Is(err, core.ErrStreamLimit) {
+			lim, active := userLimit, userN
+			if lim <= 0 {
+				lim, active = serverLimit, limited
+			}
+			m.emitConcurrencyExceeded(user, caps, id.key, lim, active)
+		}
 		return err
 	}
 	return nil
@@ -859,7 +957,7 @@ func (m *Manager) PrepareWithin(ctx context.Context, wait time.Duration, user *c
 	return ps, err
 }
 
-func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession, playRequested bool) (*core.PlaySession, core.SourceRetirement, error) {
+func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession, playRequested bool) (prepared *core.PlaySession, retired core.SourceRetirement, prepareErr error) {
 	prepareStarted := time.Now()
 	if user == nil {
 		return nil, nil, core.ErrUnauthorized
@@ -884,7 +982,32 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			m.mu.Unlock()
 			return nil, nil, errors.New("playback: shutting down")
 		}
+		var promotedReplaced []string
+		if !deferSupersession && picked != "" {
+			variantID := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: id.surface, variant: picked, exact: exact}
+			if prep := m.byIdent[variantID]; prep != nil {
+				stale := !exact && m.preferenceStaleLocked(key, picked, m.now())
+				if m.sessionFitsSelection(prep, caps, "", exact) && (m.sessionFitsSelection(prep, caps, picked, exact) || (stale && prep.prefer == picked)) {
+					promotedReplaced = m.promotePreparedLocked(id, variantID, prep)
+				}
+			}
+		}
 		if prefer != "" && !exact && m.preferenceStaleLocked(key, prefer, m.now()) {
+			entry := m.stalePrefers[stalePreferKey{key, prefer}]
+			latchedPick := prefer
+			retry := stalePreferTTL - m.now().Sub(entry.at)
+			// Record after admission, outside m.mu, including when Auto reused
+			// an existing session and never called Resolve.
+			defer func() {
+				entry.played = ""
+				if prepared != nil && prepared.Resolution != nil {
+					entry.played = prepared.Resolution.Release.ID
+				}
+				if prepareErr != nil {
+					entry.reason += "; automatic preparation: " + prepareErr.Error()
+				}
+				m.recordPreferenceFallback(ctx, key, latchedPick, entry, retry, true)
+			}()
 			// The picked version fell back moments ago: this open is the
 			// automatic choice (stale_prefer.go).
 			prefer = ""
@@ -893,22 +1016,39 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			}
 		}
 		m.lastCaps[user.ID] = caps
-		if s := m.byIdent[id]; s != nil {
-			if s.exact == exact && (prefer == "" || s.current().releaseID() == prefer || (!exact && s.prefer == prefer)) {
+		s := m.byIdent[id]
+		if s == nil && deferSupersession && prefer != "" && !exact {
+			if def := m.byIdent[identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: id.surface}]; m.sessionFitsSelection(def, caps, prefer, false) {
+				s = def
+			}
+		}
+		if s != nil {
+			if m.sessionFitsSelection(s, caps, prefer, exact) {
+				s.setNoVideoTranscode(caps.NoVideoTranscode)
 				now := m.now()
 				if !m.sessionCountsForLimit(s, now) {
 					cfg := m.config()
 					userLimit := UserStreamLimit(cfg, user)
-					serverLimit := ServerStreamLimit(cfg, m.opts.ConnectionsPerStream)
-					userN, total, _ := m.reservationCountsLocked(id)
+					serverLimit, derived := serverStreamLimit(cfg, m.opts.ConnectionsPerStream)
+					userN, total, _, sourced := m.reservationCountsLocked(id)
+					if derived {
+						total = sourced
+					}
 					if userLimit > 0 && userN >= userLimit {
 						m.mu.Unlock()
+						m.stopReplaced(promotedReplaced)
+						m.emitConcurrencyExceeded(user, caps, key, userLimit, userN)
 						return nil, nil, fmt.Errorf("%w: %s is using %d of %d streams", core.ErrStreamLimit, userLabel(user), userN, userLimit)
 					}
 					if serverLimit > 0 && total >= serverLimit {
 						m.mu.Unlock()
+						m.stopReplaced(promotedReplaced)
+						m.emitConcurrencyExceeded(user, caps, key, serverLimit, total)
 						return nil, nil, fmt.Errorf("%w: server is at its limit of %d streams", core.ErrStreamLimit, serverLimit)
 					}
+				}
+				if !deferSupersession {
+					promotedReplaced = append(promotedReplaced, m.promotePreparedLocked(id, id, s)...)
 				}
 				if play {
 					s.mu.Lock()
@@ -918,7 +1058,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 						// in openFailures and the resolver's bad-source store.
 						s.invalidateDirectRetryLocked()
 						s.tried = nil
-						s.viewerState = ""
+						s.setViewerStateLocked("", now)
 						s.failovers, s.downFailovers, s.stallContinues = 0, 0, 0
 						if s.cur != nil {
 							s.alternates = s.cur.res.Alternates
@@ -928,6 +1068,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 				}
 				s.claimed = true
 				m.mu.Unlock()
+				m.stopReplaced(promotedReplaced)
 				s.touch(now)
 				if play {
 					s.mu.Lock()
@@ -939,7 +1080,14 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			}
 			old := s.id
 			m.mu.Unlock()
-			m.log.Debug("variant picked a different release; replacing session", "old", old, "prefer", prefer)
+			m.stopReplaced(promotedReplaced)
+			m.log.Debug("variant or bitrate cap picked a different release; replacing session", "session", old, "old", old, "prefer", prefer, "maxBitrateKbps", caps.MaxBitrateKbps)
+			m.recordTimelineByID(old, TimelineEvent{
+				Kind:    "quality",
+				Level:   "info",
+				Message: "Switching playback quality or version",
+				Detail:  timelineStartDetail(caps, prefer),
+			})
 			m.Stop(old)
 			continue
 		}
@@ -947,12 +1095,12 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 	}
 	fk := flightKey{id: id, prefer: prefer, exact: exact, deferSupersession: deferSupersession}
 	f := m.flights[fk]
-	if f == nil && !deferSupersession && prefer == "" && !exact {
-		// The automatic choice a bounded decision wait (PrepareWithin) is
-		// already preparing is the same source: join it rather than
-		// resolving and opening a second one in parallel.
+	if f == nil && !deferSupersession {
+		// Join the bounded decision wait (PrepareWithin) already preparing
+		// this selection rather than resolving and opening a second source.
 		alt := fk
 		alt.deferSupersession = true
+		alt.id.variant, alt.id.exact = prefer, exact
 		if f = m.flights[alt]; f != nil {
 			fk = alt
 		}
@@ -967,6 +1115,12 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 		}
 		if f = m.flights[alt]; f != nil {
 			fk = alt
+		} else if !deferSupersession {
+			alt.deferSupersession = true
+			alt.id.variant, alt.id.exact = picked, exact
+			if f = m.flights[alt]; f != nil {
+				fk = alt
+			}
 		}
 	}
 	if f == nil {
@@ -1004,6 +1158,14 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 	case <-f.done:
 		if f.err != nil {
 			return nil, f.sources, f.err
+		}
+		if !deferSupersession && f.sess != nil {
+			m.mu.Lock()
+			replaced := m.promotePreparedLocked(id, f.sess.ident, f.sess)
+			f.sess.claimed = true
+			m.mu.Unlock()
+			m.stopReplaced(replaced)
+			m.reg.poke()
 		}
 		if play {
 			f.sess.mu.Lock()
@@ -1079,8 +1241,23 @@ func (m *Manager) expireAbandonedFlight(fk flightKey, f *flight, gen int) {
 }
 
 func (m *Manager) runFlight(ctx context.Context, f *flight, fk flightKey, user *core.User, caps core.ClientCaps) {
-	defer close(f.done)
-	defer f.cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			m.mu.Lock()
+			if m.flights[fk] == f {
+				delete(m.flights, fk)
+			}
+			if m.byIdent[fk.id] == nil {
+				delete(m.channelGroups, fk.id)
+			}
+			m.mu.Unlock()
+			f.sess = nil
+			f.err = fmt.Errorf("playback: prepare panic: %v", r)
+			f.sources.seal()
+		}
+		f.cancel()
+		close(f.done)
+	}()
 	s, err := m.prepare(ctx, fk.id, user, caps, fk.prefer, fk.exact, fk.deferSupersession, f.kind, f)
 	m.mu.Lock()
 	if m.flights[fk] == f {
@@ -1102,14 +1279,27 @@ func (m *Manager) runFlight(ctx context.Context, f *flight, fk flightKey, user *
 	f.sess, f.err = s, err
 	if err != nil {
 		f.sources.seal()
-		m.emitEvent("error", s, err)
+		errSess := s
+		if errSess == nil && f.failedSess != nil && f.playRequest && !core.IsBackgroundAnalysis(ctx) && !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrPrepareSlow) && !errors.Is(err, core.ErrPreparing) && !errors.Is(err, core.ErrJobsBusy) {
+			errSess = f.failedSess
+			errSess.mu.Lock()
+			errSess.preparedOnly = false
+			if !playAt.IsZero() {
+				errSess.exp.noteRequest(playAt)
+			} else {
+				errSess.exp.noteRequest(errSess.startedAt)
+			}
+			errSess.exp.failure = OwnerError(err)
+			errSess.mu.Unlock()
+		}
+		m.emitEvent("error", errSess, err)
 	}
 }
 
 func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, caps core.ClientCaps, prefer string, exact, deferSupersession bool, kind *core.KindInput, f *flight) (*session, error) {
 	sources := f.sources
 	log := m.log.With("user", userLabel(user), "client", caps.ClientID, "key", id.key)
-	if err := m.reserve(ctx, user, id); err != nil {
+	if err := m.reserve(ctx, user, caps, id); err != nil {
 		log.Info("stream limit", "err", err)
 		return nil, err
 	}
@@ -1146,8 +1336,11 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	}
 	profile := m.selectProfile(caps, user, title.Key)
 	s := newSession(randomID(16), id, user, caps, title, profileKey(profile), m.now())
+	s.timelineEnabled = !core.IsBackgroundAnalysis(ctx)
+	log = log.With("session", s.id)
 	if kind != nil {
 		s.kindOpen = kind.Open
+		s.kindOpenCandidate = kind.OpenCandidate
 		s.kindSourceID = kind.SourceID
 	}
 	s.sources = sources
@@ -1163,6 +1356,13 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	m.mu.Lock()
 	s.playbackGroup = m.channelGroups[id]
 	m.mu.Unlock()
+	m.recordTimeline(s, TimelineEvent{
+		At:      s.startedAt,
+		Kind:    "started",
+		Level:   "info",
+		Message: "Playback requested",
+		Detail:  timelineStartDetail(caps, prefer),
+	})
 
 	openStart := time.Now()
 	var g *generation
@@ -1189,6 +1389,10 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 		)
 	}
 	if err != nil {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		f.failedSess = s
 		log.Info("prepare failed", "err", err)
 		return nil, err
 	}
@@ -1246,12 +1450,15 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	m.reg.poke()
 	m.saveResume(ctx, s, g)
 	if rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder); ok {
-		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Title: cacheTitle(*s.title), Cause: core.CacheCausePlaying, Play: true})
+		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), RatingKey: s.title.Key, File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Indexer: g.res.Release.Indexer, Origin: sourceOrigin(g.src, g.res.Release.Protocol), Title: cacheTitle(*s.title), Cause: core.CacheCausePlaying, Play: true})
 	} else if c, ok := m.deps.Cache.(core.CachePlayRecorder); ok {
 		c.RecordPlay(g.releaseID(), cacheTitle(*s.title), g.src.Size())
 	}
 	ginfo := g.infoSnapshot()
-	log.Debug("playback session started", "session", s.id, "release", g.res.Release.Name,
+	if s.caps.ForcedOverrideApplied {
+		log.Debug("forced device override replaced a runtime declaration", "device", s.caps.Device, "product", s.caps.Product)
+	}
+	log.Debug("playback session started", "release", g.res.Release.Name,
 		"container", ginfo.Container, "size", g.src.Size(), "duration", ginfo.Duration, "estimated", ginfo.Estimated)
 	m.emitEvent("start", s, nil)
 	return s, nil
@@ -1263,45 +1470,81 @@ func (m *Manager) lookup(id string) *session {
 	return m.sessions[id]
 }
 
-// sessionCountsForLimit reports whether s is actively streaming or within
-// StreamActivityTimeout of its last media/segment read and has not been
-// stopped or closed by the client.
-func (m *Manager) sessionCountsForLimit(s *session, now time.Time) bool {
-	if s == nil {
-		return false
+func (m *Manager) pauseRetention() time.Duration {
+	if d := m.config().Server.PausedStreamRetention(); d > 0 {
+		return d
 	}
-	s.mu.Lock()
-	closed := s.closed
-	stoppedBySurface := s.stoppedBySurface
-	stopAt := s.stopAt
-	viewerState := s.viewerState
-	last := s.lastRead
-	if last.IsZero() {
-		last = s.lastActive
+	if m.opts.PauseRetention > 0 {
+		return m.opts.PauseRetention
 	}
-	s.mu.Unlock()
-	if closed || stoppedBySurface || !stopAt.IsZero() || viewerState == "stopped" {
-		return false
-	}
-	if s.activeReads.Load() > 0 {
-		return true
-	}
-	if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
-		if la := hls.LastAccess(); la.After(last) {
-			last = la
-		}
-	}
-	window := m.opts.StreamActivityTimeout
-	if window <= 0 {
-		window = 12 * time.Second
-	}
-	return now.Sub(last) <= window
+	return core.PausedSessionRetention
 }
 
-// SessionActive reports whether a playback session is live for stream limits
-// and active session listings.
+// sessionLiveness evaluates s under the shared core liveness rule.
+func (m *Manager) sessionLiveness(s *session, now time.Time) core.SessionLiveness {
+	if s == nil {
+		return core.SessionLiveness{State: core.SessionLivenessStopped, Expired: true}
+	}
+	s.mu.Lock()
+	in := core.SessionLivenessInput{
+		Closed:           s.closed,
+		PreparedOnly:     s.preparedOnly,
+		StoppedBySurface: s.stoppedBySurface,
+		BackgroundHeld:   s.preparedOnly && s.backgroundHold.active(now),
+		StopAt:           s.stopAt,
+		StartedAt:        s.startedAt,
+		OpenedAt:         s.openedAt,
+		IsHLS:            s.decision == core.DecisionTranscode || s.decision == core.DecisionRemux,
+		ViewerState:      s.viewerState,
+		PausedAt:         s.pausedAt,
+		LastProgressAt:   s.lastProgressAt,
+		HasPosition:      !s.viewerAt.IsZero(),
+		ActiveReads:      s.activeReads.Load(),
+		MediaBytes:       s.mediaBytes.Load(),
+		LastMediaAt:      s.lastMediaAt,
+		LastActive:       s.lastActive,
+		StartupGrace:     m.opts.StreamActivityTimeout,
+		IdleTimeout:      m.opts.IdleTimeout,
+		PauseRetention:   m.pauseRetention(),
+	}
+	s.mu.Unlock()
+	if m.deps.HLSLookup != nil {
+		if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
+			in.IsHLS = true
+			var la time.Time
+			if tracker, ok := hls.(core.MediaAccessTracker); ok {
+				la = tracker.LastMediaAccess()
+			} else {
+				la = hls.LastAccess()
+			}
+			if la.After(in.LastMediaAt) {
+				in.LastMediaAt = la
+			}
+		}
+	}
+	return core.EvaluateSessionLiveness(in, now)
+}
+
+// sessionCountsForLimit reports whether s occupies a stream-limit slot under
+// the shared liveness rule. Paused, idle, abandoned, and stopped sessions do not.
+func (m *Manager) sessionCountsForLimit(s *session, now time.Time) bool {
+	return m.sessionLiveness(s, now).CountsForLimit()
+}
+
+// SessionActive reports whether a playback session occupies a stream-limit slot.
 func (m *Manager) SessionActive(id string) bool {
 	return m.sessionCountsForLimit(m.lookup(id), m.now())
+}
+
+// SessionVisible reports whether a playback session is visible in Activity and
+// Overview under the shared liveness rule (playing or explicitly paused).
+func (m *Manager) SessionVisible(id string) bool {
+	return m.sessionLiveness(m.lookup(id), m.now()).Visible()
+}
+
+// SessionLiveness reports the current liveness state of a playback session.
+func (m *Manager) SessionLiveness(id string) core.SessionLivenessState {
+	return m.sessionLiveness(m.lookup(id), m.now()).State
 }
 
 // BeginMediaRead records an active client media or segment read and returns
@@ -1330,6 +1573,7 @@ func (m *Manager) Session(id string) (*core.PlaySession, bool) {
 
 func (m *Manager) snapshotWithEncoder(s *session, now time.Time) *core.PlaySession {
 	ps := s.snapshot(now)
+	ps.Liveness = m.sessionLiveness(s, now).State
 	if m.deps.HLSLookup == nil {
 		return ps
 	}
@@ -1467,11 +1711,11 @@ func (m *Manager) setSurfacePrepared(id string, prepared bool) bool {
 		s.stoppedBySurface = true
 	} else {
 		s.stoppedBySurface = false
+		s.openedAt = now
 		s.lastActive = now
-		s.lastRead = now
 		s.stopAt = time.Time{}
 		if s.viewerState == "stopped" {
-			s.viewerState = ""
+			s.setViewerStateLocked("", now)
 		}
 	}
 	s.mu.Unlock()
@@ -1581,6 +1825,28 @@ func (m *Manager) Sessions() []*core.PlaySession {
 	return out
 }
 
+// KeepAlive checks an existing session and renews control activity only for
+// sessions that have already started or been explicitly paused. An open
+// control stream is not media delivery or a new play: it never prevents a
+// never-started session from expiring after AbandonedSessionTimeout or a
+// client stop from completing.
+func (m *Manager) KeepAlive(id string) bool {
+	s := m.lookup(id)
+	if s == nil {
+		return false
+	}
+	now := m.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	if !s.lastMediaAt.IsZero() || s.mediaBytes.Load() > 0 || !s.lastProgressAt.IsZero() || !s.viewerAt.IsZero() || s.viewerState == "playing" || s.viewerState == "paused" {
+		s.lastActive = now
+	}
+	return true
+}
+
 // Stop ends a session: its source is closed once reads finish, its live
 // pin is dropped and its HLS session, if any, is stopped.
 func (m *Manager) Stop(id string) {
@@ -1602,6 +1868,10 @@ func (m *Manager) detachSessionLocked(s *session) *generation {
 		delete(m.byIdent, s.ident)
 		delete(m.channelGroups, s.ident)
 	}
+	if s.hasAlias && m.byIdent[s.alias] == s {
+		delete(m.byIdent, s.alias)
+		delete(m.channelGroups, s.alias)
+	}
 	s.mu.Lock()
 	s.closed = true
 	if s.stopCancel != nil {
@@ -1618,6 +1888,13 @@ func (m *Manager) detachSessionLocked(s *session) *generation {
 
 func (m *Manager) finishSessionStop(s *session, g *generation) {
 	id := s.id
+	// Announce detach before source/transcoder cleanup so open consoles and
+	// cluster peers drop the ended stream immediately even if Close blocks.
+	m.reg.poke()
+	if stopEv, ok := timelineStopEvent(s, m.now()); ok {
+		m.recordTimeline(s, stopEv)
+	}
+	m.emitEvent("stop", s, nil)
 	if g != nil {
 		g.retire()
 		m.unpinLive(g.releaseID())
@@ -1625,8 +1902,6 @@ func (m *Manager) finishSessionStop(s *session, g *generation) {
 	if hls, ok := m.deps.HLSLookup(id); ok && hls != nil {
 		m.deps.Transcoder.Stop(hls.ID())
 	}
-	m.reg.poke()
-	m.emitEvent("stop", s, nil)
 	m.kickPins()
 	m.log.Debug("playback session ended", "session", id, "key", s.ident.key, "bytes", s.bytes.Load())
 }
@@ -1690,19 +1965,29 @@ func (m *Manager) SetDecision(id string, d core.Decision) {
 	}
 	if s := m.lookup(id); s != nil {
 		s.mu.Lock()
+		changed := s.decision != d.Kind || s.decisionReason != d.Reason
+		hasVideo := s.cur == nil || len(s.cur.info.Streams) == 0 || s.cur.info.Video() != nil
 		s.decision, s.explicit = d.Kind, true
 		s.deliveryDecision = &d
 		s.decisionReason = d.Reason
-		s.decisionVideoCopy, s.decisionAudioCopy = d.VideoCopy, d.AudioCopy
+		s.decisionVideoCopy, s.decisionAudioCopy = hasVideo && d.VideoCopy, d.AudioCopy
 		if d.Kind == core.DecisionDirectPlay {
-			// Direct play copies both streams by definition; callers may
+			// Direct play copies existing streams by definition; callers may
 			// pass a zero-value Decision beyond the kind.
-			s.decisionVideoCopy, s.decisionAudioCopy = true, true
+			s.decisionVideoCopy, s.decisionAudioCopy = hasVideo, true
 		}
 		if d.Kind == core.DecisionRemux || d.Kind == core.DecisionTranscode {
 			s.requiresRemux = false
 		}
 		s.mu.Unlock()
+		if changed {
+			if hasVideo {
+				m.log.Info("playback delivery decision", "session", s.id, "decision", d.Kind, "videoCopy", d.VideoCopy, "audioCopy", d.AudioCopy, "reason", d.Reason)
+			} else {
+				m.log.Info("playback delivery decision", "session", s.id, "decision", d.Kind, "audioCopy", d.AudioCopy, "reason", d.Reason)
+			}
+		}
+		m.noteDecisionTimeline(s, d)
 		m.emitEvent("update", s, nil)
 	}
 }
@@ -1735,22 +2020,24 @@ func (m *Manager) Timeline(userID int64, key core.RatingKey, state string) {
 		if state == "stopped" {
 			s.mu.Lock()
 			s.stopAt = now.Add(m.opts.StoppedGrace)
-			s.viewerState = "stopped"
+			s.setViewerStateLocked("stopped", now)
 			s.invalidateDirectRetryLocked()
 			s.mu.Unlock()
 		} else if state == "playing" || state == "paused" {
 			s.touchTimeline(now)
 			s.mu.Lock()
-			s.viewerState = state
+			s.setViewerStateLocked(state, now)
 			if state == "paused" {
 				s.invalidateDirectRetryLocked()
 			}
 			s.mu.Unlock()
 		}
 	}
-	if state == "stopped" {
+	if state == "stopped" || state == "paused" {
 		m.reg.poke()
-		m.kickPins()
+		if state == "stopped" {
+			m.kickPins()
+		}
 	}
 }
 
@@ -1802,8 +2089,10 @@ func (m *Manager) janitor() {
 	}
 }
 
-// expire stops sessions idle longer than IdleTimeout (an HLS session's last
-// access counts as activity) and stopped sessions past their grace.
+// expire stops sessions that have expired under the shared liveness rule:
+// stopped sessions past their grace, never-started sessions past
+// AbandonedSessionTimeout (~2m), idle sessions past IdleTimeout, and paused
+// sessions past PausedSessionRetention.
 func (m *Manager) expire() {
 	now := m.now()
 	m.mu.Lock()
@@ -1813,28 +2102,9 @@ func (m *Manager) expire() {
 	}
 	m.mu.Unlock()
 	for _, s := range list {
-		s.mu.Lock()
-		last, stopAt, viewerState := s.lastActive, s.stopAt, s.viewerState
-		backgroundHeld := s.preparedOnly && s.backgroundHold.active(now)
-		s.mu.Unlock()
-		if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
-			if la := hls.LastAccess(); la.After(last) {
-				last = la
-			}
-		}
-		idleTimeout := m.opts.IdleTimeout
-		if viewerState == "paused" {
-			idleTimeout = max(idleTimeout, core.PausedSessionRetention)
-		}
-		switch {
-		// A client stop ends at stopAt regardless of media activity after
-		// it: segment reads from the stopped player must not disarm the
-		// stop (#410). Coming back clears stopAt (touch/touchTimeline).
-		case !stopAt.IsZero() && !now.Before(stopAt):
-			m.log.Debug("session stopped by client", "session", s.id)
-			m.Stop(s.id)
-		case !backgroundHeld && now.Sub(last) > idleTimeout:
-			m.log.Debug("session idle", "session", s.id, "idle", now.Sub(last))
+		l := m.sessionLiveness(s, now)
+		if l.Expired {
+			m.log.Debug("session expired", "session", s.id, "liveness", l.State)
 			m.Stop(s.id)
 		}
 	}

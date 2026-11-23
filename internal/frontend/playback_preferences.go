@@ -9,6 +9,7 @@ import (
 // contracts; preference lookup and selection remain host responsibilities.
 type PlaybackPreferenceSelection = trackprefs.Selection
 type PlaybackPreferenceRules = trackprefs.Rules
+type PlaybackPreferenceScope = trackprefs.Scope
 
 type PlaybackTrackPreferences interface {
 	Select(context.Context, int64, RatingKey, MediaInfo, string) (PlaybackPreferenceSelection, error)

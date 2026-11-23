@@ -1,8 +1,15 @@
 package plex
 
-// NoteOwnerStop tells the Plex client why a stream is ending. The shared
-// broker stops the source.
+// NoteOwnerStop tells the Plex client why a stream is ending using the same
+// termination delivery path as /status/sessions/terminate. The shared broker
+// stops the source.
 func (s *Server) NoteOwnerStop(id, reason string) {
+	if id == "" {
+		return
+	}
+	if reason == "" {
+		reason = "The server owner has ended this stream."
+	}
 	if ltv := s.svc().liveTV; ltv != nil {
 		for _, v := range ltv.ViewingSessions() {
 			if v.ID == id {
@@ -23,6 +30,18 @@ func (s *Server) NoteOwnerStop(id, reason string) {
 				}
 			}
 			return
+		}
+	}
+	// Fall back to direct Plex sessionId matching (local, then cluster remote).
+	if s.terminateLocal(id, reason) {
+		return
+	}
+	if s.cl != nil {
+		for _, e := range s.cl.remoteEntries(s.ctx) {
+			if matchesSession(e, id) {
+				s.cl.publish(topicTerminate, terminateEvent{Scope: "plex", ID: id, Reason: reason, Node: e.node})
+				return
+			}
 		}
 	}
 }

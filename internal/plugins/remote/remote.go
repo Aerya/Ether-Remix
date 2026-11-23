@@ -47,6 +47,13 @@ const (
 	// set it through Request.Headers; the constant keeps the spelling
 	// in one place.
 	HeaderPick = "X-Ether-Pick"
+	// HeaderViewerToken carries a host-minted, request-scoped token on
+	// frontend adapter calls so remote plugins can invoke viewer-scoped host
+	// services (kinds.visible, kinds.browse) without supplying viewer IDs.
+	HeaderViewerToken = "X-Ether-Viewer-Token"
+	// HeaderIdempotencyKey carries the Flow step idempotency key on plugin
+	// flow action calls.
+	HeaderIdempotencyKey = "X-Ether-Idempotency-Key"
 )
 
 // TunnelProtocol is the tunnel wire protocol version. It is sent as
@@ -75,6 +82,12 @@ var (
 	ErrNotFound = errors.New("remote: not found")
 	// ErrInvalid is returned by Host implementations for bad input.
 	ErrInvalid = errors.New("remote: invalid request")
+	// ErrRateLimited reports a host service rate limit exceeded.
+	ErrRateLimited = errors.New("remote: rate limit exceeded")
+	// ErrNotConfigured reports that the owner has not configured a language model.
+	ErrNotConfigured = errors.New("remote: not configured")
+	// ErrInvalidOutput reports that the language model returned invalid or schema-mismatched output.
+	ErrInvalidOutput = errors.New("remote: invalid output")
 	// ErrUnavailable is returned when a service is not wired yet.
 	ErrUnavailable = errors.New("remote: unavailable")
 	// ErrClosed reports use of a closed runtime.

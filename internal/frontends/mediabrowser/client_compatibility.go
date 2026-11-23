@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -33,7 +34,8 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/Localization/Options", i.emptyOptionalArray},
 		{"/System/WakeOnLanInfo", i.emptyOptionalArray},
 		{"/Users/{userId}/HomeSections", i.homeSections},
-		{"/Artists", i.emptyOptionalItems}, {"/Artists/AlbumArtists", i.emptyOptionalItems},
+		{"/Artists", i.artists(false)}, {"/Artists/AlbumArtists", i.artists(true)},
+		{"/Artists/{name}", i.artistByName},
 		{"/Items/{id}/InstantMix", i.emptyItemCompanions},
 		{"/LiveTv/Timers", i.emptyOptionalItems}, {"/LiveTv/SeriesTimers", i.emptyOptionalItems},
 		{"/LiveTv/Recordings/Folders", i.emptyOptionalItems},
@@ -45,7 +47,59 @@ func (i *instance) clientCompatibilityRoutes() error {
 			return err
 		}
 	}
+	if i.protocol == "jellyfin" {
+		if err := i.router.Handle("POST", "/ClientLog/Document", http.HandlerFunc(i.clientLogDocument)); err != nil {
+			return err
+		}
+	}
 	return i.router.Handle("DELETE", "/Videos/ActiveEncodings", http.HandlerFunc(i.stopEncoding))
+}
+
+// clientLogDocument accepts a client log upload the way Jellyfin 10.10
+// does: authenticated, at most 1,000,000 bytes, answered with the stored
+// file name. Ether keeps no client logs, so the body is drained and
+// discarded; the name follows Jellyfin's client-log naming so clients
+// that surface it show something sensible.
+func (i *instance) clientLogDocument(w http.ResponseWriter, r *http.Request) {
+	v, _, err := i.viewer(r)
+	if err != nil || v == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	const maxClientLogDocument = 1_000_000
+	if r.ContentLength > maxClientLogDocument {
+		http.Error(w, "Payload must be less than 1,000,000 bytes", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if _, err := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxClientLogDocument)); err != nil {
+		http.Error(w, "Payload must be less than 1,000,000 bytes", http.StatusRequestEntityTooLarge)
+		return
+	}
+	client := device(r).Client
+	if client == "" {
+		client = "unknown-client"
+	}
+	name := "clientlog-" + clientLogNamePart(client) + "-" + time.Now().UTC().Format("20060102150405") + ".log"
+	jsonReply(w, map[string]any{"FileName": name})
+}
+
+func clientLogNamePart(client string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(client) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case b.Len() > 0:
+			b.WriteByte('-')
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+	if s := strings.Trim(b.String(), "-"); s != "" {
+		return s
+	}
+	return "client"
 }
 
 func (i *instance) queryFilters(w http.ResponseWriter, r *http.Request) {
@@ -127,29 +181,48 @@ func (i *instance) upcomingEpisodes(w http.ResponseWriter, r *http.Request) {
 	q.Desc = false
 	now := time.Now().UTC().Truncate(24 * time.Hour)
 	q.Filter.ReleasedFilters = []frontend.DateFilter{{Op: ">=", Unix: now.AddDate(0, 0, -1).Unix()}}
-	if len(route.Query(r.URL.Query(), "Limit")) == 0 {
-		q.Limit = showChildPageMax
+	if len(route.Query(r.URL.Query(), "Limit")) == 0 || q.Limit <= 0 {
+		q.Limit = upcomingEpisodesMax
+	} else if q.Limit > upcomingEpisodesMax {
+		q.Limit = upcomingEpisodesMax
 	}
-	view := ""
+	var page frontend.Page
 	if parent := route.Query(r.URL.Query(), "parentId"); len(parent) > 0 {
-		if len(parent) != 1 {
+		if len(parent) != 1 || parent[0] == "" {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
-		n, e := ids.ParseGUID(ids.View, parent[0])
-		if e != nil {
+		// Jellyfin clients (Android TV's series page) scope Upcoming to the
+		// series item id. A view id scopes it to that library instead.
+		if key, e := ids.ParseRatingKeyGUID(parent[0]); e == nil {
+			page, err = i.host.Experience.Children(r.Context(), v, device(r), key, q)
+			if err == nil {
+				i.nameChildSeries(r, v, key, &page)
+			}
+		} else if n, e := ids.ParseGUID(ids.View, parent[0]); e == nil {
+			page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(n), q)
+		} else {
 			http.NotFound(w, r)
 			return
 		}
-		view = ids.Decimal(n)
+	} else {
+		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), "", q)
 	}
-	page, err := i.host.Experience.LibraryItems(r.Context(), v, device(r), view, q)
 	if err != nil {
+		if errors.Is(err, frontend.ErrNotFound) {
+			i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
+			return
+		}
 		http.Error(w, "Unavailable", 503)
 		return
 	}
 	i.page(w, r, v, page, q.Offset)
 }
+
+// upcomingEpisodesMax bounds one /Shows/Upcoming page. The premiere-date
+// filter and sort run on the catalogue's release index, so the bound is a
+// page size, not a scan limit.
+const upcomingEpisodesMax = 100
 
 func (i *instance) additionalParts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := i.authorizedItem(w, r); !ok {
@@ -171,21 +244,59 @@ func (i *instance) themeStream(w http.ResponseWriter, r *http.Request) {
 	i.host.Themes.ServeTheme(w, r, d.Title)
 }
 
+func (i *instance) themeSourceDTO(themeID, path string) map[string]any {
+	media := frontend.MediaInfo{
+		Container: "m4a",
+		Estimated: true,
+		Streams: []frontend.StreamInfo{
+			{Index: 0, Type: "audio", Codec: "aac", Channels: 2, Default: true},
+		},
+	}
+	source := i.mediaSourceDTO(themeID, media)
+	source["Path"] = path
+	source["Protocol"] = "Http"
+	source["SupportsDirectPlay"] = true
+	source["SupportsDirectStream"] = true
+	source["SupportsTranscoding"] = false
+	source["DirectStreamUrl"] = path
+	source["IsRemote"] = false
+	if i.protocol == "emby" {
+		i.embyMediaSourceDTO(source, themeID, media)
+		delete(source, "ETag")
+	}
+	i.mediaSourceDialect(source)
+	return source
+}
+
 func (i *instance) themeMedia(w http.ResponseWriter, r *http.Request) {
 	d, ok := i.authorizedTheme(w, r)
 	if !ok {
 		return
 	}
+	ownerID := ids.RatingKeyGUID(d.Title.Key)
 	empty := i.queryResult([]any{}, 0, 0)
-	empty["OwnerId"] = r.PathValue("id")
+	empty["OwnerId"] = ownerID
 	songs := empty
 	if !strings.HasSuffix(strings.ToLower(r.URL.Path), "/themevideos") && i.host.Themes != nil && i.host.Themes.Theme(d.Title, true) {
-		id := r.PathValue("id")
 		themeID := themeWireID(d.Title.Key)
 		path := "/Audio/" + themeID + "/stream.m4a"
-		source := map[string]any{"Id": themeID, "Path": path, "Protocol": "Http", "Container": "m4a", "SupportsDirectPlay": true, "SupportsDirectStream": true, "SupportsTranscoding": false, "MediaStreams": []any{map[string]any{"Type": "Audio", "Codec": "aac", "Index": 0, "Channels": 2}}, "DirectStreamUrl": path}
-		songs = i.queryResult([]any{map[string]any{"Id": themeID, "Name": d.Title.Title, "Type": "Audio", "MediaType": "Audio", "Container": "m4a", "IsFolder": false, "Path": path, "MediaSources": []any{source}, "MediaStreams": source["MediaStreams"]}}, 1, 0)
-		songs["OwnerId"] = id
+		source := i.themeSourceDTO(themeID, path)
+		songs = i.queryResult([]any{map[string]any{
+			"Id":                themeID,
+			"ServerId":          i.info.ID,
+			"Name":              d.Title.Title,
+			"Type":              "Audio",
+			"MediaType":         "Audio",
+			"Container":         "m4a",
+			"IsFolder":          false,
+			"Path":              path,
+			"UserData":          i.userDataDTO(themeID, frontend.WatchStatus{}),
+			"ImageTags":         map[string]string{},
+			"BackdropImageTags": []string{},
+			"MediaSources":      []any{source},
+			"MediaStreams":      source["MediaStreams"],
+		}}, 1, 0)
+		songs["OwnerId"] = ownerID
 	}
 	if strings.HasSuffix(strings.ToLower(r.URL.Path), "/thememedia") {
 		jsonReply(w, map[string]any{"ThemeSongsResult": songs, "ThemeVideosResult": empty, "SoundtrackSongsResult": empty})
@@ -209,7 +320,11 @@ func (i *instance) stopEncoding(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", 400)
 		return
 	}
-	if dev.ID == "" || devices[0] != dev.ID {
+	// Jellyfin answers 204 whatever deviceId names: it only kills matching
+	// jobs. Jellyfin for Android's native player sends an id that differs
+	// from its WebView's header, and its SDK crashes the app on a 403. The
+	// stop below stays scoped to the caller's own viewer and device.
+	if dev.ID == "" {
 		http.Error(w, "Forbidden", 403)
 		return
 	}
@@ -271,19 +386,50 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, section)
 	}
+	var latestExcludedGUIDs map[string]bool
+	var redundant map[string]bool
+	if stored, ok := i.storedUserConfig(r, v); ok {
+		if raw, exists := stored["LatestItemsExcludes"]; exists {
+			if list, ok := raw.([]any); ok {
+				latestExcludedGUIDs = make(map[string]bool, len(list))
+				for _, item := range list {
+					if s, ok := item.(string); ok && s != "" {
+						latestExcludedGUIDs[strings.ToLower(strings.ReplaceAll(s, "-", ""))] = true
+					}
+				}
+			}
+		} else {
+			hidePlayed := true
+			if hp, ok := stored["HidePlayedInLatest"].(bool); ok {
+				hidePlayed = hp
+			}
+			redundant = i.redundantSubsetViews(r, v, views, hidePlayed)
+		}
+	} else {
+		redundant = i.redundantSubsetViews(r, v, views, true)
+	}
 	add("SmallLibraryTiles", "")
 	add("Resume", "")
 	add("NextUp", "")
 	for _, view := range views {
-		if view.Type != "movie" && view.Type != "show" {
+		if view.Type == "livetv" || view.Type == "boxsets" {
 			continue
 		}
 		n, err := ids.ParseDecimal(view.ID)
-		if err != nil {
+		if err != nil || ids.PersonalView(n) {
+			continue
+		}
+		if view.Type != "movie" && view.Type != "show" && view.KindKey == "" {
+			continue
+		}
+		if redundant[view.ID] {
 			continue
 		}
 		id, err := ids.GUID(ids.View, n)
 		if err != nil {
+			continue
+		}
+		if latestExcludedGUIDs[strings.ToLower(strings.ReplaceAll(id, "-", ""))] {
 			continue
 		}
 		add("LatestMedia", id)
@@ -409,7 +555,7 @@ func (i *instance) themePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := "/Audio/" + wireID + "/stream.m4a"
-	jsonReply(w, map[string]any{"MediaSources": []any{map[string]any{"Id": wireID, "Path": path, "Protocol": "Http", "Container": "m4a", "SupportsDirectPlay": true, "SupportsDirectStream": true, "SupportsTranscoding": false, "DirectStreamUrl": path, "MediaStreams": []any{map[string]any{"Type": "Audio", "Codec": "aac", "Index": 0, "Channels": 2}}}}})
+	jsonReply(w, map[string]any{"MediaSources": []any{i.themeSourceDTO(wireID, path)}})
 }
 
 // Negative item GUIDs reserve a stateless audio identity separate from the

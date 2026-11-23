@@ -23,8 +23,12 @@ type experience struct {
 	Size       int64             `json:"size"`
 	Plays      int               `json:"plays"`
 	LastPlayed time.Time         `json:"lastPlayed"`
+	CachedAt   time.Time         `json:"cachedAt,omitzero"`
 	File       string            `json:"file,omitempty"`
 	Source     string            `json:"source,omitempty"`
+	Indexer    string            `json:"indexer,omitempty"`
+	Origin     string            `json:"origin,omitempty"`
+	RatingKey  core.RatingKey    `json:"ratingKey,omitempty"`
 	Causes     []core.CacheCause `json:"causes,omitempty"`
 }
 
@@ -105,6 +109,9 @@ func (c *Cache) RecordProvenance(p core.CacheProvenance) {
 	defer r.metaMu.Unlock()
 	c.mu.Lock()
 	e := &r.experience
+	if e.CachedAt.IsZero() {
+		e.CachedAt = now
+	}
 	if p.Title != "" {
 		e.Title = p.Title
 	}
@@ -113,6 +120,15 @@ func (c *Cache) RecordProvenance(p core.CacheProvenance) {
 	}
 	if p.Source != "" {
 		e.Source = p.Source
+	}
+	if p.Indexer != "" {
+		e.Indexer = p.Indexer
+	}
+	if p.Origin != "" {
+		e.Origin = p.Origin
+	}
+	if p.RatingKey != 0 {
+		e.RatingKey = p.RatingKey
 	}
 	if p.Size > 0 {
 		e.Size = p.Size
@@ -199,13 +215,17 @@ func (c *Cache) Sweep() {
 		c.shared.sweep(true)
 		return
 	}
-	prot, _ := c.protected()
+	prot, shrank := c.protected()
 	c.evictMu.Lock() // a floor measurement must not see these bytes half-freed
+	c.drainPendingUnlinks()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		c.evictMu.Unlock()
 		return
+	}
+	if shrank || c.protShrank.Swap(false) {
+		c.parkDirty = true
 	}
 	now := c.now()
 	var victims []*entry
@@ -224,7 +244,7 @@ func (c *Cache) Sweep() {
 		}
 	}
 	c.mu.Unlock()
-	if err := c.deleteFiles(victims); err != nil {
+	if err := c.deleteFiles(victims, false); err != nil {
 		c.logger.Warn("expire cache segments", "err", err)
 	}
 	c.evictMu.Unlock()

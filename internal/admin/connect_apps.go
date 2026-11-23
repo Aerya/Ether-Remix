@@ -1,12 +1,15 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -18,6 +21,27 @@ import (
 
 // Protocol identities exposed by the console app chooser.
 var connectableSurfaces = []string{"jellyfin", "emby", "silo", "stremio", "webdav", "m3u", "xtream"}
+
+type connectAdapterMeta struct {
+	Name string `json:"name"`
+	Logo string `json:"logo,omitempty"`
+	Auth string `json:"auth,omitempty"`
+}
+
+func isConnectablePluginAdapter(d frontend.Descriptor) bool {
+	if !strings.HasPrefix(string(d.ID), "plugin:") {
+		return false
+	}
+	if !strings.HasPrefix(d.PathPrefix, "/") || d.PathPrefix == "/" {
+		return false
+	}
+	switch d.Auth {
+	case "", "ether_token", "basic":
+		return true
+	default:
+		return false
+	}
+}
 
 func connectAppUsername(viewer *core.Viewer) string {
 	if viewer == nil {
@@ -76,12 +100,23 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		allowed[s] = true
 	}
 	enabled := map[string]bool{}
+	pluginAdapters := map[string]frontend.Descriptor{}
+	var pluginOrder []string
 	for _, info := range infos {
+		if !info.Enabled {
+			continue
+		}
 		id := string(info.Descriptor.ID)
-		if info.Enabled && (allowed[id] || consoleFrontendPolicy(id).ExternalIdentity) {
+		if allowed[id] || consoleFrontendPolicy(id).ExternalIdentity {
 			enabled[id] = true
+		} else if isConnectablePluginAdapter(info.Descriptor) {
+			enabled[id] = true
+			allowed[id] = true
+			pluginAdapters[id] = info.Descriptor
+			pluginOrder = append(pluginOrder, id)
 		}
 	}
+	sort.Strings(pluginOrder)
 	if r.Method == http.MethodGet {
 		out := make([]string, 0, len(enabled))
 		// The externally managed account frontend appears first in the chooser.
@@ -93,7 +128,25 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 				out = append(out, id)
 			}
 		}
-		writeJSON(w, 200, map[string]any{"apps": out})
+		out = append(out, pluginOrder...)
+		resp := map[string]any{"apps": out}
+		if len(pluginOrder) > 0 {
+			adapters := make(map[string]connectAdapterMeta, len(pluginOrder))
+			for _, id := range pluginOrder {
+				d := pluginAdapters[id]
+				auth := d.Auth
+				if auth == "" {
+					auth = "ether_token"
+				}
+				name := strings.TrimSpace(d.Name)
+				if name == "" {
+					name = id
+				}
+				adapters[id] = connectAdapterMeta{Name: name, Logo: d.Logo, Auth: auth}
+			}
+			resp["adapters"] = adapters
+		}
+		writeJSON(w, 200, resp)
 		return
 	}
 	if !csrfOK(r) {
@@ -105,25 +158,17 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		writeError(w, 404, "not_found", "app unavailable")
 		return
 	}
-	if h.deps.ViewerPortalURL == nil {
-		writeError(w, 503, "address_unavailable", "Server address unavailable. Ask the server owner to set a reachable server address, then try again.")
-		return
+	pluginDesc, isPlugin := pluginAdapters[surface]
+	pathPrefix := "/" + surface
+	if isPlugin {
+		pathPrefix = pluginDesc.PathPrefix
 	}
-	address := h.deps.ViewerPortalURL
-	if surface == "stremio" {
-		address = h.deps.StremioPortalURL
-		if address == nil {
+	u, err := h.resolveAppAddress(r.Context(), r, surface, pathPrefix, surface == "stremio")
+	if err != nil {
+		if surface == "stremio" {
 			writeError(w, 503, "stremio_https_required", "Stremio needs HTTPS. Ask the server owner to give this server a secure (HTTPS) address, then try again.")
 			return
 		}
-	}
-	portal, err := address(r.Context(), r)
-	if err != nil && surface == "stremio" {
-		writeError(w, 503, "stremio_https_required", "Stremio needs HTTPS. Ask the server owner to give this server a secure (HTTPS) address, then try again.")
-		return
-	}
-	u, parseErr := url.Parse(portal)
-	if err != nil || parseErr != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || (surface == "stremio" && u.Scheme != "https") || u.Host == "" || !strings.HasSuffix(u.Path, "/ether/me") {
 		writeError(w, 503, "address_unavailable", "Server address unavailable. Ask the server owner to set a reachable server address, then try again.")
 		return
 	}
@@ -132,40 +177,58 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		writeError(w, 503, "unavailable", "app unavailable")
 		return
 	}
-	device := core.Device{ID: surface + "-" + hex.EncodeToString(id[:]), Client: surface, Product: surface}
-	secret, err := h.deps.IdentityGrants.Issue(r.Context(), viewer.ID, nil, surface, device)
+	clientName := surface
+	if isPlugin && strings.TrimSpace(pluginDesc.Name) != "" {
+		clientName = strings.TrimSpace(pluginDesc.Name)
+	}
+	device := core.Device{ID: surface + "-" + hex.EncodeToString(id[:]), Client: clientName, Product: clientName}
+	var secret, xtreamUsername, xtreamPassword string
+	if surface == "xtream" {
+		xtreamUsername, xtreamPassword, secret, err = h.deps.IdentityGrants.IssueXtream(r.Context(), viewer.ID, device)
+	} else {
+		secret, err = h.deps.IdentityGrants.Issue(r.Context(), viewer.ID, nil, surface, device)
+	}
 	if err != nil {
 		writeError(w, 404, "not_found", "viewer unavailable")
 		return
 	}
-	prefix := strings.TrimSuffix(u.Path, "/ether/me")
 	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+	basePath := strings.TrimRight(u.Path, "/")
 	result := map[string]string{"surface": surface}
 	switch {
 	case consoleFrontendPolicy(surface).PasswordConnect:
-		u.Path = prefix + "/" + surface
-		result["url"] = u.String()
+		u.Path = basePath
+		result["url"] = strings.TrimRight(u.String(), "/")
 		result["username"] = connectAppUsername(viewer)
 		result["password"] = secret
 		if surface == "jellyfin" || surface == "emby" {
 			result["userId"], _ = ids.GUID(ids.User, viewer.ID)
 		}
 	case surface == "stremio":
-		u.Path = prefix + "/stremio/" + secret + "/manifest.json"
+		u.Path = basePath + "/" + secret + "/manifest.json"
 		result["url"] = u.String()
 	case surface == "xtream":
-		u.Path = prefix + "/xtream"
-		result["url"] = u.String()
-		result["username"] = frontend.XtreamUsername(secret)
-		result["password"] = secret
+		u.Path = basePath
+		result["url"] = strings.TrimRight(u.String(), "/")
+		result["username"] = xtreamUsername
+		result["password"] = xtreamPassword
 	case surface == "m3u":
-		u.Path = prefix + "/m3u/" + secret + "/playlist.m3u"
+		u.Path = basePath + "/" + secret + "/playlist.m3u"
 		result["url"] = u.String()
 	case surface == "webdav":
-		u.Path = prefix + "/webdav/"
+		u.Path = basePath + "/"
 		result["url"] = u.String()
 		result["username"] = strconv.FormatInt(viewer.ID, 10)
 		result["password"] = secret
+	case isPlugin:
+		u.Path = basePath
+		result["url"] = strings.TrimRight(u.String(), "/")
+		if pluginDesc.Auth == "basic" {
+			result["username"] = connectAppUsername(viewer)
+			result["password"] = secret
+		} else {
+			result["token"] = secret
+		}
 	}
 	qrValue := result["url"]
 	if surface == "webdav" {
@@ -182,4 +245,105 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 	}
 	result["qr"] = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
 	writeJSON(w, 200, result)
+}
+
+// resolveAppAddress delegates to the shared app-level address resolver when
+// wired (Deps.AppAddress), and applies the exact same published-address then
+// server-origin+path fallback when Deps.AppAddress is absent in unit tests.
+func (h *Handler) resolveAppAddress(ctx context.Context, r *http.Request, surface, pathPrefix string, requireHTTPS bool) (*url.URL, error) {
+	if h.deps.AppAddress != nil {
+		raw, err := h.deps.AppAddress(ctx, frontend.Protocol(surface), r, requireHTTPS)
+		if err != nil {
+			return nil, err
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || (requireHTTPS && u.Scheme != "https") || u.Host == "" {
+			return nil, errors.New("app address unavailable")
+		}
+		u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+		return u, nil
+	}
+	if h.deps.Config != nil {
+		for _, raw := range frontendPublishedURLs(h.deps.Config.Get(), surface) {
+			parsed, err := url.Parse(raw)
+			if err != nil || parsed == nil || parsed.Host == "" {
+				continue
+			}
+			if requireHTTPS && parsed.Scheme != "https" {
+				continue
+			}
+			parsed.RawPath, parsed.RawQuery, parsed.Fragment = "", "", ""
+			return parsed, nil
+		}
+	}
+	address := h.deps.ViewerPortalURL
+	if requireHTTPS {
+		address = h.deps.StremioPortalURL
+	}
+	if address == nil {
+		return nil, errors.New("portal address unavailable")
+	}
+	portal, err := address(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(portal)
+	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || (requireHTTPS && u.Scheme != "https") || u.Host == "" || !strings.HasSuffix(u.Path, "/ether/me") {
+		return nil, errors.New("portal address unavailable")
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/ether/me") + pathPrefix
+	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+	return u, nil
+}
+
+// Credentials are decrypted only after owner authentication and explicit CSRF admission.
+// xtreamServerURL is the server address IPTV apps sign in to, or "" when the
+// server has no reachable viewer address. It is not secret, so existing logins
+// can show it after the one-time create response is gone.
+func (h *Handler) xtreamServerURL(r *http.Request) string {
+	u, err := h.resolveAppAddress(r.Context(), r, "xtream", "/xtream", false)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(u.String(), "/")
+}
+
+func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	access, ok := RequestAccess(r.Context())
+	if !ok || !access.Owner || !h.isOwner(r, tokenFromRequest(r)) || h.deps.IdentityGrants == nil {
+		writeError(w, 403, "forbidden", "owner required")
+		return
+	}
+	if !csrfOK(r) {
+		writeError(w, 403, "csrf", "request rejected")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, 400, "invalid", "invalid viewer")
+		return
+	}
+	var body struct {
+		Hash  string `json:"hash"`
+		Limit int    `json:"limit"`
+	}
+	if decodeJSON(r, &body) != nil {
+		writeError(w, 400, "invalid", "invalid request")
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/limit") {
+		if h.deps.IdentityGrants.SetXtreamStreamLimit(r.Context(), id, body.Hash, body.Limit) != nil {
+			writeError(w, 400, "invalid", "invalid request")
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	username, password, available, err := h.deps.IdentityGrants.RevealXtream(r.Context(), id, body.Hash)
+	if err != nil {
+		writeError(w, 404, "not_found", "login unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"available": available, "url": h.xtreamServerURL(r), "username": username, "password": password})
 }

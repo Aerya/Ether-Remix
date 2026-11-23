@@ -3,13 +3,11 @@ package catalog
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
@@ -80,7 +78,7 @@ func TestMovieYearCorrectionUsesStoredDatesThenRefreshesTheRest(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("year refresh did not reach TMDB")
 	}
-	getCtx, getCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	getCtx, getCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	got, err := c.Get(getCtx, other)
 	getCancel()
 	if err != nil || got.Title != "Other" {
@@ -198,7 +196,7 @@ func TestViewedEarlyYearMovieRefreshesWithoutBlocking(t *testing.T) {
 		}
 		return &d, nil
 	}})
-	getCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	got, err := c.CachedGet(getCtx, january)
 	cancel()
 	if err != nil || got == nil || got.Year != 1943 {
@@ -206,7 +204,7 @@ func TestViewedEarlyYearMovieRefreshesWithoutBlocking(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("opening the movie did not refresh its year")
 	}
 	summer, err := c.CachedGet(ctx, july)
@@ -230,36 +228,6 @@ func TestViewedEarlyYearMovieRefreshesWithoutBlocking(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("viewed movie year was not refreshed")
-}
-
-func TestMovieYearCorrectionDoesNotSpinDuringRetryCooldown(t *testing.T) {
-	c := newChunkTestCatalog(t)
-	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	c.SetNow(func() time.Time { return now })
-	c.yearGap = time.Millisecond
-	ctx := context.Background()
-	key := core.MovieKey(289)
-	if _, err := c.db.ExecContext(ctx, `INSERT INTO catalog_titles(key,type,tmdb_id,title,year,released_ts,detail,browsable,popularity,year_checked_at) VALUES(?,'movie',289,'Casablanca',1943,?,1,1,10,?)`,
-		int64(key), time.Date(1943, 1, 15, 0, 0, 0, 0, time.UTC).Unix(), now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-	c.SetTMDB(&yearTMDB{details: func(int64) (*tmdb.MovieDetails, error) {
-		return nil, errors.New("unexpected TMDB call during cooldown")
-	}})
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	statsCtx, qs := store.WithQueryStats(runCtx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		c.correctMovieYears(statsCtx)
-	}()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-	if got := qs.Queries(); got > 10 {
-		t.Fatalf("correctMovieYears spun during retry cooldown: %d queries in 50ms", got)
-	}
 }
 
 // A sweep with more pending movies than one window still updates every

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -20,6 +21,12 @@ var ErrUnauthorized = core.ErrUnauthorized
 // It shares identity with the domain error for errors.Is checks.
 var ErrNotAvailable = core.ErrNotAvailable
 
+// ErrPlexNotShared identifies a valid plex.tv account without access to this server.
+var ErrPlexNotShared = auth.ErrPlexNotShared
+
+// ErrPlexUnreachable indicates plex.tv token validation is unavailable.
+var ErrPlexUnreachable = auth.ErrPlexUnreachable
+
 // ErrRowViewStale asks the client to refresh its visit-scoped row views.
 var ErrRowViewStale = errors.New("frontend: row view snapshot expired or changed")
 
@@ -29,6 +36,10 @@ var ErrLiveGuideStale = errors.New("frontend: live guide snapshot changed")
 // ErrStreamLimit identifies exhausted playback admission.
 var ErrStreamLimit = core.ErrStreamLimit
 
+// ProviderConnectionCapError reports that a live media provider's concurrent
+// connection limit has been reached.
+type ProviderConnectionCapError = core.ProviderConnectionCapError
+
 // ErrDownloadBudget identifies an exceeded temporary download disk budget.
 // It shares identity with the domain error for errors.Is checks.
 var ErrDownloadBudget = core.ErrDownloadBudget
@@ -36,6 +47,73 @@ var ErrDownloadBudget = core.ErrDownloadBudget
 // ErrDownloadNeedsTranscode identifies a download source that cannot be
 // copied to MP4. It shares identity with the domain error for errors.Is.
 var ErrDownloadNeedsTranscode = core.ErrDownloadNeedsTranscode
+
+// ErrVideoTranscodingDisabled identifies a playback or conversion request that
+// requires re-encoding video while transcode.videoTranscoding is set to "off".
+var ErrVideoTranscodingDisabled = core.ErrVideoTranscodingDisabled
+
+// RequiredAudioLanguageError reports that no release matched the quality
+// profile's required Audio language.
+type RequiredAudioLanguageError = core.RequiredAudioLanguageError
+
+// The two wordings a viewer can be shown when a title would need its video
+// re-encoded: the server-wide switch, or the owner's switch for their account.
+const (
+	MsgVideoTranscodingOff       = "This title needs a video transcode to play on this device, and video transcoding is turned off."
+	MsgViewerVideoTranscodingOff = "This title would need converting to play on this device, and converting video is turned off for your account. Try another version or device, or ask the server owner."
+)
+
+// Wordings for download conversion and download limits.
+const (
+	MsgDownloadTranscodingOff       = "This title would need converting to download at this quality, and converting downloads is turned off on this server. Try another quality, or ask the server owner."
+	MsgViewerDownloadTranscodingOff = "This title would need converting to download at this quality, and converting downloads is turned off for your account. Try another quality, or ask the server owner."
+	MsgViewerDownloadLimit          = "You've reached your download limit for today. It resets tomorrow at 00:00 UTC."
+	MsgViewerDownloadDataLimit      = "You've reached your download data limit for today. It resets tomorrow at 00:00 UTC."
+)
+
+// DownloadLimitMessage formats a viewer-facing explanation when a download
+// hits the server or per-viewer download limit, including when it resets.
+func DownloadLimitMessage(d core.DownloadLimitDecision) string {
+	period := d.Period
+	if period != "month" {
+		period = "day"
+	}
+	var head string
+	if d.Unit == "gb" {
+		if period == "month" {
+			head = "You've reached your download data limit for this month."
+		} else {
+			head = "You've reached your download data limit for today."
+		}
+	} else {
+		if period == "month" {
+			head = "You've reached your download limit for this month."
+		} else {
+			head = "You've reached your download limit for today."
+		}
+	}
+	if period == "month" {
+		if !d.ResetAt.IsZero() {
+			return head + " It resets on " + d.ResetAt.UTC().Format("Jan 2 at 15:04 UTC") + "."
+		}
+		return head + " It resets next month."
+	}
+	if !d.ResetAt.IsZero() {
+		return head + " It resets tomorrow at " + d.ResetAt.UTC().Format("15:04 UTC") + "."
+	}
+	return head + " It resets tomorrow at 00:00 UTC."
+}
+
+// VideoTranscodingOffMessage picks the wording for viewer. policy is the
+// host's viewer policy; one that cannot answer gets the server-wide wording.
+func VideoTranscodingOffMessage(policy any, viewer *core.User) string {
+	if p, ok := policy.(interface {
+		VideoTranscodingDisabled(*core.User) bool
+	}); ok && viewer != nil && p.VideoTranscodingDisabled(viewer) {
+		return MsgViewerVideoTranscodingOff
+	}
+	return MsgVideoTranscodingOff
+}
 
 // ErrInteractionReceipt is an invalid, stale or out-of-scope interaction handle.
 var ErrInteractionReceipt = errors.New("experience: invalid interaction receipt")
@@ -57,6 +135,7 @@ type RejectedPlaybackPath struct {
 // a temporary source failure. It preserves the candidates evaluated by planning.
 type NoCompatiblePathError struct {
 	RejectedPaths []RejectedPlaybackPath `json:"rejectedPaths"`
+	Cause         error                  `json:"-"`
 }
 
 func (e *NoCompatiblePathError) Error() string {
@@ -66,4 +145,9 @@ func (e *NoCompatiblePathError) Error() string {
 	}
 	return "no compatible playback path: " + strings.Join(reasons, "; ")
 }
-func (*NoCompatiblePathError) Unwrap() error { return ErrNotAvailable }
+func (e *NoCompatiblePathError) Unwrap() error {
+	if e != nil && e.Cause != nil {
+		return e.Cause
+	}
+	return ErrNotAvailable
+}

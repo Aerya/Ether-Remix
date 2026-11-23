@@ -33,7 +33,7 @@ func TestUnattendedWorkKeepsToItsShare(t *testing.T) {
 		w.Write([]byte(`<?xml version="1.0"?><rss><channel></channel></rss>`))
 	}))
 	defer srv.Close()
-	m := NewManager(store.OpenTest(t), []config.Indexer{{ID: "ix", Name: "IX", URL: srv.URL, APIKey: "k", Enabled: true}}, Options{HTTPClient: srv.Client(), NZBDir: t.TempDir()})
+	m := NewManager(store.OpenTest(t), []config.Indexer{{ID: "ix", Name: "IX", URL: srv.URL, APIKey: "k", Enabled: true}}, Options{HTTPClient: srv.Client(), Vault: &testVault{}})
 	warm := core.WithUnattendedSearch(core.WithIndexerPurpose(context.Background(), core.IndexerPurposeWarmup))
 	play := core.WithIndexerPurpose(context.Background(), core.IndexerPurposePlayback)
 	search := func(ctx context.Context, n int, prefix string) {
@@ -117,5 +117,54 @@ func TestRescueInheritsSpeculativeClass(t *testing.T) {
 	}
 	if rescued == 0 || int(hits.Load()-spent) != rescued {
 		t.Fatalf("Play's rescue sent %d requests, %d recorded as rescue", hits.Load()-spent, rescued)
+	}
+}
+
+// The two discovery classes cannot spend each other's allowance in either
+// direction. Availability grabs stay with warm-ups, and playback bypasses
+// both shares. Exercise real reservations so purpose recording is covered too.
+func TestDiscoverySharesAreIndependent(t *testing.T) {
+	for _, kind := range []string{"hit", "grab"} {
+		for _, detailFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/detail-first=%t", kind, detailFirst), func(t *testing.T) {
+				db := store.OpenTest(t)
+				m := NewManager(db, []config.Indexer{{ID: "ix", Name: "IX", Enabled: true, DailyLimit: 100, DailyGrabs: 100}}, Options{})
+				c := m.Clients()[0]
+				warm := core.WithUnattendedSearch(core.WithIndexerPurpose(context.Background(), core.IndexerPurposeWarmup))
+				detail := core.WithIndexerPurpose(context.Background(), core.IndexerPurposeDetail)
+				classes := []struct {
+					ctx   context.Context
+					limit int
+				}{{warm, 10}, {detail, 15}}
+				if detailFirst {
+					classes[0], classes[1] = classes[1], classes[0]
+				}
+				for _, class := range classes {
+					for i := range class.limit {
+						ctx := class.ctx
+						if kind == "grab" && ctx == warm && i == 0 {
+							ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposeAvailability)
+						}
+						if err := c.reserve(ctx, kind); err != nil {
+							t.Fatalf("%s reservation %d: %v", core.IndexerPurpose(ctx), i, err)
+						}
+					}
+					if err := c.reserve(class.ctx, kind); !errors.Is(err, errSpeculativeShare) {
+						t.Fatalf("%s exceeded its share: %v", core.IndexerPurpose(class.ctx), err)
+					}
+				}
+				if err := c.reserve(core.WithUnattendedSearch(detail), kind); !errors.Is(err, errSpeculativeShare) {
+					t.Fatalf("unattended detail escaped warm-up share: %v", err)
+				}
+				play := core.WithIndexerPurpose(context.Background(), core.IndexerPurposePlayback)
+				promoted, promote := core.WithSpeculative(core.WithIndexerPurpose(context.Background(), core.IndexerPurposeWarmup))
+				promote()
+				for _, ctx := range []context.Context{play, promoted} {
+					if err := c.reserve(ctx, kind); err != nil {
+						t.Fatalf("playback refused by discovery shares: %v", err)
+					}
+				}
+			})
+		}
 	}
 }

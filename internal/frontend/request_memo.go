@@ -40,6 +40,12 @@ func WithCatalogViewer(ctx context.Context, u *User) context.Context {
 	return core.WithCatalogViewer(ctx, u)
 }
 
+// WithSearchMemo lets one search request read each name's people once for
+// both its title and its person results. The context key stays owned by core.
+func WithSearchMemo(ctx context.Context) context.Context {
+	return core.WithSearchMemo(ctx)
+}
+
 // WithLiveApp records the live app name for this request. The context key
 // stays owned by core.
 func WithLiveApp(ctx context.Context, app string) context.Context {

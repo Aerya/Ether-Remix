@@ -31,7 +31,7 @@ func (s *Service) Ranked(ctx context.Context, source []byte, rank int, wide bool
 	}
 	hash := sha256.New()
 	_, _ = hash.Write(source)
-	_, _ = fmt.Fprintf(hash, "ranked-v3:anton:%d:%t:jpeg88", rank, wide)
+	_, _ = fmt.Fprintf(hash, "ranked-v4:anton:%d:%t:jpeg88", rank, wide)
 	data, err := s.generated.get(ctx, hex.EncodeToString(hash.Sum(nil)), func(ctx context.Context) ([]byte, error) {
 		cfg, _, err := image.DecodeConfig(bytes.NewReader(source))
 		if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > 20_000_000 {
@@ -63,7 +63,26 @@ func rankedComposite(poster image.Image, rank int, wide bool) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.RGBA{14, 15, 19, 255}), image.Point{}, draw.Src)
 	var rect image.Rectangle
-	if wide {
+	if wide && poster.Bounds().Dx() > poster.Bounds().Dy() {
+		// Fill the card from the backdrop and keep a dark rank area legible.
+		bounds := poster.Bounds()
+		cropW := bounds.Dy() * w / h
+		cropH := bounds.Dx() * h / w
+		if cropW < bounds.Dx() {
+			bounds.Min.X += (bounds.Dx() - cropW) / 2
+			bounds.Max.X = bounds.Min.X + cropW
+		} else {
+			bounds.Min.Y += (bounds.Dy() - cropH) / 2
+			bounds.Max.Y = bounds.Min.Y + cropH
+		}
+		xdraw.CatmullRom.Scale(dst, dst.Bounds(), poster, bounds, draw.Src, nil)
+		for x := 0; x < w; x++ {
+			alpha := uint8(190 * (1 - float64(x)/float64(w)))
+			draw.Draw(dst, image.Rect(x, 0, x+1, h), image.NewUniform(color.NRGBA{A: alpha}), image.Point{}, draw.Over)
+		}
+		rankedNumber(dst, rank, image.Rect(20, 20, 330, 520))
+		return dst
+	} else if wide {
 		rect = image.Rect(600, 0, 960, 540)
 	} else {
 		rect = image.Rect(180, 270, 500, 750)

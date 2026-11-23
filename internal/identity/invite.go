@@ -9,6 +9,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,11 +18,51 @@ func init() {
 	store.Register("identity_invites", 1, `CREATE TABLE identity_invites (hash TEXT PRIMARY KEY, viewer_id INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE, expires INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);`)
 }
 
+// InviteEvent describes an invite lifecycle event. InviteID is a non-secret
+// identifier derived from the invite hash (never the redeemable secret).
+type InviteEvent struct {
+	Kind      string // "created", "accepted", "viewer_created"
+	InviteID  string
+	ViewerID  int64
+	Label     string
+	MaxUses   int
+	ExpiresAt time.Time
+}
+
+func invitePublicID(hash string) string {
+	if len(hash) > 12 {
+		return "inv_" + hash[:12]
+	}
+	return "inv_" + hash
+}
+
 // Invite issues one-use links to an existing active viewer.
 type Invite struct {
 	db            *sql.DB
 	now           func() time.Time
 	ttl, grantTTL time.Duration
+	onEvent       atomic.Pointer[func(InviteEvent)]
+}
+
+// SetOnEvent installs an optional non-blocking observer for invite lifecycle events.
+func (i *Invite) SetOnEvent(fn func(InviteEvent)) {
+	if i == nil {
+		return
+	}
+	if fn == nil {
+		i.onEvent.Store(nil)
+		return
+	}
+	i.onEvent.Store(&fn)
+}
+
+func (i *Invite) emitEvent(ev InviteEvent) {
+	if i == nil {
+		return
+	}
+	if fn := i.onEvent.Load(); fn != nil && *fn != nil {
+		(*fn)(ev)
+	}
 }
 
 func NewInvite(db *sql.DB, ttl, grantTTL time.Duration, now func() time.Time) (*Invite, error) {
@@ -31,7 +72,7 @@ func NewInvite(db *sql.DB, ttl, grantTTL time.Duration, now func() time.Time) (*
 	if now == nil {
 		now = time.Now
 	}
-	return &Invite{db, now, ttl, grantTTL}, nil
+	return &Invite{db: db, now: now, ttl: ttl, grantTTL: grantTTL}, nil
 }
 func (i *Invite) Create(ctx context.Context, viewerID int64) (string, error) {
 	var raw [32]byte
@@ -40,7 +81,8 @@ func (i *Invite) Create(ctx context.Context, viewerID int64) (string, error) {
 	}
 	secret := base64.RawURLEncoding.EncodeToString(raw[:])
 	hash, _ := secretHash(secret)
-	res, err := i.db.ExecContext(ctx, `INSERT INTO identity_invites(hash,viewer_id,expires) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM auth_users WHERE id=? AND active=1 AND is_owner=0 AND origin<>'dlna_guest')`, hash, viewerID, i.now().Add(i.ttl).UnixMilli(), viewerID)
+	expires := i.now().Add(i.ttl)
+	res, err := i.db.ExecContext(ctx, `INSERT INTO identity_invites(hash,viewer_id,expires) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM auth_users WHERE id=? AND active=1 AND is_owner=0 AND origin<>'dlna_guest')`, hash, viewerID, expires.UnixMilli(), viewerID)
 	if err != nil {
 		return "", err
 	}
@@ -48,6 +90,13 @@ func (i *Invite) Create(ctx context.Context, viewerID int64) (string, error) {
 	if err != nil || n != 1 {
 		return "", core.ErrUnauthorized
 	}
+	i.emitEvent(InviteEvent{
+		Kind:      "created",
+		InviteID:  invitePublicID(hash),
+		ViewerID:  viewerID,
+		MaxUses:   1,
+		ExpiresAt: expires.UTC(),
+	})
 	return secret, nil
 }
 func (i *Invite) Redeem(ctx context.Context, secret string) (string, error) {
@@ -87,6 +136,11 @@ func (i *Invite) Redeem(ctx context.Context, secret string) (string, error) {
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
+	i.emitEvent(InviteEvent{
+		Kind:     "accepted",
+		InviteID: invitePublicID(hash),
+		ViewerID: viewer,
+	})
 	return token, nil
 }
 
@@ -108,17 +162,33 @@ func (i *Invite) CreateViewer(ctx context.Context, display string) (int64, strin
 	}
 	defer tx.Rollback()
 	now := i.now().Unix()
+	expires := i.now().Add(i.ttl)
 	var id int64
 	err = tx.QueryRowContext(ctx, `INSERT INTO auth_users(plex_id,username,title,is_owner,active,origin,created_at,updated_at) VALUES(NULL,'',?,0,1,'invite',?,?) RETURNING id`, display, now, now).Scan(&id)
 	if err != nil {
 		return 0, "", err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO identity_invites(hash,viewer_id,expires) VALUES(?,?,?)`, hash, id, i.now().Add(i.ttl).UnixMilli())
+	_, err = tx.ExecContext(ctx, `INSERT INTO identity_invites(hash,viewer_id,expires) VALUES(?,?,?)`, hash, id, expires.UnixMilli())
 	if err != nil {
 		return 0, "", err
 	}
 	if err = tx.Commit(); err != nil {
 		return 0, "", err
 	}
+	pubID := invitePublicID(hash)
+	i.emitEvent(InviteEvent{
+		Kind:      "created",
+		InviteID:  pubID,
+		ViewerID:  id,
+		Label:     display,
+		MaxUses:   1,
+		ExpiresAt: expires.UTC(),
+	})
+	i.emitEvent(InviteEvent{
+		Kind:     "viewer_created",
+		InviteID: pubID,
+		ViewerID: id,
+		Label:    display,
+	})
 	return id, secret, nil
 }

@@ -109,11 +109,13 @@ type relayProducer struct {
 	longAt  time.Time // the last overlong copy segment
 	// reformat holds the source's new format when copy output stopped
 	// matching its own PMT; the producer reopens on the new format.
-	reformat  *mediaFormat
-	reopened  time.Time
-	startedAt time.Time
-	progress  time.Time
-	closed    bool
+	reformat      *mediaFormat
+	reopened      time.Time
+	startedAt     time.Time
+	progress      time.Time
+	openedMedia   bool // true once the current producer published an aligned segment
+	droppedSkewed int  // unaligned opening segments dropped for the current producer
+	closed        bool
 }
 
 // bind points the producer at the published session after a staged tune.
@@ -144,6 +146,11 @@ func (s *Service) startOwnedRelay(ctx context.Context, ss *session, info core.Me
 	return s.runRelay(ss, p), nil
 }
 
+// relayStartWait bounds how long an owned relay timeline holds its first
+// playlist while gathering enough startup depth (at least two segments and
+// ~2x target) so a player does not stall on a single short opening segment.
+const relayStartWait = 6 * time.Second
+
 func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.ClientCaps, dec core.Decision, cut time.Duration) *relayProducer {
 	c := ss.info.Channel
 	log := s.sessionLog(ss).With("owned", "relay")
@@ -162,7 +169,9 @@ func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.C
 	}
 	tl.setHint(slateProfileFromInfo(c.ID, &output, container))
 	tl.expectStart(2, relayTargetFloor(cut))
-	tl.startMedia = 2 * cut
+	tl.startMinMedia = 2 * cut
+	tl.startMedia = max(2*cut, 4*time.Second)
+	tl.startWait = relayStartWait
 	p := &relayProducer{s: s, tl: tl, log: log, caps: caps, info: info, dec: dec, cut: cut}
 	p.bind(ss)
 	// The timeline reads only these flags under its lock; input health is
@@ -225,7 +234,7 @@ func (p *relayProducer) launch(ctx context.Context, info core.MediaInfo, dec cor
 	// An HLS input on a reserve-trimmed grant starts at the reserve depth:
 	// the relay races through that backlog and the timeline holds it.
 	backlog := info.Container == "hls" && !newFormat && p.s.stabilityReserve(ss.info.Channel) > 0
-	hls, cancel, err := p.s.startOwnedHLS(ctx, ss, core.HLSRequest{SessionID: id, InputURL: input, LiveInput: true, LiveFromBacklog: backlog, Info: info, Decision: dec, SegmentDuration: cut})
+	hls, cancel, err := p.s.startOwnedHLS(ctx, ss, core.HLSRequest{SessionID: id, InputURL: input, LiveInput: true, LiveFromBacklog: backlog, Info: info, Decision: dec, SegmentDuration: cut, MultiviewGroup: ss.caps.MultiviewGroup})
 	return id, hls, cancel, err
 }
 
@@ -244,6 +253,7 @@ func (p *relayProducer) adopt(id string, hls core.HLSSession, cancel context.Can
 	p.steady = nil
 	p.hls, p.cancel, p.info, p.dec, p.cut = hls, cancel, info, dec, cut
 	p.starved, p.reformat = false, nil
+	p.openedMedia, p.droppedSkewed = false, 0
 	p.startedAt = time.Now()
 	origin := &localRelayOrigin{hls: hls, name: id}
 	if old == nil && steady == nil {
@@ -320,6 +330,53 @@ func (p *relayProducer) split(seg *ownedSegment) []*ownedSegment {
 	return out
 }
 
+const (
+	openingAVSkewLimit  = 350 * time.Millisecond
+	maxOpeningSkewDrops = 2
+)
+
+// openingSkewReason checks a producer's opening segment before publication so
+// an unaligned first segment (missing audio/video, non-keyframe start, or
+// large A/V PTS skew from staggered/demuxed inputs) is held off the playlist.
+func (p *relayProducer) openingSkewReason(seg *ownedSegment, dropped int) string {
+	var a avAlignment
+	switch seg.ext {
+	case "ts":
+		a = tsOpeningAVAlignment(seg.data)
+	case "m4s":
+		if seg.mapRes != "" && p.tl != nil {
+			if r, ok := p.tl.resource(seg.mapRes); ok {
+				a = fmp4OpeningAVAlignment(r.data, seg.data)
+			}
+		}
+	}
+	if !a.known {
+		return ""
+	}
+	if !a.hasVideo {
+		return "missing video"
+	}
+	if !a.hasAudio {
+		limit := maxOpeningSkewDrops
+		if p.s == nil {
+			limit = 1
+		} else if h, ok := p.s.inputHealth(p.sess.Load()); !ok || h.Kind != "hls" {
+			limit = 1
+		}
+		if dropped < limit {
+			return "missing audio"
+		}
+		return ""
+	}
+	if !a.videoKeyOpen {
+		return "non-keyframe opening"
+	}
+	if a.skew > openingAVSkewLimit {
+		return fmt.Sprintf("a/v skew %s", a.skew.Round(time.Millisecond))
+	}
+	return ""
+}
+
 // accept vets a relay segment before it airs. A copy segment past the
 // target means a keyframe went missing: one modestly long segment (up to
 // twice the target) airs, as a transient loss heals at the next keyframe; a
@@ -334,27 +391,54 @@ func (p *relayProducer) accept(seg *ownedSegment) bool {
 		f := seg.format
 		p.reformat = &f
 		p.mu.Unlock()
-		p.log.Warn("owned relay output no longer matches its declared codecs", "payload", seg.format.String())
+		if p.log != nil {
+			p.log.Warn("owned relay output no longer matches its declared codecs", "payload", seg.format.String())
+		}
 		return false
 	}
 	p.mu.Lock()
 	copyMode := p.dec.VideoCopy && !p.escalated
+	opened := p.openedMedia
+	dropped := p.droppedSkewed
 	p.mu.Unlock()
-	if copyMode && seg.ext == "ts" && !p.damaged.Load() && damageCheckable(seg.format) && p.s.segmentDamaged(seg.data) {
-		// Copy hands damaged pictures straight to the player, which drops
-		// them (seconds of frozen picture). Keep this one off the
-		// playlist; the producer switches to a re-encode that conceals.
-		p.damaged.Store(true)
-		p.log.Warn("owned relay copy segment carries input damage", "duration", seg.dur)
-		return false
+	if !opened && dropped < maxOpeningSkewDrops {
+		if reason := p.openingSkewReason(seg, dropped); reason != "" {
+			p.mu.Lock()
+			p.droppedSkewed++
+			n := p.droppedSkewed
+			p.mu.Unlock()
+			if p.log != nil {
+				p.log.Warn("owned relay dropped unaligned opening segment", "reason", reason, "duration", seg.dur, "dropped", n)
+			}
+			return false
+		}
 	}
-	td := p.tl.targetDuration()
+	if copyMode && seg.ext == "ts" && !p.damaged.Load() && damageCheckable(seg.format) && p.s != nil {
+		if damaged, detail := p.s.segmentDamaged(seg.data); damaged {
+			// Copy hands damaged pictures straight to the player, which drops
+			// them (seconds of frozen picture). Keep this one off the
+			// playlist; the producer switches to a re-encode that conceals.
+			p.damaged.Store(true)
+			if p.log != nil {
+				p.log.Warn("owned relay copy segment carries input damage", "duration", seg.dur, "detail", detail)
+			}
+			return false
+		}
+	}
+	var td time.Duration
+	if p.tl != nil {
+		td = p.tl.targetDuration()
+	}
 	if td <= 0 || seg.dur <= td+td/4 {
+		p.mu.Lock()
+		p.openedMedia = true
+		p.mu.Unlock()
 		return true
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.dec.VideoCopy {
+		p.openedMedia = true
 		return true
 	}
 	now := time.Now()
@@ -363,8 +447,12 @@ func (p *relayProducer) accept(seg *ownedSegment) bool {
 	drop := seg.dur > 2*td || repeat
 	if drop {
 		p.starved = true
+	} else {
+		p.openedMedia = true
 	}
-	p.log.Warn("owned relay segment exceeds the target duration", "duration", seg.dur, "target", td, "dropped", drop)
+	if p.log != nil {
+		p.log.Warn("owned relay segment exceeds the target duration", "duration", seg.dur, "target", td, "dropped", drop)
+	}
 	return !drop
 }
 
@@ -387,10 +475,10 @@ func (p *relayProducer) run(ctx context.Context) {
 			p.mu.Lock()
 			p.progress = now
 			p.mu.Unlock()
-			if !warmed && p.tl.started() {
-				warmed = true
-				p.tl.warmSlate()
-			}
+		}
+		if !warmed && p.tl.started() {
+			warmed = true
+			p.tl.warmSlate()
 		}
 		if err != nil {
 			failures++
@@ -440,16 +528,23 @@ func (p *relayProducer) run(ctx context.Context) {
 		p.mu.Lock()
 		last, starved, escalated, copyMode := p.progress, p.starved, p.escalated, p.dec.VideoCopy
 		reformat, reopened := p.reformat, p.reopened
+		cut, droppedSkewed := p.cut, p.droppedSkewed
 		p.mu.Unlock()
 		td := p.tl.targetDuration()
 		if td <= 0 {
-			td = relayTargetFloor(p.cut)
+			td = relayTargetFloor(cut)
 		}
+		started := p.tl.started()
 		// A new producer gets ffmpeg's start-up time before the deadline
 		// applies to it; afterwards the deadline is one target duration.
+		// While the first playlist is still held for startup depth, allow
+		// the startup wait budget before treating a slow second segment as
+		// keyframe starvation or a stalled producer.
 		limit, from, cold := td, last, last.Before(startedAt)
 		if cold {
 			from, limit = startedAt, 12*time.Second
+		} else if !started {
+			limit = max(limit, relayStartWait)
 		}
 		since := now.Sub(from)
 		// Keyframe starvation: input has kept arriving for this long
@@ -464,18 +559,25 @@ func (p *relayProducer) run(ctx context.Context) {
 		}
 		// Before the first publication no cadence is known: the target
 		// stands in for the last segment.
-		lastDur := p.tl.lastSegmentDuration()
-		if lastDur <= 0 {
-			lastDur = td
-		}
+		// A segment is cut at the first keyframe past the target, so a
+		// healthy cut can run longer than the last segment (a 1.6 s GOP
+		// with a 2 s target alternates 1.6 s and 3.2 s): never size the
+		// starvation window below the target.
+		lastDur := max(p.tl.lastSegmentDuration(), td)
+		skewSlack := time.Duration(droppedSkewed) * max(cut, 2*time.Second)
 		starveLimit := lastDur + time.Second
 		if cold {
-			// The hedge normally settles a slow cold start first.
-			starveLimit = 6 * time.Second
+			// The hedge normally settles a slow cold start first; scale the
+			// wait with the configured segment target so 4 s stable cuts do
+			// not trip a re-encode before the first keyframe arrives.
+			starveLimit = max(6*time.Second, 2*cut+2*time.Second) + skewSlack
+		} else if !started {
+			starveLimit = max(starveLimit, relayStartWait)
 		}
-		starving := copyMode && !cold && !escalated && starvedFor > lastDur+500*time.Millisecond
+		starving := copyMode && !cold && started && !escalated && starvedFor > lastDur+500*time.Millisecond
 		p.starving.Store(starving)
 		p.producing.Store(!cold && !flowing.IsZero() && !starving)
+		hedgeDelay := max(cut, 2*time.Second) + time.Second + skewSlack
 		if h := p.hedgeState(); h != nil {
 			switch {
 			case !cold || escalated:
@@ -484,7 +586,7 @@ func (p *relayProducer) run(ctx context.Context) {
 				p.adoptHedge(h)
 				continue
 			}
-		} else if copyMode && cold && !escalated && !flowing.IsZero() && now.Sub(later(startedAt, flowing)) > 2*time.Second {
+		} else if copyMode && cold && !escalated && !flowing.IsZero() && now.Sub(later(startedAt, flowing)) > hedgeDelay {
 			p.startHedge(ctx)
 		}
 		ended := errors.Is(err, errOriginEnded) || failures >= 15
@@ -826,31 +928,115 @@ func damageCheckable(f mediaFormat) bool {
 }
 
 // segmentDamaged decodes one segment (one thread, errors only, bounded) and
-// reports decoder errors: corrupt or missing transport packets that a copy
-// relay would otherwise pass to the player. A check that cannot finish in
-// time reports no damage.
-func (s *Service) segmentDamaged(data []byte) bool {
+// reports decoder or transport damage: corrupt or missing packets that a copy
+// relay would otherwise pass to the player. Known benign demuxer/muxer
+// diagnostics (such as repeated CMAF MOOV atoms) are ignored so healthy copy
+// relays are not unnecessarily escalated to re-encode. A check that cannot
+// finish in time reports no damage.
+func (s *Service) segmentDamaged(data []byte) (bool, string) {
 	ffmpeg := s.ffmpegPath()
 	if ffmpeg == "" {
-		return false
+		return false, ""
 	}
 	ctx, cancel := context.WithTimeout(s.serviceContext(), 700*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-v", "error", "-threads", "1", "-f", "mpegts", "-i", "pipe:0", "-f", "null", "-")
 	cmd.Stdin = bytes.NewReader(data)
-	var errs lineCounter
-	cmd.Stderr = &errs
+	var scan segmentDamageScanner
+	cmd.Stderr = &scan
 	if err := cmd.Run(); err != nil && ctx.Err() != nil {
-		return false
+		return false, ""
 	}
-	return errs.n >= 2
+	return scan.result()
 }
 
-type lineCounter struct{ n int }
+const segmentDamageSampleLimit = 200
 
-func (c *lineCounter) Write(p []byte) (int, error) {
-	c.n += bytes.Count(p, []byte{'\n'})
+type segmentDamageScanner struct {
+	partial     []byte
+	damageLines int
+	prevIgnored bool
+	firstSample string
+}
+
+func (s *segmentDamageScanner) Write(p []byte) (int, error) {
+	rest := p
+	for len(rest) > 0 {
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line := string(append(s.partial, rest[:i]...))
+			s.partial = s.partial[:0]
+			s.consumeLine(line)
+			rest = rest[i+1:]
+			continue
+		}
+		if len(s.partial) < 4<<10 {
+			need := min(len(rest), (4<<10)-len(s.partial))
+			s.partial = append(s.partial, rest[:need]...)
+		}
+		break
+	}
 	return len(p), nil
+}
+
+func (s *segmentDamageScanner) consumeLine(raw string) {
+	line := strings.TrimSpace(raw)
+	if line == "" {
+		return
+	}
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "last message repeated ") {
+		if s.prevIgnored || s.damageLines == 0 {
+			return
+		}
+		s.damageLines++
+		return
+	}
+	if isBenignSegmentStderrLine(lower) {
+		s.prevIgnored = true
+		return
+	}
+	s.prevIgnored = false
+	s.damageLines++
+	if s.firstSample == "" {
+		if len(line) > segmentDamageSampleLimit {
+			line = line[:segmentDamageSampleLimit]
+		}
+		s.firstSample = line
+	}
+}
+
+func (s *segmentDamageScanner) result() (bool, string) {
+	if len(s.partial) > 0 {
+		line := string(s.partial)
+		s.partial = s.partial[:0]
+		s.consumeLine(line)
+	}
+	return s.damageLines >= 2, s.firstSample
+}
+
+func classifySegmentDamageStderr(stderr string) (bool, string) {
+	var scan segmentDamageScanner
+	_, _ = scan.Write([]byte(stderr))
+	return scan.result()
+}
+
+// isBenignSegmentStderrLine matches ffmpeg error-level diagnostics that appear
+// on healthy live inputs rather than corrupt or dropped media packets.
+func isBenignSegmentStderrLine(lower string) bool {
+	switch {
+	case strings.Contains(lower, "found duplicated moov atom"):
+		// Repeated CMAF/fMP4 init boxes occur at normal live boundaries and
+		// ffmpeg skips them cleanly without damaging decoded video.
+		return true
+	case strings.HasPrefix(lower, "libva info:"):
+		return true
+	case strings.Contains(lower, "timestamp discontinuity"):
+		return true
+	case strings.HasPrefix(lower, "[null @") && strings.Contains(lower, "non monotonically increasing dts"):
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *relayProducer) hasBackup() bool {
@@ -907,7 +1093,8 @@ func (p *relayProducer) recover(ctx context.Context, why string) {
 		}
 		if src.ID != cur.ID {
 			p.s.recordSourceHealth(c.ID, cur, errOriginStalled, false)
-			p.log.Warn("owned relay switched source", "from", cur.ID, "to", src.ID)
+			p.s.emitSourceFailover(c, cur.ID, src.ID, why, "relay")
+			p.log.Warn("owned relay switched source", append([]any{"from", cur.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(c, cur, src)...)...)
 		}
 		return
 	}
@@ -917,20 +1104,39 @@ func (p *relayProducer) recover(ctx context.Context, why string) {
 	p.mu.Unlock()
 }
 
+func (s *Service) resolveSessionSource(ctx context.Context, ss *session, c Channel, src StreamSource) (raw string, rawHdrs map[string]string, hdrs http.Header, err error) {
+	ss.mu.Lock()
+	direct := ss.direct
+	ss.mu.Unlock()
+	if direct != nil {
+		dURL, dRawHdrs, dHdrs, _, dGen, dInvalid, _ := direct.current()
+		if dInvalid || dURL == "" {
+			dURL, dRawHdrs, dHdrs, _, err = direct.refresh(ctx, dGen)
+			if err != nil {
+				return "", nil, nil, err
+			}
+		}
+		return dURL, dRawHdrs, dHdrs, nil
+	}
+	raw, hdrs, err = s.ResolveStreamSource(ctx, c, src)
+	return raw, src.Headers, hdrs, err
+}
+
 func (p *relayProducer) switchSource(ctx context.Context, ss *session, c Channel, src StreamSource, probe bool) error {
 	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	raw, headers, err := p.s.ResolveStreamSource(sctx, c, src)
+	raw, rawHdrs, headers, err := p.s.resolveSessionSource(sctx, ss, c, src)
 	if err != nil {
 		return err
 	}
 	grantSrc := src
 	grantSrc.URL = raw
+	grantSrc.Headers = rawHdrs
 	if err := p.s.grantDirectInput(ss, grantSrc, headers); err != nil {
 		return err
 	}
 	ss.mu.Lock()
-	ss.inputURL, ss.inputSource, ss.inputHeaders = raw, src, headers.Clone()
+	ss.inputURL, ss.inputSource, ss.inputHeaders = raw, grantSrc, headers.Clone()
 	ss.info.ActiveSourceID = src.ID
 	ss.mu.Unlock()
 	p.mu.Lock()

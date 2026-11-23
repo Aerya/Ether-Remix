@@ -318,6 +318,145 @@ func TestJellyfinBoxSetsAndPlaylists(t *testing.T) {
 	requireJellyfinSpec(t, http.MethodGet, "/Items", w)
 }
 
+type boxSetPageSigner struct {
+	frontendtest.ImageGrants
+	calls int
+	reqs  []frontend.ImagePageRequest
+}
+
+func (s *boxSetPageSigner) SignPage(_ context.Context, req frontend.ImagePageRequest) ([]frontend.ImageBatchItem, error) {
+	s.calls++
+	s.reqs = append(s.reqs, req)
+	rows := make([]frontend.ImageBatchItem, 0, len(req.Titles))
+	for _, title := range req.Titles {
+		var imgs []frontend.GrantedImage
+		for _, kind := range req.Kinds {
+			switch kind {
+			case frontend.ImagePoster:
+				imgs = append(imgs, frontend.GrantedImage{Image: frontend.Image{Kind: frontend.ImagePoster}, Secret: fmt.Sprintf("primary-%d", title.Key)})
+			case frontend.ImageBanner:
+				imgs = append(imgs, frontend.GrantedImage{Image: frontend.Image{Kind: frontend.ImageBanner}, Secret: fmt.Sprintf("banner-%d", title.Key)})
+			case frontend.ImageLogo:
+				imgs = append(imgs, frontend.GrantedImage{Image: frontend.Image{Kind: frontend.ImageLogo}, Secret: fmt.Sprintf("logo-%d", title.Key)})
+			case frontend.ImageThumb:
+				imgs = append(imgs, frontend.GrantedImage{Image: frontend.Image{Kind: frontend.ImageThumb}, Secret: fmt.Sprintf("thumb-%d", title.Key)})
+			case frontend.ImageBackdrop:
+				imgs = append(imgs, frontend.GrantedImage{Image: frontend.Image{Kind: frontend.ImageBackdrop}, Secret: fmt.Sprintf("backdrop-%d", title.Key)})
+			}
+		}
+		rows = append(rows, frontend.ImageBatchItem{Item: title.Key, Authoritative: true, Images: imgs})
+	}
+	return rows, nil
+}
+
+func TestBoxSetListPopulatesImageTagsInBatchForJellyfinAndEmby(t *testing.T) {
+	smartKey := core.SmartKey(7)
+	franchiseKey := core.CollectionKey(12)
+	cols := []frontend.Collection{
+		{Key: smartKey, Title: "Crime Thrillers", Summary: "Smart collection", ChildCount: 15},
+		{Key: franchiseKey, Title: "Before Trilogy", Summary: "Franchise", ChildCount: 3},
+	}
+	for _, proto := range []string{"jellyfin", "emby"} {
+		t.Run(proto, func(t *testing.T) {
+			signer := &boxSetPageSigner{}
+			ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) {
+				return &frontend.Viewer{ID: 1}, nil
+			}}
+			exp := frontendtest.Experience{
+				CollectionsFunc: func(context.Context, *frontend.Viewer, frontend.Device, frontend.CollectionQuery) (frontend.CollectionPage, error) {
+					return frontend.CollectionPage{Items: cols, Total: len(cols)}, nil
+				},
+				ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+					for _, c := range cols {
+						if c.Key == req.Key {
+							cc := c
+							return frontend.ItemDetail{
+								Title:               frontend.Title{Key: c.Key, Type: "boxset", Title: c.Title},
+								Collection:          &cc,
+								ImagesAuthoritative: true,
+							}, nil
+						}
+					}
+					return frontend.ItemDetail{}, frontend.ErrNotFound
+				},
+			}
+			host := frontend.Host{Identity: ident, Experience: exp, ImageGrants: signer}
+			var inst frontend.Instance
+			var err error
+			if proto == "jellyfin" {
+				inst, err = (Jellyfin{MachineID: "test"}).Mount(context.Background(), host)
+			} else {
+				inst, err = (Emby{MachineID: "test"}).Mount(context.Background(), host)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/Items?IncludeItemTypes=BoxSet", nil)
+			r.Header.Set("X-Emby-Token", "grant")
+			inst.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("list status %d: %s", w.Code, w.Body.String())
+			}
+			if signer.calls != 1 || len(signer.reqs[0].Titles) != 2 {
+				t.Fatalf("expected 1 page-level SignPage call for 2 boxsets, got calls=%d reqs=%+v", signer.calls, signer.reqs)
+			}
+			var listResp struct {
+				Items []struct {
+					ID                string            `json:"Id"`
+					ImageTags         map[string]string `json:"ImageTags"`
+					BackdropImageTags []string          `json:"BackdropImageTags"`
+				} `json:"Items"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+				t.Fatal(err)
+			}
+			if len(listResp.Items) != 2 {
+				t.Fatalf("items = %+v", listResp.Items)
+			}
+
+			// Detail for the smart BoxSet must carry the exact same artwork tags as the list row.
+			uid, _ := ids.GUID(ids.User, 1)
+			dw := httptest.NewRecorder()
+			dr := httptest.NewRequest(http.MethodGet, "/Users/"+uid+"/Items/"+ids.RatingKeyGUID(smartKey), nil)
+			dr.Header.Set("X-Emby-Token", "grant")
+			inst.Handler().ServeHTTP(dw, dr)
+			if dw.Code != http.StatusOK {
+				t.Fatalf("detail status %d: %s", dw.Code, dw.Body.String())
+			}
+			var detailResp struct {
+				ImageTags         map[string]string `json:"ImageTags"`
+				BackdropImageTags []string          `json:"BackdropImageTags"`
+			}
+			if err := json.Unmarshal(dw.Body.Bytes(), &detailResp); err != nil {
+				t.Fatal(err)
+			}
+			for _, tag := range []string{"Primary", "Banner", "Logo", "Thumb"} {
+				if listResp.Items[0].ImageTags[tag] == "" || listResp.Items[0].ImageTags[tag] != detailResp.ImageTags[tag] {
+					t.Fatalf("list vs detail %s tag mismatch: list=%+v detail=%+v", tag, listResp.Items[0].ImageTags, detailResp.ImageTags)
+				}
+			}
+			if len(listResp.Items[0].BackdropImageTags) != 1 || len(detailResp.BackdropImageTags) != 1 || listResp.Items[0].BackdropImageTags[0] != detailResp.BackdropImageTags[0] {
+				t.Fatalf("list vs detail backdrops mismatch: list=%+v detail=%+v", listResp.Items[0].BackdropImageTags, detailResp.BackdropImageTags)
+			}
+			if proto == "jellyfin" {
+				requireJellyfinSpec(t, http.MethodGet, "/Items", w)
+			}
+
+			// EnableImages=false skips batch signing and leaves image tags empty.
+			beforeCalls := signer.calls
+			w2 := httptest.NewRecorder()
+			r2 := httptest.NewRequest(http.MethodGet, "/Items?IncludeItemTypes=BoxSet&EnableImages=false", nil)
+			r2.Header.Set("X-Emby-Token", "grant")
+			inst.Handler().ServeHTTP(w2, r2)
+			if w2.Code != http.StatusOK || signer.calls != beforeCalls {
+				t.Fatalf("EnableImages=false status=%d signerCalls=%d->%d", w2.Code, beforeCalls, signer.calls)
+			}
+		})
+	}
+}
+
 func TestJellyfinBrowseFiltersReachTheLibrary(t *testing.T) {
 	var got frontend.ItemQuery
 	exp := frontendtest.Experience{LibraryItemsFunc: func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, _ string, q frontend.ItemQuery) (frontend.Page, error) {
@@ -331,6 +470,31 @@ func TestJellyfinBrowseFiltersReachTheLibrary(t *testing.T) {
 	inst.Handler().ServeHTTP(w, r)
 	if w.Code != 200 || got.Filter.MinRating != 7.5 || len(got.Filter.ContentRatings) != 2 || got.Filter.ContentRatings[0] != "PG-13" || got.Filter.ContentRatings[1] != "de/16" || got.Filter.Studio != "A24" || got.Filter.MinRuntime != 60*time.Second || got.Sort != core.SortReleased || !got.Desc {
 		t.Fatal(w.Code, got)
+	}
+}
+
+// Jellyfin Web repeats sortBy (sortBy=CommunityRating&sortBy=SortName) where
+// other apps comma-join it. Both spellings sort by the first key Ether knows.
+func TestJellyfinBrowseSortByRepeatedOrCommaJoined(t *testing.T) {
+	for _, query := range []string{
+		"sortBy=CommunityRating&sortBy=SortName&sortOrder=Descending",
+		"SortBy=CommunityRating,SortName&SortOrder=Descending",
+		"SortBy=CommunityRating&SortOrder=Descending,Ascending",
+		"sortBy=Unknown&sortBy=CommunityRating&sortOrder=Descending",
+	} {
+		var got frontend.ItemQuery
+		exp := frontendtest.Experience{LibraryItemsFunc: func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, _ string, q frontend.ItemQuery) (frontend.Page, error) {
+			got = q
+			return frontend.Page{}, nil
+		}}
+		inst := mountJellyfin(t, exp)
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/Items?Recursive=true&IncludeItemTypes=Movie&"+query, nil)
+		r.Header.Set("X-Emby-Token", "grant")
+		inst.Handler().ServeHTTP(w, r)
+		if w.Code != 200 || got.Sort != core.SortRating || !got.Desc {
+			t.Fatalf("%s: code %d sort %v desc %v", query, w.Code, got.Sort, got.Desc)
+		}
 	}
 }
 
@@ -684,8 +848,11 @@ func TestJellyfinNamedPeopleProviderLinksAndRuntime(t *testing.T) {
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &item) != nil {
 		t.Fatal(w.Code, w.Body.String())
 	}
+	// #614: a credit with no person id at all cannot be emitted on the
+	// Jellyfin surface (BaseItemPerson.Id is a required UUID in
+	// jellyfin-sdk-kotlin); it is dropped instead of failing the page.
 	people, _ := item["People"].([]any)
-	if len(people) != 1 || people[0].(map[string]any)["Name"] != "Actor" || people[0].(map[string]any)["Id"] != nil {
+	if len(people) != 0 {
 		t.Fatal(item["People"])
 	}
 	urls, _ := item["ExternalUrls"].([]any)

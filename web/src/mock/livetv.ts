@@ -1,4 +1,13 @@
 import { scheduleFixture } from "./schedule-timeline";
+import {
+  compileOwnerGroupMatcher,
+  compileOwnerGroupRegExp,
+  sortByNumber,
+  streamQualityTier,
+  type ChannelInputMerge,
+  type OwnerGroup,
+  type OwnerGroupRule,
+} from "../pages/livetv/model";
 import type { ChannelLook } from "../pages/livetv/onair/model";
 /**
  * Live TV for the mock backend: a few virtual channels built from the fake
@@ -383,6 +392,106 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     },
     look: { lookId: "personal", ident: true, upNext: true, offAir: true, breaks: "between" },
   });
+  channels.push(
+    {
+      id: "xtream-2113",
+      number: "2113",
+      name: "FOX News",
+      group: "US | News",
+      kind: "iptv",
+      enabled: true,
+      favorite: true,
+      sourceId: "demo-xtream",
+      guideId: "foxnews.us",
+      streamUrl: "http://panel.example:8080/live/demo/secret/2113.ts",
+      streamSources: [
+        {
+          id: "playlist-xtream-2113",
+          name: "Imported stream",
+          url: "http://panel.example:8080/live/demo/secret/2113.ts",
+          enabled: true,
+          priority: 0,
+          authSourceId: "demo-xtream",
+        },
+        {
+          id: "auto-xtream-1873",
+          name: "FOX News",
+          url: "http://panel.example:8080/live/demo/secret/1873.ts",
+          enabled: true,
+          priority: 1,
+          authSourceId: "demo-xtream",
+          autoFrom: "xtream-1873",
+          autoNumber: "1873",
+        },
+        {
+          id: "auto-fast-fox",
+          name: "FOX News FHD",
+          url: "https://iptv.example/live/foxnews-fhd.m3u8",
+          enabled: true,
+          priority: 2,
+          authSourceId: "demo-fast",
+          autoFrom: "fast-fox",
+          autoNumber: "118",
+        },
+      ],
+      epoch: "1970-01-01T00:00:00Z",
+      seed: 1,
+      shuffle: false,
+      items: [],
+    },
+    {
+      id: "xtream-1873",
+      number: "1873",
+      name: "FOX News",
+      group: "CA | News",
+      kind: "iptv",
+      enabled: true,
+      favorite: false,
+      sourceId: "demo-xtream",
+      guideId: "foxnews.us",
+      streamUrl: "http://panel.example:8080/live/demo/secret/1873.ts",
+      streamSources: [
+        {
+          id: "playlist-xtream-1873",
+          name: "Imported stream",
+          url: "http://panel.example:8080/live/demo/secret/1873.ts",
+          enabled: true,
+          priority: 0,
+          authSourceId: "demo-xtream",
+        },
+        {
+          id: "auto-xtream-2113",
+          name: "FOX News",
+          url: "http://panel.example:8080/live/demo/secret/2113.ts",
+          enabled: true,
+          priority: 1,
+          authSourceId: "demo-xtream",
+          autoFrom: "xtream-2113",
+          autoNumber: "2113",
+        },
+      ],
+      epoch: "1970-01-01T00:00:00Z",
+      seed: 1,
+      shuffle: false,
+      items: [],
+    },
+    {
+      id: "fast-fox",
+      number: "118",
+      name: "FOX News FHD",
+      group: "News",
+      kind: "iptv",
+      enabled: true,
+      favorite: false,
+      sourceId: "demo-fast",
+      guideId: "foxnews.us",
+      streamUrl: "https://iptv.example/live/foxnews-fhd.m3u8",
+      epoch: "1970-01-01T00:00:00Z",
+      seed: 1,
+      shuffle: false,
+      items: [],
+    },
+  );
   if (empty) channels.length = 0;
   // Two channels have a guide id their own source doesn't carry.
   const unlisted = new Set(["iptv-4", "iptv-10", "iptv-11", "iptv-16"]);
@@ -466,7 +575,7 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       return interstitials(out, c.look as ChannelLook | undefined);
     }
     if (!c.enabled || unlisted.has(c.id) || !c.guideId) return out;
-    const names = c.group === "News" ? NEWS : SHOWS;
+    const names = c.group?.includes("News") ? NEWS : SHOWS;
     const slot = 30 * 60000;
     let t = Math.floor(from / slot) * slot;
     while (t < until) {
@@ -554,59 +663,128 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     return saved;
   };
 
-  // Dedicated large editor fixture: ordinary guide/player mocks stay small.
-  const guideChannels = Array.from({ length: 10000 }, (_, i) => ({
-    id: `guide-${i}`,
-    name: i === 41 ? "World News" : `Channel ${i + 1}`,
-    number: String(i + 1),
-    sourceId: "large-lineup",
-    group: `${["News", "Sports", "Movies", "Kids", "Music"][Math.floor(i / 40) % 5]} ${Math.floor(i / 40) + 1}`,
-  }));
-  const guideGroups = [
-    ...new Map(
-      guideChannels.map((c) => [
-        c.group,
-        { sourceId: c.sourceId, name: c.group, sourceName: "10,000 channel lineup", count: 40 },
-      ]),
-    ).values(),
-  ];
-  let ownerGuides = [
+  let ownerGroups: OwnerGroup[] = [
     {
       id: "news",
-      name: "News and current affairs",
-      groups: guideGroups.filter((g) => g.name.startsWith("News")),
+      name: "News",
+      groups: [{ sourceId: "demo-fast", name: "News" }],
       channels: [] as string[],
-      hidden: false,
     },
     {
       id: "sports",
       name: "Sports",
-      groups: guideGroups.filter((g) => g.name.startsWith("Sports")),
+      groups: [{ sourceId: "demo-fast", name: "Sports" }],
       channels: [] as string[],
-      hidden: false,
     },
     {
       id: "family",
-      name: "Family favourites",
-      groups: guideGroups.filter((g) => g.name.startsWith("Kids")),
-      channels: ["guide-41"],
-      hidden: false,
+      name: "Kids & Family",
+      groups: [{ sourceId: "demo-fast", name: "Kids" }],
+      channels: ["v-family"],
     },
     {
       id: "movies",
       name: "Movies",
-      groups: guideGroups.filter((g) => g.name.startsWith("Movies")),
-      channels: [] as string[],
-      hidden: true,
+      groups: [{ sourceId: "demo-fast", name: "Movies" }],
+      channels: ["v-movie-night", "v-80s", "v-horror"],
     },
   ];
   function handle(method: string, seg: string[], q: URLSearchParams, body: unknown) {
     if (seg[0] !== "livetv") return null;
     const route = `${method} /${seg.slice(1).join("/")}`;
     const now = Date.now();
-    if (route === "PUT /guides") {
-      ownerGuides = body as typeof ownerGuides;
-      return { body: { guides: ownerGuides, groups: guideGroups, channels: guideChannels } };
+    if (route === "GET /groups") return { body: ownerGroups };
+    if (route === "POST /groups/preview") {
+      const draft = (body ?? {}) as Partial<OwnerGroup>;
+      for (const [i, r] of (draft.rules ?? []).entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            const msg = `invalid pattern "${r.value}"`;
+            return {
+              status: 400,
+              body: {
+                error: {
+                  code: "livetv",
+                  message: msg,
+                  fields: [{ field: `rules.${i}.value`, message: msg }],
+                },
+              },
+            };
+          }
+        }
+      }
+      const sourceNames = new Map(sources.map((s) => [s.id, s.name]));
+      const matcher = compileOwnerGroupMatcher(
+        { id: draft.id ?? "", name: draft.name ?? "", groups: draft.groups ?? [], ...draft },
+        sourceNames,
+      );
+      const matched = channels.filter((c) => matcher(c));
+      return { body: { count: matched.length, channels: matched.slice(0, 50) } };
+    }
+    if (route === "PUT /groups") {
+      ownerGroups = Array.isArray(body) ? (body as typeof ownerGroups) : ownerGroups;
+      return { body: ownerGroups };
+    }
+    if (route === "POST /channels/apps") {
+      const b = (body ?? {}) as {
+        app: string;
+        show: boolean;
+        channels?: string[];
+        source?: string;
+        group?: string;
+        ownerGroup?: string;
+      };
+      let targets: Channel[] = [];
+      if (Array.isArray(b.channels)) {
+        const ids = new Set(b.channels);
+        targets = channels.filter((c) => ids.has(c.id));
+      } else if (b.ownerGroup) {
+        const g = ownerGroups.find((x) => x.id === b.ownerGroup);
+        if (!g) return { status: 404, body: { error: { code: "livetv", message: "not found" } } };
+        g.apps = { ...(g.apps ?? {}), [b.app]: b.show };
+        const sourceNames = new Map(sources.map((s) => [s.id, s.name]));
+        const matcher = compileOwnerGroupMatcher(g, sourceNames);
+        targets = channels.filter((c) => matcher(c));
+        let updated = 0;
+        for (const c of targets) {
+          const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);
+          const shown = new Set<string>((c.shownApps as string[] | undefined) ?? []);
+          if (hidden.delete(b.app) || shown.delete(b.app)) {
+            c.hiddenApps = hidden.size ? [...hidden].sort() : undefined;
+            c.shownApps = shown.size ? [...shown].sort() : undefined;
+            updated++;
+          }
+        }
+        return { body: { updated } };
+      } else if (b.source !== undefined) {
+        targets = channels.filter((c) => {
+          if (b.source === "virtual") return c.kind === "virtual";
+          if (c.kind === "virtual" || (c.sourceId ?? "") !== b.source) return false;
+          if (b.group !== undefined && (c.group ?? "") !== b.group) return false;
+          return true;
+        });
+      }
+      let updated = 0;
+      for (const c of targets) {
+        const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);
+        const shown = new Set<string>((c.shownApps as string[] | undefined) ?? []);
+        if (b.show) {
+          if (hidden.delete(b.app) || !shown.has(b.app)) {
+            shown.add(b.app);
+            c.hiddenApps = hidden.size ? [...hidden].sort() : undefined;
+            c.shownApps = [...shown].sort();
+            updated++;
+          }
+        } else {
+          if (shown.delete(b.app) || !hidden.has(b.app)) {
+            hidden.add(b.app);
+            c.hiddenApps = [...hidden].sort();
+            c.shownApps = shown.size ? [...shown].sort() : undefined;
+            updated++;
+          }
+        }
+      }
+      return { body: { updated } };
     }
     if (route === "GET /search") {
       const query = (q.get("q") ?? "").toLowerCase();
@@ -632,8 +810,6 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
         },
       };
     }
-    if (route === "GET /guides")
-      return { body: { guides: ownerGuides, groups: guideGroups, channels: guideChannels } };
     if (route === "GET /usage")
       return { body: { sessions: 0, viewers: 0, watching: [], sources: [] } };
     if (method === "GET" && seg[1] === "channels" && seg[3] === "timeline") {
@@ -680,7 +856,8 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       }
       return { body: { ok: true } };
     }
-    if (route === "GET /channels/summary") return { body: channels };
+    if (route === "GET /channels/summary")
+      return { body: sortByNumber(channels.filter((c) => !c.mergedInto)) };
     if (route === "GET /channels/page") {
       const needle = (q.get("q") || "").toLowerCase();
       const filter = q.get("filter") || "all";
@@ -695,7 +872,8 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
               : filter === "missing"
                 ? !c.guideId && c.kind === "iptv"
                 : c.enabled);
-      const all = channels.filter(
+      const visible = channels.filter((c) => !c.mergedInto);
+      const all = visible.filter(
         (c) => matches(c) && `${c.name} ${c.number}`.toLowerCase().includes(needle),
       );
       const offset = Number(q.get("offset") || 0),
@@ -727,9 +905,138 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
         },
       };
     }
+    if (
+      method === "GET" &&
+      seg[1] === "channels" &&
+      seg[2] &&
+      seg[3] === "sources" &&
+      seg[4] === "status"
+    ) {
+      const ch = channels.find((c) => c.id === seg[2]);
+      const list = (ch?.streamSources as { id: string }[] | undefined) ?? [];
+      return {
+        body: list.map((src) => ({
+          id: src.id,
+          state: "available",
+          lastPlayed: new Date(now - 15 * 60e3).toISOString(),
+        })),
+      };
+    }
     if (method === "GET" && seg[1] === "channels" && seg.length === 3)
       return { body: channels.find((c) => c.id === seg[2]) };
     if (route === "GET /channels") return { body: channels };
+    if (route === "POST /channels/merge-preview") {
+      const req = (body ?? {}) as {
+        channelId?: string;
+        name?: string;
+        sourceId?: string;
+        streamUrl?: string;
+        rules?: OwnerGroupRule[];
+        match?: "any" | "all";
+      };
+      const rules = req.rules ?? [];
+      for (const [i, r] of rules.entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            return {
+              status: 400,
+              body: {
+                error: {
+                  code: "livetv",
+                  message: `invalid pattern "${r.value}"`,
+                  fields: [{ field: `rules.${i}.value`, message: `invalid pattern: ${r.value}` }],
+                },
+              },
+            };
+          }
+        }
+      }
+      const active = rules.filter((r) => r.value !== "");
+      if (!active.length) {
+        return { body: { matchCount: 0, totalFeeds: 0, maxInputs: 16, inputs: [] } };
+      }
+      const srcNames = new Map(sources.map((s) => [s.id, s.name]));
+      const srcRanks = new Map(sources.map((s, i) => [s.id, i + 1]));
+      const matcher = compileOwnerGroupMatcher(
+        { groups: [], rules: active, match: req.match ?? "any" },
+        srcNames,
+      );
+      const target = channels.find((c) => c.id === req.channelId);
+      const matched = channels.filter(
+        (c) => c.kind === "iptv" && c.id !== req.channelId && matcher(c),
+      );
+      const raw = [
+        ...(target
+          ? [{ ch: target, primary: true }]
+          : req.streamUrl
+            ? [
+                {
+                  ch: {
+                    id: req.channelId || "draft",
+                    name: req.name || "Primary",
+                    sourceId: req.sourceId,
+                  } as Channel,
+                  primary: true,
+                },
+              ]
+            : []),
+        ...matched.map((ch) => ({ ch, primary: false })),
+      ];
+      const sorted = raw
+        .map((entry, idx) => {
+          const sid = entry.ch.sourceId ?? "";
+          const q = streamQualityTier(entry.ch.name);
+          return {
+            ...entry,
+            sRank: srcRanks.get(sid) ?? 999,
+            qRank: q.rank,
+            qLabel: q.label,
+            idx,
+          };
+        })
+        .sort(
+          (a, b) =>
+            a.sRank - b.sRank ||
+            a.qRank - b.qRank ||
+            Number(b.primary) - Number(a.primary) ||
+            a.idx - b.idx,
+        );
+      return {
+        body: {
+          matchCount: matched.length,
+          totalFeeds: sorted.length,
+          maxInputs: 16,
+          inputs: sorted.map((entry, i) => ({
+            id: entry.ch.id,
+            channelId: entry.ch.id,
+            name: entry.ch.name,
+            group: entry.ch.group,
+            guideId: entry.ch.guideId,
+            sourceId: entry.ch.sourceId,
+            sourceName: entry.ch.sourceId ? srcNames.get(entry.ch.sourceId) : undefined,
+            sourcePriority: entry.ch.sourceId ? srcRanks.get(entry.ch.sourceId) : undefined,
+            quality: entry.qLabel || undefined,
+            primary: entry.primary,
+            included: i < 16,
+            state: "unchecked",
+          })),
+        },
+      };
+    }
+    if (route === "PUT /sources/order") {
+      const { ids = [] } = (body ?? {}) as { ids?: string[] };
+      const byId = new Map(sources.map((s) => [s.id, s]));
+      const next: Source[] = [];
+      for (const id of ids) {
+        const s = byId.get(id);
+        if (s && !next.includes(s)) next.push(s);
+      }
+      for (const s of sources) {
+        if (!next.includes(s)) next.push(s);
+      }
+      sources.splice(0, sources.length, ...next.map((s, i) => ({ ...s, priority: i + 1 })));
+      return { body: sources.map(source) };
+    }
     if (route === "GET /sources") return { body: sources.map(source) };
     if (route === "GET /guide") {
       const from = Date.parse(q.get("from") ?? "") || now;
@@ -919,21 +1226,39 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     }
     if (route === "PATCH /channels/bulk") {
       const change = body as {
-        ids: string[];
+        ids?: string[];
         enabled?: boolean;
         favorite?: boolean;
         group?: string;
+        numbers?: Record<string, string>;
         showApps?: string[];
         hideApps?: string[];
       };
-      const ids = new Set(change.ids);
+      const rawIds =
+        change.ids && change.ids.length > 0 ? change.ids : Object.keys(change.numbers ?? {});
+      const ids = new Set(rawIds);
       const selected = channels.filter((c) => ids.has(c.id));
       if (selected.length !== ids.size)
         return { status: 404, body: { error: { code: "livetv", message: "not found" } } };
+      if (change.numbers) {
+        for (const [id, raw] of Object.entries(change.numbers)) {
+          const trimmed = String(raw).trim();
+          if (!ids.has(id) || !trimmed || trimmed.length > 32) {
+            return {
+              status: 400,
+              body: { error: { code: "livetv", message: "invalid channel number" } },
+            };
+          }
+        }
+      }
       for (const c of selected) {
         if (change.enabled !== undefined) c.enabled = change.enabled;
         if (change.favorite !== undefined) c.favorite = change.favorite;
         if (change.group !== undefined) c.group = change.group;
+        if (change.numbers && Object.prototype.hasOwnProperty.call(change.numbers, c.id)) {
+          const nextNum = change.numbers[c.id];
+          if (nextNum !== undefined) c.number = nextNum.trim();
+        }
         if (change.showApps || change.hideApps) {
           const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);
           for (const app of change.showApps ?? []) hidden.delete(app);
@@ -953,6 +1278,40 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       if (c.guideSourceId && c.guideId) unlisted.delete(c.id);
       if (i >= 0) channels[i] = c;
       else channels.push(c);
+      const merge = c.inputMerge as ChannelInputMerge | undefined;
+      for (const other of channels) {
+        if (other.mergedInto === c.id) delete other.mergedInto;
+      }
+      if (c.kind === "iptv" && merge?.rules?.length) {
+        const srcNames = new Map(sources.map((s) => [s.id, s.name]));
+        const srcRanks = new Map(sources.map((s, idx) => [s.id, idx + 1]));
+        const matcher = compileOwnerGroupMatcher(
+          { groups: [], rules: merge.rules, match: merge.match ?? "any" },
+          srcNames,
+        );
+        const donors = channels.filter((d) => d.kind === "iptv" && d.id !== c.id && matcher(d));
+        if (merge.hideDuplicates !== false) {
+          for (const d of donors) d.mergedInto = c.id;
+        }
+        const candidates = [c, ...donors]
+          .map((ch, idx) => ({
+            ch,
+            sRank: srcRanks.get(ch.sourceId ?? "") ?? 999,
+            qRank: streamQualityTier(ch.name).rank,
+            idx,
+          }))
+          .sort((a, b) => a.sRank - b.sRank || a.qRank - b.qRank || a.idx - b.idx)
+          .slice(0, 16);
+        c.streamSources = candidates.map((entry, idx) => ({
+          id: entry.ch.id === c.id ? `playlist-${c.id}` : `merge-${entry.ch.id}`,
+          name: entry.ch.id === c.id ? "Imported stream" : entry.ch.name,
+          url: String(entry.ch.streamUrl ?? `https://iptv.example/${entry.ch.id}.m3u8`),
+          enabled: true,
+          priority: idx,
+          authSourceId: entry.ch.sourceId,
+          mergedFrom: entry.ch.id === c.id ? undefined : entry.ch.id,
+        }));
+      }
       return { body: c };
     }
     if (method === "DELETE" && seg[1] === "channels" && seg[2]) {

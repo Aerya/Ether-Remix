@@ -2,6 +2,8 @@ package plex
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -39,7 +41,16 @@ func TestStartRenegotiatesQualityAndTracks(t *testing.T) {
 			start := "/video/:/transcode/universal/start." + ext + "?"
 			get := func(path string) {
 				t.Helper()
-				if rec := f.get(t, path, headers...); rec.Code != 200 {
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.RemoteAddr = "203.0.113.50:51000"
+				req.Header.Set("X-Plex-Token", ownerToken)
+				req.Header.Set("X-Plex-Client-Identifier", "client-1")
+				for i := 0; i+1 < len(headers); i += 2 {
+					req.Header.Set(headers[i], headers[i+1])
+				}
+				rec := httptest.NewRecorder()
+				f.srv.ServeHTTP(rec, req)
+				if rec.Code != 200 {
 					t.Fatalf("request failed: %d %s", rec.Code, rec.Body.String())
 				}
 			}

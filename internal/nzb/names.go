@@ -71,6 +71,10 @@ var imageExts = map[string]bool{"jpg": true, "jpeg": true, "png": true, "gif": t
 var otherExts = map[string]bool{
 	"txt": true, "nzb": true, "srr": true, "img": true, "url": true, "exe": true,
 	"md5": true, "sha1": true, "db": true, "log": true, "cue": true, "nfo2": true,
+	"lnk": true, "scr": true, "bat": true, "cmd": true, "msi": true, "ps1": true,
+	"vbs": true, "hta": true, "pif": true, "epub": true, "mobi": true, "azw3": true,
+	"cbz": true, "cbr": true, "pdf": true, "m4b": true, "mp3": true, "flac": true,
+	"ogg": true, "opus": true, "wav": true, "m4a": true,
 }
 
 // IsVideoExt reports whether ext (without dot, any case) is a video container.
@@ -79,6 +83,7 @@ func IsVideoExt(ext string) bool { return videoExts[strings.ToLower(ext)] }
 var (
 	rePartRAR  = regexp.MustCompile(`(?i)^(.*)\.part(\d{1,4})\.rar$`)
 	reOldRAR   = regexp.MustCompile(`(?i)^(.*)\.([r-y])(\d{2})$`)
+	reOldRAR3  = regexp.MustCompile(`(?i)^(.*)\.r(\d{3})$`)
 	rePlainRAR = regexp.MustCompile(`(?i)^(.*)\.rar$`)
 	re7zVol    = regexp.MustCompile(`(?i)^(.*)\.7z\.(\d{1,4})$`)
 	re7z       = regexp.MustCompile(`(?i)^(.*)\.7z$`)
@@ -125,6 +130,12 @@ func Classify(name string) FileInfo {
 		letter := int(m[2][0] - 'r')
 		info.Kind, info.Ext, info.SetName = KindRAR, "rar", m[1]
 		info.Volume = 1 + letter*100 + n
+		return info
+	case reOldRAR3.MatchString(lower):
+		m := reOldRAR3.FindStringSubmatch(lower)
+		n, _ := strconv.Atoi(m[2])
+		info.Kind, info.Ext, info.SetName = KindRAR, "rar", m[1]
+		info.Volume = 1 + n
 		return info
 	case re7zVol.MatchString(lower):
 		m := re7zVol.FindStringSubmatch(lower)
@@ -194,9 +205,12 @@ var (
 	reLeadingNumPath = regexp.MustCompile(`^\d+/(.+\.[A-Za-z0-9]{2,5}(?:\.\d{2,4})?)$`)
 	reFileCounter    = regexp.MustCompile(`[\[(]\s*(\d{1,5})\s*(?:/|of)\s*(\d{1,5})\s*[\])]`)
 	reSegCounter     = regexp.MustCompile(`\(\s*(\d{1,6})\s*/\s*(\d{1,6})\s*\)\s*(?:\d+\s*)?$`)
-	reTrailingYEnc   = regexp.MustCompile(`(?i)\s*(?:-\s*)?(?:yenc)?\s*(?:\(\s*\d+\s*/\s*\d+\s*\))?\s*(?:\d+\s*)?$`)
-	reSizeNoise      = regexp.MustCompile(`(?i)\s+-?\s*\d+(?:[.,]\d+)?\s*[kmgt]i?b\b.*$`)
-	reBareName       = regexp.MustCompile(`([^\s"\[\]()/\\]+\.(?:part\d+\.rar|r\d{2}|7z\.\d{3}|zip\.\d{3}|z\d{2}|\d{3}|vol\d+[+-]\d+\.par2|[A-Za-z0-9]{2,4}))(?:\s|$)`)
+	reTrailingYEnc   = regexp.MustCompile(`(?i)(?:(?:^|\s+)(?:-\s*)?yenc(?:\s+\d+)?(?:\s*[\[(]\s*\d+\s*/\s*\d+\s*[\])])?(?:\s+\d+)?|\s*(?:-\s*)?[\[(]\s*\d+\s*/\s*\d+\s*[\])](?:\s*(?:yenc|\d+))*)\s*$`)
+	reSizeNoise      = regexp.MustCompile(`(?i)(?:\s*-\s*|\s+)[\[(]?\d+(?:[.,]\d+)?\s*(?:[kmgt]i?b|bytes?)\b[\])]?(?:\s*-\s*)?$`)
+	reReplyPrefix    = regexp.MustCompile(`(?i)^(?:(?:re|fwd|fw)\s*:\s*)+`)
+	reLeadingCounter = regexp.MustCompile(`(?i)^(?:[\[(]\s*\d{1,5}\s*(?:/|of)\s*\d{1,5}\s*[\])]|(?:file\s+)?\d{1,5}\s*(?:/|of)\s*\d{1,5})(?:\s*[-:]\s*|\s+)`)
+	reMidCounter     = regexp.MustCompile(`(?i)(?:[\[(]\s*\d{1,5}\s*/\s*\d{1,5}\s*[\])](?:\s*[-:]\s*|\s+)|\[\s*\d{1,5}\s+of\s+\d{1,5}\s*\]\s*[-:]\s*)`)
+	reUnquotedExt    = regexp.MustCompile(`(?i)\.(?:part\d{1,4}\.rar|vol\d+[+-]\d+\.par2|7z\.\d{1,4}|zip\.\d{1,4}|[A-Za-z0-9]{2,5}\.\d{3,4}|r\d{2,3}|[r-y]\d{2}|z\d{2,4}|\d{3,4}|[A-Za-z0-9]{2,5})(?:\s|$)`)
 )
 
 // NameFromSubject extracts the file name from a Usenet subject line, e.g.
@@ -204,14 +218,17 @@ var (
 //	`"Movie.2024.part01.rar" yEnc (1/50)`                -> Movie.2024.part01.rar
 //	`[01/42] - "Movie.2024.mkv" yEnc (1/1000)`          -> Movie.2024.mkv
 //	`[PRiVATE]-[WtFnZb]-[Movie.2024.mkv]-[1/5] - "" yEnc` -> Movie.2024.mkv
+//	`Concert Recording 2019 Full Show.mkv (1/120)`      -> Concert Recording 2019 Full Show.mkv
 //	`Movie.2024.r00 (1/50)`                             -> Movie.2024.r00
 func NameFromSubject(subject string) string {
 	s := strings.TrimSpace(subject)
 	if s == "" {
 		return ""
 	}
-	// 1. Quoted names: prefer one that looks like a file name.
-	var firstQuoted string
+	// 1. Quoted names: prefer one with a recognized file extension, then any
+	// quoted string containing a dot, keeping the first non-empty quote as a
+	// fallback for extensionless obfuscated names.
+	var firstQuoted, dottedQuoted string
 	for _, m := range reQuoted.FindAllStringSubmatch(s, -1) {
 		q := strings.TrimSpace(m[1])
 		if q == "" {
@@ -221,32 +238,127 @@ func NameFromSubject(subject string) string {
 			firstQuoted = q
 		}
 		if strings.Contains(q, ".") {
-			return cleanName(q)
+			cleaned := cleanName(q)
+			if Classify(cleaned).Kind != KindUnknown {
+				return cleaned
+			}
+			if dottedQuoted == "" {
+				dottedQuoted = cleaned
+			}
 		}
 	}
-	// 2. Bracketed names, as used by [PRiVATE]-[WtFnZb]-style posters (including nested group brackets).
+	if dottedQuoted != "" {
+		return dottedQuoted
+	}
+	// 2. Bracketed [PRiVATE]-[Group]-... frames (including nested group brackets).
 	if name := parsePrivateFrame(s); name != "" {
 		return name
 	}
-	if m := reBracketName.FindAllStringSubmatch(s, -1); len(m) > 0 {
-		return cleanName(m[len(m)-1][1])
+	// 3. Unquoted subjects vs. bracketed names: strip trailing yEnc/counter/size
+	// noise first so unquoted filenames with spaces and embedded bracket tags
+	// (e.g. `Show [H.264].mkv yEnc (1/50)`) aren't mistaken for bracketed names.
+	stripped := stripUnquotedTrailing(s)
+	unquoted, unquotedKnown := extractUnquotedName(stripped)
+	if unquotedKnown && (firstQuoted == "" || !strings.Contains(unquoted, `"`)) {
+		return unquoted
+	}
+	if name := extractBracketName(s); name != "" {
+		return name
 	}
 	if firstQuoted != "" {
 		return cleanName(firstQuoted)
 	}
-	// 3. Unquoted: drop trailing yEnc/segment counter and size noise, then
-	// look for a token with a known-looking extension.
-	stripped := reTrailingYEnc.ReplaceAllString(s, "")
-	stripped = reSizeNoise.ReplaceAllString(stripped, "")
-	stripped = strings.TrimSpace(stripped)
-	if ms := reBareName.FindAllStringSubmatch(stripped+" ", -1); len(ms) > 0 {
-		return cleanName(ms[len(ms)-1][1])
+	if unquoted != "" {
+		return unquoted
 	}
-	// Fall back to the last whitespace-separated token.
-	if f := strings.Fields(stripped); len(f) > 0 {
+	// Fall back to the last whitespace-separated token after prefix stripping.
+	if f := strings.Fields(stripUnquotedPrefix(stripped)); len(f) > 0 {
 		return cleanName(f[len(f)-1])
 	}
 	return cleanName(s)
+}
+
+func stripUnquotedTrailing(s string) string {
+	cur := strings.TrimSpace(s)
+	for range 4 {
+		next := reTrailingYEnc.ReplaceAllString(cur, "")
+		next = reSizeNoise.ReplaceAllString(next, "")
+		next = strings.TrimSpace(next)
+		if next == cur {
+			break
+		}
+		cur = next
+	}
+	return cur
+}
+
+func stripUnquotedPrefix(s string) string {
+	cur := strings.TrimSpace(s)
+	cur = strings.TrimSpace(reReplyPrefix.ReplaceAllString(cur, ""))
+	for range 3 {
+		next := strings.TrimSpace(reLeadingCounter.ReplaceAllString(cur, ""))
+		if next == "" || next == cur {
+			break
+		}
+		cur = next
+	}
+	if locs := reMidCounter.FindAllStringIndex(cur, -1); len(locs) > 0 {
+		after := strings.TrimSpace(cur[locs[len(locs)-1][1]:])
+		if after != "" && !strings.HasPrefix(after, ".") {
+			cur = after
+		}
+	}
+	return cur
+}
+
+func extractUnquotedName(stripped string) (string, bool) {
+	cand := stripUnquotedPrefix(stripped)
+	if cand == "" {
+		return "", false
+	}
+	locs := reUnquotedExt.FindAllStringIndex(cand, -1)
+	if len(locs) == 0 {
+		return "", false
+	}
+	var fallback string
+	for i := len(locs) - 1; i >= 0; i-- {
+		piece := strings.TrimSpace(cand[:locs[i][1]])
+		if piece == "" || strings.HasPrefix(piece, ".") {
+			continue
+		}
+		cleaned := cleanName(piece)
+		if cleaned == "" || strings.HasPrefix(cleaned, ".") {
+			continue
+		}
+		if fallback == "" {
+			fallback = cleaned
+		}
+		if Classify(cleaned).Kind != KindUnknown {
+			return cleaned, true
+		}
+	}
+	return fallback, false
+}
+
+func extractBracketName(s string) string {
+	ms := reBracketName.FindAllStringSubmatch(s, -1)
+	if len(ms) == 0 {
+		return ""
+	}
+	var fallback string
+	for i := len(ms) - 1; i >= 0; i-- {
+		cand := cleanName(ms[i][1])
+		if cand == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = cand
+		}
+		if Classify(cand).Kind != KindUnknown {
+			return cand
+		}
+	}
+	return fallback
 }
 
 // parsePrivateFrame extracts the filename section from `[PRiVATE]-[Group]-...`

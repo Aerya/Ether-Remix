@@ -82,16 +82,38 @@ func (i *instance) notInterestedList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]any, 0, len(page.Items))
-	for _, entry := range page.Items {
-		detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: entry.Key})
-		if e != nil || detail.Title.Key != entry.Key {
-			continue
+	if batch, ok := i.host.Experience.(frontend.TitleBatchReader); ok && len(page.Items) > 0 {
+		keys := make([]frontend.RatingKey, 0, len(page.Items))
+		for _, entry := range page.Items {
+			keys = append(keys, entry.Key)
 		}
-		state := detail.UserData
-		state.IsNotInterested = true
-		item := titleDTO(detail.Title, state)
-		i.artwork(r, v, credential, entry.Key, item)
-		items = append(items, item)
+		titles, berr := batch.BatchTitles(r.Context(), v, keys)
+		if berr == nil {
+			allowedKeys := make([]frontend.RatingKey, 0, len(titles))
+			for _, t := range titles {
+				allowedKeys = append(allowedKeys, t.Key)
+			}
+			states, _ := i.host.Experience.UserData(r.Context(), v, allowedKeys)
+			for _, t := range titles {
+				state := states[t.Key]
+				state.IsNotInterested = true
+				item := titleDTO(t, state)
+				i.artwork(r, v, credential, t.Key, item)
+				items = append(items, item)
+			}
+		}
+	} else {
+		for _, entry := range page.Items {
+			detail, e := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: v, Device: device(r), Key: entry.Key})
+			if e != nil || detail.Title.Key != entry.Key {
+				continue
+			}
+			state := detail.UserData
+			state.IsNotInterested = true
+			item := titleDTO(detail.Title, state)
+			i.artwork(r, v, credential, entry.Key, item)
+			items = append(items, item)
+		}
 	}
 	pageInfo := map[string]any{"has_more": false}
 	if offset < page.Total && len(page.Items) > 0 && len(page.Items) < page.Total-offset {

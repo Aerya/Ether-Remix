@@ -13,11 +13,19 @@ type DescriptiveResult struct {
 	Items             []Title
 }
 
-// DescriptiveSearcher reuses the collection builder and never waits for AI
-// unless wait is explicit (an asynchronous protocol job, not a search request).
+// DescriptiveSearcher reuses the collection builder and waits for AI when
+// wait is explicit (protocol AI jobs and bounded descriptive searches).
 type DescriptiveSearcher interface {
 	DescriptiveSearchAvailable() bool
 	DescribeSearch(context.Context, *User, string, bool) (DescriptiveResult, error)
+}
+
+// DescriptiveSearchController is an optional extension of DescriptiveSearcher
+// for warm-cache checks and cancelling jobs superseded by search-as-you-type.
+type DescriptiveSearchController interface {
+	DescriptiveSearcher
+	DescribeCached(user *User, query string) bool
+	CancelDescribeSearch(user *User, query string)
 }
 
 // DescriptiveCatalog evaluates a generated spec locally, without gathering a
@@ -39,4 +47,21 @@ func PublishDescribeProgress(ctx context.Context, spec *CollectionSpec, items []
 	if publish, ok := ctx.Value(describeProgressKey{}).(func(*CollectionSpec, []Title)); ok && publish != nil && len(items) > 0 {
 		publish(spec, items)
 	}
+}
+
+type searchClientKey struct{}
+
+// WithSearchClient attaches the client/device identifier for per-client
+// search-as-you-type single-flight cancellation.
+func WithSearchClient(ctx context.Context, clientID string) context.Context {
+	if clientID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, searchClientKey{}, clientID)
+}
+
+// SearchClientFrom returns the client/device identifier attached by WithSearchClient.
+func SearchClientFrom(ctx context.Context) string {
+	id, _ := ctx.Value(searchClientKey{}).(string)
+	return id
 }

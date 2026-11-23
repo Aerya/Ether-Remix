@@ -38,12 +38,17 @@ import { SettingsRow } from "../../components/SettingsRow";
 import { api, errorMessage, newId } from "../../lib/api";
 import { isPlainObject } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
-import type { Indexer, IndexerProtocol, SiteDefinition, SiteTestResult } from "../../lib/types";
+import type {
+  ClientIdentityConfig,
+  Indexer,
+  IndexerProtocol,
+  SiteDefinition,
+  SiteTestResult,
+} from "../../lib/types";
 import { useResolver } from "../releases/resolverDraft";
-import { searchIdentityOptions } from "../settings/schema";
 import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
 import { REGIONAL_TRACK_TAGS } from "../setup/language";
-import { ClientIdentity } from "./ClientIdentity";
+import { IdentityRulesCard, IdentityRulesDrawer, IndexerIdentityRow } from "./IdentityRules";
 import { hasUsableDebrid } from "./Debrid";
 import {
   BoolRow,
@@ -274,6 +279,11 @@ export function IndexerList({
 }) {
   const { dashboard, refreshDashboard } = useApp();
   const config = useAsync(() => api.getConfig(), [version]);
+  const identitySection = useAsync(
+    () => api.getSection<ClientIdentityConfig | null>("clientIdentity"),
+    [version],
+  );
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [sitesVersion, setSitesVersion] = useState(0);
   const sites = useAsync(() => api.sites.definitions(), [sitesVersion]);
   const statuses = useAsync(() => api.sites.status().catch(() => []), [version, sitesVersion]);
@@ -298,6 +308,8 @@ export function IndexerList({
     .filter(
       (r) => pseShowsIndexer(view, r.ix) && (!originKey || indexerOrigin(r.ix).key === originKey),
     );
+  const identityRules = identitySection.data?.value?.rules ?? cfg?.clientIdentity?.rules ?? [];
+  const defaultUserAgent = identitySection.data?.defaultUserAgent ?? "";
   const definitions = sites.data ?? null;
   // A definition installed a moment ago, until the reloaded list includes it.
   const [installed, setInstalled] = useState<SiteDefinition | null>(null);
@@ -312,6 +324,10 @@ export function IndexerList({
   const status = dashboard?.sections?.indexers;
   const live = Array.isArray(status) ? status.filter(isPlainObject) : [];
   const statFor = (ix: Indexer) => live.find((s) => s.indexer === ix.name || s.id === ix.id);
+  const notifyDefinitionsChanged = () => {
+    setSitesVersion((v) => v + 1);
+    void refreshDashboard();
+  };
 
   async function commit(list: Indexer[], message: string) {
     await api.putSection(
@@ -630,7 +646,7 @@ export function IndexerList({
                       {site ? (
                         <>
                           <Badge variant="outline">{siteKindLabel(ix.protocol)}</Badge>
-                          {definitions && !def ? (
+                          {(definitions && !def) || s?.missingDefinition === true ? (
                             <Badge variant="destructive">{t("Definition missing")}</Badge>
                           ) : null}
                           {tested ? (
@@ -643,14 +659,21 @@ export function IndexerList({
                           ) : null}
                         </>
                       ) : isStremio(ix) ? (
-                        <Badge variant="outline">{t("Stremio addon")}</Badge>
+                        <>
+                          <Badge variant="outline">{t("Stremio addon")}</Badge>
+                          {ix.useAddonOrder ? (
+                            <Badge variant="outline">{t("Add-on order")}</Badge>
+                          ) : null}
+                        </>
                       ) : isZilean(ix) ? (
                         <Badge variant="outline">{t("Zilean")}</Badge>
                       ) : (
                         <Badge variant="outline">{protocolLabel(ix)}</Badge>
                       )}
                       {!ix.enabled ? <Badge variant="secondary">{t("Disabled")}</Badge> : null}
-                      {s && Number(s.retryAt ?? 0) > Date.now() / 1000 ? (
+                      {s && Number(s.pausedUntil ?? 0) > Date.now() / 1000 ? (
+                        <Badge variant="warning">{t("Paused · retries automatically")}</Badge>
+                      ) : s && Number(s.retryAt ?? 0) > Date.now() / 1000 ? (
                         <Badge variant="warning">
                           {t("Waiting for service · retries automatically")}
                         </Badge>
@@ -679,10 +702,13 @@ export function IndexerList({
         )}
       </Section>
 
-      {/* PSE-HOOK: onglet Stremio — voir docs/pse/FORK.fr.md */}
       {view !== "stremio" ? (
         <>
-          <ClientIdentity indexers={indexers} onSaved={() => void config.reload()} />
+          <IdentityRulesCard
+            rules={identityRules}
+            defaultUserAgent={defaultUserAgent}
+            onOpen={() => setRulesOpen(true)}
+          />
           <PluginSourceCards
             classes={["indexer", "direct"]}
             sectionTitle={t("Plugin sources")}
@@ -699,7 +725,7 @@ export function IndexerList({
             onAdd={addSite}
             onUpload={() => setUploading("install")}
             onConfigSaved={() => config.reload()}
-            onDefinitionsChanged={() => setSitesVersion((v) => v + 1)}
+            onDefinitionsChanged={notifyDefinitionsChanged}
           />
         </>
       ) : null}
@@ -710,7 +736,7 @@ export function IndexerList({
         onInstalled={(def) => {
           const next = uploading;
           setUploading(null);
-          setSitesVersion((v) => v + 1);
+          notifyDefinitionsChanged();
           if (next === "add") addSite(def);
         }}
       />
@@ -730,7 +756,7 @@ export function IndexerList({
           <SitePicker
             definitions={definitions}
             inUse={inUse}
-            onInstalled={() => setSitesVersion((v) => v + 1)}
+            onInstalled={notifyDefinitionsChanged}
             onPick={addSite}
             onUpload={() => {
               setPicking(false);
@@ -924,6 +950,14 @@ export function IndexerList({
                   error={errors.url}
                   onChange={(v) => set({ url: v })}
                 />
+                <BoolRow
+                  label={t("Use the add-on's order")}
+                  help={t(
+                    "Keep this add-on's result order instead of re-ranking with the quality profile. Compatibility, language, reject and health rules still apply, and indexer order places this source among other indexers.",
+                  )}
+                  value={Boolean(draft.useAddonOrder)}
+                  onChange={(v) => set({ useAddonOrder: v || undefined })}
+                />
                 {draft.url.includes("torrentio.strem.fun") ? (
                   <p className="px-5 text-sm text-fg-muted">
                     {t(
@@ -957,76 +991,49 @@ export function IndexerList({
                 />
               </SettingsSection>
             ) : (
-              <>
-                <SettingsSection title={t("Connection")}>
-                  <SettingsRow
-                    title={t("Protocol")}
-                    description={
-                      isTorrent(draft)
-                        ? t("Torrent releases stream through your debrid account.")
-                        : t("Usenet releases stream from your Usenet providers.")
-                    }
-                    control={
-                      <Segmented
-                        ariaLabel={t("Protocol")}
-                        size="sm"
-                        options={PROTOCOLS}
-                        value={isTorrent(draft) ? "torrent" : "usenet"}
-                        onChange={(v) => set({ protocol: v })}
-                      />
-                    }
-                  />
-                  <TextRow
-                    label={t("Name")}
-                    value={draft.name}
-                    onChange={(v) => set({ name: v })}
-                  />
-                  <TextRow
-                    label={t("URL")}
-                    type="url"
-                    value={draft.url}
-                    placeholder="https://indexer.example.com"
-                    help={t("/api is added automatically.")}
-                    error={errors.url}
-                    onChange={(v) => set({ url: v })}
-                  />
-                  <SettingsRow stacked title={t("API key")}>
-                    <SecretInput
-                      ariaLabel={t("API key")}
-                      value={draft.apiKey}
-                      onChange={(v) => set({ apiKey: v })}
+              <SettingsSection title={t("Connection")}>
+                <SettingsRow
+                  title={t("Protocol")}
+                  description={
+                    isTorrent(draft)
+                      ? t("Torrent releases stream through your debrid account.")
+                      : t("Usenet releases stream from your Usenet providers.")
+                  }
+                  control={
+                    <Segmented
+                      ariaLabel={t("Protocol")}
+                      size="sm"
+                      options={PROTOCOLS}
+                      value={isTorrent(draft) ? "torrent" : "usenet"}
+                      onChange={(v) => set({ protocol: v })}
                     />
-                  </SettingsRow>
-                </SettingsSection>
-                <SettingsSection
-                  title={t("Client identity")}
-                  description={t("What this indexer sees Ether as.")}
-                >
-                  <SettingsRow
-                    title={t("Identity")}
-                    description={t("Inherit uses the Client identity card on the Indexers page.")}
-                    control={
-                      <div className="w-56">
-                        <SearchSelect
-                          value={draft.clientIdentity ?? ""}
-                          onChange={(v) => set({ clientIdentity: v })}
-                          options={[
-                            { value: "", label: t("Inherit") },
-                            ...searchIdentityOptions(false),
-                          ]}
-                          ariaLabel={t("Identity")}
-                          placeholder={t("Select…")}
-                          searchPlaceholder={t("Search…")}
-                          noMatchesLabel={t("No matches")}
-                          selectLabel={t("Select")}
-                          closeLabel={t("Close")}
-                        />
-                      </div>
-                    }
+                  }
+                />
+                <TextRow label={t("Name")} value={draft.name} onChange={(v) => set({ name: v })} />
+                <TextRow
+                  label={t("URL")}
+                  type="url"
+                  value={draft.url}
+                  placeholder="https://indexer.example.com"
+                  help={t("/api is added automatically.")}
+                  error={errors.url}
+                  onChange={(v) => set({ url: v })}
+                />
+                <SettingsRow stacked title={t("API key")}>
+                  <SecretInput
+                    ariaLabel={t("API key")}
+                    value={draft.apiKey}
+                    onChange={(v) => set({ apiKey: v })}
                   />
-                </SettingsSection>
-              </>
+                </SettingsRow>
+              </SettingsSection>
             )}
+            <IndexerIdentityRow
+              indexer={draft}
+              rules={identityRules}
+              indexers={indexers}
+              onManage={() => setRulesOpen(true)}
+            />
             {builtin && draftDef ? (
               <SiteSettingsFields def={draftDef} draft={draft} onChange={set} errors={errors} />
             ) : null}
@@ -1130,6 +1137,18 @@ export function IndexerList({
           </>
         ) : null}
       </RecordDrawer>
+
+      <IdentityRulesDrawer
+        open={rulesOpen}
+        stacked={editing !== null}
+        rules={identityRules}
+        indexers={indexers}
+        defaultUserAgent={defaultUserAgent}
+        onClose={() => setRulesOpen(false)}
+        onSaved={async () => {
+          await Promise.all([identitySection.reload(), config.reload()]);
+        }}
+      />
     </>
   );
 }

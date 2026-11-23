@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -10,13 +11,71 @@ import (
 // Titles returns hydrated, released, non-adult mirror entries in requested order. It never
 // fetches remote metadata, so collection serving stays bounded and offline.
 func (m *Mirror) Titles(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
-	return m.titles(ctx, keys, false)
+	return m.titles(ctx, keys, false, true)
 }
 
 // TitlesIncludingFuture is a local metadata read for collection-scoped
 // authorization. Its caller must enforce membership and viewer policy.
 func (m *Mirror) TitlesIncludingFuture(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
-	return m.titles(ctx, keys, true)
+	return m.titles(ctx, keys, true, true)
+}
+
+// ServeTitles returns mirror titles with their scalar columns and text facets
+// (genres, keywords, studios, countries) for collection serving and policy
+// filtering, without reading credits, aired season/episode counts, or air-added times.
+func (m *Mirror) ServeTitles(ctx context.Context, keys []core.RatingKey, includeFuture bool) ([]core.Title, error) {
+	return m.titles(ctx, keys, includeFuture, false)
+}
+
+// ArtSummary reads only the type and artwork paths for keys, used when a
+// collection header needs fallback artwork while the in-memory index is cold.
+func (m *Mirror) ArtSummary(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
+	if len(keys) == 0 {
+		return []core.Title{}, nil
+	}
+	byKey := make(map[core.RatingKey]core.Title, len(keys))
+	const chunk = 400
+	for start := 0; start < len(keys); start += chunk {
+		end := min(start+chunk, len(keys))
+		part := keys[start:end]
+		args := make([]any, len(part))
+		for i, k := range part {
+			args[i] = int64(k)
+		}
+		rows, err := m.db.QueryContext(ctx, `SELECT key,type,poster,backdrop,released_ts,adult FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var t core.Title
+			var key, released int64
+			var adult int
+			var typ string
+			if err := rows.Scan(&key, &typ, &t.PosterPath, &t.BackdropPath, &released, &adult); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			t.Key = core.RatingKey(key)
+			t.Type = core.MediaType(typ)
+			t.Adult = adult != 0
+			if released != 0 {
+				t.Released = time.Unix(released, 0).UTC()
+			}
+			byKey[t.Key] = t
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	now := m.now()
+	out := make([]core.Title, 0, len(keys))
+	for _, k := range keys {
+		if t, ok := byKey[k]; ok && !t.Adult && (t.IsReleased(now) || !t.Released.IsZero()) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // ValidKeys filters keys to stored, non-adult mirror entries matching Titles
@@ -84,12 +143,12 @@ func (m *Mirror) ValidKeys(ctx context.Context, keys []core.RatingKey, includeFu
 	return out, nil
 }
 
-func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFuture bool) ([]core.Title, error) {
+func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFuture, full bool) ([]core.Title, error) {
 	if len(keys) == 0 {
 		return []core.Title{}, nil
 	}
 	byKey := make(map[core.RatingKey]*core.Title, len(keys))
-	const chunk = 400
+	const chunk = 200
 	for start := 0; start < len(keys); start += chunk {
 		end := start + chunk
 		if end > len(keys) {
@@ -101,8 +160,8 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 			args[i] = int64(k)
 		}
 		ph := placeholders(len(part))
-		rows, err := m.db.QueryContext(ctx, `SELECT key,type,tmdb_id,imdb,tvdb,title,original_title,sort_title,tagline,summary,year,
-			released_ts,runtime_sec,status,language,content_rating,rating,vote_count,popularity,poster,backdrop,logo,
+		rows, err := m.db.QueryContext(ctx, `SELECT key,type,tmdb_id,imdb,tvdb,title,original_title,english_title,sort_title,tagline,summary,year,
+			released_ts,runtime_sec,status,language,content_rating,enforcement_rating,certifications,rating,vote_count,popularity,poster,backdrop,logo,
 			collection_id,collection_name,child_count,leaf_count,fetched_at,adult,last_air_ts,
    COALESCE((SELECT h.checked FROM catalog_home_release h WHERE h.key=catalog_titles.key),0),
    COALESCE((SELECT h.earliest_ts FROM catalog_home_release h WHERE h.key=catalog_titles.key),0),
@@ -116,14 +175,15 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 			var key, released, runtime, fetched, lastAir int64
 			var adult, checked, fallback int
 			var home int64
-			var typ string
-			if err := rows.Scan(&key, &typ, &t.IDs.TMDB, &t.IDs.IMDB, &t.IDs.TVDB, &t.Title, &t.OriginalTitle, &t.SortTitle,
-				&t.Tagline, &t.Summary, &t.Year, &released, &runtime, &t.Status, &t.Language, &t.ContentRating,
+			var typ, certsRaw string
+			if err := rows.Scan(&key, &typ, &t.IDs.TMDB, &t.IDs.IMDB, &t.IDs.TVDB, &t.Title, &t.OriginalTitle, &t.EnglishTitle, &t.SortTitle,
+				&t.Tagline, &t.Summary, &t.Year, &released, &runtime, &t.Status, &t.Language, &t.ContentRating, &t.EnforcementRating, &certsRaw,
 				&t.Rating, &t.VoteCount, &t.Popularity, &t.PosterPath, &t.BackdropPath, &t.LogoPath,
 				&t.CollectionID, &t.CollectionName, &t.ChildCount, &t.LeafCount, &fetched, &adult, &lastAir, &checked, &home, &fallback); err != nil {
 				rows.Close()
 				return nil, err
 			}
+			t.ContentRatings = decodeCertifications(certsRaw)
 			t.Key = core.RatingKey(key)
 			t.Type = core.MediaType(typ)
 			t.Adult = adult != 0
@@ -149,35 +209,52 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
-		pair := func(q string, apply func(t *core.Title, v string)) error {
-			rows, err := m.db.QueryContext(ctx, q, args...)
-			if err != nil {
-				return err
+		// Read all four text facet tables in one UNION ALL instead of four
+		// round-trips, then sort each title's slices to match ORDER BY.
+		facetArgs := make([]any, 0, len(args)*4)
+		for i := 0; i < 4; i++ {
+			facetArgs = append(facetArgs, args...)
+		}
+		frows, err := m.db.QueryContext(ctx, `SELECT tag, key, v FROM (
+SELECT 'g' AS tag, key, genre AS v FROM catalog_genres WHERE key IN (`+ph+`)
+UNION ALL
+SELECT 'k', key, keyword FROM catalog_keywords WHERE key IN (`+ph+`)
+UNION ALL
+SELECT 's', key, studio FROM catalog_studios WHERE key IN (`+ph+`)
+UNION ALL
+SELECT 'c', key, country FROM catalog_countries WHERE key IN (`+ph+`)
+) AS facets`, facetArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for frows.Next() {
+			var tag, v string
+			var k int64
+			if err := frows.Scan(&tag, &k, &v); err != nil {
+				frows.Close()
+				return nil, err
 			}
-			defer rows.Close()
-			for rows.Next() {
-				var k int64
-				var v string
-				if err := rows.Scan(&k, &v); err != nil {
-					return err
-				}
-				if t := byKey[core.RatingKey(k)]; t != nil {
-					apply(t, v)
-				}
+			t := byKey[core.RatingKey(k)]
+			if t == nil {
+				continue
 			}
-			return rows.Err()
+			switch tag {
+			case "g":
+				t.Genres = append(t.Genres, v)
+			case "k":
+				t.Keywords = append(t.Keywords, v)
+			case "s":
+				t.Studios = append(t.Studios, v)
+			case "c":
+				t.Countries = append(t.Countries, v)
+			}
 		}
-		if err := pair(`SELECT key,genre FROM catalog_genres WHERE key IN (`+ph+`) ORDER BY genre`, func(t *core.Title, v string) { t.Genres = append(t.Genres, v) }); err != nil {
+		frows.Close()
+		if err := frows.Err(); err != nil {
 			return nil, err
 		}
-		if err := pair(`SELECT key,keyword FROM catalog_keywords WHERE key IN (`+ph+`) ORDER BY keyword`, func(t *core.Title, v string) { t.Keywords = append(t.Keywords, v) }); err != nil {
-			return nil, err
-		}
-		if err := pair(`SELECT key,studio FROM catalog_studios WHERE key IN (`+ph+`) ORDER BY studio`, func(t *core.Title, v string) { t.Studios = append(t.Studios, v) }); err != nil {
-			return nil, err
-		}
-		if err := pair(`SELECT key,country FROM catalog_countries WHERE key IN (`+ph+`) ORDER BY country`, func(t *core.Title, v string) { t.Countries = append(t.Countries, v) }); err != nil {
-			return nil, err
+		if !full {
+			continue
 		}
 		crows, err := m.db.QueryContext(ctx, `SELECT c.key,c.person_tmdb,c.name,c.role,c.kind,c.thumb,COALESCE(p.imdb,''),c.provider_id FROM catalog_credits c LEFT JOIN catalog_people p ON p.person_tmdb=c.person_tmdb WHERE c.key IN (`+ph+`)`+pseListCredits(ctx)+` ORDER BY c.kind,c.ord`, args...) // PSE-HOOK: listes légères, réalisateurs seuls — voir docs/pse/FORK.fr.md
 		if err != nil {
@@ -211,12 +288,20 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 			return nil, err
 		}
 	}
-	counted := make([]*core.Title, 0, len(byKey))
 	for _, t := range byKey {
-		counted = append(counted, t)
+		sort.Strings(t.Genres)
+		sort.Strings(t.Keywords)
+		sort.Strings(t.Studios)
+		sort.Strings(t.Countries)
 	}
-	if err := applyAiredCounts(ctx, m.db, m.now(), counted); err != nil {
-		return nil, err
+	if full {
+		counted := make([]*core.Title, 0, len(byKey))
+		for _, t := range byKey {
+			counted = append(counted, t)
+		}
+		if err := applyAiredCounts(ctx, m.db, m.now(), counted); err != nil {
+			return nil, err
+		}
 	}
 	out := make([]core.Title, 0, len(keys))
 	for _, k := range keys {
@@ -224,8 +309,10 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 			out = append(out, *t)
 		}
 	}
-	if err := applyAirAddedTimes(ctx, m.db, out, m.now()); err != nil {
-		return nil, err
+	if full {
+		if err := applyAirAddedTimes(ctx, m.db, out, m.now()); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

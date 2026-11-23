@@ -300,6 +300,9 @@ func (s *Service) clipRequest(c Channel, p Programme, snapshots ...[]Programme) 
 			if ref := ArtworkRef(next.Item.Key, next.Item.Thumb, "poster"); ref != "" {
 				r.Art["next.poster"] = ref
 			}
+			if ref := ArtworkRef(next.Item.Key, next.Item.Art, "art"); ref != "" {
+				r.Art["next.backdrop"] = ref
+			}
 			if p.Item.Slate != "tonight" {
 				break
 			}
@@ -426,13 +429,14 @@ func (c Channel) pluginItem(id string) (Item, bool) {
 	if c.Filter != nil && c.Filter.MaxContentRating != "" {
 		cap = c.Filter.MaxContentRating
 	}
-	if cap != "" && rating == "" && (c.Look == nil || !c.Look.AllowUnratedSegments) {
+	enf := contentrating.EnforceRating(rating)
+	if cap != "" && enf == "" && (c.Look == nil || !c.Look.AllowUnratedSegments) {
 		return Item{}, false
 	}
-	if rating != "" && (contentrating.Exceeds(rating, c.Rating) || (c.Filter != nil && contentrating.Exceeds(rating, c.Filter.MaxContentRating))) {
+	if enf != "" && (contentrating.EnforceExceeds(enf, c.Rating) || (c.Filter != nil && contentrating.EnforceExceeds(enf, c.Filter.MaxContentRating))) {
 		return Item{}, false
 	}
-	return Item{Slate: id, Title: name, Rating: rating, DurationMS: d.Milliseconds()}, true
+	return Item{Slate: id, Title: name, Rating: rating, EnforcementRating: enf, DurationMS: d.Milliseconds()}, true
 }
 
 func (c Channel) momentDuration(kind string) (time.Duration, bool) {

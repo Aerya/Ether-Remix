@@ -32,7 +32,20 @@ export function sourceImportError(error: unknown, previous = true): string {
     cause = t("A secure connection to the provider could not be established.");
   else if (/timeout|timed out|deadline|within \d|stopped sending/i.test(raw))
     cause = t("The provider took too long to respond. Try again shortly.");
-  else cause = t("Check the source settings and try again.");
+  else if (/still updating/i.test(raw))
+    cause = t("This source is still updating. Try again in a minute.");
+  else {
+    // Ether's own explanation (validation, a refused change) says what to fix;
+    // URLs are dropped so a playlist link with credentials never shows.
+    const reason = raw
+      .replace(/\b(?:https?|rtmp|rtsp|udp):\/\/\S+/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    cause =
+      reason && reason.length <= 240 && !/^(?:unknown|internal|failed to fetch)/i.test(reason)
+        ? `${reason.charAt(0).toUpperCase()}${reason.slice(1)}${/[.!?]$/.test(reason) ? "" : "."}`
+        : t("Check the source settings and try again.");
+  }
 
   const message = /^playlist:/i.test(raw)
     ? t("Couldn't download the playlist. {cause}", { cause })

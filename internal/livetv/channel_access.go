@@ -273,8 +273,8 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 // VisibleTo reports whether Live TV has an enabled channel this viewer can
-// access. It checks existence in SQL so provider discovery never loads the
-// entire lineup.
+// access. It checks existence in SQL when no group app rule hides the target
+// surface, and otherwise uses the epoch-cached channel summary index.
 func (s *Service) VisibleTo(ctx context.Context, u *core.User) bool {
 	if !s.Enabled() {
 		return false
@@ -282,9 +282,30 @@ func (s *Service) VisibleTo(ctx context.Context, u *core.User) bool {
 	if u == nil {
 		return false
 	}
-	_, pol, err := s.withPolicy(ctx, u)
+	ctx, pol, err := s.withPolicy(ctx, u)
 	if err != nil || pol.Disabled {
 		return false
+	}
+	app := core.LiveApp(ctx)
+	if slices.Contains(Apps, app) {
+		if idx, err := s.cachedOwnerGroupIndex(ctx); err == nil && idx.hasAppHides(app) {
+			summaries, err := s.channelSummaries(ctx)
+			if err != nil {
+				return false
+			}
+			for _, c := range summaries {
+				if !c.Enabled || slices.Contains(c.HiddenApps, app) {
+					continue
+				}
+				if s.sourcePaused(ctx, Channel{SourceID: c.SourceID}) {
+					continue
+				}
+				if u.IsOwner || pol.Permits(c.ID, c.Private) {
+					return true
+				}
+			}
+			return false
+		}
 	}
 	d := store.DialectOf(s.o.DB)
 	trueValue := "1"
@@ -295,7 +316,7 @@ func (s *Service) VisibleTo(ctx context.Context, u *core.User) bool {
 	// A paused source's channels are not offered.
 	sourceID := store.JSONText(d, "livetv_channels.data", "sourceId")
 	enabled += " AND (" + sourceID + " IS NULL OR " + sourceID + " NOT IN (SELECT id FROM livetv_sources WHERE " + store.JSONText(d, "livetv_sources.data", "disabled") + "=" + trueValue + "))"
-	if app := core.LiveApp(ctx); slices.Contains(Apps, app) {
+	if slices.Contains(Apps, app) {
 		// Apps are fixed identifiers, so the literal is safe; the stored list
 		// is a JSON array of them.
 		hidden := store.JSONText(d, "data", "hiddenApps")

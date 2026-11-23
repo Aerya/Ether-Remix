@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"strings"
@@ -587,4 +588,254 @@ func TestCheckCompressedRARWinsOverTransientStatError(t *testing.T) {
 	if ok || !errors.Is(err, ErrCompressed) || !errors.Is(err, core.ErrReleaseRejected) {
 		t.Fatalf("CheckRelease = %v, %v; want ErrCompressed + ErrReleaseRejected", ok, err)
 	}
+}
+
+type virtualSeg struct {
+	vol   int
+	begin int64
+	end   int64
+	part  core.ArticlePart
+}
+
+type virtualVolume struct {
+	head     []byte
+	dataOff  int64
+	dataBase int64
+	dataSize int64
+	tail     []byte
+	size     int64
+}
+
+func (v virtualVolume) readRange(begin, end int64) []byte {
+	out := make([]byte, end-begin)
+	for pos := begin; pos < end; {
+		dst := out[pos-begin:]
+		switch {
+		case pos < int64(len(v.head)):
+			n := copy(dst, v.head[pos:])
+			pos += int64(n)
+		case pos < v.dataOff+v.dataSize:
+			rel := pos - v.dataOff
+			rem := min(int64(len(dst)), v.dataSize-rel)
+			fillVirtualMKV(dst[:rem], v.dataBase+rel)
+			pos += rem
+		default:
+			tOff := pos - (v.dataOff + v.dataSize)
+			n := copy(dst, v.tail[tOff:])
+			pos += int64(n)
+		}
+	}
+	return out
+}
+
+func fillVirtualMKV(dst []byte, off int64) {
+	ebml := [4]byte{0x1a, 0x45, 0xdf, 0xa3}
+	for i := range dst {
+		p := off + int64(i)
+		if p < 4 {
+			dst[i] = ebml[p]
+		} else {
+			dst[i] = byte(p*131 + (p>>13)*17 + 0x5a)
+		}
+	}
+}
+
+type virtualRARFetcher struct {
+	vols []virtualVolume
+	segs map[string]virtualSeg
+}
+
+func (f *virtualRARFetcher) Body(ctx context.Context, id string, groups []string, prio core.Priority) ([]byte, error) {
+	b, _, err := f.BodyPart(ctx, id, groups, prio)
+	return b, err
+}
+
+func (f *virtualRARFetcher) BodyPart(ctx context.Context, id string, _ []string, _ core.Priority) ([]byte, core.ArticlePart, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, core.ArticlePart{}, err
+	}
+	s, ok := f.segs[id]
+	if !ok {
+		return nil, core.ArticlePart{}, core.ErrArticleMissing
+	}
+	return f.vols[s.vol].readRange(s.begin, s.end), s.part, nil
+}
+
+func (f *virtualRARFetcher) Stat(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	_, ok := f.segs[id]
+	return ok, nil
+}
+
+// TestRAR5Estimated200MBVolume reproduces a healthy 200,000,000-byte RAR5
+// volume (file block at offset 94, 199,999,360-byte data payload) whose
+// postedFile.Size() estimate is smaller than 200,000,000 bytes, while keeping
+// rejection of genuinely truncated volumes whose size is known.
+func TestRAR5Estimated200MBVolume(t *testing.T) {
+	const (
+		vol1Size  = 200_000_000
+		pack1     = 199_999_360
+		pack2     = 500_640
+		totalSize = pack1 + pack2
+	)
+	pre1 := append([]byte(nil), archivetest.RAR5Signature...)
+	pre1 = append(pre1, archivetest.RAR5MainHeader(true, 0, false)...)
+	pre1 = append(pre1, archivetest.RAR5Block(3, 0, []byte{0}, nil, true, 65)...)
+	pre1 = append(pre1, make([]byte, 65)...)
+	if len(pre1) != 94 {
+		t.Fatalf("volume 1 pre-file header len = %d, want 94", len(pre1))
+	}
+	end1 := archivetest.RAR5EndHeader(true)
+	wantFH1 := vol1Size - len(pre1) - pack1 - len(end1)
+	var memberName string
+	var fh1 []byte
+	const baseVideoName = "GOAT.2026.UHD.BluRay.2160p.DDP7.1.DV.HDR10Plus.x265-BHDStudio.mkv"
+	for pad := 1; pad <= wantFH1; pad++ {
+		candName := strings.Repeat("d", pad) + "/" + baseVideoName
+		cand := archivetest.RAR5FileHeader(archivetest.Header{
+			Name:       candName,
+			PackSize:   pack1,
+			UnpackSize: totalSize,
+			SplitAfter: true,
+		})
+		if len(cand) == wantFH1 {
+			memberName, fh1 = candName, cand
+			break
+		}
+	}
+	if fh1 == nil {
+		t.Fatalf("failed to build %d-byte RAR5 file header", wantFH1)
+	}
+	head1 := append(pre1, fh1...)
+	vol1 := virtualVolume{
+		head:     head1,
+		dataOff:  int64(len(head1)),
+		dataBase: 0,
+		dataSize: pack1,
+		tail:     end1,
+		size:     vol1Size,
+	}
+
+	var head2 []byte
+	head2 = append(head2, archivetest.RAR5Signature...)
+	head2 = append(head2, archivetest.RAR5MainHeader(true, 1, false)...)
+	head2 = append(head2, archivetest.RAR5FileHeader(archivetest.Header{
+		Name:        memberName,
+		PackSize:    pack2,
+		UnpackSize:  totalSize,
+		SplitBefore: true,
+	})...)
+	end2 := archivetest.RAR5EndHeader(false)
+	vol2 := virtualVolume{
+		head:     head2,
+		dataOff:  int64(len(head2)),
+		dataBase: pack1,
+		dataSize: pack2,
+		tail:     end2,
+		size:     int64(len(head2)) + pack2 + int64(len(end2)),
+	}
+
+	buildRelease := func(vol1Limit int64, firstSegSize int64, mode string) (*virtualRARFetcher, []byte) {
+		vf := &virtualRARFetcher{
+			vols: []virtualVolume{vol1, vol2},
+			segs: map[string]virtualSeg{},
+		}
+		var sb strings.Builder
+		sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+		sb.WriteString(`<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb"><head><meta type="title">GOAT.2026</meta></head>` + "\n")
+		addVol := func(vIdx int, name string, limit int64) {
+			var ranges [][2]int64
+			for off := int64(0); off < limit; {
+				step := int64(768_000)
+				if off == 0 && firstSegSize > 0 {
+					step = firstSegSize
+				}
+				end := min(off+step, limit)
+				ranges = append(ranges, [2]int64{off, end})
+				off = end
+			}
+			subject := fmt.Sprintf(`[%d/2] - "%s" yEnc (1/%d)`, vIdx+1, name, len(ranges))
+			fmt.Fprintf(&sb, `<file poster="t@test" date="1700000000" subject="%s"><groups><group>alt.binaries.test</group></groups><segments>`, html.EscapeString(subject))
+			for i, rg := range ranges {
+				n := i + 1
+				id := postID(name, n)
+				segLen := rg[1] - rg[0]
+				var ap core.ArticlePart
+				switch mode {
+				case "estimated-no-filesize":
+					ap = core.ArticlePart{Name: name, FileSize: 0, Part: n, Total: len(ranges), Begin: rg[0] + 1, End: rg[1]}
+				case "per-segment-single":
+					ap = core.ArticlePart{Name: name, FileSize: segLen, Part: 1, Total: 1, Begin: 1, End: segLen}
+				case "known-size":
+					ap = core.ArticlePart{Name: name, FileSize: limit, Part: n, Total: len(ranges), Begin: rg[0] + 1, End: rg[1]}
+				}
+				vf.segs[id] = virtualSeg{vol: vIdx, begin: rg[0], end: rg[1], part: ap}
+				// Understated NZB segment bytes ensure NZB metadata is smaller too.
+				fmt.Fprintf(&sb, `<segment bytes="%d" number="%d">%s</segment>`, min(segLen, 500_000), n, html.EscapeString(id))
+			}
+			sb.WriteString("</segments></file>\n")
+		}
+		addVol(0, "GOAT.2026.UHD.BluRay.2160p-BHDStudio.part01.rar", vol1Limit)
+		addVol(1, "GOAT.2026.UHD.BluRay.2160p-BHDStudio.part02.rar", vol2.size)
+		sb.WriteString("</nzb>\n")
+		return vf, []byte(sb.String())
+	}
+
+	for _, tc := range []struct {
+		name         string
+		firstSegSize int64
+		mode         string
+	}{
+		// Non-representative 500 KB first article + missing =ybegin size= makes
+		// postedFile.Size() estimate ~130.5 MB for the 200,000,000-byte volume.
+		{"non-representative-first-article", 500_000, "estimated-no-filesize"},
+		// Standalone single-part yEnc per segment (=ybegin size=<segLen>).
+		{"per-segment-single-part-yenc", 768_000, "per-segment-single"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vf, doc := buildRelease(vol1Size, tc.firstSegSize, tc.mode)
+			e := newTestEngine(t, vf, nil, Options{ReadAheadMin: 64 << 10, ReadAheadParallel: 1})
+			ok, err := e.Check(context.Background(), doc)
+			if !ok || err != nil {
+				t.Fatalf("Check = %v, %v; want true, nil", ok, err)
+			}
+			src := openSource(t, e, "goat-"+tc.name, doc)
+			if src.Name() != baseVideoName || src.Size() != totalSize {
+				t.Fatalf("Name=%q Size=%d, want %q %d", src.Name(), src.Size(), baseVideoName, totalSize)
+			}
+			for _, off := range []int64{
+				0,
+				150_000_000,     // well past the ~130.5 MB initial volume estimate
+				pack1 - 64,      // across the 200,000,000-byte volume 1 -> volume 2 boundary
+				totalSize - 512, // tail up to EOF
+			} {
+				buf := make([]byte, 256)
+				gotN, err := src.ReadAt(buf, off)
+				wantN := int(min(int64(len(buf)), totalSize-off))
+				if gotN != wantN || err != nil {
+					t.Fatalf("ReadAt(off=%d) = %d, %v; want %d, nil", off, gotN, err, wantN)
+				}
+				want := make([]byte, wantN)
+				fillVirtualMKV(want, off)
+				if !bytes.Equal(buf[:gotN], want) {
+					t.Fatalf("ReadAt(off=%d) payload mismatch", off)
+				}
+			}
+		})
+	}
+
+	t.Run("known-truncated-volume-rejected", func(t *testing.T) {
+		vf, doc := buildRelease(150_000_000, 768_000, "known-size")
+		e := newTestEngine(t, vf, nil, Options{})
+		_, err := e.Open(context.Background(), "goat-trunc", doc)
+		if !errors.Is(err, ErrCorrupt) || !IsRejection(err) {
+			t.Fatalf("Open truncated known-size volume = %v, want ErrCorrupt rejection", err)
+		}
+		ok, err := e.Check(context.Background(), doc)
+		if ok || !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("Check truncated known-size volume = %v, %v; want false, ErrCorrupt", ok, err)
+		}
+	})
 }

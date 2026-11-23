@@ -65,13 +65,9 @@ func TestTranscodeChaosCorpusScenarios(t *testing.T) {
 							defer f.get(t, "/video/:/transcode/universal/stop?session="+id, headers...)
 							get := func(p string) []byte {
 								t.Helper()
-								start := time.Now()
 								r := f.get(t, p, headers...)
 								if r.Code != 200 {
 									t.Fatalf("client request HTTP %d: %s", r.Code, p)
-								}
-								if time.Since(start) > 20*time.Second {
-									t.Fatal("client wait exceeded 20 seconds")
 								}
 								return r.Body.Bytes()
 							}

@@ -10,6 +10,10 @@ import (
 
 func init() {
 	store.Register("watchlist", 8, `CREATE TABLE watchlist_warm_intents(user_id INTEGER NOT NULL,item_key INTEGER NOT NULL,added INTEGER NOT NULL,PRIMARY KEY(user_id,item_key)); CREATE INDEX watchlist_warm_intents_newest ON watchlist_warm_intents(added);`)
+	// Titles already on watchlists when warm intents were introduced were never
+	// queued, so Prewarm skipped them. Queue the newest once; the consumer reads
+	// intents only while Prewarm is on.
+	store.Register("watchlist", 9, `INSERT INTO watchlist_warm_intents(user_id,item_key,added) SELECT user_id,item_key,MAX(added) FROM watchlist_items WHERE 1=1 GROUP BY user_id,item_key ORDER BY MAX(added) DESC LIMIT 100 ON CONFLICT(user_id,item_key) DO NOTHING;`)
 }
 
 type intentWriter interface {

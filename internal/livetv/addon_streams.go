@@ -60,7 +60,7 @@ func mergeAddonStreams(fresh, previous []StreamSource) []StreamSource {
 		out = append(out, input)
 	}
 	for _, input := range previous {
-		if !isAddonInput(input.ID) {
+		if !isAddonInput(input.ID) || input.AutoFrom != "" {
 			out = append(out, input)
 		}
 	}
@@ -111,14 +111,18 @@ func (s *Service) restoreAddonChannel(ctx context.Context, c *Channel) error {
 	if err != nil || old.SourceID != c.SourceID {
 		return fmt.Errorf("re-enter the stream URL")
 	}
-	src, err := s.storedSourceByID(ctx, old.SourceID)
-	if err != nil || !addonSource(src) {
-		return fmt.Errorf("re-enter the stream URL")
-	}
 	for i := range c.StreamSources {
 		input := &c.StreamSources[i]
 		if input.URL != redactedSecret && !hasRedactedHeader(input.Headers) {
 			continue
+		}
+		effSourceID := input.AuthSourceID
+		if effSourceID == "" {
+			effSourceID = old.SourceID
+		}
+		src, err := s.storedSourceByID(ctx, effSourceID)
+		if err != nil || !addonSource(src) {
+			return fmt.Errorf("re-enter the stream URL")
 		}
 		found := false
 		for _, v := range old.StreamSources {
@@ -136,7 +140,23 @@ func (s *Service) restoreAddonChannel(ctx context.Context, c *Channel) error {
 		}
 	}
 	if c.StreamURL == redactedSecret {
-		c.StreamURL = old.StreamURL
+		if src, err := s.storedSourceByID(ctx, old.SourceID); err == nil && addonSource(src) {
+			c.StreamURL = old.StreamURL
+		} else {
+			restored := false
+			for _, v := range c.StreamSources {
+				if v.Enabled && v.URL != "" && v.URL != redactedSecret {
+					c.StreamURL = v.URL
+					restored = true
+					break
+				}
+			}
+			if !restored && len(c.StreamSources) > 0 && c.StreamSources[0].URL != redactedSecret {
+				c.StreamURL = c.StreamSources[0].URL
+			} else if !restored {
+				return fmt.Errorf("re-enter the stream URL")
+			}
+		}
 	}
 	return nil
 }

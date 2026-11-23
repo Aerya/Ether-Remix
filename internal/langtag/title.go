@@ -7,6 +7,27 @@ import (
 	"unicode"
 )
 
+// ForcedSubtitleTitle recognizes labels for partial subtitles without treating
+// a full dialogue track that also includes signs and songs as partial.
+func ForcedSubtitleTitle(title string) bool {
+	words := strings.FieldsFunc(strings.ToLower(title), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+	for i, word := range words {
+		if word == "forced" && (i == 0 || (words[i-1] != "non" && words[i-1] != "not" && words[i-1] != "no")) {
+			return true
+		}
+	}
+	partial := false
+	for _, word := range words {
+		switch word {
+		case "full", "complete", "dialogue", "dialog":
+			return false
+		case "signs", "songs":
+			partial = true
+		}
+	}
+	return partial
+}
+
 // displayLanguageAliases maps lower-case display names and regional/script
 // phrases to their canonical BCP-47 tags.
 var displayLanguageAliases = map[string]string{

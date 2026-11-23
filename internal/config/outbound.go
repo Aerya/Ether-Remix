@@ -26,9 +26,16 @@ type Outbound struct {
 	// Plex, updates, UPnP and remote access are never routed here.
 	Indexers bool `json:"indexers"`
 	Stremio  bool `json:"stremio"`
+	// LiveTV is IPTV playlists, guides and channel streams (including
+	// Xtream movies and series), separate from add-ons so an owner can send
+	// only Live TV through the proxy.
+	LiveTV   bool `json:"liveTV"`
 	Debrid   bool `json:"debrid"`
 	Usenet   bool `json:"usenet"`
 	Metadata bool `json:"metadata"`
+	// Extras is trailers, extras and theme music (yt-dlp, ffmpeg and
+	// trailer fetches). Off by default, like Metadata.
+	Extras bool `json:"extras"`
 	// Bypass are extra hostnames that stay on the normal route.
 	// Loopback and literal private addresses always do.
 	Bypass []string `json:"bypass,omitempty"`

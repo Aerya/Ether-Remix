@@ -200,6 +200,7 @@ func trimForCache(t *frontend.Title) *frontend.Title {
 	cp.Cast = clipPeople(t.Cast, titleCacheMaxCast)
 	cp.Directors = clipPeople(t.Directors, titleCacheMaxCrew)
 	cp.Writers = clipPeople(t.Writers, titleCacheMaxCrew)
+	cp.Crew = clipPeople(t.Crew, titleCacheMaxCrew)
 	cp.Genres = append([]string(nil), t.Genres...)
 	cp.Studios = append([]string(nil), t.Studios...)
 	cp.Countries = append([]string(nil), t.Countries...)
@@ -238,6 +239,9 @@ func mergeDetail(t *frontend.Title, d *frontend.Title) {
 	}
 	if len(t.Writers) == 0 {
 		t.Writers = d.Writers
+	}
+	if len(t.Crew) == 0 {
+		t.Crew = d.Crew
 	}
 	if t.ContentRating == "" {
 		t.ContentRating = d.ContentRating

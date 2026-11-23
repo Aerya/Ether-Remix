@@ -738,7 +738,7 @@ func (rc *recovery) restoreUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.leave()
-	body := http.MaxBytesReader(w, r.Body, 9<<30)
+	body := http.MaxBytesReader(w, r.Body, backup.MaxUploadBytes)
 	head := make([]byte, 8)
 	n, _ := io.ReadFull(body, head)
 	if !backup.IsEncrypted(head[:n]) {

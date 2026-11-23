@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,34 +28,67 @@ func installationChanged(w http.ResponseWriter) {
 	problemReply(w, http.StatusConflict, map[string]any{"type": "/problems/installation_changed", "title": "Playback installation changed", "status": http.StatusConflict, "detail": "Refresh playback capabilities before retrying."})
 }
 
+type siloHDRDetails struct {
+	HDR10           bool  `json:"hdr10"`
+	HDR10Plus       bool  `json:"hdr10_plus"`
+	HLG             bool  `json:"hlg"`
+	DVProfiles      []int `json:"dolby_vision_profiles"`
+	DVProfileLevels []struct {
+		Profile int `json:"profile"`
+	} `json:"dolby_vision_profile_levels"`
+}
+
 type startRequest struct {
 	Context struct {
 		Deliveries map[string]struct {
-			Enabled   bool `json:"enabled"`
-			Supported bool `json:"supported_on_device"`
-			Subtitles struct {
+			Enabled     bool     `json:"enabled"`
+			Supported   bool     `json:"supported_on_device"`
+			Containers  []string `json:"containers"`
+			VideoCodecs []string `json:"video_codecs"`
+			// AudioDecode lists codecs the player decodes itself for this
+			// delivery (for example ExoPlayer/FFmpeg software TrueHD/DTS on an
+			// Android tablet without an AV receiver).
+			AudioDecode []string `json:"audio_decode_codecs"`
+			// AudioPassthrough lists codecs the device bitstreams to its
+			// audio output (TrueHD, DTS-HD to an AV receiver) without decoding
+			// them; codecs_audio lists only what it decodes.
+			AudioPassthrough []string        `json:"audio_passthrough_codecs"`
+			HDRDetails       *siloHDRDetails `json:"hdr_details"`
+			Subtitles        struct {
 				ASSStyling      bool `json:"ass_styling"`
 				FontAttachments bool `json:"font_attachments"`
 				SidecarText     bool `json:"sidecar_text"`
+				// NativeEmbedded lists the container/codec pairs the player
+				// demuxes and renders itself from the original file.
+				NativeEmbedded []struct {
+					Container string   `json:"container"`
+					Codecs    []string `json:"codecs"`
+					Identity  string   `json:"track_identity"`
+				} `json:"native_embedded"`
 			} `json:"subtitles"`
 		} `json:"deliveries"`
 	} `json:"client_playback_context"`
-	FileID           string  `json:"file_id"`
-	ProfileID        string  `json:"profile_id"`
-	InstallationID   string  `json:"installation_id"`
-	Attempt          string  `json:"playback_attempt_id"`
-	Protocol         int     `json:"protocol_version"`
-	Quality          string  `json:"quality_preference"`
-	Position         float64 `json:"start_position"`
-	Audio            *int    `json:"audio_track_index"`
-	Subtitle         *int    `json:"subtitle_track_index"`
-	SubtitleFidelity string  `json:"subtitle_fidelity_preference"`
+	Features         []string `json:"client_features"`
+	FileID           string   `json:"file_id"`
+	ProfileID        string   `json:"profile_id"`
+	InstallationID   string   `json:"installation_id"`
+	Attempt          string   `json:"playback_attempt_id"`
+	Protocol         int      `json:"protocol_version"`
+	Quality          string   `json:"quality_preference"`
+	Position         float64  `json:"start_position"`
+	Audio            *int     `json:"audio_track_index"`
+	Subtitle         *int     `json:"subtitle_track_index"`
+	SubtitleFidelity string   `json:"subtitle_fidelity_preference"`
 	Capabilities     struct {
-		Video      []string `json:"codecs_video"`
-		Audio      []string `json:"codecs_audio"`
-		Containers []string `json:"containers"`
-		HDR        bool     `json:"hdr"`
-		Resolution string   `json:"max_resolution"`
+		Video            []string `json:"codecs_video"`
+		Audio            []string `json:"codecs_audio"`
+		Containers       []string `json:"containers"`
+		HDR              bool     `json:"hdr"`
+		Resolution       string   `json:"max_resolution"`
+		AudioPassthrough struct {
+			PassthroughCodecs []string `json:"passthrough_codecs"`
+		} `json:"audio_passthrough"`
+		HDRDetails *siloHDRDetails `json:"hdr_details"`
 	} `json:"client_capabilities"`
 }
 
@@ -67,8 +102,13 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
 	var b startRequest
-	if decode(r, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) || b.Position > float64((1<<63-1)/int64(time.Second)) {
+	if json.Unmarshal(raw, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) || b.Position > float64((1<<63-1)/int64(time.Second)) {
 		http.Error(w, "Bad Request", 400)
 		return
 	}
@@ -85,11 +125,57 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	if h, e := strconv.Atoi(strings.TrimSuffix(b.Quality, "p")); e == nil && h > 0 && (height == 0 || h < height) {
 		height = h
 	}
-	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: b.Capabilities.Video, AudioCodecs: b.Capabilities.Audio, Containers: b.Capabilities.Containers, MaxHeight: height, HDR10: b.Capabilities.HDR}, UserAgent: r.UserAgent()})
+	// The original file plays any codec the device decodes (including player
+	// software decoders listed under original_http.audio_decode_codecs on
+	// tablets without an AV receiver) or bitstreams to a receiver.
+	appendUnique := func(dst []string, items ...string) []string {
+		for _, item := range items {
+			if item = strings.ToLower(strings.TrimSpace(item)); item != "" && !slices.Contains(dst, item) {
+				dst = append(dst, item)
+			}
+		}
+		return dst
+	}
+	videoCodecs := appendUnique(nil, b.Capabilities.Video...)
+	audioCodecs := appendUnique(nil, b.Capabilities.Audio...)
+	audioCodecs = appendUnique(audioCodecs, b.Capabilities.AudioPassthrough.PassthroughCodecs...)
+	containers := appendUnique(nil, b.Capabilities.Containers...)
+	hdr10 := b.Capabilities.HDR
+	var dvProfiles []int
+	mergeHDR := func(h *siloHDRDetails) {
+		if h == nil {
+			return
+		}
+		if h.HDR10 || h.HDR10Plus || h.HLG {
+			hdr10 = true
+		}
+		for _, p := range h.DVProfiles {
+			if p > 0 && !slices.Contains(dvProfiles, p) {
+				dvProfiles = append(dvProfiles, p)
+			}
+		}
+		for _, pl := range h.DVProfileLevels {
+			if pl.Profile > 0 && !slices.Contains(dvProfiles, pl.Profile) {
+				dvProfiles = append(dvProfiles, pl.Profile)
+			}
+		}
+	}
+	mergeHDR(b.Capabilities.HDRDetails)
+	if original, ok := b.Context.Deliveries["original_http"]; ok && original.Enabled && original.Supported {
+		videoCodecs = appendUnique(videoCodecs, original.VideoCodecs...)
+		audioCodecs = appendUnique(audioCodecs, original.AudioDecode...)
+		audioCodecs = appendUnique(audioCodecs, original.AudioPassthrough...)
+		containers = appendUnique(containers, original.Containers...)
+		mergeHDR(original.HDRDetails)
+	}
+	cap, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: d.ID, Product: d.Client, Platform: d.Platform, Version: d.Version, DeviceName: d.DeviceName, VideoCodecs: videoCodecs, AudioCodecs: audioCodecs, Containers: containers, MaxHeight: height, HDR10: hdr10, DolbyVision: len(dvProfiles) > 0, DVProfiles: dvProfiles}, UserAgent: r.UserAgent()})
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	// A server HLS stream carries the selected embedded text track as a WebVTT
+	// rendition, read with the picture instead of extracted from the file.
+	cap.Client.HLSTextRenditions = slices.Contains(b.Features, "hls_subtitle_renditions_v1")
 	scope := frontend.VersionScope{Viewer: v, Device: d, Protocol: "silo", Caps: cap.Client}
 	// A channel GUID or live channel file_id tunes through the same live
 	// session as Jellyfin and Plex instead of a catalogue file.
@@ -145,22 +231,22 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		pos = i.skipIntroAtStart(r, v, scope, key, versionHandle, pos)
 		b.Position = float64(pos) / float64(time.Second)
 	}
-	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleStreamIndex: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(b.Capabilities.Video) > 0}})
+	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleOrdinal: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(videoCodecs) > 0}})
 	if err != nil {
-		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) {
+		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) && !errors.As(err, new(*frontend.RequiredAudioLanguageError)) {
 			i.versionUnavailable(w, err, "plan")
 			return
 		}
-		playbackError(w, err)
+		i.playbackError(w, v, err)
 		return
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: "silo", PlanID: plan.ID, Viewer: v, Device: d})
 	if err != nil {
-		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) {
+		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) && !errors.As(err, new(*frontend.RequiredAudioLanguageError)) {
 			i.versionUnavailable(w, err, "open")
 			return
 		}
-		playbackError(w, err)
+		i.playbackError(w, v, err)
 		return
 	}
 	if liveFile {
@@ -205,7 +291,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	media, err := i.host.Sessions.StartStream(r.Context(), access, session.ID, frontend.StreamRequest{Format: format, Position: pos})
 	if err != nil {
 		i.stopFailedAdmission(r.Context(), access, session.ID)
-		playbackError(w, err)
+		i.playbackError(w, v, err)
 		return
 	}
 	// Admission finishes only after stream preparation and one last exact
@@ -321,94 +407,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	deliveryClass := "original_http"
-	if format == frontend.StreamHLS {
-		deliveryClass = "hls"
-	}
-	var clientASSStyling bool
-	if b.Context.Deliveries != nil {
-		if delivCap, ok := b.Context.Deliveries[deliveryClass]; ok {
-			clientASSStyling = delivCap.Subtitles.ASSStyling
-		}
-	}
-	requireAuthoredFidelity := strings.EqualFold(b.SubtitleFidelity, "preserve")
-	fidelityPolicy := "allow_simplified_rendering"
-	if requireAuthoredFidelity {
-		fidelityPolicy = "require_authored_fidelity"
-	}
-	_, hasSubtitleArtifacts := i.host.Sessions.(frontend.SessionSubtitleArtifacts)
-	assStylingPreserved := false
-	selected := map[string]any{}
-	inventory := []any{}
-	subtitle := map[string]any{"mode": "off"}
-	ordinal := 0
-	audioOrdinal := 0
-	for _, track := range plan.Media.Streams {
-		if track.Type == "audio" {
-			if track.Index == plan.Decision.AudioStream {
-				selected["audio"] = map[string]any{"id": "file:" + b.FileID + ":audio:" + strconv.Itoa(audioOrdinal), "index": audioOrdinal}
-			}
-			audioOrdinal++
-		}
-		if track.Type != "subtitle" {
-			continue
-		}
-		trackID := "file:" + b.FileID + ":subtitle:" + strconv.Itoa(ordinal)
-		entry := map[string]any{"track_id": trackID, "combined_index": ordinal, "source": "embedded", "codec": track.Codec, "language": track.Language, "label": track.Title, "forced": track.Forced, "default": track.Default, "hearing_impaired": false, "delivery": "burn_in_only"}
-		if track.External {
-			entry["source"] = "external"
-		}
-		isEmbeddedASS := !track.External && frontend.IsASSSubtitleCodec(track.Codec)
-		// Availability is resolved when the client requests the artifact. Do
-		// not scan every subtitle track or extract media during startup.
-		authoredASS := isEmbeddedASS && hasSubtitleArtifacts
-		preserveTrackASS := authoredASS && clientASSStyling
-		url, e := i.host.Sessions.SubtitleURL(r.Context(), access, session.ID, track.Index, "vtt")
-		if e == nil && strings.HasPrefix(url, "/sessions/media/") {
-			entry["delivery"] = "sidecar"
-			ext := ".vtt"
-			if preserveTrackASS {
-				ext = ".ass"
-			}
-			entry["url"] = "/api/v2/stream/" + session.ID + "/subtitles/" + strconv.Itoa(track.Index) + ext
-			if sync := i.subtitleSyncMS(r, v); sync != 0 {
-				entry["url"] = entry["url"].(string) + "?sync_ms=" + strconv.Itoa(sync)
-			}
-			if authoredASS {
-				entry["font_bundle_url"] = "/api/v2/stream/" + session.ID + "/subtitles/" + strconv.Itoa(track.Index) + "/fonts"
-			}
-		}
-		inventory = append(inventory, entry)
-		if track.Index == plan.Decision.SubtitleStream {
-			selected["subtitle"] = map[string]any{"id": trackID, "index": ordinal}
-			if plan.Decision.BurnSubtitles {
-				subtitle["mode"] = "burn_in"
-				subtitle["track_id"] = trackID
-			} else if url, e := entry["url"].(string); e {
-				if preserveTrackASS {
-					subtitle["mode"] = "render"
-					subtitle["track_id"] = trackID
-					subtitle["artifact"] = map[string]any{"url": url, "format": "ass", "mime_type": "text/x-ssa", "timing_origin_seconds": 0}
-					// The artifact endpoint must still validate completeness; startup
-					// cannot claim that authored bytes have already been delivered.
-				} else if requireAuthoredFidelity {
-					i.stopFailedAdmission(r.Context(), access, session.ID)
-					http.Error(w, "Selected track unavailable", http.StatusUnprocessableEntity)
-					return
-				} else {
-					subtitle["mode"] = "convert"
-					subtitle["track_id"] = trackID
-					subtitle["artifact"] = map[string]any{"url": url, "format": "vtt", "mime_type": "text/vtt", "timing_origin_seconds": 0}
-				}
-			} else {
-				i.stopFailedAdmission(r.Context(), access, session.ID)
-				http.Error(w, "Subtitle unavailable", 503)
-				return
-			}
-		}
-		ordinal++
-	}
-	subtitle["inventory"] = inventory
+	selected, subtitle, fidelityPolicy, requireAuthoredFidelity, assStylingPreserved := i.siloTracks(siloTrackInputs{r: r, viewer: v, access: access, sessionID: session.ID, start: b, media: plan.Media, format: format, delivery: delivery, live: liveFile, hlsRenditions: cap.Client.HLSTextRenditions, audioStream: plan.Decision.AudioStream, subtitleStream: plan.SubtitleStream(), burn: plan.Decision.BurnSubtitles})
 	stream := map[string]any{"url": media, "protocol": proto, "container": plan.Media.Container, "mime_type": mime, "headers": map[string]string{"X-Silo-Device-Id": d.ID}, "header_refresh": "none"}
 	if format == frontend.StreamHLS {
 		stream["container"] = "hls"
@@ -449,8 +448,8 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		}
 		output["livePolicy"] = live.LatencyPolicy()
 	}
-	document := map[string]any{"outcome": "playable", "protocol_version": 3, "server_features": []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1"}, "session_id": session.ID, "playback_plan": output}
-	i.rememberPlan(session.ID, playbackPlan{format: format, live: liveFile, baseID: plan.ID, delivery: delivery, requireAuthored: requireAuthoredFidelity, body: document})
+	document := map[string]any{"outcome": "playable", "protocol_version": 3, "server_features": siloServerFeatures, "session_id": session.ID, "playback_plan": output}
+	i.rememberPlan(session.ID, playbackPlan{format: format, live: liveFile, baseID: plan.ID, delivery: delivery, requireAuthored: requireAuthoredFidelity, body: document, start: raw, media: plan.Media, hlsRenditions: cap.Client.HLSTextRenditions, audioCopy: plan.Decision.AudioCopy})
 	reply(w, 201, document)
 }
 
@@ -560,6 +559,14 @@ type playbackPlan struct {
 	delivery        string
 	requireAuthored bool
 	body            map[string]any
+	// start is the start request the session was admitted with. A track or
+	// quality change is planned again from it with the new selection.
+	start []byte
+	// media, hlsRenditions and audioCopy are what a track pick re-plans
+	// against within the same session.
+	media         frontend.MediaInfo
+	hlsRenditions bool
+	audioCopy     bool
 }
 
 func (i *instance) rememberPlan(id string, plan playbackPlan) {
@@ -761,12 +768,54 @@ func (i *instance) progress(w http.ResponseWriter, r *http.Request) {
 }
 
 func playbackError(w http.ResponseWriter, err error) {
+	playbackErrorFor(w, nil, nil, err)
+}
+
+func (i *instance) playbackError(w http.ResponseWriter, v *frontend.Viewer, err error) {
+	var policy any
+	if i != nil {
+		policy = i.host.ViewerPolicy
+	}
+	playbackErrorFor(w, policy, v, err)
+}
+
+func playbackErrorFor(w http.ResponseWriter, policy any, viewer *frontend.Viewer, err error) {
+	if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		http.Error(w, frontend.VideoTranscodingOffMessage(policy, viewer), http.StatusUnprocessableEntity)
+		return
+	}
+	var reqLang *frontend.RequiredAudioLanguageError
+	if errors.As(err, &reqLang) {
+		http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, frontend.ErrArchiveUnstreamable) {
+		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, frontend.ErrReleaseRejected) || errors.Is(err, frontend.ErrArticleMissing) || errors.Is(err, frontend.ErrArticleCorrupt) {
+		http.Error(w, "The source is incomplete or cannot be played.", http.StatusUnprocessableEntity)
+		return
+	}
 	if errors.Is(err, frontend.ErrTrackNotFound) {
 		http.Error(w, "Selected track unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	if errors.Is(err, frontend.ErrTrackSourceUnavailable) {
 		http.Error(w, "Track source unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if errors.Is(err, frontend.ErrPreparing) {
+		msg := frontend.PreparingMessage(err)
+		w.Header().Set("Retry-After", strconv.Itoa(frontend.PreparingRetrySeconds(err, 5)))
+		w.Header().Set("X-Ether-Media-Error", "preparing")
+		requestID, idErr := controlCommandID()
+		if idErr != nil {
+			http.Error(w, msg, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("X-Request-ID", requestID)
+		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "about:blank", "title": "Item is still being prepared", "status": http.StatusServiceUnavailable, "detail": msg, "instance": "urn:silo:request:" + requestID})
 		return
 	}
 	if errors.Is(err, frontend.ErrSessionBusy) {
@@ -813,7 +862,7 @@ func (i *instance) playbackCapabilities(w http.ResponseWriter, r *http.Request) 
 	if !allowed {
 		state = "not_configured"
 	}
-	features := []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1"}
+	features := slices.Clone(siloServerFeatures)
 	if i.host.WatchParty != nil {
 		features = append(features, "watch_party_coordinator_v1", "fixed_media_file_v1")
 	}
@@ -850,6 +899,27 @@ type replanRequest struct {
 	Quality        string   `json:"quality_preference"`
 	Position       float64  `json:"position_seconds"`
 	Attempted      []string `json:"attempted_plan_keys"`
+	Selected       struct {
+		Audio    *replanTrack `json:"audio"`
+		Subtitle *replanTrack `json:"subtitle"`
+	} `json:"selected_tracks"`
+}
+
+type replanTrack struct {
+	ID    string `json:"id"`
+	Index *int   `json:"index"`
+}
+
+// intentReplan reports a user's choice (a track or quality pick), not a route
+// failure. It carries no attempt history: the playing route stays valid.
+func intentReplan(operation string) bool {
+	return operation == "track_change" || operation == "quality_change"
+}
+
+// nonFailureReplan reports an operation that is not a playback route failure
+// and therefore may legitimately carry an empty attempted_plan_keys list.
+func nonFailureReplan(operation string) bool {
+	return intentReplan(operation) || operation == "seek_reanchor" || operation == "output_change"
 }
 
 type replanRoute struct {
@@ -869,8 +939,20 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<20))
+	if err != nil {
+		problem(w, http.StatusBadRequest, "urn:ether:problem:validation-failed", "Validation failed", "The replan request is not readable.")
+		return
+	}
 	var b replanRequest
-	if decode(r, &b) != nil || b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.ReplanID == "" || b.FailedPlan == "" || b.PlanAttempt == "" || b.PlanKey == "" || b.Quality == "" || b.AttemptCount < 1 || len(b.Attempted) == 0 || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) {
+	if err := json.Unmarshal(raw, &b); err != nil {
+		problem(w, http.StatusBadRequest, "urn:ether:problem:validation-failed", "Validation failed", "The replan request is missing a required field.")
+		return
+	}
+	if b.Quality == "" {
+		b.Quality = "auto"
+	}
+	if b.Protocol != 3 || b.InstallationID == "" || b.Attempt == "" || b.ReplanID == "" || b.FailedPlan == "" || b.PlanAttempt == "" || b.PlanKey == "" || b.AttemptCount < 1 || (len(b.Attempted) == 0 && !nonFailureReplan(b.Operation)) || b.Position < 0 || math.IsNaN(b.Position) || math.IsInf(b.Position, 0) {
 		problem(w, http.StatusBadRequest, "urn:ether:problem:validation-failed", "Validation failed", "The replan request is missing a required field.")
 		return
 	}
@@ -888,7 +970,11 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "urn:ether:problem:playback-session-not-found", "Playback session not found", "This server has no plan to revise for the session.")
 		return
 	}
-	raw, err := json.Marshal(snap.body)
+	if intentReplan(b.Operation) && !snap.live && len(snap.start) > 0 {
+		i.replanSelection(w, r, b, snap, v, id)
+		return
+	}
+	raw, err = json.Marshal(snap.body)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
@@ -920,7 +1006,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 			attempted[k] = true
 		}
 	}
-	if b.Operation != "seek_reanchor" {
+	if !nonFailureReplan(b.Operation) {
 		if b.PlanKey != "" {
 			attempted[b.PlanKey] = true
 		}
@@ -940,7 +1026,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 	nextKey := currentKey
 	nextReason, _ := plan["decision_reason"].(string)
 
-	routeFailed := b.Operation != "seek_reanchor" && (attempted[currentKey] || attempted[currentPlanID] || b.Operation == "failure_recovery")
+	routeFailed := !nonFailureReplan(b.Operation) && (attempted[currentKey] || attempted[currentPlanID] || b.Operation == "failure_recovery")
 	if routeFailed {
 		var ladder []replanRoute
 		switch currentDelivery {
@@ -966,12 +1052,14 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 			siloAdaptationUnavailable(w, id)
 			return
 		}
-		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: chosen.format, Position: pos}); err != nil {
-			if errors.Is(err, frontend.ErrNotAvailable) {
+		// The transcode rung must encode: the copy it replaces is what the
+		// player refused, and serving that stream again only fails again.
+		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: chosen.format, Position: pos, ReencodeVideo: chosen.delivery == "server_transcode_hls"}); err != nil {
+			if errors.Is(err, frontend.ErrNotAvailable) && !errors.Is(err, frontend.ErrPreparing) {
 				siloAdaptationUnavailable(w, id)
 				return
 			}
-			playbackError(w, err)
+			i.playbackError(w, access.Viewer, err)
 			return
 		}
 		nextFormat = chosen.format
@@ -980,10 +1068,10 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		nextReason = chosen.reason
 	} else {
 		if _, err = i.host.Sessions.StartStream(r.Context(), access, id, frontend.StreamRequest{Format: nextFormat, Position: pos}); err != nil {
-			playbackError(w, err)
+			i.playbackError(w, access.Viewer, err)
 			return
 		}
-		if b.Operation != "seek_reanchor" && attempted[nextKey] {
+		if !nonFailureReplan(b.Operation) && attempted[nextKey] {
 			siloAdaptationUnavailable(w, id)
 			return
 		}
@@ -992,6 +1080,9 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 	plan["plan_id"] = nextKey
 	plan["plan_attempt_key"] = nextKey
 	plan["delivery"] = nextDelivery
+	if nextDelivery != "original_http" {
+		withoutNativeSubtitles(plan)
+	}
 	if nextReason != "" {
 		plan["decision_reason"] = nextReason
 	}
@@ -1035,14 +1126,14 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	document["session_id"] = id
-	i.rememberPlan(id, playbackPlan{format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document})
+	i.rememberPlan(id, playbackPlan{format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document, start: snap.start, media: snap.media, hlsRenditions: snap.hlsRenditions, audioCopy: snap.audioCopy && nextDelivery != "server_transcode_hls"})
 	reply(w, http.StatusOK, document)
 }
 
 func siloAdaptationUnavailable(w http.ResponseWriter, sessionID string) {
 	reply(w, http.StatusOK, map[string]any{
 		"protocol_version": 3,
-		"server_features":  []string{"playback_plan_v3", "neutral_playback_v3_contract_v1", "header_authenticated_media_v1", "sequenced_progress_v1", "plan_source_duration_v1"},
+		"server_features":  siloServerFeatures,
 		"outcome":          "adaptation_unavailable",
 		"session_id":       sessionID,
 		"terminal": map[string]any{
@@ -1142,7 +1233,10 @@ func (i *instance) playbackRoutes() error {
 	}
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		if err := i.router.Handle(method, "/api/v2/playback/transcode/{session}/{path...}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			i.serveSessionMedia(w, r, r.PathValue("session"), r.PathValue("path"))
+			session := r.PathValue("session")
+			serveSiloHLS(w, r, r.PathValue("path"), func(w http.ResponseWriter, r *http.Request, resource string) {
+				i.serveSessionMedia(w, r, session, resource)
+			})
 		})); err != nil {
 			return err
 		}
@@ -1179,4 +1273,507 @@ func (i *instance) playbackRoutes() error {
 		}
 	}
 	return nil
+}
+
+// nativeEmbedded reports whether the client declared that it renders codec
+// from container itself during original-file playback.
+func (b startRequest) nativeEmbedded(container, codec string) bool {
+	d, ok := b.Context.Deliveries["original_http"]
+	if !ok {
+		return false
+	}
+	container = siloContainerName(container)
+	codec = siloSubtitleCodecName(codec)
+	for _, n := range d.Subtitles.NativeEmbedded {
+		if (n.Identity != "" && n.Identity != "ffmpeg_stream_index") || siloContainerName(n.Container) != container {
+			continue
+		}
+		for _, c := range n.Codecs {
+			if siloSubtitleCodecName(c) == codec {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func siloContainerName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "matroska" || strings.HasPrefix(name, "matroska,") {
+		return "mkv"
+	}
+	return name
+}
+
+// siloSubtitleCodecName is the FFmpeg codec name the client compares with.
+func siloSubtitleCodecName(codec string) string {
+	switch codec = strings.ToLower(strings.TrimSpace(codec)); codec {
+	case "srt":
+		return "subrip"
+	case "vtt":
+		return "webvtt"
+	case "tx3g":
+		return "mov_text"
+	case "pgs", "pgssub":
+		return "hdmv_pgs_subtitle"
+	case "dvdsub", "vobsub":
+		return "dvd_subtitle"
+	case "dvbsub":
+		return "dvb_subtitle"
+	}
+	return codec
+}
+
+// withoutNativeSubtitles turns a plan's player-rendered embedded subtitle
+// into its sidecar artifact when the delivery leaves the original file: only
+// original-file playback demuxes embedded tracks in the player.
+func withoutNativeSubtitles(plan map[string]any) {
+	subtitle, _ := plan["subtitle"].(map[string]any)
+	if subtitle == nil {
+		return
+	}
+	inventory, _ := subtitle["inventory"].([]any)
+	if _, embedded := subtitle["embedded"]; !embedded {
+		return
+	}
+	delete(subtitle, "embedded")
+	trackID, _ := subtitle["track_id"].(string)
+	for _, raw := range inventory {
+		row, _ := raw.(map[string]any)
+		if url, ok := row["url"].(string); ok && row["track_id"] == trackID && strings.Contains(url, ".vtt") {
+			subtitle["mode"] = "convert"
+			subtitle["artifact"] = map[string]any{"url": url, "format": "vtt", "mime_type": "text/vtt", "timing_origin_seconds": 0}
+			return
+		}
+	}
+	subtitle["mode"] = "off"
+	delete(subtitle, "track_id")
+	if selected, ok := plan["selected_tracks"].(map[string]any); ok {
+		delete(selected, "subtitle")
+	}
+}
+
+// siloServerFeatures are the playback features every plan document declares.
+// Each name corresponds to a contract Ether implements: native embedded tracks,
+// seek re-anchoring on offset HLS streams, direct-stream resume, route event
+// diagnostics, active quality reporting, and HLS text subtitle renditions.
+var siloServerFeatures = []string{
+	"playback_plan_v3",
+	"neutral_playback_v3_contract_v1",
+	"embedded_subtitles_v1",
+	"playback_route_diagnostics",
+	"seek_reanchor_v1",
+	"direct_stream_resume_v1",
+	"header_authenticated_media_v1",
+	"sequenced_progress_v1",
+	"plan_source_duration_v1",
+	"plan_active_quality_v1",
+	"hls_subtitle_renditions_v1",
+	"hls_remux_subtitle_renditions_v1",
+}
+
+// replanSelection answers a track or quality pick within the playing
+// session: the plan names the new audio and subtitle selection, and a server
+// stream restarts at the viewer's position only when its audio or a burned
+// subtitle changes. Silo Android sends every audio and subtitle pick this
+// way, subtitles off included, and refuses to replace a session whose
+// progress is still pending, so the session is kept.
+func (i *instance) replanSelection(w http.ResponseWriter, r *http.Request, b replanRequest, snap playbackPlan, viewer *frontend.Viewer, id string) {
+	var start startRequest
+	if json.Unmarshal(snap.start, &start) != nil || len(snap.media.Streams) == 0 {
+		siloAdaptationUnavailable(w, id)
+		return
+	}
+	raw, err := json.Marshal(snap.body)
+	if err != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	var document map[string]any
+	if json.Unmarshal(raw, &document) != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	plan, _ := document["playback_plan"].(map[string]any)
+	if plan == nil {
+		siloAdaptationUnavailable(w, id)
+		return
+	}
+	streamAt := func(kind string, ordinal int) (frontend.StreamInfo, bool) {
+		n := 0
+		for _, s := range snap.media.Streams {
+			if s.Type != kind {
+				continue
+			}
+			if n == ordinal {
+				return s, true
+			}
+			n++
+		}
+		return frontend.StreamInfo{}, false
+	}
+	currentAudio := -1
+	for _, s := range snap.media.Streams {
+		if s.Type == "audio" && (currentAudio < 0 || s.Default) {
+			currentAudio = s.Index
+		}
+	}
+	if selected, _ := plan["selected_tracks"].(map[string]any); selected != nil {
+		if a, _ := selected["audio"].(map[string]any); a != nil {
+			if n, ok := a["index"].(float64); ok {
+				if s, ok := streamAt("audio", int(n)); ok {
+					currentAudio = s.Index
+				}
+			}
+		}
+	}
+	audio := currentAudio
+	if b.Selected.Audio != nil && b.Selected.Audio.Index != nil {
+		s, ok := streamAt("audio", *b.Selected.Audio.Index)
+		if !ok {
+			problem(w, http.StatusUnprocessableEntity, "urn:ether:problem:track-not-found", "Track not found", "The selected audio track is not in this media.")
+			return
+		}
+		audio = s.Index
+	}
+	subtitle := -1
+	var subtitleTrack frontend.StreamInfo
+	if b.Selected.Subtitle != nil && b.Selected.Subtitle.Index != nil && *b.Selected.Subtitle.Index >= 0 {
+		s, ok := streamAt("subtitle", *b.Selected.Subtitle.Index)
+		if !ok {
+			problem(w, http.StatusUnprocessableEntity, "urn:ether:problem:track-not-found", "Track not found", "The selected subtitle track is not in this media.")
+			return
+		}
+		subtitle, subtitleTrack = s.Index, s
+	}
+	// Server HLS cannot carry an image subtitle: it is burned into the video.
+	burn := snap.format == frontend.StreamHLS && subtitle >= 0 && frontend.IsImageSubtitle(subtitleTrack.Codec)
+	wasBurned := false
+	if sub, _ := plan["subtitle"].(map[string]any); sub != nil {
+		wasBurned = sub["mode"] == "burn_in"
+	}
+	access := frontend.SessionAccess{Viewer: viewer, Device: device(r), Protocol: "silo"}
+	pos := time.Duration(b.Position * float64(time.Second))
+	// A quality pick caps the encoded height; Auto (or a rung at least the
+	// source's height) lifts the cap. The original file cannot be made
+	// smaller, so a cap moves it to a server encode.
+	current, _ := plan["active_quality"].(string)
+	wantQuality := b.Quality
+	if wantQuality == "auto" {
+		wantQuality = ""
+	}
+	qualityChanged := b.Operation == "quality_change" && wantQuality != current
+	height := 0
+	if qualityChanged && wantQuality != "" {
+		if rows, _ := plan["available_qualities"].([]any); rows != nil {
+			for _, raw := range rows {
+				row, _ := raw.(map[string]any)
+				if label, _ := row["label"].(string); label == wantQuality {
+					if h, ok := row["height"].(float64); ok {
+						height = int(h)
+					}
+				}
+			}
+		}
+		if height == 0 {
+			siloAdaptationUnavailable(w, id)
+			return
+		}
+	}
+	format := snap.format
+	if qualityChanged && height > 0 && format == frontend.StreamDirect {
+		format = frontend.StreamHLS
+	}
+	restart := format == frontend.StreamHLS && (audio != currentAudio || burn || wasBurned || qualityChanged || format != snap.format)
+	if restart {
+		req := frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, AudioStream: &audio}
+		if burn {
+			req.SubtitleStream, req.BurnImageSubtitles = &subtitle, true
+		}
+		if qualityChanged {
+			req.MaxHeight = &height
+		}
+		if _, err := i.host.Sessions.StartStream(r.Context(), access, id, req); err != nil {
+			i.playbackError(w, access.Viewer, err)
+			return
+		}
+	}
+	if format != snap.format {
+		snap.format, snap.delivery, snap.audioCopy = format, "server_transcode_hls", false
+		plan["delivery"] = snap.delivery
+		withoutNativeSubtitles(plan)
+		if stream, _ := plan["stream"].(map[string]any); stream != nil {
+			stream["protocol"], stream["container"], stream["mime_type"] = "hls", "hls", "application/vnd.apple.mpegurl"
+		}
+	}
+	if qualityChanged {
+		if wantQuality == "" {
+			delete(plan, "active_quality")
+		} else {
+			plan["active_quality"] = wantQuality
+		}
+		if recipe, _ := plan["effective_recipe"].(map[string]any); recipe != nil && height > 0 {
+			if v := snap.media.Video(); v != nil && v.Height > height && v.Width > 0 {
+				recipe["height"], recipe["width"] = height, v.Width*height/v.Height
+			}
+		}
+	}
+	selected, sub, fidelityPolicy, _, assStyling := i.siloTracks(siloTrackInputs{r: r, viewer: viewer, access: access, sessionID: id, start: start, media: snap.media, format: format, delivery: snap.delivery, live: snap.live, hlsRenditions: snap.hlsRenditions, audioStream: audio, subtitleStream: subtitle, burn: burn})
+	if b.Selected.Subtitle != nil && subtitle >= 0 && selected["subtitle"] == nil {
+		problem(w, http.StatusServiceUnavailable, "urn:ether:problem:track-source-unavailable", "Subtitle unavailable", "The selected subtitle cannot be delivered for this stream.")
+		return
+	}
+	plan["selected_tracks"] = selected
+	plan["subtitle"] = sub
+	plan["subtitle_fidelity_policy"] = fidelityPolicy
+	if claims, _ := plan["claims"].(map[string]any); claims != nil {
+		if subs, _ := claims["subtitles"].(map[string]any); subs != nil {
+			subs["ass_styling_preserved"] = assStyling
+		}
+		if audioClaim, _ := claims["audio"].(map[string]any); audioClaim != nil && snap.audioCopy {
+			if s, ok := streamAt("audio", ordinalOf(snap.media, "audio", audio)); ok {
+				audioClaim["codec"] = s.Codec
+			}
+		}
+	}
+	if recipe, _ := plan["effective_recipe"].(map[string]any); recipe != nil && snap.audioCopy {
+		for _, s := range snap.media.Streams {
+			if s.Type == "audio" && s.Index == audio {
+				recipe["audio_codec"] = s.Codec
+				if s.Channels > 0 {
+					recipe["audio_channels"] = s.Channels
+				}
+			}
+		}
+	}
+	base, _ := plan["plan_id"].(string)
+	if base == "" {
+		base = snap.baseID
+	}
+	key := fmt.Sprintf("%s:tracks:a%d:s%d:q%d", base, audio, subtitle, height)
+	plan["plan_attempt_key"] = key
+	if restart {
+		if stream, _ := plan["stream"].(map[string]any); stream != nil {
+			stream["url"] = siloMediaURL(id, snap.format)
+		}
+		if timeline, _ := plan["timeline"].(map[string]any); timeline != nil {
+			timeline["source_start_seconds"] = b.Position
+			timeline["stream_origin_seconds"] = b.Position
+			timeline["player_start_seconds"] = 0
+			timeline["timeline_offset_seconds"] = b.Position
+		}
+	}
+	document["session_id"] = id
+	snap.body = document
+	i.rememberPlan(id, snap)
+	reply(w, http.StatusOK, document)
+}
+
+// ordinalOf is the position of a stream among the media's streams of a kind.
+func ordinalOf(media frontend.MediaInfo, kind string, index int) int {
+	n := 0
+	for _, s := range media.Streams {
+		if s.Type != kind {
+			continue
+		}
+		if s.Index == index {
+			return n
+		}
+		n++
+	}
+	return -1
+}
+
+// siloTrackInputs are what a plan's track selection and subtitle delivery
+// depend on: the start request's declared abilities, the session's media and
+// delivery, and the selected stream indices.
+type siloTrackInputs struct {
+	r              *http.Request
+	viewer         *frontend.Viewer
+	access         frontend.SessionAccess
+	sessionID      string
+	start          startRequest
+	media          frontend.MediaInfo
+	format         frontend.StreamFormat
+	delivery       string
+	live           bool
+	hlsRenditions  bool
+	audioStream    int
+	subtitleStream int
+	burn           bool
+}
+
+// siloTracks builds a plan's selected tracks and subtitle decision, with the
+// subtitle inventory, for one selection.
+func (i *instance) siloTracks(in siloTrackInputs) (selected, subtitle map[string]any, fidelityPolicy string, requireAuthoredFidelity, assStylingPreserved bool) {
+	deliveryClass := "original_http"
+	if in.format == frontend.StreamHLS {
+		deliveryClass = "hls"
+	}
+	var clientASSStyling bool
+	if in.start.Context.Deliveries != nil {
+		if delivCap, ok := in.start.Context.Deliveries[deliveryClass]; ok {
+			clientASSStyling = delivCap.Subtitles.ASSStyling
+		}
+	}
+	requireAuthoredFidelity = strings.EqualFold(in.start.SubtitleFidelity, "preserve")
+	fidelityPolicy = "allow_simplified_rendering"
+	if requireAuthoredFidelity {
+		fidelityPolicy = "require_authored_fidelity"
+	}
+	_, hasSubtitleArtifacts := i.host.Sessions.(frontend.SessionSubtitleArtifacts)
+	assStylingPreserved = false
+	selected = map[string]any{}
+	inventory := []any{}
+	subtitle = map[string]any{"mode": "off"}
+	ordinal := 0
+	audioOrdinal := 0
+	// Original-file playback demuxes every embedded track in the player
+	// (embedded_subtitles_v1). A track it renders natively needs no server
+	// artifact: the plan names its stream and the subtitle is on screen as
+	// soon as the video is, with no whole-file extraction.
+	native := func(track frontend.StreamInfo) bool {
+		// The app switches by the file's own track id; without it the plan
+		// fails its validation, so the track goes as a sidecar instead.
+		if in.format != frontend.StreamDirect || track.External || track.ExternalURL != "" || track.ContainerTrackID <= 0 || !slices.Contains(in.start.Features, "embedded_subtitles_v1") {
+			return false
+		}
+		return in.start.nativeEmbedded(in.media.Container, track.Codec)
+	}
+	vttURLs := map[int]string{}
+	hlsOK := map[int]bool{}
+	var subReqs []frontend.SubtitleURLRequest
+	wantHLS := in.format == frontend.StreamHLS && !in.live && in.hlsRenditions && (in.delivery != "server_remux_hls" || slices.Contains(in.start.Features, "hls_remux_subtitle_renditions_v1"))
+	for _, track := range in.media.Streams {
+		if track.Type != "subtitle" {
+			continue
+		}
+		subReqs = append(subReqs, frontend.SubtitleURLRequest{Index: track.Index, Format: "vtt"})
+		if wantHLS && !track.External && track.Index == in.subtitleStream {
+			subReqs = append(subReqs, frontend.SubtitleURLRequest{Index: track.Index, Format: "hls"})
+		}
+	}
+	if len(subReqs) > 0 {
+		var urls []string
+		if batch, ok := i.host.Sessions.(frontend.SubtitleURLBatch); ok {
+			if got, err := batch.SubtitleURLs(in.r.Context(), in.access, in.sessionID, subReqs); err == nil && len(got) == len(subReqs) {
+				urls = got
+			}
+		}
+		if urls == nil {
+			urls = make([]string, len(subReqs))
+			for idx, req := range subReqs {
+				if u, err := i.host.Sessions.SubtitleURL(in.r.Context(), in.access, in.sessionID, req.Index, req.Format); err == nil {
+					urls[idx] = u
+				}
+			}
+		}
+		for idx, req := range subReqs {
+			if urls[idx] == "" {
+				continue
+			}
+			if req.Format == "hls" {
+				hlsOK[req.Index] = true
+			} else {
+				vttURLs[req.Index] = urls[idx]
+			}
+		}
+	}
+	// hls_subtitle_renditions_v1 covers a transcode; a copy remux needs
+	// hls_remux_subtitle_renditions_v1 as well.
+	hlsRendition := func(track frontend.StreamInfo) map[string]any {
+		if !wantHLS || track.External || !hlsOK[track.Index] {
+			return nil
+		}
+		return map[string]any{"group_id": frontend.HLSTextRenditionGroup, "name": frontend.HLSTextRenditionName(track.Title, track.Language, track.Index), "format": "vtt", "mime_type": "text/vtt"}
+	}
+	for _, track := range in.media.Streams {
+		if track.Type == "audio" {
+			if track.Index == in.audioStream {
+				selected["audio"] = map[string]any{"id": "file:" + in.start.FileID + ":audio:" + strconv.Itoa(audioOrdinal), "index": audioOrdinal}
+			}
+			audioOrdinal++
+		}
+		if track.Type != "subtitle" {
+			continue
+		}
+		trackID := "file:" + in.start.FileID + ":subtitle:" + strconv.Itoa(ordinal)
+		entry := map[string]any{"track_id": trackID, "combined_index": ordinal, "source": "embedded", "codec": track.Codec, "language": track.Language, "label": track.Title, "forced": track.Forced, "default": track.Default, "hearing_impaired": false, "delivery": "burn_in_only"}
+		if track.External {
+			entry["source"] = "external"
+		}
+		isEmbeddedASS := !track.External && frontend.IsASSSubtitleCodec(track.Codec)
+		// Availability is resolved when the client requests the artifact. Do
+		// not scan every subtitle track or extract media during startup.
+		authoredASS := isEmbeddedASS && hasSubtitleArtifacts
+		preserveTrackASS := authoredASS && clientASSStyling
+		url := vttURLs[track.Index]
+		if strings.HasPrefix(url, "/sessions/media/") {
+			entry["delivery"] = "sidecar"
+			ext := ".vtt"
+			if preserveTrackASS {
+				ext = ".ass"
+			}
+			entry["url"] = "/api/v2/stream/" + in.sessionID + "/subtitles/" + strconv.Itoa(track.Index) + ext
+			if sync := i.subtitleSyncMS(in.r, in.viewer); sync != 0 {
+				entry["url"] = entry["url"].(string) + "?sync_ms=" + strconv.Itoa(sync)
+			}
+			if authoredASS {
+				entry["font_bundle_url"] = "/api/v2/stream/" + in.sessionID + "/subtitles/" + strconv.Itoa(track.Index) + "/fonts"
+			}
+		}
+		nativeTrack := native(track)
+		if url, ok := entry["url"].(string); ok && nativeTrack {
+			// The player switches to this stream in its own demux; the row
+			// names it on the URL, where the inventory schema allows it.
+			sep := "?"
+			if strings.Contains(url, "?") {
+				sep = "&"
+			}
+			entry["url"] = url + sep + "embedded_stream_index=" + strconv.Itoa(track.Index)
+		}
+		inventory = append(inventory, entry)
+		if track.Index == in.subtitleStream {
+			selected["subtitle"] = map[string]any{"id": trackID, "index": ordinal}
+			if in.burn {
+				subtitle["mode"] = "burn_in"
+				subtitle["track_id"] = trackID
+			} else if nativeTrack {
+				subtitle["mode"] = "render"
+				subtitle["track_id"] = trackID
+				subtitle["embedded"] = map[string]any{"stream_index": track.Index, "container_track_id": strconv.Itoa(track.ContainerTrackID)}
+			} else if rendition := hlsRendition(track); rendition != nil {
+				subtitle["mode"] = "convert"
+				subtitle["track_id"] = trackID
+				subtitle["hls_rendition"] = rendition
+			} else if url, e := entry["url"].(string); e {
+				if preserveTrackASS {
+					subtitle["mode"] = "render"
+					subtitle["track_id"] = trackID
+					subtitle["artifact"] = map[string]any{"url": url, "format": "ass", "mime_type": "text/x-ssa", "timing_origin_seconds": 0}
+					// The artifact endpoint must still validate completeness; startup
+					// cannot claim that authored bytes have already been delivered.
+				} else {
+					// "preserve" is the app's default preference, sent on every
+					// start. Plain text (SubRip, WebVTT, mov_text) converts to
+					// WebVTT without losing anything. Only authored ASS styling
+					// can be simplified, and then the plan says so instead of
+					// refusing to play.
+					if isEmbeddedASS {
+						fidelityPolicy = "allow_simplified_rendering"
+					}
+					subtitle["mode"] = "convert"
+					subtitle["track_id"] = trackID
+					subtitle["artifact"] = map[string]any{"url": url, "format": "vtt", "mime_type": "text/vtt", "timing_origin_seconds": 0}
+				}
+			} else {
+				// No deliverable artifact for the chosen track: start without
+				// subtitles rather than fail the start.
+				delete(selected, "subtitle")
+			}
+		}
+		ordinal++
+	}
+	subtitle["inventory"] = inventory
+	return selected, subtitle, fidelityPolicy, requireAuthoredFidelity, assStylingPreserved
 }

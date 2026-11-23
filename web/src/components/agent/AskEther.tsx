@@ -392,7 +392,7 @@ export function AskEther() {
             </section>
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col [&>div>header]:hidden">
+          <div className="flex min-h-0 flex-1 flex-col">
             <Suspense
               fallback={
                 <div className="grid flex-1 place-items-center">

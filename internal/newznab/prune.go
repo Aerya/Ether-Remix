@@ -12,7 +12,7 @@ const budgetRetentionDays = 35
 
 // Prune deletes budget and usage rows older than budgetRetentionDays, any expired
 // search-cache rows (normally removed on write, but an idle indexer never
-// writes) and NZBs the disk cache no longer keeps. It is meant to be called
+// writes). It is meant to be called
 // periodically.
 func (m *Manager) Prune(ctx context.Context) (int64, error) {
 	if m.db == nil {
@@ -23,7 +23,6 @@ func (m *Manager) Prune(ctx context.Context) (int64, error) {
 		now = m.opts.Now
 	}
 	t := now()
-	removed := pruneNZBs(m.opts.NZBDir, t)
 	cutoff := t.UTC().AddDate(0, 0, -budgetRetentionDays).Format("2006-01-02")
 	res, err := m.db.ExecContext(ctx, `DELETE FROM newznab_budget WHERE day<?`, cutoff)
 	if err != nil {
@@ -41,5 +40,5 @@ func (m *Manager) Prune(ctx context.Context) (int64, error) {
 		return total, err
 	}
 	n, _ = res.RowsAffected()
-	return total + n + removed, nil
+	return total + n, nil
 }

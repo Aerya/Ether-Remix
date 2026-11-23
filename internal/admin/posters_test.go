@@ -1,10 +1,17 @@
 package admin
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
-	"github.com/braedonsaunders/ether/internal/config"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/braedonsaunders/ether/internal/config"
 )
 
 func TestPosterSecrets(t *testing.T) {
@@ -61,5 +68,97 @@ func TestIndependentPosterAccountSecrets(t *testing.T) {
 	restored, errs := UnredactConfig(redacted, c)
 	if len(errs) > 0 || restored.Posters.Accounts != c.Posters.Accounts {
 		t.Fatal("selecting a source lost another account's credentials", errs)
+	}
+}
+
+func TestSavingPostersSectionRollsGeneration(t *testing.T) {
+	store, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(c *config.Config) error {
+		c.SetupComplete = true
+		c.Plex.Token = "owner-tok"
+		c.Plex.Claimed = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Deps{
+		Config:       store,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		IsOwnerToken: func(_ context.Context, tok string) bool { return tok == "owner-tok" },
+	})
+	req := func(method, path string, body any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		r := httptest.NewRequest(method, path, bytes.NewReader(raw))
+		r.RemoteAddr = "192.168.1.50:49152"
+		r.Header.Set("X-Plex-Token", "owner-tok")
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("X-Ether-Request", "1")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	if got := store.Get().Posters.Generation; got != 0 {
+		t.Fatalf("initial generation = %d, want 0", got)
+	}
+
+	// Enable BetterPosters via PUT /api/config/posters -> generation 1.
+	p := config.Posters{Version: 1, Source: "betterposters"}
+	p.Accounts.BetterPosters = config.PosterAccount{Enabled: true}
+	if w := req(http.MethodPut, "/api/config/posters", p); w.Code != http.StatusOK {
+		t.Fatalf("enable posters: %d %s", w.Code, w.Body.String())
+	}
+	if got := store.Get().Posters.Generation; got != 1 {
+		t.Fatalf("after enable generation = %d, want 1", got)
+	}
+
+	// Re-saving the exact same Posters section still rolls generation -> 2.
+	if w := req(http.MethodPut, "/api/config/posters", p); w.Code != http.StatusOK {
+		t.Fatalf("resave posters: %d %s", w.Code, w.Body.String())
+	}
+	if got := store.Get().Posters.Generation; got != 2 {
+		t.Fatalf("after resave generation = %d, want 2", got)
+	}
+
+	// Saving an unrelated section does not change posters.generation.
+	if w := req(http.MethodPatch, "/api/config/updates", map[string]any{"channel": "stable"}); w.Code != http.StatusOK {
+		t.Fatalf("unrelated section: %d %s", w.Code, w.Body.String())
+	}
+	if got := store.Get().Posters.Generation; got != 2 {
+		t.Fatalf("unrelated save changed generation = %d, want 2", got)
+	}
+
+	// Disabling rolls generation -> 3.
+	p.Source = "tmdb"
+	p.Accounts.BetterPosters.Enabled = false
+	if w := req(http.MethodPut, "/api/config/posters", p); w.Code != http.StatusOK {
+		t.Fatalf("disable posters: %d %s", w.Code, w.Body.String())
+	}
+	if got := store.Get().Posters.Generation; got != 3 {
+		t.Fatalf("after disable generation = %d, want 3", got)
+	}
+
+	// PUT /api/config with unchanged posters keeps generation = 3 (even if client sent stale 0).
+	full := RedactConfig(store.Get())
+	full.Posters.Generation = 0
+	if w := req(http.MethodPut, "/api/config", full); w.Code != http.StatusOK {
+		t.Fatalf("full save unchanged: %d %s", w.Code, w.Body.String())
+	}
+	if got := store.Get().Posters.Generation; got != 3 {
+		t.Fatalf("full save unchanged generation = %d, want 3", got)
+	}
+
+	// PUT /api/config with a poster change rolls generation -> 4.
+	full = RedactConfig(store.Get())
+	full.Posters.Accounts.BetterPosters.Enabled = true
+	full.Posters.Source = "betterposters"
+	if w := req(http.MethodPut, "/api/config", full); w.Code != http.StatusOK {
+		t.Fatalf("full save changed: %d %s", w.Code, w.Body.String())
+	}
+	if got := store.Get().Posters.Generation; got != 4 {
+		t.Fatalf("full save changed generation = %d, want 4", got)
 	}
 }

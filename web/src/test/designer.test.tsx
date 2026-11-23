@@ -52,6 +52,11 @@ describe("Home", () => {
   it("previews the typical viewer's Home with each row's provenance", async () => {
     const { fake } = renderApp("/home");
     const cw = await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
+    expect(screen.getByText("Preview Home as")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Page" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Rows" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Device" })).toHaveTextContent("TV");
+    expect(screen.queryByText(/^score /)).toBeNull();
     expect(within(cw).getByText(/Anchored for everyone/)).toBeInTheDocument();
     expect(within(cw).getByText(/global anchor at slot 1/)).toBeInTheDocument();
     const top = screen.getByRole("region", { name: /Slot \d+: Top 10 on Living Room Ether Today/ });
@@ -264,6 +269,7 @@ describe("Home", () => {
       slot: Number(slot),
     });
     // Page structure and length are edited in place on the Layout tab, not in a drawer.
+    fireEvent.click(screen.getByRole("tab", { name: "Layout" }));
     expect(
       screen.queryByRole("button", { name: /Edit anchored slots|Edit page length/ }),
     ).toBeNull();
@@ -282,26 +288,29 @@ describe("Home", () => {
     expect(lastPreview(fake).layout?.global[0]?.maxRows).toBe(3);
   });
 
-  it("tunes a page with dials, keeps Home's picks off it, and shows what the model learned", async () => {
+  it("is Home-only, opens a row drawer on row click with Settings/Content subtabs, and tunes Home dials", async () => {
     const { fake } = renderApp("/home");
     await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
-    // Switch to the TV page: its catalogue has series rows, not Home-only ones.
-    fireEvent.click(screen.getByRole("button", { name: "Page" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "TV" }));
-    await waitFor(() => expect(screen.queryByRole("menu", { name: "Page" })).toBeNull());
-    fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
-    const series = screen.getByRole("group", { name: "Series" });
-    expect(
-      within(series).getByRole("listitem", { name: "Row Finish What You Started" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("listitem", { name: "Row Top 10 for You" })).toBeNull();
-    expect(screen.queryByRole("listitem", { name: "Row Acclaimed & Unseen" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Page" })).toBeNull();
+
+    // Clicking the row item opens its drawer directly with Settings and Content subtabs.
+    const topCard = screen.getByRole("listitem", { name: "Row Top 10 Today" });
+    fireEvent.click(within(topCard).getByText("Top 10 Today"));
+    const drawer = await screen.findByRole("dialog", { name: "Top 10 Today" });
+    expect(within(drawer).getByRole("tab", { name: "Settings" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.click(within(drawer).getByRole("tab", { name: /Content/ }));
+    expect(within(drawer).getAllByRole("listitem").length).toBeGreaterThan(0);
+    await closeEditor();
 
     fireEvent.click(screen.getByRole("tab", { name: "Tuning" }));
+    expect(screen.queryByText(/Copy these dials to/)).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Don't repeat what Home shows" })).toBeNull();
     fireEvent.change(screen.getByRole("slider", { name: "Discovery" }), {
       target: { value: "80" },
     });
-    fireEvent.click(screen.getByRole("switch", { name: "Don't repeat what Home shows" }));
     const learning = await screen.findByRole("region", { name: "How it learns" }, WAIT);
     expect(within(learning).getByText("Active")).toBeInTheDocument();
     expect(within(learning).getByText("+47%")).toBeInTheDocument();
@@ -309,8 +318,8 @@ describe("Home", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Save layout/ }));
     await waitFor(() => expect(calls(fake, "PUT", "/layout")).toHaveLength(1), WAIT);
-    const shows = savedLayout(fake).global.find((p) => p.section === "shows");
-    expect(shows).toMatchObject({ dedupeHome: false, tuning: { discovery: 0.8 } });
+    const home = savedLayout(fake).global.find((p) => p.section === "home");
+    expect(home).toMatchObject({ tuning: { discovery: 0.8 } });
   });
 
   it("adds a custom row pattern from a drawer", async () => {
@@ -329,6 +338,55 @@ describe("Home", () => {
     );
     expect(await screen.findByRole("listitem", { name: "Row because.*" })).toBeInTheDocument();
     expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+  });
+
+  it("reverts row drawer edits on Cancel, keeps them on Done, and opens the Stremio catalog picker from + Add row without leaving Home", async () => {
+    renderApp("/home");
+    await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
+    fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
+    expect(screen.queryByText("Create a Home row from a Stremio catalog")).toBeNull();
+
+    // Open row editor drawer: Cancel reverts edits, Done keeps edits.
+    fireEvent.click(screen.getByRole("button", { name: "Constraints for Top 10 Today" }));
+    const drawer = await screen.findByRole("dialog", { name: "Top 10 Today" });
+    expect(within(drawer).getByPlaceholderText("Every day")).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("button", { name: "From hour for Top 10 Today" }),
+    ).toHaveTextContent("Any time");
+    fireEvent.click(
+      within(within(drawer).getByRole("radiogroup", { name: "Status of Top 10 Today" })).getByRole(
+        "radio",
+        { name: "Off" },
+      ),
+    );
+    fireEvent.click(within(drawer).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Constraints for Top 10 Today" }));
+    const drawerAgain = await screen.findByRole("dialog", { name: "Top 10 Today" });
+    fireEvent.click(
+      within(
+        within(drawerAgain).getByRole("radiogroup", { name: "Status of Top 10 Today" }),
+      ).getByRole("radio", { name: "Off" }),
+    );
+    fireEvent.click(within(drawerAgain).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+
+    // + Add row -> From a Stremio catalog… opens AddonCatalogDrawer over Home without navigating away.
+    fireEvent.click(screen.getByRole("button", { name: "Add row" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "From a Stremio catalog…" }));
+    const picker = await screen.findByRole(
+      "dialog",
+      { name: "Choose a Stremio plugin catalog" },
+      WAIT,
+    );
+    expect(picker).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Home" })).toBeInTheDocument();
+    fireEvent.click(within(picker).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("heading", { name: "Home" })).toBeInTheDocument();
   });
 
   it("discards unsaved edits", async () => {

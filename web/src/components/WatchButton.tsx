@@ -10,7 +10,15 @@ type Players = { available: boolean; players: Player[]; url?: string };
 const preferenceKey = "ether.web-player";
 const playerName = (id: PlayerID) => (id === "vela" ? t("Vela") : t("Jellyfin web"));
 
-export function WatchButton({ app }: { app?: "vela" } = {}) {
+export function WatchButton({
+  app,
+  popoverSide = "bottom",
+  variant = "ghost",
+}: {
+  app?: "vela";
+  popoverSide?: "top" | "bottom";
+  variant?: "ghost" | "outline";
+} = {}) {
   const [players, setPlayers] = useState<Player[]>([]);
   const [preferred, setPreferred] = useState<PlayerID>(() => {
     try {
@@ -82,7 +90,9 @@ export function WatchButton({ app }: { app?: "vela" } = {}) {
   }
 
   const buttonClass =
-    "inline-flex h-9 items-center justify-center gap-2 text-sm font-medium hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50";
+    variant === "outline"
+      ? "inline-flex h-9 items-center justify-center gap-2 border border-border bg-surface text-sm font-medium text-fg transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
+      : "inline-flex h-9 items-center justify-center gap-2 text-sm font-medium hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50";
   return (
     <div className="inline-flex items-center">
       <button
@@ -101,11 +111,12 @@ export function WatchButton({ app }: { app?: "vela" } = {}) {
           open={open}
           onOpenChange={setOpen}
           align="end"
+          side={popoverSide}
           trigger={
             <button
               type="button"
               disabled={busy}
-              className={`${buttonClass} rounded-r-md border-l border-border px-1.5`}
+              className={`${buttonClass} rounded-r-md ${variant === "outline" ? "-ml-px" : "border-l border-border"} px-1.5`}
               aria-label={t("Choose web player")}
               aria-haspopup="menu"
               aria-expanded={open}

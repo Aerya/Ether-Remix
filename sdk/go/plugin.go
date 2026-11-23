@@ -38,6 +38,42 @@ func (c *Context) T(key string, params map[string]any) string {
 	return c.I18n.T(key, params, c.Locale)
 }
 
+// PublishEvent emits a manifest-declared plugin event onto Ether's event bus.
+func (c *Context) PublishEvent(key string, payload any, corr *EventCorrelation) error {
+	if eh, ok := c.Ether.(EventsHost); ok {
+		return eh.PublishEvent(c.Context, key, payload, corr)
+	}
+	return fmt.Errorf("events.publish is not supported by this host")
+}
+
+// AIComplete runs a bounded completion against the owner's configured language
+// model. Requires permissions.ai: "complete" (or "complete+search" for opted-in
+// interactive search routes; every other viewer/client path stays refused).
+func (c *Context) AIComplete(req AICompleteRequest) (AICompleteResponse, error) {
+	if ah, ok := c.Ether.(AIHost); ok {
+		ctx := c.Context
+		if tok := c.viewerToken(); tok != "" {
+			ctx = WithViewerToken(ctx, tok)
+		}
+		return ah.AIComplete(ctx, req)
+	}
+	return AICompleteResponse{}, fmt.Errorf("ai.complete is not supported by this host")
+}
+
+// MediaProbe probes container metadata for a PlayableSource in the same shape
+// /resolve returns. Requires permissions.media: "probe" and is restricted to
+// jobs, actions, and background routes (refused on viewer/client paths).
+func (c *Context) MediaProbe(src PlayableSource) (MediaProbeResult, error) {
+	if mh, ok := c.Ether.(MediaHost); ok {
+		ctx := c.Context
+		if tok := c.viewerToken(); tok != "" {
+			ctx = WithViewerToken(ctx, tok)
+		}
+		return mh.MediaProbe(ctx, src)
+	}
+	return MediaProbeResult{}, fmt.Errorf("media.probe is not supported by this host")
+}
+
 // Routes holds the capability handlers for a Plugin.
 type Routes struct {
 	Catalog          func(ctx *Context, req CatalogRequest) (CatalogResponse, error)
@@ -55,6 +91,7 @@ type Routes struct {
 	Health           func(ctx *Context) (HealthResponse, error)
 	Notify           func(ctx *Context, req NotifyRequest) (NotifyResponse, error)
 	Event            func(ctx *Context, events []EtherEvent) (EventResponse, error)
+	FlowAction       func(ctx *Context, req FlowActionRequest) (FlowActionResponse, error)
 	View             func(ctx *Context, req ViewRequest) (ViewResponse, error)
 	Action           func(ctx *Context, req ActionRequest) (ActionResponse, error)
 	Tool             func(ctx *Context, req ToolRequest) (ToolResponse, error)
@@ -85,6 +122,7 @@ type Plugin struct {
 	host            Host
 	remoteOpts      RemoteHostOptions
 	pageRoutes      map[string]string
+	flowRoutes      map[string]string
 	kindHandlers    *kindHandlers
 
 	mu              sync.RWMutex
@@ -144,6 +182,14 @@ func New(def Definition) *Plugin {
 			}
 		}
 	}
+	flowRoutes := map[string]string{}
+	if def.Manifest.Ether != nil && def.Manifest.Ether.Contributes != nil {
+		for _, fa := range def.Manifest.Ether.Contributes.FlowActions {
+			if fa.Route != "" && fa.Key != "" {
+				flowRoutes[fa.Route] = fa.Key
+			}
+		}
+	}
 	initialSettings, _ := DecodeSettings(schema, nil, def.DefaultSettings)
 
 	return &Plugin{
@@ -155,6 +201,7 @@ func New(def Definition) *Plugin {
 		host:            def.Host,
 		remoteOpts:      def.RemoteHostOptions,
 		pageRoutes:      pageRoutes,
+		flowRoutes:      flowRoutes,
 		settings:        initialSettings,
 	}
 }
@@ -278,6 +325,9 @@ func (p *Plugin) buildContext(ctx context.Context, req RawRequest) *Context {
 	hdrs := map[string]string{}
 	for k, v := range req.Headers {
 		hdrs[k] = v
+	}
+	if tok := headerValue(req.Headers, HeaderViewerToken); tok != "" {
+		ctx = WithViewerToken(ctx, tok)
 	}
 
 	return &Context{
@@ -656,6 +706,45 @@ func (p *Plugin) Dispatch(ctx context.Context, req RawRequest) RawResponse {
 			res, err := p.routes.View(pctx, ViewRequest{Page: pageKey, Query: query})
 			if err != nil {
 				return toRouteErrorResponse(err)
+			}
+			return okJSON(res, http.StatusOK)
+		}
+	}
+
+	if method == http.MethodPost {
+		flowKey, matchedFlow := p.flowRoutes[path]
+		if !matchedFlow && strings.HasPrefix(path, "/ether/v1/flow-actions/") {
+			flowKey, _ = url.PathUnescape(strings.TrimPrefix(path, "/ether/v1/flow-actions/"))
+			matchedFlow = flowKey != ""
+		}
+		if matchedFlow {
+			if p.routes.FlowAction == nil {
+				return errorJSON(http.StatusNotFound, "not_found", "Flow action handler is not registered.")
+			}
+			var faReq FlowActionRequest
+			if len(req.Body) > 0 {
+				if err := json.Unmarshal(req.Body, &faReq); err != nil {
+					return errorJSON(http.StatusBadRequest, "invalid_json", "Flow action request body must be valid JSON.")
+				}
+			}
+			faReq.Key = flowKey
+			if faReq.IdempotencyKey == "" {
+				for hk, hv := range pctx.Headers {
+					if strings.EqualFold(hk, HeaderIdempotencyKey) && strings.TrimSpace(hv) != "" {
+						faReq.IdempotencyKey = strings.TrimSpace(hv)
+						break
+					}
+				}
+			}
+			if faReq.Params == nil {
+				faReq.Params = map[string]any{}
+			}
+			res, err := p.routes.FlowAction(pctx, faReq)
+			if err != nil {
+				return toRouteErrorResponse(err)
+			}
+			if res.Output == nil {
+				res.Output = map[string]any{}
 			}
 			return okJSON(res, http.StatusOK)
 		}

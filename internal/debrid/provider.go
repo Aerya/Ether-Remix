@@ -9,6 +9,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/httpclient"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -23,6 +24,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/retryafter"
 )
@@ -62,16 +64,37 @@ var (
 	// no new torrent for now, cached or not. The provider still answers and
 	// serves what it holds, so this is not an outage.
 	ErrDownloadLimit = fmt.Errorf("debrid: %w", core.ErrDownloadLimit)
+	// ErrTooLarge is a torrent that exceeds the provider's or account plan's
+	// maximum torrent size (e.g. TorBox DOWNLOAD_TOO_LARGE, Real-Debrid 29,
+	// AllDebrid MAGNET_TOO_LARGE, Debrid-Link torrentTooBig). Another
+	// provider may still serve it, and it is not a provider outage.
+	ErrTooLarge = fmt.Errorf("debrid: torrent exceeds provider size limit: %w", core.ErrNotCached)
+	// errProviderZipped is a torrent that the provider only holds collapsed
+	// into a single server-side zip archive instead of its individual files.
+	// Another provider may still hold the unzipped files.
+	errProviderZipped = fmt.Errorf("debrid: provider holds torrent only as a single zip archive: %w", core.ErrNotCached)
 	// ErrNoProvider means no debrid provider is enabled.
 	ErrNoProvider = errors.New("debrid: no debrid provider is enabled")
 	// ErrUnsupported is an operation a provider does not offer.
 	ErrUnsupported = errors.New("debrid: not supported by this provider")
 	// errNoVideo is a torrent without a playable file (or without the
 	// wanted episode): a property of the release, not of a provider.
-	errNoVideo = fmt.Errorf("debrid: no playable video file: %w", core.ErrReleaseRejected)
+	errNoVideo error = releaseNoUsableError{msg: "debrid: no playable video file: " + core.ErrReleaseRejected.Error()}
+	// errNoUsableNonVideo is a torrent without a usable non-video file for a
+	// plugin release request.
+	errNoUsableNonVideo error = releaseNoUsableError{msg: "debrid: no usable non-video file: " + core.ErrReleaseRejected.Error()}
 	// errFileMissing is a payload's file absent from its torrent.
 	errFileMissing = fmt.Errorf("debrid: file is no longer in the torrent: %w", ErrGone)
 )
+
+type releaseNoUsableError struct {
+	msg string
+}
+
+func (e releaseNoUsableError) Error() string { return e.msg }
+func (e releaseNoUsableError) Unwrap() []error {
+	return []error{core.ErrReleaseRejected, core.ErrNoUsableFile}
+}
 
 // rateLimitError carries the provider's Retry-After hint.
 type rateLimitError struct{ retryAfter time.Duration }
@@ -94,6 +117,40 @@ type untrackedPending struct{ err error }
 
 func (e *untrackedPending) Error() string { return e.err.Error() }
 func (e *untrackedPending) Unwrap() error { return e.err }
+
+// queuedPending is core.ErrNotCached for a torrent the provider placed in its
+// own queue instead of starting immediately (TorBox returning queued_id with
+// no torrent_id when active slots are full). A later check looks the hash up
+// on the account until the provider promotes it to an active torrent.
+type queuedPending struct {
+	queuedID        string
+	hash            string
+	activeDownloads int
+	err             error
+}
+
+func (e *queuedPending) Error() string { return e.err.Error() }
+func (e *queuedPending) Unwrap() error { return e.err }
+
+func queued(queuedID, hash string, activeDownloads int, err error) error {
+	if queuedID == "" {
+		return err
+	}
+	return &queuedPending{
+		queuedID:        queuedID,
+		hash:            strings.ToLower(strings.TrimSpace(hash)),
+		activeDownloads: activeDownloads,
+		err:             err,
+	}
+}
+
+func pendingQueue(err error) (*queuedPending, bool) {
+	var qp *queuedPending
+	if errors.As(err, &qp) && qp != nil && qp.queuedID != "" {
+		return qp, true
+	}
+	return nil, false
+}
 
 func (e *pendingError) Error() string { return e.err.Error() }
 func (e *pendingError) Unwrap() error { return e.err }
@@ -120,11 +177,14 @@ type File struct {
 	ID   string // provider file id ("" when the provider has none)
 	Path string
 	Size int64
+	// MIMEType is optional provider metadata; generic binary types defer to Path.
+	MIMEType string
 	// Link is the provider-side link for the file (Real-Debrid hoster
 	// link, AllDebrid file link, Premiumize, Debrid-Link and Offcloud
 	// direct link).
 	Link     string
-	selected bool // Real-Debrid: already selected in a reused torrent
+	Zip      *ZipMember // non-nil when Path/Size name a member inside a provider server-side ZIP
+	selected bool       // Real-Debrid: already selected in a reused torrent
 }
 
 // AcquireRequest asks a provider to make a torrent available.
@@ -140,6 +200,12 @@ type AcquireRequest struct {
 	SelectFiles    func([]File, File) []string
 	CachedOnly     bool
 	RemoveUncached bool
+	Private        bool
+	privateChecked bool
+	// AllowCompressedZip permits selecting a deflate-compressed member inside
+	// a provider's server-side ZIP archive (used for non-video release sources
+	// decoded by kindstream and for file-list inspection).
+	AllowCompressedZip bool
 	// MayRemove, when set, is asked before a torrent this call added is
 	// removed again (RemoveUncached); false keeps it on the account because
 	// a cluster node is streaming from it.
@@ -165,6 +231,7 @@ type Acquired struct {
 type Handle struct {
 	TorrentID, FileID, Path, Link, Magnet, InfoHash string
 	Size                                            int64
+	Private                                         bool
 }
 
 // DirectLink is a time-limited HTTPS URL for a file.
@@ -407,7 +474,7 @@ func call(ctx context.Context, hc *http.Client, base string, r apiRequest, auth 
 		req.Header.Set("Content-Type", ctype)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if auth != nil {
 		auth(req)
 	}
@@ -416,7 +483,7 @@ func call(ctx context.Context, hc *http.Client, base string, r apiRequest, auth 
 		return 0, nil, sanitize(err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return resp.StatusCode, nil, sanitize(err)
 	}
@@ -693,6 +760,21 @@ func isVideo(p string) bool {
 	return videoExts[strings.ToLower(path.Ext(p))]
 }
 
+// playableVideo is shared by automatic selection and video-only selectors.
+// A filename must name a supported video, and a specific provider MIME type
+// must agree. Providers commonly report generic binary data for valid videos.
+func playableVideo(f File) bool {
+	if !isVideo(f.Path) || isExtra(f.Path) || f.Size <= 0 {
+		return false
+	}
+	if strings.TrimSpace(f.MIMEType) == "" {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(f.MIMEType)
+	return err == nil && (strings.HasPrefix(mediaType, "video/") ||
+		mediaType == "application/octet-stream" || mediaType == "binary/octet-stream")
+}
+
 // isExtra reports samples, trailers and featurettes.
 func isExtra(p string) bool {
 	lower := strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
@@ -707,44 +789,215 @@ func isExtra(p string) bool {
 	return false
 }
 
-// ChooseFile honors explicit plugin file selectors first, including non-video
-// files. Otherwise it picks the main video: the target episode or largest video.
-func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
-	featureCount := 0
+// chooseNonVideoFile selects a non-video file (or single-volume wrapper
+// archive for downstream extraction) from a torrent file list when a plugin
+// release target carries AllowNonVideo with a member selector or media MIME.
+func chooseNonVideoFile(files []File, target *core.ReleaseTarget) (File, error) {
+	var nonEmpty []File
+	var names []string
 	for _, f := range files {
-		if isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 {
-			featureCount++
+		if f.Size <= 0 {
+			continue
+		}
+		nonEmpty = append(nonEmpty, f)
+		names = append(names, f.Path)
+	}
+	if len(nonEmpty) == 0 {
+		return File{}, fmt.Errorf("debrid: no non-empty files (%s): %w", torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
+	singleArchive := func() (File, bool) {
+		type archiveSetKey struct {
+			kind nzb.Kind
+			name string
+		}
+		setCounts := make(map[archiveSetKey]int)
+		infos := make([]nzb.FileInfo, len(nonEmpty))
+		for i, f := range nonEmpty {
+			info := nzb.Classify(path.Base(strings.ReplaceAll(f.Path, "\\", "/")))
+			infos[i] = info
+			if info.Kind.IsArchive() {
+				setCounts[archiveSetKey{kind: info.Kind, name: info.SetName}]++
+			}
+		}
+		best := -1
+		for i, f := range nonEmpty {
+			info := infos[i]
+			if !info.Kind.IsArchive() || info.Kind == nzb.KindSplit {
+				continue
+			}
+			// Debrid serves one file per Acquire; skip multi-volume archive
+			// sets that cannot be opened from a single HTTP volume.
+			if setCounts[archiveSetKey{kind: info.Kind, name: info.SetName}] != 1 || info.Volume > 0 {
+				continue
+			}
+			if best < 0 || f.Size > nonEmpty[best].Size || (f.Size == nonEmpty[best].Size && f.Path < nonEmpty[best].Path) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			return nonEmpty[best], true
+		}
+		return File{}, false
+	}
+
+	if want := strings.TrimSpace(target.Member); want != "" {
+		if idx, ok, ambig := nzb.MatchPathIndex(names, want); ok {
+			return nonEmpty[idx], nil
+		} else if ambig {
+			return File{}, fmt.Errorf("debrid: member %q matched multiple files: %w", want, core.ErrWrongContent)
+		}
+		if arc, ok := singleArchive(); ok {
+			return arc, nil
+		}
+		return File{}, fmt.Errorf("debrid: no file or archive matching %q (%s): %w", want, torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
+	if target.MemberIndex != nil {
+		if arc, ok := singleArchive(); ok {
+			return arc, nil
+		}
+		return File{}, fmt.Errorf("debrid: no archive for memberIndex %d (%s): %w", *target.MemberIndex, torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
+	if th := coreTrackToNZB(target.Track); th != nil {
+		if idx, ok, ambig := nzb.MatchTrackIndex(names, *th, target.MIME); ok {
+			return nonEmpty[idx], nil
+		} else if ambig {
+			return File{}, fmt.Errorf("debrid: track hint (disc=%d number=%d title=%q) matched multiple files: %w", th.Disc, th.Number, th.Title, core.ErrWrongContent)
+		}
+		if arc, ok := singleArchive(); ok {
+			return arc, nil
+		}
+		return File{}, fmt.Errorf("debrid: no file or archive matching track hint (disc=%d number=%d title=%q) (%s): %w", th.Disc, th.Number, th.Title, torrentFileSummary(files), errNoUsableNonVideo)
+	}
+
+	best := -1
+	bestRank := 0
+	for i, f := range nonEmpty {
+		rank := nzb.NonVideoMatchRank(f.Path, target.MIME)
+		if rank == 0 {
+			continue
+		}
+		if rank > bestRank ||
+			(rank == bestRank && (best < 0 || f.Size > nonEmpty[best].Size || (f.Size == nonEmpty[best].Size && f.Path < nonEmpty[best].Path))) {
+			best = i
+			bestRank = rank
 		}
 	}
-	movieMatches := func(f File) bool { return featureCount <= 1 || movieFileMatches(f.Path, target) }
+	if best >= 0 {
+		return nonEmpty[best], nil
+	}
+	if arc, ok := singleArchive(); ok {
+		return arc, nil
+	}
+	return File{}, fmt.Errorf("debrid: no usable %s file (%s): %w", target.MIME, torrentFileSummary(files), errNoUsableNonVideo)
+}
 
-	if target != nil && (target.FileIndex != nil || target.ExactFile != "") {
-		matches := func(f File) bool {
-			want := strings.ReplaceAll(target.ExactFile, "\\", "/")
-			name := strings.ReplaceAll(f.Path, "\\", "/")
-			return want == "" || name == want || (!strings.Contains(want, "/") && path.Base(name) == want)
+// ChooseFile selects an explicitly named file (including non-video files when
+// target.AllowNonVideo is set) or picks the main playable video: the target
+// episode or largest video.
+func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
+	exactMatch := func(f File) bool {
+		want := strings.ReplaceAll(target.ExactFile, "\\", "/")
+		if want == "" {
+			return true
 		}
+		name := strings.ReplaceAll(f.Path, "\\", "/")
+		if strings.TrimPrefix(name, "/") == strings.TrimPrefix(want, "/") {
+			return true
+		}
+		return !strings.Contains(want, "/") && path.Base(name) == want
+	}
+	if target != nil && target.AllowNonVideo && (target.FileIndex != nil || target.ExactFile != "") {
 		if target.FileIndex != nil {
 			i := *target.FileIndex
 			if i < 0 || i >= len(files) {
-				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d: %w", i, len(files), core.ErrWrongContent)
+				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d (%s): %w", i, len(files), torrentFileSummary(files), core.ErrWrongContent)
 			}
 			f := files[i]
-			if f.Size <= 0 || !matches(f) || !movieMatches(f) {
-				return File{}, fmt.Errorf("debrid: selected file is empty or does not match file: %w", core.ErrWrongContent)
+			if !exactMatch(f) {
+				return File{}, fmt.Errorf("debrid: selected file %q does not match target %q (%s): %w", f.Path, target.ExactFile, torrentFileSummary(files), core.ErrWrongContent)
+			}
+			if f.Size <= 0 {
+				return File{}, fmt.Errorf("debrid: selected file %q is empty: %w", f.Path, core.ErrReleaseRejected)
 			}
 			return f, nil
 		}
 		var chosen File
 		count := 0
 		for _, f := range files {
-			if f.Size > 0 && matches(f) && movieMatches(f) {
+			if exactMatch(f) {
+				chosen = f
+				count++
+			}
+		}
+		if count == 0 {
+			cleanWant := strings.TrimPrefix(strings.ReplaceAll(target.ExactFile, "\\", "/"), "/")
+			if strings.Contains(cleanWant, "/") {
+				suffix := "/" + cleanWant
+				for _, f := range files {
+					cleanName := strings.TrimPrefix(strings.ReplaceAll(f.Path, "\\", "/"), "/")
+					if strings.HasSuffix(cleanName, suffix) {
+						chosen = f
+						count++
+					}
+				}
+			}
+		}
+		if count != 1 {
+			return File{}, fmt.Errorf("debrid: file %q matched %d files (%s): %w", target.ExactFile, count, torrentFileSummary(files), core.ErrWrongContent)
+		}
+		if chosen.Size <= 0 {
+			return File{}, fmt.Errorf("debrid: selected file %q is empty: %w", chosen.Path, core.ErrReleaseRejected)
+		}
+		return chosen, nil
+	}
+
+	if target != nil && target.AllowNonVideo &&
+		(target.Member != "" || target.MemberIndex != nil || coreTrackToNZB(target.Track) != nil || nzb.IsNonVideoMIME(target.MIME)) {
+		return chooseNonVideoFile(files, target)
+	}
+
+	featureCount := 0
+	for _, f := range files {
+		if playableVideo(f) {
+			featureCount++
+		}
+	}
+	if featureCount == 0 {
+		return File{}, fmt.Errorf("%w (%s)", errNoVideo, torrentFileSummary(files))
+	}
+	movieMatches := func(f File) bool { return featureCount <= 1 || movieFileMatches(f.Path, target) }
+
+	if target != nil && (target.FileIndex != nil || target.ExactFile != "") {
+		if target.FileIndex != nil {
+			i := *target.FileIndex
+			if i < 0 || i >= len(files) {
+				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d (%s): %w", i, len(files), torrentFileSummary(files), core.ErrWrongContent)
+			}
+			f := files[i]
+			if !playableVideo(f) {
+				return File{}, fmt.Errorf("debrid: selected file %q is not a main video: %w", f.Path, errNoVideo)
+			}
+			if !exactMatch(f) || !movieMatches(f) {
+				return File{}, fmt.Errorf("debrid: selected file %q does not match target (%s): %w", f.Path, torrentFileSummary(files), core.ErrWrongContent)
+			}
+			return f, nil
+		}
+		var chosen File
+		count := 0
+		for _, f := range files {
+			if exactMatch(f) && !playableVideo(f) {
+				return File{}, fmt.Errorf("debrid: selected file %q is not a main video: %w", f.Path, errNoVideo)
+			}
+			if playableVideo(f) && exactMatch(f) && movieMatches(f) {
 				chosen = f
 				count++
 			}
 		}
 		if count != 1 {
-			return File{}, fmt.Errorf("debrid: file matched %d files: %w", count, core.ErrWrongContent)
+			return File{}, fmt.Errorf("debrid: file %q matched %d files (%s): %w", target.ExactFile, count, torrentFileSummary(files), core.ErrWrongContent)
 		}
 		return chosen, nil
 	}
@@ -761,10 +1014,10 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	identityMismatch := false
 	for _, f := range files {
 		if target != nil && (!movieMatches(f) || !fileCourMatchesTarget(f.Path, target) || !fileIdentityMatches(f, target)) {
-			identityMismatch = identityMismatch || (isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0)
+			identityMismatch = identityMismatch || playableVideo(f)
 			continue
 		}
-		if isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 {
+		if playableVideo(f) {
 			videos = append(videos, f)
 		}
 	}
@@ -778,6 +1031,14 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	}
 	sort.SliceStable(videos, func(i, j int) bool { return videos[i].Size > videos[j].Size })
 	if target == nil || target.Episode <= 0 {
+		if target != nil && len(videos) > 1 && len(target.WantedLanguages) > 0 {
+			mc := make([]releaseparse.MovieCandidate, len(videos))
+			for i, v := range videos {
+				mc[i] = releaseparse.MovieCandidate{Path: v.Path, Size: v.Size}
+			}
+			order := releaseparse.OrderMovieCandidates(mc, target.MovieTitles, target.OriginalLanguage, target.WantedLanguages)
+			return videos[order[0]], nil
+		}
 		return videos[0], nil
 	}
 	if target.Season == 0 {
@@ -791,57 +1052,68 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 		}
 		return File{}, fmt.Errorf("debrid: no verified special S00E%02d: %w", target.Episode, core.ErrWrongContent)
 	}
-	// Pass 1: explicit season + episode match on base name, or on full path
-	// when the base name carries no episode number of its own.
-	for _, f := range videos {
-		normPath := strings.ReplaceAll(f.Path, "\\", "/")
-		baseInfo := releaseparse.Parse(path.Base(normPath))
-		fullInfo := releaseparse.Parse(strings.ReplaceAll(normPath, "/", " "))
-		fileCour := baseInfo.Cour
-		if fileCour == 0 {
-			fileCour = fullInfo.Cour
+	for _, cand := range targetEpisodeCandidates(target) {
+		candCour := target.Cour
+		if cand.Season != target.Season || cand.Episode != target.Episode {
+			candCour = 0
 		}
-		if target.Cour > 0 && target.CourEpisode > 0 && fileCour > 0 {
-			seasonOK := (len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) == 0) ||
-				slices.Contains(baseInfo.Seasons, target.Season) ||
-				slices.Contains(fullInfo.Seasons, target.Season)
-			if fileCour == target.Cour && seasonOK &&
-				(slices.Contains(baseInfo.Episodes, target.CourEpisode) ||
-					releaseparse.EpisodeMatchesAbsolute(baseInfo, target.CourEpisode)) {
-				return f, nil
-			}
-			continue
-		}
-		if fileCour > 1 && target.Cour != fileCour {
-			continue
-		}
-		// Absolute anime numbers are authoritative file identities. Never let
-		// a parent pack's episode range or the single-file fallback override one.
-		if len(baseInfo.AbsoluteEpisodes) > 0 {
-			if (len(fullInfo.Seasons) == 0 || len(fullInfo.Seasons) == 1 && fullInfo.Seasons[0] == target.Season) && releaseparse.EpisodeMatchesAbsolute(baseInfo, target.AbsoluteEpisode) {
-				return f, nil
-			}
-			// In an explicitly numbered season folder, a bare file number is
-			// local to that season (the folder supplies the missing Sxx).
-			if len(fullInfo.Seasons) == 1 && fullInfo.Seasons[0] == target.Season && releaseparse.EpisodeMatchesAbsolute(baseInfo, target.Episode) {
-				return f, nil
-			}
-			continue
-		}
-		if len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) > 0 {
-			baseInfo.Seasons = fullInfo.Seasons
-		}
-		if releaseparse.EpisodeMatches(baseInfo, target.Season, target.Episode) ||
-			(len(baseInfo.Episodes) == 0 && (len(videos) == 1 || len(fullInfo.Episodes) == 1) && releaseparse.EpisodeMatches(fullInfo, target.Season, target.Episode)) {
-			return f, nil
-		}
-	}
-	// Pass 2: classic pack numbering ("Season 2/05 - Title.mkv", "205 - Title.avi",
-	// or miniseries "Part 2 - Title.mkv") when no standard SxxExx matched.
-	if len(videos) > 1 {
+		sizeGate := episodeSizeGateForSeason(videos, cand.Season, candCour)
+		// Pass 1: explicit season + episode match on base name, or on full path
+		// when the base name carries no episode number of its own.
 		for _, f := range videos {
-			if classicPackEpisodeMatches(f.Path, target.Season, target.Episode) {
+			if !sizeGate.Accept(f.Path, f.Size) {
+				continue
+			}
+			normPath := strings.ReplaceAll(f.Path, "\\", "/")
+			baseInfo := releaseparse.Parse(path.Base(normPath))
+			fullInfo := releaseparse.Parse(strings.ReplaceAll(normPath, "/", " "))
+			fileCour := baseInfo.Cour
+			if fileCour == 0 {
+				fileCour = fullInfo.Cour
+			}
+			if candCour > 0 && target.CourEpisode > 0 && fileCour > 0 {
+				seasonOK := (len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) == 0) ||
+					slices.Contains(baseInfo.Seasons, cand.Season) ||
+					slices.Contains(fullInfo.Seasons, cand.Season)
+				if fileCour == candCour && seasonOK &&
+					(slices.Contains(baseInfo.Episodes, target.CourEpisode) ||
+						releaseparse.EpisodeMatchesAbsolute(baseInfo, target.CourEpisode)) {
+					return f, nil
+				}
+				continue
+			}
+			if fileCour > 1 && target.Cour != fileCour {
+				continue
+			}
+			// Absolute anime numbers are authoritative file identities. Never let
+			// a parent pack's episode range or the single-file fallback override one.
+			if len(baseInfo.AbsoluteEpisodes) > 0 {
+				if (len(fullInfo.Seasons) == 0 || len(fullInfo.Seasons) == 1 && fullInfo.Seasons[0] == cand.Season) && releaseparse.EpisodeMatchesAbsolute(baseInfo, target.AbsoluteEpisode) {
+					return f, nil
+				}
+				// In an explicitly numbered season folder, a bare file number is
+				// local to that season (the folder supplies the missing Sxx).
+				if len(fullInfo.Seasons) == 1 && fullInfo.Seasons[0] == cand.Season && releaseparse.EpisodeMatchesAbsolute(baseInfo, cand.Episode) {
+					return f, nil
+				}
+				continue
+			}
+			if len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) > 0 {
+				baseInfo.Seasons = fullInfo.Seasons
+			}
+			if releaseparse.EpisodeMatches(baseInfo, cand.Season, cand.Episode) ||
+				(len(baseInfo.Episodes) == 0 && (len(videos) == 1 || len(fullInfo.Episodes) == 1) && releaseparse.EpisodeMatches(fullInfo, cand.Season, cand.Episode)) ||
+				(cand.Season > 0 && len(baseInfo.Episodes) == 0 && len(baseInfo.AbsoluteEpisodes) == 0 && releaseparse.EpisodeMatchesAirDateString(baseInfo, target.AirDate)) {
 				return f, nil
+			}
+		}
+		// Pass 2: classic pack numbering ("Season 2/05 - Title.mkv", "205 - Title.avi",
+		// or miniseries "Part 2 - Title.mkv") when no standard SxxExx matched.
+		if len(videos) > 1 {
+			for _, f := range videos {
+				if sizeGate.Accept(f.Path, f.Size) && classicPackEpisodeMatches(f.Path, cand.Season, cand.Episode) {
+					return f, nil
+				}
 			}
 		}
 	}
@@ -852,7 +1124,7 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 		normPath := strings.ReplaceAll(videos[0].Path, "\\", "/")
 		baseInfo := releaseparse.Parse(path.Base(normPath))
 		info := releaseparse.Parse(strings.ReplaceAll(normPath, "/", " "))
-		if len(baseInfo.AbsoluteEpisodes) == 0 && len(baseInfo.Episodes) == 0 && len(info.Episodes) == 0 && !namesOtherClassicEpisode(videos[0].Path, target.Season, target.Episode) {
+		if len(baseInfo.AbsoluteEpisodes) == 0 && len(baseInfo.Episodes) == 0 && len(info.Episodes) == 0 && !namesOtherClassicEpisodeForTarget(videos[0].Path, target) {
 			return videos[0], nil
 		}
 	}
@@ -876,7 +1148,7 @@ func sourceNamedFile(files []File, target *core.ReleaseTarget) (File, bool) {
 	var match File
 	count := 0
 	for _, f := range files {
-		if isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 && strings.EqualFold(basename(f.Path), basename(target.FileName)) {
+		if playableVideo(f) && strings.EqualFold(basename(f.Path), basename(target.FileName)) {
 			match = f
 			count++
 		}
@@ -884,11 +1156,20 @@ func sourceNamedFile(files []File, target *core.ReleaseTarget) (File, bool) {
 	if count != 1 || !fileCourMatchesTarget(match.Path, target) || !fileIdentityMatches(match, target) {
 		return File{}, false
 	}
-	info := releaseparse.Parse(path.Base(strings.ReplaceAll(match.Path, "\\", "/")))
-	if len(info.Seasons) > 0 && !slices.Contains(info.Seasons, target.Season) {
+	var peers []File
+	for _, f := range files {
+		if playableVideo(f) && fileCourMatchesTarget(f.Path, target) && fileIdentityMatches(f, target) {
+			peers = append(peers, f)
+		}
+	}
+	if !episodeSizeGate(peers, target).Accept(match.Path, match.Size) {
 		return File{}, false
 	}
-	if len(info.Episodes) > 0 || len(info.AbsoluteEpisodes) > 0 || len(info.Seasons) > 0 || namesOtherClassicEpisode(match.Path, target.Season, target.Episode) {
+	info := releaseparse.Parse(path.Base(strings.ReplaceAll(match.Path, "\\", "/")))
+	if len(info.Seasons) > 0 && !targetAllowsSeason(target, info.Seasons) {
+		return File{}, false
+	}
+	if len(info.Episodes) > 0 || len(info.AbsoluteEpisodes) > 0 || len(info.Seasons) > 0 || namesOtherClassicEpisodeForTarget(match.Path, target) {
 		copyTarget := *target
 		copyTarget.FileName = "" // avoid applying the hint again
 		_, err := ChooseFile([]File{match}, &copyTarget)
@@ -897,7 +1178,7 @@ func sourceNamedFile(files []File, target *core.ReleaseTarget) (File, bool) {
 	// Even a title-only file must not contradict an explicitly named season
 	// folder. A collection folder with several seasons supplies no such proof.
 	full := releaseparse.Parse(strings.NewReplacer("/", " ", "\\", " ").Replace(match.Path))
-	if len(full.Seasons) == 1 && full.Seasons[0] != target.Season {
+	if len(full.Seasons) == 1 && !targetAllowsSeason(target, full.Seasons) {
 		return File{}, false
 	}
 	return match, true
@@ -936,8 +1217,8 @@ func fileCourMatchesTarget(filePath string, target *core.ReleaseTarget) bool {
 	if cour > 1 && (target.Cour != cour || target.CourEpisode <= 0) || cour == 1 && target.Cour > 1 {
 		return false
 	}
-	return (len(base.Seasons) == 0 || slices.Contains(base.Seasons, target.Season)) &&
-		(len(full.Seasons) == 0 || slices.Contains(full.Seasons, target.Season))
+	return (len(base.Seasons) == 0 || targetAllowsSeason(target, base.Seasons)) &&
+		(len(full.Seasons) == 0 || targetAllowsSeason(target, full.Seasons))
 }
 
 func chosenFileMatchesTarget(filePath string, target *core.ReleaseTarget) bool {
@@ -947,8 +1228,12 @@ func chosenFileMatchesTarget(filePath string, target *core.ReleaseTarget) bool {
 	if target == nil || target.Episode <= 0 || filePath == "" {
 		return true
 	}
-	if target.Season != 0 && classicPackEpisodeMatches(filePath, target.Season, target.Episode) {
-		return true
+	if target.Season != 0 {
+		for _, cand := range targetEpisodeCandidates(target) {
+			if classicPackEpisodeMatches(filePath, cand.Season, cand.Episode) {
+				return true
+			}
+		}
 	}
 	_, err := ChooseFile([]File{{Path: filePath, Size: 1}}, target)
 	return err == nil
@@ -1017,6 +1302,79 @@ func fileIdentityMatches(f File, target *core.ReleaseTarget) bool {
 	info := releaseparse.Parse(full)
 	year := releaseparse.EpisodeSeriesYear(full, info.Year)
 	return releaseparse.SeriesYearMatches(year, target.ShowYear) && (target.Season == 0 || year != 0 || idMatch || releaseparse.EpisodeTitleMatches(path.Base(strings.ReplaceAll(f.Path, "\\", "/")), target.EpisodeTitle))
+}
+
+func targetEpisodeCandidates(target *core.ReleaseTarget) []core.EpisodeNumber {
+	if target == nil || target.Episode <= 0 {
+		return nil
+	}
+	var out []core.EpisodeNumber
+	add := func(s, e int) {
+		if s <= 0 || e <= 0 {
+			return
+		}
+		n := core.EpisodeNumber{Season: s, Episode: e}
+		if !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	add(target.Season, target.Episode)
+	for _, a := range target.Aliases {
+		add(a.Season, a.Episode)
+	}
+	if target.PackID == "" {
+		add(target.CanonicalSeason, target.CanonicalEpisode)
+	}
+	return out
+}
+
+func targetAllowsSeason(target *core.ReleaseTarget, seasons []int) bool {
+	if target == nil || len(seasons) == 0 {
+		return true
+	}
+	for _, cand := range targetEpisodeCandidates(target) {
+		if slices.Contains(seasons, cand.Season) {
+			return true
+		}
+	}
+	return false
+}
+
+func namesOtherClassicEpisodeForTarget(filePath string, target *core.ReleaseTarget) bool {
+	if target == nil {
+		return false
+	}
+	cands := targetEpisodeCandidates(target)
+	if len(cands) == 0 {
+		return namesOtherClassicEpisode(filePath, target.Season, target.Episode)
+	}
+	other := false
+	for _, cand := range cands {
+		if namesOtherClassicEpisode(filePath, cand.Season, cand.Episode) {
+			other = true
+		} else if cand.Season == 1 {
+			return false
+		}
+	}
+	return other
+}
+
+func episodeSizeGate(videos []File, target *core.ReleaseTarget) releaseparse.PackEpisodeSizeGate {
+	if target == nil || target.Season <= 0 || target.Episode <= 0 {
+		return releaseparse.PackEpisodeSizeGate{}
+	}
+	return episodeSizeGateForSeason(videos, target.Season, target.Cour)
+}
+
+func episodeSizeGateForSeason(videos []File, season, cour int) releaseparse.PackEpisodeSizeGate {
+	if season <= 0 {
+		return releaseparse.PackEpisodeSizeGate{}
+	}
+	sized := make([]releaseparse.PackSizedFile, len(videos))
+	for i, f := range videos {
+		sized[i] = releaseparse.PackSizedFile{Path: f.Path, Size: f.Size}
+	}
+	return releaseparse.NewPackEpisodeSizeGate(sized, season, cour)
 }
 
 func movieFileMatches(name string, target *core.ReleaseTarget) bool {

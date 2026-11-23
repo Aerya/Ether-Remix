@@ -92,3 +92,151 @@ func source(country string, releaseType int) string {
 	}
 	return s
 }
+
+// Alpha2 normalizes a country or sub-region code (such as "us", "GB", or
+// "CA-QC") to its uppercase ISO 3166-1 alpha-2 code, or "" when invalid.
+func Alpha2(country string) string {
+	c := strings.ToUpper(strings.TrimSpace(country))
+	if len(c) == 5 && c[2] == '-' {
+		c = c[:2]
+	}
+	if len(c) == 2 && c[0] >= 'A' && c[0] <= 'Z' && c[1] >= 'A' && c[1] <= 'Z' {
+		return c
+	}
+	return ""
+}
+
+// ByCountry reduces provider certifications to the best bare label per country
+// (keyed by uppercase country code), following Select's release-type ordering
+// and preferring a rated label over an explicit "not rated" mark.
+func ByCountry(certs []Certification) map[string]string {
+	byCountry := map[string][]Certification{}
+	for _, c := range certs {
+		country := strings.ToUpper(strings.TrimSpace(c.Country))
+		label := strings.TrimSpace(c.Label)
+		if Alpha2(country) == "" || label == "" {
+			continue
+		}
+		byCountry[country] = append(byCountry[country], c)
+	}
+	if len(byCountry) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(byCountry))
+	for country, list := range byCountry {
+		sort.SliceStable(list, func(i, j int) bool { return rank(list[i].ReleaseType) < rank(list[j].ReleaseType) })
+		var nr string
+		picked := ""
+		for _, c := range list {
+			label := strings.TrimSpace(c.Label)
+			if Lookup(country, label) != Unrated {
+				picked = label
+				break
+			}
+			if nr == "" && IsNotRated(label) {
+				nr = label
+			}
+		}
+		if picked == "" {
+			picked = nr
+		}
+		if picked != "" {
+			out[country] = picked
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// Display selects a bare certificate and optional ISO 3166-1 alpha-2 country
+// code for a title, preferring the regions in preferredRegions in order (for
+// example the viewer's Accept-Language region, the server's configured region,
+// then "US"), before falling back to other countries in foreignPriority order
+// or the parsed stored rating. Unknown bare ratings return label with "".
+func Display(stored string, certs map[string]string, preferredRegions ...string) (label, country string) {
+	pool := make(map[string]string, len(certs)+1)
+	for rawCountry, rawLabel := range certs {
+		cc := strings.ToUpper(strings.TrimSpace(rawCountry))
+		lbl := strings.TrimSpace(rawLabel)
+		if Alpha2(cc) == "" || lbl == "" {
+			continue
+		}
+		pool[cc] = lbl
+	}
+	stored = strings.TrimSpace(stored)
+	var parsed Rating
+	if stored != "" {
+		parsed = Parse(FromPrefixed(stored))
+		if parsed.Country != "" && parsed.Label != "" {
+			existing, exists := pool[parsed.Country]
+			if !exists || (Lookup(parsed.Country, existing) == Unrated && parsed.Level != Unrated) {
+				pool[parsed.Country] = parsed.Label
+			}
+		}
+	}
+
+	prefs := make([]string, 0, len(preferredRegions))
+	seenPref := make(map[string]bool, len(preferredRegions))
+	for _, r := range preferredRegions {
+		cc := Alpha2(r)
+		if cc == "" || seenPref[cc] {
+			continue
+		}
+		seenPref[cc] = true
+		prefs = append(prefs, cc)
+	}
+
+	keys := make([]string, 0, len(pool))
+	for k := range pool {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		pi, pj := foreignPriority(keys[i]), foreignPriority(keys[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return keys[i] < keys[j]
+	})
+
+	findRegion := func(cc string, ratedOnly bool) (string, string, bool) {
+		if lbl := pool[cc]; lbl != "" && (!ratedOnly || Lookup(cc, lbl) != Unrated) {
+			return lbl, cc, true
+		}
+		for _, k := range keys {
+			if Alpha2(k) != cc {
+				continue
+			}
+			if lbl := pool[k]; lbl != "" && (!ratedOnly || Lookup(k, lbl) != Unrated) {
+				return lbl, cc, true
+			}
+		}
+		return "", "", false
+	}
+
+	for _, cc := range prefs {
+		if lbl, alpha, ok := findRegion(cc, true); ok {
+			return lbl, alpha
+		}
+	}
+	for _, k := range keys {
+		if lbl := pool[k]; lbl != "" && Lookup(k, lbl) != Unrated {
+			return lbl, Alpha2(k)
+		}
+	}
+	for _, cc := range prefs {
+		if lbl, alpha, ok := findRegion(cc, false); ok && IsNotRated(lbl) {
+			return lbl, alpha
+		}
+	}
+	if parsed.Label != "" {
+		return parsed.Label, Alpha2(parsed.Country)
+	}
+	for _, k := range keys {
+		if lbl := pool[k]; lbl != "" {
+			return lbl, Alpha2(k)
+		}
+	}
+	return "", ""
+}

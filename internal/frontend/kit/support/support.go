@@ -127,7 +127,7 @@ func sampleable(protocol string, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		return false
 	}
-	for _, skip := range []string{"/images/", "/image/", "/videos/", "/audio/", "/sessions/", "/download"} {
+	for _, skip := range []string{"/images/", "/image/", "/videos/", "/audio/", "/sessions/", "/download", "/auth/keys", "/users/new", "/password"} {
 		if strings.Contains(p, skip) {
 			return false
 		}

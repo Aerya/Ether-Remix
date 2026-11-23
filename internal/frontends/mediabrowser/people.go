@@ -1,10 +1,15 @@
 package mediabrowser
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
 // peopleDTO uses parent-authorized facet IDs and title-bound portrait grants.
@@ -23,6 +28,11 @@ func (i *instance) peopleDTO(r *http.Request, viewer *frontend.Viewer, token str
 	}
 	for _, p := range detail.Title.Writers {
 		credits = append(credits, credit{p.TMDB, p.ID, p.Name, p.Role, "Writer"})
+	}
+	for _, p := range detail.Title.Crew {
+		if strings.EqualFold(p.Role, "Producer") {
+			credits = append(credits, credit{p.TMDB, p.ID, p.Name, p.Role, "Producer"})
+		}
 	}
 	ids := make([]int64, 0, min(len(credits), 256))
 	seen := map[int64]bool{}
@@ -71,10 +81,14 @@ func (i *instance) peopleDTO(r *http.Request, viewer *frontend.Viewer, token str
 		} else {
 			id = c.wire
 		}
-		dto := map[string]any{"Name": c.name, "Type": c.kind}
-		if id != "" {
-			dto["Id"] = id
+		// BaseItemPerson.Id is a required UUID in the Jellyfin SDK: one
+		// credit without a usable id fails decoding of the whole item
+		// (Jellyfin Android TV then exits the detail page, #614). Drop the
+		// credit rather than the page.
+		if id == "" || (i.protocol == "jellyfin" && !guidLike(id)) {
+			continue
 		}
+		dto := map[string]any{"Name": c.name, "Type": c.kind, "Id": id}
 		if c.role != "" {
 			dto["Role"] = c.role
 		}
@@ -97,4 +111,231 @@ func (i *instance) peopleDTO(r *http.Request, viewer *frontend.Viewer, token str
 		result = append(result, dto)
 	}
 	return result
+}
+
+func personPortrait(person frontend.PersonDetail) (frontend.Image, bool) {
+	if person.TMDB > 0 {
+		want := "tmdb:" + strconv.FormatInt(person.TMDB, 10)
+		for _, img := range person.Images {
+			if img.Kind == frontend.ImagePerson && img.Subject == want && img.Path != "" {
+				return img, true
+			}
+		}
+	}
+	for _, img := range person.Images {
+		if img.Kind == frontend.ImagePerson && img.Path != "" {
+			return img, true
+		}
+	}
+	if person.KnownFor == "MusicArtist" {
+		for _, img := range person.Images {
+			if img.Kind == frontend.ImagePoster && img.Path != "" {
+				return img, true
+			}
+		}
+	}
+	return frontend.Image{}, false
+}
+
+func personImagesEnabled(r *http.Request) bool {
+	if v := route.Query(r.URL.Query(), "EnableImages"); len(v) == 1 && strings.EqualFold(v[0], "false") {
+		return false
+	}
+	types := route.Query(r.URL.Query(), "EnableImageTypes")
+	if len(types) == 0 {
+		return true
+	}
+	for _, value := range types {
+		for _, t := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), "primary") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (i *instance) issuePersonGrants(r *http.Request, people []frontend.PersonDetail) ([]string, []frontend.Image) {
+	grants := make([]string, len(people))
+	imgs := make([]frontend.Image, len(people))
+	if i.host.ImageGrants == nil || len(people) == 0 || !personImagesEnabled(r) {
+		return grants, imgs
+	}
+	_, token, _ := i.viewer(r)
+	if batch, ok := i.host.ImageGrants.(frontend.PersonImageGrantBatch); ok {
+		targets := make([]frontend.PersonImageTarget, 0, len(people))
+		positions := make([]int, 0, len(people))
+		for n, person := range people {
+			if person.ArtworkItem == 0 {
+				continue
+			}
+			if img, ok := personPortrait(person); ok {
+				targets = append(targets, frontend.PersonImageTarget{Item: person.ArtworkItem, Image: img})
+				positions = append(positions, n)
+				imgs[n] = img
+			}
+		}
+		if len(targets) > 0 {
+			tokens, err := batch.IssuePersonImages(r.Context(), token, device(r), targets)
+			if err == nil && len(tokens) == len(targets) {
+				for n, pos := range positions {
+					grants[pos] = tokens[n]
+				}
+			}
+		}
+		// The batch admits catalogue credits only; people from plugin
+		// library items are granted one at a time, which checks the item.
+		for n, person := range people {
+			if grants[n] != "" || person.ArtworkItem == 0 || !person.ArtworkItem.IsPluginKey() {
+				continue
+			}
+			img, ok := personPortrait(person)
+			if !ok {
+				continue
+			}
+			if grant, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: token, Device: device(r), Item: person.ArtworkItem, Image: img}); err == nil && grant != "" {
+				grants[n], imgs[n] = grant, img
+			}
+		}
+		return grants, imgs
+	}
+	for n, person := range people {
+		if person.ArtworkItem == 0 {
+			continue
+		}
+		img, ok := personPortrait(person)
+		if !ok {
+			continue
+		}
+		grant, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: token, Device: device(r), Item: person.ArtworkItem, Image: img})
+		if err == nil && grant != "" {
+			grants[n] = grant
+			imgs[n] = img
+		}
+	}
+	return grants, imgs
+}
+
+func (i *instance) personItemDTO(person frontend.PersonDetail, grant string, img frontend.Image, detail bool) map[string]any {
+	itemType := "Person"
+	isFolder := false
+	if person.KnownFor == "MusicArtist" {
+		itemType = "MusicArtist"
+		isFolder = true
+	}
+	dto := map[string]any{"Id": person.ID, "Name": person.Name, "Type": itemType, "ServerId": i.info.ID, "IsFolder": isFolder}
+	if itemType == "MusicArtist" {
+		dto["SortName"] = person.Name
+	}
+	if grant != "" {
+		dto["ImageTags"] = map[string]string{"Primary": grant}
+		i.addImageMetadata(dto, "Primary", grant, img)
+		delete(dto, "PrimaryImageAspectRatio")
+	}
+	if !detail {
+		return dto
+	}
+	if person.Biography != "" {
+		dto["Overview"] = person.Biography
+	}
+	if person.Birthday != "" {
+		if born, err := time.Parse("2006-01-02", person.Birthday); err == nil {
+			dto["PremiereDate"] = wireTime(born)
+		}
+	}
+	pids := map[string]string{}
+	if person.TMDB > 0 && !frontend.IsPluginPersonID(person.TMDB) {
+		pids["Tmdb"] = strconv.FormatInt(person.TMDB, 10)
+	}
+	if person.IMDB != "" {
+		pids["Imdb"] = person.IMDB
+	}
+	if len(pids) > 0 {
+		dto["ProviderIds"] = pids
+	}
+	dto["BackdropImageTags"] = []string{}
+	return dto
+}
+
+func (i *instance) writePersonItem(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, wireID string) bool {
+	if i.host.Experience == nil {
+		return false
+	}
+	people, ok := i.host.Experience.(frontend.PeopleReader)
+	if !ok {
+		return false
+	}
+	person, err := people.Person(i.identityContext(r), v, device(r), wireID, frontend.PersonReadOptions{})
+	if err != nil {
+		if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrPeopleQuery) {
+			return false
+		}
+		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
+		return true
+	}
+	grants, imgs := i.issuePersonGrants(r, []frontend.PersonDetail{person})
+	dto := i.personItemDTO(person, grants[0], imgs[0], true)
+	i.replyItems(w, r, dto)
+	return true
+}
+
+func personExcluded(q frontend.ItemQuery) bool {
+	for _, typ := range q.ExcludedTypes {
+		if typ == "person" {
+			return true
+		}
+	}
+	return false
+}
+
+func personTypesOnly(q frontend.ItemQuery) (only bool, excluded bool) {
+	if len(q.Types) > 0 {
+		return false, false
+	}
+	hasPerson := false
+	for _, typ := range q.UnservedTypes {
+		if typ == "person" {
+			hasPerson = true
+		} else {
+			return false, false
+		}
+	}
+	if !hasPerson {
+		return false, false
+	}
+	return true, personExcluded(q)
+}
+
+func (i *instance) personSearchHints(r *http.Request, v *frontend.Viewer, term string, offset, limit int) ([]any, int, error) {
+	reader, ok := i.host.Experience.(frontend.PeopleReader)
+	if !ok {
+		return nil, 0, nil
+	}
+	term = strings.TrimSpace(term)
+	if term == "" || len([]rune(term)) > 200 {
+		return []any{}, 0, nil
+	}
+	offset = max(offset, 0)
+	if limit <= 0 {
+		limit = 50
+	}
+	people, err := reader.People(r.Context(), v, device(r), frontend.PeopleQuery{Query: term, Limit: min(offset+limit, 100)})
+	if err != nil {
+		return nil, 0, err
+	}
+	page := paging.Slice(people, offset, limit)
+	grants, _ := i.issuePersonGrants(r, page)
+	hints := make([]any, 0, len(page))
+	for n, person := range page {
+		// Jellyfin's Kotlin SDK decodes SearchHint.Id / ItemId as UUID.
+		if i.protocol == "jellyfin" && !guidLike(person.ID) {
+			continue
+		}
+		hint := map[string]any{"Id": person.ID, "ItemId": person.ID, "Name": person.Name, "Type": "Person", "IsFolder": false}
+		if grants[n] != "" {
+			hint["PrimaryImageTag"] = grants[n]
+		}
+		hints = append(hints, hint)
+	}
+	return hints, len(people), nil
 }

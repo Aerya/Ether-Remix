@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -160,17 +161,29 @@ func (s *Service) SourceHistories() []SourceHistory {
 
 // noteSourceEvidence adds observations to a source's counters.
 func (s *Service) noteSourceEvidence(channelID string, src StreamSource, ev SourceEvidence) {
-	if src.ID == "" || ev.empty() {
+	if src.ID == "" || strings.HasPrefix(channelID, directChannelPrefix) || ev.empty() {
 		return
 	}
-	s.history.update(channelID, src, func(h *SourceHistory) { h.add(ev) })
+	var transitioned bool
+	var after SourceHistory
+	s.history.update(channelID, src, func(h *SourceHistory) {
+		wasDegraded := isSourceDegraded(*h)
+		h.add(ev)
+		if !wasDegraded && isSourceDegraded(*h) {
+			transitioned = true
+			after = *h
+		}
+	})
+	if transitioned {
+		s.emitSourceDegraded(after)
+	}
 }
 
 // noteSourceMode records the mode a session used on a source and how it
 // ended: mode "steady", "copy", "transcode", "passthrough"; outcome "ok",
 // "escalated" (switched mid-session), "failed".
 func (s *Service) noteSourceMode(channelID string, src StreamSource, mode, outcome string) {
-	if src.ID == "" {
+	if src.ID == "" || strings.HasPrefix(channelID, directChannelPrefix) {
 		return
 	}
 	now := s.o.Now()
@@ -251,9 +264,10 @@ func (h *SourceHistory) add(ev SourceEvidence) {
 func (h *sourceHistoryStore) update(channelID string, src StreamSource, fn func(*SourceHistory)) {
 	key := sourceHealthKey(channelID, src)
 	h.mu.Lock()
-	var next SourceHistory
+	var prev, next SourceHistory
 	if v, ok := h.entries.Load(key); ok {
-		next = *v.(*SourceHistory)
+		prev = *v.(*SourceHistory)
+		next = prev
 	} else {
 		next = SourceHistory{Key: key, ChannelID: channelID, SourceID: src.ID}
 		h.count.Add(1)
@@ -269,6 +283,10 @@ func (h *sourceHistoryStore) update(channelID string, src StreamSource, fn func(
 		h.evictLocked()
 	}
 	h.mu.Unlock()
+	if h.s != nil && sourceHistoryAvailabilityChanged(prev, next) {
+		h.s.bumpHealthRevision()
+		h.s.noteSourceHistoryExpiry(next, next.Updated)
+	}
 	if h.wake != nil {
 		select {
 		case h.wake <- struct{}{}:
@@ -323,6 +341,11 @@ func (h *sourceHistoryStore) load(ctx context.Context, db *sql.DB, query string,
 		return err
 	}
 	defer rows.Close()
+	var healthChanged bool
+	var now time.Time
+	if h.s != nil {
+		now = h.s.o.Now()
+	}
 	for rows.Next() {
 		var key, data string
 		var updated int64
@@ -334,16 +357,31 @@ func (h *sourceHistoryStore) load(ctx context.Context, db *sql.DB, query string,
 			continue
 		}
 		h.mu.Lock()
-		if v, ok := h.entries.Load(key); !ok || !v.(*SourceHistory).Updated.After(e.Updated) {
-			if !ok {
+		var prev SourceHistory
+		prevOK := false
+		if v, ok := h.entries.Load(key); ok {
+			prev = *v.(*SourceHistory)
+			prevOK = true
+		}
+		if !prevOK || !prev.Updated.After(e.Updated) {
+			if !prevOK {
 				h.count.Add(1)
 			}
 			h.entries.Store(key, &e)
+			if sourceHistoryAvailabilityChanged(prev, e) {
+				healthChanged = true
+				if h.s != nil {
+					h.s.noteSourceHistoryExpiry(e, now)
+				}
+			}
 		}
 		if updated > h.seen {
 			h.seen = updated
 		}
 		h.mu.Unlock()
+	}
+	if healthChanged && h.s != nil {
+		h.s.bumpHealthRevision()
 	}
 	return rows.Err()
 }

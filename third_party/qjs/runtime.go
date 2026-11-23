@@ -295,10 +295,10 @@ func (r *Runtime) NewStringHandle(v string) *Handle {
 	// Allocate len+1 for null terminator
 	ptr := r.Malloc(uint64(len(v) + 1))
 
-	// Write string data
-	r.mem.MustWrite(uint32(ptr), []byte(v))
-	// Add null terminator
-	r.mem.MustWrite(uint32(ptr)+uint32(len(v)), []byte{0})
+	if err := r.mem.WriteString(uint32(ptr), v); err != nil {
+		r.FreeHandle(ptr)
+		panic(err)
+	}
 
 	return NewHandle(r, ptr)
 }

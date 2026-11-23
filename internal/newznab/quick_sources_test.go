@@ -17,7 +17,7 @@ func TestQuickSearchAndRescueOnlySelectedIndexer(t *testing.T) {
 	ca, cb := testConfig(a.server.URL), testConfig(b.server.URL)
 	ca.ID = "a"
 	cb.ID = "b"
-	m := NewManager(db, []config.Indexer{ca, cb}, Options{NZBDir: t.TempDir()})
+	m := NewManager(db, []config.Indexer{ca, cb}, Options{Vault: &testVault{}})
 	ctx := core.WithQuickSource(t.Context(), "usenet", map[string]bool{"a": true})
 	req := core.SearchRequest{Type: core.TypeMovie, Title: "The Signal", Year: 1999}
 	_, _ = m.Search(ctx, req)

@@ -64,27 +64,49 @@ func (s *Service) exportScope(ctx context.Context, viewer *core.Viewer, viewID s
 		return exportScope{}, err
 	}
 	id, err := strconv.Atoi(viewID)
-	if err != nil || !SectionAllowed(v, id) || s.d.Browse == nil {
+	if err != nil || s.d.Browse == nil {
 		return exportScope{}, core.ErrNotFound
 	}
-	var library *Library
-	libs := s.libraries()
-	for j := range libs {
-		if libs[j].ID == id {
-			library = &libs[j]
-			break
+	var out exportScope
+	if s.d.PluginLibraries != nil {
+		stored, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id))
+		if err != nil {
+			return exportScope{}, core.ErrNotFound
 		}
+		mt, _, ok := s.publishedLibrary(ctx, stored)
+		if !ok || !v.AllowsLibrary(stored.ID) || stored.Source == core.LibraryPlugin {
+			return exportScope{}, core.ErrNotFound
+		}
+		if stored.Source == core.LibraryCollection && stored.CollectionID <= 0 {
+			return exportScope{viewer: v, library: Library{ID: int(stored.ID), Name: stored.Name, Type: mt, Virtual: true}, none: true}, nil
+		}
+		lib := Library{ID: int(stored.ID), Name: stored.Name, Type: mt, Virtual: !core.IsBuiltinLibrary(stored.ID)}
+		f := s.libraryBrowseFilter(ctx, v, stored, core.Filter{Type: mt, MaxContentRating: v.MaxContentRating})
+		f.Type = mt
+		out = exportScope{viewer: v, library: lib, filter: f}
+	} else {
+		if !SectionAllowed(v, id) {
+			return exportScope{}, core.ErrNotFound
+		}
+		var library *Library
+		libs := s.libraries()
+		for j := range libs {
+			if libs[j].ID == id {
+				library = &libs[j]
+				break
+			}
+		}
+		if library == nil {
+			return exportScope{}, core.ErrNotFound
+		}
+		out = exportScope{viewer: v, library: *library, filter: core.Filter{Type: library.Type, MaxContentRating: v.MaxContentRating}}
 	}
-	if library == nil {
-		return exportScope{}, core.ErrNotFound
-	}
-	out := exportScope{viewer: v, library: *library, filter: core.Filter{Type: library.Type, MaxContentRating: v.MaxContentRating}}
 	if s.d.PageExclusions != nil {
-		out.ex = s.d.PageExclusions(ctx, v, library.Type)
+		out.ex = s.d.PageExclusions(ctx, v, out.library.Type)
 		if out.ex.Err != nil {
 			return exportScope{}, out.ex.Err
 		}
-		if folded, fits, none := viewerBrowseFilter(out.filter, v, out.ex, library.Type); fits {
+		if folded, fits, none := viewerBrowseFilter(out.filter, v, out.ex, out.library.Type); fits {
 			out.filter, out.none = folded, none
 		}
 	}
@@ -134,14 +156,20 @@ func (s *Service) ExportPolicy(ctx context.Context, viewer *core.Viewer, _ core.
 		Facts                       core.TitleFacts
 		Rules                       int64
 		RulesJudged                 bool
+		ExtraRules                  []core.LibraryExclusion
+		ExtraFallback               string
+		CatalogueSources            []string
+		CollectionMembers           int64
 	}{v.ID, v.IsOwner, v.MaxContentRating, sections, scope.library.ID, scope.library.Type, scope.none, ex.Keys, ex.ExcludeGenres, ex.ExcludeKeywords,
-		share.ContentRatings, share.ExcludeContentRatings, share.MinContentRating, share.MaxContentRating, share.IncludeCollectionNames, share.ExcludeCollectionNames, facts, rules, rulesJudged}
+		share.ContentRatings, share.ExcludeContentRatings, share.MinContentRating, share.MaxContentRating, share.IncludeCollectionNames, share.ExcludeCollectionNames, facts, rules, rulesJudged,
+		scope.filter.ExtraRules, scope.filter.ExtraFallback, scope.filter.CatalogueSources, scope.filter.CollectionMembers}
 	raw, err := json.Marshal(stamp)
 	if err != nil {
 		return frontend.ExportPolicy{}, err
 	}
 	sum := sha256.Sum256(raw)
 	judged := v.MaxContentRating != "" || len(sections) > 0 || len(ex.ExcludeGenres) > 0 || len(ex.ExcludeKeywords) > 0 || facts != 0 || rulesJudged ||
+		len(scope.filter.ExtraRules) > 0 || scope.filter.ExtraFallback != "" || len(scope.filter.CatalogueSources) > 0 || scope.filter.CollectionMembers > 0 ||
 		len(share.ContentRatings) > 0 || len(share.ExcludeContentRatings) > 0 || share.MinContentRating != "" || share.MaxContentRating != "" ||
 		len(share.IncludeCollectionNames) > 0 || len(share.ExcludeCollectionNames) > 0
 	return frontend.ExportPolicy{Stamp: hex.EncodeToString(sum[:]), TitleJudged: judged}, nil

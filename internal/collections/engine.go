@@ -120,8 +120,19 @@ func (s *Service) evaluate(ctx context.Context, spIn core.CollectionSpec, opt ev
 		return nil, err
 	}
 	res.resolved = cloneSpec(sp)
+	anySourceOK := false
+	for _, r := range results {
+		if r.err == nil {
+			anySourceOK = true
+			break
+		}
+	}
 	for i, r := range results {
 		if r.err != nil {
+			if len(results) > 1 && anySourceOK {
+				res.warnings = append(res.warnings, fmt.Sprintf("%s: %v", sourceName(sp.Sources[i]), r.err))
+				continue
+			}
 			return nil, r.err
 		}
 		res.warnings = append(res.warnings, r.warnings...)
@@ -1063,7 +1074,7 @@ func (s *Service) translate(ctx context.Context, r *rule, kind string, q url.Val
 		// evaluated locally only.
 		var labels []string
 		for _, t := range r.tags {
-			l := contentrating.LevelOf(t)
+			l := contentrating.EnforceLevelOf(t)
 			if l == contentrating.Unrated {
 				return false
 			}
@@ -1166,6 +1177,10 @@ type personalRules struct {
 // filterForUser applies a user's library access, content-rating limit and
 // personal rules (watched, in progress) to built members.
 func (s *Service) filterForUser(ctx context.Context, keys []core.RatingKey, pr personalRules, user *core.User, snap *snapshot) []core.RatingKey {
+	return s.filterForUserWithStatuses(ctx, keys, pr, user, snap, nil, false)
+}
+
+func (s *Service) filterForUserWithStatuses(ctx context.Context, keys []core.RatingKey, pr personalRules, user *core.User, snap *snapshot, preloaded map[core.RatingKey]core.WatchStatus, preloadedOK bool) []core.RatingKey {
 	max := ""
 	allowedLibs := false
 	if user != nil {
@@ -1184,7 +1199,9 @@ func (s *Service) filterForUser(ctx context.Context, keys []core.RatingKey, pr p
 		return keys
 	}
 	var statuses map[core.RatingKey]core.WatchStatus
-	if st := s.stateDep(); personal && user != nil && st != nil {
+	if preloadedOK {
+		statuses = preloaded
+	} else if st := s.stateDep(); personal && user != nil && st != nil {
 		if m, err := st.GetMany(ctx, user.ID, keys); err == nil {
 			statuses = m
 		} else {
@@ -1194,15 +1211,33 @@ func (s *Service) filterForUser(ctx context.Context, keys []core.RatingKey, pr p
 	if statuses == nil {
 		statuses = map[core.RatingKey]core.WatchStatus{} // nothing watched
 	}
+	var allowedMovie, allowedShow bool
+	if allowedLibs {
+		allowedMovie = user.AllowsLibrary(core.LibraryMovies)
+		allowedShow = user.AllowsLibrary(core.LibraryShows)
+		if (!allowedMovie || !allowedShow) && s.librarySections != nil {
+			for id, typ := range s.librarySections(ctx) {
+				if !user.AllowsLibrary(core.LibraryID(id)) {
+					continue
+				}
+				switch typ {
+				case core.TypeMovie:
+					allowedMovie = true
+				case core.TypeShow:
+					allowedShow = true
+				}
+			}
+		}
+	}
 	ec := &evalCtx{now: s.now(), status: statuses}
 	out := make([]core.RatingKey, 0, len(keys))
 	for _, k := range keys {
 		if allowedLibs {
-			kind := core.TypeShow
 			if k.Kind() == core.KindMovie {
-				kind = core.TypeMovie
-			}
-			if !user.AllowsLibrary(core.CanonicalLibraryForTitle(kind)) {
+				if !allowedMovie {
+					continue
+				}
+			} else if !allowedShow {
 				continue
 			}
 		}
@@ -1218,7 +1253,7 @@ func (s *Service) filterForUser(ctx context.Context, keys []core.RatingKey, pr p
 		}
 		// A member the index no longer knows has no known rating, and an
 		// unknown rating exceeds every limit.
-		if max != "" && (e == nil || contentrating.Exceeds(e.crating, max)) {
+		if max != "" && (e == nil || contentrating.EnforceExceeds(e.enforcementRating(), max)) {
 			continue
 		}
 		if personal {

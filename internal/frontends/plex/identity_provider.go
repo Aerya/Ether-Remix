@@ -15,7 +15,7 @@ type PlexProvider struct {
 
 func (PlexProvider) Name() string { return "plex" }
 func (p PlexProvider) Verify(ctx context.Context, proof frontend.IdentityProof) (frontend.VerifiedIdentity, error) {
-	if p.Auth == nil || frontend.IsGrantCredential(proof.Token) {
+	if p.Auth == nil || frontend.IsGrantCredential(proof.Token) || frontend.IsAPIKeyCredential(proof.Token) {
 		return frontend.VerifiedIdentity{}, frontend.ErrUnauthorized
 	}
 	user, err := p.Auth.Authenticate(ctx, proof.Token)

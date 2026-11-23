@@ -89,11 +89,13 @@ type deliverySample struct {
 	at      time.Time
 	bytes   int64
 	fetches int64
+	busy    time.Duration
 }
 
 // deliveryTracker measures wall-clock network delivery from core.SourceDelivery
 // snapshots (including near read-ahead and disk play-ahead) over a bounded
-// post-warmup window. Never feed resolver capacity hints from this session tracker.
+// post-warmup window. Never feed resolver capacity hints from steady-state
+// consumer-paced wall-clock windows; use burstRate only while unthrottled.
 type deliveryTracker struct {
 	samples [12]deliverySample
 	count   int
@@ -105,14 +107,14 @@ func (d *deliveryTracker) record(cur core.SourceDelivery, now time.Time) {
 	keep := 0
 	for i := 0; i < d.count; i++ {
 		s := d.samples[i]
-		if !now.Before(s.at) && now.Sub(s.at) <= speedWindow*time.Second && cur.Bytes >= s.bytes && cur.Fetches >= s.fetches {
+		if !now.Before(s.at) && now.Sub(s.at) <= speedWindow*time.Second && cur.Bytes >= s.bytes && cur.Fetches >= s.fetches && (cur.Busy == 0 || cur.Busy >= s.busy) {
 			d.samples[keep] = s
 			keep++
 		}
 	}
 	d.count = keep
 	if d.count == 0 {
-		d.samples[0] = deliverySample{at: now, bytes: cur.Bytes, fetches: cur.Fetches}
+		d.samples[0] = deliverySample{at: now, bytes: cur.Bytes, fetches: cur.Fetches, busy: cur.Busy}
 		d.count = 1
 		return
 	}
@@ -122,7 +124,7 @@ func (d *deliveryTracker) record(cur core.SourceDelivery, now time.Time) {
 			copy(d.samples[:], d.samples[1:])
 			d.count--
 		}
-		d.samples[d.count] = deliverySample{at: now, bytes: cur.Bytes, fetches: cur.Fetches}
+		d.samples[d.count] = deliverySample{at: now, bytes: cur.Bytes, fetches: cur.Fetches, busy: cur.Busy}
 		d.count++
 	}
 }
@@ -138,6 +140,36 @@ func (d *deliveryTracker) observe(cur core.SourceDelivery, now time.Time, minSpa
 		minSpan = time.Second
 	}
 	if span < minSpan || cur.Fetches-base.fetches < 4 || cur.Bytes-base.bytes < 256<<10 {
+		return 0, false
+	}
+	return float64(cur.Bytes-base.bytes) / span.Seconds(), true
+}
+
+// burstRate divides fetched bytes by active Busy fetch time when reported,
+// excluding idle gaps between reads. Callers must still restrict reporting to
+// unthrottled bursts or supply-limited windows so consumer-paced single-article
+// fetches are never mistaken for provider capacity.
+func (d *deliveryTracker) burstRate(cur core.SourceDelivery, now time.Time, minSpan time.Duration) (float64, bool) {
+	d.record(cur, now)
+	if d.count == 0 {
+		return 0, false
+	}
+	base := d.samples[0]
+	span := now.Sub(base.at)
+	if minSpan <= 0 {
+		minSpan = time.Second
+	}
+	if span < minSpan || cur.Fetches-base.fetches < 4 || cur.Bytes-base.bytes < 256<<10 {
+		return 0, false
+	}
+	if cur.Busy > 0 {
+		busy := cur.Busy - base.busy
+		if busy < time.Second {
+			return 0, false
+		}
+		return float64(cur.Bytes-base.bytes) / busy.Seconds(), true
+	}
+	if cur.InFlight <= 0 {
 		return 0, false
 	}
 	return float64(cur.Bytes-base.bytes) / span.Seconds(), true
@@ -208,6 +240,77 @@ func (s *session) resetSpeed(now time.Time, grace time.Duration) {
 	s.speedMu.Unlock()
 }
 
+func encoderBound(s *session, hls core.HLSSession) bool {
+	if s != nil {
+		if g := s.current(); g != nil && len(g.info.Streams) > 0 && g.info.Video() == nil {
+			return false
+		}
+	}
+	src, ok := hls.(encoderStatusSource)
+	if !ok {
+		return false
+	}
+	st := src.EncoderStatus()
+	return st != nil && !st.Decision.VideoCopy && st.Phase == "running" && st.Speed > 0 && st.Speed < 0.95
+}
+
+// observeTimelineStall feeds resolver stall evidence when client timeline
+// accounting records a non-seek mid-play stall while source delivery is below
+// the media bitrate (excluding client-network stalls with a healthy server
+// buffer and encoder-bound sessions).
+func (m *Manager) observeTimelineStall(s *session, now time.Time) {
+	if s == nil || s.caps.BroadcastBitrateKbps > 0 {
+		return
+	}
+	s.mu.Lock()
+	stalls := s.exp.stallCount(now)
+	newStall := !s.caps.NoPlaybackTelemetry && stalls > s.stallObserved
+	if newStall {
+		s.stallObserved = stalls
+	}
+	viewerState := s.viewerState
+	g := s.cur
+	closed := s.closed
+	s.mu.Unlock()
+	if !newStall || g == nil || closed || viewerState == "paused" || viewerState == "stopped" {
+		return
+	}
+	observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver)
+	if !yes {
+		return
+	}
+	if hls, hasHLS := m.deps.HLSLookup(s.id); hasHLS && hls != nil && encoderBound(s, hls) {
+		return
+	}
+	if _, buffer, bufferKnown := m.repairHorizon(g, core.RepairEvent{Offset: -1}); bufferKnown && buffer >= 12*time.Second {
+		return
+	}
+	media := mediaBps(g.infoSnapshot(), g.src.Size())
+	if media <= 0 {
+		return
+	}
+	rep, hasDelivery := g.src.(core.SourceDeliveryReporter)
+	var srcDelivery core.SourceDelivery
+	if hasDelivery {
+		srcDelivery = rep.SourceDelivery()
+	}
+	minWin := minObservationWindow(m.opts.SpeedGrace)
+	var stallBps float64
+	s.speedMu.Lock()
+	if hasDelivery {
+		minNetSpan := max(minWin, min(4*time.Second, max(time.Second, m.opts.SpeedGrace)))
+		if netBps, netOK := s.delivery.observe(srcDelivery, now, minNetSpan); netOK && netBps > 0 && netBps < media {
+			stallBps = netBps
+		}
+	} else if readBps, readOK := s.speed.rateWindow(now, minWin); readOK && readBps > 0 && readBps < media {
+		stallBps = readBps
+	}
+	s.speedMu.Unlock()
+	if stallBps > 0 {
+		observer.ObserveSourceStall(g.res.Release, stallBps)
+	}
+}
+
 // speedLoop periodically evaluates every session's fetch rate.
 func (m *Manager) speedLoop() {
 	t := time.NewTicker(m.opts.SpeedCheckInterval)
@@ -262,6 +365,8 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	if hasHLS && hls != nil && m.checkEncoderSpeed(s, g, hls, time.Now()) {
 		return // encoder-bound output is not evidence against the provider
 	}
+	m.noteTimelineStall(s, now)
+	m.observeTimelineStall(s, now)
 	if downs+misses >= m.opts.MaxDownFailovers {
 		return
 	}
@@ -298,8 +403,9 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	readBps, readOK := s.speed.rateWindow(now, minWin)
 	var netBps float64
 	var netOK bool
+	var minNetSpan time.Duration
 	if hasDelivery {
-		minNetSpan := max(minWin, min(4*time.Second, max(time.Second, m.opts.SpeedGrace)))
+		minNetSpan = max(minWin, min(4*time.Second, max(time.Second, m.opts.SpeedGrace)))
 		netBps, netOK = s.delivery.observe(srcDelivery, now, minNetSpan)
 	}
 	fetch, ok := readBps, readOK
@@ -323,9 +429,14 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	// rescuing inside grace only when a previously built cushion (>= 12s) has
 	// genuinely drained almost dry after sustained observation.
 	drainingBuiltBuffer := hasHLS && bufferKnown && s.gracePeakBuffer >= 12*time.Second && buffer <= 4*time.Second && age >= 6*time.Second
-	if netOK {
-		if observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver); yes {
-			observer.ObserveSourceDelivery(g.res.Release, netBps)
+	var sampleBps float64
+	var sampleOK bool
+	if hasDelivery {
+		saturating := srcDelivery.InFlight >= 2 || (srcDelivery.Parallel <= 1 && srcDelivery.InFlight >= 1) || blocked >= time.Second
+		filling := (grace && (!bufferKnown || s.gracePeakBuffer < 12*time.Second)) || (bufferKnown && buffer < 12*time.Second)
+		supplyLimited := netOK && netBps < media && (!bufferKnown || buffer < 12*time.Second)
+		if saturating && (filling || supplyLimited) {
+			sampleBps, sampleOK = s.delivery.burstRate(srcDelivery, now, minNetSpan)
 		}
 	}
 	if hasHLS && ok && fetch < media {
@@ -334,16 +445,31 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	if grace && !drainingBuiltBuffer {
 		s.slowChecks = 0
 		s.speedMu.Unlock()
+		if sampleOK {
+			if observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver); yes {
+				observer.ObserveSourceDelivery(g.res.Release, sampleBps)
+			}
+		}
 		return
 	}
 	if !ok {
 		s.speedMu.Unlock()
+		if sampleOK {
+			if observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver); yes {
+				observer.ObserveSourceDelivery(g.res.Release, sampleBps)
+			}
+		}
 		return
 	}
 	ratio := fetch / media
 	if grace && drainingBuiltBuffer && bufferRunway(buffer, ratio) > 5*time.Second {
 		s.slowChecks = 0
 		s.speedMu.Unlock()
+		if sampleOK {
+			if observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver); yes {
+				observer.ObserveSourceDelivery(g.res.Release, sampleBps)
+			}
+		}
 		return
 	}
 	if ratio < 1 {
@@ -354,6 +480,11 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	slow := s.slowChecks
 	at := g.timeMapSnapshot().TimeAt(s.lastSrcPos)
 	s.speedMu.Unlock()
+	if sampleOK {
+		if observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver); yes {
+			observer.ObserveSourceDelivery(g.res.Release, sampleBps)
+		}
+	}
 	// Begin bounded preparation before the buffer is empty. A source slightly
 	// faster than average still needs headroom for bursts, but never switch it
 	// solely for lacking that headroom.
@@ -377,6 +508,17 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	s.speedMu.Lock()
 	s.slowChecks = 0
 	s.speedMu.Unlock()
+	if observer, yes := m.deps.Resolver.(core.SourceDeliveryObserver); yes {
+		stallBps := float64(0)
+		if hasDelivery && netOK && netBps > 0 && netBps < media {
+			stallBps = netBps
+		} else if !hasDelivery && readOK && readBps > 0 && readBps < media {
+			stallBps = readBps
+		}
+		if stallBps > 0 {
+			observer.ObserveSourceStall(g.res.Release, stallBps)
+		}
+	}
 	attrs := []any{
 		"session", s.id, "key", s.ident.key, "release", g.res.Release.Name,
 		"fetchBps", int64(fetch), "sourceReadBps", int64(readBps), "mediaBps", int64(media), "at", at,

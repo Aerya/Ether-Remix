@@ -34,7 +34,7 @@ func TestPendingLegacyProgressPreservesRawResume(t *testing.T) {
 	at := time.Now()
 	ws := core.WatchStatus{Key: core.MovieKey(3), Duration: time.Hour}
 	w := pendingWrite{kind: "progress", progress: progressWrite{state: "progress", offset: 100 * time.Hour, at: at}}
-	got := overlayPending(ws, w, false, time.Time{})
+	got := overlayPending(ws, w, false, time.Time{}, 0)
 	if got.ViewCount != 0 || got.ViewOffset != 100*time.Hour {
 		t.Fatalf("pending legacy: %+v", got)
 	}

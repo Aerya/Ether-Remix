@@ -6,7 +6,8 @@ import { SubtabNav } from "../components/layout";
 it.each([
   ["reachable", "text-success"],
   ["unreachable", "text-danger"],
-  ["unknown", "text-warning"],
+  ["warning", "text-warning"],
+  ["unknown", "text-fg-muted"],
 ])("shows %s with its status icon", (state, color) => {
   const { container } = render(<StatusRow state={state} title="Connection" description={state} />);
   expect(container.querySelector("svg")).toHaveClass(color);

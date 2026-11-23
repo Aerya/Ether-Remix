@@ -1,5 +1,5 @@
 {
-  "id": "tv.ether.examples.pluto", "version": "1.0.0", "name": "Pluto TV", "description": "Live channels and guide from Pluto TV.",
+  "id": "tv.ether.examples.pluto", "version": "1.0.2", "name": "Pluto TV", "description": "Live channels and guide from Pluto TV.",
   "types": ["tv"], "resources": ["stream"],
   "ether": {
     "protocol": 1, "kind": "livetv_source", "capabilities": ["livetv_channels"],

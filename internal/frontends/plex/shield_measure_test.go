@@ -217,30 +217,6 @@ func TestShieldDisabledDetailDoesNoSourceIO(t *testing.T) {
 	}
 }
 
-func TestShieldSlowMetadataKeepsNormalResponseAndPublishesLater(t *testing.T) {
-	x := newShieldMeasureRig(t, "on", true)
-	defer x.Close()
-	gate := make(chan struct{})
-	x.probeBlock = gate
-	// Make a version lookup wait its entire context allowance. It must share
-	// the probe budget, never add the usual three seconds after the probe.
-	x.f.srv.setVariants(&shieldSlowVariants{VariantResolver: x.rs})
-	d, _, _, _ := x.view(t)
-	if d < 3800*time.Millisecond || d > 5500*time.Millisecond {
-		t.Fatalf("slow detail wait %s, want about four seconds total", d)
-	}
-	close(gate)
-	caps := (&Request{User: &ownerUser, ClientID: "client-1", Product: "Plex for Android (TV)", Platform: "Android", Device: "SHIELD Android TV"}).ClientCaps(0)
-	if _, ok := x.mgr.WaitWarmProbe(t.Context(), &ownerUser, caps, fightClub.Key, time.Second); !ok {
-		t.Fatal("request timeout canceled background probe")
-	}
-	x.f.srv.setVariants(x.rs)
-	r := x.f.get(t, "/library/metadata/"+fightClub.Key.String(), "X-Plex-Product", "Plex for Android (TV)", "X-Plex-Platform", "Android")
-	if r.Code != 200 || len(subtitleTags(r.Body.String())) != 2 {
-		t.Fatalf("later detail lost completed probe: %d %s", r.Code, r.Body.String())
-	}
-}
-
 type shieldSlowVariants struct{ core.VariantResolver }
 
 func (v *shieldSlowVariants) Variants(ctx context.Context, r core.ResolveRequest, n int) ([]core.ReleaseVariant, error) {

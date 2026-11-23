@@ -14,9 +14,25 @@ type KindInput struct {
 	// Open returns the item's byte stream. It is called once per open, inside
 	// the prepare flight, so stream-limit accounting and cancellation apply.
 	Open func(ctx context.Context) (MediaSource, error)
+	// OpenCandidate, when set, opens the next non-excluded candidate from the
+	// item's kind resolution and returns its concrete Release metadata so
+	// mid-stream failover can switch to alternative plugin candidates.
+	OpenCandidate func(ctx context.Context, exclude []string) (MediaSource, Release, error)
 	// SourceID is a stable identity for the underlying source, used as the
-	// synthetic release id so session accounting and snapshots have a name.
+	// synthetic release id when OpenCandidate is not provided.
 	SourceID string
+	// PreferSourceID, when non-empty, requests opening the version whose
+	// candidate source id matches, instead of the default winner. The id is
+	// the stable release id of one of the item's /resolve sources.
+	PreferSourceID string
+	// Exact, when true alongside a non-empty PreferSourceID, forbids falling
+	// back to another candidate if PreferSourceID is unavailable or fails
+	// mid-stream.
+	Exact bool
+	// DeferSupersession keeps the prepared session off Activity and leaves
+	// other live sessions untouched until MarkSurfaceOpened is called on
+	// admission (used by broker Plan and SwitchVersion).
+	DeferSupersession bool
 }
 
 // KindPlayback opens a non-catalogue (plugin kind) item through the session

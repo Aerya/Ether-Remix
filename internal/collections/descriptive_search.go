@@ -51,16 +51,76 @@ type describeDraft struct {
 	at           time.Time
 }
 type describeJob struct {
-	partial chan struct{}
-	done    chan struct{}
-	result  core.DescriptiveResult
-	err     error
-	at      time.Time
+	partial    chan struct{}
+	done       chan struct{}
+	cancel     context.CancelFunc
+	waiters    int
+	superseded bool
+	result     core.DescriptiveResult
+	err        error
+	at         time.Time
 }
 
 func (s *Service) DescriptiveSearchAvailable() bool {
 	agent := s.collectionDraftAgent()
 	return agent != nil && agent.DescribeCollectionAvailable()
+}
+
+// DescribeCached reports whether query already has a live (in-progress or
+// cached) descriptive search job for user without starting a new job.
+func (s *Service) DescribeCached(user *core.User, query string) bool {
+	query = strings.TrimSpace(query)
+	if query == "" || len(query) > 1000 {
+		return false
+	}
+	normalized := strings.Join(strings.Fields(strings.ToLower(query)), " ")
+	key := fmt.Sprintf("%d|%s", vibeOwner(user), normalized)
+	s.describeMu.Lock()
+	defer s.describeMu.Unlock()
+	job := s.describeJobs[key]
+	if job == nil {
+		return false
+	}
+	select {
+	case <-job.done:
+		ttl := 10 * time.Minute
+		if job.err != nil {
+			ttl = time.Minute
+		}
+		return s.now().Sub(job.at) < ttl
+	default:
+		return true
+	}
+}
+
+// CancelDescribeSearch cancels an in-progress descriptive search job for query
+// when no active callers remain waiting on it (e.g. superseded keystroke text).
+func (s *Service) CancelDescribeSearch(user *core.User, query string) {
+	query = strings.TrimSpace(query)
+	if query == "" || len(query) > 1000 {
+		return
+	}
+	normalized := strings.Join(strings.Fields(strings.ToLower(query)), " ")
+	key := fmt.Sprintf("%d|%s", vibeOwner(user), normalized)
+	s.describeMu.Lock()
+	job := s.describeJobs[key]
+	if job == nil || job.waiters > 0 {
+		s.describeMu.Unlock()
+		return
+	}
+	select {
+	case <-job.done:
+		s.describeMu.Unlock()
+		return
+	default:
+	}
+	job.superseded = true
+	delete(s.describeJobs, key)
+	cancel := job.cancel
+	s.describeMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // DescribeSearch schedules at most two jobs. Cache hits never call the model.
@@ -115,7 +175,8 @@ func (s *Service) DescribeSearch(ctx context.Context, user *core.User, query str
 				}
 			}
 		}
-		job = &describeJob{done: make(chan struct{}), partial: make(chan struct{}), at: s.now()}
+		jobCtx, jobCancel := context.WithCancel(context.WithoutCancel(ctx))
+		job = &describeJob{done: make(chan struct{}), partial: make(chan struct{}), cancel: jobCancel, at: s.now()}
 		s.describeJobs[key] = job
 		s.describeActive++
 		var viewer *core.User
@@ -123,10 +184,18 @@ func (s *Service) DescribeSearch(ctx context.Context, user *core.User, query str
 			copy := *user
 			viewer = &copy
 		}
-		go s.runDescribe(context.WithoutCancel(ctx), viewer, normalized, query, job)
+		go s.runDescribe(jobCtx, viewer, normalized, query, job)
+	}
+	if wait {
+		job.waiters++
 	}
 	s.describeMu.Unlock()
 	if wait {
+		defer func() {
+			s.describeMu.Lock()
+			job.waiters--
+			s.describeMu.Unlock()
+		}()
 		select {
 		case <-ctx.Done():
 			return core.DescriptiveResult{}, ctx.Err()
@@ -156,7 +225,8 @@ func (s *Service) DescribeSearch(ctx context.Context, user *core.User, query str
 	}
 	result.Items = slices.Clone(result.Items)
 	result.Items = slices.DeleteFunc(result.Items, func(t core.Title) bool {
-		return t.Adult || (user != nil && contentrating.Exceeds(t.ContentRating, user.MaxContentRating))
+		enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+		return t.Adult || (user != nil && contentrating.EnforceExceeds(enf, user.MaxContentRating))
 	})
 	if result.Spec != nil {
 		sp := cloneSpec(*result.Spec)
@@ -263,6 +333,9 @@ func (s *Service) describeSpec(ctx context.Context, key, query string, publish f
 	draft.spec, draft.err, draft.at = spec, err, s.now()
 	draft.listeners = nil
 	draft.partialItems, draft.partialSpec = nil, nil
+	if errors.Is(err, context.Canceled) && s.describeDrafts[key] == draft {
+		delete(s.describeDrafts, key)
+	}
 	close(draft.done)
 	s.describeMu.Unlock()
 	return spec, err
@@ -271,6 +344,9 @@ func (s *Service) describeSpec(ctx context.Context, key, query string, publish f
 func (s *Service) runDescribe(parent context.Context, user *core.User, key, query string, job *describeJob) {
 	ctx, cancel := context.WithTimeout(parent, describeJobTimeout)
 	defer cancel()
+	if job.cancel != nil {
+		defer job.cancel()
+	}
 	started := time.Now()
 	stage := "draft"
 	var draftDuration, candidateDuration, scoringDuration time.Duration
@@ -343,25 +419,26 @@ func (s *Service) runDescribe(parent context.Context, user *core.User, key, quer
 	if err == nil {
 		err = ctx.Err()
 	}
+	s.describeMu.Lock()
+	superseded := job.superseded
+	s.describeMu.Unlock()
 	if err != nil {
 		result.State = "failed"
-		class := "upstream"
-		var netErr net.Error
-		switch {
-		case errors.Is(err, context.DeadlineExceeded):
-			class = "timeout"
-		case errors.Is(err, context.Canceled):
-			class = "cancelled"
-		case errors.As(err, &netErr) && netErr.Timeout():
-			class = "timeout"
-		case stage == "candidates":
-			class = "catalog"
+		if !superseded {
+			class := "upstream"
+			var netErr net.Error
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				class = "timeout"
+			case errors.Is(err, context.Canceled):
+				class = "cancelled"
+			case errors.As(err, &netErr) && netErr.Timeout():
+				class = "timeout"
+			case stage == "candidates":
+				class = "catalog"
+			}
+			log.Warn("descriptive search failed", "query_hash", fmt.Sprintf("%x", sha256.Sum256([]byte(key))), "stage", stage, "error_class", class, "duration", time.Since(started))
 		}
-		log := s.log
-		if log == nil {
-			log = slog.Default()
-		}
-		log.Warn("descriptive search failed", "query_hash", fmt.Sprintf("%x", sha256.Sum256([]byte(key))), "stage", stage, "error_class", class, "duration", time.Since(started))
 	}
 	s.describeMu.Lock()
 	job.result, job.err, job.at = result, err, s.now()
@@ -370,4 +447,4 @@ func (s *Service) runDescribe(parent context.Context, user *core.User, key, quer
 	s.describeMu.Unlock()
 }
 
-var _ core.DescriptiveSearcher = (*Service)(nil)
+var _ core.DescriptiveSearchController = (*Service)(nil)

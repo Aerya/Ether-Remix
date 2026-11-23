@@ -1,7 +1,8 @@
 import "./create-reveal.css";
 import { AgentPanel } from "@braedonsaunders/appkit-ai/react";
 import { Button } from "@braedonsaunders/appkit-ui";
-import { useEffect, useRef, useState } from "react";
+import { Check, Palette, Pencil, RotateCcw, Undo2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   agentPanelLabels,
@@ -11,21 +12,63 @@ import {
 import { t } from "../../../../i18n";
 import { apiStream, errorMessage } from "../../../../lib/api";
 import { readAgentStream } from "../../../plugins/LiveStage";
+import type { Bindings } from "../model";
 import { ROLES, studio, type Style } from "../studio-model";
 import { StyleThumbnail } from "./RemixPanel";
+
+const SAMPLE_BINDINGS: Bindings = {
+  viewer: { name: "Alex", greeting: "Good evening" },
+  now: {
+    title: "Carnival of Souls",
+    time: "20:00",
+    meta: "1962 · 1h 18m",
+    logline: "A church organist drifts toward a deserted pavilion.",
+  },
+  next: {
+    title: "The Grand Budapest Hotel",
+    time: "21:30",
+    reason: "Picked for your evening",
+    meta: "2014 · 1h 39m",
+    logline: "A legendary concierge and his lobby boy are swept into an alpine caper.",
+  },
+  offair: { message: "Back on air soon" },
+  list: [
+    { time: "20:00", title: "Carnival of Souls", meta: "1962 · 1h 18m" },
+    { time: "21:30", title: "The Grand Budapest Hotel", meta: "2014 · 1h 39m" },
+    { time: "23:15", title: "Moonrise Kingdom", meta: "2012 · 1h 34m" },
+    { time: "01:00", title: "Fantastic Mr. Fox", meta: "2009 · 1h 27m" },
+  ],
+};
 
 export function CreateTab({
   style,
   onChange,
   selectedSceneId: sceneId,
   sceneOnly = false,
+  bindings,
+  active = true,
 }: {
   style: Style;
   onChange(style: Style): void;
   selectedSceneId?: string;
   sceneOnly?: boolean;
+  bindings?: Bindings;
+  active?: boolean;
 }) {
   const selectedSceneId = sceneOnly ? sceneId : undefined;
+  const previewBindings = useMemo<Bindings>(
+    () =>
+      bindings &&
+      (bindings.now?.title || bindings.next?.title || bindings.list?.some((item) => item.title))
+        ? bindings
+        : {
+            ...SAMPLE_BINDINGS,
+            ...(bindings?.channel?.name ? { channel: bindings.channel } : {}),
+            ...(bindings?.viewer?.name ? { viewer: bindings.viewer } : {}),
+            ...(bindings?.offair?.message ? { offair: bindings.offair } : {}),
+          },
+    [bindings],
+  );
   const [proposal, setProposal] = useState<Style | null>(null);
   const [revealed, setRevealed] = useState<number | null>(null);
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -45,7 +88,6 @@ export function CreateTab({
   const [before, setBefore] = useState<Style | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [narrative, setNarrative] = useState("");
   const [lastPrompt, setLastPrompt] = useState("");
   const thread = useRef<string | undefined>(undefined);
   const turn = useRef<string | undefined>(undefined);
@@ -81,7 +123,6 @@ export function CreateTab({
     setRevealed(0);
     setProposal(null);
     setLastPrompt(prompt);
-    setNarrative("");
     const current = ++revision.current;
     const abort = new AbortController();
     controller.current = abort;
@@ -113,8 +154,6 @@ export function CreateTab({
       let pending = Promise.resolve();
       void readAgentStream(new Response(preview), (chunk) => {
         if (chunk.type === "start") turn.current = chunk.messageId;
-        if (chunk.type === "text-start") setNarrative("");
-        if (chunk.type === "text-delta" && chunk.delta) setNarrative((n) => n + chunk.delta);
         if (chunk.type === "error")
           setError(chunk.errorText ?? t("Ether could not finish that. Try again."));
         if (chunk.type === "tool-output-available" && chunk.output?.look) {
@@ -201,16 +240,10 @@ export function CreateTab({
       ]
     : preview.scenes;
   return (
-    <section className="studio-create">
+    <section className={`studio-create${sceneOnly ? " studio-create-stacked" : ""}`}>
       <div className="studio-create-conversation">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-widest text-primary">
-            {t("Ask Ether")}
-          </p>
-          <h2 className="mt-2 text-2xl font-semibold">{t("Describe your channel")}</h2>
-        </div>
         {enabled === false ? (
-          <div className="rounded-xl border border-border p-6">
+          <div className="m-4 rounded-xl border border-border p-6">
             <p>{t("Connect a language model to use Ask Ether.")}</p>
             <Link className="text-primary underline" to="/services">
               {t("Integrations")} → {t("LLM")}
@@ -222,76 +255,139 @@ export function CreateTab({
               enabled={enabled === true}
               labels={{
                 ...agentPanelLabels(),
+                welcomeTitle: selectedSceneId
+                  ? t("Shape this scene")
+                  : t("Design your channel’s on-air look"),
+                welcomeDescription: selectedSceneId
+                  ? t(
+                      "Describe the motion, typography, or layout you want for this moment. Your preview updates live.",
+                    )
+                  : t(
+                      "Describe the era, palette, typography, and mood. Ether drafts your brand kit and scenes live on the right.",
+                    ),
                 placeholder: selectedSceneId ? t("Describe a change") : t("Describe your channel"),
               }}
               toolLabels={{ look_draft: t("Draft a style") }}
               send={send}
+              emptyContent={
+                <div className="m-auto flex max-w-md flex-col items-center px-5 py-8 text-center">
+                  <span className="mb-3 grid size-10 place-items-center rounded-xl bg-primary-subtle text-primary">
+                    <Palette size={20} aria-hidden />
+                  </span>
+                  <h3 className="text-base font-semibold text-fg">
+                    {selectedSceneId
+                      ? t("Shape this scene")
+                      : t("Design your channel’s on-air look")}
+                  </h3>
+                  <p className="mt-1.5 text-sm leading-relaxed text-fg-muted">
+                    {selectedSceneId
+                      ? t(
+                          "Describe the motion, typography, or layout you want for this moment. Your preview updates live.",
+                        )
+                      : t(
+                          "Describe the era, palette, typography, and mood. Ether drafts your brand kit and scenes live on the right.",
+                        )}
+                  </p>
+                  <div className="mt-5 grid w-full gap-2 text-left">
+                    {(selectedSceneId
+                      ? [
+                          t("Slow the drift and make the title larger"),
+                          t("Add a subtle timestamp in the accent colour"),
+                          t("Give it a warm film-grain fade-in"),
+                        ]
+                      : [
+                          t("Late-night 1980s cinema station with warm gold type and film grain"),
+                          t("Crisp minimalist daytime channel with bright geometry"),
+                          t("Cosy rainy-evening mystery channel with classic serif titles"),
+                        ]
+                    ).map((idea) => (
+                      <button
+                        key={idea}
+                        type="button"
+                        disabled={enabled !== true || busy}
+                        onClick={() => fill(idea)}
+                        className="rounded-xl border border-border bg-surface px-3.5 py-2.5 text-left text-xs leading-snug text-fg-muted transition-colors hover:border-primary/40 hover:bg-primary-subtle hover:text-fg disabled:pointer-events-none disabled:opacity-50"
+                      >
+                        {idea}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              }
+              composerContent={
+                error || (!busy && (proposal || lastPrompt || before)) ? (
+                  <div className="flex flex-wrap items-center gap-1 px-1 pb-1">
+                    {error ? (
+                      <p role="alert" className="mr-auto text-xs text-danger">
+                        {error}
+                      </p>
+                    ) : null}
+                    {!busy && proposal ? (
+                      <>
+                        <Button
+                          size="sm"
+                          aria-label={t("Keep this")}
+                          title={t("Keep this")}
+                          onClick={() => {
+                            setBefore(structuredClone(style));
+                            onChange(proposal);
+                            setProposal(null);
+                          }}
+                        >
+                          <Check size={14} />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={t("Refine")}
+                          title={t("Refine")}
+                          onClick={() => fill("")}
+                        >
+                          <Pencil size={14} />
+                        </Button>
+                      </>
+                    ) : null}
+                    {!busy && lastPrompt ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={t("Try again")}
+                        title={t("Try again")}
+                        onClick={() => {
+                          fill(lastPrompt);
+                          requestAnimationFrame(() =>
+                            chat.current
+                              ?.querySelector("textarea")
+                              ?.dispatchEvent(
+                                new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+                              ),
+                          );
+                        }}
+                      >
+                        <RotateCcw size={14} />
+                      </Button>
+                    ) : null}
+                    {!busy && (before || proposal) ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={t("Revert")}
+                        title={t("Revert")}
+                        onClick={() => {
+                          if (before) onChange(before);
+                          setBefore(null);
+                          setProposal(null);
+                        }}
+                      >
+                        <Undo2 size={14} />
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : undefined
+              }
             />
           </div>
         )}
-        <div className="flex flex-wrap gap-2">
-          {[
-            t("80s synthwave movie channel"),
-            t("Cosy Sunday kids"),
-            t("Noir late-night thrillers"),
-          ].map((idea) => (
-            <Button key={idea} variant="outline" disabled={busy} onClick={() => fill(idea)}>
-              {idea}
-            </Button>
-          ))}
-        </div>
-        <p role="status" className="studio-create-narrative text-sm text-fg-muted">
-          {narrative || t("Describe the style below, then watch it come to life.")}
-        </p>
-        {error && (
-          <p role="alert" className="text-danger">
-            {error}
-          </p>
-        )}
-        <div className="flex flex-wrap gap-2">
-          <Button
-            disabled={!proposal || busy}
-            onClick={() => {
-              setBefore(structuredClone(style));
-              onChange(proposal!);
-              setProposal(null);
-            }}
-          >
-            {t("Keep this")}
-          </Button>
-          <Button variant="outline" disabled={!proposal || busy} onClick={() => fill("")}>
-            {t("Refine")}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={!lastPrompt || busy}
-            onClick={() => {
-              fill(lastPrompt);
-              requestAnimationFrame(() =>
-                chat.current
-                  ?.querySelector("textarea")
-                  ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
-              );
-            }}
-          >
-            {t("Try again")}
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={busy || (!before && !proposal)}
-            onClick={() => {
-              if (before) onChange(before);
-              setBefore(null);
-              setProposal(null);
-              setNarrative("");
-            }}
-          >
-            {t("Revert")}
-          </Button>
-        </div>
-        <p className="text-xs text-fg-muted">
-          {t("Keep this updates your draft. Save the style when you’re ready.")}
-        </p>
       </div>
       <div className="studio-create-build" aria-label={t("Live build")} aria-busy={building}>
         <div className={`studio-create-kit ${!ready ? "studio-create-pending" : ""}`}>
@@ -396,7 +492,12 @@ export function CreateTab({
               preview.scenes.some((next) => next.id === scene.id) &&
               (revealed === null || index < revealed) ? (
                 <div className="studio-create-scene">
-                  <StyleThumbnail style={preview} scene={scene} playing={!reducedMotion} />
+                  <StyleThumbnail
+                    style={preview}
+                    scene={scene}
+                    bindings={previewBindings}
+                    playing={active && !reducedMotion}
+                  />
                 </div>
               ) : (
                 <div className="studio-create-placeholder">

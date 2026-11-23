@@ -1,11 +1,25 @@
 import { useEffect, useState } from "react";
-import { Button } from "@braedonsaunders/appkit-ui";
+import { Badge, Button } from "@braedonsaunders/appkit-ui";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { apiFetch } from "../../../lib/api";
+import { relativeTime } from "../../../lib/format";
 import { t } from "../../../i18n";
 
-type Job = { path: string; state: string; progress?: string; error?: string };
+export interface ActionJob {
+  path: string;
+  label?: string;
+  kind?: string;
+  state: string;
+  code?: string;
+  progress?: string;
+  outcome?: string;
+  error?: string;
+  started?: string;
+  finished?: string;
+}
+
 export function ActionJobs({ id }: { id: string }) {
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobs, setJobs] = useState<ActionJob[]>([]);
   const [error, setError] = useState("");
   useEffect(() => {
     let live = true;
@@ -13,7 +27,7 @@ export function ActionJobs({ id }: { id: string }) {
     setJobs([]);
     async function load() {
       try {
-        const next = await apiFetch<Job[]>(`/plugins/${encodeURIComponent(id)}/jobs`);
+        const next = await apiFetch<ActionJob[]>(`/plugins/${encodeURIComponent(id)}/jobs`);
         if (live) {
           setJobs(next);
           setError("");
@@ -38,42 +52,75 @@ export function ActionJobs({ id }: { id: string }) {
           {error}
         </p>
       ) : null}
-      {jobs.map((job) => (
-        <div key={job.path} className="flex items-center justify-between gap-3 text-sm">
-          <div>
-            <p className="break-all font-mono text-xs">{job.path}</p>
-            <p>
-              {job.state === "running"
-                ? t("Running…")
-                : job.state === "done"
-                  ? t("Completed")
-                  : job.state === "canceled"
-                    ? t("Cancelled")
-                    : t("Failed")}
-            </p>
-            {job.progress ? (
-              <p className="text-xs text-fg-muted" role="status">
-                {job.progress}
-              </p>
-            ) : null}
-            {job.error ? <p className="text-xs text-danger">{job.error}</p> : null}
-          </div>
-          {job.state === "running" ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                void apiFetch(`/plugins/${encodeURIComponent(id)}/jobs/cancel`, {
-                  method: "POST",
-                  body: JSON.stringify({ path: job.path }),
-                }).catch((e) => setError(String(e)));
-              }}
+      <div className="space-y-3">
+        {jobs.map((job) => {
+          const isRunning = job.state === "running";
+          const isGuard = job.code === "delete_guard";
+          const isCanceled = job.state === "canceled" || job.state === "cancelled";
+          const isDone = job.state === "done";
+          const timestamp = job.finished || job.started;
+          return (
+            <div
+              key={job.path}
+              className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border/60 bg-surface-muted/30 px-3 py-2.5 text-sm"
             >
-              {t("Cancel")}
-            </Button>
-          ) : null}
-        </div>
-      ))}
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-fg">{job.label || job.path}</span>
+                  {isRunning ? (
+                    <Badge variant="secondary" className="gap-1">
+                      <RefreshCw size={11} className="animate-spin" aria-hidden />
+                      {t("Running")}
+                    </Badge>
+                  ) : isGuard ? (
+                    <Badge variant="outline" className="gap-1 border-warning/50 text-warning">
+                      <AlertTriangle size={11} aria-hidden />
+                      {t("Paused · Needs choice")}
+                    </Badge>
+                  ) : isDone ? (
+                    <Badge variant="secondary">{t("Completed")}</Badge>
+                  ) : isCanceled ? (
+                    <Badge variant="outline">{t("Cancelled")}</Badge>
+                  ) : (
+                    <Badge variant="destructive">{t("Failed")}</Badge>
+                  )}
+                  {timestamp ? (
+                    <span className="text-xs text-fg-muted">{relativeTime(timestamp)}</span>
+                  ) : null}
+                </div>
+                {job.label && job.path && job.label !== job.path ? (
+                  <p className="break-all font-mono text-[11px] text-fg-subtle">{job.path}</p>
+                ) : null}
+                {job.progress ? (
+                  <p className="text-xs text-fg-muted" role="status">
+                    {job.progress}
+                  </p>
+                ) : null}
+                {job.outcome ? <p className="text-xs text-fg-muted">{job.outcome}</p> : null}
+                {job.error ? (
+                  <p className={isGuard ? "text-xs text-warning" : "text-xs text-danger"}>
+                    {job.error}
+                  </p>
+                ) : null}
+              </div>
+              {isRunning ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void apiFetch(`/plugins/${encodeURIComponent(id)}/jobs/cancel`, {
+                      method: "POST",
+                      body: JSON.stringify({ path: job.path }),
+                    }).catch((e) => setError(String(e)));
+                  }}
+                >
+                  {t("Cancel")}
+                </Button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

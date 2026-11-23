@@ -279,7 +279,7 @@ func (i *instance) resumeUnderParent(w http.ResponseWriter, r *http.Request, vie
 		requireExact, _ = strconv.ParseBool(values[0])
 	}
 	q := frontend.ItemQuery{Types: resumeUnderParentTypes(r), Recursive: true, Limit: showChildPageMax}
-	page, err := i.host.Experience.Children(r.Context(), viewer, device(r), parent, q)
+	page, err := i.host.Experience.Children(frontend.WithNoContainerExpand(r.Context()), viewer, device(r), parent, q)
 	if err != nil {
 		if errors.Is(err, frontend.ErrNotFound) {
 			i.replyItems(w, r, i.queryResult([]any{}, 0, offset))

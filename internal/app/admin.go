@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,16 +31,26 @@ import (
 
 func (a *App) buildAdmin() http.Handler {
 	local, _ := identity.NewLocal(a.db)
-	grants, _ := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil)
+	grants, _ := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil, a.cfg)
 	limiter, _ := identity.NewLoginLimiter(a.db, 15*time.Minute, 30, 8, nil)
 	pollLimiter, _ := identity.NewPollLimiter(a.db, time.Minute, 120, 60, nil)
 	quick, _ := identity.NewQuickConnect(a.db, 10*time.Minute, 30*24*time.Hour, nil)
 	invites, _ := identity.NewInvite(a.db, 24*time.Hour, 30*24*time.Hour, nil)
+	a.wireIdentityLocal(local)
+	a.wireIdentityGrants(grants)
+	a.wireIdentityLimiter(limiter, "login")
+	a.wireIdentityLimiter(pollLimiter, "poll")
+	a.wireIdentityQuickConnect(quick)
+	a.wireIdentityInvite(invites)
 	deps := admin.Deps{
+		EventBus:         a.eventBus,
+		Flows:            a.flowsAdminDeps(),
 		FavoritesMirror:  a.favorites,
 		NotInterested:    notInterestedPortal{a},
 		ViewerAlerts:     &notify.ViewerAlerts{DB: a.db, Active: a.users.ActiveUser},
 		ActiveViewer:     a.users.ActiveUser,
+		AppAddress:       a.frontends.appAddress,
+		ConsoleListener:  a.consoleListenerStatus,
 		ViewerPortalURL:  a.frontends.viewerPortalURL,
 		StremioPortalURL: a.frontends.viewerPortalSecureURL,
 		CreateDLNAGuest:  a.createDLNAGuest,
@@ -63,6 +75,9 @@ func (a *App) buildAdmin() http.Handler {
 		AuthenticatePlex: a.users.Authenticate, LinkPlex: a.users.LinkPlex, LocalIdentity: local, IdentityGrants: grants, IdentityLimiter: limiter, OwnerCredentialChanged: a.syncOwnerRecovery, PollLimiter: pollLimiter, QuickConnect: quick, RefreshViewers: a.users.RefreshViewers, OwnerConfigured: func(ctx context.Context) bool { _, err := a.users.Owner(ctx); return err == nil },
 		Config:           a.cfg,
 		Frontends:        a.frontends.control,
+		FrontendAPIKeys:  a.mustAPIKeyStore(),
+		Vela:             a.velaManager(),
+		VelaSkins:        a.velaSkinsAdmin(),
 		Extensions:       a.extensionHandlers(),
 		OwnedMedia:       a.ownedMediaAPI(),
 		PublicExtensions: a.publicExtensionHandlers(),
@@ -74,14 +89,16 @@ func (a *App) buildAdmin() http.Handler {
 		Version:          a.opts.Version,
 		PlexAuth:         &plexAuth{app: a, pins: map[string]*plextv.PIN{}},
 		SignIn:           &plexSignIn{app: a, pins: map[string]*plextv.PIN{}},
-		IsOwnerToken: func(ctx context.Context, token string) bool {
-			if auth.IsOwnerSession(token) {
-				u, err := a.users.OwnerSession(ctx, token)
+		IsOwnerToken: func(ctx context.Context) func(context.Context, string) bool {
+			return func(ctx context.Context, token string) bool {
+				if auth.IsOwnerSession(token) {
+					u, err := a.users.OwnerSession(ctx, token)
+					return err == nil && u.IsOwner
+				}
+				u, err := a.users.Authenticate(ctx, token)
 				return err == nil && u.IsOwner
 			}
-			u, err := a.users.Authenticate(ctx, token)
-			return err == nil && u.IsOwner
-		},
+		}(context.Background()),
 		Sessions: a.users,
 		TestUsenet: func(ctx context.Context, p config.UsenetProvider) error {
 			if a.fetcher != nil {
@@ -104,6 +121,23 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return newznab.Test(ctx, ix, a.cfg.Get().ClientIdentity)
 		},
+		TestIndexerIdentity: func(ctx context.Context, ix config.Indexer, policy config.ClientIdentity) (config.Identity, error) {
+			if a.indexers != nil {
+				return a.indexers.TestIndexerCaps(ctx, ix, policy)
+			}
+			return newznab.TestCaps(ctx, ix, policy)
+		},
+		IndexerPreview: func(req admin.IndexerPreviewRequest) (any, error) {
+			cfg := a.cfg.Get()
+			return newznab.PreviewRequestIdentity(newznab.PreviewInput{
+				Rule:          req.Rule,
+				Rules:         req.Rules,
+				HasRules:      req.HasRules,
+				Indexer:       req.Indexer,
+				SavedIndexers: cfg.Indexers,
+				SavedPolicy:   cfg.ClientIdentity,
+			})
+		},
 		TestDebrid: func(ctx context.Context, p config.DebridProvider) error {
 			return a.debrid.Test(ctx, p)
 		},
@@ -115,6 +149,7 @@ func (a *App) buildAdmin() http.Handler {
 		},
 		TestOpenSubtitles: subtitles.Test,
 		TestSubDL:         subtitles.TestSubDL,
+		TestSubSource:     subtitles.TestSubSource,
 		TestTrakt:         trakt.Test,
 		TestIntroDB: func(ctx context.Context, apiKey string) error {
 			return markers.Probe(ctx, "", apiKey)
@@ -162,7 +197,7 @@ func (a *App) buildAdmin() http.Handler {
 				return map[string]string{"error": "ffmpeg not found"}
 			}
 			accel := a.transcoder.HWAccel()
-			hw := map[string]any{"hwaccel": accel, "ffmpeg": a.transcoder.Version(), "enhancement": a.transcoder.EnhancementStatus()}
+			hw := map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "hwaccel": accel, "ffmpeg": a.transcoder.Version(), "enhancement": a.transcoder.EnhancementStatus()}
 			if vendor := transcode.GPUVendor(accel.Device); vendor != "" {
 				hw["vendor"] = vendor
 			}
@@ -172,6 +207,9 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			if cap.PlaybackError != "" {
 				hw["playbackError"] = cap.PlaybackError
+			}
+			if cap.HardwareToneMap != nil {
+				hw["hardwareToneMap"] = *cap.HardwareToneMap
 			}
 			if len(cap.ToneMap) > 0 {
 				hw["toneMap"] = cap.ToneMap
@@ -186,21 +224,55 @@ func (a *App) buildAdmin() http.Handler {
 		DatabaseCompactStatus: a.compactionStatus,
 		DatabaseCompact:       a.startCompaction,
 		ExtraStatus: map[string]admin.StatusFunc{
-			"stream":   func(context.Context) any { return a.engine.Stats() },
-			"widget":   a.widgetStatus,
-			"prefetch": func(context.Context) any { return a.prefetch.Stats() },
-			"debrid":   a.debridStatus,
-			"sources":  func(context.Context) any { return map[string]any{"startup": a.resolver.SourceStartups()} },
-			"database": a.databaseStatus,
-			"updates":  a.updateStatus,
-			"storage":  a.storageStatus,
+			"stream":        func(context.Context) any { return a.engine.Stats() },
+			"widget":        a.widgetStatus,
+			"prefetch":      func(context.Context) any { return a.prefetch.Stats() },
+			"debrid":        a.debridStatus,
+			"sources":       func(context.Context) any { return map[string]any{"startup": a.resolver.SourceStartups()} },
+			"database":      a.databaseStatus,
+			"upload-budget": a.uploadBudgetStatus,
+			"updates":       a.updateStatus,
+			"storage":       a.storageStatus,
 		},
-		ResolverTraces:     func(context.Context) (any, error) { return a.resolver.Traces(), nil },
-		Users:              a.users,
-		ViewerDirectory:    a.viewerDirectory,
-		RenameViewer:       a.renameViewer,
-		Personalization:    a.personalize,
-		Collections:        a.collections,
+		ResolverTraces:  func(context.Context) (any, error) { return a.resolver.Traces(), nil },
+		Users:           a.users,
+		RenameViewer:    a.renameViewer,
+		ViewerDirectory: a.viewerDirectory,
+		Personalization: a.personalize,
+		LayoutLibraries: func(ctx context.Context) ([]admin.LayoutLibrary, error) {
+			if a.libraries == nil {
+				return []admin.LayoutLibrary{}, nil
+			}
+			libs, err := a.libraries.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]admin.LayoutLibrary, 0, len(libs))
+			for _, l := range libs {
+				lType := string(l.MediaType)
+				if l.Source == core.LibraryPlugin {
+					lType = "plugin"
+				} else if l.MediaType != core.TypeMovie && l.MediaType != core.TypeShow {
+					continue
+				}
+				out = append(out, admin.LayoutLibrary{
+					ID:      int(l.ID),
+					Name:    l.Name,
+					Slug:    l.Key,
+					Type:    lType,
+					Section: "library:" + strconv.Itoa(int(l.ID)),
+				})
+			}
+			return out, nil
+		},
+		PluginLibraryRows: a.pluginLibraryLayoutRows,
+		Collections:       a.collections,
+		AddonCatalogImports: func() admin.AddonCatalogImporter {
+			if a.pluginsRT == nil || a.pluginsRT.catalogImports == nil {
+				return nil
+			}
+			return a.pluginsRT.catalogImports
+		}(),
 		CatalogHelper:      a.collections,
 		ViewerCatalogRules: a.catalog,
 		TitleSchedules:     a.catalog,
@@ -237,14 +309,20 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return libraryScopeFilter(lib, req), nil
 		},
-		Images:          a.images,
-		TitlePosters:    a.titlePosters(),
-		OwnerArtwork:    a.artwork,
-		PlexWatch:       a.plexWatchAPI(),
-		Trakt:           a.traktAPI(),
-		PlexServers:     a.plexServersAPI(),
-		SharePlexViewer: a.sharePlexViewer,
-		Prerolls:        a.prerollAdmin(),
+		Images:                a.images,
+		TitlePosters:          a.titlePosters(),
+		OwnerArtwork:          a.artwork,
+		PlexWatch:             a.plexWatchAPI(),
+		Trakt:                 a.traktAPI(),
+		PlexServers:           a.plexServersAPI(),
+		SharePlexViewer:       a.sharePlexViewer,
+		SharePlexViewerNoSync: a.sharePlexViewerNoSync,
+		SyncPlexFriends:       a.syncPlexFriends,
+		ListPlexUsers:         a.listPlexUsers,
+		Prerolls:              a.prerollAdmin(),
+	}
+	if a.users != nil {
+		deps.EnsurePlexFriend = a.users.EnsurePlexFriend
 	}
 	// Optional role-owned dependencies stay absent until a real local or private
 	// service supplies them. This preserves console/auth/config/catalog without
@@ -302,7 +380,7 @@ func (a *App) plexWatchAPI() admin.PlexWatch {
 	return plexWatchAdmin{a.plexWatch}
 }
 
-func (a *App) sharePlexViewer(ctx context.Context, usernameOrEmail string, userID int64) error {
+func (a *App) sharePlexViewerNoSync(ctx context.Context, usernameOrEmail string, userID int64) error {
 	if a.plextv == nil {
 		return errors.New("plextv: client not initialized")
 	}
@@ -314,12 +392,173 @@ func (a *App) sharePlexViewer(ctx context.Context, usernameOrEmail string, userI
 	if cfg.Server.MachineIdentifier == "" {
 		return errors.New("plextv: server machine identifier not configured")
 	}
-	if err := a.plextv.ShareServer(ctx, token, usernameOrEmail, userID, nil); err != nil {
+	return a.plextv.ShareServer(ctx, token, usernameOrEmail, userID, nil)
+}
+
+func (a *App) syncPlexFriends(ctx context.Context) error {
+	if a.registrar == nil {
+		return nil
+	}
+	return a.registrar.SyncFriendsNow(ctx)
+}
+
+func (a *App) listPlexUsers(ctx context.Context) ([]plextv.SharedUser, error) {
+	if a.plextv == nil {
+		return nil, nil
+	}
+	var (
+		mu              sync.Mutex
+		dir             = plextv.NewSharedUserDirectory()
+		accountCount    int
+		serverUserCount int
+		sharedCount     int
+		homeCount       int
+		pmsCount        int
+		communityCount  int
+		communityList   []plextv.CommunityFriend
+	)
+	cfg := a.cfg.Get()
+	etherToken := cfg.Plex.Token
+	ownerUsername := strings.TrimSpace(cfg.Plex.OwnerUsername)
+	ownerPlexID := cfg.Plex.OwnerPlexID
+
+	var wg sync.WaitGroup
+	seenAccountTokens := make(map[string]bool)
+	fetchAccountSources := func(tok, label string, includeHomeAdmin bool) {
+		if tok == "" || seenAccountTokens[tok] {
+			return
+		}
+		seenAccountTokens[tok] = true
+
+		wg.Go(func() {
+			if users, err := a.plextv.AccountUsers(ctx, tok); err == nil {
+				mu.Lock()
+				accountCount += len(users)
+				mu.Unlock()
+				dir.Merge(users...)
+			} else {
+				a.log.Warn("list plex.tv account users error", "source", label, "err", err)
+			}
+		})
+		wg.Go(func() {
+			if users, err := a.plextv.SharedServerUsers(ctx, tok); err == nil {
+				mu.Lock()
+				sharedCount += len(users)
+				mu.Unlock()
+				dir.Merge(users...)
+			} else {
+				a.log.Warn("list plex.tv shared server users error", "source", label, "err", err)
+			}
+		})
+		wg.Go(func() {
+			if homes, err := a.plextv.HomeUsers(ctx, tok); err == nil {
+				mapped := make([]plextv.SharedUser, 0, len(homes))
+				for _, h := range homes {
+					if h.ID <= 0 {
+						continue
+					}
+					if !includeHomeAdmin && h.HomeAdmin {
+						continue
+					}
+					if ownerPlexID > 0 && h.ID == ownerPlexID {
+						continue
+					}
+					mapped = append(mapped, plextv.SharedUser{
+						PlexID:       h.ID,
+						UUID:         h.UUID,
+						Username:     h.Username,
+						Title:        h.Title,
+						FriendlyName: h.Friendly,
+						Thumb:        h.Thumb,
+						Home:         true,
+						Restricted:   h.Restricted,
+					})
+				}
+				mu.Lock()
+				homeCount += len(mapped)
+				mu.Unlock()
+				dir.Merge(mapped...)
+			} else {
+				a.log.Warn("list plex.tv home users error", "source", label, "err", err)
+			}
+		})
+	}
+
+	if etherToken != "" {
+		fetchAccountSources(etherToken, "ether", false)
+		wg.Go(func() {
+			if users, err := a.plextv.Users(ctx, etherToken); err == nil {
+				mu.Lock()
+				serverUserCount += len(users)
+				mu.Unlock()
+				dir.Merge(users...)
+			} else {
+				a.log.Warn("list ether plex.tv users error", "err", err)
+			}
+		})
+		wg.Go(func() {
+			cFriends, err := a.plextv.CommunityFriends(ctx, etherToken)
+			if err != nil {
+				a.log.Debug("list plex community friends error", "err", err)
+				return
+			}
+			if len(cFriends) == 0 {
+				return
+			}
+			mu.Lock()
+			communityList = cFriends
+			communityCount = len(cFriends)
+			mu.Unlock()
+		})
+	}
+
+	if a.plexServers != nil {
+		if err := a.plexServers.ForEachServerCredential(ctx, func(serverID int64, machineID, ownerName, pmsToken string) {
+			sameOwner := ownerName != "" && ownerUsername != "" && strings.EqualFold(strings.TrimSpace(ownerName), ownerUsername)
+			fetchAccountSources(pmsToken, "pms", !sameOwner)
+			if machineID == "" {
+				return
+			}
+			id := a.plextv.Identity()
+			id.ClientIdentifier = machineID
+			pmsClient := a.plextv.WithIdentity(id)
+			wg.Go(func() {
+				if users, err := pmsClient.Users(ctx, pmsToken); err == nil {
+					mu.Lock()
+					pmsCount += len(users)
+					mu.Unlock()
+					dir.Merge(users...)
+				} else {
+					a.log.Warn("list pms plex.tv users error", "serverId", serverID, "err", err)
+				}
+			})
+		}); err != nil {
+			a.log.Warn("list connected pms servers error", "err", err)
+		}
+	}
+
+	wg.Wait()
+
+	dir.EnrichCommunity(communityList)
+	out := dir.Users()
+
+	a.log.Debug("resolved plex.tv user directory",
+		"total", len(out),
+		"accountUsers", accountCount,
+		"serverUsers", serverUserCount,
+		"sharedServerUsers", sharedCount,
+		"homeUsers", homeCount,
+		"pmsServerUsers", pmsCount,
+		"communityFriends", communityCount,
+	)
+	return out, nil
+}
+
+func (a *App) sharePlexViewer(ctx context.Context, usernameOrEmail string, userID int64) error {
+	if err := a.sharePlexViewerNoSync(ctx, usernameOrEmail, userID); err != nil {
 		return err
 	}
-	if a.registrar != nil {
-		_ = a.registrar.SyncFriendsNow(ctx)
-	}
+	_ = a.syncPlexFriends(ctx)
 	return nil
 }
 
@@ -523,4 +762,52 @@ func (a *App) viewerDirectory(ctx context.Context) ([]admin.ViewerRecord, error)
 		out = append(out, admin.ViewerRecord{User: u.User, Active: u.Active, Origin: u.Origin, Home: u.Home, OwnerEnabled: u.OwnerEnabled, PlexShared: u.PlexShared, HasPlex: u.HasPlex})
 	}
 	return out, nil
+}
+
+func (a *App) pluginLibraryLayoutRows(ctx context.Context, viewer *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error) {
+	var svc *surfaceExperience
+	if a.frontends != nil && a.frontends.siloExperience != nil {
+		svc = a.frontends.siloExperience
+	} else if a.pluginsRT != nil && a.pluginsRT.kindCatalog != nil {
+		if raw, err := a.newSurfaceExperience("silo"); err == nil {
+			svc, _ = raw.(*surfaceExperience)
+		}
+	}
+	if svc == nil || svc.Service == nil {
+		return []core.RowDescriptor{}, []core.HomeRow{}, nil
+	}
+	v := viewer
+	if v == nil || v.ID <= 0 {
+		if owner, err := a.users.Owner(ctx); err == nil && owner != nil {
+			v = owner
+		} else {
+			v = &core.User{ID: 1, IsOwner: true}
+		}
+	}
+	viewID := strconv.Itoa(libraryID)
+	sec := "library:" + viewID
+	cands, err := svc.Service.PluginLibraryCandidateRows(ctx, v, viewID)
+	if err != nil {
+		return nil, nil, err
+	}
+	descs := make([]core.RowDescriptor, 0, len(cands))
+	rows := make([]core.HomeRow, 0, len(cands))
+	for _, r := range cands {
+		descs = append(descs, core.RowDescriptor{
+			HubID:    r.ID,
+			Title:    r.Title,
+			Kind:     r.Kind,
+			Sections: []string{sec},
+			Group:    "collections",
+		})
+		rows = append(rows, core.HomeRow{
+			HubID:  r.ID,
+			Title:  r.Title,
+			Kind:   r.Kind,
+			Source: core.RowSourcePrecomposed,
+			Items:  r.Items,
+			Hub:    core.Hub{ID: r.ID, Title: r.Title, Items: r.Items, ItemCount: len(r.Items)},
+		})
+	}
+	return descs, rows, nil
 }

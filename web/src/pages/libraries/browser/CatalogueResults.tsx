@@ -1,5 +1,13 @@
-import { Button } from "@braedonsaunders/appkit-ui";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Button, Checkbox } from "@braedonsaunders/appkit-ui";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { Artwork } from "../../../components/Artwork";
 import type { TitleCard } from "../../../lib/contract";
 import { fixed } from "../../../lib/format";
@@ -19,6 +27,8 @@ export interface CatalogueResultsProps {
   onVisibleKeys?: (keys: string[]) => void;
   onBulkWatchlist?: (keys: string[]) => Promise<void>;
 }
+
+const LIST_COLUMNS = ["year", "rating", "runtime", "genres"] as const;
 
 /** Keeps only visible rows mounted; pages remain available when scrolling back. */
 export function CatalogueResults({
@@ -44,7 +54,7 @@ export function CatalogueResults({
   const [size, setSize] = useState({ width: 900, height: 640, top: 0 });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focused, setFocused] = useState(0);
-  const [columns, setColumns] = useState(["year", "rating", "runtime", "genres"]);
+  const [columns, setColumns] = useState<string[]>([...LIST_COLUMNS]);
   const [writing, setWriting] = useState(false);
   const [bulkError, setBulkError] = useState(false);
   const [peek, setPeek] = useState<string | null>(null);
@@ -174,8 +184,24 @@ export function CatalogueResults({
       else next.add(key);
       return next;
     });
+  const showYear = columns.includes("year");
+  const showRating = columns.includes("rating");
+  const showRuntime = columns.includes("runtime");
+  const showGenres = columns.includes("genres");
+  const listColsStyle = {
+    "--catalogue-data-cols": [
+      "minmax(10rem, 1.8fr)",
+      showYear ? "4.5rem" : "",
+      showRating ? "4.5rem" : "",
+      showRuntime ? "5.25rem" : "",
+      showGenres ? "minmax(8rem, 1.2fr)" : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+  } as CSSProperties;
+  const hasSelection = selected.size > 0;
   return (
-    <div className="catalogue-result-browser">
+    <div className="catalogue-result-browser" style={list ? listColsStyle : undefined}>
       <div className="catalogue-result-options">
         {onBulkWatchlist ? (
           <>
@@ -222,16 +248,15 @@ export function CatalogueResults({
           <details className="catalogue-columns">
             <summary>{t("Columns")}</summary>
             <div>
-              {["year", "rating", "runtime", "genres"].map((column) => (
+              {LIST_COLUMNS.map((column) => (
                 <label key={column}>
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={columns.includes(column)}
                     onChange={() =>
                       setColumns((prev) =>
                         prev.includes(column)
                           ? prev.filter((v) => v !== column)
-                          : [...prev, column],
+                          : LIST_COLUMNS.filter((c) => c === column || prev.includes(c)),
                       )
                     }
                   />
@@ -249,8 +274,24 @@ export function CatalogueResults({
         )}
       </div>
       {bulkError && <p role="alert">{t("Some watchlists could not be updated. Try again.")}</p>}
+      {list && titles.length > 0 && (
+        <div className="catalogue-list-header" role="row">
+          {onBulkWatchlist && <span className="catalogue-list-select-spacer" aria-hidden />}
+          <div className="catalogue-list-header-open">
+            <span aria-hidden />
+            <div className="catalogue-list-header-cols">
+              <span role="columnheader">{t("Title")}</span>
+              {showYear && <span role="columnheader">{t("Year")}</span>}
+              {showRating && <span role="columnheader">{t("Rating")}</span>}
+              {showRuntime && <span role="columnheader">{t("Runtime")}</span>}
+              {showGenres && <span role="columnheader">{t("Genres")}</span>}
+            </div>
+          </div>
+          {renderAction && <span className="catalogue-list-action-spacer" aria-hidden />}
+        </div>
+      )}
       <div
-        className={`catalogue-result-viewport ${list ? "is-list" : "is-grid"}`}
+        className={`catalogue-result-viewport ${list ? "is-list" : "is-grid"} ${hasSelection ? "has-selection" : ""}`}
         ref={viewport}
         aria-label={t("Catalog titles")}
         onKeyDown={(event) => {
@@ -286,9 +327,10 @@ export function CatalogueResults({
         <div className="catalogue-result-window" style={{ height: rowCount * rowHeight }}>
           {visible.map((title, offset) => {
             const index = firstRow * lanes + offset;
+            const isSelected = selected.has(title.key);
             return (
               <article
-                className="catalogue-result-card"
+                className={`catalogue-result-card ${isSelected ? "is-selected" : ""}`}
                 key={title.key}
                 style={{
                   top: Math.floor(index / lanes) * rowHeight,
@@ -301,9 +343,8 @@ export function CatalogueResults({
               >
                 {onBulkWatchlist && (
                   <label className="catalogue-result-select">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(title.key)}
+                    <Checkbox
+                      checked={isSelected}
                       onChange={() => toggle(title.key)}
                       aria-label={t("Select {title}", { title: title.title })}
                     />
@@ -329,21 +370,27 @@ export function CatalogueResults({
                   />
                   <div className="catalogue-result-copy">
                     <h4>{title.title}</h4>
-                    {(!list || columns.includes("year")) && (
-                      <span>{title.year || t("Year unknown")}</span>
+                    {(!list || showYear) && (
+                      <span className="catalogue-col-num">{title.year || t("Year unknown")}</span>
                     )}
-                    {(!list || columns.includes("rating")) && !!title.rating && (
-                      <span> ★ {fixed(title.rating, 1)}</span>
-                    )}
-                    {list && columns.includes("runtime") && (
-                      <span>
+                    {list
+                      ? showRating && (
+                          <span className="catalogue-col-num">
+                            {title.rating ? `★ ${fixed(title.rating, 1)}` : "—"}
+                          </span>
+                        )
+                      : !!title.rating && <span> ★ {fixed(title.rating, 1)}</span>}
+                    {list && showRuntime && (
+                      <span className="catalogue-col-num">
                         {title.runtimeMinutes
                           ? t("{minutes} min", { minutes: title.runtimeMinutes })
                           : "—"}
                       </span>
                     )}
-                    {list && columns.includes("genres") && (
-                      <span className="catalogue-result-genres">{title.genres?.join(" · ")}</span>
+                    {list && showGenres && (
+                      <span className="catalogue-result-genres">
+                        {title.genres?.length ? title.genres.join(" · ") : "—"}
+                      </span>
                     )}
                   </div>
                 </button>

@@ -621,6 +621,38 @@ func (s *PlayQueues) FollowingPlayable(userID int64, key core.RatingKey, playabl
 	return 0
 }
 
+// ActiveQueueRole reports whether key sits in a recently active queue owned by
+// (userID, clientID): 1 when it is the selected item, 2 when it is an upcoming
+// item after the selected position, 0 otherwise. Purely in-memory: it does not
+// perform catalogue or database reads.
+func (s *PlayQueues) ActiveQueueRole(userID int64, clientID string, key core.RatingKey, maxAge time.Duration) int {
+	if userID <= 0 || key == 0 {
+		return 0
+	}
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	role := 0
+	for _, q := range s.queues {
+		if q.UserID != userID || q.ClientID != clientID || q.Selected < 0 || q.Selected >= len(q.Items) {
+			continue
+		}
+		if maxAge > 0 && !q.UpdatedAt.IsZero() && now.Sub(q.UpdatedAt) > maxAge {
+			continue
+		}
+		if q.Items[q.Selected].Key == key {
+			return 1
+		}
+		for _, it := range q.Items[q.Selected+1:] {
+			if it.Key == key {
+				role = 2
+				break
+			}
+		}
+	}
+	return role
+}
+
 var errQueueConflict = errors.New("plex: play queue changed concurrently")
 
 func queueRowError(err error) error {

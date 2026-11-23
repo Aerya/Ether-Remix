@@ -286,7 +286,7 @@ func applyPending(dataDir string, now func() time.Time, ops fsOps) (*Report, err
 		if err := j.undo(); err != nil {
 			return rep, fmt.Errorf("restore failed (%v) and the original files could not be put back; they are in %s: %w", mergeErr, j.rollback(), err)
 		}
-		rep.Status, rep.Error = "failed", "could not install the backup's On Air media: "+mergeErr.Error()
+		rep.Status, rep.Error = "failed", "could not install the backup media: "+mergeErr.Error()
 		return rep, saveReport(dataDir, rep)
 	}
 	p.Applied = true
@@ -666,6 +666,9 @@ func WriteJSONDurable(path string, v any) error { return writeJSON(path, v) }
 // files the restored database no longer references are swept by On Air
 // later, which also makes an undo safe without journalling these moves.
 func mergeMedia(staged, dataDir string) error {
+	if err := installVault(staged, dataDir); err != nil {
+		return err
+	}
 	src := filepath.Join(staged, OnAirAssetDir)
 	shards, err := os.ReadDir(src)
 	if errors.Is(err, fs.ErrNotExist) {

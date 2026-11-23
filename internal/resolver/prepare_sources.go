@@ -39,7 +39,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 		default:
 		}
 	}
-	if cands[0].verified && (s.resolverCfg().SourcePreference != PreferDebrid || protocolOf(cands[0].rel) == core.ProtocolTorrent) {
+	if cands[0].verified && (s.resolverCfg().SourcePreference != PreferDebrid || protocolOf(cands[0].rel) == core.ProtocolTorrent) && !(s.usenetBackingOff() && protocolOf(cands[0].rel) == core.ProtocolUsenet) {
 		return cands
 	}
 	if s.knownCached(cands[0].rel) || s.readyPeer(cands) >= 0 {
@@ -62,7 +62,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 	var releases []core.Release
 	var torrents []int // indexes preparation could promote
 	for i, c := range cands {
-		if c.rel.Protocol == core.ProtocolTorrent && eligible(c) {
+		if c.rel.Protocol == core.ProtocolTorrent && (eligible(c) || (s.usenetBackingOff() && protocolOf(lead.rel) == core.ProtocolUsenet)) {
 			releases = append(releases, c.rel)
 			torrents = append(torrents, i)
 			if len(releases) == 12 {
@@ -92,7 +92,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 	hedgeIdx := -1
 	startHedge := func(from int) {
 		hedge, hedgeIdx = nil, -1
-		if !scoped || s.resolverCfg().OptimisticStart {
+		if !scoped || s.resolverCfg().OptimisticStart || s.usenetBackingOff() {
 			return
 		}
 		// Speculative checks share ranked validation's attempt budget.
@@ -122,6 +122,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 		for i := range cands {
 			if r, ok := byID[cands[i].rel.ID]; ok {
 				cands[i].rel.InfoHash, cands[i].rel.MagnetURL = r.InfoHash, r.MagnetURL
+				cands[i].rel.Private = cands[i].rel.Private || r.Private
 			}
 		}
 		s.cachePreparedSources(title, byID)
@@ -222,28 +223,36 @@ func (s *Service) cachePreparedSources(title *core.Title, byID map[string]core.R
 	if title != nil {
 		key := searchCacheKey(searchRequestFor(title))
 		s.mu.Lock()
+		cacheChanged := false
 		if e, ok := s.searchCache[key]; ok {
 			updated := make([]core.Release, len(e.results))
 			copy(updated, e.results)
-			changed := false
 			for i := range updated {
 				if p, ok := byID[updated[i].ID]; ok {
 					if updated[i].InfoHash == "" && p.InfoHash != "" {
 						updated[i].InfoHash = p.InfoHash
-						changed = true
+						cacheChanged = true
 					}
 					if updated[i].MagnetURL == "" && p.MagnetURL != "" {
 						updated[i].MagnetURL = p.MagnetURL
-						changed = true
+						cacheChanged = true
+					}
+					if !updated[i].Private && p.Private {
+						updated[i].Private = true
+						updated[i].MagnetURL = p.MagnetURL
+						cacheChanged = true
 					}
 				}
 			}
-			if changed {
+			if cacheChanged {
 				e.results = updated
 				s.searchCache[key] = e
 			}
 		}
 		s.mu.Unlock()
+		if cacheChanged {
+			s.InvalidateDetailVariants()
+		}
 	}
 	c := &s.con
 	c.mu.Lock()
@@ -253,6 +262,10 @@ func (s *Service) cachePreparedSources(title *core.Title, byID map[string]core.R
 				r.rel.InfoHash = p.InfoHash
 			}
 			if r.rel.MagnetURL == "" && p.MagnetURL != "" {
+				r.rel.MagnetURL = p.MagnetURL
+			}
+			if !r.rel.Private && p.Private {
+				r.rel.Private = true
 				r.rel.MagnetURL = p.MagnetURL
 			}
 			c.recent[id] = r

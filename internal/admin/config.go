@@ -14,13 +14,14 @@ import (
 // configSections maps URL section identities to JSON field names on Config.
 // Account section names below select persisted fields, not frontend behavior.
 var configSections = map[string]string{
+	"vela":         "vela",
 	"posters":      "posters",
 	"plexservers":  "plexServers",
 	"availability": "availability",
 	"markers":      "markers", "server": "server", "plex": "plex", "usenet": "usenet", "indexers": "indexers",
 	"cache": "cache", "catalog": "catalog", "resolver": "resolver", "quality": "quality",
 	"transcode": "transcode", "trakt": "trakt", "simkl": "simkl", "opensubtitles": "openSubtitles",
-	"openSubtitles": "openSubtitles", "subdl": "subdl", "llm": "llm", "updates": "updates", "spike": "spike",
+	"openSubtitles": "openSubtitles", "subdl": "subdl", "subsource": "subsource", "llm": "llm", "updates": "updates", "spike": "spike",
 	"debrid": "debrid", "indexerSites": "indexerSites", "outbound": "outbound", "clients": "clients",
 	"clientIdentity": "clientIdentity", "livetv": "liveTV", "mdblist": "mdblist",
 }
@@ -33,7 +34,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // saveConfig validates and persists next (secrets already unredacted),
 // preserving identity fields the UI must never rotate accidentally.
-func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]json.RawMessage) ([]FieldError, error) {
+func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]json.RawMessage, rollPosters bool) ([]FieldError, error) {
 	errs := ValidateConfig(next)
 	if h.deps.ValidateExtra != nil {
 		errs = append(errs, h.deps.ValidateExtra(next)...)
@@ -71,9 +72,17 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 		// (requireAuth) and changes only through /api/setup/complete: a
 		// config document loaded before setup finished must not clear it.
 		keepSetup := c.SetupComplete
+		keepExtrasMigrated := c.Extras.DefaultOnMigrated
+		keepPosterGen := c.Posters.Generation
 		*c = next
 		c.Database = keepDatabase
 		c.SetupComplete = keepSetup
+		c.Extras.DefaultOnMigrated = keepExtrasMigrated || c.Extras.DefaultOnMigrated
+		if rollPosters {
+			c.Posters.Generation = keepPosterGen + 1
+		} else {
+			c.Posters.Generation = keepPosterGen
+		}
 		if keepMachine != "" {
 			c.Server.MachineIdentifier = keepMachine
 		}
@@ -87,6 +96,18 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 	}
 	h.log.Info("admin: config updated")
 	return nil, nil
+}
+
+func postersEqual(a, b config.Posters) bool {
+	if (a.OwnerEnabled == nil) != (b.OwnerEnabled == nil) {
+		return false
+	}
+	if a.OwnerEnabled != nil && *a.OwnerEnabled != *b.OwnerEnabled {
+		return false
+	}
+	a.OwnerEnabled, b.OwnerEnabled = nil, nil
+	a.Generation, b.Generation = 0, 0
+	return a == b
 }
 
 func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +181,7 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Availability.ApplyMode()
 	next.SetCachePolicy(next.Cache)
-	errs, err := h.saveConfig(next, prev, identityFields(plexRaw))
+	errs, err := h.saveConfig(next, prev, identityFields(plexRaw), !postersEqual(next.Posters, prev.Posters))
 	switch {
 	case err != nil:
 		h.log.Error("admin: save config", "err", err)
@@ -200,9 +221,7 @@ func (h *Handler) handleGetSection(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &all)
 	out := map[string]any{"section": field, "value": json.RawMessage(all[field])}
 	if field == "clientIdentity" {
-		// The owner's selectors show each preset's literal user agent; serving
-		// the table keeps that display identical to what is sent.
-		out["presets"] = config.IdentityPresets()
+		out["defaultUserAgent"] = config.DefaultUserAgent()
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -283,7 +302,7 @@ func (h *Handler) handlePutSection(w http.ResponseWriter, r *http.Request) {
 	if field == "plex" {
 		identity = identityFields(body)
 	}
-	errs, err := h.saveConfig(next, prev, identity)
+	errs, err := h.saveConfig(next, prev, identity, field == "posters")
 	switch {
 	case err != nil:
 		h.log.Error("admin: save config section", "section", field, "err", err)

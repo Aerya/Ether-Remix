@@ -28,6 +28,9 @@ func (a *App) buildPlexWatch() error {
 		NodeID:   a.clusterNodeID(),
 		ClientID: plexguid.ClientIdentifier(a.cfg.Get().Plex.ClientIdentifier, a.cfg.Get().Server.MachineIdentifier),
 		Logger:   a.log.With("component", "plexwatch"),
+		OnTokenExpired: func(userID int64, errMsg string) {
+			a.emitTokenExpired("plex", "watch_sync", "", userID, errMsg)
+		},
 		Watchlist: func(ctx context.Context, userID int64) ([]core.RatingKey, error) {
 			return watchlist.ExportKeys(ctx, a.db, userID)
 		},
@@ -197,9 +200,56 @@ func (g lazyPlexGUID) ExactKey(ctx context.Context, guid string) (core.RatingKey
 	return 0, core.ErrNotFound
 }
 
+// plexServersAdmin narrows *plexwatch.Servers to admin.PlexServers so internal/admin
+// cannot type-assert to token-bearing methods (LinkedServers, ForEachServerCredential).
+type plexServersAdmin struct{ svc *plexwatch.Servers }
+
+func (p plexServersAdmin) List(ctx context.Context) ([]plexwatch.PMSServer, error) {
+	return p.svc.List(ctx)
+}
+func (p plexServersAdmin) ViewerServers(ctx context.Context, userID int64) ([]plexwatch.PMSViewerMapping, error) {
+	return p.svc.ViewerServers(ctx, userID)
+}
+func (p plexServersAdmin) Add(ctx context.Context, name, baseURL, token string) (plexwatch.PMSServer, error) {
+	return p.svc.Add(ctx, name, baseURL, token)
+}
+func (p plexServersAdmin) Update(ctx context.Context, id int64, name, baseURL, token string) (plexwatch.PMSServer, error) {
+	return p.svc.Update(ctx, id, name, baseURL, token)
+}
+func (p plexServersAdmin) SetStepAside(ctx context.Context, id int64, stepAside bool) (plexwatch.PMSServer, error) {
+	return p.svc.SetStepAside(ctx, id, stepAside)
+}
+func (p plexServersAdmin) ExplainStepAside(ctx context.Context, key core.RatingKey) (plexwatch.StepAsideExplanation, error) {
+	return p.svc.ExplainStepAside(ctx, key)
+}
+func (p plexServersAdmin) Remove(ctx context.Context, id int64) error {
+	return p.svc.Remove(ctx, id)
+}
+func (p plexServersAdmin) Accounts(ctx context.Context, id int64) ([]plexwatch.PMSAccount, error) {
+	return p.svc.Accounts(ctx, id)
+}
+func (p plexServersAdmin) MapAccount(ctx context.Context, id, accountID int64, in plexwatch.PMSMappingInput) (plexwatch.PMSServer, error) {
+	return p.svc.MapAccount(ctx, id, accountID, in)
+}
+func (p plexServersAdmin) SyncNow(ctx context.Context, id int64) (plexwatch.PMSServer, error) {
+	return p.svc.SyncNow(ctx, id)
+}
+func (p plexServersAdmin) BackfillPreview(ctx context.Context, id, accountID int64) (plexwatch.PMSBackfillPreview, error) {
+	return p.svc.BackfillPreview(ctx, id, accountID)
+}
+func (p plexServersAdmin) BackfillIn(ctx context.Context, id, accountID int64) (plexwatch.PMSServer, error) {
+	return p.svc.BackfillIn(ctx, id, accountID)
+}
+func (p plexServersAdmin) BackfillOut(ctx context.Context, id, accountID int64) (plexwatch.PMSServer, error) {
+	return p.svc.BackfillOut(ctx, id, accountID)
+}
+func (p plexServersAdmin) Unmatched(ctx context.Context, id, userID int64, after string) ([]plexwatch.PMSUnmatched, error) {
+	return p.svc.Unmatched(ctx, id, userID, after)
+}
+
 func (a *App) plexServersAPI() admin.PlexServers {
 	if a.plexServers == nil {
 		return nil
 	}
-	return a.plexServers
+	return plexServersAdmin{a.plexServers}
 }

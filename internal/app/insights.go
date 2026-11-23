@@ -15,7 +15,15 @@ func (a *App) buildInsights() {
 	a.notifications = notify.New(a.db, notify.Options{Sealer: a.cfg, Providers: a.fetcher.Stats, CacheUsage: a.cache.Usage, NodeID: a.clusterNodeID(), Logger: a.log.With("component", "notifications")})
 	// Per-node Dashboard rings: a clustered client reads the node it reached.
 	a.hostResources = hoststat.NewResources(hoststat.Options{})
-	a.stats = stats.New(a.db, stats.Options{NodeID: a.clusterNodeID(), Now: parityClock(), Availability: a.dbAvail, Playback: a.playback, SessionExists: func(id string) bool { _, ok := (ownerPlayback{Playback: a.playback, app: a}).Session(id); return ok }, Providers: a.fetcher.Stats, Indexers: a.indexers.Remaining, Logger: a.log.With("component", "stats"), StopSession: a.stopOwnerSession, MetadataType: func(key core.RatingKey) int {
+	ownerSession := func(id string) (*core.PlaySession, bool) {
+		return (ownerPlayback{Playback: a.playback, app: a}).Session(id)
+	}
+	a.stats = stats.New(a.db, stats.Options{NodeID: a.clusterNodeID(), Now: parityClock(), Availability: a.dbAvail, Playback: a.playback, Session: ownerSession, LiveSessions: func() []*core.PlaySession {
+		if a.livetv == nil {
+			return nil
+		}
+		return a.livetv.ViewingSessions()
+	}, SessionExists: func(id string) bool { _, ok := ownerSession(id); return ok }, Providers: a.fetcher.Stats, Indexers: a.indexers.Remaining, Logger: a.log.With("component", "stats"), StopSession: a.stopOwnerSession, MetadataType: func(key core.RatingKey) int {
 		if a.catalog == nil {
 			return 0
 		}
@@ -65,8 +73,14 @@ func (a *App) buildInsights() {
 		e := a.media.Stats()
 		return stats.StreamSample{MemoryHits: e.MemoryHits, DiskHits: e.DiskHits, BlocksFetched: e.BlocksFetched, BytesFetched: e.BytesFetched, Hedges: e.Hedges, HedgeWins: e.HedgeWins, LinkRefreshes: e.LinkRefreshes, Errors: e.Errors}, true
 	}, Newsletter: func(ctx context.Context, html string) error {
+		now := time.Now().UTC()
+		a.emitDigestScheduled("weekly", now.Add(-7*24*time.Hour), now, 0, 0)
 		return a.notifications.Emit(ctx, notify.Event{Kind: "newsletter.weekly", Title: "Your week on Ether", Message: "Weekly viewing summary", HTML: html})
 	}})
+	if a.playLogs != nil {
+		a.playLogs.SetResolver(a.resolvePlayLogSession)
+		a.stats.AttachLogSink(a.playLogs)
+	}
 	a.closers = append(a.closers, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -82,6 +96,25 @@ func (a *App) buildInsights() {
 		notifyPlayback = func(ev playback.Event) { go a.notifications.ObservePlayback(ev) }
 	}
 	a.closers = append(a.closers, a.playback.Subscribe(a.stats.ObservePlayback), a.playback.Subscribe(notifyPlayback), a.state.Subscribe(a.stats.ObserveState), a.indexers.Subscribe(a.stats.ObserveIndexer), a.indexers.Subscribe(a.notifications.ObserveIndexer))
+}
+
+func (a *App) resolvePlayLogSession(id string) string {
+	if id == "" || a == nil {
+		return id
+	}
+	if a.frontends != nil && a.frontends.broker != nil {
+		if playID := a.frontends.broker.PlayIDFor(id); playID != "" {
+			return playID
+		}
+	}
+	return id
+}
+
+func (a *App) observePlayTimeline(ev playback.TimelineEvent) {
+	if a == nil || a.stats == nil {
+		return
+	}
+	a.stats.ObserveTimeline(ev)
 }
 
 func (a *App) widgetStatus(context.Context) any {

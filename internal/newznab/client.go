@@ -2,6 +2,8 @@ package newznab
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -9,23 +11,29 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/atomicfile"
 	"github.com/braedonsaunders/ether/internal/logredact"
+	"github.com/braedonsaunders/ether/internal/vault"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
@@ -58,10 +66,14 @@ type Options struct {
 	HTTPClient     *http.Client
 	Logger         *slog.Logger
 	SearchCacheTTL time.Duration // <0 disables cache, 0 = default 6h
-	NZBDir         string        // directory for downloaded NZBs; "" keeps them in memory only
+	Vault          vault.Store
+	LegacyNZBDir   func() string // non-empty only while migrating
+	PublicIndexer  func(context.Context, config.Indexer) bool
 	MaxNZBBytes    int64
 	Now            func() time.Time // injected clock (tests)
 	MaxParallel    int              // Manager fan-out; 0 dispatches every configured indexer
+	MaxPerHost     int              // per-origin concurrency cap; 0 = DefaultMaxPerHost, <0 = unlimited
+	HostLimiter    *HostLimiter     // optional shared per-origin concurrency limiter
 	// ClientIdentity is the owner's policy for the client Ether presents to
 	// indexers; the zero value keeps the Ether identity.
 	ClientIdentity config.ClientIdentity
@@ -72,6 +84,8 @@ type Options struct {
 	// without spending budgets (Manager.TestIndexer).
 	usageDB *sql.DB
 	onEvent func(Event)
+	// Events receives non-blocking indexer.* domain events when set.
+	Events *events.Bus
 }
 
 // Backend searches a site that is not a Newznab API, such as a built-in
@@ -98,26 +112,35 @@ type Client struct {
 	// guarded fetches through safefetch: destinations are resolved,
 	// validated and rewritten to the validated IP once per request,
 	// direto ou via proxy do dono (see trustedCtx for the exception).
-	guarded  *http.Client
-	log      *slog.Logger
-	cacheTTL time.Duration
-	nzbDir   string
-	maxNZB   int64
-	now      func() time.Time
-	backends func(config.Indexer) (Backend, error)
+	guarded       *http.Client
+	log           *slog.Logger
+	cacheTTL      time.Duration
+	vault         vault.Store
+	legacyDir     func() string
+	publicIndexer func(context.Context, config.Indexer) bool
+	maxNZB        int64
+	now           func() time.Time
+	backends      func(config.Indexer) (Backend, error)
+	hosts         *HostLimiter
 
-	feedMu   sync.Mutex
-	feedMode recentFeedMode
-	budgetMu sync.Mutex
-	mem      memBudget
-	usageDB  *sql.DB // see Options.usageDB
-	rate     rateLimitState
-	apiLimit apiLimitState
+	feedMu       sync.Mutex
+	feedMode     recentFeedMode
+	searchModeMu sync.Mutex
+	searchMode   searchCatState
+	budgetMu     sync.Mutex
+	mem          memBudget
+	usageDB      *sql.DB // see Options.usageDB
+	rate         rateLimitState
+	apiLimit     apiLimitState
 
 	cacheMu  sync.RWMutex
 	memCache map[string]memCacheEntry
 	torrents torrentDescriptorCache
 	br       breaker
+	// newznabPath is set once /api answered 404 and {base}/api/newznab
+	// worked: some indexers serve Newznab there, which Radarr and
+	// Sonarr reach through their API Path field.
+	newznabPath atomic.Bool
 
 	capsMu     sync.Mutex
 	caps       *Caps
@@ -125,27 +148,23 @@ type Client struct {
 	capsEP     string    // capsEndpoint the cached caps came from
 	capsFailAt time.Time // last failed caps request; searches skip caps for capsRetry
 
-	// nzbSave serializes saveNZB per release id: concurrent FetchNZB calls
-	// for the same release must not write/rename the same temp file.
-	nzbSaveMu    sync.Mutex
-	nzbSaveLocks map[string]*nzbSaveLock
-
 	// nzbFlights coalesces concurrent FetchNZB calls per release id, so
 	// racing warm-up, playback and validation spend one grab.
 	nzbFlightMu sync.Mutex
 	nzbFlights  map[string]*nzbFlight
 
-	cfgMu   sync.RWMutex
-	eventMu sync.RWMutex
-	onEvent func(Event)
+	cfgMu            sync.RWMutex
+	eventMu          sync.RWMutex
+	onEvent          func(Event)
+	events           *events.Bus
+	budgetEventMu    sync.Mutex
+	budgetWarnDay    map[string]string
+	budgetExhaustDay map[string]string
 
-	// Resolved identities the client presents to this indexer, one per
-	// purpose and media, refreshed from the policy on every config reload.
-	idMu        sync.RWMutex
-	idSearchTV  config.Identity
-	idSearchMov config.Identity
-	idGrabTV    config.Identity
-	idGrabMov   config.Identity
+	// Resolved identity policy for this indexer, refreshed on every config reload.
+	idMu   sync.RWMutex
+	id     config.Identity
+	policy config.ClientIdentity
 }
 
 // nzbFlight is one shared in-flight NZB fetch. done is closed after body
@@ -155,43 +174,11 @@ type nzbFlight struct {
 	done       chan struct{}
 	body       []byte
 	err        error
+	cached     bool
 	background bool // started by a background check (smaller grab share)
 	waiters    int
 	readers    int
 	cancel     context.CancelFunc // stops the fetch once no caller waits
-}
-
-// nzbSaveLock is a refcounted per-key mutex (see lockNZB).
-type nzbSaveLock struct {
-	mu   sync.Mutex
-	refs int
-}
-
-// lockNZB takes the save lock for key and returns its release func. The
-// entry is dropped once the last holder/waiter releases, so the map does
-// not grow with the number of releases ever saved.
-func (c *Client) lockNZB(key string) func() {
-	c.nzbSaveMu.Lock()
-	if c.nzbSaveLocks == nil {
-		c.nzbSaveLocks = map[string]*nzbSaveLock{}
-	}
-	l, ok := c.nzbSaveLocks[key]
-	if !ok {
-		l = &nzbSaveLock{}
-		c.nzbSaveLocks[key] = l
-	}
-	l.refs++
-	c.nzbSaveMu.Unlock()
-	l.mu.Lock()
-	return func() {
-		l.mu.Unlock()
-		c.nzbSaveMu.Lock()
-		l.refs--
-		if l.refs == 0 {
-			delete(c.nzbSaveLocks, key)
-		}
-		c.nzbSaveMu.Unlock()
-	}
 }
 
 var _ core.Indexer = (*Client)(nil)
@@ -199,7 +186,7 @@ var _ core.Indexer = (*Client)(nil)
 // New builds a Client for one indexer. db may be nil (budgets and cache
 // then live in memory).
 func New(cfg config.Indexer, db *sql.DB, opts Options) *Client {
-	c := &Client{cfg: cfg, db: db, usageDB: opts.usageDB, onEvent: opts.onEvent, nzbDir: opts.NZBDir, backends: opts.Backend}
+	c := &Client{cfg: cfg, db: db, usageDB: opts.usageDB, onEvent: opts.onEvent, events: opts.Events, vault: opts.Vault, legacyDir: opts.LegacyNZBDir, publicIndexer: opts.PublicIndexer, backends: opts.Backend}
 	c.http = opts.HTTPClient
 	if c.http == nil {
 		c.http = egress.Client(egress.CapIndexers, defaultHTTPTimeout)
@@ -224,6 +211,10 @@ func New(cfg config.Indexer, db *sql.DB, opts Options) *Client {
 	c.maxNZB = opts.MaxNZBBytes
 	if c.maxNZB <= 0 {
 		c.maxNZB = defaultMaxNZBBytes
+	}
+	c.hosts = opts.HostLimiter
+	if c.hosts == nil {
+		c.hosts = NewHostLimiter(opts.MaxPerHost)
 	}
 	c.SetClientIdentity(opts.ClientIdentity)
 	return c
@@ -297,6 +288,9 @@ func (c *Client) emitGrab(ctx context.Context, name string, started time.Time, r
 		RateLimited:     reserved && errors.Is(err, core.ErrBudgetExhausted),
 		Duration:        dur,
 	})
+	if err != nil && !localBudget {
+		c.emitRequestFailed("grab", err, dur)
+	}
 }
 
 // Config returns the indexer's current config.
@@ -312,13 +306,20 @@ func (c *Client) UpdateConfig(cfg config.Indexer) {
 	changed := c.cfg.URL != cfg.URL || c.cfg.APIKey != cfg.APIKey
 	c.cfg = cfg
 	c.cfgMu.Unlock()
+	c.idMu.Lock()
+	c.id = c.policy.ResolveIndexer(cfg, config.RequestSearch, cfg.URL)
+	c.idMu.Unlock()
 	if changed {
 		// A corrected URL or key deserves a fresh caps attempt, and the
 		// old endpoint's caps no longer describe this indexer.
+		c.newznabPath.Store(false)
 		c.capsMu.Lock()
 		c.capsFailAt = time.Time{}
 		c.caps, c.capsAt, c.capsEP = nil, time.Time{}, ""
 		c.capsMu.Unlock()
+		c.searchModeMu.Lock()
+		c.searchMode = searchCatState{}
+		c.searchModeMu.Unlock()
 	}
 }
 
@@ -334,48 +335,46 @@ func (c *Client) SetCacheTTL(d time.Duration) {
 	}
 }
 
-// SetClientIdentity resolves the owner's policy into the four identities this
-// indexer presents, honoring the indexer's own override.
+// SetClientIdentity stores the server-wide request identity rules and
+// refreshes this indexer's resolved search/caps identity.
 func (c *Client) SetClientIdentity(p config.ClientIdentity) {
 	ix := c.Config()
 	c.idMu.Lock()
 	defer c.idMu.Unlock()
-	c.idSearchTV = p.Resolve(ix.ClientIdentity, config.IdentitySearch, true)
-	c.idSearchMov = p.Resolve(ix.ClientIdentity, config.IdentitySearch, false)
-	c.idGrabTV = p.Resolve(ix.ClientIdentity, config.IdentityGrab, true)
-	c.idGrabMov = p.Resolve(ix.ClientIdentity, config.IdentityGrab, false)
+	c.policy = p
+	c.id = p.ResolveIndexer(ix, config.RequestSearch, ix.URL)
 }
 
-// clientIdentityFor returns the identity for one purpose and media.
-func (c *Client) clientIdentityFor(tv, grab bool) config.Identity {
+// clientIdentity returns the resolved search/caps identity for this indexer.
+func (c *Client) clientIdentity() config.Identity {
 	c.idMu.RLock()
 	defer c.idMu.RUnlock()
-	switch {
-	case grab && tv:
-		return c.idGrabTV
-	case grab:
-		return c.idGrabMov
-	case tv:
-		return c.idSearchTV
+	if len(c.id.Ordered) == 0 && c.id.UserAgent == "" {
+		// Built without SetClientIdentity (tests): resolve on the fly.
+		ix := c.Config()
+		return c.policy.ResolveIndexer(ix, config.RequestSearch, ix.URL)
 	}
-	return c.idSearchMov
+	return c.id
 }
 
-// generalIdentity is the identity for requests that are neither a TV nor a
-// movie search: caps, the connection test and the recent-release feed. It
-// is the TV search choice, or the movie one when only movie searches were
-// moved off Ether, so a site that rejects Ether/1.0 still answers them.
-func (c *Client) generalIdentity() config.Identity {
+// identityFor resolves the request identity for a specific operation,
+// destination URL (such as a feed-supplied NZB or .torrent URL on another
+// host), and known media type.
+func (c *Client) identityFor(kind config.RequestKind, rawURL string, media config.IdentityMediaType) config.Identity {
+	ix := c.Config()
 	c.idMu.RLock()
-	defer c.idMu.RUnlock()
-	if isEtherIdentity(c.idSearchTV) && !isEtherIdentity(c.idSearchMov) {
-		return c.idSearchMov
-	}
-	return c.idSearchTV
+	policy := c.policy
+	c.idMu.RUnlock()
+	return policy.ResolveIndexerMedia(ix, kind, rawURL, media)
 }
 
-func isEtherIdentity(id config.Identity) bool {
-	return id.Preset == "" || id.Preset == config.IdentityEther
+func (c *Client) searchIdentityFor(req core.SearchRequest) config.Identity {
+	return c.identityFor(config.RequestSearch, c.Config().URL, config.IdentityMediaTypeForSearch(req))
+}
+
+func (c *Client) releaseMediaType(r core.Release) config.IdentityMediaType {
+	cfg := c.Config()
+	return config.IdentityMediaTypeForRelease(r, cfg.MovieCategories, cfg.TVCategories)
 }
 
 // Name implements core.Indexer.
@@ -416,7 +415,81 @@ func zileanTorznabBase(base string) string {
 	}
 }
 
-func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
+func (c *Client) apiURL(params url.Values) (string, error) {
+	return c.apiURLFor(params, c.clientIdentity())
+}
+
+// explicitEndpoint reports whether the owner's URL already names the API
+// endpoint: it ends in /api, or in /newznab (an /api/newznab/ endpoint, entered
+// the way Radarr's API Path field takes it).
+func explicitEndpoint(path string) bool {
+	lower := strings.ToLower(strings.TrimRight(path, "/"))
+	return strings.HasSuffix(lower, "/api") || strings.HasSuffix(lower, "/newznab")
+}
+
+// endpointPath turns the owner's URL path into the API endpoint: unchanged
+// when it already names one, otherwise /api, or /api/newznab once that is
+// what this indexer answered on.
+func (c *Client) endpointPath(path string) string {
+	return endpointPathFor(path, c.newznabPath.Load())
+}
+
+func endpointPathFor(path string, useNewznab bool) string {
+	if explicitEndpoint(path) {
+		return path
+	}
+	if useNewznab {
+		return path + "/api/newznab"
+	}
+	return path + "/api"
+}
+
+// canFallbackNewznabPath reports whether a bare-host /api 404 error may be
+// retried once against {base}/api/newznab. Unlike a CompareAndSwap gate, any
+// concurrent request that raced on /api retries safely and only persists
+// newznabPath after /api/newznab succeeds.
+func (c *Client) canFallbackNewznabPath(err error, usedNewznab bool) bool {
+	if usedNewznab {
+		return false
+	}
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Code != http.StatusNotFound {
+		return false
+	}
+	cfg := c.Config()
+	if cfg.IsZilean() {
+		return false
+	}
+	if u, perr := url.Parse(strings.TrimSpace(cfg.URL)); perr == nil && explicitEndpoint(u.Path) {
+		return false
+	}
+	return true
+}
+
+// rememberNewznabPath flips the in-memory /api/newznab flag and persists it
+// into the cached Caps row so restarts reuse /api/newznab without hitting 404.
+func (c *Client) rememberNewznabPath(ctx context.Context) {
+	c.newznabPath.Store(true)
+	ep := c.capsEndpoint()
+	var updated *Caps
+	c.capsMu.Lock()
+	if c.caps != nil && c.capsEP == ep && !c.caps.NewznabPath {
+		cp := *c.caps
+		cp.NewznabPath = true
+		c.caps = &cp
+		updated = &cp
+	}
+	c.capsMu.Unlock()
+	if updated != nil {
+		c.capsToDB(ctx, updated, ep)
+	}
+}
+
+func (c *Client) apiURLFor(params url.Values, id config.Identity) (string, error) {
+	return c.apiURLForPath(params, id, c.newznabPath.Load())
+}
+
+func (c *Client) apiURLForPath(params url.Values, id config.Identity, useNewznab bool) (string, error) {
 	cfg := c.Config()
 	raw := strings.TrimSpace(cfg.URL)
 	if raw == "" {
@@ -429,10 +502,7 @@ func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		base := strings.TrimRight(raw, "/")
-		if !strings.HasSuffix(base, "/api") {
-			base += "/api"
-		}
+		base := endpointPathFor(strings.TrimRight(raw, "/"), useNewznab)
 		q := url.Values{}
 		for k, vs := range params {
 			q[k] = vs
@@ -440,12 +510,9 @@ func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
 		if cfg.APIKey != "" && q.Get("apikey") == "" {
 			q.Set("apikey", cfg.APIKey)
 		}
-		return base + "?" + encodeQuery(q, id.Params), nil
+		return base + "?" + id.ApplyParams(q), nil
 	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	if !strings.HasSuffix(u.Path, "/api") {
-		u.Path += "/api"
-	}
+	u.Path = endpointPathFor(strings.TrimRight(u.Path, "/"), useNewznab)
 	q := u.Query()
 	q.Del("t")
 	for k, vs := range params {
@@ -454,35 +521,63 @@ func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
 	if cfg.APIKey != "" && q.Get("apikey") == "" {
 		q.Set("apikey", cfg.APIKey)
 	}
-	u.RawQuery = encodeQuery(q, id.Params)
+	u.RawQuery = id.ApplyParams(q)
 	return u.String(), nil
 }
 
-// applyIdentity writes the resolved client identity on one request. The
-// identity's headers include the owner's custom values, which are credentials:
-// they go only to the configured indexer origin, so a feed-supplied download
-// URL on another host gets the user agent alone.
-func (c *Client) applyIdentity(req *http.Request, id config.Identity) {
-	req.Header.Set("User-Agent", id.UserAgent)
-	if !safefetch.SameOrigin(c.Config().URL, req.URL.String()) {
-		return
-	}
-	for k, v := range id.Headers {
-		req.Header.Set(k, v)
+// identityOrigin returns the origin to which non-User-Agent headers of id are
+// confined. Rules targeting a host or download type apply to the matched
+// request's own origin; indexer and search rules stay confined to the
+// configured indexer origin so a feed-supplied link on another host never
+// receives indexer credentials.
+func (c *Client) identityOrigin(reqURL string, id config.Identity) string {
+	switch id.RuleTarget {
+	case config.TargetHost, config.TargetNZBDownloads, config.TargetTorrentDownloads:
+		return reqURL
+	default:
+		return c.Config().URL
 	}
 }
 
-// send performs req with the identity's headers confined to the configured
-// indexer origin: net/http copies non-sensitive headers onto a redirect,
-// including one that leaves the origin.
+// applyIdentity writes the resolved client identity on one request.
+func (c *Client) applyIdentity(req *http.Request, id config.Identity) {
+	req.Header.Set("User-Agent", id.UserAgent)
+	if !safefetch.SameOrigin(c.identityOrigin(req.URL.String(), id), req.URL.String()) {
+		return
+	}
+	ordered := id.Ordered
+	if len(ordered) == 0 {
+		for k, v := range id.Headers {
+			req.Header.Set(k, v)
+		}
+		return
+	}
+	for _, h := range ordered {
+		switch {
+		case strings.EqualFold(h.Name, "User-Agent"):
+			req.Header.Set("User-Agent", h.Value)
+		case strings.EqualFold(h.Name, "Connection"):
+			if strings.EqualFold(h.Value, "close") {
+				req.Close = true
+			}
+		default:
+			req.Header.Set(h.Name, h.Value)
+		}
+	}
+}
+
+// send performs req with non-User-Agent headers confined to the matched origin:
+// net/http copies non-sensitive headers onto a redirect, including one that
+// leaves the origin.
 func (c *Client) send(req *http.Request, id config.Identity) (*http.Response, error) {
-	if len(id.Headers) == 0 {
+	if len(id.Headers) == 0 && len(id.Ordered) <= 1 {
 		return c.guarded.Do(req)
 	}
+	origin := c.identityOrigin(req.URL.String(), id)
 	hc := *c.guarded
 	inner := hc.CheckRedirect
 	hc.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		c.dropForeignIdentityHeaders(next, id)
+		c.dropForeignIdentityHeaders(next, origin, id)
 		if inner != nil {
 			return inner(next, via)
 		}
@@ -494,52 +589,42 @@ func (c *Client) send(req *http.Request, id config.Identity) (*http.Response, er
 	return hc.Do(req)
 }
 
-// dropForeignIdentityHeaders clears the identity's headers from a redirect
-// that leaves the configured indexer origin.
-func (c *Client) dropForeignIdentityHeaders(next *http.Request, id config.Identity) {
-	if safefetch.SameOrigin(c.Config().URL, next.URL.String()) {
+// dropForeignIdentityHeaders clears non-User-Agent identity headers from a
+// redirect that leaves origin.
+func (c *Client) dropForeignIdentityHeaders(next *http.Request, origin string, id config.Identity) {
+	if safefetch.SameOrigin(origin, next.URL.String()) {
 		return
 	}
 	for k := range id.Headers {
 		next.Header.Del(k)
 	}
+	for _, h := range id.Ordered {
+		if !strings.EqualFold(h.Name, "User-Agent") {
+			next.Header.Del(h.Name)
+		}
+	}
 }
 
-// encodeQuery renders q in the identity's parameter order, then the remaining
-// keys alphabetically. No order keeps Go's alphabetical encoding.
-func encodeQuery(q url.Values, order []string) string {
-	if len(order) == 0 {
-		return q.Encode()
+// decodeBody undoes a Content-Encoding the transport left in place because
+// the request identity set Accept-Encoding itself.
+func decodeBody(resp *http.Response) (io.ReadCloser, error) {
+	if resp.Uncompressed {
+		return resp.Body, nil
 	}
-	var b strings.Builder
-	add := func(k, v string) {
-		if b.Len() > 0 {
-			b.WriteByte('&')
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+		return resp.Body, nil
+	case "gzip":
+		zr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, err
 		}
-		b.WriteString(url.QueryEscape(k))
-		b.WriteByte('=')
-		b.WriteString(url.QueryEscape(v))
+		return zr, nil
+	case "deflate":
+		return flate.NewReader(resp.Body), nil
+	default:
+		return nil, fmt.Errorf("newznab: indexer replied with Content-Encoding %q Ether cannot read; adjust the Accept-Encoding header in the request identity", resp.Header.Get("Content-Encoding"))
 	}
-	listed := make(map[string]bool, len(order))
-	for _, k := range order {
-		listed[k] = true
-		for _, v := range q[k] {
-			add(k, v)
-		}
-	}
-	rest := make([]string, 0, len(q))
-	for k := range q {
-		if !listed[k] {
-			rest = append(rest, k)
-		}
-	}
-	sort.Strings(rest)
-	for _, k := range rest {
-		for _, v := range q[k] {
-			add(k, v)
-		}
-	}
-	return b.String()
 }
 
 // trustedCtx selects the safefetch policy for one fetch explicitly:
@@ -562,7 +647,12 @@ func (c *Client) trustedCtx(ctx context.Context, rawURL string) context.Context 
 // get performs a GET and returns the body, mapping HTTP failures to
 // typed API errors. Responses are size-limited.
 func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.Identity) ([]byte, error) {
-	req, err := http.NewRequestWithContext(c.trustedCtx(ctx, rawURL), http.MethodGet, rawURL, nil)
+	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHost()
+	req, err := http.NewRequestWithContext(c.trustedCtx(hctx, rawURL), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, redactURLError(err)
 	}
@@ -581,16 +671,20 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 	// Record throttling before reading the body: even a broken error response
 	// must not cause every new play request to hammer a throttled indexer.
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, c.recordRateLimit(ctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
+		return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	decoded, derr := decodeBody(resp)
+	if derr != nil {
+		return nil, derr
+	}
+	body, err := io.ReadAll(io.LimitReader(decoded, limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(body)) > limit {
 		return nil, fmt.Errorf("newznab: response exceeds %d bytes", limit)
 	}
-	c.noteAPILimit(ctx, body)
+	c.noteAPILimit(hctx, body)
 	// Newznab quota errors can arrive with HTTP 200, including NZB grabs.
 	// Detect these here so caps, searches and downloads share the same backoff.
 	if bytes.Contains(bytes.ToLower(body[:min(len(body), 4096)]), []byte("error")) {
@@ -598,7 +692,7 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 			var ae *APIError
 			if errors.As(perr, &ae) {
 				if ae.Budget {
-					return nil, c.recordRateLimit(ctx, resp.Header.Get("Retry-After"), perr)
+					return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), perr)
 				}
 				return nil, perr
 			}
@@ -660,6 +754,9 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 	}
 	c.capsMu.Unlock()
 	if caps, ok := c.capsFromDB(ctx, ep); ok {
+		if caps.NewznabPath {
+			c.newznabPath.Store(true)
+		}
 		c.capsMu.Lock()
 		if c.capsEndpoint() == ep {
 			c.caps, c.capsAt, c.capsEP = caps, c.now(), ep
@@ -667,11 +764,13 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 		c.capsMu.Unlock()
 		return caps, nil
 	}
+	capsStarted := time.Now()
 	caps, err := c.fetchCaps(ctx)
+	capsElapsed := time.Since(capsStarted)
 	c.capsMu.Lock()
 	current := c.capsEndpoint() == ep // the config did not change meanwhile
 	if err != nil {
-		if current && ctx.Err() == nil && !errors.Is(err, core.ErrBudgetExhausted) {
+		if current && !callerLeft(ctx, capsElapsed) && !errors.Is(err, core.ErrBudgetExhausted) {
 			c.capsFailAt = c.now()
 		}
 		c.capsMu.Unlock()
@@ -688,15 +787,31 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 }
 
 func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
-	id := c.generalIdentity()
-	u, err := c.apiURL(url.Values{"t": {"caps"}}, id)
+	id := c.clientIdentity()
+	usedNewznab := c.newznabPath.Load()
+	u, err := c.apiURLForPath(url.Values{"t": {"caps"}}, id, usedNewznab)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.reserve(capsPurpose(ctx), "hit"); err != nil {
+	hctx, releaseHost, err := c.acquireHost(ctx, u)
+	if err != nil {
 		return nil, err
 	}
-	body, err := c.get(ctx, u, 5<<20, id)
+	defer releaseHost()
+	if err := c.reserve(capsPurpose(hctx), "hit"); err != nil {
+		return nil, err
+	}
+	body, err := c.get(hctx, u, 5<<20, id)
+	if err != nil && c.canFallbackNewznabPath(err, usedNewznab) {
+		alt, aerr := c.apiURLForPath(url.Values{"t": {"caps"}}, id, true)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if body, err = c.get(hctx, alt, 5<<20, id); err == nil {
+			usedNewznab = true
+			c.newznabPath.Store(true)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -710,11 +825,16 @@ func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newznab: parse caps: %w", err)
 	}
+	caps.NewznabPath = usedNewznab
 	return caps, nil
 }
 
 func cacheKey(c *Client, req core.SearchRequest) string {
 	h := sha1.New()
+	fmt.Fprintf(h, "aliases:%v|only:%t|", core.EpisodeAliases(req), req.ReleaseAliasesOnly)
+	if req.AltEpisode > 0 {
+		fmt.Fprintf(h, "alt:%d:%d|", req.AltSeason, req.AltEpisode)
+	}
 	// Cached releases include parsed audio-language facts. Earlier names
 	// with regional tags were persisted as unknown language; refresh them
 	// instead of applying corrected ranking only after their TTL expires.
@@ -725,7 +845,13 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// Audio and anime absolute episode numbers; Stremio addons keep HTTP
 	// and Usenet streams and read flag languages.
 	// v5: anime BD/BDMux source tags and three-letter audio languages.
-	fmt.Fprint(h, "release-parse-v5|")
+	// v6: anime absolute numbers followed by language/edition tags ("- 750 - ENG UNCUT 1080p").
+	// v7: Usenet poster and upload date preserved for cross-indexer content identity.
+	// v8: Brazilian/Portuguese release language variants (PT.BR, PTBR, Dublado/Legendado, slash/plus delimiters).
+	fmt.Fprint(h, "release-parse-v8|")
+	if mode := c.currentSearchCatMode(); mode != searchCatDefault {
+		fmt.Fprintf(h, "catmode:%d|", mode)
+	}
 	if req.Category != "" {
 		fmt.Fprintf(h, "category:%s|", req.Category)
 	}
@@ -738,21 +864,29 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 		// Do not reuse persisted empty answers from that narrower search.
 		fmt.Fprint(h, "tv-keywords-v2|")
 	}
+	if !c.Config().UsesBackend() && !c.Config().IsTorrent() && isTVRequest(req) && req.Season > 0 && req.Episode > 0 {
+		// Usenet episode searches now fall back to season-pack queries when
+		// episode-specific queries miss; do not reuse persisted empty answers.
+		fmt.Fprint(h, "usenet-season-pack-v1|")
+	}
 	// The indexer's search identity: an edited URL, key, category list or
 	// built-in site setting must not be answered from the old config's
 	// results (in memory, or persisted for a fresh client).
 	fmt.Fprintf(h, "%s|", searchIdentity(c.Config()))
-	// The client identity decides headers and parameter order, and an indexer
-	// may answer a blocked or decoy persona differently: a cached answer
-	// fetched as another identity must not serve the one switched to. The
-	// whole identity is hashed, so editing a custom user agent or header
-	// counts as a change.
-	fmt.Fprintf(h, "client-id-v1:%v|", c.clientIdentityFor(isTVRequest(req), false))
+	// The client identity decides outbound headers and parameter overrides: a
+	// cached answer fetched under one identity must not serve another.
+	fmt.Fprintf(h, "client-id-v2:%s|", c.searchIdentityFor(req).Fingerprint())
 	fmt.Fprintf(h, "%s|%s|%d|%s|%d|%s|%d|%d|%d",
 		c.indexerID(), req.Type, req.IDs.TMDB, req.IDs.IMDB, req.IDs.TVDB,
 		strings.ToLower(strings.TrimSpace(req.Title)), req.Year, req.Season, req.Episode)
 	if orig := strings.ToLower(strings.TrimSpace(req.OriginalTitle)); orig != "" && orig != strings.ToLower(strings.TrimSpace(req.Title)) {
 		fmt.Fprintf(h, "|%s", orig)
+	}
+	if eng := strings.ToLower(strings.TrimSpace(req.EnglishTitle)); eng != "" && eng != strings.ToLower(strings.TrimSpace(req.Title)) && eng != strings.ToLower(strings.TrimSpace(req.OriginalTitle)) {
+		fmt.Fprintf(h, "|eng:%s", eng)
+	}
+	for _, sub := range subtitleQueryAliases(req) {
+		fmt.Fprintf(h, "|sub:%s", strings.ToLower(sub))
 	}
 	// Anime requests search more (absolute numbers, kitsu ids); keys of
 	// every other request stay as they were.
@@ -760,6 +894,9 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 		fmt.Fprintf(h, "|anime:%d", req.AbsoluteEpisode)
 		if req.Cour > 0 && req.CourEpisode > 0 {
 			fmt.Fprintf(h, "|cour:%d:%d", req.Cour, req.CourEpisode)
+		}
+		if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 {
+			fmt.Fprintf(h, "|courtvdb:%d:%d", req.CourTVDBSeason, req.CourTVDBEpisode)
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -773,8 +910,31 @@ func joinCats(cats []int) string {
 	return strings.Join(parts, ",")
 }
 
+func subtitleQueryAliases(req core.SearchRequest) []string {
+	var out []string
+	seen := map[string]bool{}
+	addFrom := func(s string) {
+		if s == "" {
+			return
+		}
+		for _, a := range releaseparse.SubtitleAliases(s, req.AlternativeTitles) {
+			k := strings.ToLower(strings.TrimSpace(a))
+			if k == "" || seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, a)
+		}
+	}
+	addFrom(req.Title)
+	addFrom(req.OriginalTitle)
+	addFrom(req.EnglishTitle)
+	return out
+}
+
 // queryTitles returns the distinct search titles to try for req: Title
-// first, then OriginalTitle (when distinct), then structural aliases.
+// first, then OriginalTitle and EnglishTitle (when distinct), then structural
+// aliases and subtitle halves confirmed by AlternativeTitles.
 func queryTitles(req core.SearchRequest) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -790,19 +950,77 @@ func queryTitles(req core.SearchRequest) []string {
 		seen[k] = true
 		out = append(out, s)
 	}
-	add(req.Title)
+	// Indexers match release names, which never carry punctuation such as
+	// colons, and often drop diacritics. Like Sonarr and Radarr, search the
+	// cleaned title; an accented title is also searched unaccented.
+	addClean := func(s string) {
+		c := cleanSearchTitle(s)
+		add(c)
+		if f := foldSearchTitle(c); f != c {
+			add(f)
+		}
+	}
+	addClean(req.Title)
 	if req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
-		add(req.OriginalTitle)
+		addClean(req.OriginalTitle)
+	}
+	if req.EnglishTitle != "" && !releaseparse.TitlesMatch(req.EnglishTitle, req.Title) &&
+		(req.OriginalTitle == "" || !releaseparse.TitlesMatch(req.EnglishTitle, req.OriginalTitle)) {
+		addClean(req.EnglishTitle)
 	}
 	for _, a := range releaseparse.TitleAliases(req.Title) {
-		add(a)
+		addClean(a)
 	}
 	if req.OriginalTitle != "" {
 		for _, a := range releaseparse.TitleAliases(req.OriginalTitle) {
-			add(a)
+			addClean(a)
 		}
 	}
+	if req.EnglishTitle != "" {
+		for _, a := range releaseparse.TitleAliases(req.EnglishTitle) {
+			addClean(a)
+		}
+	}
+	for _, a := range subtitleQueryAliases(req) {
+		addClean(a)
+	}
 	return out
+}
+
+// cleanSearchTitle drops the punctuation release names never contain
+// (colons, quotes, brackets, commas…) and collapses spaces; hyphens stay
+// ("Spider-Man"). Apostrophes are
+// removed without a gap ("Ocean's" → "Oceans"); "&" is kept.
+func cleanSearchTitle(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range s {
+		switch {
+		case r == '\'' || r == '’' || r == '‘' || r == '`':
+			continue
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '&' || r == '-':
+			if space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			space = false
+			b.WriteRune(r)
+		default:
+			space = true
+		}
+	}
+	return b.String()
+}
+
+// foldSearchTitle removes diacritics ("Anéis" → "Aneis").
+func foldSearchTitle(s string) string {
+	var b strings.Builder
+	for _, r := range norm.NFD.String(s) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return norm.NFC.String(b.String())
 }
 
 // isTVRequest reports whether a search asks about a show rather than a movie.
@@ -810,64 +1028,131 @@ func isTVRequest(req core.SearchRequest) bool {
 	return req.Type == core.TypeEpisode || req.Season > 0 || req.Type == core.TypeShow
 }
 
-// releaseIsTV reports the media type of a release being grabbed. A feed URL
-// carries no media type, and only a movie category is evidence of one, so an
-// unknown category takes the TV identity.
-func releaseIsTV(r core.Release) bool {
-	return !(r.Category >= 2000 && r.Category < 3000)
+func interleaveAttempts(lists [][]url.Values) []url.Values {
+	var out []url.Values
+	seen := map[string]bool{}
+	for i := 0; ; i++ {
+		any := false
+		for _, list := range lists {
+			if i < len(list) {
+				any = true
+				enc := list[i].Encode()
+				if !seen[enc] {
+					seen[enc] = true
+					out = append(out, list[i])
+				}
+			}
+		}
+		if !any {
+			break
+		}
+	}
+	return out
+}
+
+func (c *Client) searchAttemptsSplit(req core.SearchRequest, caps *Caps) (primary, packs []url.Values) {
+	if req.Category != "" || req.Type != core.TypeEpisode {
+		return c.numberedSearchAttemptsSplit(req, caps)
+	}
+	var epLists, packLists [][]url.Values
+	if !req.ReleaseAliasesOnly {
+		ep, pk := c.numberedSearchAttemptsSplit(req, caps)
+		epLists = append(epLists, ep)
+		packLists = append(packLists, pk)
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		ep, pk := c.numberedSearchAttemptsSplit(core.AliasSearchRequest(req, n), caps)
+		epLists = append(epLists, ep)
+		packLists = append(packLists, pk)
+	}
+	return interleaveAttempts(epLists), interleaveAttempts(packLists)
 }
 
 // searchAttempts builds the ordered fallback queries for a request.
-func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
+func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps) []url.Values {
+	primary, packs := c.searchAttemptsSplit(req, caps)
+	if len(packs) == 0 {
+		return primary
+	}
+	seen := make(map[string]bool, len(primary))
+	for _, p := range primary {
+		seen[p.Encode()] = true
+	}
+	out := slices.Clone(primary)
+	for _, p := range packs {
+		enc := p.Encode()
+		if !seen[enc] {
+			seen[enc] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func ordinalSeason(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return fmt.Sprintf("%d%s Season", n, suffix)
+}
+
+func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps) ([]url.Values, []url.Values) {
 	cfg := c.Config()
 	if req.Category != "" {
 		cats, err := core.SearchCategories(req.Category)
 		if err != nil {
-			return nil
+			return nil, nil
 		}
-		return []url.Values{{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}, "t": {"search"}, "cat": {joinCats(cats)}, "q": {strings.TrimSpace(req.Title)}}}
+		v := url.Values{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}, "t": {"search"}, "cat": {joinCats(cats)}}
+		if q := strings.TrimSpace(req.Title); q != "" {
+			v.Set("q", q)
+		}
+		return []url.Values{v}, nil
 	}
 	isTV := isTVRequest(req)
+	catMode := c.currentSearchCatMode()
 	base := func() url.Values {
 		v := url.Values{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}}
-		if id.Offset0 {
-			v.Set("offset", "0")
-		}
-		if isTV {
-			cats := cfg.TVCategories
-			if len(cats) == 0 {
-				cats = []int{5000}
-			}
-			v.Set("cat", joinCats(cats))
-		} else {
-			cats := cfg.MovieCategories
-			if len(cats) == 0 {
-				cats = []int{2000}
-			}
-			v.Set("cat", joinCats(cats))
-		}
+		applyDefaultSearchCats(v, cfg, caps, isTV, catMode)
 		return v
 	}
 	imdb := strings.TrimPrefix(req.IDs.IMDB, "tt")
 	titles := queryTitles(req)
 	var attempts []url.Values
 	if isTV {
-		mk := func(idKey, idVal string) url.Values {
+		mkWith := func(idKey, idVal string, season, episode int) url.Values {
 			v := base()
 			v.Set("t", "tvsearch")
 			if idKey != "" {
 				v.Set(idKey, idVal)
 			}
-			if req.Season > 0 {
-				v.Set("season", strconv.Itoa(req.Season))
+			if season > 0 {
+				v.Set("season", strconv.Itoa(season))
 			}
-			if req.Episode > 0 {
-				v.Set("ep", strconv.Itoa(req.Episode))
+			if episode > 0 {
+				v.Set("ep", strconv.Itoa(episode))
 			}
 			return v
 		}
+		mk := func(idKey, idVal string) url.Values {
+			return mkWith(idKey, idVal, req.Season, req.Episode)
+		}
 		if req.IDs.TVDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tvdbid"))) {
-			attempts = append(attempts, mk("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10)))
+			tvdbSeason, tvdbEp := req.Season, req.Episode
+			if req.CourTVDBSeason > 0 && req.Episode > 0 && req.CourTVDBEpisode > 0 {
+				tvdbSeason, tvdbEp = req.CourTVDBSeason, req.CourTVDBEpisode
+			} else if req.CourTVDBSeason > 0 && req.Episode == 0 {
+				tvdbSeason = req.CourTVDBSeason
+			}
+			attempts = append(attempts, mkWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason, tvdbEp))
 		}
 		if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
 			attempts = append(attempts, mk("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
@@ -890,6 +1175,27 @@ func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Id
 			v2.Set("t", "search")
 			v2.Set("q", q)
 			attempts = append(attempts, v2)
+		}
+		// Long TMDB anime seasons often map to separate TVDB seasons in
+		// Fribb/anime-lists ("S03E01", "3rd Season - 01"); search those before
+		// bare absolute numbers so season-1 batches do not short-circuit.
+		if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 && req.Episode > 0 {
+			for _, title := range titles {
+				if req.CourTVDBSeason != req.Season || req.CourTVDBEpisode != req.Episode {
+					q := fmt.Sprintf("%s S%02dE%02d", title, req.CourTVDBSeason, req.CourTVDBEpisode)
+					v := mkWith("", "", req.CourTVDBSeason, req.CourTVDBEpisode)
+					v.Set("q", q)
+					attempts = append(attempts, v)
+					v2 := base()
+					v2.Set("t", "search")
+					v2.Set("q", q)
+					attempts = append(attempts, v2)
+				}
+				vOrd := base()
+				vOrd.Set("t", "search")
+				vOrd.Set("q", fmt.Sprintf("%s %s - %02d", title, ordinalSeason(req.CourTVDBSeason), req.CourTVDBEpisode))
+				attempts = append(attempts, vOrd)
+			}
 		}
 		// Anime releases are numbered from the series start ("Show - 1071")
 		// and indexers rarely map them to seasons: search the absolute
@@ -917,52 +1223,90 @@ func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Id
 				}
 			}
 		}
-		// Torznab season-pack and complete-series fallback: older TV shows
-		// on torrent indexers often exist only as full-season or complete
-		// packs, which an episode-specific query (ep=N / SxxExx) misses.
-		if cfg.IsTorrent() && req.Season > 0 {
-			mkSeason := func(idKey, idVal string) url.Values {
+		// Season-pack fallback: TV shows on both torrent and Usenet indexers
+		// often exist only as full-season packs, which episode-specific queries
+		// (ep=N / SxxExx) miss. Usenet runs targeted ID and "Sxx" queries;
+		// Torznab also adds "tvsearch", "Season N" and "Complete" queries.
+		var packs []url.Values
+		if req.Season > 0 {
+			mkSeasonWith := func(idKey, idVal string, season int) url.Values {
 				v := base()
 				v.Set("t", "tvsearch")
 				if idKey != "" {
 					v.Set(idKey, idVal)
 				}
-				v.Set("season", strconv.Itoa(req.Season))
+				v.Set("season", strconv.Itoa(season))
 				return v
+			}
+			mkSeason := func(idKey, idVal string) url.Values {
+				return mkSeasonWith(idKey, idVal, req.Season)
 			}
 			if req.Episode > 0 {
 				if req.IDs.TVDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tvdbid"))) {
-					attempts = append(attempts, mkSeason("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10)))
+					tvdbSeason := req.Season
+					if req.CourTVDBSeason > 0 {
+						tvdbSeason = req.CourTVDBSeason
+					}
+					packs = append(packs, mkSeasonWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason))
 				}
 				if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
-					attempts = append(attempts, mkSeason("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
+					packs = append(packs, mkSeason("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
 				}
 				if imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
-					attempts = append(attempts, mkSeason("imdbid", imdb))
+					packs = append(packs, mkSeason("imdbid", imdb))
+				}
+				if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
+					for _, title := range titles {
+						q := fmt.Sprintf("%s S%02d", title, req.CourTVDBSeason)
+						if cfg.IsTorrent() {
+							v := mkSeasonWith("", "", req.CourTVDBSeason)
+							v.Set("q", q)
+							packs = append(packs, v)
+							for _, sq := range []string{
+								q,
+								fmt.Sprintf("%s %s", title, ordinalSeason(req.CourTVDBSeason)),
+								fmt.Sprintf("%s Season %d", title, req.CourTVDBSeason),
+							} {
+								v2 := base()
+								v2.Set("t", "search")
+								v2.Set("q", sq)
+								packs = append(packs, v2)
+							}
+						} else {
+							v2 := base()
+							v2.Set("t", "search")
+							v2.Set("q", q)
+							packs = append(packs, v2)
+						}
+					}
 				}
 				for _, title := range titles {
 					q := fmt.Sprintf("%s S%02d", title, req.Season)
-					v := mkSeason("", "")
-					v.Set("q", q)
-					attempts = append(attempts, v)
+					if cfg.IsTorrent() {
+						v := mkSeason("", "")
+						v.Set("q", q)
+						packs = append(packs, v)
+					}
 					v2 := base()
 					v2.Set("t", "search")
 					v2.Set("q", q)
-					attempts = append(attempts, v2)
+					packs = append(packs, v2)
 				}
 			}
-			for _, title := range titles {
-				v := base()
-				v.Set("t", "search")
-				v.Set("q", fmt.Sprintf("%s Season %d", title, req.Season))
-				attempts = append(attempts, v)
-				vc := base()
-				vc.Set("t", "search")
-				vc.Set("q", title+" Complete")
-				attempts = append(attempts, vc)
+			if cfg.IsTorrent() {
+				for _, title := range titles {
+					v := base()
+					v.Set("t", "search")
+					v.Set("q", fmt.Sprintf("%s Season %d", title, req.Season))
+					packs = append(packs, v)
+					vc := base()
+					vc.Set("t", "search")
+					vc.Set("q", title+" Complete")
+					packs = append(packs, vc)
+				}
 			}
 		}
-		return attempts
+		return attempts, packs
 	}
 	if imdb != "" && (caps == nil || (!caps.MovieAvail || hasParam(caps.MovieParams, "imdbid"))) {
 		v := base()
@@ -986,22 +1330,36 @@ func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Id
 		v.Set("q", q)
 		attempts = append(attempts, v)
 	}
-	return attempts
+	return attempts, nil
 }
 
-func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Identity) ([]core.Release, error) {
+func stampMissingCategory(results []core.Release, media config.IdentityMediaType) {
+	cat := config.DefaultCategoryForIdentityMedia(media)
+	if cat == 0 {
+		return
+	}
+	for i := range results {
+		if results[i].Category == 0 {
+			results[i].Category = cat
+		}
+	}
+}
+
+func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Identity, media config.IdentityMediaType) ([]core.Release, error) {
 	if err := c.searchPaused(); err != nil {
 		return nil, err
 	}
-	u, err := c.apiURL(params, id)
+	usedNewznab := c.newznabPath.Load()
+	u, err := c.apiURLForPath(params, id, usedNewznab)
 	if err != nil {
 		return nil, err
 	}
 	started := time.Now()
 	admitted := false
 	reserved := false
-	results, err := c.guardSearch(ctx, true, defaultHTTPTimeout, func(ctx context.Context) ([]core.Release, error) {
+	results, err := c.guardSearch(ctx, u, true, defaultHTTPTimeout, func(ctx context.Context) ([]core.Release, error) {
 		admitted = true
+		started = time.Now()
 		// The hit is reserved once the breaker has admitted the request,
 		// right before it is sent: the budget and the usage breakdown count
 		// HTTP requests the indexer actually receives, as Prowlarr does.
@@ -1010,9 +1368,37 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 		}
 		reserved = true
 		if emit, ok := ctx.Value(searchArrivalKey{}).(func([]core.Release)); ok {
-			return c.getSearchStream(ctx, u, emit, id)
+			wrappedEmit := emit
+			if config.DefaultCategoryForIdentityMedia(media) != 0 {
+				wrappedEmit = func(rs []core.Release) {
+					stampMissingCategory(rs, media)
+					emit(rs)
+				}
+			}
+			rs, serr := c.getSearchStream(ctx, u, wrappedEmit, id)
+			if serr != nil && c.canFallbackNewznabPath(serr, usedNewznab) {
+				// {base}/api answered 404: retry once on {base}/api/newznab.
+				alt, aerr := c.apiURLForPath(params, id, true)
+				if aerr != nil {
+					return nil, aerr
+				}
+				if rs, serr = c.getSearchStream(ctx, alt, wrappedEmit, id); serr == nil {
+					c.rememberNewznabPath(ctx)
+				}
+			}
+			return rs, serr
 		}
 		body, err := c.get(ctx, u, 20<<20, id)
+		if err != nil && c.canFallbackNewznabPath(err, usedNewznab) {
+			// {base}/api answered 404: retry once on {base}/api/newznab.
+			alt, aerr := c.apiURLForPath(params, id, true)
+			if aerr != nil {
+				return nil, aerr
+			}
+			if body, err = c.get(ctx, alt, 20<<20, id); err == nil {
+				c.rememberNewznabPath(ctx)
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1024,6 +1410,9 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 		for i := range results {
 			results[i].Protocol = core.ProtocolTorrent
 		}
+	}
+	if err == nil {
+		stampMissingCategory(results, media)
 	}
 	out := c.feedReleases(results)
 	if admitted && !(err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrIndexerPaused))) {
@@ -1070,6 +1459,9 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 	if core.TorrentOnlySearch(ctx) && !cfg.IsTorrent() {
 		return nil, nil
 	}
+	identity := searchIdentity(cfg)
+	catState := c.loadSearchCatState(ctx, identity)
+	usesDefaultCat := !cfg.UsesBackend() && c.usesDefaultSearchCats(cfg, req)
 	key := cacheKey(c, req)
 	if core.QuickSource(ctx) == "alko" {
 		key += "|alko-only"
@@ -1082,6 +1474,9 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 		}
 	}()
 	ctx = withCacheAge(ctx, req.Released)
+	if req.Category != "" && strings.TrimSpace(req.Title) == "" {
+		ctx = withRecentSearchCache(ctx)
+	}
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})
 		return cached, nil
@@ -1104,21 +1499,53 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 		return nil, err
 	}
 	if c.Config().UsesBackend() {
-		results, err := c.backendSearch(ctx, req)
+		results, incomplete, err := c.backendSearch(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		c.cachePut(ctx, key, results)
+		if !incomplete {
+			c.cachePut(ctx, key, results)
+		}
 		return results, nil
 	}
-	id := c.clientIdentityFor(isTVRequest(req), false)
-	caps, _ := c.Caps(ctx) // best effort; failures just mean no param gating
-	attempts := c.searchAttempts(req, caps, id)
+	media := config.IdentityMediaTypeForSearch(req)
+	id := c.identityFor(config.RequestSearch, cfg.URL, media)
+	capsStarted := time.Now()
+	caps, capsErr := c.Caps(ctx) // best effort; failures just mean no param gating
+	if capsErr != nil && ctx.Err() != nil {
+		capsElapsed := time.Since(capsStarted)
+		if !callerLeft(ctx, capsElapsed) {
+			c.recordSearchTimeout(ctx, capsErr, capsElapsed)
+		}
+		return nil, capsErr
+	}
+	attempts := c.searchAttempts(req, caps)
 	if len(attempts) == 0 {
 		return nil, fmt.Errorf("newznab: search request has no usable identifiers")
 	}
+	searchCtx := ctx
+	unfiltered := usesDefaultCat && catState.mode == searchCatUnfiltered
+	if unfiltered {
+		if emit, ok := ctx.Value(searchArrivalKey{}).(func([]core.Release)); ok {
+			searchCtx = context.WithValue(ctx, searchArrivalKey{}, func(rs []core.Release) {
+				if kept := filterVideoReleases(rs); len(kept) > 0 {
+					emit(kept)
+				}
+			})
+		}
+	}
+	confirmCatMode := func() {
+		if usesDefaultCat && !catState.verified {
+			catState.verified = true
+			catState.checked = c.now()
+			c.saveSearchCatState(ctx, catState)
+		}
+	}
 	var firstErr error
-	results, err := c.doSearch(ctx, attempts[0], id)
+	results, err := c.doSearch(searchCtx, attempts[0], id, media)
+	if err == nil && unfiltered {
+		results = filterVideoReleases(results)
+	}
 	if err != nil {
 		if errors.Is(err, core.ErrBudgetExhausted) {
 			return nil, err
@@ -1131,6 +1558,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 			return nil, err
 		}
 	} else if len(results) > 0 {
+		confirmCatMode()
 		c.cachePut(ctx, key, results)
 		return results, nil
 	}
@@ -1147,99 +1575,121 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 		return nil, firstErr
 	}
 	rest := attempts[1:]
-	if len(rest) == 0 {
-		if firstErr != nil {
-			return nil, firstErr
-		}
-		c.cachePut(ctx, key, nil)
-		return nil, nil
-	}
-	// When the primary attempt misses on an uncapped indexer, fan out the
-	// fallback queries (alternate IDs, keyword search, OriginalTitle/aliases,
-	// season packs) in bounded parallel bursts so obscure titles resolve in
-	// a single round-trip instead of N serial timeouts. An indexer with a
-	// personal cap tries them one at a time and stops at the first hit.
-	if c.Config().DailyLimit == 0 && firstErr == nil {
-		const burstWidth = 4
-		for base := 0; base < len(rest); base += burstWidth {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			end := min(base+burstWidth, len(rest))
-			batch := rest[base:end]
-			type outSlot struct {
-				res []core.Release
-				err error
-			}
-			slots := make([]outSlot, len(batch))
-			var wg sync.WaitGroup
-			for i, p := range batch {
-				wg.Add(1)
-				go func(i int, p url.Values) {
-					defer wg.Done()
-					slots[i].res, slots[i].err = c.doSearch(ctx, p, id)
-				}(i, p)
-			}
-			wg.Wait()
-			var merged []core.Release
-			seen := map[string]bool{}
-			var budgetErr error
-			down := false
-			for _, s := range slots {
-				if s.err != nil {
-					if errors.Is(s.err, core.ErrBudgetExhausted) && budgetErr == nil {
-						budgetErr = s.err
-					} else if firstErr == nil {
-						firstErr = s.err
+	if len(rest) > 0 {
+		// When the primary attempt misses on an uncapped indexer, fan out the
+		// fallback queries (alternate IDs, keyword search, OriginalTitle/aliases,
+		// season packs) in bounded parallel bursts so obscure titles resolve in
+		// a single round-trip instead of N serial timeouts. An indexer with a
+		// personal cap tries them one at a time and stops at the first hit.
+		if c.Config().DailyLimit == 0 && firstErr == nil {
+			const maxBurstWidth = 4
+			for base := 0; base < len(rest); {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				width := c.br.burstLimit(maxBurstWidth)
+				end := min(base+width, len(rest))
+				batch := rest[base:end]
+				base = end
+				type outSlot struct {
+					res []core.Release
+					err error
+				}
+				slots := make([]outSlot, len(batch))
+				var wg sync.WaitGroup
+				for i, p := range batch {
+					wg.Add(1)
+					go func(i int, p url.Values) {
+						defer wg.Done()
+						res, derr := c.doSearch(searchCtx, p, id, media)
+						if derr == nil && unfiltered {
+							res = filterVideoReleases(res)
+						}
+						slots[i].res, slots[i].err = res, derr
+					}(i, p)
+				}
+				wg.Wait()
+				var merged []core.Release
+				seen := map[string]bool{}
+				var budgetErr error
+				down := false
+				for _, s := range slots {
+					if s.err != nil {
+						if errors.Is(s.err, core.ErrBudgetExhausted) && budgetErr == nil {
+							budgetErr = s.err
+						} else if firstErr == nil {
+							firstErr = s.err
+						}
+						down = down || transientFailure(s.err)
+						continue
 					}
-					down = down || transientFailure(s.err)
+					for _, r := range s.res {
+						k := r.ID
+						if r.InfoHash != "" {
+							k = r.InfoHash
+						}
+						if !seen[k] {
+							seen[k] = true
+							merged = append(merged, r)
+						}
+					}
+				}
+				if len(merged) > 0 {
+					confirmCatMode()
+					c.cachePut(ctx, key, merged)
+					return merged, nil
+				}
+				if budgetErr != nil {
+					return nil, budgetErr
+				}
+				if down {
+					return nil, firstErr
+				}
+			}
+		} else {
+			for _, params := range rest {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				results, err := c.doSearch(searchCtx, params, id, media)
+				if err == nil && unfiltered {
+					results = filterVideoReleases(results)
+				}
+				if err != nil {
+					if errors.Is(err, core.ErrBudgetExhausted) {
+						return nil, err
+					}
+					if firstErr == nil {
+						firstErr = err
+					}
+					c.log.Debug("newznab search attempt failed", "indexer", c.Name(), "t", params.Get("t"), "err", err)
+					if transientFailure(err) {
+						return nil, err
+					}
 					continue
 				}
-				for _, r := range s.res {
-					k := r.ID
-					if r.InfoHash != "" {
-						k = r.InfoHash
-					}
-					if !seen[k] {
-						seen[k] = true
-						merged = append(merged, r)
-					}
+				if len(results) > 0 {
+					confirmCatMode()
+					c.cachePut(ctx, key, results)
+					return results, nil
 				}
-			}
-			if len(merged) > 0 {
-				c.cachePut(ctx, key, merged)
-				return merged, nil
-			}
-			if budgetErr != nil {
-				return nil, budgetErr
-			}
-			if down {
-				return nil, firstErr
 			}
 		}
-	} else {
-		for _, params := range rest {
-			if err := ctx.Err(); err != nil {
-				return nil, err
+	}
+	if firstErr == nil && usesDefaultCat && !catState.verified && catState.mode == searchCatDefault && !c.now().Before(catState.probeBackoffUntil) &&
+		(len(capsSubcategories(caps, isTVRequest(req))) > 0 || c.isFeedUnfiltered(ctx, identity)) {
+		probed, mode, perr := c.probeBroaderSearchCats(ctx, req, caps, attempts, id, media, identity)
+		if perr != nil {
+			if errors.Is(perr, core.ErrBudgetExhausted) || transientFailure(perr) {
+				return nil, perr
 			}
-			results, err := c.doSearch(ctx, params, id)
-			if err != nil {
-				if errors.Is(err, core.ErrBudgetExhausted) {
-					return nil, err
-				}
-				if firstErr == nil {
-					firstErr = err
-				}
-				c.log.Debug("newznab search attempt failed", "indexer", c.Name(), "t", params.Get("t"), "err", err)
-				if transientFailure(err) {
-					return nil, err
-				}
-				continue
+			firstErr = perr
+		} else if len(probed) > 0 {
+			if mode != searchCatDefault {
+				key = cacheKey(c, req)
 			}
-			if len(results) > 0 {
-				c.cachePut(ctx, key, results)
-				return results, nil
-			}
+			c.cachePut(ctx, key, probed)
+			return probed, nil
 		}
 	}
 	if firstErr != nil {
@@ -1252,30 +1702,16 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) (out []core
 // rescueAttempts builds broader keyword, alias, season-pack and miniseries
 // queries for a second-pass rescue when the primary search returned only
 // dead/unhealthy or non-matching releases.
-func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
+func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values {
 	cfg := c.Config()
 	isTV := isTVRequest(req)
+	catMode := c.currentSearchCatMode()
 	base := func() url.Values {
 		v := url.Values{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}}
-		if id.Offset0 {
-			v.Set("offset", "0")
-		}
-		if isTV {
-			cats := cfg.TVCategories
-			if len(cats) == 0 {
-				cats = []int{5000}
-			}
-			v.Set("cat", joinCats(cats))
-		} else {
-			cats := cfg.MovieCategories
-			if len(cats) == 0 {
-				cats = []int{2000}
-			}
-			v.Set("cat", joinCats(cats))
-		}
+		applyDefaultSearchCats(v, cfg, caps, isTV, catMode)
 		return v
 	}
-	primary := c.searchAttempts(req, caps, id)
+	primary, packs := c.searchAttemptsSplit(req, caps)
 	alreadyFirst := ""
 	if len(primary) > 0 {
 		alreadyFirst = primary[0].Encode()
@@ -1297,10 +1733,72 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps, id config.Id
 		add(p)
 	}
 	titles := queryTitles(req)
+	altTitles := rescueAlternativeTitles(req, titles)
+	nonLatinOriginal := hasNonLatinRune(req.OriginalTitle)
 	if isTV {
+		// Prioritize distinct alternative/English titles (e.g. "I Live Alone"
+		// when TMDB's primary English title is "Home Alone") with explicit
+		// episode/bare-episode/air-date queries before falling back to broad
+		// season-pack queries.
+		if req.Season > 0 && req.Episode > 0 {
+			for _, alt := range altTitles {
+				vSE := base()
+				vSE.Set("t", "search")
+				vSE.Set("q", fmt.Sprintf("%s S%02dE%02d", alt, req.Season, req.Episode))
+				add(vSE)
+				if req.Season == 1 || req.Episode >= 100 || nonLatinOriginal {
+					vEp := base()
+					vEp.Set("t", "search")
+					vEp.Set("q", fmt.Sprintf("%s E%02d", alt, req.Episode))
+					add(vEp)
+				}
+			}
+			// Bare E### and broadcast air-date queries for long-running /
+			// Asian variety shows that omit Sxx (e.g. "I Live Alone E674",
+			// "나 혼자 산다 E674", "I Live Alone 241115").
+			if req.Season == 1 || req.Episode >= 100 || nonLatinOriginal {
+				for _, title := range titles {
+					if req.Episode > 20 || nonLatinOriginal {
+						vEp := base()
+						vEp.Set("t", "search")
+						vEp.Set("q", fmt.Sprintf("%s E%02d", title, req.Episode))
+						add(vEp)
+					}
+				}
+			}
+			if !req.Released.IsZero() && (nonLatinOriginal || (req.Season == 1 && req.Episode > 20)) {
+				yymmdd := req.Released.UTC().Format("060102")
+				yyyyDot := req.Released.UTC().Format("2006.01.02")
+				for _, title := range append(slices.Clone(altTitles), titles...) {
+					vShort := base()
+					vShort.Set("t", "search")
+					vShort.Set("q", fmt.Sprintf("%s %s", title, yymmdd))
+					add(vShort)
+					vFull := base()
+					vFull.Set("t", "search")
+					vFull.Set("q", fmt.Sprintf("%s %s", title, yyyyDot))
+					add(vFull)
+				}
+			}
+		}
+		for _, p := range packs {
+			add(p)
+		}
 		for _, title := range titles {
 			if req.Season > 0 && req.Episode > 0 {
-				// Season pack queries (S01 / Season 1 / Complete).
+				// Season pack queries (mapped TVDB season first, then S01 / Season 1 / Complete).
+				if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
+					for _, sq := range []string{
+						fmt.Sprintf("%s S%02d", title, req.CourTVDBSeason),
+						fmt.Sprintf("%s %s", title, ordinalSeason(req.CourTVDBSeason)),
+						fmt.Sprintf("%s Season %d", title, req.CourTVDBSeason),
+					} {
+						vTVDB := base()
+						vTVDB.Set("t", "search")
+						vTVDB.Set("q", sq)
+						add(vTVDB)
+					}
+				}
 				vS := base()
 				vS.Set("t", "search")
 				vS.Set("q", fmt.Sprintf("%s S%02d", title, req.Season))
@@ -1329,11 +1827,61 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps, id config.Id
 	}
 	// Movies: also try bare title without year for uploads whose indexed
 	// release name omitted the year or used a festival release year.
-	for _, title := range titles {
+	for _, title := range append(slices.Clone(titles), altTitles...) {
 		v := base()
 		v.Set("t", "search")
 		v.Set("q", title)
 		add(v)
+	}
+	return out
+}
+
+func hasNonLatinRune(s string) bool {
+	for _, r := range s {
+		if r >= 128 && !unicode.In(r, unicode.Latin) {
+			return true
+		}
+	}
+	return false
+}
+
+// rescueAlternativeTitles picks up to 2 distinct, clean alternative/English
+// titles not already covered by queryTitles (preferring Latin/ASCII aliases
+// for foreign-script shows, such as "I Live Alone" for "나 혼자 산다" / "Home Alone").
+func rescueAlternativeTitles(req core.SearchRequest, existing []string) []string {
+	var latin, other []string
+	seen := map[string]bool{}
+	for _, e := range existing {
+		seen[strings.ToLower(cleanSearchTitle(e))] = true
+	}
+	addCand := func(raw string) {
+		c := cleanSearchTitle(raw)
+		if c == "" || len([]rune(c)) < 3 || len([]rune(c)) > 64 {
+			return
+		}
+		k := strings.ToLower(c)
+		if seen[k] {
+			return
+		}
+		for _, e := range existing {
+			if releaseparse.TitlesMatch(c, e) {
+				return
+			}
+		}
+		seen[k] = true
+		if hasNonLatinRune(c) {
+			other = append(other, c)
+		} else {
+			latin = append(latin, c)
+		}
+	}
+	addCand(req.EnglishTitle)
+	for _, alt := range req.AlternativeTitles {
+		addCand(alt)
+	}
+	out := append(latin, other...)
+	if len(out) > 2 {
+		out = out[:2]
 	}
 	return out
 }
@@ -1350,6 +1898,8 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 		// Rescue is Play's second pass; speculative work never fans out.
 		return nil, nil
 	}
+	cfg := c.Config()
+	catState := c.loadSearchCatState(ctx, searchIdentity(cfg))
 	key := cacheKey(c, req) + "|rescue"
 	defer func() {
 		if resultErr != nil && len(out) == 0 {
@@ -1376,6 +1926,8 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 		// searches by identifier, so another title asks the same question).
 		var merged []core.Release
 		seen := map[string]bool{}
+		incomplete := false
+		var firstErr error
 		appendUnique := func(rs []core.Release) {
 			for _, r := range rs {
 				k := r.ID
@@ -1388,67 +1940,133 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 				}
 			}
 		}
-		if !cfg.IsStremio() && !cfg.IsAddon() && req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
-			alt := req
-			alt.Title, alt.OriginalTitle = req.OriginalTitle, ""
-			if rs, err := c.backendSearch(ctx, alt); err == nil {
-				appendUnique(rs)
+		run := func(r core.SearchRequest) error {
+			rs, inc, err := c.backendSearch(ctx, r)
+			if inc {
+				incomplete = true
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return err
+				}
+				incomplete = true
+				core.NoteSearchIncomplete(ctx)
+				if firstErr == nil {
+					firstErr = err
+				}
+				return nil
+			}
+			appendUnique(rs)
+			return nil
+		}
+		if !cfg.IsStremio() && !cfg.IsAddon() {
+			if req.OriginalTitle != "" && !releaseparse.TitlesMatch(req.OriginalTitle, req.Title) {
+				alt := req
+				alt.Title, alt.OriginalTitle = req.OriginalTitle, ""
+				if err := run(alt); err != nil {
+					return nil, err
+				}
+			}
+			for _, altTitle := range rescueAlternativeTitles(req, queryTitles(req))[:min(1, len(rescueAlternativeTitles(req, queryTitles(req))))] {
+				alt := req
+				alt.Title, alt.OriginalTitle = altTitle, ""
+				if err := run(alt); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if req.Season > 0 && req.Episode > 0 {
+			if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
+				tvdbPack := req
+				tvdbPack.Season, tvdbPack.Episode = req.CourTVDBSeason, 0
+				if err := run(tvdbPack); err != nil {
+					return nil, err
+				}
+			}
 			packReq := req
 			packReq.Episode = 0
-			if rs, err := c.backendSearch(ctx, packReq); err == nil {
-				appendUnique(rs)
+			if err := run(packReq); err != nil {
+				return nil, err
 			}
 		}
-		c.cachePut(ctx, key, merged)
+		if len(merged) == 0 && firstErr != nil {
+			return nil, firstErr
+		}
+		if !incomplete {
+			c.cachePut(ctx, key, merged)
+		}
 		return merged, nil
 	}
-	id := c.clientIdentityFor(isTVRequest(req), false)
+	media := config.IdentityMediaTypeForSearch(req)
+	id := c.identityFor(config.RequestSearch, c.Config().URL, media)
 	caps, _ := c.Caps(ctx)
-	attempts := c.rescueAttempts(req, caps, id)
+	unfiltered := c.usesDefaultSearchCats(cfg, req) && catState.mode == searchCatUnfiltered
+	attempts := c.rescueAttempts(req, caps)
 	if len(attempts) == 0 {
 		return nil, nil
 	}
-	if len(attempts) > 6 {
-		attempts = attempts[:6]
+	if len(attempts) > 8 {
+		attempts = attempts[:8]
 	}
 	var merged []core.Release
 	seen := map[string]bool{}
 	var firstErr error
 	// As for Search: a capped indexer's rescue goes one query at a time.
 	if c.Config().DailyLimit == 0 {
-		type slot struct {
-			res []core.Release
-			err error
-		}
-		slots := make([]slot, len(attempts))
-		var wg sync.WaitGroup
-		for i, p := range attempts {
-			wg.Add(1)
-			go func(i int, p url.Values) {
-				defer wg.Done()
-				slots[i].res, slots[i].err = c.doSearch(ctx, p, id)
-			}(i, p)
-		}
-		wg.Wait()
-		for _, s := range slots {
-			if s.err != nil {
-				if firstErr == nil {
-					firstErr = s.err
-				}
-				continue
+		for base := 0; base < len(attempts); {
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
-			for _, r := range s.res {
-				k := r.ID
-				if r.InfoHash != "" {
-					k = r.InfoHash
+			width := c.br.burstLimit(len(attempts))
+			end := min(base+width, len(attempts))
+			batch := attempts[base:end]
+			base = end
+			type slot struct {
+				res []core.Release
+				err error
+			}
+			slots := make([]slot, len(batch))
+			var wg sync.WaitGroup
+			for i, p := range batch {
+				wg.Add(1)
+				go func(i int, p url.Values) {
+					defer wg.Done()
+					res, derr := c.doSearch(ctx, p, id, media)
+					if derr == nil && unfiltered {
+						res = filterVideoReleases(res)
+					}
+					slots[i].res, slots[i].err = res, derr
+				}(i, p)
+			}
+			wg.Wait()
+			var budgetErr error
+			down := false
+			for _, s := range slots {
+				if s.err != nil {
+					if errors.Is(s.err, core.ErrBudgetExhausted) && budgetErr == nil {
+						budgetErr = s.err
+					} else if firstErr == nil {
+						firstErr = s.err
+					}
+					down = down || transientFailure(s.err)
+					continue
 				}
-				if !seen[k] {
-					seen[k] = true
-					merged = append(merged, r)
+				for _, r := range s.res {
+					k := r.ID
+					if r.InfoHash != "" {
+						k = r.InfoHash
+					}
+					if !seen[k] {
+						seen[k] = true
+						merged = append(merged, r)
+					}
 				}
+			}
+			if budgetErr != nil || down {
+				if firstErr == nil {
+					firstErr = budgetErr
+				}
+				break
 			}
 		}
 	} else {
@@ -1456,7 +2074,10 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			res, err := c.doSearch(ctx, p, id)
+			res, err := c.doSearch(ctx, p, id, media)
+			if err == nil && unfiltered {
+				res = filterVideoReleases(res)
+			}
 			if err != nil {
 				if errors.Is(err, core.ErrBudgetExhausted) {
 					// A refused query proves nothing: never cache it as a miss.
@@ -1489,20 +2110,12 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) (out 
 	if len(merged) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
-	c.cachePut(ctx, key, merged)
-	return merged, nil
-}
-
-// nzbDiskPath returns the on-disk NZB path for a release id, or "".
-func (c *Client) nzbDiskPath(releaseID string) string {
-	if c.nzbDir == "" || releaseID == "" {
-		return ""
+	if firstErr != nil {
+		core.NoteSearchIncomplete(ctx)
+	} else {
+		c.cachePut(ctx, key, merged)
 	}
-	// Opaque/backend IDs and persisted releases can collide between clients.
-	// A different configured origin must never inherit another client's bytes.
-	key := c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + releaseID
-	sum := sha256.Sum256([]byte(key))
-	return filepath.Join(c.nzbDir, hex.EncodeToString(sum[:])+".nzb")
+	return merged, nil
 }
 
 // FetchNZB implements core.Indexer. Every call returns a slice of its own,
@@ -1513,7 +2126,7 @@ func (c *Client) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
 }
 
 // fetchNZBReporting is FetchNZB, also reporting whether this call asked
-// the indexer: false for an NZB read from the disk cache or one taken from
+// the indexer: false for an NZB read from the vault or one taken from
 // another caller's download. Only the indexer's own downloads are grabs.
 func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte, bool, error) {
 	if !c.Config().Enabled {
@@ -1524,13 +2137,6 @@ func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte,
 	}
 	if r.Protocol == core.ProtocolTorrent {
 		return nil, false, fmt.Errorf("newznab: %q is a torrent release; it streams through a debrid provider", r.Name)
-	}
-	if path := c.nzbDiskPath(r.ID); path != "" {
-		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
-			c.touchNZB(path)
-			c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true})
-			return b, false, nil
-		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -1564,7 +2170,7 @@ func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte,
 		if !leader {
 			c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true})
 		}
-		return body, leader, nil
+		return body, leader && !f.cached, nil
 	}
 }
 
@@ -1624,31 +2230,62 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 	f := &nzbFlight{done: make(chan struct{}), background: core.IsBackgroundCheck(ctx), waiters: 1, readers: 1, cancel: cancel}
 	c.nzbFlights[r.ID] = f
 	go func() {
-		defer cancel()
+		defer func() {
+			if p := recover(); p != nil {
+				f.err = fmt.Errorf("newznab: fetch NZB panic: %v", p)
+			}
+			c.nzbFlightMu.Lock()
+			if c.nzbFlights[r.ID] == f {
+				delete(c.nzbFlights, r.ID)
+			}
+			c.nzbFlightMu.Unlock()
+			close(f.done)
+			cancel()
+		}()
 		started := time.Now()
 		var reserved bool
-		f.body, reserved, f.err = c.fetchNZB(fctx, r)
-		c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
-		c.nzbFlightMu.Lock()
-		if c.nzbFlights[r.ID] == f {
-			delete(c.nzbFlights, r.ID)
+		if body := c.keptNZB(fctx, r); body != nil {
+			f.body, f.cached = body, true
+			c.emit(Event{Kind: "cache", Purpose: usagePurpose(fctx), Success: true, Cached: true})
+		} else {
+			f.body, reserved, f.err = c.fetchNZB(fctx, r)
+			c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
 		}
-		c.nzbFlightMu.Unlock()
-		close(f.done)
 	}()
 	return f, true
 }
 
 // fetchNZB downloads r's NZB from the indexer, spending one grab, and
-// keeps it on disk. The bool reports whether a grab slot was reserved.
+// stores it in the vault. The bool reports whether a grab slot was reserved.
 func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, error) {
-	if c.Config().UsesBackend() {
+	if cfg := c.Config(); cfg.UsesBackend() {
 		b, err := c.backend()
 		if err != nil {
 			return nil, false, err
 		}
+		fetchRel := r
+		if fetchRel.NZBURL != "" {
+			authURL, aerr := c.authenticateLink(fetchRel.NZBURL)
+			if aerr != nil {
+				return nil, false, aerr
+			}
+			fetchRel.NZBURL = authURL
+		}
+		hctx := ctx
+		if cfg.IsStremio() {
+			target := fetchRel.NZBURL
+			if target == "" {
+				target = cfg.URL
+			}
+			var releaseHost func()
+			hctx, releaseHost, err = c.acquireHost(ctx, target)
+			if err != nil {
+				return nil, false, err
+			}
+			defer releaseHost()
+		}
 		reserved := false
-		body, err := b.FetchNZB(ctx, r, func(rctx context.Context, kind string) error {
+		body, err := b.FetchNZB(hctx, fetchRel, func(rctx context.Context, kind string) error {
 			if err := c.reserve(rctx, kind); err != nil {
 				return err
 			}
@@ -1658,42 +2295,64 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		if err != nil {
 			return nil, reserved, err
 		}
-		c.saveNZB(r.ID, body)
+		c.keepNZB(ctx, r, body)
 		return body, reserved, nil
 	}
-	id := c.clientIdentityFor(releaseIsTV(r), true)
 	// r.NZBURL comes from the indexer's feed, so it is untrusted data:
 	// c.get dials it through the safefetch guard. Only a URL that stays
 	// on the owner-configured indexer origin (relative links resolve
 	// there) may reach a private address; absolute feed URLs to any
 	// other host, and redirects away from the indexer, must be public.
+	var id config.Identity
+	media := c.releaseMediaType(r)
 	rawURL := r.NZBURL
+	var guidParams url.Values
+	usedNewznab := false
 	if rawURL == "" {
 		if r.GUID == "" {
 			return nil, false, fmt.Errorf("newznab: release %q has no NZB URL or GUID: %w", r.Name, core.ErrReleaseRejected)
 		}
-		u, err := c.apiURL(url.Values{"t": {"get"}, "id": {r.GUID}}, id)
+		id = c.identityFor(config.RequestNZBDownload, c.Config().URL, media)
+		guidParams = url.Values{"t": {"get"}, "id": {r.GUID}}
+		usedNewznab = c.newznabPath.Load()
+		u, err := c.apiURLForPath(guidParams, id, usedNewznab)
 		if err != nil {
 			return nil, false, err
 		}
 		rawURL = u
-	} else if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		base, err := url.Parse(strings.TrimRight(c.Config().URL, "/") + "/")
+	} else {
+		var err error
+		rawURL, err = c.resolveLink(rawURL)
 		if err != nil {
-			return nil, false, redactURLError(err)
+			return nil, false, err
 		}
-		ref, err := url.Parse(rawURL)
+		rawURL, err = c.authenticateLink(rawURL)
 		if err != nil {
-			return nil, false, redactURLError(err)
+			return nil, false, err
 		}
-		rawURL = base.ResolveReference(ref).String()
+		id = c.identityFor(config.RequestNZBDownload, rawURL, media)
+		rawURL = id.ApplyToURL(rawURL)
 	}
-	// Reserved right before the request, so a release with no usable URL
-	// spends nothing.
-	if err := c.reserve(ctx, "grab"); err != nil {
+	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
+	if err != nil {
 		return nil, false, err
 	}
-	body, err := c.get(ctx, rawURL, c.maxNZB, id)
+	defer releaseHost()
+	// Reserved right before the request, so a release with no usable URL
+	// spends nothing.
+	if err := c.reserve(hctx, "grab"); err != nil {
+		return nil, false, err
+	}
+	body, err := c.get(hctx, rawURL, c.maxNZB, id)
+	if err != nil && guidParams != nil && c.canFallbackNewznabPath(err, usedNewznab) {
+		alt, aerr := c.apiURLForPath(guidParams, id, true)
+		if aerr != nil {
+			return nil, true, aerr
+		}
+		if body, err = c.get(hctx, alt, c.maxNZB, id); err == nil {
+			c.rememberNewznabPath(ctx)
+		}
+	}
 	if err != nil {
 		return nil, true, err
 	}
@@ -1709,27 +2368,8 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		return nil, true, fmt.Errorf("newznab: response for %q is not an NZB: the indexer sent %s", r.Name, kind)
 	}
 	body = nzb
-	c.saveNZB(r.ID, body)
+	c.keepNZB(ctx, r, body)
 	return body, true, nil
-}
-
-// saveNZB keeps a fetched NZB on disk so later plays need no grab. Saves
-// for the same release are serialized and each writes its own temp file,
-// so concurrent fetches cannot truncate each other's temp or race the
-// rename; the rename onto the final path stays atomic.
-func (c *Client) saveNZB(releaseID string, body []byte) {
-	path := c.nzbDiskPath(releaseID)
-	if path == "" {
-		return
-	}
-	unlock := c.lockNZB(path)
-	defer unlock()
-	if err := os.MkdirAll(c.nzbDir, 0o755); err != nil {
-		return
-	}
-	if err := atomicfile.Write(path, body, 0644); err != nil {
-		c.log.Debug("newznab save NZB failed", "indexer", c.Name(), "err", err)
-	}
 }
 
 // backend returns the search backend of a built-in site or addon.
@@ -1741,15 +2381,24 @@ func (c *Client) backend() (Backend, error) {
 }
 
 // backendSearch runs a built-in indexer's search and stamps the results
-// the way Newznab results are stamped.
-func (c *Client) backendSearch(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
+// the way Newznab results are stamped. incomplete is true when the backend
+// returned a partial answer (some lookups failed, were rate-limited or
+// stopped by budget); callers must not cache an incomplete answer and the
+// caller's fleet search coverage is marked incomplete.
+func (c *Client) backendSearch(ctx context.Context, req core.SearchRequest) ([]core.Release, bool, error) {
 	b, err := c.backend()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return c.stampBackend(ctx, "search", func(ctx context.Context, reserve func(context.Context, string) error) ([]core.Release, error) {
+	subCtx, subCov := core.WithSearchCoverage(ctx)
+	rels, err := c.stampBackend(subCtx, "search", func(ctx context.Context, reserve func(context.Context, string) error) ([]core.Release, error) {
 		return b.Search(ctx, req, reserve)
 	})
+	incomplete := subCov.Incomplete()
+	if incomplete {
+		core.NoteSearchIncomplete(ctx)
+	}
+	return rels, incomplete, err
 }
 
 // backendRecent lists a built-in site's latest releases.
@@ -1786,8 +2435,15 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 		}
 		return nil
 	}
-	results, err := c.guardSearch(ctx, false, 0, func(ctx context.Context) ([]core.Release, error) {
+	hostURL := ""
+	if c.Config().IsStremio() {
+		hostURL = c.Config().URL
+	}
+	prl := &partialRateLimit{}
+	runCtx := context.WithValue(ctx, partialRateLimitKey{}, prl)
+	results, err := c.guardSearch(runCtx, hostURL, false, 0, func(ctx context.Context) ([]core.Release, error) {
 		admitted = true
+		started = time.Now()
 		return run(ctx, reserve)
 	})
 	if err != nil {
@@ -1795,6 +2451,8 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 		if errors.As(err, &rl) {
 			err = c.recordRateLimit(ctx, rl.RetryAfter, err)
 		}
+	} else if rl := prl.get(); rl != nil {
+		_ = c.recordRateLimit(ctx, rl.RetryAfter, rl)
 	}
 	if err == nil {
 		if hits > 0 { // PSE-HOOK: pause qui s'allonge, seulement après une requête partie — voir docs/pse/FORK.fr.md
@@ -1818,6 +2476,7 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 			}
 		}
 		c.markOnDemand(results)
+		c.stampSourceOrder(results)
 	}
 	if admitted && !(err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrIndexerPaused))) {
 		now := c.now()
@@ -1896,75 +2555,76 @@ func TestWithOptions(ctx context.Context, cfg config.Indexer, opts Options) erro
 		return humanError(name, err)
 	}
 	params := url.Values{"t": {"search"}, "q": {"test"}, "limit": {"1"}, "extended": {"1"}}
-	id := c.generalIdentity()
-	if id.Offset0 {
-		params.Set("offset", "0")
-	}
-	if _, err := c.doSearch(ctx, params, id); err != nil {
+	if _, err := c.doSearch(ctx, params, c.clientIdentity(), config.IdentityMediaAny); err != nil {
 		return humanError(name, err)
 	}
 	return nil
 }
 
-// An NZB on disk is reused for as long as it is kept, so a release is
-// grabbed from its indexer once. Unused NZBs leave after nzbKeep, and the
-// directory stays under nzbDiskCap (least recently used first).
-const (
-	nzbKeep    = 60 * 24 * time.Hour
-	nzbDiskCap = 1 << 30
-)
-
-// touchNZB marks a cached NZB used, at most once a day.
-func (c *Client) touchNZB(path string) {
-	if info, err := os.Stat(path); err == nil && c.now().Sub(info.ModTime()) > 24*time.Hour {
-		now := c.now()
-		_ = os.Chtimes(path, now, now)
-	}
+// TestCaps runs a single t=caps request against cfg using the identity
+// resolved from policy, returning the resolved identity and any error.
+func TestCaps(ctx context.Context, cfg config.Indexer, policy config.ClientIdentity) (config.Identity, error) {
+	return TestCapsWithOptions(ctx, cfg, Options{ClientIdentity: policy})
 }
 
-// pruneNZBs bounds the NZB disk cache in dir; it returns the files removed.
-func pruneNZBs(dir string, now time.Time) int64 {
-	if dir == "" {
-		return 0
+// TestCapsWithOptions is TestCaps with injectable options (usage tracking/tests).
+func TestCapsWithOptions(ctx context.Context, cfg config.Indexer, opts Options) (config.Identity, error) {
+	if cfg.URL == "" {
+		return config.DefaultIdentity(), fmt.Errorf("indexer %q: URL is empty", cfg.Name)
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
+	testCfg := cfg
+	testCfg.Enabled = true
+	c := New(testCfg, nil, opts)
+	id := c.clientIdentity()
+	name := cfg.Name
+	if name == "" {
+		name = c.Name()
 	}
-	type file struct {
-		path string
-		at   time.Time
-		size int64
+	if _, err := c.Caps(ctx); err != nil {
+		return id, humanError(name, err)
 	}
-	var files []file
-	var total, removed int64
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".nzb") {
-			continue
+	return id, nil
+}
+
+func (c *Client) keptNZB(ctx context.Context, r core.Release) []byte {
+	if c.vault == nil {
+		return nil
+	}
+	lookup := func(source, id string) []byte {
+		key, ok, err := c.vault.ByAlias(ctx, source, id)
+		if err != nil || !ok {
+			return nil
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue
+		record, err := c.vault.Get(ctx, key)
+		if err != nil || record == nil || len(record.XML) == 0 {
+			return nil
 		}
-		path := filepath.Join(dir, e.Name())
-		if now.Sub(info.ModTime()) > nzbKeep {
-			if os.Remove(path) == nil {
-				removed++
+		_ = c.vault.Touch(ctx, key, true)
+		return bytes.Clone(record.XML)
+	}
+	if body := lookup(c.indexerID(), r.ID); body != nil {
+		return body
+	}
+	hash := sha256.Sum256([]byte(c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + r.ID))
+	id := hex.EncodeToString(hash[:])
+	if c.legacyDir != nil {
+		if dir := c.legacyDir(); dir != "" {
+			if body, err := os.ReadFile(filepath.Join(dir, id+".nzb")); err == nil && len(body) > 0 {
+				c.keepNZB(ctx, r, body)
+				return body
 			}
-			continue
-		}
-		files = append(files, file{path, info.ModTime(), info.Size()})
-		total += info.Size()
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].at.Before(files[j].at) })
-	for _, f := range files {
-		if total <= nzbDiskCap {
-			break
-		}
-		if os.Remove(f.path) == nil {
-			removed++
-			total -= f.size
 		}
 	}
-	return removed
+	return lookup(vault.LegacyAliasIndexer, id)
+}
+
+func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {
+	if c.vault == nil {
+		return
+	}
+	r.IndexerID = c.indexerID()
+	private := c.publicIndexer == nil || !c.publicIndexer(ctx, c.Config())
+	if _, err := c.vault.Put(ctx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body}); err != nil {
+		c.log.Warn("could not store indexer release in vault", "indexer", r.IndexerID)
+	}
 }

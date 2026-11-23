@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/mediaproc"
 )
 
 var (
@@ -56,10 +56,12 @@ func (e Extra) ThumbURL() string {
 	return ""
 }
 
+const defaultTrailerFormat = "bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[ext=mp4]/b"
+
 // DefaultResolverArgs is the yt-dlp-compatible template used when the
-// owner configured a command but no arguments: print one single-file
-// media URL for the watch page.
-var DefaultResolverArgs = []string{"-g", "-f", "b[ext=mp4]/b", "--no-playlist", "{url}"}
+// owner configured a command but no arguments: print video and audio URLs
+// (or one muxed URL) for the watch page.
+var DefaultResolverArgs = []string{"-g", "-f", defaultTrailerFormat, "--no-playlist", "{url}"}
 
 const (
 	maxResolverOutput = 64 << 10
@@ -89,20 +91,29 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 
 // execRunner runs the resolver without a shell, bounding both streams.
 func execRunner(ctx context.Context, name string, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := mediaproc.CommandContext(ctx, 90*time.Second, name, args...)
+	rc, hasProxy := runnerProxyFrom(ctx)
+	if hasProxy {
+		if env := subprocessEnv(nil, rc.proxy, rc.policyEnabled, rc.bypass, true); env != nil {
+			cmd.Env = env
+		}
+	}
 	out := &cappedBuffer{max: maxResolverOutput}
 	serr := &cappedBuffer{max: maxResolverStderr}
 	cmd.Stdout = out
 	cmd.Stderr = serr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(serr.buf.String())
+		if rc.proxy != nil {
+			msg = strings.TrimSpace(scrubProxyText(msg, rc.proxy))
+		}
 		if len(msg) > 256 {
 			msg = msg[:256]
 		}
 		if msg != "" {
-			return nil, fmt.Errorf("extras resolver: %w: %s", err, msg)
+			return nil, scrubProxyErr(fmt.Errorf("extras resolver: %w: %s", err, msg), rc.proxy)
 		}
-		return nil, fmt.Errorf("extras resolver: %w", err)
+		return nil, scrubProxyErr(fmt.Errorf("extras resolver: %w", err), rc.proxy)
 	}
 	if out.overflow {
 		return nil, fmt.Errorf("extras resolver: output exceeds %d bytes", maxResolverOutput)
@@ -112,30 +123,39 @@ func execRunner(ctx context.Context, name string, args []string) ([]byte, error)
 
 // runResolver invokes the owner's command for one extra and parses its
 // output: either a JSON object {"url":..., "headers":{...},
-// "expires":...} or plain text whose single http(s) line is the URL
+// "audioURL":..., "expires":...} or one/two plain http(s) lines
 // (the yt-dlp -g shape).
 func runResolver(ctx context.Context, cfg config.Extras, e Extra, runner CommandRunner, now func() time.Time) (Resolved, error) {
 	page, ok := PageURL(e.Site, e.SiteKey)
 	if !ok {
 		return Resolved{}, fmt.Errorf("extras: invalid %s key %q", e.Site, e.SiteKey)
 	}
+	proxy, policyEnabled, bypass, err := extrasProxyFor(page)
+	if err != nil {
+		return Resolved{}, err
+	}
 	args := cfg.ResolverArgs
-	if len(args) == 0 {
+	customArgs := len(args) > 0
+	if !customArgs {
 		args = DefaultResolverArgs
 	}
 	sub := strings.NewReplacer(
 		"{url}", page, "{site}", strings.ToLower(e.Site),
 		"{key}", e.SiteKey, "{id}", e.SiteKey)
-	out := make([]string, len(args))
-	for i, a := range args {
-		out[i] = sub.Replace(a)
+	out := make([]string, 0, len(args)+2)
+	if proxy != nil && !customArgs {
+		out = append(out, "--proxy", proxy.String())
+	}
+	for _, a := range args {
+		out = append(out, sub.Replace(a))
 	}
 	timeout := cfg.ResolverTimeoutOr(20 * time.Second)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	ctx = withRunnerProxy(ctx, runnerProxyConfig{proxy: proxy, policyEnabled: policyEnabled, bypass: bypass})
 	raw, err := runner(ctx, cfg.ResolverCommand, out)
 	if err != nil {
-		return Resolved{}, err
+		return Resolved{}, scrubProxyErr(err, proxy)
 	}
 	if len(raw) > maxResolverOutput {
 		return Resolved{}, fmt.Errorf("extras resolver: output exceeds %d bytes", maxResolverOutput)
@@ -151,6 +171,7 @@ func parseResolverOutput(raw []byte, at time.Time) (Resolved, error) {
 	if strings.HasPrefix(text, "{") {
 		var j struct {
 			URL       string            `json:"url"`
+			AudioURL  string            `json:"audioURL"`
 			Headers   map[string]string `json:"headers"`
 			Expires   json.RawMessage   `json:"expires"`
 			Container string            `json:"container"`
@@ -158,7 +179,7 @@ func parseResolverOutput(raw []byte, at time.Time) (Resolved, error) {
 		if err := json.Unmarshal([]byte(text), &j); err != nil {
 			return Resolved{}, fmt.Errorf("extras resolver: bad JSON: %w", err)
 		}
-		r := Resolved{URL: strings.TrimSpace(j.URL), Headers: j.Headers, Container: j.Container}
+		r := Resolved{URL: strings.TrimSpace(j.URL), AudioURL: strings.TrimSpace(j.AudioURL), Headers: j.Headers, Container: j.Container}
 		r.Expires = parseExpiry(j.Expires, at)
 		return finishResolved(r, at)
 	}
@@ -176,21 +197,36 @@ func parseResolverOutput(raw []byte, at time.Time) (Resolved, error) {
 	if len(urls) == 0 {
 		return Resolved{}, fmt.Errorf("extras resolver: no media URL in output")
 	}
-	if len(urls) > 1 {
-		return Resolved{}, fmt.Errorf("extras resolver: %d media URLs; configure a single-file format", len(urls))
+	if len(urls) > 2 {
+		return Resolved{}, fmt.Errorf("extras resolver: %d media URLs; expected video and optional audio", len(urls))
 	}
-	return finishResolved(Resolved{URL: urls[0]}, at)
+	r := Resolved{URL: urls[0]}
+	if len(urls) == 2 {
+		r.AudioURL = urls[1]
+	}
+	return finishResolved(r, at)
 }
 
 func finishResolved(r Resolved, at time.Time) (Resolved, error) {
-	u, err := url.Parse(r.URL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return Resolved{}, fmt.Errorf("extras resolver: invalid media URL %q", r.URL)
-	}
-	if r.Expires.IsZero() {
-		// googlevideo-style "expire" unix query parameter.
+	var video *url.URL
+	for i, raw := range []string{r.URL, r.AudioURL} {
+		if i == 1 && raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Resolved{}, fmt.Errorf("extras resolver: invalid media URL %q", raw)
+		}
+		if i == 0 {
+			video = u
+		}
+		// A pair is one cache entry: expire both at the earliest URL expiry,
+		// including when an owner supplied an explicit JSON expiry.
 		if exp, err := strconv.ParseInt(u.Query().Get("expire"), 10, 64); err == nil && exp > 0 {
-			r.Expires = time.Unix(exp, 0)
+			expires := time.Unix(exp, 0)
+			if r.Expires.IsZero() || expires.Before(r.Expires) {
+				r.Expires = expires
+			}
 		}
 	}
 	if r.Expires.IsZero() || !r.Expires.After(at) {
@@ -203,7 +239,7 @@ func finishResolved(r Resolved, at time.Time) (Resolved, error) {
 		r.Expires = latest
 	}
 	if r.Container == "" {
-		r.Container = containerFromURL(u)
+		r.Container = containerFromURL(video)
 	}
 	return r, nil
 }

@@ -30,5 +30,65 @@ func (s *Service) SetOwnerEnabled(ctx context.Context, viewerID int64, enabled b
 		return err
 	}
 	s.notify("")
+	var name string
+	var streamLimit int
+	var maxRating string
+	var libs []core.LibraryID
+	if u, e := s.User(ctx, viewerID); e == nil && u != nil {
+		name = u.Username
+		if name == "" {
+			name = u.Title
+		}
+		streamLimit = u.StreamLimit
+		maxRating = u.MaxContentRating
+		libs = u.AllowedLibraries
+	}
+	if !enabled {
+		s.emitViewerEvent(ViewerEvent{
+			Kind:     "deactivated",
+			ViewerID: viewerID,
+			Username: name,
+			Reason:   "paused_by_owner",
+			Actor:    "owner",
+		})
+	} else {
+		s.emitViewerEvent(ViewerEvent{
+			Kind:             "access_changed",
+			ViewerID:         viewerID,
+			Username:         name,
+			StreamLimit:      streamLimit,
+			MaxContentRating: maxRating,
+			AllowedLibraries: libs,
+			Actor:            "owner",
+		})
+	}
+	return nil
+}
+
+// SetViewerHidden sets whether a viewer is hidden from public sign-in pickers
+// (Jellyfin/Emby Policy.IsHidden).
+func (s *Service) SetViewerHidden(ctx context.Context, viewerID int64, hidden bool) error {
+	s.membershipMu.Lock()
+	defer s.membershipMu.Unlock()
+	val := 0
+	if hidden {
+		val = 1
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE auth_users SET hidden=?, updated_at=? WHERE id=? AND origin<>'dlna_guest'`, val, time.Now().Unix(), viewerID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return core.ErrNotFound
+	}
+	if err := s.reload(ctx); err != nil {
+		return err
+	}
+	s.gen.Add(1)
+	s.notify("")
 	return nil
 }

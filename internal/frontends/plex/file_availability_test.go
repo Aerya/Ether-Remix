@@ -77,7 +77,7 @@ type fileProbeSource struct {
 
 func (s *fileProbeSource) Close() error { s.closed.Add(1); return nil }
 
-func fileProbeManager(t *testing.T, f *fixture, res fileProbeResolver, engine *fileProbeEngine) *playback.Manager {
+func fileProbeManager(t *testing.T, f *fixture, res core.Resolver, engine *fileProbeEngine) *playback.Manager {
 	t.Helper()
 	cfg := config.Defaults(t.TempDir())
 	cfg.Cache.DisableSpeculation = true
@@ -177,5 +177,98 @@ func TestFileAvailabilityOnlyDefinitiveEvidenceHidesAVersion(t *testing.T) {
 				t.Fatalf("exists=%v accessible=%v, want %v", p.Exists, p.Accessible, tc.want)
 			}
 		})
+	}
+}
+
+// countingProbeResolver records each warm-up search a file check starts.
+type countingProbeResolver struct {
+	fileProbeResolver
+	resolves *atomic.Int32
+}
+
+func (r countingProbeResolver) Resolve(ctx context.Context, q core.ResolveRequest) (*core.Resolution, error) {
+	r.resolves.Add(1)
+	return r.fileProbeResolver.Resolve(ctx, q)
+}
+
+// Library tools such as Tracearr reconcile their catalogue with batched
+// /library/metadata/{k1,k2,…}?checkFiles=1 lookups covering every title.
+// Each title's warm-up search spends indexer API hits, so a batch must answer
+// from local state only: no searches, no source opens, every Part available.
+// A single-title detail page keeps the full check.
+func TestBatchedFileChecksDoNotSearch(t *testing.T) {
+	f := newFixture(func(d *testServerDeps) { d.DisableEnrichment = true })
+	engine := &fileProbeEngine{}
+	resolves := &atomic.Int32{}
+	m := fileProbeManager(t, f, countingProbeResolver{fileProbeResolver{releases: []string{"checked"}}, resolves}, engine)
+	f.srv.setPlayback(m)
+	defer f.srv.Close()
+	defer m.Close()
+
+	batch := fightClub.Key.String() + "," + alien.Key.String()
+	r := f.get(t, "/library/metadata/"+batch+"?checkFiles=1", jsonAccept...)
+	if r.Code != 200 {
+		t.Fatalf("batch: %d %s", r.Code, r.Body.String())
+	}
+	items := decodeJSON(t, r)["Metadata"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("batch returned %d items", len(items))
+	}
+	for _, item := range items {
+		part := item.(map[string]any)["Media"].([]any)[0].(map[string]any)["Part"].([]any)[0].(map[string]any)
+		if part["exists"] != true || part["accessible"] != true {
+			t.Fatalf("batched part exists=%v accessible=%v, want available", part["exists"], part["accessible"])
+		}
+	}
+	if n := resolves.Load(); n != 0 {
+		t.Fatalf("batched checkFiles started %d searches", n)
+	}
+	if n := engine.opens.Load(); n != 0 {
+		t.Fatalf("batched checkFiles opened %d sources", n)
+	}
+
+	r = f.get(t, "/library/metadata/"+fightClub.Key.String()+"?checkFiles=1", jsonAccept...)
+	if r.Code != 200 {
+		t.Fatalf("single: %d %s", r.Code, r.Body.String())
+	}
+	if resolves.Load() == 0 || engine.opens.Load() == 0 {
+		t.Fatalf("single-title checkFiles did not probe: resolves=%d opens=%d", resolves.Load(), engine.opens.Load())
+	}
+}
+
+// Monitoring and library tools (Tautulli, Tracearr, Kometa, python-plexapi
+// scripts) read single titles too, for live sessions, notifications and
+// their own UIs. Those reads never start a search, a source probe or
+// version discovery, whatever the options.
+func TestLibraryToolReadsDoNotSearch(t *testing.T) {
+	for _, product := range []string{"Tautulli", "Tracearr", "Kometa", "PlexAPI"} {
+		t.Run(product, func(t *testing.T) {
+			f := newFixture(func(d *testServerDeps) { d.DisableEnrichment = true })
+			engine := &fileProbeEngine{}
+			resolves := &atomic.Int32{}
+			m := fileProbeManager(t, f, countingProbeResolver{fileProbeResolver{releases: []string{"checked"}}, resolves}, engine)
+			f.srv.setPlayback(m)
+			defer f.srv.Close()
+			defer m.Close()
+			r := f.get(t, "/library/metadata/"+fightClub.Key.String()+"?checkFiles=1", append([]string{"X-Plex-Product", product}, jsonAccept...)...)
+			if r.Code != 200 {
+				t.Fatalf("%d %s", r.Code, r.Body.String())
+			}
+			part := decodeJSON(t, r)["Metadata"].([]any)[0].(map[string]any)["Media"].([]any)[0].(map[string]any)["Part"].([]any)[0].(map[string]any)
+			if part["exists"] != true || part["accessible"] != true {
+				t.Fatalf("part exists=%v accessible=%v, want available", part["exists"], part["accessible"])
+			}
+			if resolves.Load() != 0 || engine.opens.Load() != 0 {
+				t.Fatalf("library tool read searched: resolves=%d opens=%d", resolves.Load(), engine.opens.Load())
+			}
+			if f.srv.detailSearchAllowed(&Request{Product: product}) {
+				t.Fatal("library tool allowed detail version discovery")
+			}
+		})
+	}
+	for _, product := range []string{"Plex Web", "Plex for Android (TV)", "Plex HTPC", ""} {
+		if libraryToolClient(&Request{Product: product}) {
+			t.Fatalf("player %q classified as a library tool", product)
+		}
 	}
 }

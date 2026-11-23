@@ -11,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/livetv/guideprovider"
 	"github.com/braedonsaunders/ether/internal/markers"
 )
@@ -155,6 +156,7 @@ type Channel struct {
 
 	sweepKey      string
 	numberMissing bool
+	numberKept    bool   // lineup-unique import: provider number was free and is kept
 	Health        string `json:"health,omitempty"`
 	Transcode     bool   `json:"transcode"`           // IPTV: normalize codecs through the transcoder
 	Stability     string `json:"stability,omitempty"` // fastest, balanced, rocksolid; "" inherits the server preset
@@ -162,29 +164,34 @@ type Channel struct {
 	// Private channels are hidden from every viewer whose policy does not
 	// grant them: a restricted viewer needs it in Channels, an unrestricted
 	// one in Granted. Owners always see them.
-	Private       bool           `json:"private,omitempty"`
-	Number        string         `json:"number"`
-	Name          string         `json:"name"`
-	Kind          string         `json:"kind"` // virtual or iptv
-	Enabled       bool           `json:"enabled"`
-	HiddenApps    []string       `json:"hiddenApps,omitempty"` // apps (Apps) that omit this channel; every other app lists it
-	Favorite      bool           `json:"favorite"`
-	Logo          string         `json:"logo,omitempty"`
-	LogoMatched   bool           `json:"logoMatched,omitempty"`
-	ProviderAdult bool           `json:"providerAdult,omitempty"`
-	Rating        string         `json:"rating,omitempty"`
-	SourceID      string         `json:"sourceId,omitempty"`
-	GuideID       string         `json:"guideId,omitempty"`
-	TvgName       string         `json:"tvgName,omitempty"`       // provider's label; a guide-matching hint
-	StreamURL     string         `json:"streamUrl,omitempty"`     // owner API only
-	StreamSources []StreamSource `json:"streamSources,omitempty"` // ordered inputs; independent of channel/guide identity
-	Group         string         `json:"group,omitempty"`
-	CustomGroup   bool           `json:"customGroup,omitempty"` // preserve owner grouping on provider refresh
-	Epoch         time.Time      `json:"epoch"`
-	Seed          int64          `json:"seed"`
-	Shuffle       bool           `json:"shuffle"`
-	Items         []Item         `json:"items"`
-	Blocks        []Block        `json:"blocks,omitempty"`
+	Private               bool               `json:"private,omitempty"`
+	Number                string             `json:"number"`
+	Name                  string             `json:"name"`
+	Kind                  string             `json:"kind"` // virtual or iptv
+	Enabled               bool               `json:"enabled"`
+	HiddenApps            []string           `json:"hiddenApps,omitempty"` // explicit per-channel hides (override OwnerGroup.Apps)
+	ShownApps             []string           `json:"shownApps,omitempty"`  // explicit per-channel shows (override OwnerGroup.Apps hides)
+	Favorite              bool               `json:"favorite"`
+	Logo                  string             `json:"logo,omitempty"`
+	LogoMatched           bool               `json:"logoMatched,omitempty"`
+	ProviderAdult         bool               `json:"providerAdult,omitempty"`
+	Rating                string             `json:"rating,omitempty"`
+	SourceID              string             `json:"sourceId,omitempty"`
+	GuideID               string             `json:"guideId,omitempty"`
+	TvgName               string             `json:"tvgName,omitempty"`       // provider's label; a guide-matching hint
+	StreamURL             string             `json:"streamUrl,omitempty"`     // owner API only
+	StreamSources         []StreamSource     `json:"streamSources,omitempty"` // ordered inputs; independent of channel/guide identity
+	SuppressedAutoBackups []string           `json:"suppressedAutoBackups,omitempty"`
+	OwnerStreamSources    bool               `json:"ownerStreamSources,omitempty"`
+	InputMerge            *ChannelInputMerge `json:"inputMerge,omitempty"`
+	MergedInto            string             `json:"mergedInto,omitempty"`
+	Group                 string             `json:"group,omitempty"`
+	CustomGroup           bool               `json:"customGroup,omitempty"` // preserve owner grouping on provider refresh
+	Epoch                 time.Time          `json:"epoch"`
+	Seed                  int64              `json:"seed"`
+	Shuffle               bool               `json:"shuffle"`
+	Items                 []Item             `json:"items"`
+	Blocks                []Block            `json:"blocks,omitempty"`
 	// Collection/Filter/Sources are expanded into a stable item snapshot when saved.
 	Collection core.RatingKey  `json:"collection,omitempty"`
 	Filter     *core.Filter    `json:"filter,omitempty"`
@@ -214,6 +221,13 @@ type Channel struct {
 	// provider's renumbering; an owner edit makes Number differ and sticks.
 	ProviderNumber string `json:"providerNumber,omitempty"`
 
+	// ProviderGuideID is the guide id the source gave this channel at the last
+	// import (Xtream epg_channel_id, M3U tvg-id, or a plugin's guideId). While
+	// GuideID still equals it and GuideSourceID is empty, the channel follows
+	// the provider's guide id changes; an owner mapping (or explicit clear)
+	// makes them differ and sticks.
+	ProviderGuideID string `json:"providerGuideId,omitempty"`
+
 	// adult is the provider's own adult flag (Xtream is_adult); import only.
 	adult bool
 }
@@ -234,9 +248,14 @@ type Source struct {
 	PlexCursor  int        `json:"plexCursor,omitempty"`
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
+	Priority    int        `json:"priority,omitempty"`
 	Kind        string     `json:"kind,omitempty"` // a source kind id, e.g. plugin:<id>/channels
 	PlaylistURL string     `json:"playlistUrl,omitempty"`
 	GuideURL    string     `json:"guideUrl,omitempty"`
+	// PlaylistGuide reports that the last import used a guide URL found in
+	// the playlist's #EXTM3U header (x-tvg-url / url-tvg) because the owner
+	// set no guide of their own.
+	PlaylistGuide bool `json:"playlistGuide,omitempty"`
 	// Inline uploads are supplied on import and are not returned by GET.
 	Playlist  string    `json:"playlist,omitempty"`
 	Guide     string    `json:"guide,omitempty"`
@@ -288,8 +307,6 @@ type Source struct {
 	// order and numbers; otherwise channels are numbered 1… down the
 	// listed groups (unlisted groups follow in provider order).
 	GroupOrder []string `json:"groupOrder,omitempty"`
-	// HubGroups adds each included channel group as a What's On shelf in Plex.
-	HubGroups bool `json:"hubGroups,omitempty"`
 
 	// Provider etiquette for the source's streams. MaxConnections caps
 	// simultaneous provider connections below what the panel allows (0 uses
@@ -321,6 +338,14 @@ type SourceGroup struct {
 	// Excluded reports whether the owner's rules leave this group out.
 	Excluded bool `json:"excluded,omitempty"`
 }
+
+// EventStreamRef identifies a Stremio stream lookup target for an event-based
+// guide programme (for example, type="sport", id="streamed:match-1").
+type EventStreamRef struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
 type Programme struct {
 	BlockID          string `json:"blockId,omitempty"`
 	SourceID         string `json:"sourceId,omitempty"`
@@ -333,13 +358,14 @@ type Programme struct {
 	graphicsRequest  *core.ClipRequest
 	graphicsID       string
 	graphicsFallback bool
-	Reason           string    `json:"reason,omitempty"`
-	Lens             string    `json:"lens,omitempty"`
-	ID               string    `json:"id"`
-	ChannelID        string    `json:"channelId"`
-	Start            time.Time `json:"start"`
-	End              time.Time `json:"end"`
-	Item             Item      `json:"item"`
+	Reason           string           `json:"reason,omitempty"`
+	Lens             string           `json:"lens,omitempty"`
+	EventStreams     []EventStreamRef `json:"eventStreams,omitempty"`
+	ID               string           `json:"id"`
+	ChannelID        string           `json:"channelId"`
+	Start            time.Time        `json:"start"`
+	End              time.Time        `json:"end"`
+	Item             Item             `json:"item"`
 }
 
 func (p Programme) Offset(at time.Time) time.Duration {
@@ -378,9 +404,11 @@ type Options struct {
 	NewTimer        func(time.Duration) *time.Timer
 	NewTicker       func(time.Duration) *time.Ticker
 
-	VODChanged      func() // provider index or connection changed
-	SessionsChanged func() // viewer live sessions started, stopped or expired
-	SourcesChanged  func() // IPTV source health or lineup changed
+	VODChanged      func()                                                      // provider index or connection changed
+	SessionsChanged func()                                                      // viewer live sessions started, stopped or expired
+	SessionExpired  func(string)                                                // called with the live session ID after idle expiration
+	ObserveSession  func(session *core.PlaySession, ended bool, problem string) // called on media delivery, stop/expiry and tune failure
+	SourcesChanged  func()                                                      // IPTV source health or lineup changed
 	// BreakInput opens an exclusive background playback source, never a viewer session.
 	// The final argument is an identity captured from an admitted save, never
 	// a request context. The callback must revalidate it on each background run.
@@ -407,6 +435,7 @@ type Options struct {
 	ConfirmAdmission   func(context.Context, *core.User, bool, time.Time) (*core.User, error)
 	CanPlay            func(*core.User, bool, time.Time) bool
 	StreamLimit        func(*core.User) int
+	RemoteUploadCap    func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
 	DB                 *sql.DB
 	Catalog            core.Catalog
 	Collections        core.Collections
@@ -421,6 +450,8 @@ type Options struct {
 	Now                func() time.Time
 	// Logger receives credential-safe import, playback and delivery diagnostics.
 	Logger *slog.Logger
+	// Events receives Live TV domain events when non-nil.
+	Events *events.Bus
 	// Allowed applies additional owner title/genre policies to every surface.
 	Allowed func(*core.User, *core.Title) bool
 	// Warm resolves/primes a title without opening a viewer stream.

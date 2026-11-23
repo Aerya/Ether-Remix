@@ -23,7 +23,10 @@ func (s *Server) plexMetaOn() bool {
 	return cfg.Plex.Claimed && cfg.Plex.UsePlexMetadata
 }
 
-func (s *Server) withPlexMeta(ctx context.Context, keys []frontend.RatingKey, guids map[frontend.RatingKey]string) context.Context {
+// withPlexMeta preloads cached Plex overlays for keys. schedule=false
+// (stored-only list pages) only reads what is cached: a section walk
+// must not mint refresh work — and its writes — for every page it passes.
+func (s *Server) withPlexMeta(ctx context.Context, keys []frontend.RatingKey, guids map[frontend.RatingKey]string, schedule ...bool) context.Context {
 	if !s.plexMetaOn() {
 		return ctx
 	}
@@ -46,7 +49,9 @@ func (s *Server) withPlexMeta(ctx context.Context, keys []frontend.RatingKey, gu
 			refresh = append(refresh, k)
 		}
 	}
-	metaSrc.Schedule(refresh...)
+	if len(schedule) == 0 || schedule[0] {
+		metaSrc.Schedule(refresh...)
+	}
 	return context.WithValue(ctx, plexMetaCtxKey{}, plexMetaBatch{rows: cached, guids: guids})
 }
 
@@ -94,7 +99,7 @@ func (s *Server) plexMetaRatingOK(u *frontend.Viewer, t *frontend.Title, row fro
 	if !ok {
 		return true
 	}
-	return frontend.MetadataOverlayRatingAllowed(u, t.ContentRating, row.ContentRating)
+	return frontend.MetadataOverlayTitleAllowed(u, t, row.ContentRating)
 }
 
 func (s *Server) plexMetaRatingAllowedCached(u *frontend.Viewer, t *frontend.Title, rows map[frontend.RatingKey]frontend.CachedMetadataOverlay, guids map[frontend.RatingKey]string) bool {
@@ -175,11 +180,17 @@ func applyPlexMetaDates(t *frontend.Title, m *model.Metadata, o frontend.Metadat
 }
 
 // Slugs are Plex catalogue identities, not a formatting of a title. Only use
-// the provider's slug when its cached overlay still matches the verified GUID.
-func (s *Server) verifiedPlexSlug(ctx context.Context, key frontend.RatingKey) string {
-	row, ok := s.plexMetaCached(ctx, key)
-	if !ok {
-		return ""
+// the provider's slug when its cached record still matches the verified GUID.
+// Non-detail list paths only check the batched plexmeta overlay and never fall
+// back to per-item provider-credit lookups.
+func (s *Server) verifiedPlexSlug(ctx context.Context, key frontend.RatingKey, allowCredits bool) string {
+	if row, ok := s.plexMetaCached(ctx, key); ok && row.Slug != "" {
+		return row.Slug
 	}
-	return row.Slug
+	if allowCredits {
+		if credits, ok := s.plexCreditsCached(ctx, key); ok && credits.Slug != "" {
+			return credits.Slug
+		}
+	}
+	return ""
 }

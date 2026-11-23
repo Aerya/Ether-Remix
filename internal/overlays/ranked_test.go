@@ -55,3 +55,36 @@ func TestRankedVariantsDurableCache(t *testing.T) {
 		t.Fatal("accepted rank 11")
 	}
 }
+
+func TestRankedBackdrop(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 160, 90))
+	for y := 0; y < 90; y++ {
+		for x := 0; x < 160; x++ {
+			img.SetRGBA(x, y, color.RGBA{220, 80, 40, 255})
+		}
+	}
+	var source bytes.Buffer
+	if err := png.Encode(&source, img); err != nil {
+		t.Fatal(err)
+	}
+	s := New(nil, Options{CacheDir: t.TempDir()})
+	data, _, err := s.Ranked(context.Background(), source.Bytes(), 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Bounds() != image.Rect(0, 0, 960, 540) {
+		t.Fatal(got.Bounds())
+	}
+	r, g, b, _ := got.At(850, 250).RGBA()
+	if r < 40000 || g < 10000 || b < 5000 {
+		t.Fatal("backdrop missing from wide card", r, g, b)
+	}
+	other, _, err := s.Ranked(context.Background(), source.Bytes(), 10, true)
+	if err != nil || bytes.Equal(data, other) {
+		t.Fatal("rank missing", err)
+	}
+}

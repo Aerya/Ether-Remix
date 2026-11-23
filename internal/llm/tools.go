@@ -32,6 +32,9 @@ type ToolCall struct {
 	ID    string
 	Name  string
 	Input json.RawMessage
+	// Signature is an opaque provider token that must return with the call
+	// when the conversation is replayed (Gemini 3 thoughtSignature).
+	Signature string
 }
 
 // ToolResult is one tool outcome fed back to the model.
@@ -87,7 +90,9 @@ type Event struct {
 	InputTokens  int
 	OutputTokens int
 	FinishReason string
-	Err          error
+	// Signature accompanies EventToolCall; see ToolCall.Signature.
+	Signature string
+	Err       error
 }
 
 // ProviderID returns the configured provider id.
@@ -396,8 +401,16 @@ func (c *Client) streamOpenAI(ctx context.Context, base string, cfg config.LLM, 
 	if req.Temperature != 0 {
 		body["temperature"] = req.Temperature
 	}
-	if req.MaxTokens > 0 {
-		body["max_tokens"] = req.MaxTokens
+	// Always bound the reply, as in chatOnce (#649): an unbounded request
+	// makes some routers drop every provider.
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultChatMaxTokens
+	}
+	if useMaxCompletionTokens(cfg) {
+		body["max_completion_tokens"] = maxTokens
+	} else {
+		body["max_tokens"] = maxTokens
 	}
 	rc, err := c.openStream(ctx, base+"/chat/completions", openAIHeaders(cfg.APIKey), body)
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "stream_options") {
@@ -891,6 +904,9 @@ func (c *Client) streamGemini(ctx context.Context, base string, cfg config.LLM, 
 		Text             string `json:"text,omitempty"`
 		FunctionCall     any    `json:"functionCall,omitempty"`
 		FunctionResponse any    `json:"functionResponse,omitempty"`
+		// Gemini 3 rejects a replayed function call without the signature it
+		// was issued with ("Function call is missing a thought_signature").
+		ThoughtSignature string `json:"thoughtSignature,omitempty"`
 	}
 	type content struct {
 		Role  string `json:"role"`
@@ -920,7 +936,7 @@ func (c *Client) streamGemini(ctx context.Context, base string, cfg config.LLM, 
 			for _, tc := range m.ToolCalls {
 				var args any
 				_ = json.Unmarshal(schemaOrEmptyInput(tc.Input), &args)
-				parts = append(parts, part{FunctionCall: map[string]any{"name": tc.Name, "args": args}})
+				parts = append(parts, part{FunctionCall: map[string]any{"name": tc.Name, "args": args}, ThoughtSignature: tc.Signature})
 			}
 			contents = append(contents, content{Role: "model", Parts: parts})
 		case "system":
@@ -968,6 +984,7 @@ func (c *Client) streamGemini(ctx context.Context, base string, cfg config.LLM, 
 							Name string          `json:"name"`
 							Args json.RawMessage `json:"args"`
 						} `json:"functionCall"`
+						ThoughtSignature string `json:"thoughtSignature"`
 					} `json:"parts"`
 				} `json:"content"`
 			} `json:"candidates"`
@@ -1003,7 +1020,7 @@ func (c *Client) streamGemini(ctx context.Context, base string, cfg config.LLM, 
 					}
 					sendEvent(ctx, out, Event{Kind: EventToolCallStart, ToolCallID: id, ToolName: p.FunctionCall.Name})
 					sendEvent(ctx, out, Event{Kind: EventToolCallDelta, ToolCallID: id, ToolName: p.FunctionCall.Name, InputDelta: string(args)})
-					sendEvent(ctx, out, Event{Kind: EventToolCall, ToolCallID: id, ToolName: p.FunctionCall.Name, Input: args})
+					sendEvent(ctx, out, Event{Kind: EventToolCall, ToolCallID: id, ToolName: p.FunctionCall.Name, Input: args, Signature: p.ThoughtSignature})
 				}
 			}
 		}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/usenet"
@@ -173,6 +174,9 @@ func TestUnverifiedPlayRecordedInHistory(t *testing.T) {
 	if _, err := s.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps()}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.flushBookkeeping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	recs, _, err := s.History(ctx, HistoryFilter{})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("history %v %v", recs, err)
@@ -323,5 +327,65 @@ func TestProviderOutageNeverPlaysUnverified(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Once interactive playStartDeadline has elapsed and at least one candidate's
+// NZB is in the unverified pool, ranked validation stops launching extra waves
+// instead of burning validationBudget across dozens of candidates.
+func TestPlayDeadlineBoundsValidationOnceUnverifiedCollected(t *testing.T) {
+	rels := continuationReleases(8)
+	fail := make(map[string]error, len(rels))
+	for _, r := range rels {
+		fail[r.ID] = context.DeadlineExceeded
+	}
+	h := timeoutHealth(fail)
+	s := New(&fakeIndexer{releases: rels}, h, nil, testCfg(), Options{})
+	defer s.Close()
+
+	// Foreground health deadline caps at playStartDeadline, honors earlier
+	// parent deadlines, and leaves speculative/background checks untouched.
+	fgCtx, _ := withUnverifiedPool(context.Background())
+	capped, cancel := withForegroundHealthDeadline(fgCtx)
+	defer cancel()
+	dl, ok := capped.Deadline()
+	if !ok || time.Until(dl) > playStartDeadline+time.Second {
+		t.Fatalf("foreground health deadline not bounded to playStartDeadline: ok=%v rem=%v", ok, time.Until(dl))
+	}
+	specBase, specCancel := core.WithSpeculative(context.Background())
+	defer specCancel()
+	specCtx, _ := withUnverifiedPool(specBase)
+	if _, hasDL := func() (time.Time, bool) {
+		c, done := withForegroundHealthDeadline(specCtx)
+		defer done()
+		return c.Deadline()
+	}(); hasDL {
+		t.Fatal("speculative context should not receive foreground play deadline")
+	}
+
+	// Simulate playStartDeadline already reached while validating 8 candidates:
+	// Wave 1 (2 in flight) populates unverifiedPool and stops further waves.
+	ctx, pool := withUnverifiedPool(context.Background())
+	pool.playDeadline = time.Now().Add(-time.Second)
+	cands := make([]candidate, len(rels))
+	tr := &Trace{Candidates: make([]CandidateTrace, len(rels))}
+	for i, r := range rels {
+		cands[i] = candidate{rel: r, trace: i}
+		tr.Candidates[i] = CandidateTrace{ReleaseID: r.ID, Name: r.Name}
+	}
+	if idx, _, err := s.validateRanked(ctx, cands, tr); idx >= 0 || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("validateRanked = (%d, %v), want (-1, DeadlineExceeded)", idx, err)
+	}
+	h.mu.Lock()
+	totalCalls := 0
+	for _, n := range h.checks {
+		totalCalls += n
+	}
+	h.mu.Unlock()
+	if totalCalls > 2 {
+		t.Fatalf("launched %d health checks past playStartDeadline with unverified NZB in hand, want <= 2", totalCalls)
+	}
+	if res := s.lastResort(ctx, pool, matrixTitle().Key, cands, tr); res == nil || res.Release.ID != "source00" {
+		t.Fatalf("lastResort = %+v, want source00", res)
 	}
 }

@@ -2,7 +2,10 @@ package catalog
 
 import (
 	"context"
+	"maps"
+
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/pse/localmedia"
 	"github.com/braedonsaunders/ether/internal/store"
 
@@ -69,6 +72,51 @@ func (c *Catalog) visibleWith(f *libraryfilter.Filter, t *core.Title) bool {
 	return !f.Hidden(t) && (c.upcomingMovie(t) || !(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t))
 }
 
+// loadStoredRatings copies already-known content_rating and enforcement_rating
+// facts from catalog_titles onto remote summaries in bounded key chunks so
+// downstream viewer rating policies see stored certifications even when
+// canonical library rules are passive.
+func (c *Catalog) loadStoredRatings(ctx context.Context, out []core.Title, idx map[core.RatingKey][]int) error {
+	if c == nil || c.db == nil || len(out) == 0 {
+		return nil
+	}
+	const batch = 200
+	enfCol := `CASE WHEN enforcement_rating<>'' THEN enforcement_rating WHEN content_rating='' AND (` + adultKeywordsExistsSQL("catalog_titles.key") + `) THEN '` + contentrating.UncertifiedAdult + `' ELSE '' END`
+	for chunk := range store.Chunks(out, batch) {
+		part := chunk
+		rows, err := c.db.QueryContext(ctx, `SELECT key, content_rating, `+enfCol+`, certifications FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, keyArgs(part)...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var k int64
+			var cr, er, certsRaw string
+			if err := rows.Scan(&k, &cr, &er, &certsRaw); err != nil {
+				rows.Close()
+				return err
+			}
+			certs := decodeCertifications(certsRaw)
+			for _, i := range idx[core.RatingKey(k)] {
+				if cr != "" {
+					out[i].ContentRating = cr
+				}
+				if len(out[i].ContentRatings) == 0 && len(certs) > 0 {
+					out[i].ContentRatings = maps.Clone(certs)
+				}
+				if enf := contentrating.EffectiveEnforcement(er, out[i].ContentRating, out[i].Adult, out[i].Keywords); enf != "" {
+					out[i].EnforcementRating = enf
+				}
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FilterVisibility enriches remote summaries with already-known local facets;
 // there are no detail fetches or indexer calls. Unknown metadata stays unknown,
 // and for a restricted viewer an undetailed summary their rules cannot judge
@@ -85,12 +133,21 @@ func (c *Catalog) FilterVisibility(ctx context.Context, ts []core.Title) []core.
 		}
 		ts = visible
 	}
-	f := c.visibilityFor(ctx)
-	if f.Passive() && !(c.config().ReleaseMode == config.ModeDigital) {
-		return ts
-	}
 	if len(ts) == 0 {
 		return ts
+	}
+	f := c.visibilityFor(ctx)
+	if f.Passive() && !(c.config().ReleaseMode == config.ModeDigital) {
+		out := make([]core.Title, len(ts))
+		copy(out, ts)
+		idx := make(map[core.RatingKey][]int, len(out))
+		for i, t := range out {
+			idx[t.Key] = append(idx[t.Key], i)
+		}
+		if err := c.loadStoredRatings(ctx, out, idx); err != nil {
+			return nil
+		}
+		return out
 	}
 	out := make([]core.Title, 0, len(ts))
 	idx := map[core.RatingKey][]int{}
@@ -131,13 +188,8 @@ func (c *Catalog) FilterVisibility(ctx context.Context, ts []core.Title) []core.
 		out[i].Studios = uniqueStrings(out[i].Studios)
 		out[i].Countries = uniqueStrings(out[i].Countries)
 	}
-	for chunk := range store.Chunks(ts, batch) {
-		part := chunk
-		if err := c.scanPairs(ctx, "SELECT key, content_rating FROM catalog_titles WHERE key IN ("+placeholders(len(part))+") AND content_rating<>''", keyArgs(part), func(i int, v string) {
-			out[i].ContentRating = v
-		}, idx); err != nil {
-			return nil
-		}
+	if err := c.loadStoredRatings(ctx, out, idx); err != nil {
+		return nil
 	}
 	// A restricted viewer's rules must not wave through a summary they
 	// cannot judge: a condition on an unknown field answers "no match", so
@@ -207,7 +259,8 @@ func (c *Catalog) PreviewVisibilityScoped(ctx context.Context, specs []core.Libr
 			return nil, err
 		}
 	}
-	f, err := c.compileLibraryRules(specs, fallback)
+	keptSpecs, keptIndices := libraryfilter.PreviewableRules(specs)
+	f, err := c.compileLibraryRules(keptSpecs, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -255,10 +308,13 @@ func (c *Catalog) PreviewVisibilityScoped(ctx context.Context, specs []core.Libr
 	if p.Shown == nil {
 		p.Shown = []core.Title{}
 	}
+	if len(specs) > 0 {
+		p.Rules = make([]VisibilityRulePreview, len(specs))
+	}
 	sel, catchArgs := f.CatchCountsSQL()
 	if sel != "" {
 		row := c.db.QueryRowContext(ctx, `SELECT `+sel+` FROM catalog_titles t WHERE `+scope, append(append([]any(nil), catchArgs...), scopeArgs...)...)
-		nums := make([]int, len(specs)*2)
+		nums := make([]int, len(keptSpecs)*2)
 		dest := make([]any, len(nums))
 		for i := range nums {
 			dest[i] = &nums[i]
@@ -266,34 +322,50 @@ func (c *Catalog) PreviewVisibilityScoped(ctx context.Context, specs []core.Libr
 		if err = row.Scan(dest...); err != nil {
 			return nil, err
 		}
-		p.Rules = make([]VisibilityRulePreview, len(specs))
-		for i := range specs {
-			p.Rules[i] = VisibilityRulePreview{Movies: nums[i*2], Shows: nums[i*2+1]}
+		for i, orig := range keptIndices {
+			p.Rules[orig] = VisibilityRulePreview{Movies: nums[i*2], Shows: nums[i*2+1]}
 		}
 	}
 	return p, nil
 }
 
 func (c *Catalog) compileLibraryRules(rules []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
-	return c.compileLibraryRulesMode(rules, fallback, false)
+	return c.compileLibraryRulesModeForViewer(rules, fallback, false, 0)
 }
 
 func (c *Catalog) compileLibraryRulesMode(rules []core.LibraryExclusion, fallback string, membershipOnly bool) (*libraryfilter.Filter, error) {
+	return c.compileLibraryRulesModeForViewer(rules, fallback, membershipOnly, 0)
+}
+
+func (c *Catalog) compileLibraryRulesModeForViewer(rules []core.LibraryExclusion, fallback string, membershipOnly bool, viewerID int64) (*libraryfilter.Filter, error) {
 	f, err := libraryfilter.CompilePolicy(rules, fallback)
 	if err != nil {
-		return nil, err
+		return nil, libraryfilter.MarkInvalidFilter(err)
 	}
-	return c.bindLibraryRulesMode(f, membershipOnly)
+	bound, err := c.bindLibraryRulesModeForViewer(f, membershipOnly, viewerID)
+	if err != nil {
+		return nil, libraryfilter.MarkInvalidFilter(err)
+	}
+	return bound, nil
 }
 
 func (c *Catalog) bindLibraryRules(f *libraryfilter.Filter) (*libraryfilter.Filter, error) {
-	return c.bindLibraryRulesMode(f, false)
+	return c.bindLibraryRulesModeForViewer(f, false, 0)
 }
 
 func (c *Catalog) bindLibraryRulesMode(f *libraryfilter.Filter, membershipOnly bool) (*libraryfilter.Filter, error) {
+	return c.bindLibraryRulesModeForViewer(f, membershipOnly, 0)
+}
+
+func (c *Catalog) bindLibraryRulesModeForViewer(f *libraryfilter.Filter, membershipOnly bool, viewerID int64) (*libraryfilter.Filter, error) {
 	return f.BindCatalogue(func(p core.Filter) (string, []any, error) {
 		p.LocalOnly = true
 		p.CatalogCandidates = true
+		if p.Group != nil && p.Group.UserID == 0 && viewerID > 0 {
+			g := *p.Group
+			g.UserID = viewerID
+			p.Group = &g
+		}
 		where, args, err := c.browseWhereMode(p, membershipOnly)
 		if err == nil && where == "" {
 			where = "1=1"
@@ -309,4 +381,10 @@ func (c *Catalog) bindLibraryRulesMode(f *libraryfilter.Filter, membershipOnly b
 		err := c.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM catalog_titles t WHERE t.key=? AND (`+q+`)`, append([]any{int64(t.Key)}, args...)...).Scan(&count)
 		return err == nil && count > 0
 	})
+}
+
+// CompileLibraryRules validates library writes using the same bound predicates
+// as startup and serving, without evaluating or fetching any title.
+func (c *Catalog) CompileLibraryRules(rules []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+	return c.compileLibraryRules(rules, fallback)
 }

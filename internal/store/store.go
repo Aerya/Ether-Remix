@@ -332,8 +332,11 @@ func openSQLite(ctx context.Context, path string, files []SnapshotFile, progress
 	// wal_autocheckpoint=0 keeps a commit from running a checkpoint. Under
 	// WAL + synchronous=NORMAL the checkpoint is the fsync; a request must
 	// not wait on it. RunCheckpointer does that work in the background.
-	dsn := "file:" + path + "?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_pragma=wal_autocheckpoint(0)&_pragma=cache_size(-65536)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)" +
-		fmt.Sprintf("&_pragma=journal_size_limit(%d)", journalSizeLimit)
+	cacheKiB, mmapBytes := sqliteCachePragmas(path)
+	slog.Info("store: sqlite page cache sized from host memory",
+		"cache_kib_per_conn", cacheKiB, "warm_conns", sqliteIdleConns, "mmap_bytes", mmapBytes)
+	dsn := "file:" + path + "?_txlock=immediate&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_pragma=wal_autocheckpoint(0)&_pragma=temp_store(MEMORY)" +
+		fmt.Sprintf("&_pragma=cache_size(%d)&_pragma=mmap_size(%d)&_pragma=journal_size_limit(%d)", -cacheKiB, mmapBytes, journalSizeLimit)
 	if path == ":memory:" {
 		// Only migratedImage opens ":memory:" here, to build the image every
 		// new database file starts from; auto_vacuum must be set before its
@@ -390,7 +393,7 @@ func openSQLite(ctx context.Context, path string, files []SnapshotFile, progress
 		// Opening SQLite re-reads the whole schema. The default idle pool
 		// drops every connection past the second, so a play paid that cost
 		// again. Keep the connections a server actually uses.
-		db.SetMaxIdleConns(8)
+		db.SetMaxIdleConns(sqliteIdleConns)
 		if err := db.PingContext(ctx); err != nil {
 			db.Close()
 			return nil, err

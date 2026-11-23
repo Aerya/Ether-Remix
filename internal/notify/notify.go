@@ -115,12 +115,42 @@ func (c Channel) clone() Channel {
 	return c
 }
 
+// EmbedField is one key/value field rendered inside rich notification embeds
+// (such as Discord embeds and Slack attachments).
+type EmbedField struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Inline bool   `json:"inline,omitempty"`
+}
+
 type Event struct {
-	HTML    string    `json:"html,omitempty"`
-	Kind    string    `json:"kind"`
-	Title   string    `json:"title"`
-	Message string    `json:"message"`
-	At      time.Time `json:"at"`
+	HTML      string       `json:"html,omitempty"`
+	Kind      string       `json:"kind"`
+	Title     string       `json:"title"`
+	Message   string       `json:"message"`
+	At        time.Time    `json:"at"`
+	PosterURL string       `json:"posterUrl,omitempty"`
+	Color     string       `json:"color,omitempty"`
+	Fields    []EmbedField `json:"fields,omitempty"`
+	Priority  int          `json:"priority,omitempty"`
+	LinkURL   string       `json:"linkUrl,omitempty"`
+	Footer    string       `json:"footer,omitempty"`
+}
+
+// DeliverOptions controls explicit channel delivery via DeliverToChannels.
+type DeliverOptions struct {
+	// BypassDigest delivers immediately even when a channel has DigestMinutes > 0.
+	BypassDigest bool
+	// QueueOnly always enqueues rows into notify_queue without performing
+	// synchronous network I/O on the caller's goroutine.
+	QueueOnly bool
+}
+
+// DeliverResult reports the per-channel outcome of DeliverToChannels.
+type DeliverResult struct {
+	ChannelID string `json:"channelId"`
+	Status    string `json:"status"` // "sent" | "queued" | "skipped" | "failed"
+	Error     string `json:"error,omitempty"`
 }
 type Options struct {
 	// NodeID names this node on the queue rows it claims; a random id is
@@ -393,6 +423,133 @@ func (s *Service) Emit(ctx context.Context, e Event) error {
 	}
 	s.publishEvent(e)
 	return nil
+}
+
+// DeliverToChannels sends e directly to the specified notification channel IDs
+// (or all enabled channels when channelIDs is empty or contains "*"), reusing
+// channel secret sealing, per-channel rate limits, digest batching, delivery
+// history, and plugin notification channel kinds.
+func (s *Service) DeliverToChannels(ctx context.Context, channelIDs []string, e Event, opts DeliverOptions) ([]DeliverResult, error) {
+	if s == nil {
+		return nil, errors.New("notification service unavailable")
+	}
+	if strings.TrimSpace(e.Kind) == "" {
+		e.Kind = "flow"
+	}
+	if len(e.Title) > 500 || len(e.Message) > 8000 || len(e.HTML) > 256000 {
+		return nil, errors.New("event too large")
+	}
+	if len(e.Fields) > 25 {
+		e.Fields = append([]EmbedField(nil), e.Fields[:25]...)
+	}
+	if e.At.IsZero() {
+		e.At = s.opts.Now()
+	}
+	cs, err := s.channels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]Channel, len(cs))
+	for _, c := range cs {
+		byID[c.ID] = c
+	}
+
+	wildcard := len(channelIDs) == 0
+	for _, id := range channelIDs {
+		if strings.TrimSpace(id) == "*" {
+			wildcard = true
+			break
+		}
+	}
+
+	var targets []Channel
+	var results []DeliverResult
+	if wildcard {
+		for _, c := range cs {
+			if c.Enabled {
+				targets = append(targets, c)
+			}
+		}
+	} else {
+		seen := make(map[string]bool, len(channelIDs))
+		for _, rawID := range channelIDs {
+			id := strings.TrimSpace(rawID)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			c, ok := byID[id]
+			if !ok {
+				results = append(results, DeliverResult{ChannelID: id, Status: "skipped", Error: "channel not found"})
+				continue
+			}
+			if !c.Enabled {
+				results = append(results, DeliverResult{ChannelID: id, Status: "skipped", Error: "channel disabled"})
+				continue
+			}
+			targets = append(targets, c)
+		}
+	}
+	if len(targets) == 0 {
+		return results, errors.New("no enabled target notification channels")
+	}
+
+	now := s.opts.Now()
+	var (
+		succeeded int
+		firstErr  error
+	)
+	for _, c := range targets {
+		var recent int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notify_queue WHERE channel=? AND attempted>?`, c.ID, now.Unix()-60).Scan(&recent); err != nil {
+			return results, err
+		}
+		rateLimited := recent >= c.PerMinute
+		digestWait := c.DigestMinutes > 0 && !opts.BypassDigest
+		if opts.QueueOnly || digestWait || rateLimited {
+			due := now
+			immediate := 1
+			if digestWait {
+				due = now.Add(time.Duration(c.DigestMinutes) * time.Minute)
+				immediate = 0
+			}
+			raw, err := json.Marshal(e)
+			if err != nil {
+				return results, err
+			}
+			if _, err := s.db.ExecContext(ctx, `INSERT INTO notify_queue(channel,event,created,due,immediate) VALUES(?,?,?,?,?)`,
+				c.ID, string(raw), now.Unix(), due.Unix(), immediate); err != nil {
+				return results, err
+			}
+			results = append(results, DeliverResult{ChannelID: c.ID, Status: "queued"})
+			succeeded++
+			continue
+		}
+
+		rowID, err := s.recordDelivery(ctx, c, e)
+		if err != nil {
+			return results, err
+		}
+		status, detail := "sent", ""
+		deliverErr := s.deliver(ctx, c, e)
+		if deliverErr != nil {
+			status, detail = "failed", deliverErr.Error()
+			if firstErr == nil {
+				firstErr = deliverErr
+			}
+		} else {
+			succeeded++
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE notify_queue SET status=?,error=? WHERE id=?`, status, detail, rowID); err != nil {
+			return results, err
+		}
+		results = append(results, DeliverResult{ChannelID: c.ID, Status: status, Error: detail})
+	}
+	s.publishEvent(e)
+	if succeeded == 0 && firstErr != nil {
+		return results, firstErr
+	}
+	return results, nil
 }
 
 // prepare validates e, stamps its time and selects the channels it goes to.

@@ -192,7 +192,7 @@ func (t *sessionActivities) expire(now time.Time, ttl time.Duration) []playEntry
 
 func activityEntry(a frontend.PlaybackActivity) playEntry {
 	e := playEntry{id: a.ID, sessionKey: a.SessionKey, decisionSeen: a.DecisionSeen, playingSeen: a.PlayingSeen, user: a.User, key: a.Key, state: a.State, offset: a.Offset, duration: a.Duration, playQueueItemID: a.PlayQueueItemID, transcodeID: a.TranscodeID, startedAt: a.StartedAt, updatedAt: a.UpdatedAt}
-	e.client = Request{ClientID: a.ClientID, Product: a.Product, Version: a.Version, Platform: a.Platform, PlatformVersion: a.PlatformVersion, Device: a.Device, DeviceName: a.DeviceName, Model: a.Model, Vendor: a.Vendor, ProfileName: a.ProfileName, SessionID: a.SessionID, Remote: a.Remote}
+	e.client = Request{ClientID: a.ClientID, Product: a.Product, Version: a.Version, Platform: a.Platform, PlatformVersion: a.PlatformVersion, Device: a.Device, DeviceName: a.DeviceName, Model: a.Model, Vendor: a.Vendor, ProfileName: a.ProfileName, SessionID: a.SessionID, Remote: a.Remote, Secure: a.Secure}
 	if a.RemoteIP != "" {
 		e.client.RemoteIP = parseAddr(a.RemoteIP)
 	}
@@ -200,7 +200,7 @@ func activityEntry(a frontend.PlaybackActivity) playEntry {
 }
 
 func entryActivity(e playEntry) frontend.PlaybackActivity {
-	a := frontend.PlaybackActivity{ID: e.id, SessionKey: e.sessionKey, DecisionSeen: e.decisionSeen, PlayingSeen: e.playingSeen, User: e.user, ClientID: e.client.ClientID, Product: e.client.Product, Version: e.client.Version, Platform: e.client.Platform, PlatformVersion: e.client.PlatformVersion, Device: e.client.Device, DeviceName: e.client.DeviceName, Model: e.client.Model, Vendor: e.client.Vendor, ProfileName: e.client.ProfileName, SessionID: e.client.SessionID, Remote: e.client.Remote, Key: e.key, State: e.state, Offset: e.offset, Duration: e.duration, PlayQueueItemID: e.playQueueItemID, TranscodeID: e.transcodeID, StartedAt: e.startedAt, UpdatedAt: e.updatedAt}
+	a := frontend.PlaybackActivity{ID: e.id, SessionKey: e.sessionKey, DecisionSeen: e.decisionSeen, PlayingSeen: e.playingSeen, User: e.user, ClientID: e.client.ClientID, Product: e.client.Product, Version: e.client.Version, Platform: e.client.Platform, PlatformVersion: e.client.PlatformVersion, Device: e.client.Device, DeviceName: e.client.DeviceName, Model: e.client.Model, Vendor: e.client.Vendor, ProfileName: e.client.ProfileName, SessionID: e.client.SessionID, Remote: e.client.Remote, Secure: e.client.Secure, Key: e.key, State: e.state, Offset: e.offset, Duration: e.duration, PlayQueueItemID: e.playQueueItemID, TranscodeID: e.transcodeID, StartedAt: e.startedAt, UpdatedAt: e.updatedAt}
 	if e.client.RemoteIP.IsValid() {
 		a.RemoteIP = e.client.RemoteIP.String()
 	}
@@ -488,6 +488,14 @@ func (s *Server) notifyPlaying(e playEntry, state string) {
 	if state == "" {
 		state = e.state
 	}
+	transcodeID := ""
+	if state != "stopped" {
+		if te, ok := s.activeTranscodeForSession(e); ok {
+			transcodeID = te.id
+		} else if e.node != "" {
+			transcodeID = e.transcodeID
+		}
+	}
 	s.publishNotification(model.NotificationContainer{
 		Type: "playing",
 		Size: 1,
@@ -501,7 +509,7 @@ func (s *Server) notifyPlaying(e playEntry, state string) {
 			ViewOffset:       ms(e.offset),
 			PlayQueueItemID:  e.playQueueItemID,
 			State:            state,
-			TranscodeSession: e.transcodeID,
+			TranscodeSession: transcodeID,
 		}},
 	}, e.user.ID)
 }
@@ -562,7 +570,7 @@ func (s *Server) notifyTimeline(key frontend.RatingKey, t frontend.MediaType, ti
 // publishNotification delivers a notification to this node's subscribers
 // and, on a clustered node, to every other node's.
 func (s *Server) publishNotification(nc model.NotificationContainer, userID int64) {
-	s.recordActivities(nc)
+	s.recordActivities(nc, userID)
 	msg, ok := encodeNotification(nc)
 	if !ok {
 		return

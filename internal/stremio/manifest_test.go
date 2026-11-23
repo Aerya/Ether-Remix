@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -308,4 +309,103 @@ func TestCatalogValidateExtras(t *testing.T) {
 			t.Errorf("%v accepted", extra)
 		}
 	}
+}
+
+func TestLiveEventCatalogsDetection(t *testing.T) {
+	raw := `{
+		"id": "community.sports.example",
+		"version": "1.0.0",
+		"name": "Sports Streams",
+		"types": ["sport"],
+		"resources": [
+			{"name": "catalog", "types": ["sport", "other"]},
+			{"name": "meta", "types": ["sport"], "idPrefixes": ["streamed", "sf"]},
+			{"name": "stream", "types": ["sport"], "idPrefixes": ["streamed", "sf"]}
+		],
+		"catalogs": [
+			{"type": "sport", "id": "sports_live", "name": "Live Now", "extra": [{"name": "search", "isRequired": false}, {"name": "skip", "isRequired": false}]},
+			{"type": "sport", "id": "sports_football", "name": "Football"},
+			{"type": "sport", "id": "sports_football", "name": "Football Duplicate"},
+			{"type": "sport", "id": "sports_search", "name": "Search Only", "extra": [{"name": "search", "isRequired": true}]},
+			{"type": "other", "id": "unstreamable", "name": "No Stream Type"},
+			{"type": "movie", "id": "top", "name": "Movies"},
+			{"type": "tv", "id": "channels", "name": "Classic TV"}
+		]
+	}`
+	var m Manifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	cats := m.LiveEventCatalogs()
+	if len(cats) != 2 || cats[0].ID != "sports_live" || cats[1].ID != "sports_football" {
+		t.Fatalf("LiveEventCatalogs = %+v", cats)
+	}
+	if IsCustomLiveType("movie") || IsCustomLiveType("Series") || IsCustomLiveType("TV") || IsCustomLiveType("") {
+		t.Fatal("standard or empty type treated as custom live type")
+	}
+	if !IsCustomLiveType("sport") || !IsCustomLiveType("events") || !IsCustomLiveType("channel") {
+		t.Fatal("custom live type rejected")
+	}
+}
+
+func TestCatalogLegacyGenresAndIDMappingAndPageBound(t *testing.T) {
+	// Legacy manifests declare options in catalog.genres alongside extraSupported/extraRequired.
+	cat := Catalog{
+		Type:          TypeMovie,
+		ID:            "legacy",
+		ExtraRequired: []string{"genre"},
+		Genres:        []string{"Action", "Sci-Fi"},
+	}
+	ex, ok := cat.ExtraNamed("genre")
+	if !ok || !ex.IsRequired || len(ex.Options) != 2 || ex.Options[0] != "Action" {
+		t.Fatalf("legacy genres extra = %+v, ok=%v", ex, ok)
+	}
+	if err := cat.ValidateExtras(map[string]string{"genre": "Action"}); err != nil {
+		t.Fatalf("valid legacy genre rejected: %v", err)
+	}
+	if err := cat.ValidateExtras(map[string]string{"genre": "Horror"}); err == nil {
+		t.Fatal("undeclared legacy genre accepted")
+	}
+
+	// ID mapping covers IMDb, TMDB, TVDB prefixes (colon and hyphen) plus explicit fields.
+	for _, tc := range []struct {
+		meta     MetaPreview
+		wantIMDb string
+		wantTMDB int64
+		wantTVDB int64
+	}{
+		{MetaPreview{ID: "tt0133093"}, "tt0133093", 0, 0},
+		{MetaPreview{ID: "imdb:tt0903747:1:1"}, "tt0903747", 0, 0},
+		{MetaPreview{ID: "tmdb:550"}, "", 550, 0},
+		{MetaPreview{ID: "tmdb:movie:603"}, "", 603, 0},
+		{MetaPreview{ID: "tmdb-102"}, "", 102, 0},
+		{MetaPreview{ID: "tvdb:81189"}, "", 0, 81189},
+		{MetaPreview{ID: "tvdb-81189"}, "", 0, 81189},
+		{MetaPreview{ID: "custom:1", IMDbIDAlt: "tt0111161", TMDBIDAlt: "278", TVDBIDAlt: 999}, "tt0111161", 278, 999},
+	} {
+		imdb, tmdb, tvdb := tc.meta.Ref()
+		if imdb != tc.wantIMDb || tmdb != tc.wantTMDB || tvdb != tc.wantTVDB {
+			t.Errorf("%+v -> (%q, %d, %d), want (%q, %d, %d)", tc.meta, imdb, tmdb, tvdb, tc.wantIMDb, tc.wantTMDB, tc.wantTVDB)
+		}
+	}
+
+	// Bounded paging stops at MaxCatalogPages even when an add-on drips 1 item per page.
+	calls := 0
+	drip := funcFetcher(func(_ context.Context, route string, _ int64) ([]byte, error) {
+		calls++
+		return []byte(fmt.Sprintf(`{"metas":[{"id":"tt%07d"}]}`, calls)), nil
+	})
+	items, err := Addon{Fetcher: drip}.Catalog(t.Context(), Catalog{Type: TypeMovie, ID: "drip", Extra: []Extra{{Name: "skip"}}}, nil, MaxCatalogItems)
+	if err != nil {
+		t.Fatalf("drip catalog err = %v", err)
+	}
+	if calls != MaxCatalogPages || len(items) != MaxCatalogPages {
+		t.Fatalf("drip paging fetched %d pages / %d items, want %d", calls, len(items), MaxCatalogPages)
+	}
+}
+
+type funcFetcher func(context.Context, string, int64) ([]byte, error)
+
+func (f funcFetcher) Fetch(ctx context.Context, route string, limit int64) ([]byte, error) {
+	return f(ctx, route, limit)
 }

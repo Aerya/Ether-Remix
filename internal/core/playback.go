@@ -25,6 +25,9 @@ type HLSRamp struct {
 }
 
 type HLSRequest struct {
+	// PMSDASH selects the single-video PMS manifest and five-second grid for Plex TV apps.
+	PMSDASH bool
+
 	// MediaGeneration is a trusted presentation namespace retained across encoder
 	// recovery. A new playback start must use a fresh value; empty mints one.
 	MediaGeneration string `json:",omitempty"`
@@ -42,8 +45,12 @@ type HLSRequest struct {
 	Diagnostics       bool
 	// Continuous disables ramps and governor changes that introduce discontinuities.
 	Continuous bool
-	Ramp       HLSRamp    `json:",omitzero"`
-	Resume     *HLSResume `json:",omitempty"`
+	// FirstSegmentAt is the title time a full-timeline (StartOffset zero)
+	// client seeks to first, such as a Jellyfin resume point. The encoder
+	// starts at that segment instead of at zero. Zero starts at the beginning.
+	FirstSegmentAt time.Duration `json:",omitempty"`
+	Ramp           HLSRamp       `json:",omitzero"`
+	Resume         *HLSResume    `json:",omitempty"`
 	// RecoveryStart is trusted composition only; nil preserves legacy behavior.
 	RecoveryStart *RecoveryStart `json:",omitempty"`
 
@@ -51,6 +58,9 @@ type HLSRequest struct {
 	// only for DASH representation URL rendering. Empty retains SessionID. It
 	// never changes encoder registry identity, source scope or retirement ownership.
 	ManifestSessionID string
+	// MultiviewGroup scopes live tile transcode accounting so all tiles in one
+	// multiview group share a single transcode slot against MaxTranscodes.
+	MultiviewGroup string `json:",omitempty"`
 
 	// SlateText is trusted server-generated copy for a looping silent card.
 	// It is never decoded from client requests. Info.Duration bounds the slot.
@@ -73,6 +83,9 @@ type HLSRequest struct {
 	// LiveInput permits playlist demuxers for owner-configured live sources.
 	// Ordinary resolved media must leave this false, even if duration is unknown.
 	LiveInput bool
+	// NoVideoTranscode enforces the owner's per-viewer "no video transcoding"
+	// policy on this session (never re-encode video; LiveInput is unaffected).
+	NoVideoTranscode bool `json:",omitempty"`
 	// LiveFromBacklog starts a live HLS input at the first segment its
 	// playlist lists (Live TV's relay trims that playlist to the channel's
 	// stability reserve), so the backlog primes the reserve instead of the
@@ -237,6 +250,9 @@ type PlaySession struct {
 	BufferedBytes int64
 	BufferedUntil time.Duration
 	LastActive    time.Time
+	// Liveness is the session's evaluated state under the shared liveness rule
+	// (playing, paused, starting, idle, stopped).
+	Liveness SessionLivenessState `json:"liveness,omitempty"`
 	// ViewerState is the last client timeline state: playing, paused, or stopped.
 	ViewerState string `json:"viewerState,omitempty"`
 	// ViewOffset is the client's last reported playhead in milliseconds.
@@ -260,6 +276,13 @@ type PlaySession struct {
 	// and mid-play buffering (additive). Nil for a source no play request
 	// or client timeline has reached.
 	Experience *PlayExperience `json:"experience,omitempty"`
+	// SegmentStart is where the requested episode begins inside a combined
+	// multi-episode file ("S01E01-E02" played for its second episode):
+	// server-started streams add it to the client's episode-relative
+	// position. Zero for a file holding only the requested episode, and
+	// recomputed on every snapshot so a failover to another release
+	// re-derives it (additive).
+	SegmentStart time.Duration `json:"segmentStart,omitempty"`
 }
 
 // LiveChannel identifies a live session's selected channel independently of its programme.
@@ -275,6 +298,17 @@ func (s *PlaySession) SourceReleaseID() string {
 		return ""
 	}
 	return s.Resolution.Release.ID
+}
+
+// SourcePosition translates a client's episode-relative position into the
+// source file's timeline, past any earlier episodes a combined file holds
+// before the requested one (SegmentStart). Server-started streams start at
+// the translated position; client-reported positions stay episode-relative.
+func (s *PlaySession) SourcePosition(client time.Duration) time.Duration {
+	if s == nil {
+		return client
+	}
+	return client + s.SegmentStart
 }
 
 // PlayExperience measures what the viewer saw (additive).
@@ -310,16 +344,19 @@ type EncoderStatus struct {
 	Decision       Decision       `json:"decision"`
 	// Rung is the ABR rung the active run encodes ("" or "base" for the
 	// session's primary decision).
-	Rung       string        `json:"rung,omitempty"`
-	Processor  string        `json:"processor"`
-	Filters    string        `json:"filters"`
-	Phase      string        `json:"phase"`
-	Reason     string        `json:"reason,omitempty"`
-	StartedAt  time.Time     `json:"startedAt"`
-	UpdatedAt  time.Time     `json:"updatedAt"`
-	Speed      float64       `json:"speed"`
-	OutputTime time.Duration `json:"outputTime"`
-	ReadyUntil time.Duration `json:"readyUntil"`
+	Rung               string        `json:"rung,omitempty"`
+	Processor          string        `json:"processor"`
+	Filters            string        `json:"filters"`
+	Phase              string        `json:"phase"`
+	Reason             string        `json:"reason,omitempty"`
+	StartedAt          time.Time     `json:"startedAt"`
+	UpdatedAt          time.Time     `json:"updatedAt"`
+	Speed              float64       `json:"speed"`
+	OutputTime         time.Duration `json:"outputTime"`
+	ReadyUntil         time.Duration `json:"readyUntil"`
+	MinOffsetAvailable time.Duration `json:"minOffsetAvailable,omitempty"`
+	HWDecoder          string        `json:"hwDecoder,omitempty"`
+	HWEncoder          string        `json:"hwEncoder,omitempty"`
 }
 
 type Playback interface {
@@ -341,6 +378,16 @@ type Playback interface {
 	Failover(ctx context.Context, sessionID string, at time.Duration) (*PlaySession, error)
 	Stop(sessionID string)
 	Sessions() []*PlaySession
+}
+
+// DirectDeliverer is implemented by a Playback that can name the provider URL
+// a direct play of one of its sessions may be redirected to (additive). A
+// runtime without it — a remote cluster playback, a fixture — always relays.
+type DirectDeliverer interface {
+	// DirectDelivery reports the provider URL this session's file can be
+	// fetched from directly, and records the read as a direct play of a live
+	// session, the way a relayed range read would.
+	DirectDelivery(sessionID string) (link DirectSourceLink, ok bool)
 }
 
 // SurfaceScopedPlayback separates client identifiers by their authenticated

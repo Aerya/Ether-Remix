@@ -30,5 +30,25 @@ func (s *Service) SetViewerMaxRating(ctx context.Context, id int64, rating strin
 		return err
 	}
 	s.notify("")
+	var name string
+	var streamLimit int
+	var libs []core.LibraryID
+	if u, e := s.User(ctx, id); e == nil && u != nil {
+		name = u.Username
+		if name == "" {
+			name = u.Title
+		}
+		streamLimit = u.StreamLimit
+		libs = u.AllowedLibraries
+	}
+	s.emitViewerEvent(ViewerEvent{
+		Kind:             "access_changed",
+		ViewerID:         id,
+		Username:         name,
+		StreamLimit:      streamLimit,
+		MaxContentRating: rating,
+		AllowedLibraries: libs,
+		Actor:            "owner",
+	})
 	return nil
 }

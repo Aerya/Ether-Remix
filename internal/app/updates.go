@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/service"
 	"github.com/braedonsaunders/ether/internal/updater"
 )
@@ -103,6 +104,11 @@ func (a *App) initUpdates() {
 		InstallID:      installID,
 		OnStatusChange: a.publishDashboard,
 		OnAvailable: func(version string) error {
+			channel := ""
+			if a.cfg != nil {
+				channel = a.cfg.Get().Updates.Channel
+			}
+			a.emitUpdateAvailable(a.opts.Version, version, channel, false)
 			if a.notifications == nil {
 				return nil
 			}
@@ -114,6 +120,14 @@ func (a *App) initUpdates() {
 		},
 		// Once per version across restarts and cluster nodes, like OnAvailable.
 		OnInstalled: func(u updater.InstalledUpdate) error {
+			channel := ""
+			auto := false
+			if a.cfg != nil {
+				uc := a.cfg.Get().Updates
+				channel = uc.Channel
+				auto = uc.AutoUpdate
+			}
+			a.emitUpdateInstalled(u.From, u.To, channel, auto)
 			if a.notifications == nil {
 				return nil
 			}
@@ -122,6 +136,7 @@ func (a *App) initUpdates() {
 			return a.notifications.UpdateInstalled(ctx, u.From, u.To)
 		},
 		OnRolledBack: func(f updater.FailedUpdate) error {
+			a.emitUpdateRolledBack(f.Version, f.From, f.Reason)
 			if a.notifications == nil {
 				return nil
 			}
@@ -140,15 +155,23 @@ func (a *App) initUpdates() {
 	}
 }
 
-// activeSessionCount is everything an update restart would interrupt:
-// playback sessions, transcodes and live TV viewers.
+// activeSessionCount is everything an update or maintenance restart would
+// interrupt under the shared liveness rule: actively playing local streams
+// (excluding paused, starting/abandoned, idle, prepared-only, and stopped).
 func (a *App) activeSessionCount() int {
-	n := len(a.playback.Sessions())
-	if a.transcoder != nil {
-		n += len(a.transcoder.Sessions())
+	if a == nil {
+		return 0
 	}
-	if a.livetv != nil {
-		n += len(a.livetv.ViewingSessions())
+	n := len((ownerPlayback{Playback: a.playback, app: a}).activeLocalSessions())
+	// Standalone encoder-only specialist nodes have no local playback manager;
+	// count only transcode sessions with recent media delivery.
+	if a.playback == nil && a.brokerPlayback == nil && a.spikeLibrary == nil && a.transcoder != nil {
+		now := time.Now()
+		for _, hs := range a.transcoder.Sessions() {
+			if la := hs.LastMediaAccess(); !la.IsZero() && now.Sub(la) <= core.PlayingEvidenceWindowHLS {
+				n++
+			}
+		}
 	}
 	return n
 }

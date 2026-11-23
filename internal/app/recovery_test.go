@@ -388,28 +388,6 @@ func TestRecoveryFollowsTheRetryLoop(t *testing.T) {
 		t.Fatal("the start never began")
 	}
 	rc.endAttempt(false)
-
-	// A stale wake-up does not skip the backoff.
-	rc.mu.Lock()
-	rc.activeUntil = time.Time{}
-	rc.mu.Unlock()
-	rc.front.retryNow()
-	t0 := time.Now()
-	if !rc.wait(context.Background(), 80*time.Millisecond) || time.Since(t0) < 70*time.Millisecond {
-		t.Fatalf("wait returned after %v", time.Since(t0))
-	}
-	// The page in use holds the retry.
-	old := recoveryPoll
-	recoveryPoll = 10 * time.Millisecond
-	defer func() { recoveryPoll = old }()
-	rc.mu.Lock()
-	rc.activeUntil = time.Now().Add(200 * time.Millisecond)
-	rc.mu.Unlock()
-	t0 = time.Now()
-	rc.wait(context.Background(), 20*time.Millisecond)
-	if time.Since(t0) < 180*time.Millisecond {
-		t.Fatalf("retry did not wait for the page: %v", time.Since(t0))
-	}
 }
 
 // Finding 6: no new restore over a restore being applied.

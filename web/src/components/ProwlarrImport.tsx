@@ -13,6 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { t, tn } from "../i18n";
 import { apiFetch, errorMessage } from "../lib/api";
+import { Drawer } from "./Drawer";
 import { PasswordInput } from "./fields";
 import { SettingsRow } from "./SettingsRow";
 
@@ -45,8 +46,13 @@ type Saved = {
   kept?: boolean;
 };
 
-/** Preview and import the Usenet and torrent indexers a Prowlarr instance already manages. */
-export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
+function useProwlarrImport({
+  active = true,
+  onImported,
+}: {
+  active?: boolean;
+  onImported?: () => void;
+}) {
   const [disabled, setDisabled] = useState(false);
   const [url, setURL] = useState("");
   const [key, setKey] = useState("");
@@ -74,6 +80,7 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
   }
 
   useEffect(() => {
+    if (!active) return;
     let live = true;
     apiFetch<Saved>("/playback/prowlarr")
       .then(async (saved) => {
@@ -104,7 +111,7 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
     return () => {
       live = false;
     };
-  }, []);
+  }, [active]);
 
   function configBody() {
     const config: {
@@ -144,19 +151,49 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
     }
   }
 
+  return {
+    disabled,
+    setDisabled,
+    url,
+    setURL,
+    key,
+    setKey,
+    tags,
+    setTags,
+    tagOptions,
+    tagsLoaded,
+    options,
+    result,
+    setResult,
+    status,
+    kept,
+    busy,
+    loadTags,
+    run,
+  };
+}
+
+type ProwlarrState = ReturnType<typeof useProwlarrImport>;
+
+function ProwlarrFields({ s }: { s: ProwlarrState }) {
   return (
-    <div className="space-y-4">
-      {status === "unreachable" ? (
+    <>
+      {s.status === "unreachable" ? (
         <Alert variant="warning">
           <AlertTitle>{t("Prowlarr is unreachable")}</AlertTitle>
-          {kept ? <AlertDescription>{t("Still using the last indexers.")}</AlertDescription> : null}
+          {s.kept ? (
+            <AlertDescription>{t("Still using the last indexers.")}</AlertDescription>
+          ) : null}
         </Alert>
       ) : null}
-      <Switch
-        aria-label={t("Enabled")}
-        checked={!disabled}
-        onChange={(e) => setDisabled(!e.currentTarget.checked)}
-      />
+      <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
+        <span className="font-medium">{t("Enabled")}</span>
+        <Switch
+          aria-label={t("Enabled")}
+          checked={!s.disabled}
+          onChange={(e) => s.setDisabled(!e.currentTarget.checked)}
+        />
+      </label>
       <SettingsSection title="Prowlarr">
         <SettingsRow
           title={t("Prowlarr URL")}
@@ -166,10 +203,10 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
               type="url"
               className="sm:w-72"
               placeholder="http://localhost:9696"
-              value={url}
+              value={s.url}
               onChange={(e) => {
-                setURL(e.target.value);
-                setResult(null);
+                s.setURL(e.target.value);
+                s.setResult(null);
               }}
             />
           }
@@ -181,10 +218,10 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
               aria-label={t("Prowlarr API key")}
               autoComplete="off"
               className="sm:w-72"
-              value={key}
+              value={s.key}
               onChange={(e) => {
-                setKey(e.target.value);
-                setResult(null);
+                s.setKey(e.target.value);
+                s.setResult(null);
               }}
             />
           }
@@ -195,14 +232,14 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
           control={
             <div className="space-y-2 sm:w-72">
               <MultiSelect
-                value={tags}
+                value={s.tags}
                 onChange={(next) => {
-                  setTags(next);
-                  setResult(null);
+                  s.setTags(next);
+                  s.setResult(null);
                 }}
-                options={options}
+                options={s.options}
                 ariaLabel={t("Indexer tags")}
-                placeholder={tagOptions.length ? t("Every indexer") : t("Load tags")}
+                placeholder={t("All tags")}
                 searchPlaceholder={t("Search…")}
                 noMatchesLabel={t("No matches")}
                 clearLabel={t("Clear")}
@@ -213,33 +250,50 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={busy || !url || !key}
+                disabled={s.busy || !s.url || !s.key}
                 onClick={() =>
-                  void loadTags().catch((e) => {
+                  void s.loadTags().catch((e) => {
                     toast.error(errorMessage(e));
                   })
                 }
               >
                 {t("Load tags")}
               </Button>
-              {tagsLoaded && tagOptions.length === 0 ? (
+              {s.tagsLoaded && s.tagOptions.length === 0 ? (
                 <p className="text-xs text-fg-muted">{t("No tags on this Prowlarr.")}</p>
               ) : null}
             </div>
           }
         />
       </SettingsSection>
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" disabled={busy || !url || !key} onClick={() => void run(false)}>
-          {t("Preview indexers")}
-        </Button>
-        <Button
-          disabled={busy || !result || result.imported || !key}
-          onClick={() => void run(true)}
-        >
-          {t("Import indexers")}
-        </Button>
-      </div>
+    </>
+  );
+}
+
+function ProwlarrActionButtons({ s }: { s: ProwlarrState }) {
+  return (
+    <>
+      <Button
+        variant="outline"
+        disabled={s.busy || !s.url || !s.key}
+        onClick={() => void s.run(false)}
+      >
+        {t("Preview indexers")}
+      </Button>
+      <Button
+        disabled={s.busy || !s.result || s.result.imported || !s.key}
+        onClick={() => void s.run(true)}
+      >
+        {t("Import indexers")}
+      </Button>
+    </>
+  );
+}
+
+function ProwlarrResults({ s }: { s: ProwlarrState }) {
+  const { result } = s;
+  return (
+    <>
       {result?.stopped ? (
         <p className="text-sm text-fg-muted">
           {tn(
@@ -280,6 +334,57 @@ export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
           </AlertDescription>
         </Alert>
       ) : null}
+    </>
+  );
+}
+
+/** Preview and import the Usenet and torrent indexers a Prowlarr instance already manages. */
+export function ProwlarrImport({ onImported }: { onImported?: () => void }) {
+  const s = useProwlarrImport({ onImported });
+  return (
+    <div className="space-y-4">
+      <ProwlarrFields s={s} />
+      <div className="flex flex-wrap gap-2">
+        <ProwlarrActionButtons s={s} />
+      </div>
+      <ProwlarrResults s={s} />
     </div>
+  );
+}
+
+/** Drawer wrapper for Prowlarr sync with Cancel, Preview and Import in a sticky footer. */
+export function ProwlarrImportDrawer({
+  open,
+  onClose,
+  onImported,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onImported?: () => void;
+}) {
+  const s = useProwlarrImport({ active: open, onImported });
+  return (
+    <Drawer
+      open={open}
+      onClose={() => {
+        if (!s.busy) onClose();
+      }}
+      title={t("Import from Prowlarr")}
+      description={t("Sync indexers from Prowlarr.")}
+      size="lg"
+      footer={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={s.busy}>
+            {t("Cancel")}
+          </Button>
+          <ProwlarrActionButtons s={s} />
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <ProwlarrFields s={s} />
+        <ProwlarrResults s={s} />
+      </div>
+    </Drawer>
   );
 }

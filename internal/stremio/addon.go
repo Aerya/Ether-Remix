@@ -32,6 +32,8 @@ const (
 	MaxSubtitlesBytes = 2 << 20
 	// MaxCatalogItems bounds one catalog read.
 	MaxCatalogItems = 2000
+	// MaxCatalogPages bounds how many skip pages one catalog read may fetch.
+	MaxCatalogPages = 40
 )
 
 // Fetcher reads one route of an add-on ("/stream/movie/tt1.json"). A
@@ -151,12 +153,20 @@ type MetaPreview struct {
 	Name          string   `json:"name"`
 	Poster        string   `json:"poster,omitempty"`
 	Logo          string   `json:"logo,omitempty"`
+	Background    string   `json:"background,omitempty"`
 	Description   string   `json:"description,omitempty"`
 	Genres        []string `json:"genres,omitempty"`
 	ReleaseInfo   string   `json:"releaseInfo,omitempty"`
+	Released      string   `json:"released,omitempty"`
+	Runtime       string   `json:"runtime,omitempty"`
 	IMDBRating    string   `json:"imdbRating,omitempty"`
 	IMDbID        string   `json:"imdb_id,omitempty"`
+	IMDbIDAlt     string   `json:"imdbId,omitempty"`
 	TMDBID        any      `json:"tmdb_id,omitempty"`
+	TMDBIDAlt     any      `json:"tmdbId,omitempty"`
+	MovieDBID     any      `json:"moviedb_id,omitempty"`
+	TVDBID        any      `json:"tvdb_id,omitempty"`
+	TVDBIDAlt     any      `json:"tvdbId,omitempty"`
 	BehaviorHints struct {
 		DefaultVideoID     string `json:"defaultVideoId,omitempty"`
 		HasScheduledVideos bool   `json:"hasScheduledVideos,omitempty"`
@@ -187,7 +197,7 @@ func (a Addon) Catalog(ctx context.Context, c Catalog, extra map[string]string, 
 	var out []MetaPreview
 	seen := map[string]bool{}
 	skip := 0
-	for len(out) < maxItems {
+	for pages := 0; len(out) < maxItems && pages < MaxCatalogPages; pages++ {
 		ex := make(map[string]string, len(extra)+1)
 		for k, v := range extra {
 			ex[k] = v
@@ -241,17 +251,14 @@ type Video struct {
 // Meta is a meta document.
 type Meta struct {
 	MetaPreview
-	Background string   `json:"background,omitempty"`
-	Runtime    string   `json:"runtime,omitempty"`
-	Released   string   `json:"released,omitempty"`
-	Year       any      `json:"year,omitempty"`
-	Cast       []string `json:"cast,omitempty"`
-	Director   []string `json:"director,omitempty"`
-	Writer     []string `json:"writer,omitempty"`
-	Country    string   `json:"country,omitempty"`
-	Language   string   `json:"language,omitempty"`
-	Website    string   `json:"website,omitempty"`
-	Videos     []Video  `json:"videos,omitempty"`
+	Year     any      `json:"year,omitempty"`
+	Cast     []string `json:"cast,omitempty"`
+	Director []string `json:"director,omitempty"`
+	Writer   []string `json:"writer,omitempty"`
+	Country  string   `json:"country,omitempty"`
+	Language string   `json:"language,omitempty"`
+	Website  string   `json:"website,omitempty"`
+	Videos   []Video  `json:"videos,omitempty"`
 }
 
 // Meta reads meta/{type}/{id}.json.
@@ -270,7 +277,7 @@ func (a Addon) Meta(ctx context.Context, typ, id string) (Meta, error) {
 func (a Addon) GuideCatalog(ctx context.Context, id, date string) ([]Meta, error) {
 	var out []Meta
 	seen := map[string]bool{}
-	for skip := 0; len(out) < MaxCatalogItems; {
+	for skip, pages := 0, 0; len(out) < MaxCatalogItems && pages < MaxCatalogPages; pages++ {
 		extra := map[string]string{"date": date}
 		if skip > 0 {
 			extra["skip"] = strconv.Itoa(skip)
@@ -355,23 +362,76 @@ func ParseCatalogRef(id string) (imdb string, tmdb, tvdb int64) {
 	if rest, ok := strings.CutPrefix(lower, "tmdb:"); ok {
 		return "", num(rest), 0
 	}
+	if rest, ok := strings.CutPrefix(lower, "tmdb-"); ok {
+		return "", num(rest), 0
+	}
 	if rest, ok := strings.CutPrefix(lower, "tvdb:"); ok {
+		return "", 0, num(rest)
+	}
+	if rest, ok := strings.CutPrefix(lower, "tvdb-"); ok {
 		return "", 0, num(rest)
 	}
 	return "", 0, 0
 }
 
-// Ref reads a catalog entry's identity: its id, else explicit imdb_id or
-// tmdb_id fields some add-ons add.
+func parseMetaNumericID(v any, prefix string) int64 {
+	switch val := v.(type) {
+	case float64:
+		if val > 0 {
+			return int64(val)
+		}
+	case int64:
+		if val > 0 {
+			return val
+		}
+	case int:
+		if val > 0 {
+			return int64(val)
+		}
+	case json.Number:
+		if n, err := val.Int64(); err == nil && n > 0 {
+			return n
+		}
+	case string:
+		s := strings.TrimSpace(val)
+		if prefix != "" {
+			lower := strings.ToLower(s)
+			if rest, ok := strings.CutPrefix(lower, prefix+":"); ok {
+				s = rest
+			} else if rest, ok := strings.CutPrefix(lower, prefix+"-"); ok {
+				s = rest
+			}
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// Ref reads a catalog entry's identity: its id, plus any explicit imdb_id,
+// imdbId, tmdb_id, tmdbId, moviedb_id, tvdb_id or tvdbId fields some add-ons include.
 func (m MetaPreview) Ref() (imdb string, tmdb, tvdb int64) {
 	imdb, tmdb, tvdb = ParseCatalogRef(m.ID)
-	if imdb == "" && tmdb == 0 && tvdb == 0 {
+	if imdb == "" {
 		imdb = IMDbID(m.IMDbID)
-		switch v := m.TMDBID.(type) {
-		case float64:
-			tmdb = int64(v)
-		case string:
-			tmdb, _ = strconv.ParseInt(v, 10, 64)
+		if imdb == "" {
+			imdb = IMDbID(m.IMDbIDAlt)
+		}
+	}
+	if tmdb == 0 {
+		tmdb = parseMetaNumericID(m.TMDBID, "tmdb")
+		if tmdb == 0 {
+			tmdb = parseMetaNumericID(m.TMDBIDAlt, "tmdb")
+		}
+		if tmdb == 0 {
+			tmdb = parseMetaNumericID(m.MovieDBID, "tmdb")
+		}
+	}
+	if tvdb == 0 {
+		tvdb = parseMetaNumericID(m.TVDBID, "tvdb")
+		if tvdb == 0 {
+			tvdb = parseMetaNumericID(m.TVDBIDAlt, "tvdb")
 		}
 	}
 	return imdb, tmdb, tvdb

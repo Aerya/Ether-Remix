@@ -1,4 +1,10 @@
-import { Button, SearchSelect, Textarea, type ContextMenuEntry } from "@braedonsaunders/appkit-ui";
+import {
+  Button,
+  Input,
+  SearchSelect,
+  Textarea,
+  type ContextMenuEntry,
+} from "@braedonsaunders/appkit-ui";
 import {
   ArrowDownWideNarrow,
   ArrowUpNarrowWide,
@@ -94,7 +100,11 @@ export function BuildPanel({
   };
   const sourceItems: ContextMenuEntry[] = [
     ...descriptors
-      .filter((d) => d.id !== "catalog" || !spec.sources.some((s) => s.kind === "catalog"))
+      .filter(
+        (d) =>
+          (d.id !== "catalog" || !spec.sources.some((s) => s.kind === "catalog")) &&
+          !d.owner.startsWith("addon."),
+      )
       .map((d) => ({
         key: d.id,
         label: isPluginDescriptor(d)
@@ -125,6 +135,19 @@ export function BuildPanel({
             value={spec.description ?? ""}
             placeholder={t("What makes this collection special?")}
             onChange={(e) => update({ description: e.currentTarget.value }, "description")}
+          />
+        </Field>
+        <Field
+          label={t("Folder")}
+          hint={t("Optional folder for grouping related collections together.")}
+          htmlFor="collection-folder"
+        >
+          <Input
+            id="collection-folder"
+            maxLength={80}
+            value={spec.folder ?? ""}
+            placeholder={t("e.g. AIOMetadata, Seasonal…")}
+            onChange={(e) => update({ folder: e.currentTarget.value }, "folder")}
           />
         </Field>
         <Field label={t("Contains")}>

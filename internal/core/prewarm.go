@@ -85,3 +85,46 @@ type WarmProbeWaiter interface {
 type MetadataProber interface {
 	ProbeMetadata(context.Context, *User, RatingKey, ClientCaps) error
 }
+
+// PlayMetadataProber joins or starts the shared resolve+probe flight for a
+// client's play-time metadata re-ask (such as Plezy's first play) and waits
+// until the probe lands or the caller's deadline/context expires. Unlike
+// MetadataProber (detail browsing), this carries explicit play intent: it
+// runs under playback resolution rules, bypasses speculative warm-up gates
+// and negative memos, and publishes into the warm cache so the following
+// stream request adopts the same resolved source and probe.
+type PlayMetadataProber interface {
+	ProbePlayMetadata(context.Context, *User, RatingKey, ClientCaps) error
+}
+
+// VersionHeaderProber runs bounded header probes on unprobed offered versions
+// that can be opened without indexer searches or NZB grabs (already-cached
+// debrid torrents, direct HTTP streams, or vaulted Usenet NZBs) so play-time
+// metadata reads can return real container tracks for non-Auto picks too.
+type VersionHeaderProber interface {
+	ProbeVersionHeaders(context.Context, *User, RatingKey, ClientCaps) error
+}
+
+type versionProbeSearchWaitKey struct{}
+
+// WithVersionProbeSearchWait attaches a signal channel closed when a concurrent
+// play-intent probe (Auto) has finished. ProbeVersionHeaders uses it to observe
+// an indexer search started by that concurrent probe instead of exiting before
+// searchCached begins, while still returning promptly if Auto finishes without
+// running a search.
+func WithVersionProbeSearchWait(ctx context.Context, done <-chan struct{}) context.Context {
+	if done == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, versionProbeSearchWaitKey{}, done)
+}
+
+// VersionProbeSearchWait returns the concurrent Auto-probe completion signal
+// attached by WithVersionProbeSearchWait, or nil when none was set.
+func VersionProbeSearchWait(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	ch, _ := ctx.Value(versionProbeSearchWaitKey{}).(<-chan struct{})
+	return ch
+}

@@ -503,7 +503,14 @@ func (r *Registrar) Status() Status {
 	st := r.st
 	r.mu.Unlock()
 	if r.o.Config != nil {
-		cfg := r.o.Config.Get()
+		// Status runs on hot request paths (per-title section lookups), so
+		// read the four fields it needs without cloning the whole config.
+		var cfg config.Config
+		if live, ok := r.o.Config.(interface{ Read() config.Config }); ok {
+			cfg = live.Read()
+		} else {
+			cfg = r.o.Config.Get()
+		}
 		st.Claimed = cfg.Plex.Claimed && cfg.Plex.Token != ""
 		st.OwnerUsername = cfg.Plex.OwnerUsername
 		st.MachineIdentifier = cfg.Server.MachineIdentifier

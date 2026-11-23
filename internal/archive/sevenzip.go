@@ -912,7 +912,7 @@ func parse7zHeader(crypto *sz7Crypto, hdr []byte, size int64) ([]Member, error) 
 			if fo.unpackSize() > uint64(crypto.data.ExpandedBytes) || (fo.unpackSize() > 0 && (packed == 0 || (packed <= ^uint64(0)/1000 && fo.unpackSize() > packed*1000))) {
 				return nil, fmt.Errorf("archive: 7z block exceeds size or ratio limit: %w", ErrUnsupported)
 			}
-			m.data7z = &data7zPlan{ctx: crypto.ctx, coder: fo.coders[0], start: int64(packStart[fi]), packed: int64(packed), unpacked: fo.unpackSize(), skip: int64(inFolder), memory: crypto.data.MemoryBytes / 2}
+			m.data7z = &data7zPlan{coder: fo.coders[0], start: int64(packStart[fi]), packed: int64(packed), unpacked: fo.unpackSize(), skip: int64(inFolder), memory: crypto.data.MemoryBytes / 2}
 		}
 		if m.Encrypted && crypto.enabled {
 			order, err := fo.chain()

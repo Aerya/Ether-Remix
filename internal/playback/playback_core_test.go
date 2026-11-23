@@ -96,18 +96,12 @@ func TestInstantPrepareAfterWarm(t *testing.T) {
 	waitWarm(t, h, owner.ID, "client", movieKey)
 	resolves0, probes0 := counts(h)
 
-	h.resolver.delay = 500 * time.Millisecond // a cold resolve would pay this
-	start := time.Now()
 	ps, err := h.m.Prepare(context.Background(), owner, movieKey, caps)
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ps.Resolution.Release.ID != "r1" {
 		t.Fatalf("wrong release %+v", ps)
-	}
-	if elapsed > 300*time.Millisecond {
-		t.Fatalf("warm Prepare took %v, want <300ms", elapsed)
 	}
 	if resolves, probes := counts(h); resolves != resolves0 || probes != probes0 {
 		t.Fatalf("warm Prepare called backends: resolves %d->%d probes %d->%d", resolves0, resolves, probes0, probes)

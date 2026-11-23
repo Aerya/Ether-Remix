@@ -1,5 +1,323 @@
 {
   "version": 1,
+  "apps": [
+    {
+      "protocol": "plex",
+      "name": "Plex Web",
+      "devices": ["Browser"],
+      "directPlay": "browser",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Apple TV",
+      "identity": {"product": "Plex for Apple TV", "platform": "tvOS", "device": "Apple TV"},
+      "devices": ["Apple TV"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for iOS",
+      "identity": {"product": "Plex for iOS", "platform": "iOS"},
+      "devices": ["iOS"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Android phones",
+      "product": "Plex for Android (Mobile)",
+      "identity": {"product": "Plex for Android (Mobile)", "platform": "Android"},
+      "devices": ["Android"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Android TV",
+      "product": "Plex for Android (TV)",
+      "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Android TV"},
+      "devices": ["Android TV", "Google TV", "NVIDIA Shield"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex HTPC",
+      "products": ["Plex HTPC", "Plex Media Player"],
+      "devices": ["Home theater PC"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Windows",
+      "devices": ["Home theater PC"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Mac",
+      "devices": ["Mac"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Linux",
+      "devices": ["Home theater PC"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex Desktop",
+      "devices": ["Home theater PC", "Mac"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Kodi",
+      "product": "PM4K",
+      "products": ["PM4K", "Plex for Kodi"],
+      "identity": {"product": "PM4K", "device": "Kodi"},
+      "devices": ["Kodi"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Roku",
+      "identity": {"product": "Plex for Roku", "platform": "Roku"},
+      "devices": ["Roku"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for LG",
+      "identity": {"product": "Plex for LG", "platform": "webOS"},
+      "devices": ["LG webOS"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Samsung",
+      "identity": {"product": "Plex for Samsung", "platform": "Tizen"},
+      "devices": ["Samsung Tizen"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Vizio",
+      "devices": ["Smart TV"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Fire TV",
+      "devices": ["Fire TV"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for Xbox",
+      "identity": {"product": "Plex for Xbox", "platform": "Xbox"},
+      "devices": ["Xbox"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plex for PlayStation",
+      "identity": {"product": "Plex for PlayStation", "platform": "PlayStation"},
+      "devices": ["PlayStation"],
+      "directPlay": "reported",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "plex",
+      "name": "Plezy",
+      "devices": ["Home theater PC", "Apple TV", "iOS", "Android TV", "Android"],
+      "directPlay": "builtin",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "jellyfin",
+      "name": "Swiftfin",
+      "identity": {"product": "Swiftfin", "platform": "tvOS"},
+      "devices": ["Apple TV", "iOS"],
+      "directPlay": "reported",
+      "certification": "pending"
+    },
+    {
+      "protocol": "jellyfin",
+      "name": "Findroid",
+      "devices": ["Android"],
+      "subtitles": ["srt", "ass"],
+      "directPlay": "findroid",
+      "certification": "pending"
+    },
+    {
+      "protocol": "jellyfin",
+      "name": "Streamyfin",
+      "devices": ["Android"],
+      "videoCodecs": ["h264", "hevc", "vp8", "vp9", "av1"],
+      "subtitles": ["srt", "vtt", "ttml"],
+      "directPlay": "listed",
+      "note": "no-dv5",
+      "certification": "pending"
+    },
+    {
+      "protocol": "jellyfin",
+      "name": "Jellyfin Android TV",
+      "identity": {"product": "Jellyfin Android TV", "platform": "Android", "device": "Android TV"},
+      "devices": ["Android TV", "Google TV", "NVIDIA Shield"],
+      "directPlay": "reported",
+      "certification": "pending"
+    },
+    {
+      "protocol": "jellyfin",
+      "name": "JellyCon",
+      "devices": ["Kodi"],
+      "directPlay": "open",
+      "note": "h264-ac3",
+      "certification": "pending"
+    },
+    {
+      "protocol": "jellyfin",
+      "name": "Infuse",
+      "products": ["Infuse", "Infuse-Direct", "infuse-jellyfin"],
+      "devices": ["Apple TV", "iOS"],
+      "directPlay": "reported",
+      "note": "capture",
+      "certification": "pending"
+    },
+    {
+      "protocol": "jellyfin",
+      "name": "Jellyfin for Roku",
+      "identity": {"product": "Jellyfin for Roku", "platform": "Roku"},
+      "devices": ["Roku"],
+      "directPlay": "reported",
+      "certification": "pending"
+    },
+    {
+      "protocol": "emby",
+      "name": "Emby Web",
+      "devices": ["Browser"],
+      "directPlay": "browser",
+      "certification": "pending"
+    },
+    {
+      "protocol": "emby",
+      "name": "Emby for Android TV",
+      "identity": {"product": "Emby for Android TV", "platform": "Android", "device": "Android TV"},
+      "devices": ["Android TV"],
+      "directPlay": "reported",
+      "certification": "pending"
+    },
+    {
+      "protocol": "emby",
+      "name": "Emby for TV",
+      "devices": ["Apple TV"],
+      "directPlay": "reported",
+      "note": "unsupported-shell",
+      "certification": "unsupported"
+    },
+    {
+      "protocol": "emby",
+      "name": "Infuse",
+      "products": ["Infuse", "Infuse-Direct"],
+      "devices": ["Apple TV", "iOS"],
+      "directPlay": "reported",
+      "note": "capture",
+      "certification": "pending"
+    },
+    {
+      "protocol": "emby",
+      "name": "Emby SDK",
+      "devices": [],
+      "directPlay": "reported",
+      "note": "sdk",
+      "certification": "pending"
+    },
+    {
+      "protocol": "silo",
+      "name": "Silo for Apple TV",
+      "products": ["Silo for Apple TV", "silo-appletv"],
+      "identity": {"product": "Silo for Apple TV", "platform": "tvOS", "device": "Apple TV"},
+      "devices": ["Apple TV"],
+      "directPlay": "reported",
+      "certification": "pending"
+    },
+    {
+      "protocol": "silo",
+      "name": "Silo Apple",
+      "identity": {"product": "Silo Apple", "platform": "iOS"},
+      "devices": ["iOS", "Mac"],
+      "directPlay": "reported",
+      "certification": "pending"
+    },
+    {
+      "protocol": "silo",
+      "name": "Silo Android",
+      "identity": {"product": "Silo Android", "platform": "Android"},
+      "devices": ["Android", "Android TV"],
+      "directPlay": "reported",
+      "certification": "pending"
+    },
+    {
+      "protocol": "stremio",
+      "name": "Stremio",
+      "identity": {"product": "Stremio", "platform": "desktop"},
+      "devices": ["Android TV", "iOS", "Browser", "NVIDIA Shield", "Home theater PC"],
+      "directPlay": "stream",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "stremio",
+      "name": "Nuvio",
+      "identity": {"product": "Nuvio", "platform": "android"},
+      "devices": ["Android", "iOS"],
+      "directPlay": "stream",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "webdav",
+      "name": "Kodi",
+      "devices": ["Kodi", "Home theater PC", "Android TV"],
+      "directPlay": "player",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "webdav",
+      "name": "VLC",
+      "devices": ["Home theater PC", "Mac", "Apple TV", "iOS", "Android", "Android TV"],
+      "directPlay": "player",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "dlna",
+      "name": "DLNA renderer",
+      "devices": ["DLNA TV or receiver"],
+      "directPlay": "renderer",
+      "certification": "builtin"
+    },
+    {
+      "protocol": "webdav",
+      "name": "Files and media players",
+      "devices": ["Apple TV", "iOS", "Android"],
+      "directPlay": "player",
+      "certification": "builtin"
+    }
+  ],
   "devices": [
     {"name": "Apple TV", "identity": {"product": "Plex for Apple TV", "platform": "tvOS", "device": "Apple TV"}},
     {"name": "iOS", "identity": {"product": "Plex for iOS", "platform": "iOS", "device": "iPhone"}},
@@ -282,7 +600,9 @@
         "any": [
           {"field": "identity", "op": "contains", "value": "htpc"},
           {"field": "identity", "op": "contains", "value": "kodi"},
-          {"field": "identity", "op": "contains", "value": "infuse"}
+          {"field": "identity", "op": "contains", "value": "infuse"},
+          {"field": "product", "op": "equals", "value": "plezy"},
+          {"field": "product", "op": "equals", "value": "vlc"}
         ]
       }
     },
@@ -335,6 +655,30 @@
         {"field": "product", "op": "equals", "value": "pm4k"},
         {"field": "product", "op": "equals", "value": "plex for kodi"}
       ]}
+    },
+    {
+      "id": "infuse",
+      "role": "playback",
+      "preset": "htpc",
+      "video": ["h264", "hevc", "vp9", "mpeg2video", "vc1", "mpeg4"],
+      "audio": ["aac", "ac3", "eac3", "truehd", "dts", "dtshd", "mp3", "flac", "alac", "opus", "vorbis", "pcm"],
+      "dolbyVision": true,
+      "match": {
+        "all": [
+          {"field": "product", "op": "contains", "value": "infuse"},
+          {
+            "any": [
+              {"field": "platform", "op": "equals", "value": "tvos"},
+              {"field": "platform", "op": "equals", "value": "ios"},
+              {"field": "platform", "op": "equals", "value": "ipados"},
+              {"field": "device", "op": "contains", "value": "apple tv"},
+              {"field": "device", "op": "contains", "value": "appletv"},
+              {"field": "device", "op": "contains", "value": "iphone"},
+              {"field": "device", "op": "contains", "value": "ipad"}
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "apple-tv",
@@ -476,7 +820,12 @@
       "id": "htpc",
       "role": "playback",
       "preset": "htpc",
-      "match": {"field": "product", "op": "equals", "value": "plezy"}
+      "match": {
+        "any": [
+          {"field": "product", "op": "equals", "value": "plezy"},
+          {"field": "product", "op": "equals", "value": "vlc"}
+        ]
+      }
     },
     {
       "id": "roku",
@@ -635,6 +984,26 @@
               {"field": "platform", "op": "equals", "value": "android"},
               {"field": "product", "op": "notContains", "value": "web"}
             ]
+          },
+          {"field": "product", "op": "contains", "value": "plex for lg"},
+          {"field": "product", "op": "contains", "value": "plex for samsung"},
+          {"field": "product", "op": "contains", "value": "plex for vizio"},
+          {"field": "product", "op": "contains", "value": "plex for xbox"},
+          {"field": "product", "op": "contains", "value": "plex for playstation"},
+          {"field": "product", "op": "contains", "value": "plex for fire tv"},
+          {
+            "all": [
+              {
+                "any": [
+                  {"field": "platform", "op": "equals", "value": "webos"},
+                  {"field": "platform", "op": "equals", "value": "tizen"},
+                  {"field": "platform", "op": "equals", "value": "vidaa"},
+                  {"field": "platform", "op": "equals", "value": "xbox"},
+                  {"field": "platform", "op": "equals", "value": "playstation"}
+                ]
+              },
+              {"field": "product", "op": "notContains", "value": "web"}
+            ]
           }
         ]
       }
@@ -665,6 +1034,7 @@
     {
       "id": "plex-android-matroska-hls",
       "role": "quirk",
+      "notes": "Plex for Android Matroska-in-HLS transport. Its master playlist must not declare CODECS or SUPPLEMENTAL-CODECS, or the app's media3 player drops the muxed subtitle track (listed, never drawn); see transcode.HLSVariantAttributes. The match also covers Plex for Android (TV), which shares the player code.",
       "quirks": ["plex-android-matroska-hls"],
       "match": {"field": "product", "op": "contains", "value": "plex for android"}
     },
@@ -672,7 +1042,7 @@
       "id": "plex-android-mobile",
       "role": "segmented-audio",
       "notes": "Plex for Android (Mobile), also the app uncertified Android boxes run, lists E-AC-3, AC-3 and DTS in its HLS target whatever the device decodes. Segmented Matroska with copied E-AC-3 froze after the first segment on Pixel phones (PR #395) and plays converted to AAC. Direct play of the original file is the app's own decision and is untouched.",
-      "audio": ["eac3", "ac3", "dts", "dca", "dtshd", "truehd", "mlp"],
+      "audio": ["eac3", "ac3", "dts", "dca", "dtshd"],
       "match": {
         "all": [
           {"field": "product", "op": "contains", "value": "plex for android"},
@@ -753,7 +1123,8 @@
             {"field": "platform", "op": "equals", "value": "android"},
             {"field": "platform", "op": "equals", "value": "ios"}
           ]}
-        ]}
+        ]},
+        {"field": "product", "op": "contains", "value": "infuse"}
       ]}
     }
   ]

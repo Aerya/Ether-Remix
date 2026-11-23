@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -170,14 +169,16 @@ func newKindTestHarness(t *testing.T, liveTimeout time.Duration, httpClient *htt
 		Logger:    log,
 	})
 
-	cachePut, cacheOpen := blobs.HostBackends(kc.QuotaFor)
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kc.QuotaFor)
 	mgr.SetKindBackends(plugins.KindBackends{
 		KindUpsert:     items.KindUpsert,
 		KindDelete:     items.KindDelete,
 		KindItems:      items.KindItems,
+		KindItemsByID:  items.KindItemsByID,
 		ResolveSources: kr.ResolveSources,
 		CachePut:       cachePut,
 		CacheOpen:      cacheOpen,
+		CacheDelete:    cacheDelete,
 	})
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -476,6 +477,27 @@ func TestNonKindAndLibrarylessKindCreateNoLibrary(t *testing.T) {
 		t.Fatalf("expected 3 views after adding library decl, got %+v %v", views, err)
 	}
 
+	// Owner deletion survives plugin synchronization without purging its items.
+	if err := h.libs.Delete(ctx, pluginLib.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.mgr.SetEnabled(ctx, kindPluginID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.mgr.SetEnabled(ctx, kindPluginID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.libs.Get(ctx, pluginLib.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("sync resurrected deleted library: %v", err)
+	}
+	restored, err := h.libs.RestorePluginLibrary(ctx, kindPluginID, pluginLib.KindKey, libraries.PluginLibraryDecl{Name: "Default"})
+	if err != nil || restored.ID != pluginLib.ID || restored.Name != pluginLib.Name {
+		t.Fatalf("restore: %+v %v", restored, err)
+	}
+	if cnt, err := h.catalog.Count(ctx, restored); err != nil || cnt != 1 {
+		t.Fatalf("deletion lost plugin items: %d %v", cnt, err)
+	}
+
 	// 4. Updating to v1.2.0 removing the library block purges the library and items.
 	installStudioManifest(t, h.mgr, map[string]any{
 		"id":      kindPluginID,
@@ -634,7 +656,6 @@ func TestSetupGatingOfflineBrowseRolesAndRemovePurge(t *testing.T) {
 	exp := h.experienceFor(t, "plex")
 
 	// While required setup step is pending, library is gated from client Views and pull sync does not run.
-	time.Sleep(50 * time.Millisecond)
 	if syncCalls.Load() != 0 {
 		t.Fatalf("pull sync ran before required setup step completed: %d calls", syncCalls.Load())
 	}
@@ -860,7 +881,7 @@ func TestSetupGatingOfflineBrowseRolesAndRemovePurge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cachePut, _ := h.blobs.HostBackends(h.catalog.QuotaFor)
+	cachePut, _, _ := h.blobs.HostBackends(h.catalog.QuotaFor)
 	if _, err := cachePut(ctx, pluginID, libRow.Key, "cover-1", bytes.NewReader([]byte("cached-blob"))); err != nil {
 		t.Fatal(err)
 	}
@@ -898,6 +919,7 @@ func TestSetupGatingOfflineBrowseRolesAndRemovePurge(t *testing.T) {
 		"plugin_kinds",
 		"plugin_items",
 		"plugin_item_tally",
+		"plugin_item_field_tally",
 		"plugin_matches",
 		"plugin_resolutions",
 		"plugin_sync_state",
@@ -926,151 +948,19 @@ func TestSetupGatingOfflineBrowseRolesAndRemovePurge(t *testing.T) {
 	}
 }
 
-func TestLiveSearchCoalescingTimeoutAndFilterLibraries(t *testing.T) {
-	h := newKindTestHarness(t, 80*time.Millisecond, nil)
+func TestFilterLibraryAccess(t *testing.T) {
+	h := newKindTestHarness(t, 0, nil)
 	ctx := context.Background()
-
-	var liveCalls atomic.Int32
-	var slowMode atomic.Bool
-
-	h.rt.callContext = func(_ context.Context, req plugins.Request) (plugins.Response, error) {
-		switch req.Path {
-		case "/ether/health":
-			return plugins.Response{Status: 200, Body: json.RawMessage(`{"status":"ok"}`)}, nil
-		case "/ether/v1/kinds/recordings/browse":
-			var b core.KindBrowseRequest
-			_ = json.Unmarshal(req.Body, &b)
-			if b.ParentID == "" {
-				return plugins.Response{
-					Status: 200,
-					Body:   json.RawMessage(`{"items":[{"id":"alb-1","level":"album","title":"Harbour","year":2024,"childCount":1,"leafCount":1,"fields":{"genre":"ambient"}}]}`),
-				}, nil
-			}
-			return plugins.Response{
-				Status: 200,
-				Body:   json.RawMessage(`{"items":[{"id":"trk-local","level":"track","parentId":"alb-1","index":1,"title":"Beacon Local","playable":true,"fields":{"genre":"ambient","durationSec":50}}]}`),
-			}, nil
-		case "/ether/v1/kinds/recordings/search":
-			liveCalls.Add(1)
-			if slowMode.Load() {
-				time.Sleep(200 * time.Millisecond)
-				return plugins.Response{
-					Status: 200,
-					Body:   json.RawMessage(`{"items":[{"id":"trk-late","level":"track","parentId":"alb-1","index":3,"title":"Lighthouse Late","playable":true,"fields":{"genre":"ambient","durationSec":70}}]}`),
-				}, nil
-			}
-			time.Sleep(25 * time.Millisecond)
-			return plugins.Response{
-				Status: 200,
-				Body:   json.RawMessage(`{"items":[{"id":"trk-live","level":"track","parentId":"alb-1","index":2,"title":"Beacon Live","playable":true,"fields":{"genre":"ambient","durationSec":65}}]}`),
-			}, nil
-		}
-		return plugins.Response{Status: 404, Body: json.RawMessage(`{"error":"not found"}`)}, nil
-	}
-
-	const pluginID = "community.example.recordings"
-	installStudioManifest(t, h.mgr, map[string]any{
-		"id":      pluginID,
-		"version": "1.0.0",
-		"name":    "Field Recordings",
-		"ether": map[string]any{
-			"protocol":     1,
-			"kind":         "content",
-			"summary":      "Field recordings",
-			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
-			"capabilities": []string{"catalog_provider", "kind_resolver"},
-			"strings":      map[string]any{"en": "i18n/en.json"},
-			"contributes": map[string]any{
-				"mediaKinds": []map[string]any{recordingsKindDecl(true)},
-			},
-		},
-	}, map[string][]byte{
-		"i18n/en.json": []byte(`{"lib_name":"Field Recordings"}`),
-	})
-
 	exp := h.experienceFor(t, "jellyfin")
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		libs, _ := h.libs.List(ctx)
-		ready := false
-		for _, lib := range libs {
-			if lib.PluginID == pluginID {
-				tally, _ := h.items.LibraryTally(ctx, lib.ID)
-				if tally["track"] == 1 {
-					ready = true
-				}
-			}
-		}
-		if ready {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 
-	// 1. Concurrent identical live searches coalesce into 1 plugin call and merge local + live hits.
-	var wg sync.WaitGroup
-	results := make([]frontend.SearchPage, 4)
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			res, err := exp.Search(ctx, h.users[1], core.Device{}, "beacon", frontend.ItemQuery{Limit: 10})
-			if err != nil {
-				t.Errorf("Search %d: %v", idx, err)
-				return
-			}
-			results[idx] = res
-		}(i)
-	}
-	wg.Wait()
-	if liveCalls.Load() != 1 {
-		t.Fatalf("expected singleflight to coalesce 4 searches into 1 live call, got %d", liveCalls.Load())
-	}
-	if len(results[0].Page.Items) != 2 {
-		t.Fatalf("expected merged local + live search hits (2), got %+v", results[0].Page.Items)
-	}
-
-	// 2. Slow live search times out gracefully (returning local results without error) and upserts late results in background.
-	slowMode.Store(true)
-	resTimeout, err := exp.Search(ctx, h.users[1], core.Device{}, "lighthouse", frontend.ItemQuery{Limit: 10})
-	if err != nil {
-		t.Fatalf("Search on live timeout must not fail: %v", err)
-	}
-	if len(resTimeout.Page.Items) != 0 {
-		t.Fatalf("expected 0 immediate local hits before late background upsert, got %+v", resTimeout.Page.Items)
-	}
-
-	// Wait for background upsert to finish, then search local FTS -> now has Lighthouse Late!
-	var libID core.LibraryID
-	for _, lib := range mustListLibs(t, h.libs) {
-		if lib.PluginID == pluginID {
-			libID = lib.ID
-		}
-	}
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		page, _ := h.items.Search(ctx, pluginitems.SearchQuery{LibraryID: libID, Query: "lighthouse", Limit: 10})
-		if len(page.Items) == 1 {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	page, err := h.items.Search(ctx, pluginitems.SearchQuery{LibraryID: libID, Query: "lighthouse", Limit: 10})
-	if err != nil || len(page.Items) != 1 || page.Items[0].Title != "Lighthouse Late" {
-		t.Fatalf("expected late live search result persisted in background, got %+v %v", page, err)
-	}
-
-	// 3. Filter library access: viewer restricted to a Comedy filter library sees comedy movies but not drama movies.
+	// Viewer restricted to a Comedy filter library sees comedy movies but not drama movies.
 	comedy := core.Title{Key: core.MovieKey(501), Type: core.TypeMovie, Title: "Funny One", Genres: []string{"Comedy"}}
 	drama := core.Title{Key: core.MovieKey(502), Type: core.TypeMovie, Title: "Serious One", Genres: []string{"Drama"}}
 	h.titles[comedy.Key] = comedy
 	h.titles[drama.Key] = drama
 
 	present := core.Presentations{
-		MediaBrowser: &struct {
-			CollectionType string            `json:"collectionType"`
-			ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-		}{CollectionType: "movies"},
+		MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "movies"},
 	}
 	filterLib, err := h.libs.Create(ctx, "Comedy Movies", core.TypeMovie, libraryRules(core.Filter{Type: core.TypeMovie, Genres: []string{"Comedy"}}), "hide", present)
 	if err != nil {
@@ -1097,4 +987,347 @@ func mustListLibs(t *testing.T, svc *libraries.Service) []core.Library {
 
 func libraryRules(f core.Filter) []core.LibraryExclusion {
 	return []core.LibraryExclusion{{Action: "show", MediaType: string(f.Type), Match: "all", Rules: core.LibraryPredicateConditions(f)}}
+}
+
+func TestKindCatalogPresentationTabSearchAndPlaceholder(t *testing.T) {
+	h := newKindTestHarness(t, 250*time.Millisecond, nil)
+	ctx := context.Background()
+
+	const pluginID = "community.example.games"
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Video Games",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Video games",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes": map[string]any{
+				"mediaKinds": []map[string]any{{
+					"key":   "game",
+					"label": "Game",
+					"library": map[string]any{
+						"name": "Games",
+						"card": "landscape",
+						"tabs": []map[string]any{
+							{"key": "recommended", "label": "Recommended", "kind": "recommended"},
+							{"key": "library", "label": "Library", "kind": "library"},
+							{"key": "developers", "label": "Developers", "kind": "collections", "facet": "developers", "order": "name", "searchPlaceholder": "$t:search_devs"},
+							{"key": "cast", "label": "Voice cast", "kind": "people", "facet": "voiceCast", "order": "name", "searchPlaceholder": "Search voice cast"},
+							{"key": "publishers", "label": "Publishers", "kind": "collections", "facet": "developers", "search": false},
+						},
+					},
+					"levels": []map[string]any{{"key": "game", "label": "Game", "playable": true}},
+					"fields": []map[string]any{
+						{"key": "developers", "type": "strings", "label": "Developers", "indexed": true},
+						{"key": "voiceCast", "type": "people", "label": "Voice cast", "indexed": true},
+					},
+					"present": map[string]any{"vela": map[string]any{"type": "movies"}},
+					"browse": map[string]any{
+						"sorts":  []string{"released", "title"},
+						"facets": []string{"developers", "voiceCast"},
+					},
+					"sync": map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	}, map[string][]byte{
+		"i18n/en.json": []byte(`{"search_devs":"Search developers"}`),
+	})
+
+	var gameLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			gameLib = lib
+		}
+	}
+	if gameLib.ID == 0 {
+		t.Fatal("expected game plugin library")
+	}
+
+	pres, ok := h.catalog.Presentation(ctx, gameLib)
+	if !ok || len(pres.Tabs) != 5 {
+		t.Fatalf("Presentation = (%+v, %v), want 5 tabs", pres, ok)
+	}
+	if pres.Tabs[0].Search || pres.Tabs[1].Search {
+		t.Fatalf("recommended/library tabs must not set Search: %+v", pres.Tabs[:2])
+	}
+	if !pres.Tabs[2].Search || pres.Tabs[2].SearchPlaceholder != "Search developers" {
+		t.Fatalf("developers tab = %+v, want Search=true and resolved $t: SearchPlaceholder", pres.Tabs[2])
+	}
+	if !pres.Tabs[3].Search || pres.Tabs[3].SearchPlaceholder != "Search voice cast" {
+		t.Fatalf("cast tab = %+v, want Search=true and literal SearchPlaceholder", pres.Tabs[3])
+	}
+	if pres.Tabs[4].Search || pres.Tabs[4].SearchPlaceholder != "" {
+		t.Fatalf("publishers tab = %+v, want Search=false", pres.Tabs[4])
+	}
+
+	_, err := h.items.KindUpsert(ctx, pluginID, "game", []core.KindItem{
+		{
+			ID:       "g1",
+			Level:    "game",
+			Index:    1,
+			Title:    "Echoes of Zoë",
+			Playable: true,
+			Fields: map[string]json.RawMessage{
+				"developers": json.RawMessage(`["Zoë Mode","Nintendo"]`),
+				"voiceCast":  json.RawMessage(`[{"name":"Zoë Wanamaker"},{"name":"Troy Baker"}]`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc, err := h.catalog.FacetCollections(ctx, gameLib, "developers", "name", "zoe", 0, 10)
+	if err != nil || len(fc.Items) != 1 || fc.Items[0].Name != "Zoë Mode" {
+		t.Fatalf("KindCatalog.FacetCollections(query=zoe) = %+v, err=%v", fc, err)
+	}
+	fp, err := h.catalog.FacetPeople(ctx, gameLib, "voiceCast", "name", "zoe", 0, 10)
+	if err != nil || len(fp.Items) != 1 || fp.Items[0].Name != "Zoë Wanamaker" {
+		t.Fatalf("KindCatalog.FacetPeople(query=zoe) = %+v, err=%v", fp, err)
+	}
+}
+
+func TestKindCatalogPresentationShelvesAndIndexedBrowse(t *testing.T) {
+	h := newKindTestHarness(t, 250*time.Millisecond, nil)
+	ctx := context.Background()
+
+	pluginID := "community.docs.archive"
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Documentary Archive",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Adds a curated documentary library",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes": map[string]any{
+				"mediaKinds": []any{map[string]any{
+					"key":   "documentary",
+					"label": "Documentaries",
+					"library": map[string]any{
+						"name": "Documentaries",
+						"card": "landscape",
+						"shelves": []any{
+							map[string]any{"key": "latest", "label": "Latest releases"},
+							map[string]any{"key": "earth-science", "label": "$t:shelf_earth_science", "sort": "rating", "direction": "desc", "facet": "topic", "values": []string{"Science", "Nature"}},
+							map[string]any{"key": "feature-history", "label": "Feature history", "sort": "title", "direction": "asc", "filters": map[string]any{"topic": []string{"History"}, "format": []string{"Feature"}}},
+						},
+					},
+					"levels": []any{map[string]any{"key": "film", "label": "Film", "playable": true}},
+					"fields": []any{
+						map[string]any{"key": "topic", "type": "strings", "label": "Topic", "indexed": true},
+						map[string]any{"key": "format", "type": "enum", "label": "Format", "indexed": true, "enum": []string{"Feature", "Short"}},
+					},
+					"present": map[string]any{"vela": map[string]any{"type": "movies"}},
+					"browse": map[string]any{
+						"sorts":  []string{"title", "released"},
+						"facets": []string{"topic"},
+					},
+					"sync": map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	}, map[string][]byte{
+		"i18n/en.json": []byte(`{"shelf_earth_science":"Earth and science"}`),
+	})
+
+	var docLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			docLib = lib
+		}
+	}
+	if docLib.ID == 0 {
+		t.Fatal("expected documentary plugin library")
+	}
+
+	pres, ok := h.catalog.Presentation(ctx, docLib)
+	if !ok || len(pres.Shelves) != 3 {
+		t.Fatalf("Presentation = (%+v, %v), want 3 shelves", pres, ok)
+	}
+	if pres.Shelves[0].Key != "latest" || pres.Shelves[0].Sort != core.SortReleased || pres.Shelves[0].Direction != "desc" || pres.Shelves[0].Filters != nil {
+		t.Fatalf("shelf[0] = %+v", pres.Shelves[0])
+	}
+	if pres.Shelves[1].Label != "Earth and science" || pres.Shelves[1].Sort != core.SortRating || len(pres.Shelves[1].Filters["topic"]) != 2 {
+		t.Fatalf("shelf[1] = %+v", pres.Shelves[1])
+	}
+	if pres.Shelves[2].Sort != core.SortTitle || pres.Shelves[2].Direction != "asc" || len(pres.Shelves[2].Filters) != 2 {
+		t.Fatalf("shelf[2] = %+v", pres.Shelves[2])
+	}
+
+	_, err := h.items.KindUpsert(ctx, pluginID, "documentary", []core.KindItem{
+		{
+			ID: "d1", Level: "film", Title: "Deep Ocean", Playable: true, Rating: 9.1,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["Nature"]`), "format": json.RawMessage(`"Feature"`)},
+		},
+		{
+			ID: "d2", Level: "film", Title: "Quantum Fields", Playable: true, Rating: 8.4,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["Science"]`), "format": json.RawMessage(`"Short"`)},
+		},
+		{
+			ID: "d3", Level: "film", Title: "Ancient Roads", Playable: true, Rating: 8.8,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["History"]`), "format": json.RawMessage(`"Feature"`)},
+		},
+		{
+			ID: "d4", Level: "film", Title: "Brief History", Playable: true, Rating: 7.5,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["History"]`), "format": json.RawMessage(`"Short"`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// OR within a facet ("Science" OR "Nature") ordered by rating desc, NoTotal: true.
+	orPage, err := h.catalog.Browse(ctx, docLib, frontend.ItemQuery{
+		Sort:    pres.Shelves[1].Sort,
+		Desc:    pres.Shelves[1].Direction != "asc",
+		NoTotal: true,
+		Filter:  core.Filter{Facets: pres.Shelves[1].Filters},
+	}, "", 20)
+	if err != nil || len(orPage.Items) != 2 || orPage.Items[0].Title != "Deep Ocean" || orPage.Items[1].Title != "Quantum Fields" {
+		t.Fatalf("OR shelf browse = %+v, err=%v", orPage.Items, err)
+	}
+
+	// AND across facets (topic="History" AND format="Feature"), even though "format" is indexed but not in browse.facets.
+	andPage, err := h.catalog.Browse(ctx, docLib, frontend.ItemQuery{
+		Sort:    pres.Shelves[2].Sort,
+		Desc:    pres.Shelves[2].Direction != "asc",
+		NoTotal: true,
+		Filter:  core.Filter{Facets: pres.Shelves[2].Filters},
+	}, "", 20)
+	if err != nil || len(andPage.Items) != 1 || andPage.Items[0].Title != "Ancient Roads" {
+		t.Fatalf("AND shelf browse = %+v, err=%v", andPage.Items, err)
+	}
+}
+
+func TestKindCatalogManifestViewHistoryTab(t *testing.T) {
+	ctx := context.Background()
+	h := newKindTestHarness(t, 250*time.Millisecond, nil)
+	if _, err := h.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (
+		user_id BIGINT NOT NULL,
+		rating_key BIGINT NOT NULL,
+		view_offset_ns BIGINT NOT NULL DEFAULT 0,
+		duration_ns BIGINT NOT NULL DEFAULT 0,
+		view_count BIGINT NOT NULL DEFAULT 0,
+		counted BIGINT NOT NULL DEFAULT 0,
+		last_viewed_at BIGINT NOT NULL DEFAULT 0,
+		user_rating DOUBLE PRECISION NOT NULL DEFAULT 0,
+		updated_at BIGINT NOT NULL DEFAULT 0,
+		PRIMARY KEY (user_id, rating_key)
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	const pluginID = "community.example.history-docs"
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "History Docs",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Documentaries with a manifest History view tab",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"contributes": map[string]any{
+				"mediaKinds": []any{map[string]any{
+					"key":   "doc",
+					"label": "Documentaries",
+					"library": map[string]any{
+						"name": "Documentaries",
+						"tabs": []any{
+							map[string]any{"key": "recommended", "label": "Recommended", "kind": "recommended"},
+							map[string]any{"key": "library", "label": "Library", "kind": "library"},
+							map[string]any{
+								"key":               "history",
+								"label":             "History",
+								"kind":              "view",
+								"layout":            "timeline",
+								"sort":              "lastViewed",
+								"direction":         "desc",
+								"searchPlaceholder": "Search watch history",
+								"filters": map[string]any{
+									"match": "all",
+									"rules": []any{
+										map[string]any{"field": "viewer", "op": "is", "value": map[string]any{"history": true}},
+									},
+								},
+							},
+						},
+					},
+					"levels":  []any{map[string]any{"key": "film", "label": "Film", "playable": true}},
+					"present": map[string]any{"vela": map[string]any{"type": "movies"}},
+					"browse":  map[string]any{"sorts": []string{"title", "released"}},
+					"sync":    map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	}, nil)
+
+	var docLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			docLib = lib
+		}
+	}
+	if docLib.ID == 0 {
+		t.Fatal("expected plugin library")
+	}
+
+	pres, ok := h.catalog.Presentation(ctx, docLib)
+	if !ok || len(pres.Tabs) != 3 {
+		t.Fatalf("Presentation tabs = %+v (ok=%v)", pres.Tabs, ok)
+	}
+	hist := pres.Tabs[2]
+	if hist.ID != "history" || hist.Kind != core.TabView || hist.Layout != core.TabLayoutTimeline || hist.Sort != "lastViewed" || hist.Direction != "desc" || !hist.Search || hist.SearchPlaceholder != "Search watch history" || hist.Filters == nil {
+		t.Fatalf("manifest history ViewTab = %+v", hist)
+	}
+
+	if _, err := h.items.KindUpsert(ctx, pluginID, "doc", []core.KindItem{
+		{ID: "d1", Level: "film", Title: "Alpha", Playable: true},
+		{ID: "d2", Level: "film", Title: "Beta", Playable: true},
+		{ID: "d3", Level: "film", Title: "Gamma", Playable: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	k1, _, _ := h.items.GetByRef(ctx, core.NewItemRef(pluginID, "doc", "d1"))
+	k2, _, _ := h.items.GetByRef(ctx, core.NewItemRef(pluginID, "doc", "d2"))
+	k3, _, _ := h.items.GetByRef(ctx, core.NewItemRef(pluginID, "doc", "d3"))
+	// Viewer 1 watched d1 earlier and d3 later; Viewer 2 watched d2 only.
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO state_watch(user_id,rating_key,view_count,last_viewed_at) VALUES (1,?,1,1000),(1,?,1,3000),(2,?,1,2000)`, int64(k1.Key), int64(k3.Key), int64(k2.Key)); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, fallback := hist.Filters.ToPolicy("")
+	q := frontend.ItemQuery{
+		Sort: core.SortLastViewed,
+		Desc: true,
+		Filter: core.Filter{
+			TabRules:    rules,
+			TabFallback: fallback,
+		},
+	}
+
+	v1Page, err := h.catalog.Browse(core.WithCatalogViewer(ctx, &core.User{ID: 1}), docLib, q, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v1Page.Items) != 2 || v1Page.Items[0].Title != "Gamma" || v1Page.Items[1].Title != "Alpha" {
+		t.Fatalf("viewer 1 history = %+v, want [Gamma, Alpha]", v1Page.Items)
+	}
+
+	v2Page, err := h.catalog.Browse(core.WithCatalogViewer(ctx, &core.User{ID: 2}), docLib, q, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v2Page.Items) != 1 || v2Page.Items[0].Title != "Beta" {
+		t.Fatalf("viewer 2 history = %+v, want [Beta]", v2Page.Items)
+	}
 }

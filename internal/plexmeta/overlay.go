@@ -122,7 +122,7 @@ func SaferRating(tmdb, plex string) string {
 	if tmdb == "" {
 		return plex
 	}
-	if contentrating.LevelOf(plex) > contentrating.LevelOf(tmdb) {
+	if contentrating.EnforceLevelOf(plex) > contentrating.EnforceLevelOf(tmdb) {
 		return plex
 	}
 	return tmdb

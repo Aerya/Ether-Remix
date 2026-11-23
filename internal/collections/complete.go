@@ -17,6 +17,33 @@ func (s *Service) ListComplete(ctx context.Context, user *core.User, typ core.Me
 	return s.listCompleteUntil(ctx, user, typ, nil, false)
 }
 
+// ListOwnedComplete builds every eligible non-franchise collection (built-in,
+// owner and ephemeral) without materializing TMDB franchises, and reports
+// whether TMDB franchises also belong to typ for this server configuration.
+func (s *Service) ListOwnedComplete(ctx context.Context, user *core.User, typ core.MediaType) ([]core.Collection, bool, error) {
+	rows, err := s.loadRows(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].builtin && !rows[j].builtin })
+	out := make([]core.Collection, 0)
+	for _, row := range rows {
+		if !visible(row, user) || !row.spec.Targets.CollectionsTab || !typeMatches(row.spec, typ) {
+			continue
+		}
+		keys, err := s.serve(ctx, row, user, true)
+		if err != nil {
+			return nil, false, fmt.Errorf("collections: complete list: %w", err)
+		}
+		if len(keys) > 0 && (row.spec.MediaType != MediaMixed || typ == "" || len(sectionKeys(keys, typ)) > 0) {
+			out = append(out, s.collectionFor(ctx, row, user, typ, keys))
+		}
+	}
+	out = append(out, s.listEphemeral(user, typ)...)
+	hideFranchises := s.catCfg != nil && s.catCfg().HideFranchiseCollections
+	return out, !hideFranchises && (typ == "" || typ == core.TypeMovie), nil
+}
+
 // FindVisible stops evaluating collections as soon as accept finds a visible
 // member. It never materializes the complete collection listing.
 func (s *Service) FindVisible(ctx context.Context, user *core.User, typ core.MediaType, accept func(core.Collection) (bool, error)) (bool, error) {

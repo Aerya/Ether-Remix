@@ -3,6 +3,7 @@ package subtitles
 import (
 	"encoding/binary"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -64,7 +65,7 @@ func mp4U32(b []byte, off int) uint32 {
 	return binary.BigEndian.Uint32(b[off:])
 }
 
-func (r *rangeReader) mp4TextCues(size int64) ([]Cue, error) {
+func (r *rangeReader) mp4TextCueTracks(size int64) ([][]Cue, error) {
 	for off, n := int64(0), 0; off < size && n < 256; n++ {
 		h, err := r.read(off, 8)
 		if err != nil || len(h) < 8 {
@@ -102,21 +103,26 @@ func (r *rangeReader) mp4TextCues(size int64) ([]Cue, error) {
 	return nil, errMP4
 }
 
-func mp4Tracks(_ *rangeReader, moov []byte, _ int64) ([]Cue, error) {
+func mp4Tracks(_ *rangeReader, moov []byte, _ int64) ([][]Cue, error) {
 	boxes, err := mp4Boxes(moov)
 	if err != nil {
 		return nil, err
 	}
+	var tracks [][]Cue
 	for _, a := range boxes {
 		if a.kind != "trak" {
 			continue
 		}
 		cues, err := mp4TextTrack(a.data)
 		if err == nil && len(cues) > 0 {
-			return cues, nil
+			tracks = append(tracks, cues)
 		}
 	}
-	return nil, errMP4
+	if len(tracks) == 0 {
+		return nil, errMP4
+	}
+	sort.SliceStable(tracks, func(i, j int) bool { return len(tracks[i]) > len(tracks[j]) })
+	return tracks, nil
 }
 
 func mp4TextTrack(trak []byte) ([]Cue, error) {
@@ -188,7 +194,8 @@ func mp4HasTX3G(stsd []byte) bool {
 	if len(stsd) < 16 {
 		return false
 	}
-	return bytesContains(stsd, []byte("tx3g")) || bytesContains(stsd, []byte("text"))
+	return bytesContains(stsd, []byte("tx3g")) || bytesContains(stsd, []byte("text")) ||
+		bytesContains(stsd, []byte("wvtt")) || bytesContains(stsd, []byte("stpp"))
 }
 
 func bytesContains(b, sub []byte) bool {

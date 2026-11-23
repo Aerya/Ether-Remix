@@ -42,6 +42,7 @@ func decodeBody(br *BodyReader, opt *yenc.DecodeOptions) (*yenc.Part, error) {
 	// Copy the result before clearing pooled state. Never keep media buffers in
 	// the pool, and discard upstream's private read buffer on incomplete input.
 	result := *p
+	beginSize := g.beginSize
 	guardErr := g.err
 	complete := g.terminated && guardErr == nil && len(g.pending) == 0 && len(g.suffix) == 0 &&
 		(err == nil || errors.Is(err, rapidyenc.ErrCrcMismatch) || errors.Is(err, rapidyenc.ErrDataCorruption))
@@ -74,7 +75,7 @@ func decodeBody(br *BodyReader, opt *yenc.DecodeOptions) (*yenc.Part, error) {
 	// stream was ambiguous (embedded control lines), so refuse it.
 	m := &response.Metadata
 	h := &result.Header
-	if m.FileSize != h.Size || m.PartSize != h.PartSize() || m.BytesProduced != int64(len(result.Data)) ||
+	if m.FileSize != beginSize || m.PartSize != h.PartSize() || m.BytesProduced != int64(len(result.Data)) ||
 		(h.Multipart && (m.Offset+1 != h.Begin || m.PartNumber != int64(h.Part))) || m.EndSize != result.Trailer.Size {
 		return &result, yenc.ErrMalformed
 	}
@@ -99,6 +100,7 @@ var wireDecoderPool = sync.Pool{New: func() any {
 type guardedBody struct {
 	body                      *BodyReader
 	part                      yenc.Part
+	beginSize                 int64
 	maxSize, budget, wireData int64
 	preamble                  int
 	began, first, ended       bool
@@ -180,7 +182,8 @@ func (g *guardedBody) Read(dst []byte) (int, error) {
 			if g.err != nil {
 				continue
 			}
-			if !wireIntMatches(content, "size", g.part.Header.Size, false) || !wireIntMatches(content, "part", int64(g.part.Header.Part), true) {
+			g.beginSize = g.part.Header.Size
+			if !wireIntMatches(content, "size", g.beginSize, false) || !wireIntMatches(content, "part", int64(g.part.Header.Part), true) {
 				g.err = yenc.ErrMalformed
 				continue
 			}

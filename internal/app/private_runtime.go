@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,7 @@ type privatePlayback interface {
 }
 
 type deploymentRuntime struct {
+	vaultHandler  http.Handler
 	sourceAdmin   http.Handler
 	publicReady   atomic.Bool
 	quotaOpen     atomic.Bool
@@ -191,6 +193,10 @@ func (a *App) startPrivate(ctx context.Context) (func(), error) {
 	mux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := p.guard.Request(r); err != nil {
 			http.Error(w, "denied", 403)
+			return
+		}
+		if p.vaultHandler != nil && strings.HasPrefix(r.URL.Path, "/private/vault/") {
+			p.vaultHandler.ServeHTTP(w, r)
 			return
 		}
 		if p.sourceAdmin != nil && r.URL.Path == "/cluster/runtime/source-admin" {

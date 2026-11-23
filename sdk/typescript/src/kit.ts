@@ -79,11 +79,15 @@ export function parseFeed(data: string): ParsedFeed {
   };
 }
 
-/** One non-directory zip member, in archive order. */
+/** An archive member in archive order (host listings may include directories). */
 export interface ArchiveMember {
   index: number;
   name: string;
   size: number;
+  /** Informational warning: name is unsafe as a filesystem path; member remains readable by index. */
+  unsafe?: boolean;
+  /** Present with unsafe=true; explains why name must not be used as an output path. */
+  unsafeReason?: string;
 }
 
 /** List zip/cbz/epub members by reading the central directory. */

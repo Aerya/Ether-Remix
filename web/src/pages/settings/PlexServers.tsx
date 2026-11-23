@@ -248,7 +248,10 @@ export function PlexServers({ enabled }: { enabled: boolean }) {
     const v = (viewers.data ?? []).find((x) => x.id === id);
     if (!v) return t("Unknown viewer");
     return (
-      <Link to={`/viewers/${v.id}/limits`} className="font-medium text-primary hover:underline">
+      <Link
+        to={`/viewers/${v.id}/sign-in?signin=sync`}
+        className="font-medium text-primary hover:underline"
+      >
         {v.title || v.username}
       </Link>
     );

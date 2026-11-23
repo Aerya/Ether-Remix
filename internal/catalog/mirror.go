@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 	"sort"
 	"time"
 )
@@ -98,7 +99,7 @@ func (m *Mirror) Snapshot(ctx context.Context) ([]MirrorItem, error) {
 // snapshotRange reads the titles with lo < key <= hi and their facets.
 func (m *Mirror) snapshotRange(ctx context.Context, lo, hi int64, items *[]*MirrorItem, byKey map[core.RatingKey]*MirrorItem) error {
 	const in = ` AND t.key>? AND t.key<=?`
-	rows, err := m.db.QueryContext(ctx, `SELECT t.key,t.type,t.title,t.sort_title,t.year,t.released_ts,t.added_at,t.runtime_sec,t.rating,t.vote_count,t.popularity,t.language,t.content_rating,t.collection_id,t.poster,t.backdrop,t.detail FROM catalog_titles t WHERE `+mirrorBrowsableWhere+in+` ORDER BY t.key`, lo, hi)
+	rows, err := m.db.QueryContext(ctx, `SELECT t.key,t.type,t.title,t.sort_title,t.year,t.released_ts,t.added_at,t.runtime_sec,t.rating,t.vote_count,t.popularity,t.language,t.content_rating,t.enforcement_rating,t.collection_id,t.poster,t.backdrop,t.detail FROM catalog_titles t WHERE `+mirrorBrowsableWhere+in+` ORDER BY t.key`, lo, hi)
 	if err != nil {
 		return err
 	}
@@ -106,7 +107,7 @@ func (m *Mirror) snapshotRange(ctx context.Context, lo, hi int64, items *[]*Mirr
 		e := &MirrorItem{}
 		var released, runtime int64
 		t := &e.Title
-		if err := rows.Scan(&t.Key, &t.Type, &t.Title, &t.SortTitle, &t.Year, &released, &e.AddedAt, &runtime, &t.Rating, &t.VoteCount, &t.Popularity, &t.Language, &t.ContentRating, &t.CollectionID, &t.PosterPath, &t.BackdropPath, &e.Detailed); err != nil {
+		if err := rows.Scan(&t.Key, &t.Type, &t.Title, &t.SortTitle, &t.Year, &released, &e.AddedAt, &runtime, &t.Rating, &t.VoteCount, &t.Popularity, &t.Language, &t.ContentRating, &t.EnforcementRating, &t.CollectionID, &t.PosterPath, &t.BackdropPath, &e.Detailed); err != nil {
 			rows.Close()
 			return err
 		}
@@ -187,38 +188,38 @@ func (m *Mirror) snapshotRange(ctx context.Context, lo, hi int64, items *[]*Mirr
 
 func (m *Mirror) Franchises(ctx context.Context) ([]core.Collection, error) {
 	rows, err := m.db.QueryContext(ctx, `
-		SELECT t.collection_id,
-		       COALESCE(NULLIF(MAX(t.collection_name),''), MAX(cc.name), ''),
-		       COUNT(*),
-		       COALESCE(MAX(cc.poster),''), COALESCE(MAX(cc.backdrop),''),
-		       COALESCE(MAX(cc.summary),'')
-		FROM catalog_titles t
-		LEFT JOIN catalog_collections cc ON cc.tmdb_id = t.collection_id
-		WHERE t.type='movie' AND t.browsable=1 AND t.collection_id>0
-		GROUP BY t.collection_id HAVING COUNT(*)>=2
-		ORDER BY COUNT(*) DESC`)
+		SELECT f.collection_id,
+		       COALESCE(NULLIF(f.name,''), cc.name, ''),
+		       f.member_count,
+		       COALESCE(cc.poster,''), COALESCE(cc.backdrop,''),
+		       COALESCE(cc.summary,'')
+		FROM catalog_franchises f
+		LEFT JOIN catalog_collections cc ON cc.tmdb_id = f.collection_id
+		WHERE f.member_count>=2
+		ORDER BY f.member_count DESC, f.collection_id ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []core.Collection
-	for rows.Next() {
-		var id int64
-		var name, poster, backdrop, summary string
-		var n int
-		if err := rows.Scan(&id, &name, &n, &poster, &backdrop, &summary); err != nil {
-			return nil, err
-		}
-		if name == "" {
-			name = fmt.Sprintf("Collection %d", id)
-		}
-		out = append(out, core.Collection{Key: core.CollectionKey(id), Title: name, Summary: summary,
-			Kind: "franchise", Type: core.TypeMovie, PosterPath: poster, BackdropPath: backdrop, ChildCount: n})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return scanFranchiseRows(rows)
+}
+
+// FranchiseTotal returns the number of franchises with at least two browsable
+// movies in O(1) from catalog_franchise_counts.
+func (m *Mirror) FranchiseTotal(ctx context.Context) (int, error) {
+	return franchiseTotalDB(ctx, m.db)
+}
+
+// FranchisesPage returns one page of franchises with at least two browsable
+// movies in (member_count DESC, collection_id ASC) order.
+func (m *Mirror) FranchisesPage(ctx context.Context, offset, limit int) ([]core.Collection, error) {
+	return franchisesPageDB(ctx, m.db, offset, limit)
+}
+
+// FranchisesCursor returns the next keyset page of franchises with at least
+// two browsable movies in (member_count DESC, collection_id ASC) order.
+func (m *Mirror) FranchisesCursor(ctx context.Context, afterCount, afterID, limit int) ([]core.Collection, error) {
+	return franchisesCursorDB(ctx, m.db, 2, afterCount, afterID, limit)
 }
 
 // NextFranchise reads one candidate for lazy collection-view discovery. Unlike
@@ -227,12 +228,12 @@ func (m *Mirror) NextFranchise(ctx context.Context, after int64) (*core.Collecti
 	var id int64
 	var name, poster, backdrop, summary string
 	var n int
-	err := m.db.QueryRowContext(ctx, `SELECT t.collection_id,
- COALESCE(NULLIF(MAX(t.collection_name),''),MAX(cc.name),''),COUNT(*),
- COALESCE(MAX(cc.poster),''),COALESCE(MAX(cc.backdrop),''),COALESCE(MAX(cc.summary),'')
- FROM catalog_titles t LEFT JOIN catalog_collections cc ON cc.tmdb_id=t.collection_id
- WHERE t.type='movie' AND t.browsable=1 AND t.collection_id>?
- GROUP BY t.collection_id HAVING COUNT(*)>=2 ORDER BY t.collection_id LIMIT 1`, after).Scan(&id, &name, &n, &poster, &backdrop, &summary)
+	err := m.db.QueryRowContext(ctx, `SELECT f.collection_id,
+ COALESCE(NULLIF(f.name,''),cc.name,''),f.member_count,
+ COALESCE(cc.poster,''),COALESCE(cc.backdrop,''),COALESCE(cc.summary,'')
+ FROM catalog_franchises f LEFT JOIN catalog_collections cc ON cc.tmdb_id=f.collection_id
+ WHERE f.member_count>=2 AND f.collection_id>?
+ ORDER BY f.collection_id LIMIT 1`, after).Scan(&id, &name, &n, &poster, &backdrop, &summary)
 	if err != nil {
 		return nil, err
 	}
@@ -242,13 +243,56 @@ func (m *Mirror) NextFranchise(ctx context.Context, after int64) (*core.Collecti
 	return &core.Collection{Key: core.CollectionKey(id), Title: name, Summary: summary, Kind: "franchise", Type: core.TypeMovie, PosterPath: poster, BackdropPath: backdrop, ChildCount: n}, nil
 }
 
+// FranchiseRatedCountsBatch is FranchiseRatedCounts scoped to one batch of
+// franchise IDs, probing catalog_titles_collection instead of scanning the
+// library.
+func (m *Mirror) FranchiseRatedCountsBatch(ctx context.Context, level int, collectionIDs []int) (map[int64]int, error) {
+	if len(collectionIDs) == 0 {
+		return nil, nil
+	}
+	out := make(map[int64]int, len(collectionIDs))
+	for part := range store.Chunks(collectionIDs, 400) {
+		args := make([]any, 0, len(part)+1)
+		args = append(args, level)
+		for _, id := range part {
+			args = append(args, id)
+		}
+		rows, err := m.db.QueryContext(ctx, `SELECT collection_id, COUNT(*)
+			FROM catalog_titles
+			WHERE type='movie' AND browsable=1 AND adult=0
+			  AND content_rating_rank>0 AND content_rating_rank<=? AND enforcement_rating<>'XXX'
+			  AND collection_id IN (`+placeholders(len(part))+`)
+			GROUP BY collection_id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if n > 0 {
+				out[id] = n
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // FranchiseRatedCounts is, per franchise Franchises lists, how many of its
 // browsable movies a viewer capped at level may watch (rated, at or below
-// the cap; contentrating.Exceeds), in one grouped read over the franchises'
-// members.
+// the cap; contentrating.EnforceExceeds), in one grouped read over the
+// franchises' members.
 func (m *Mirror) FranchiseRatedCounts(ctx context.Context, level int) (map[int64]int, error) {
-	rows, err := m.db.QueryContext(ctx, `SELECT collection_id, COUNT(CASE WHEN content_rating_rank>0 AND content_rating_rank<=? THEN 1 END)
-		FROM catalog_titles WHERE type='movie' AND browsable=1 AND collection_id>0
+	rows, err := m.db.QueryContext(ctx, `SELECT collection_id, COUNT(CASE WHEN content_rating_rank>0 AND content_rating_rank<=? AND enforcement_rating<>'XXX' THEN 1 END)
+		FROM catalog_titles WHERE type='movie' AND browsable=1 AND adult=0 AND collection_id>0
 		GROUP BY collection_id HAVING COUNT(*)>=2`, level)
 	if err != nil {
 		return nil, err

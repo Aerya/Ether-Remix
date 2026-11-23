@@ -73,6 +73,7 @@ function nodeName(n: ClusterNode): string {
 export function transcodeLabel(n: ClusterNode): string {
   if (n.caps?.roles?.length && !n.caps.roles.includes("transcode")) return t("—");
   if (!n.caps?.transcode) return t("Unavailable");
+  if (n.caps.videoTranscoding === "off") return t("Off");
   const hw = n.caps.hwAccel;
   return hw && hw !== "none" ? hw : t("Software");
 }
@@ -989,6 +990,7 @@ function NodeControls({
           {[
             ["maxStreams", t("Streams")],
             ["defaultStreamLimit", t("Per viewer")],
+            ["videoTranscoding", t("Video transcoding")],
             ["maxTranscodes", t("Transcoding")],
             ["hwAccel", t("Hardware acceleration")],
           ].map(([key, label]) => {

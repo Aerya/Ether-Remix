@@ -35,13 +35,14 @@ func TestSortNameBoundsPageTheSortOrder(t *testing.T) {
 		{core.Filter{NameStartsWith: "batman "}, false, "[batman begins]"},
 		{core.Filter{NameStartsWith: "AE"}, false, "[aeon flux]"},
 		{core.Filter{NameStartsWith: "É"}, false, "[ebola syndrome]"},
+		{core.Filter{NameStartsWith: "R"}, false, "[rec]]"},
 		{core.Filter{NameStartsWith: "the"}, false, "[theory of everything]"},
-		{core.Filter{NameLessThan: "A"}, false, "[12 angry men [rec]]"},
+		{core.Filter{NameLessThan: "A"}, false, "[0000000012 angry men]"},
 		{core.Filter{NameStartsWithOrGreater: "T"}, false, "[theory of everything zodiac 千と千尋の神隠し]"},
 		{core.Filter{NameStartsWithOrGreater: "b", NameLessThan: "E"}, false, "[batman batman begins beetlejuice]"},
 		{core.Filter{NameStartsWith: "Z", NameLessThan: "B"}, false, "[]"},
-		{core.Filter{NameStartsWith: "  "}, false, "[12 angry men [rec] a aeon flux amelie batman batman begins beetlejuice ebola syndrome theory of everything zodiac 千と千尋の神隠し]"},
-		{core.Filter{FirstCharacter: "#"}, false, "[12 angry men [rec]]"},
+		{core.Filter{NameStartsWith: "  "}, false, "[0000000012 angry men a aeon flux amelie batman batman begins beetlejuice ebola syndrome rec] theory of everything zodiac 千と千尋の神隠し]"},
+		{core.Filter{FirstCharacter: "#"}, false, "[0000000012 angry men]"},
 		{core.Filter{FirstCharacter: "~"}, false, "[千と千尋の神隠し]"},
 	} {
 		tc.f.Type = core.TypeMovie

@@ -164,23 +164,13 @@ type ownedBroadcastHTTP struct {
 
 func (s *ownedBroadcastHTTP) Close() error { s.cancel(); return s.HTTPSession.Close() }
 
-type broadcastHTTPObservation struct{ *mediaObservation }
-
-func (w *broadcastHTTPObservation) Write(p []byte) (int, error) {
-	n, err := w.mediaObservation.Write(p)
-	if n > 0 && err == nil {
-		w.ss.mu.Lock()
-		w.ss.last = w.s.o.Now()
-		w.ss.firstMediaDelivered = true
-		w.ss.mu.Unlock()
-	}
-	return n, err
-}
 func (s *Service) serveBroadcastHTTPMedia(w http.ResponseWriter, r *http.Request, ss *session, stream core.HTTPSession) {
 	s.touchMedia(ss)
-	observed := s.observeMedia(w, ss)
+	observed := s.observeContinuousMedia(w, ss)
 	defer observed.done()
-	stream.ServeHTTP(&broadcastHTTPObservation{observed}, r)
+	ss.activeReads.Add(1)
+	defer ss.activeReads.Add(-1)
+	stream.ServeHTTP(observed, r)
 }
 
 // Segment serving uses ServeContent. Its per-file Content-Length and status

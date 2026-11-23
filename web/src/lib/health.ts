@@ -104,6 +104,19 @@ export function usenetProblem(state: unknown, lastError?: unknown): string | nul
   const err = str(lastError);
   if (!s || s === "ok") return null;
   const lower = err.toLowerCase();
+  if (s !== "auth_failed" && lower.includes("ip address")) {
+    return t("Account in use from another IP address.");
+  }
+  if (
+    s !== "auth_failed" &&
+    (lower.includes("simultaneous") ||
+      lower.includes("too many") ||
+      lower.includes("connection limit") ||
+      lower.includes("already logged in") ||
+      lower.includes("in use"))
+  ) {
+    return t("Account connection limit reached.");
+  }
   if (
     s === "auth_failed" ||
     lower.includes("authentication failed") ||
@@ -311,7 +324,7 @@ function debridOn(v: unknown): boolean {
  * section it also warns when debrid is on but no enabled indexer returns
  * torrents: every play would then fail with nothing to stream.
  */
-export function indexersHealth(v: unknown, debrid?: unknown): HealthItem {
+export function indexersHealth(v: unknown, debrid?: unknown, now = new Date()): HealthItem {
   const base = {
     id: "indexers" as const,
     label: t("Indexers"),
@@ -332,57 +345,94 @@ export function indexersHealth(v: unknown, debrid?: unknown): HealthItem {
       summary: t("No indexers enabled"),
       details: [t("Ether has nothing to search until an indexer is enabled.")],
     };
-  const noTorrent = debridOn(debrid) && !enabled.some((r) => r.torrent === true);
+  const nowSec = now.getTime() / 1000;
+  const isMissing = (r: Record<string, unknown>) => r.missingDefinition === true;
+  const isPaused = (r: Record<string, unknown>) => !isMissing(r) && num(r.pausedUntil) > nowSec;
+  const missing = enabled.filter(isMissing).length;
+  const paused = enabled.filter(isPaused).length;
+  const noTorrent = debridOn(debrid) && !enabled.some((r) => r.torrent === true && !isMissing(r));
   let exhausted = 0;
   let remaining = 0;
   let limited = 0;
   let used = 0;
   let limit = 0;
   const details = rows.map((r) => {
+    const rowEnabled = r.enabled !== false;
+    const rowMissing = isMissing(r);
+    const rowPaused = isPaused(r);
     const hl = num(r.hitsLimit);
     const hr = num(r.hitsRemaining);
-    if (hl > 0) {
+    if (hl > 0 && rowEnabled && !rowMissing) {
       limited++;
       remaining += hr;
       used += num(r.hitsUsed);
       limit += hl;
-      if (hr <= 0) exhausted++;
+      if (hr <= 0 && !rowPaused) exhausted++;
     }
-    const parts = [
-      hl > 0 ? t("{left}/{limit} searches left", { left: hr, limit: hl }) : t("unlimited searches"),
-    ];
-    if (num(r.grabsLimit) > 0)
+    const parts: string[] = [];
+    if (rowMissing) {
+      parts.push(t("definition missing"));
+    } else {
       parts.push(
-        t("{left}/{limit} grabs left", { left: num(r.grabsRemaining), limit: num(r.grabsLimit) }),
+        hl > 0
+          ? t("{left}/{limit} searches left", { left: hr, limit: hl })
+          : t("unlimited searches"),
       );
+      if (num(r.grabsLimit) > 0)
+        parts.push(
+          t("{left}/{limit} grabs left", { left: num(r.grabsRemaining), limit: num(r.grabsLimit) }),
+        );
+      if (rowPaused) parts.push(t("paused after failures"));
+    }
     return `${str(r.indexer) || str(r.name)}: ${parts.join(" · ")}`;
   });
+  const broken = missing + paused + exhausted;
   let level: HealthLevel = "ok";
-  if (exhausted > 0 && exhausted === rows.length) level = "error";
-  else if (exhausted > 0) level = "warn";
+  if (broken >= enabled.length) level = "error";
+  else if (broken > 0) level = "warn";
   let summary =
-    limited === 0
-      ? tn(rows.length, "{count} indexer · no daily limits", "{count} indexers · no daily limits")
-      : exhausted > 0
-        ? tn(
-            rows.length,
-            "{exhausted} of {count} indexer out of searches today",
-            "{exhausted} of {count} indexers out of searches today",
-            { exhausted },
-          )
+    missing > 0
+      ? enabled.length === 1 && missing === 1
+        ? t("Definition missing")
         : tn(
-            rows.length,
-            "{count} indexer · {remaining} searches left today",
-            "{count} indexers · {remaining} searches left today",
-            { remaining },
-          );
+            enabled.length,
+            "{missing} of {count} indexer missing its definition",
+            "{missing} of {count} indexers missing their definition",
+            { missing },
+          )
+      : paused > 0
+        ? tn(
+            enabled.length,
+            "{paused} of {count} indexer paused after failures",
+            "{paused} of {count} indexers paused after failures",
+            { paused },
+          )
+        : limited === 0
+          ? tn(
+              rows.length,
+              "{count} indexer · no daily limits",
+              "{count} indexers · no daily limits",
+            )
+          : exhausted > 0
+            ? tn(
+                rows.length,
+                "{exhausted} of {count} indexer out of searches today",
+                "{exhausted} of {count} indexers out of searches today",
+                { exhausted },
+              )
+            : tn(
+                rows.length,
+                "{count} indexer · {remaining} searches left today",
+                "{count} indexers · {remaining} searches left today",
+                { remaining },
+              );
   if (noTorrent) {
     details.unshift(
       t(
         "Debrid streams torrents, but no enabled indexer returns them. Add a Stremio addon or Torznab indexer.",
       ),
     );
-    if (level !== "error") {
+    if (level === "ok") {
       level = "warn";
       summary = t("No torrent indexer for debrid");
     }
@@ -955,7 +1005,7 @@ export function computeHealth(
   const plexOn = opts?.plexEnabled !== false;
   const items: HealthItem[] = [
     usenetHealth(s.providers, s.debrid, s.indexers),
-    indexersHealth(s.indexers, s.debrid),
+    indexersHealth(s.indexers, s.debrid, now),
     cacheHealth(s.cache),
     catalogHealth(s.catalog, now),
     databaseHealth(s.database, now),
@@ -974,7 +1024,6 @@ export interface NowPlaying {
   isMusic?: boolean;
   artist?: string;
   album?: string;
-  viewerState?: string;
   canStop?: boolean;
   node?: string;
   processor?: string;
@@ -993,9 +1042,11 @@ export interface NowPlaying {
   channelId: string;
   channelName: string;
   channelNumber: string;
+  userId?: number;
   user: string;
   device: string;
   product: string;
+  platform?: string;
   decision: string;
   decisionReason: string;
   qualityFallback?: string;
@@ -1018,8 +1069,16 @@ export interface NowPlaying {
   failovers: number;
   /** The client's address, when the server reports it. */
   ip: string;
+  /** Server-computed explanation for local-vs-remote classification, e.g. "Home network (source 192.168.3.10)". */
+  networkReason?: string;
   /** Delivered bitrate now (or the encode's target), kbps; 0 when unknown. */
   bitrateKbps: number;
+  /** Dynamic bitrate cap applied to this stream in kbps, when constrained by a shared budget. */
+  bitrateCapKbps?: number;
+  /** Source of the bitrate cap, e.g. "upload_budget". */
+  bitrateCapSource?: string;
+  /** Overall bitrate of the source media in kbps, when probed or derivable. */
+  sourceKbps?: number;
   /** Short human descriptions, e.g. "HEVC 2160p HDR10" → "H.264 1080p SDR". */
   sourceVideo: string;
   outputVideo: string;
@@ -1030,6 +1089,16 @@ export interface NowPlaying {
   ratingKey: number;
   /** Selected subtitle, e.g. "English SRT" or "English PGS (burned)". */
   subtitle: string;
+  /** Shared server liveness classification: "playing" or "paused". */
+  liveness?: string;
+  /** Last client-reported timeline state: "playing", "paused", or "stopped". */
+  viewerState?: string;
+  /** True only when the client explicitly reported paused. */
+  paused?: boolean;
+  /** Viewer-experience accounting on the live session, when playback was requested. */
+  startMs?: number | null;
+  bufferEvents?: number | null;
+  bufferMs?: number | null;
 }
 
 function pick(o: Record<string, unknown>, ...keys: string[]): unknown {
@@ -1046,7 +1115,20 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
     const channel = pick(s, "liveChannel", "LiveChannel");
     const liveChannel = isPlainObject(channel) ? channel : null;
     const resolution = (pick(s, "Resolution", "resolution") ?? {}) as Record<string, unknown>;
-    const release = isPlainObject(resolution.release) ? resolution.release : {};
+    const releaseObj = pick(resolution, "release", "Release");
+    const release = isPlainObject(releaseObj) ? releaseObj : {};
+    const expObj = pick(s, "experience", "Experience");
+    const exp =
+      isPlainObject(expObj) && pick(expObj, "requested", "Requested") === true ? expObj : null;
+    const expPictured = exp ? pick(exp, "pictured", "Pictured") === true : false;
+    const expStartNs = exp ? num(pick(exp, "startTime", "StartTime")) : -1;
+    const startMs = exp
+      ? expPictured && expStartNs >= 0
+        ? Math.round(expStartNs / 1e6)
+        : null
+      : undefined;
+    const bufferEvents = exp ? num(pick(exp, "bufferEvents", "BufferEvents")) : undefined;
+    const bufferMs = exp ? Math.round(num(pick(exp, "buffering", "Buffering")) / 1e6) : undefined;
     const durationNs = num(pick(info, "duration", "Duration"));
     const offsetMs = pick(s, "viewOffset", "ViewOffset", "positionMs", "PositionMs");
     const durationMs = durationNs / 1e6;
@@ -1057,6 +1139,13 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
     else if (typeof offsetMs === "number" && Number.isFinite(offsetMs) && durationMs > 0)
       progress = Math.max(0, Math.min(1, offsetMs / durationMs));
     const size = num(pick(info, "size", "Size"));
+    const infoBitrateKbps = num(pick(info, "bitrateKbps", "BitrateKbps"));
+    const sourceKbps =
+      infoBitrateKbps > 0
+        ? infoBitrateKbps
+        : size > 0 && durationMs > 0
+          ? Math.round((size * 8) / durationMs)
+          : 0;
     const bufferedBytes = num(pick(s, "BufferedBytes", "bufferedBytes"));
     const bufferedUntilNs = num(pick(s, "BufferedUntil", "bufferedUntil"));
     let buffered = 0;
@@ -1064,6 +1153,11 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       buffered = Math.min(1, bufferedUntilNs / 1e6 / durationMs);
     else if (size > 0 && bufferedBytes > 0)
       buffered = Math.min(1, (progress ?? 0) + bufferedBytes / size);
+    const userId = num(pick(s, "UserID", "userId"));
+    const platform = str(pick(client, "platform", "Platform"));
+    const liveness = str(pick(s, "liveness", "Liveness"));
+    const viewerState = str(pick(s, "viewerState", "ViewerState"));
+    const paused = liveness === "paused" || (!liveness && viewerState === "paused");
     return {
       isMusic: s.isMusic === true,
       artist: str(s.artist),
@@ -1080,18 +1174,20 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       channelId: liveChannel ? str(pick(liveChannel, "id", "ID")).trim() : "",
       channelName: liveChannel ? str(pick(liveChannel, "name", "Name")).trim() : "",
       channelNumber: liveChannel ? str(pick(liveChannel, "number", "Number")).trim() : "",
+      ...(userId ? { userId } : {}),
       user: str(pick(s, "Username", "username")) || t("Someone"),
       device:
         str(pick(client, "deviceName", "device")) ||
         str(pick(client, "product")) ||
         t("Unknown device"),
       product: str(pick(client, "product")),
+      ...(platform ? { platform } : {}),
       decision: str(pick(s, "Decision", "decision")),
       decisionReason: str(pick(s, "decisionReason", "DecisionReason")),
       qualityFallback: str(pick(s, "qualityFallback", "QualityFallback")),
       videoCopy: pick(s, "decisionVideoCopy", "DecisionVideoCopy") === true,
       audioCopy: pick(s, "decisionAudioCopy", "DecisionAudioCopy") === true,
-      remote: pick(client, "remote") === true,
+      remote: pick(client, "remote", "Remote") === true,
       bytesServed: num(pick(s, "BytesServed", "bytesServed")),
       size,
       buffered,
@@ -1099,11 +1195,23 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       startedAt: parseTime(pick(s, "StartedAt", "startedAt")),
       durationMs,
       progress,
-      release: str(release.name),
+      release: str(pick(release, "name", "Name")) || str(pick(s, "release", "Release")),
       origin: str(pick(s, "origin", "Origin")),
       failovers: num(pick(s, "Failovers", "failovers")),
-      ip: str(pick(s, "ip", "IP", "Ip")) || str(pick(client, "ip", "address")),
+      ip:
+        str(pick(s, "ip", "IP", "Ip")) ||
+        str(pick(client, "clientIp", "ClientIP", "ip", "address")),
+      ...(str(pick(s, "networkReason", "NetworkReason"))
+        ? { networkReason: str(pick(s, "networkReason", "NetworkReason")) }
+        : {}),
       bitrateKbps: num(pick(s, "bitrateKbps", "BitrateKbps")),
+      ...(num(pick(s, "bitrateCapKbps", "BitrateCapKbps")) > 0
+        ? { bitrateCapKbps: num(pick(s, "bitrateCapKbps", "BitrateCapKbps")) }
+        : {}),
+      ...(str(pick(s, "bitrateCapSource", "BitrateCapSource"))
+        ? { bitrateCapSource: str(pick(s, "bitrateCapSource", "BitrateCapSource")) }
+        : {}),
+      ...(sourceKbps ? { sourceKbps } : {}),
       sourceVideo: str(pick(s, "sourceVideo", "SourceVideo")),
       outputVideo: str(pick(s, "outputVideo", "OutputVideo")),
       sourceAudio: str(pick(s, "sourceAudio", "SourceAudio")),
@@ -1111,8 +1219,21 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       container: str(pick(s, "container", "Container")),
       ratingKey: num(pick(s, "ratingKey", "RatingKey")),
       subtitle: str(pick(s, "subtitle", "Subtitle")),
+      ...(liveness ? { liveness } : {}),
+      ...(viewerState ? { viewerState } : {}),
+      ...(paused ? { paused } : {}),
+      ...(exp ? { startMs, bufferEvents, bufferMs } : {}),
     };
   });
+}
+
+/** True only when the session is explicitly paused under the shared server liveness rule. */
+export function isPausedSession(
+  s: Pick<NowPlaying, "paused" | "liveness" | "viewerState">,
+): boolean {
+  return (
+    s.paused === true || s.liveness === "paused" || (!s.liveness && s.viewerState === "paused")
+  );
 }
 
 /** Selected channel, independent of the programme title. */

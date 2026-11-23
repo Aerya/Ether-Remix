@@ -52,10 +52,18 @@ func anthropicHeaders(key string) http.Header {
 // models reject it) and no assistant prefill (also rejected), so JSON
 // comes from the prompt alone; the parsers are tolerant.
 func (c *Client) anthropicChat(ctx context.Context, base string, cfg config.LLM, msgs []Message) (string, error) {
-	req := anthropicRequest{Model: cfg.Model, MaxTokens: anthropicMaxTokens}
-	if budget, ok := ctx.Value(chatBudgetKey{}).(int); ok {
-		req.MaxTokens = budget
+	budget := anthropicMaxTokens
+	if b, ok := ctx.Value(chatBudgetKey{}).(int); ok {
+		budget = b
 	}
+	return c.anthropicChatBudget(ctx, base, cfg, msgs, budget)
+}
+
+func (c *Client) anthropicChatBudget(ctx context.Context, base string, cfg config.LLM, msgs []Message, budget int) (string, error) {
+	if budget <= 0 {
+		budget = anthropicMaxTokens
+	}
+	req := anthropicRequest{Model: cfg.Model, MaxTokens: budget}
 	var system []string
 	for _, m := range msgs {
 		if m.Role == "system" {

@@ -16,6 +16,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/listcache"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
@@ -76,7 +77,16 @@ func (i *instance) Handler() http.Handler {
 		mediasafety.SetHeaders(w)
 		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		r = r.Clone(r.Context())
+		ctx := r.Context()
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			if !reqmemo.Active(ctx) {
+				ctx = reqmemo.With(ctx)
+			}
+			if frontend.RequestMemoFrom(ctx) == nil {
+				ctx = frontend.WithRequestMemo(ctx)
+			}
+		}
+		r = r.Clone(ctx)
 		u := *r.URL
 		u.Path = strings.TrimPrefix(u.Path, "/xtream")
 		r.URL = &u
@@ -103,6 +113,7 @@ type login struct {
 	viewer             *frontend.Viewer
 	device             frontend.Device
 	password, username string
+	credential         string
 	artwork            map[frontend.RatingKey]string
 	ids                map[frontend.RatingKey]int32
 	channels           map[string]int32
@@ -134,7 +145,7 @@ func (i *instance) authenticate(r *http.Request) (login, error) {
 	if u == "" {
 		u, p = r.URL.Query().Get("username"), r.URL.Query().Get("password")
 	}
-	if len(u) > 128 || len(p) > 128 || i.host.ClientIP == nil {
+	if i.host.ClientIP == nil {
 		return login{}, errors.New("unauthorized")
 	}
 	ip, ok := i.host.ClientIP(r)
@@ -148,12 +159,16 @@ func (i *instance) authenticate(r *http.Request) (login, error) {
 	if v == nil {
 		return login{}, errors.New("unauthorized")
 	}
-	sum := sha256.Sum256([]byte(p))
+	credential, short := frontend.XtreamGrantCredential(u, p)
+	if !short {
+		credential = p
+	}
+	sum := sha256.Sum256([]byte(credential))
 	d := frontend.Device{ID: "xtream-" + hex.EncodeToString(sum[:16]), Client: "IPTV player apps", Product: "Xtream"}
 	if i.host.ClientSeen != nil {
 		i.host.ClientSeen(d.ID)
 	}
-	return login{viewer: v, device: d, password: p, username: u, artwork: make(map[frontend.RatingKey]string), ids: make(map[frontend.RatingKey]int32), channels: make(map[string]int32), groups: make(map[string]int32)}, nil
+	return login{viewer: v, device: d, password: p, username: u, credential: credential, artwork: make(map[frontend.RatingKey]string), ids: make(map[frontend.RatingKey]int32), channels: make(map[string]int32), groups: make(map[string]int32)}, nil
 }
 func jsonResponse(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -221,7 +236,7 @@ func (i *instance) api(w http.ResponseWriter, r *http.Request, l login) {
 			}
 		}
 		now := time.Now().UTC()
-		jsonResponse(w, map[string]any{"user_info": map[string]any{"username": l.username, "password": l.password, "auth": 1, "status": "Active", "message": "Ether", "exp_date": nil, "is_trial": "0", "active_cons": strconv.Itoa(i.active(r, l)), "created_at": "0", "max_connections": "1", "allowed_output_formats": []string{"m3u8"}}, "server_info": map[string]any{"url": base.Hostname(), "port": port, "https_port": "443", "server_protocol": base.Scheme, "rtmp_port": "0", "timezone": "UTC", "timestamp_now": now.Unix(), "time_now": now.Format("2006-01-02 15:04:05")}})
+		jsonResponse(w, map[string]any{"user_info": map[string]any{"username": l.username, "password": l.password, "auth": 1, "status": "Active", "message": "Ether", "exp_date": nil, "is_trial": "0", "active_cons": strconv.Itoa(i.active(r, l)), "created_at": "0", "max_connections": strconv.Itoa(i.connectionLimit(r, l)), "allowed_output_formats": []string{"m3u8", "ts"}}, "server_info": map[string]any{"url": base.Hostname(), "port": port, "https_port": "443", "server_protocol": base.Scheme, "rtmp_port": "0", "timezone": "UTC", "timestamp_now": now.Unix(), "time_now": now.Format("2006-01-02 15:04:05")}})
 		// Apps sign in, then list categories and whole libraries.
 		i.prepareLists(r, l, "movie", "show")
 	case "get_live_categories", "get_live_streams":
@@ -259,7 +274,7 @@ func (i *instance) image(r *http.Request, l login, key frontend.RatingKey, chann
 	if base == "" {
 		return ""
 	}
-	secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: l.password, Device: l.device, Item: key, Channel: channel, Image: images[0]})
+	secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: l.credential, Device: l.device, Item: key, Channel: channel, Image: images[0]})
 	if err != nil {
 		return ""
 	}

@@ -41,6 +41,7 @@ func TestValidateConfigQualityProfileRanking(t *testing.T) {
 		}, "quality.profiles[0].qualityOrder", "twice"},
 		{"unknown built-in format", func(p *core.QualityProfile) { p.CustomFormatScores["ether:nope"] = 5 }, "quality.profiles[0].customFormatScores", "not one of Ether's formats"},
 		{"rule score without the rule", func(p *core.QualityProfile) { p.CustomFormatScores["rule:gone"] = 5 }, "quality.profiles[0].customFormatScores", "Prefer rule"},
+		{"invalid audioLanguageMode", func(p *core.QualityProfile) { p.AudioLanguageMode = "strict" }, "quality.profiles[0].audioLanguageMode", "must be one of"},
 	} {
 		c := cfg
 		c.Quality.Profiles = append([]core.QualityProfile(nil), cfg.Quality.Profiles...)

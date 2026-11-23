@@ -133,6 +133,7 @@ Streaming formats (context Ether knows and Radarr doesn't):
 | Format | Matches | Default |
 | --- | --- | --- |
 | Viewer's language | Foreign title; release declares the viewer's audio language or MULTi | 20000 |
+| Viewer's subtitles | The indexer lists subtitles (Newznab `subs`) in the viewer's subtitle language | 15 |
 | Series year differs | Accepted although the series year differs | −10000 |
 | Video transcode | The device can't decode a legacy codec | −20 |
 | Audio plays directly | The device plays the audio format | 10 |
@@ -171,6 +172,44 @@ release type to 1203. So WEB-DL (4000) always beats WEBRip (2000), and HDR
 (500) only decides between releases of the same type. The 1080p and 720p
 profiles use the same shape at smaller weights (release type 1000 a step,
 Viewer's language 10000, Series year differs −5000).
+
+## Stremio add-on order
+
+A Stremio add-on source (such as AIOStreams or Comet) may already sort its
+own stream list. Each Stremio add-on indexer has an optional **Use the
+add-on's order** switch (`useAddonOrder`, off by default).
+
+When it is on for a source:
+
+- Releases from that source keep the add-on's response order among themselves
+  instead of being re-ranked by quality position, custom format scores,
+  SeaDex/plugin points, size, seeders, source routing or health racing.
+- Hard filters and gates still apply: device codec and Dolby Vision
+  compatibility, profile resolution and size limits, CAM/screener bans,
+  viewer and profile audio language rules, Never-play and Only-play rules,
+  blocked custom formats (score ≤ −10000), title identity checks, connection
+  bandwidth fit, health checks and failover. If the add-on's first result is
+  rejected or fails validation, the next compatible result in the add-on's
+  order plays.
+
+### Interleaving with other sources
+
+When at least one enabled Stremio add-on uses its own order, enabled sources
+are partitioned into ordered **priority bands** following indexer priority
+(the source order on the Indexers page, top to bottom):
+
+- Each add-on-ordered Stremio source forms its own band and keeps its exact
+  internal order inside it.
+- Contiguous profile-ranked sources between add-on-ordered sources share a
+  band and continue competing with one another by quality profile.
+
+For example, with priorities `[NZBGeek, DrunkenSlug, AIOStreams (add-on order), Torrentio]`,
+compatible releases from NZBGeek and DrunkenSlug compete by quality profile
+first (band 0), then AIOStreams keeps its own order (band 1), and Torrentio
+ranks by quality profile after it (band 2). Moving AIOStreams to the top puts
+AIOStreams in band 0 and every profile-ranked source below it in band 1. When
+no enabled Stremio add-on has this option on, all sources share band 0 and
+ranking is unchanged.
 
 ## Upgrading
 

@@ -1,6 +1,10 @@
 package silo
 
-import "github.com/braedonsaunders/ether/internal/frontend"
+import (
+	"strings"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
+)
 
 // NativeLibraryType returns this adapter's built-in library category.
 func NativeLibraryType(mt frontend.MediaType) string {
@@ -14,7 +18,7 @@ func NativeLibraryType(mt frontend.MediaType) string {
 func ProjectLibrary(p frontend.Presentations, fallback frontend.MediaType) (frontend.MediaType, string, bool) {
 	if p.Silo != nil && p.Silo.Type != "" {
 		mt := fallback
-		switch p.Silo.Type {
+		switch strings.ToLower(strings.TrimSpace(p.Silo.Type)) {
 		case "movies", "movie":
 			mt = frontend.TypeMovie
 		case "tvshows", "series", "show":
@@ -23,5 +27,4 @@ func ProjectLibrary(p frontend.Presentations, fallback frontend.MediaType) (fron
 		return mt, p.Silo.Type, true
 	}
 	return "", "", false
-
 }

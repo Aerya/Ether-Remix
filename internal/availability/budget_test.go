@@ -2,6 +2,7 @@ package availability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -130,5 +131,77 @@ func TestBackgroundTrafficStaysWithinEachIndexerAllowance(t *testing.T) {
 		if src == "geek" && b.pairs[fmt.Sprintf("%d/geek", k)] > 0 && b.pairs[fmt.Sprintf("%d/slug", k)] > 0 {
 			t.Errorf("title %d found on geek was still searched on slug", k)
 		}
+	}
+}
+
+func TestAdmitPluginUsenetCheckDailyAllowanceAndReset(t *testing.T) {
+	ctx := context.Background()
+	x := setup(t)
+	x.c.Availability.Verify = false // must not require Ether's own title verification
+	x.c.Availability.PluginUsenetChecks = 2
+	x.c.Availability.ReservePercent = 80
+	x.now = time.Date(2026, 11, 22, 18, 30, 0, 0, time.UTC)
+	wantReset := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+
+	// Plugin A can spend up to 2 background checks; returned context carries
+	// background priority and foreground reserve.
+	bgCtx1, refund1, reset1, err := x.s.AdmitPluginUsenetCheck(ctx, "plug.a")
+	if err != nil {
+		t.Fatalf("first admit: %v", err)
+	}
+	if !reset1.Equal(wantReset) {
+		t.Fatalf("resetAt = %v, want %v", reset1, wantReset)
+	}
+	if !core.IsBackgroundCheck(bgCtx1) || core.ForegroundReserve(bgCtx1) != 80 {
+		t.Fatalf("bgCtx missing background/reserve markers: bg=%v reserve=%d", core.IsBackgroundCheck(bgCtx1), core.ForegroundReserve(bgCtx1))
+	}
+
+	_, _, _, err = x.s.AdmitPluginUsenetCheck(ctx, "plug.a")
+	if err != nil {
+		t.Fatalf("second admit: %v", err)
+	}
+
+	// Third check for plugin A is refused with ErrBudgetExhausted and next UTC midnight.
+	_, _, reset3, err := x.s.AdmitPluginUsenetCheck(ctx, "plug.a")
+	if !errors.Is(err, core.ErrBudgetExhausted) {
+		t.Fatalf("third admit err = %v, want core.ErrBudgetExhausted", err)
+	}
+	if !reset3.Equal(wantReset) {
+		t.Fatalf("exhausted resetAt = %v, want %v", reset3, wantReset)
+	}
+
+	// Plugin B has an independent per-plugin allowance in availability_budget.
+	if _, _, _, err := x.s.AdmitPluginUsenetCheck(ctx, "plug.b"); err != nil {
+		t.Fatalf("plugin B admit failed while plugin A exhausted: %v", err)
+	}
+	if got := x.s.used(ctx, PluginUsenetCheckBucket("plug.a")); got != 2 {
+		t.Fatalf("plug.a used = %d, want 2", got)
+	}
+	if got := x.s.used(ctx, PluginUsenetCheckBucket("plug.b")); got != 1 {
+		t.Fatalf("plug.b used = %d, want 1", got)
+	}
+
+	// Refund is idempotent and returns exactly 1 slot.
+	refund1()
+	refund1()
+	if got := x.s.used(ctx, PluginUsenetCheckBucket("plug.a")); got != 1 {
+		t.Fatalf("plug.a used after idempotent refund = %d, want 1", got)
+	}
+	if _, _, _, err := x.s.AdmitPluginUsenetCheck(ctx, "plug.a"); err != nil {
+		t.Fatalf("re-admit after refund: %v", err)
+	}
+
+	// Next UTC day resets the allowance.
+	x.now = wantReset.Add(time.Second)
+	if _, _, resetNext, err := x.s.AdmitPluginUsenetCheck(ctx, "plug.a"); err != nil {
+		t.Fatalf("admit after UTC midnight rollover: %v", err)
+	} else if !resetNext.Equal(wantReset.Add(24 * time.Hour)) {
+		t.Fatalf("next-day resetAt = %v, want %v", resetNext, wantReset.Add(24*time.Hour))
+	}
+
+	// Setting allowance to 0 disables background checks immediately.
+	x.c.Availability.PluginUsenetChecks = 0
+	if _, _, _, err := x.s.AdmitPluginUsenetCheck(ctx, "plug.c"); !errors.Is(err, core.ErrBudgetExhausted) {
+		t.Fatalf("zero allowance err = %v, want core.ErrBudgetExhausted", err)
 	}
 }

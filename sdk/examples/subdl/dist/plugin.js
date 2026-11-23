@@ -38,7 +38,166 @@ var EtherPlugin = (() => {
     }
   };
 
+  // sdk/typescript/src/kinds.ts
+  function createKindHandlers() {
+    return { catalog: /* @__PURE__ */ new Map(), resolve: /* @__PURE__ */ new Map(), match: /* @__PURE__ */ new Map(), frontend: /* @__PURE__ */ new Map() };
+  }
+  function ok(body) {
+    return { status: 200, headers: { "Content-Type": "application/json" }, body };
+  }
+  function err(status, code, message) {
+    return { status, headers: { "Content-Type": "application/json" }, body: { error: { code, message } } };
+  }
+  function parseBody(body) {
+    if (typeof body === "string" && body.trim()) {
+      const parsed = JSON.parse(body);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    }
+    if (body && typeof body === "object") return body;
+    return {};
+  }
+  function frontendQuery(req) {
+    const query = new URLSearchParams();
+    if (req.query) {
+      for (const [k, v] of Object.entries(req.query)) {
+        if (Array.isArray(v)) {
+          if (v.length > 0) query.set(k, String(v[0]));
+        } else if (v !== void 0 && v !== null) {
+          query.set(k, String(v));
+        }
+      }
+    }
+    const qIndex = (req.path || "").indexOf("?");
+    if (qIndex >= 0) {
+      for (const [k, v] of new URLSearchParams((req.path || "").slice(qIndex + 1))) {
+        if (!query.has(k)) query.set(k, v);
+      }
+    }
+    return query;
+  }
+  async function dispatchKinds(handlers, req, ctx) {
+    const method = (req.method || "GET").toUpperCase();
+    const path = (req.path || "/").split("?")[0] ?? "/";
+    if (!path.startsWith("/ether/v1/")) return null;
+    const parts = path.slice("/ether/v1/".length).split("/").map((p) => decodeURIComponent(p));
+    if (parts.length >= 2 && parts[0] === "frontend") {
+      const adapter = handlers.frontend.get(parts[1] ?? "");
+      if (!adapter) return err(404, "not_found", `No frontend adapter is registered for "${parts[1]}".`);
+      const headers = {};
+      for (const [k, v] of Object.entries(req.headers ?? {})) headers[k] = Array.isArray(v) ? v[0] ?? "" : v;
+      let subPath = `/${parts.slice(2).join("/")}`;
+      const query = frontendQuery(req);
+      const qs = query.toString();
+      if (qs) subPath += `?${qs}`;
+      const res = await adapter.handle(method, subPath, headers, typeof req.body === "string" ? req.body : "");
+      if (res.body.length > 10 * 1024 * 1024) return err(502, "adapter_error", "Frontend adapter response is larger than 10 MiB; serve media through Ether stream URLs.");
+      return { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };
+    }
+    if (method !== "GET" && method !== "POST") {
+      return err(405, "method_not_allowed", "Kind routes use GET or POST.");
+    }
+    let body;
+    try {
+      body = parseBody(req.body);
+    } catch {
+      return err(400, "invalid_json", "Request body must be valid JSON.");
+    }
+    if (parts.length === 3 && parts[0] === "setup" && parts[2] === "test") {
+      if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
+      const input = { step: String(body.step || parts[1]), fields: body.fields };
+      return ok(await handlers.setup.testSetup(input, ctx));
+    }
+    if (parts.length < 3 || parts[0] !== "kinds") return null;
+    const kind = parts[1] ?? "";
+    const tail = parts.slice(2);
+    const browseReq = { ...body, kind };
+    const page = async (p) => {
+      const result = { ...await p };
+      const limit = Number(browseReq.limit || 200);
+      result.items = (result.items ?? []).slice(0, limit);
+      if (!result.nextCursor) delete result.nextCursor;
+      return ok(result);
+    };
+    if (tail.length === 1 && (tail[0] === "browse" || tail[0] === "search")) {
+      const provider = handlers.catalog.get(kind);
+      if (!provider) return err(404, "not_found", `No catalogue provider is registered for kind "${kind}".`);
+      if (tail[0] === "search") {
+        if (!provider.search) return err(501, "not_implemented", "This provider does not search.");
+        return page(provider.search(browseReq, ctx));
+      }
+      return page(provider.browse(browseReq, ctx));
+    }
+    if (tail.length === 2 && tail[0] === "items") {
+      const provider = handlers.catalog.get(kind);
+      if (!provider) return err(404, "not_found", `No catalogue provider is registered for kind "${kind}".`);
+      return ok(await provider.detail(kind, tail[1] ?? "", ctx));
+    }
+    if (tail.length === 1 && tail[0] === "changes") {
+      const provider = handlers.catalog.get(kind);
+      if (!provider?.changes) return err(501, "not_implemented", "This provider has no changes feed.");
+      const result = { ...await provider.changes({ kind, cursor: body.cursor, limit: body.limit }, ctx) };
+      result.upserts = result.upserts ?? [];
+      return ok(result);
+    }
+    if (tail.length === 1 && tail[0] === "resolve") {
+      const resolver = handlers.resolve.get(kind);
+      if (!resolver) return err(404, "not_found", `No resolver is registered for kind "${kind}".`);
+      const result = { ...await resolver.resolve({ ...body, kind }, ctx) };
+      result.sources = result.sources ?? [];
+      return ok(result);
+    }
+    if (tail.length === 1 && tail[0] === "match") {
+      const matcher = handlers.match.get(kind);
+      if (!matcher) return err(404, "not_found", `No matcher is registered for kind "${kind}".`);
+      const result = { ...await matcher.match({ ...body, kind }, ctx) };
+      result.matches = result.matches ?? [];
+      return ok(result);
+    }
+    return err(404, "not_found", "No kind route matched.");
+  }
+
   // sdk/typescript/src/host.ts
+  function checkDataRange(r) {
+    if (!Number.isSafeInteger(r.offset) || r.offset < 0 || r.offset > 256 * 1024 * 1024 || !Number.isSafeInteger(r.length) || r.length <= 0 || r.length > 1024 * 1024) throw new Error("Data range needs nonnegative offset and length 1..1048576");
+  }
+  function encodeData(data) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const parts = [];
+    for (let i2 = 0; i2 < data.length; i2 += 3) {
+      const n = data[i2] << 16 | (data[i2 + 1] ?? 0) << 8 | (data[i2 + 2] ?? 0);
+      parts.push(alphabet[n >>> 18 & 63] + alphabet[n >>> 12 & 63] + (i2 + 1 < data.length ? alphabet[n >>> 6 & 63] : "=") + (i2 + 2 < data.length ? alphabet[n & 63] : "="));
+    }
+    return parts.join("");
+  }
+  function encodeText(text) {
+    const encoded = encodeURIComponent(text);
+    const bytes = [];
+    for (let i2 = 0; i2 < encoded.length; i2++) {
+      if (encoded[i2] === "%") {
+        bytes.push(parseInt(encoded.slice(i2 + 1, i2 + 3), 16));
+        i2 += 2;
+      } else bytes.push(encoded.charCodeAt(i2));
+    }
+    return new Uint8Array(bytes);
+  }
+  function decodeData(r) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const text = r.bodyBase64;
+    const out = new Uint8Array(Math.floor(text.length * 3 / 4) - (text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0));
+    let acc = 0, bits2 = 0, pos = 0;
+    for (const c of text) {
+      if (c === "=") break;
+      const n = alphabet.indexOf(c);
+      if (n < 0) throw new Error("Invalid base64 host result");
+      acc = acc << 6 | n;
+      bits2 += 6;
+      if (bits2 >= 8) {
+        bits2 -= 8;
+        out[pos++] = acc >> bits2 & 255;
+      }
+    }
+    return out;
+  }
   function isHostedRuntime() {
     const g = globalThis;
     return typeof g.__ether_host === "function" || typeof g.ether === "object";
@@ -53,6 +212,26 @@ var EtherPlugin = (() => {
       throw new Error(`Host service ${name} is not available outside the Ether runtime`);
     };
     return {
+      archive: {
+        list: (blob) => callHost("archive.list", [blob]),
+        open: (blob, member, range) => {
+          checkDataRange(range);
+          return decodeData(callHost("archive.open", [blob, member, range]));
+        },
+        extract: (blob, member, opts) => callHost("archive.extract", opts == null ? [blob, member] : [blob, member, opts])
+      },
+      cache: {
+        put: (lib, name, data) => callHost("cache.put", [lib, name, { bodyBase64: encodeData(data) }]).blob,
+        open: (blob) => {
+          const r = callHost("cache.open", [blob]);
+          return r.bodyBase64 ? decodeData({ bodyBase64: r.bodyBase64 }) : encodeText(r.body ?? "");
+        },
+        read: (blob, range) => {
+          checkDataRange(range);
+          return decodeData(callHost("cache.read", [blob, range]));
+        }
+      },
+      settings: { get: () => callHost("settings.get", []) },
       kv: {
         get(key) {
           if (g.ether?.kv) return g.ether.kv.get(key) ?? null;
@@ -79,13 +258,21 @@ var EtherPlugin = (() => {
       },
       secret: {
         get(name) {
-          if (g.ether?.secret) return g.ether.secret.get(name);
-          return callHost("secret.get", [name]);
+          try {
+            if (g.ether?.secret) return g.ether.secret.get(name) ?? "";
+            return callHost("secret.get", [name]) ?? "";
+          } catch (err3) {
+            if (err3 instanceof Error && /is not saved/i.test(err3.message)) return "";
+            throw err3;
+          }
         }
       },
       http: {
+        hash: (req) => callHost("http.hash", [req]),
+        fetchToCache: (req) => callHost("http.fetchToCache", [req]),
         fetch(req) {
           const normalized = {
+            timeoutMs: req.timeoutMs,
             method: req.method ?? "GET",
             url: req.url,
             headers: req.headers ?? {},
@@ -113,6 +300,9 @@ var EtherPlugin = (() => {
         }
       },
       viewers: {
+        granted() {
+          return callHost("viewers.granted", []) ?? [];
+        },
         history(viewerId, limit = 50, offset = 0) {
           if (typeof g.__ether_host === "function") {
             return callHost("viewers.history", [viewerId, limit, offset]) ?? [];
@@ -146,6 +336,22 @@ var EtherPlugin = (() => {
           if (g.ether?.folders) return g.ether.folders.list(root, path) ?? [];
           return callHost("folders.list", [root, path]) ?? [];
         },
+        hashStart(root, path) {
+          if (g.ether?.folders) return g.ether.folders.hashStart(root, path);
+          return callHost("folders.hashStart", [root, path]);
+        },
+        hashPoll(id) {
+          if (g.ether?.folders) return g.ether.folders.hashPoll(id);
+          return callHost("folders.hashPoll", [id]);
+        },
+        hashCancel(id) {
+          if (g.ether?.folders) return g.ether.folders.hashCancel(id);
+          return callHost("folders.hashCancel", [id]);
+        },
+        hash(root, path) {
+          if (g.ether?.folders) return g.ether.folders.hash(root, path);
+          return callHost("folders.hash", [root, path]);
+        },
         stat(root, path) {
           if (g.ether?.folders) return g.ether.folders.stat(root, path);
           return callHost("folders.stat", [root, path]);
@@ -158,6 +364,13 @@ var EtherPlugin = (() => {
             return;
           }
           callHost("notify.owner", [text]);
+        }
+      },
+      frontend: {
+        streamUrl(viewerId, itemRef) {
+          void viewerId;
+          const r = callHost("frontend.streamURL", [itemRef]);
+          return r?.url ?? "";
         }
       },
       log(level, message, attrs) {
@@ -224,6 +437,15 @@ var EtherPlugin = (() => {
       return parsed;
     };
     return {
+      archive: {
+        list: async (blob) => await callJson("POST", "/ether/plugin-host/data/archive.list", [blob]) ?? [],
+        open: async (blob, member, range) => {
+          checkDataRange(range);
+          return decodeData(await callJson("POST", "/ether/plugin-host/data/archive.open", [blob, member, range]));
+        },
+        extract: async (blob, member, opts2) => await callJson("POST", "/ether/plugin-host/data/archive.extract", opts2 == null ? [blob, member] : [blob, member, opts2])
+      },
+      ...credential ? { settings: { get: async () => (await callJson("GET", "/ether/plugin-host/settings"))?.settings ?? {} } } : {},
       kv: {
         async get(key) {
           const res = await callJson(
@@ -258,11 +480,14 @@ var EtherPlugin = (() => {
         }
       },
       http: {
+        hash: async (req) => await callJson("POST", "/ether/plugin-host/data/http.hash", [req]),
+        fetchToCache: async (req) => await callJson("POST", "/ether/plugin-host/data/http.fetchToCache", [req]),
         async fetch(req) {
           const resp = await doFetch(req.url, {
             method: req.method ?? "GET",
             headers: req.headers,
-            body: req.body
+            body: req.body,
+            signal: req.timeoutMs && req.timeoutMs > 0 ? AbortSignal.timeout(req.timeoutMs) : void 0
           });
           const outHeaders = {};
           resp.headers.forEach((v, k) => {
@@ -298,6 +523,9 @@ var EtherPlugin = (() => {
         }
       },
       viewers: {
+        async granted() {
+          return await callJson("GET", "/ether/plugin-host/viewers/granted") ?? [];
+        },
         async history(viewerId, limit = 50, offset = 0) {
           const params = new URLSearchParams({
             limit: String(limit),
@@ -330,6 +558,18 @@ var EtherPlugin = (() => {
             )
           );
         },
+        hashStart() {
+          return Promise.reject(new Error("folders.hash requires the hosted runtime"));
+        },
+        hashPoll() {
+          return Promise.reject(new Error("folders.hash requires the hosted runtime"));
+        },
+        hashCancel() {
+          return Promise.reject(new Error("folders.hash requires the hosted runtime"));
+        },
+        hash() {
+          return Promise.reject(new Error("folders.hash requires the hosted runtime"));
+        },
         stat() {
           return Promise.reject(
             new Error(
@@ -341,6 +581,53 @@ var EtherPlugin = (() => {
       notify: {
         async owner(text) {
           await callJson("POST", "/ether/plugin-host/notify", { text });
+        }
+      },
+      kinds: {
+        async upsert(kind, items) {
+          const r = await callJson("POST", `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/upsert`, { items });
+          return r?.accepted ?? 0;
+        },
+        async delete(kind, externalIds) {
+          await callJson("POST", `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/delete`, { externalIds });
+        },
+        async items(kind, cursor = "", limit = 200) {
+          return await callJson("GET", `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/items?cursor=${encodeURIComponent(cursor)}&limit=${limit}`) ?? { items: [] };
+        },
+        async resolveSources(q) {
+          const r = await callJson("POST", "/ether/plugin-host/sources/resolve", q);
+          return r?.candidates ?? [];
+        }
+      },
+      cache: {
+        read: async (blob, range) => {
+          checkDataRange(range);
+          return decodeData(await callJson("POST", "/ether/plugin-host/data/cache.read", [blob, range]));
+        },
+        async put(libraryKey, name, data) {
+          const resp = await doFetch(`${base}/ether/plugin-host/cache/${encodeURIComponent(libraryKey)}?name=${encodeURIComponent(name)}`, {
+            method: "POST",
+            headers: credential ? { "X-Ether-Plugin-Credential": credential } : {},
+            body: data
+          });
+          if (!resp.ok) throw new Error(`plugin-host cache put: status ${resp.status}`);
+          return (await resp.json()).blob ?? "";
+        },
+        async open(blobRef) {
+          const resp = await doFetch(`${base}/ether/plugin-host/cache/${blobRef.replace(/^\//, "")}`, {
+            headers: credential ? { "X-Ether-Plugin-Credential": credential } : {}
+          });
+          if (!resp.ok) throw new Error(`plugin-host cache open: status ${resp.status}`);
+          return new Uint8Array(await resp.arrayBuffer());
+        }
+      },
+      frontend: {
+        async streamUrl(viewerId, itemRef) {
+          const r = await callJson("POST", "/ether/plugin-host/frontend/stream-url", {
+            viewerId,
+            itemRef
+          });
+          return r?.url ?? "";
         }
       },
       async log(level, message, attrs) {
@@ -564,9 +851,9 @@ var EtherPlugin = (() => {
       body: { error: { code, message } }
     };
   }
-  function isEtherHostFault(err2) {
-    if (!err2) return false;
-    const msg = err2 instanceof Error ? err2.message : String(err2);
+  function isEtherHostFault(err3) {
+    if (!err3) return false;
+    const msg = err3 instanceof Error ? err3.message : String(err3);
     return msg.includes("__ETHER_FAULT__");
   }
   function parseParams(input) {
@@ -632,6 +919,7 @@ var EtherPlugin = (() => {
       throw new Error("Plugin manifest requires id, name, and version.");
     }
     const routes = def.routes ?? {};
+    const kindHandlers = createKindHandlers();
     const i18n = createI18n(
       buildInlineStrings(manifest, def.strings),
       def.defaultLocale ?? "en"
@@ -657,6 +945,7 @@ var EtherPlugin = (() => {
         }
       }
     }
+    let settingsFailureLogged = false;
     function buildContext(req) {
       const { query } = parseUrlPathAndQuery(req.path, req.query);
       const localeHeader = req.locale ?? query.locale ?? getHeader(req.headers, "X-Ether-Locale") ?? getHeader(req.headers, "Accept-Language") ?? def.defaultLocale ?? "en";
@@ -664,9 +953,9 @@ var EtherPlugin = (() => {
       const pickToken = getHeader(req.headers, "X-Ether-Pick");
       const requestId = getHeader(req.headers, "X-Ether-Request-ID");
       const hostClient = def.host ?? (isHostedRuntime() ? createHostedClient() : createRemoteHostClient(def.remoteHostOptions));
-      return {
+      const makeContext = (settings) => ({
         manifest,
-        settings: currentSettings,
+        settings,
         locale,
         pickToken,
         requestId,
@@ -675,7 +964,29 @@ var EtherPlugin = (() => {
         ether: hostClient,
         i18n,
         t: (key, params) => i18n.t(key, params, locale)
+      });
+      if (!hostClient.settings || req.path === "/ether/configure") return makeContext(currentSettings);
+      const fallback = () => {
+        if (!settingsFailureLogged) {
+          console.warn("plugin settings lookup failed");
+          settingsFailureLogged = true;
+        }
+        return makeContext({});
       };
+      let fresh;
+      try {
+        fresh = hostClient.settings.get();
+      } catch {
+        return fallback();
+      }
+      const resolve = (v) => {
+        const merged = { ...v };
+        for (const field of collectSettingFields(settingsSchema)) {
+          if (field.kind === "secret" && currentSettings[field.key] !== void 0) merged[field.key] = currentSettings[field.key];
+        }
+        return makeContext(decodeSettings(settingsSchema, merged, def.defaultSettings).settings);
+      };
+      return fresh instanceof Promise ? fresh.then(resolve, fallback) : resolve(fresh);
     }
     function mapResult(value, transform = (r) => okResponse(r)) {
       if (value instanceof Promise) {
@@ -845,7 +1156,7 @@ var EtherPlugin = (() => {
           return errorResponse(404, "not_found", "Job handler is not registered.");
         }
         const name = decodeURIComponent(path.slice("/ether/job/".length));
-        return mapResult(routes.job({ name }, ctx));
+        return mapResult(routes.job({ name, continuation: parseJsonBody(req.body).continuation }, ctx));
       }
       if (method === "POST" && path === "/ether/rank-key") {
         if (!routes.rankKey) {
@@ -957,37 +1268,42 @@ var EtherPlugin = (() => {
           }
         }
       }
+      if (path.startsWith("/ether/v1/")) {
+        return dispatchKinds(kindHandlers, req, ctx).then(
+          (r) => r ?? errorResponse(404, "not_found", `No route matched ${method} ${path}.`)
+        );
+      }
       return errorResponse(404, "not_found", `No route matched ${method} ${path}.`);
     }
-    function handleRouteError(err2) {
-      if (isEtherHostFault(err2)) {
-        throw err2;
+    function handleRouteError(err3) {
+      if (isEtherHostFault(err3)) {
+        throw err3;
       }
-      if (err2 instanceof PluginHttpError) {
-        return errorResponse(err2.status, err2.code, err2.message);
+      if (err3 instanceof PluginHttpError) {
+        return errorResponse(err3.status, err3.code, err3.message);
       }
-      if (err2 && typeof err2 === "object" && "status" in err2 && typeof err2.status === "number") {
-        const e = err2;
+      if (err3 && typeof err3 === "object" && "status" in err3 && typeof err3.status === "number") {
+        const e = err3;
         return errorResponse(e.status, e.code || "plugin_error", e.message || "Request failed.");
       }
-      const message = err2 instanceof Error ? err2.message : String(err2);
+      const message = err3 instanceof Error ? err3.message : String(err3);
       return errorResponse(500, "internal_error", message || "Internal plugin error.");
     }
     function handleRequest(req) {
       try {
         const ctx = buildContext(req);
-        const res = dispatchCore(req, ctx);
+        const res = ctx instanceof Promise ? ctx.then((c) => dispatchCore(req, c)) : dispatchCore(req, ctx);
         return res instanceof Promise ? res.catch(handleRouteError) : res;
-      } catch (err2) {
-        return handleRouteError(err2);
+      } catch (err3) {
+        return handleRouteError(err3);
       }
     }
     async function dispatch(req) {
       try {
-        const ctx = buildContext(req);
+        const ctx = await buildContext(req);
         return await dispatchCore(req, ctx);
-      } catch (err2) {
-        return handleRouteError(err2);
+      } catch (err3) {
+        return handleRouteError(err3);
       }
     }
     function rankKey(candidate, config) {
@@ -1012,7 +1328,22 @@ var EtherPlugin = (() => {
       handle: handleRequest,
       dispatch,
       rank_key: rankKey,
-      cond_match: condMatch
+      cond_match: condMatch,
+      onCatalog: (kind, provider) => {
+        kindHandlers.catalog.set(kind, provider);
+      },
+      onResolve: (kind, resolver) => {
+        kindHandlers.resolve.set(kind, resolver);
+      },
+      onMatch: (kind, matcher) => {
+        kindHandlers.match.set(kind, matcher);
+      },
+      onFrontend: (key, adapter) => {
+        kindHandlers.frontend.set(key, adapter);
+      },
+      onSetupTest: (tester) => {
+        kindHandlers.setup = tester;
+      }
     };
     if (isHostedRuntime()) {
       const g = globalThis;
@@ -1226,11 +1557,11 @@ var EtherPlugin = (() => {
     "invalid zip data"
     // determined by unknown compression method
   ];
-  var err = function(ind, msg, nt) {
+  var err2 = function(ind, msg, nt) {
     var e = new Error(msg || ec[ind]);
     e.code = ind;
     if (Error.captureStackTrace)
-      Error.captureStackTrace(e, err);
+      Error.captureStackTrace(e, err2);
     if (!nt)
       throw e;
     return e;
@@ -1263,7 +1594,7 @@ var EtherPlugin = (() => {
           var s = shft(pos) + 4, l = dat[s - 4] | dat[s - 3] << 8, t = s + l;
           if (t > sl) {
             if (noSt)
-              err(0);
+              err2(0);
             break;
           }
           if (resize)
@@ -1309,10 +1640,10 @@ var EtherPlugin = (() => {
           lm = hMap(lt, lbt, 1);
           dm = hMap(dt, dbt, 1);
         } else
-          err(1);
+          err2(1);
         if (pos > tbts) {
           if (noSt)
-            err(0);
+            err2(0);
           break;
         }
       }
@@ -1325,11 +1656,11 @@ var EtherPlugin = (() => {
         pos += c & 15;
         if (pos > tbts) {
           if (noSt)
-            err(0);
+            err2(0);
           break;
         }
         if (!c)
-          err(2);
+          err2(2);
         if (sym < 256)
           buf[bt++] = sym;
         else if (sym == 256) {
@@ -1344,7 +1675,7 @@ var EtherPlugin = (() => {
           }
           var d = dm[bits16(dat, pos) & dms], dsym = d >> 4;
           if (!d)
-            err(3);
+            err2(3);
           pos += d & 15;
           var dt = fd[dsym];
           if (dsym > 3) {
@@ -1353,7 +1684,7 @@ var EtherPlugin = (() => {
           }
           if (pos > tbts) {
             if (noSt)
-              err(0);
+              err2(0);
             break;
           }
           if (resize)
@@ -1362,7 +1693,7 @@ var EtherPlugin = (() => {
           if (bt < dt) {
             var shift = dl - dt, dend = Math.min(dt, end);
             if (shift + bt < 0)
-              err(3);
+              err2(3);
             for (; bt < dend; ++bt)
               buf[bt] = dict[shift + bt];
           }
@@ -1423,7 +1754,7 @@ var EtherPlugin = (() => {
     } else {
       var _a2 = dutf8(dat), s = _a2.s, r = _a2.r;
       if (r.length)
-        err(8);
+        err2(8);
       return s;
     }
   }
@@ -1445,7 +1776,7 @@ var EtherPlugin = (() => {
     var e = data.length - 22;
     for (; b4(data, e) != 101010256; --e) {
       if (!e || data.length - e > 65558)
-        err(13);
+        err2(13);
     }
     ;
     var c = b2(data, e + 8);
@@ -1476,7 +1807,7 @@ var EtherPlugin = (() => {
         else if (c_2 == 8)
           files[fn] = inflateSync(data.subarray(b, b + sc), { out: new u8(su) });
         else
-          err(14, "unknown compression type " + c_2);
+          err2(14, "unknown compression type " + c_2);
       }
     }
     return files;
@@ -1566,6 +1897,14 @@ var EtherPlugin = (() => {
   var fail = (message) => {
     throw new PluginHttpError(502, "subdl_error", message);
   };
+  function readApiKey(ctx) {
+    try {
+      return (ctx.ether.secret.get("apiKey") || "").trim();
+    } catch (err3) {
+      if (err3 instanceof Error && /is not saved/i.test(err3.message)) return "";
+      throw err3;
+    }
+  }
   function bytes64(s) {
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s) || s.length > 4 * Math.ceil(MAX / 3)) return fail("Invalid subtitle archive.");
@@ -1615,7 +1954,7 @@ var EtherPlugin = (() => {
   var subdl = plugin({ manifest: settingsManifest, routes: {
     subtitles(req, ctx) {
       const id = req.id.split(":");
-      const apiKey = ctx.ether.secret.get("apiKey");
+      const apiKey = readApiKey(ctx);
       if (!/^tt\d+$/.test(id[0]) || !apiKey) return { subtitles: [] };
       let url = "https://api.subdl.com/api/v1/subtitles?api_key=" + encodeURIComponent(apiKey) + "&imdb_id=" + encodeURIComponent(id[0]) + "&subs_per_page=30&client=custom_integration";
       if (req.type === "series" && /^\d+$/.test(id[1] || "") && /^\d+$/.test(id[2] || "")) url += "&type=tv&season_number=" + id[1] + "&episode_number=" + id[2];
@@ -1627,12 +1966,14 @@ var EtherPlugin = (() => {
     },
     subtitlesDownload(req, ctx) {
       if (!/^\/subtitle\/[0-9]+-[0-9]+\.zip$/.test(req.id) || req.format !== "srt") return fail("Invalid subtitle selection.");
-      const response = ctx.ether.http.fetch({ url: "https://dl.subdl.com" + req.id, headers: { "x-api-key": ctx.ether.secret.get("apiKey") } });
+      const apiKey = readApiKey(ctx);
+      if (!apiKey) return fail("Enter an API key.");
+      const response = ctx.ether.http.fetch({ url: "https://dl.subdl.com" + req.id, headers: { "x-api-key": apiKey } });
       if (response.status !== 200 || !response.bodyBase64) return fail("Subtitle download failed.");
       return { format: "srt", encoding: "utf8", data: archive(response.bodyBase64) };
     },
     test(ctx) {
-      const key = ctx.ether.secret.get("apiKey");
+      const key = readApiKey(ctx);
       return { ok: !!key, message: key ? "API key saved." : "Enter an API key." };
     }
   } });

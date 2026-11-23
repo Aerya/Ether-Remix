@@ -103,6 +103,17 @@ query credentials before it appends a stream grant. Resume reuse stays bound
 to the stored selection key, and a resume row, its keyframe index and its
 probe commit in one transaction after the payload owner receipt is held.
 
+Library deletion withdraws publication for new plans, plan replay, source
+handles and lazy issuance. Admission reads current stored membership in a
+published library allowed to the viewer; another matching library may still
+authorize the title. Already admitted playback uses retained declarations and
+local title facts, while current viewer safety, credentials and session fences
+still apply. Plugin/library tombstones survive sync and restart; the owner's
+Add Library action explicitly restores the selected kind with its original
+identity and settings. Library deletion does not purge media or watch history.
+All serving nodes must understand the tombstone schema before deletion is
+enabled; older binaries do not enforce this publication boundary.
+
 ### Media URLs and manifests
 
 Never emit Plex account tokens, surface login grants, passwords or refresh

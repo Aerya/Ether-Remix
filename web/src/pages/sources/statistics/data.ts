@@ -159,11 +159,15 @@ export type UsenetSample = {
 };
 type Budget = {
   indexer: string;
+  enabled?: boolean;
+  torrent?: boolean;
   hitsUsed: number;
   hitsRemaining: number;
   grabsUsed: number;
   grabsRemaining: number;
   retryAt?: number;
+  pausedUntil?: number;
+  missingDefinition?: boolean;
 };
 type ProviderMonth = { id: string; bytes: number };
 export type Cost = { kind: string; id: string; monthly: number; currency: string };
@@ -436,24 +440,37 @@ export function sourceRows(data: StatsData, plugins: PluginSourceSummary[]): Sou
     });
   }
 
+  const nowSec = Date.now() / 1000;
   const budgets = infra?.snapshots.indexers?.data ?? [];
-  const indexers: { name: string; usage?: IndexerUsage }[] =
-    usage?.indexers?.map((u) => ({ name: u.name, usage: u })) ??
-    budgets.map((b) => ({ name: b.indexer }));
-  for (const { name, usage: u } of indexers) {
+  const budgetByName = new Map(budgets.map((b) => [b.indexer, b]));
+  const indexers: { name: string; usage?: IndexerUsage; budget?: Budget }[] =
+    usage?.indexers?.map((u) => ({ name: u.name, usage: u, budget: budgetByName.get(u.name) })) ??
+    budgets.map((b) => ({ name: b.indexer, budget: b }));
+  for (const { name, usage: u, budget: b } of indexers) {
     const mine = (h.indexerDays ?? []).filter((d) => d.indexer === name);
     const requests = sum(mine, indexerRequests);
     const searches = sum(mine, (d) => d.searches);
-    const limited = Boolean(u?.retryAt && u.retryAt > Date.now() / 1000);
+    const enabled = u ? u.enabled : b?.enabled !== false;
+    const missingDef = Boolean(u?.missingDefinition || b?.missingDefinition);
+    const paused = Math.max(u?.pausedUntil ?? 0, b?.pausedUntil ?? 0) > nowSec;
+    const limited = Math.max(u?.retryAt ?? 0, b?.retryAt ?? 0) > nowSec;
+    const [health, healthLabel]: [Health, string] = !enabled
+      ? ["off", t("Turned off")]
+      : missingDef
+        ? ["danger", t("Definition missing")]
+        : paused
+          ? ["warning", t("Needs attention")]
+          : limited
+            ? ["warning", t("Daily limit reached")]
+            : ["ok", t("Healthy")];
     rows.push({
       key: `indexer:${name}`,
       kind: "indexer",
       id: name,
       name,
-      detail: u?.torrent ? t("Torrent indexer") : t("Usenet indexer"),
-      health: u && !u.enabled ? "off" : limited ? "warning" : "ok",
-      healthLabel:
-        u && !u.enabled ? t("Turned off") : limited ? t("Daily limit reached") : t("Healthy"),
+      detail: (u?.torrent ?? b?.torrent) ? t("Torrent indexer") : t("Usenet indexer"),
+      health,
+      healthLabel,
       series: daily(days, mine, indexerRequests),
       usage: tn(requests, "{count} API request", "{count} API requests"),
       usageSort: requests,

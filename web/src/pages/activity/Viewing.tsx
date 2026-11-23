@@ -9,6 +9,7 @@ import {
   type Viz,
 } from "../../components/charts";
 import { Artwork } from "../../components/Artwork";
+import { LiveChannelArtwork } from "../../components/SessionArtwork";
 import { useTitle } from "../../lib/titles";
 import type { EtherUser } from "../../lib/types";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -17,8 +18,27 @@ import { t, tn } from "../../i18n";
 import { fixed, formatNumber, formatPercent } from "../../lib/format";
 import { hoursOf, type Bucket, type Summary } from "./types";
 
-function TitleThumb({ ratingKey, label }: { ratingKey?: string; label: string }) {
-  const title = useTitle(ratingKey || undefined);
+function TitleThumb({
+  ratingKey,
+  channelId,
+  label,
+}: {
+  ratingKey?: string;
+  channelId?: string;
+  label: string;
+}) {
+  const validKey = !channelId && ratingKey && ratingKey !== "0" ? ratingKey : undefined;
+  const title = useTitle(validKey);
+  if (channelId) {
+    return (
+      <LiveChannelArtwork
+        channelId={channelId}
+        name={label}
+        className="size-8 shrink-0 rounded"
+        imgClassName="p-1"
+      />
+    );
+  }
   return (
     <Artwork
       src={title?.poster}
@@ -53,6 +73,7 @@ const rank = (items: Bucket[] | undefined, leading?: (b: Bucket) => React.ReactN
 
 const TV: Viz = "viz-1";
 const MOVIES: Viz = "viz-2";
+const LIVE: Viz = "viz-3";
 
 function NoPlays() {
   return <p className="py-4 text-sm text-fg-muted">{t("No recorded plays in this period.")}</p>;
@@ -75,10 +96,25 @@ export function Viewing({
   const s = summary;
   const kinds = (s.kinds ?? []).map((b) => ({
     key: b.label,
-    label: b.label === "movie" ? t("Movies") : b.label === "episode" ? t("TV episodes") : b.label,
+    label:
+      b.label === "movie"
+        ? t("Movies")
+        : b.label === "episode"
+          ? t("TV episodes")
+          : b.label === "live"
+            ? t("Live TV")
+            : b.label,
     value: hoursOf(b.watchedMs),
-    color: b.label === "movie" ? MOVIES : b.label === "episode" ? TV : undefined,
+    color:
+      b.label === "movie"
+        ? MOVIES
+        : b.label === "episode"
+          ? TV
+          : b.label === "live"
+            ? LIVE
+            : undefined,
   }));
+  const hasLiveDaily = (s.dailyKinds ?? []).some((d) => (d.liveMs ?? 0) > 0);
   const userById = new Map(viewers.map((v) => [String(v.id), v]));
   const h = (v: number) => t("{hours} h", { hours: fixed(v, 1) });
   return (
@@ -140,6 +176,16 @@ export function Viewing({
                 color: MOVIES,
                 values: s.dailyKinds.map((d) => hoursOf(d.movieMs)),
               },
+              ...(hasLiveDaily
+                ? [
+                    {
+                      key: "live",
+                      label: t("Live TV"),
+                      color: LIVE,
+                      values: s.dailyKinds.map((d) => hoursOf(d.liveMs ?? 0)),
+                    },
+                  ]
+                : []),
             ]}
           />
         ) : s.daily.length ? (
@@ -196,7 +242,7 @@ export function Viewing({
             color="viz-4"
             ariaLabel={t("Top titles")}
             data={rank(s.titles, (b) => (
-              <TitleThumb ratingKey={b.key} label={b.label} />
+              <TitleThumb ratingKey={b.key} channelId={b.channelId} label={b.label} />
             ))}
             valueFormat={h}
             empty={<NoPlays />}

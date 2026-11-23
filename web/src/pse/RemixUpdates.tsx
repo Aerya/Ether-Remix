@@ -26,8 +26,31 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-23-instant-screens-continue",
+    id: "2026-11-23-upstream-0320",
     version: "current",
+    date: "2026-11-23",
+    title: [
+      "Synchronisation Ether et compatibilité Remix",
+      "Ether synchronization and Remix compatibility",
+    ],
+    items: [
+      [
+        "Les évolutions Ether jusqu’à la révision du 23 novembre sont intégrées : bibliothèques et plugins, sélection des versions de lecture et console adaptée aux petits écrans.",
+        "Ether changes through the November 23 revision are integrated: libraries and plugins, playback version selection and a console adapted to small screens.",
+      ],
+      [
+        "Les bibliothèques à thème et la musique Remix conservent leurs autorisations. Les lignes de l’accueil Plex restent issues de la sélection d’accueil et sont réparties par type de bibliothèque.",
+        "Remix theme libraries and music retain their access controls. Plex Home rows still follow the Home selection and are partitioned by library media type.",
+      ],
+      [
+        "Les migrations déjà appliquées par Remix sont conservées. Les nouveautés amont utilisent des numéros distincts ; les réglages de rafraîchissement des addons et les origines des collections sont préservés.",
+        "Previously applied Remix migrations are retained. Incoming changes use separate numbers; addon refresh settings and collection origins are preserved.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-23-instant-screens-continue",
+    version: "0.2.37-remix.132.1",
     date: "2026-11-23",
     title: [
       "Écrans Plex immédiats, listes légères et « Continuer à regarder » complet",

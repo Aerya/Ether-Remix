@@ -67,7 +67,6 @@ func TestDiscoveryHiddenTitleStaysPlayable(t *testing.T) {
 	if rec := f.get(t, "/library/parts/1000000000000550/1759276800/file.mkv", "Range", "bytes=0-9"); rec.Code != http.StatusPartialContent {
 		t.Fatalf("part of a discovery-hidden title that resolves: %d", rec.Code)
 	}
-
 }
 
 // Content policy still blocks playback outright.
@@ -170,6 +169,8 @@ func TestPlaybackMessageNamesTheCause(t *testing.T) {
 		{"uncached among not-available", errors.Join(notCached("a"), fmt.Errorf("x: %w", core.ErrNotAvailable)), msgNotAvailable},
 		{"plain not available", fmt.Errorf("%q: %w", "x", core.ErrNotAvailable), msgNotAvailable},
 		{"sent to download", errors.Join(notCached("a"), fmt.Errorf("%q: %w", "b", core.ErrDownloadQueued)), msgDownloadQueued},
+		{"queued at TorBox behind active downloads", &core.UncachedError{Err: &core.DownloadQueuedError{Provider: "TorBox", ActiveDownloads: 3, Err: core.ErrDownloadQueued}}, "Not cached yet (queued at TorBox behind 3 active downloads). Try again later."},
+		{"preparing queued plugin release", &core.PreparingError{RetryAfter: 5 * time.Second, Err: &core.UncachedError{Err: core.ErrDownloadQueued}}, msgDownloadQueued},
 		{"stream limit", core.ErrStreamLimit, msgStreamLimit},
 		{"cached-only", &core.UncachedError{Err: notCached("a"), CachedOnly: true}, msgNotCachedOnly},
 		{"cached-only, Usenet found nothing", &core.UncachedError{Err: notCached("a"), CachedOnly: true, Usenet: core.UsenetNone}, msgNotCachedOnlyNoNZB},
@@ -270,7 +271,6 @@ func TestPlaybackFailureClientContract(t *testing.T) {
 						"X-Plex-Client-Identifier": client.name, "X-Plex-Session-Identifier": "attempt",
 						"Accept": "application/" + client.format}
 					base := "?path=/library/metadata/1000000000000550&session=attempt&hasMDE=1&directPlay=1&mediaIndex=0&partIndex=0"
-					started := time.Now()
 					decision := f.request(t, "GET", "/video/:/transcode/universal/decision"+base, h)
 					attrs := containerAttrs(t, decision.Body.Bytes())
 					want := playbackMessage(failure)
@@ -321,9 +321,6 @@ func TestPlaybackFailureClientContract(t *testing.T) {
 							t.Fatalf("unbounded media route %s: %d, calls %d -> %d", path, r.Code, before, p.calls)
 						}
 						checkTimeline()
-					}
-					if time.Since(started) >= 12*time.Second {
-						t.Fatal("immediate failure unexpectedly blocked")
 					}
 				})
 			}

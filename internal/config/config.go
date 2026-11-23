@@ -21,9 +21,14 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+type Vela struct {
+	ChannelURL string `json:"channelURL,omitempty"`
+}
+
 type Config struct {
 	// DiscoveryCards replaces home recommendations without modifying saved layouts.
 	DiscoveryCards bool `json:"discoveryCards,omitempty"`
+	Vela           Vela `json:"vela,omitempty"`
 	// Frontends selects protocol listeners by their registered ID.
 	Frontends map[string]Frontend `json:"frontends,omitempty"`
 	// FrontendPorts are node-local listener port overrides.
@@ -53,6 +58,7 @@ type Config struct {
 	PlexServers   PlexServers   `json:"plexServers"`
 	OpenSubtitles OpenSubtitles `json:"openSubtitles"`
 	SubDL         SubDL         `json:"subdl"`
+	SubSource     SubSource     `json:"subsource"`
 	// Subtitles is the ordered subtitle provider list (OpenSubtitles and
 	// Stremio subtitle add-ons). Empty means OpenSubtitles alone, as before.
 	Subtitles Subtitles `json:"subtitles,omitempty"`
@@ -81,14 +87,84 @@ type Config struct {
 type Frontend struct {
 	// AppearanceRevision survives restarts so Vela clients can reject stale looks.
 	AppearanceRevision uint64 `json:"appearanceRevision,omitempty"`
-	Enabled            bool   `json:"enabled"`
-	// PublicURL is the optional address viewers use to reach this one app
-	// from outside the home network (e.g. https://jelly.example.com), for
-	// owners who route each app through its own host name. Empty keeps the
-	// server-wide address. Plex ignores it: Plex apps use Plex.CustomURLs,
-	// which is also what plex.tv receives.
-	PublicURL string         `json:"publicUrl,omitempty"`
-	Settings  map[string]any `json:"settings,omitempty"`
+	// CapabilitiesRevision survives restarts so Vela clients can observe sign-in method changes.
+	CapabilitiesRevision uint64 `json:"capabilitiesRevision,omitempty"`
+	Enabled              bool   `json:"enabled"`
+	// PublicURL is kept for backwards compatibility with configs that stored a
+	// single per-app public address; new saves write PublishedAddresses.
+	PublicURL string `json:"publicUrl,omitempty"`
+	// PublishedAddresses is the optional list of URLs Ether hands out for this
+	// app when there is no app-scoped request in hand (QR codes, invites,
+	// console share links). Both subdomain (https://jellyfin.example.com) and
+	// path (https://example.com/jellyfin) forms are supported. Plex ignores it
+	// and uses Plex.CustomURLs.
+	PublishedAddresses []string       `json:"publishedAddresses,omitempty"`
+	Settings           map[string]any `json:"settings,omitempty"`
+}
+
+// EffectivePublishedAddresses returns the configured published addresses for
+// this frontend, falling back to legacy PublicURL when the list is empty.
+func (f Frontend) EffectivePublishedAddresses() []string {
+	if len(f.PublishedAddresses) > 0 {
+		out := make([]string, 0, len(f.PublishedAddresses))
+		for _, raw := range f.PublishedAddresses {
+			if s := strings.TrimSpace(raw); s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if s := strings.TrimSpace(f.PublicURL); s != "" {
+		return []string{s}
+	}
+	return nil
+}
+
+// upgradeFrontendPublishedAddresses migrates legacy per-frontend publicUrl
+// values into publishedAddresses and removes the retired key.
+func upgradeFrontendPublishedAddresses(doc map[string]any) bool {
+	frontends, ok := doc["frontends"].(map[string]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for id, rawEntry := range frontends {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok {
+			continue
+		}
+		rawPub, hasLegacy := entry["publicUrl"]
+		if !hasLegacy {
+			continue
+		}
+		changed = true
+		delete(entry, "publicUrl")
+		if id == "plex" {
+			continue
+		}
+		s, _ := rawPub.(string)
+		s = strings.TrimRight(strings.TrimSpace(s), "/")
+		if s == "" {
+			continue
+		}
+		var existing []any
+		if list, ok := entry["publishedAddresses"].([]any); ok {
+			existing = list
+		}
+		dup := false
+		for _, item := range existing {
+			if prev, ok := item.(string); ok && strings.TrimRight(strings.TrimSpace(prev), "/") == s {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			entry["publishedAddresses"] = append(existing, s)
+		}
+	}
+	return changed
 }
 
 type Server struct {
@@ -108,9 +184,24 @@ type Server struct {
 	// PortExplicit preserves an owner-selected 32400 when PMS is installed.
 	PortExplicit bool `json:"portExplicit,omitempty"`
 	// Port for the Plex API and web UI. PMS uses 32400.
-	Port         int    `json:"port"`
-	BindAddress  string `json:"bindAddress"`
-	FriendlyName string `json:"friendlyName"`
+	Port int `json:"port"`
+	// ConsolePort, when non-zero, binds an optional dedicated listener for
+	// the owner console (/ether) and its API. Zero keeps the console on Port.
+	ConsolePort int `json:"consolePort,omitempty"`
+	// DisableConsoleOnMainPort stops serving /ether on Port while ConsolePort
+	// is bound. Ignored if ConsolePort is unset or fails to bind so the owner
+	// is never locked out.
+	DisableConsoleOnMainPort bool   `json:"disableConsoleOnMainPort,omitempty"`
+	BindAddress              string `json:"bindAddress"`
+	FriendlyName             string `json:"friendlyName"`
+	// ResumeAfterSeconds is how far into a title a viewer must be before
+	// their position is kept as a resume point. 0 keeps the default, 5% of
+	// the title.
+	ResumeAfterSeconds int `json:"resumeAfterSeconds,omitempty"`
+	// PausedStreamMinutes is how long a paused stream is kept before Ether
+	// closes it (2–1440 minutes; effective minimum is about 2 minutes).
+	// 0 keeps the default, 30 minutes.
+	PausedStreamMinutes int `json:"pausedStreamMinutes,omitempty"`
 	// The Movies / TV Shows library names live on libraries 1/2 in
 	// internal/libraries (v0.3.8); the old moviesLibraryName /
 	// tvShowsLibraryName keys were migrated there and deleted here.
@@ -128,6 +219,15 @@ type Server struct {
 	// WebFrameOrigins permits embedding the owner UI in these exact HTTP(S)
 	// origins (for example a dashboard). Empty denies framing everywhere.
 	WebFrameOrigins []string `json:"webFrameOrigins,omitempty"`
+}
+
+// PausedStreamRetention returns the configured paused-stream retention, or 0
+// when the built-in default (core.PausedSessionRetention) applies.
+func (s Server) PausedStreamRetention() time.Duration {
+	if s.PausedStreamMinutes <= 0 {
+		return 0
+	}
+	return time.Duration(s.PausedStreamMinutes) * time.Minute
 }
 
 type Plex struct {
@@ -153,6 +253,11 @@ type Plex struct {
 	// apps still display Plex's own rating. Date-added stays the catalogue
 	// release/air date.
 	UsePlexMetadata bool `json:"usePlexMetadata,omitempty"`
+	// Delivery is how a direct-play media route reaches the client: "relay"
+	// (default) streams the bytes through Ether; "redirect" answers an
+	// eligible TorBox part read with a temporary file URL after admission.
+	// The player fetches the bytes directly. Unrecognised values relay.
+	Delivery string `json:"delivery,omitempty"`
 	// Remote access
 	RemoteAccess bool     `json:"remoteAccess"`
 	UseUPnP      bool     `json:"useUpnp"`
@@ -234,6 +339,12 @@ type Indexer struct {
 	// is the site address and Protocol follows the definition; for an
 	// add-on URL is its install link and results are torrents.
 	Kind string `json:"kind,omitempty"`
+	// UseAddonOrder keeps a Stremio add-on's own result order among its
+	// releases instead of re-ranking them with the quality profile. Hard
+	// compatibility, language, reject and health rules still apply; indexer
+	// priority orders this source relative to other sources. Valid only when
+	// Kind is IndexerKindStremio.
+	UseAddonOrder bool `json:"useAddonOrder,omitempty"`
 	// Plugin is the installed plugin an IndexerKindAddon row searches. Such
 	// rows exist only in the running search manager, never in config.
 	Plugin string `json:"plugin,omitempty"`
@@ -252,9 +363,6 @@ type Indexer struct {
 	// SecretSettings are the definition's password-type settings. They are
 	// sealed at rest and redacted in API responses like API keys.
 	SecretSettings map[string]string `json:"secretSettings,omitempty"`
-	// ClientIdentity overrides the global client identity for this indexer's
-	// searches and grabs. Empty inherits the policy.
-	ClientIdentity string `json:"clientIdentity,omitempty"`
 	// ProwlarrImport is what the last Prowlarr sync wrote into the fields
 	// the owner may also edit. A later sync updates a field only while it
 	// still holds that value, so owner edits survive syncs. Nil for
@@ -342,6 +450,10 @@ type Cache struct {
 
 	Dir         string `json:"dir"`
 	BudgetBytes int64  `json:"budgetBytes"`
+	// LibraryBudgetBytes bounds the release library (kept NZBs and torrent
+	// records, internal/vault). Zero means no limit; when set, releases
+	// never replayed leave first.
+	LibraryBudgetBytes int64 `json:"libraryBudgetBytes,omitempty"`
 	// Prefetch
 	PrefetchNextEpisode bool    `json:"prefetchNextEpisode"`
 	PrefetchBytes       int64   `json:"prefetchBytes"` // opening bytes pulled ahead
@@ -533,13 +645,15 @@ type ClientCompatibility struct {
 type Transcode struct {
 	RTXVideo RTXVideo `json:"rtxVideo"`
 
-	FFmpegPath           string `json:"ffmpegPath"` // empty = bundled, then PATH
-	FFprobePath          string `json:"ffprobePath"`
-	HWAccel              string `json:"hwAccel"` // "auto", "none", "videotoolbox", "nvenc", "qsv", "vaapi"
-	VAAPIDevice          string `json:"vaapiDevice"`
-	TempDir              string `json:"tempDir"`
-	MaxTranscodes        int    `json:"maxTranscodes"`
-	RemoteMaxBitrateKbps int    `json:"remoteMaxBitrateKbps"`
+	VideoTranscoding       string `json:"videoTranscoding"` // "on" (default) or "off" (movies and shows only; Live TV is unaffected)
+	FFmpegPath             string `json:"ffmpegPath"`       // empty = bundled, then PATH
+	FFprobePath            string `json:"ffprobePath"`
+	HWAccel                string `json:"hwAccel"` // "auto", "none", "videotoolbox", "nvenc", "qsv", "vaapi"
+	VAAPIDevice            string `json:"vaapiDevice"`
+	TempDir                string `json:"tempDir"`
+	MaxTranscodes          int    `json:"maxTranscodes"`
+	RemoteMaxBitrateKbps   int    `json:"remoteMaxBitrateKbps"`
+	RemoteUploadBudgetKbps int    `json:"remoteUploadBudgetKbps"`
 
 	// Adaptive HLS engine (additive). Numeric zero values select the
 	// transcode package defaults; see Defaults for the shipped values.
@@ -551,8 +665,19 @@ type Transcode struct {
 	ABRLadderUnderCopy bool     `json:"abrLadderUnderCopy"` // soft encode rungs under Direct Stream / video-copy (opt-in)
 	VBVReservoir       bool     `json:"vbvReservoir"`       // constant-quality + generous VBV for capped transcodes
 	VBVBufferSeconds   int      `json:"vbvBufferSeconds"`   // VBV buffer depth in seconds of maxrate (default 8)
-	SpikeGovernor      bool     `json:"spikeGovernor"`      // clamp VBR spikes in copy streams to measured goodput
-	SpikeMarginPercent int      `json:"spikeMarginPercent"` // spike threshold over goodput, percent (default 125)
+	// ThrottleSeconds is how far ahead of the player ffmpeg may run before it
+	// is paused, for every app (non-live streams; 16–600 seconds). 0 keeps the
+	// built-in distances: 16 seconds when the video is re-encoded, two minutes
+	// when it is copied.
+	ThrottleSeconds    int  `json:"throttleSeconds"`
+	SpikeGovernor      bool `json:"spikeGovernor"`      // clamp VBR spikes in copy streams to measured goodput
+	SpikeMarginPercent int  `json:"spikeMarginPercent"` // spike threshold over goodput, percent (default 125)
+}
+
+// VideoTranscodingOff reports whether video re-encoding is disabled for movies
+// and shows. Empty or "on" leaves video transcoding enabled.
+func (t Transcode) VideoTranscodingOff() bool {
+	return t.VideoTranscoding == "off"
 }
 
 // Downloads controls Plex offline downloads (allowSync + the Download
@@ -579,6 +704,15 @@ type Downloads struct {
 	Expiry Duration `json:"expiry"`
 	// MaxHeight caps the download profile's resolution (default 1080).
 	MaxHeight int `json:"maxHeight"`
+	// The default download limit for every non-owner viewer; a viewer's own
+	// policy can replace it. LimitUnit is "" (no limit), "titles" or "gb";
+	// LimitPeriod is "day" (default) or "month".
+	LimitUnit   string `json:"limitUnit"`
+	LimitAmount int    `json:"limitAmount"`
+	LimitPeriod string `json:"limitPeriod"`
+	// NoTranscode makes every viewer's downloads come only from a release
+	// that needs no video re-encode; a viewer's policy can also set it.
+	NoTranscode bool `json:"noTranscode"`
 }
 
 // PlexServers controls watch sync with owner-run servers; server credentials and
@@ -623,12 +757,21 @@ type SubDL struct {
 	APIKey  string `json:"apiKey"`
 }
 
+// SubSource is the owner's SubSource (subsource.net) subtitle account.
+// Authenticated with the X-API-Key header against api.subsource.net/api/v1.
+type SubSource struct {
+	Enabled bool   `json:"enabled"`
+	APIKey  string `json:"apiKey"`
+}
+
 // Subtitle provider kinds (SubtitleProvider.Kind). An installed add-on's
 // subtitles are kind "plugin:<id>/subtitles".
 const (
 	SubtitleProviderOpenSubtitles = "opensubtitles"
 	// SubtitleProviderSubDL is the SubDL (subdl.com) subtitle provider.
 	SubtitleProviderSubDL = "subdl"
+	// SubtitleProviderSubSource is the SubSource (subsource.net) subtitle provider.
+	SubtitleProviderSubSource = "subsource"
 	// SubtitleProviderStremio is the retired kind of a subtitle add-on
 	// entered with its link (URL, sealed at rest and redacted). Such
 	// entries are migrated once into installed add-ons and never written.
@@ -1007,6 +1150,8 @@ func decodeOverDefaults(defaults Config, b []byte) (Config, bool, error) {
 		delete(plex, "disableVersionTracking")
 	}
 	stripRetiredLiveTV(file)
+	upgradeClientIdentity(file)
+	upgradeFrontendPublishedAddresses(file)
 	keepStoredAutoUpdate(file)
 	doc := toDoc(defaults)
 	mergeDoc(doc, file)
@@ -1028,6 +1173,22 @@ func keepStoredAutoUpdate(file map[string]any) {
 	if _, set := updates["autoUpdate"]; !set {
 		updates["autoUpdate"] = false
 	}
+}
+
+// migrateExtrasDefaultOn switches stored pre-v0.3.19 configs from the old
+// off-by-default extras setting to on-by-default once, recording
+// defaultOnMigrated so a later deliberate off stays off.
+func migrateExtrasDefaultOn(file map[string]any) bool {
+	extras, ok := file["extras"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if migrated, _ := extras["defaultOnMigrated"].(bool); migrated {
+		return false
+	}
+	extras["enabled"] = true
+	extras["defaultOnMigrated"] = true
+	return true
 }
 
 // decodeStartupConfig decodes the stored config over defaults. The
@@ -1063,6 +1224,15 @@ func decodeStartupConfig(defaults Config, b []byte) (Config, bool, error) {
 		}
 	}
 	if resetPreStandardQuality(file) {
+		dropped = true
+	}
+	if upgradeClientIdentity(file) {
+		dropped = true
+	}
+	if upgradeFrontendPublishedAddresses(file) {
+		dropped = true
+	}
+	if migrateExtrasDefaultOn(file) {
 		dropped = true
 	}
 	doc := toDoc(defaults)

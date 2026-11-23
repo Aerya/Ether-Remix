@@ -1,5 +1,9 @@
 import type {
   ActivityDay,
+  AddonCatalogImportList,
+  AddonCatalogImportRequest,
+  AddonCatalogImportResult,
+  AddonCatalogPreview,
   CollectionPreview,
   CollectionSpec,
   CollectionTemplate,
@@ -10,6 +14,10 @@ import type {
   FacetValue,
   HomeLayout,
   LayoutDoc,
+  LibraryLayoutDoc,
+  LayoutPage,
+  TargetSchedule,
+  ViewerLibraryPage,
   LayoutImpactResult,
   PreviewContext,
   LookupKind,
@@ -39,18 +47,22 @@ import type {
   DebridProvider,
   DebridStatus,
   DiskInfo,
+  UploadBudgetStatus,
   EtherConfig,
   EtherUser,
   FieldError,
   CatalogEntry,
-  IdentityPreset,
+  IdentityRule,
+  IdentityTestResult,
   Indexer,
+  IndexerPreviewRequest,
   LLMModel,
   LLMProvider,
   LogEntry,
   QualityAnswer,
   QualityClient,
   QualityQuestion,
+  RequestPreview,
   SiteDefinition,
   SiteTestResult,
   SiteTestStatus,
@@ -176,6 +188,8 @@ export class ApiError extends Error {
   code: string;
   fields?: FieldError[];
   phase?: string;
+  /** The parsed error response, for endpoints that explain more (e.g. flow validation). */
+  body?: unknown;
   constructor(status: number, code: string, message: string, fields?: FieldError[]) {
     super(message);
     this.name = "ApiError";
@@ -243,6 +257,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
   if (!res.ok) {
     const body = data as {
+      code?: string;
       error?: string | { code?: string; message?: string; fields?: FieldError[]; phase?: string };
       fields?: unknown;
     } | null;
@@ -255,7 +270,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     }
     const error = new ApiError(
       res.status,
-      err?.code ?? "http",
+      err?.code ?? body?.code ?? "http",
       err?.message ??
         flat ??
         (typeof body?.error === "string" ? body.error : undefined) ??
@@ -263,6 +278,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       err?.fields,
     );
     error.phase = err?.phase;
+    error.body = data;
     throw error;
   }
   return data as T;
@@ -285,7 +301,9 @@ export function routeApiImagesThroughFetch(on: boolean): void {
 
 /** True when an image URL must be fetched with headers rather than put in an <img>. */
 export function imageNeedsFetch(src: string | null | undefined): boolean {
-  return Boolean(src && src.startsWith(API_BASE) && (routeImagesThroughFetch || getToken()));
+  if (!src) return false;
+  if (routeImagesThroughFetch && src.startsWith("/vela/v0/branding/")) return true;
+  return Boolean(src.startsWith(API_BASE) && (routeImagesThroughFetch || getToken()));
 }
 
 /** Fetch an authenticated console image, keeping the response headers. */
@@ -324,6 +342,19 @@ function qs(params: Record<string, string | number | undefined | null>): string 
   return s ? `?${s}` : "";
 }
 
+export interface SignInLockout {
+  key: string;
+  namespace: string;
+  scope: string;
+  remoteIp?: string;
+  identity?: string;
+  app?: string;
+  attempts: number;
+  limit: number;
+  remainingMs: number;
+  expiresAt: string;
+}
+
 export type TestFn = () => Promise<TestResult>;
 
 export const api = {
@@ -344,6 +375,14 @@ export const api = {
     }),
   /** Ends this console's session on the server. */
   signOut: () => apiFetch<{ ok: boolean }>("/auth/session", { method: "DELETE" }),
+  listLockouts: async () =>
+    (await apiFetch<{ lockouts: SignInLockout[] }>("/auth/lockouts")).lockouts ?? [],
+  clearLockout: (key: string) =>
+    apiFetch<{ ok: boolean; cleared: boolean }>(`/auth/lockouts/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+    }),
+  clearAllLockouts: () =>
+    apiFetch<{ ok: boolean; cleared: number }>("/auth/lockouts", { method: "DELETE" }),
   setupStatus: () => apiFetch<SetupStatus>("/setup/status"),
   setupComplete: (force = false) => post<SetupStatus>("/setup/complete", { force }),
   setupReopen: () => post<SetupStatus>("/setup/reopen"),
@@ -357,7 +396,7 @@ export const api = {
   putConfig: async (config: EtherConfig) =>
     (await put<{ config: EtherConfig }>("/config", config)).config,
   getSection: <T>(section: string) =>
-    apiFetch<{ section: string; value: T; presets?: IdentityPreset[] }>(`/config/${section}`),
+    apiFetch<{ section: string; value: T; defaultUserAgent?: string }>(`/config/${section}`),
   putSection: (section: string, value: unknown) =>
     put<{ section: string; value: unknown }>(`/config/${section}`, value),
 
@@ -370,12 +409,19 @@ export const api = {
   // ---- Integration tests ----------------------------------------------------
   testUsenet: (p: UsenetProvider) => post<TestResult>("/test/usenet", p),
   testIndexer: (ix: Indexer) => post<TestResult>("/test/indexer", ix),
+  previewIndexer: (req: IndexerPreviewRequest) => post<RequestPreview>("/indexer/preview", req),
+  testIndexerIdentity: (indexerId: string, rules?: IdentityRule[]) =>
+    post<IdentityTestResult>("/test/indexer-identity", {
+      indexerId,
+      ...(rules ? { rules } : {}),
+    }),
   testDebrid: (p: DebridProvider) => post<TestResult>("/test/debrid", p),
   testTMDB: (key: string) => post<TestResult>("/test/tmdb", { key }),
   testIntroDB: (apiKey: string) => post<TestResult>("/test/introdb", { apiKey }),
   testOpenSubtitles: (cfg: EtherConfig["openSubtitles"]) =>
     post<TestResult>("/test/opensubtitles", cfg),
   testSubDL: (cfg: EtherConfig["subdl"]) => post<TestResult>("/test/subdl", cfg),
+  testSubSource: (cfg: EtherConfig["subsource"]) => post<TestResult>("/test/subsource", cfg),
   testLLM: (cfg: EtherConfig["llm"]) => post<TestResult>("/test/llm", cfg),
   llmProviders: async () =>
     (await apiFetch<{ providers: LLMProvider[] }>("/llm/providers")).providers,
@@ -426,6 +472,9 @@ export const api = {
   systemLoad: (signal?: AbortSignal) => apiFetch<SystemLoad>("/system/load", { signal }),
   debridStatus: async () =>
     (await apiFetch<{ value: DebridStatus | null }>("/status/debrid")).value,
+  uploadBudgetStatus: async (signal?: AbortSignal) =>
+    (await apiFetch<{ value: UploadBudgetStatus | null }>("/status/upload-budget", { signal }))
+      .value,
   sourceStartup: async () =>
     (await apiFetch<{ value: { startup: SourceStartup[] } | null }>("/status/sources")).value
       ?.startup ?? [],
@@ -521,6 +570,26 @@ export const api = {
     post<CollectionTemplateBundleApplyResult>(
       `/collections/template-bundles/${encodeURIComponent(id)}/apply`,
     ),
+  addonCatalogImports: async (): Promise<AddonCatalogImportList> => {
+    const res = await apiFetch<AddonCatalogImportList | null>("/collections/addon-imports");
+    return {
+      imports: res?.imports ?? [],
+      availableAddons: res?.availableAddons ?? [],
+    };
+  },
+  previewAddonCatalogImport: (req: { url?: string; addonId?: string }) =>
+    post<AddonCatalogPreview>("/collections/addon-imports/preview", req),
+  applyAddonCatalogImport: (req: AddonCatalogImportRequest) =>
+    post<AddonCatalogImportResult>("/collections/addon-imports", req),
+  syncAddonCatalogImport: (addonId: string) =>
+    post<AddonCatalogImportResult>(
+      `/collections/addon-imports/${encodeURIComponent(addonId)}/sync`,
+    ),
+  deleteAddonCatalogImport: (addonId: string, deleteCollections = false) =>
+    apiFetch<null>(
+      `/collections/addon-imports/${encodeURIComponent(addonId)}${qs({ deleteCollections: deleteCollections ? 1 : undefined })}`,
+      { method: "DELETE" },
+    ),
   artworkUrl: (id: string, w: number, version?: string) =>
     `${API_BASE}/collections/${encodeURIComponent(id)}/artwork${qs({ w, v: version })}`,
 
@@ -600,9 +669,21 @@ export const api = {
   ) => apiFetch<ViewerHome>(`/viewers/${id}/home${qs(ctx)}`, { signal }),
   refreshViewer: (id: number) => post<null>(`/viewers/${id}/refresh`),
 
-  // ---- Home Designer -----------------------------------------------------------
+  // ---- Home Designer & Library Recommended rows -------------------------------
   layout: () => apiFetch<LayoutDoc>("/layout"),
   putLayout: (layout: HomeLayout) => put<LayoutDoc>("/layout", { layout }),
+  libraryLayout: (id: number, signal?: AbortSignal) =>
+    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { signal }),
+  putLibraryLayout: (
+    id: number,
+    body: {
+      page?: LayoutPage;
+      viewerPages?: ViewerLibraryPage[];
+      collectionSchedules?: Record<string, TargetSchedule | null>;
+    },
+  ) => put<LibraryLayoutDoc>(`/layout/libraries/${id}`, body),
+  deleteLibraryLayout: (id: number) =>
+    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { method: "DELETE" }),
   /** The Plex Home a viewer (null = the typical viewer) gets with a draft layout (omitted = saved). */
   previewLayout: (
     body: PreviewContext & { viewerId: number | null; layout?: HomeLayout; count?: number },

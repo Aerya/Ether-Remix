@@ -13,6 +13,11 @@ func (p *RemotePlayback) CheckFileAvailability(ctx context.Context, u *core.User
 	if u == nil {
 		return false, core.ErrUnauthorized
 	}
+	if core.LocalResponse(ctx) {
+		// A local-only check (a batched checkFiles lookup) must not make the
+		// source node search; the local-only request does not cross the wire.
+		return false, core.ErrForegroundOnly
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	owner, err := p.o.SelectSource(ctx)

@@ -12,6 +12,7 @@ var (
 	_ core.BufferedInputSwapper    = (*Session)(nil)
 	_ core.ReplacementOutputWaiter = (*Session)(nil)
 	_ core.InputSwapState          = (*Session)(nil)
+	_ core.DamagedSegmentSkipper   = (*Session)(nil)
 )
 
 func (s *Session) CurrentSwapInput() string {

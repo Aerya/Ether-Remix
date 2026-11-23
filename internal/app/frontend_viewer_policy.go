@@ -57,6 +57,47 @@ func (s surfaceViewerPolicy) ConfirmPlayback(ctx context.Context, u *core.User, 
 	return s.app.safety.ConfirmPlayback(ctx, u, remote, now)
 }
 
+func (s surfaceViewerPolicy) DownloadTranscodingDisabled(u *core.User) bool {
+	return s.app != nil && s.app.safety != nil && s.app.safety.DownloadTranscodingDisabled(u)
+}
+
+func (s surfaceViewerPolicy) DownloadAllowance(u *core.User) core.DownloadAllowance {
+	if s.app == nil || s.app.safety == nil {
+		return core.DownloadAllowance{}
+	}
+	return s.app.safety.DownloadAllowance(u)
+}
+
+func (s surfaceViewerPolicy) AdmitDownload(ctx context.Context, u *core.User, key core.RatingKey, estimatedBytes int64) core.DownloadLimitDecision {
+	if s.app == nil || s.app.safety == nil {
+		return core.DownloadLimitDecision{Allowed: true}
+	}
+	return s.app.safety.AdmitDownload(ctx, u, key, estimatedBytes)
+}
+
+func (s surfaceViewerPolicy) ReconcileDownloadBytes(ctx context.Context, u *core.User, key core.RatingKey, actualBytes int64) core.DownloadLimitDecision {
+	if s.app == nil || s.app.safety == nil {
+		return core.DownloadLimitDecision{Allowed: true}
+	}
+	return s.app.safety.ReconcileDownloadBytes(ctx, u, key, actualBytes)
+}
+
+func (s surfaceViewerPolicy) RecordDownloadBytes(ctx context.Context, u *core.User, key core.RatingKey, bytes int64) {
+	if s.app != nil && s.app.safety != nil {
+		s.app.safety.RecordDownloadBytes(ctx, u, key, bytes)
+	}
+}
+
+func (s surfaceViewerPolicy) ReleaseDownloadReservation(ctx context.Context, u *core.User, key core.RatingKey) {
+	if s.app != nil && s.app.safety != nil {
+		s.app.safety.ReleaseDownloadReservation(ctx, u, key)
+	}
+}
+
+func (s surfaceViewerPolicy) VideoTranscodingDisabled(u *core.User) bool {
+	return s.app != nil && s.app.safety != nil && s.app.safety.VideoTranscodingDisabled(u)
+}
+
 func (s surfaceViewerPolicy) BitrateLimit(u *core.User) int {
 	if s.app == nil || s.app.safety == nil {
 		return 0
@@ -107,6 +148,7 @@ var (
 	_ frontend.ArtworkAccessPolicy        = surfaceViewerPolicy{}
 	_ frontend.UserPolicySource           = surfaceViewerPolicy{}
 	_ frontend.DownloadAccessPolicy       = surfaceViewerPolicy{}
+	_ frontend.DownloadLimitPolicy        = surfaceViewerPolicy{}
 	_ frontend.BrowseBlocksPolicy         = surfaceViewerPolicy{}
 	_ frontend.BrowseShareFilterPolicy    = surfaceViewerPolicy{}
 )

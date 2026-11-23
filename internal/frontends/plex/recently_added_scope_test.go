@@ -1,12 +1,15 @@
 package plex
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -97,5 +100,57 @@ func TestRecentlyAddedExplicitScopes(t *testing.T) {
 	var body struct{ MediaContainer model.MediaContainer }
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.MediaContainer.Metadata) == 0 {
 		t.Fatalf("library endpoint changed: %s (%v)", rec.Body.String(), err)
+	}
+}
+
+type scopedRecentExperience struct {
+	frontend.Experience
+	item core.Title
+}
+
+func (e *scopedRecentExperience) PublishedViews(context.Context) ([]frontend.View, error) {
+	return []frontend.View{
+		{ID: "1", LibraryID: 1, Name: "Movies", Type: core.TypeMovie, Native: plexBaseMovie},
+		{ID: "9", LibraryID: 9, Name: "Curated Movies", Type: core.TypeMovie, Virtual: true, Native: plexBaseMovie},
+	}, nil
+}
+
+func (e *scopedRecentExperience) LibraryItems(_ context.Context, _ *frontend.Viewer, _ frontend.Device, viewID string, q frontend.ItemQuery) (core.Page, error) {
+	if viewID != "9" {
+		return core.Page{}, nil
+	}
+	if q.Sort != frontend.SortAdded || !q.Desc || !q.Filter.KnownAddedDate {
+		return core.Page{}, nil
+	}
+	return core.Page{Items: []core.Title{e.item}, Total: 1, TotalExact: true}, nil
+}
+
+func TestRecentlyAddedScopedCustomSection(t *testing.T) {
+	scopedMovie := core.Title{Key: core.MovieKey(9201), Type: core.TypeMovie, Title: "In Collection Only", Released: time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)}
+	f := newFixture(func(d *testServerDeps) {
+		directExp := experience.NewDirectService(experience.ServiceDeps{
+			Catalog:   d.Catalog,
+			State:     d.State,
+			Playlists: d.Playlists,
+		})
+		d.Experience = &scopedRecentExperience{Experience: directExp, item: scopedMovie}
+	})
+	defer f.srv.Close()
+	f.catalog.mu.Lock()
+	f.catalog.titles[scopedMovie.Key] = scopedMovie
+	f.catalog.mu.Unlock()
+
+	for _, path := range []string{"/library/recentlyAdded?sectionID=9", "/hubs/home/recentlyAdded?sectionID=9"} {
+		rec := f.get(t, path, "Accept", "application/json")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status %d: %s", path, rec.Code, rec.Body.String())
+		}
+		var body struct{ MediaContainer model.MediaContainer }
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s decode: %v", path, err)
+		}
+		if len(body.MediaContainer.Metadata) != 1 || body.MediaContainer.Metadata[0].RatingKey != scopedMovie.Key.String() {
+			t.Fatalf("%s metadata = %+v, want only %s", path, body.MediaContainer.Metadata, scopedMovie.Key)
+		}
 	}
 }

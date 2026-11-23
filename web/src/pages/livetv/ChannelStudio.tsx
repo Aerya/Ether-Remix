@@ -19,11 +19,11 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Artwork } from "../../components/Artwork";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { DragHandle, SortableList } from "../../components/Sortable";
-import { Field } from "../../components/fields";
+import { Field, Segmented } from "../../components/fields";
 import { errorMessage, isAbort } from "../../lib/api";
 import type { CollectionSpec } from "../../lib/contract";
 import type { EtherUser } from "../../lib/types";
@@ -37,6 +37,7 @@ import { LivePreview } from "./LivePreview";
 import { STABILITY } from "./stability";
 import { ScheduleTimeline, type TimelineElement } from "./ScheduleTimeline";
 import { Drawer } from "../../components/Drawer";
+import { MatchRuleRows, extractRuleErrors } from "./OwnerGroupDrawer";
 import {
   timeZones,
   MINUTE,
@@ -49,7 +50,11 @@ import {
   tv,
   upNext,
   policyPermits,
+  compileOwnerGroupRegExp,
   type Channel,
+  type ChannelMergePreview,
+  type OwnerGroupMatch,
+  type OwnerGroupRule,
   type ChannelSummary,
   type Coverage,
   type LiveTVPolicy,
@@ -121,6 +126,25 @@ export function compose(d: StudioDraft): Channel {
     }
     return { ...c, blocks: c.blocks ?? [] };
   }
+  if (c.inputMerge) {
+    const activeRules = (c.inputMerge.rules ?? []).filter((r) => r.value !== "");
+    for (const r of activeRules) {
+      if ((r.op === "matches" || r.op === "notMatches") && !compileOwnerGroupRegExp(r.value)) {
+        throw new Error(t("Fix invalid rule patterns before saving."));
+      }
+    }
+    if (activeRules.length === 0) {
+      return { ...c, inputMerge: undefined };
+    }
+    return {
+      ...c,
+      inputMerge: {
+        rules: activeRules,
+        match: c.inputMerge.match === "all" ? "all" : "any",
+        hideDuplicates: c.inputMerge.hideDuplicates === false ? false : undefined,
+      },
+    };
+  }
   return c;
 }
 
@@ -171,6 +195,8 @@ export function ChannelStudio({
   const [horizon, setHorizon] = useState<1 | 7>(1);
   const [seedText, setSeedText] = useState(String(c.seed));
   useEffect(() => setSeedText(String(c.seed)), [c.seed]);
+  const [preview, setPreview] = useState<Programme[] | null>(null);
+  const [previewError, setPreviewError] = useState("");
   // Another channel (or a new one becoming saved) starts on its first tab with
   // the player stopped. Adjusted during render, not in an effect: an effect
   // also runs after mount and could undo a tab picked before it flushed.
@@ -178,7 +204,11 @@ export function ChannelStudio({
   if (shown.id !== c.id || shown.isNew !== isNew) {
     setShown({ id: c.id, isNew });
     setTab(virtual ? "programming" : "stream");
-    if (shown.id !== c.id) setWatching(false);
+    setPreviewError("");
+    if (shown.id !== c.id) {
+      setWatching(false);
+      setPreview(null);
+    }
   }
 
   const { locale } = useLocale();
@@ -192,11 +222,11 @@ export function ChannelStudio({
     }
   }, [draft, locale]);
   const previewKey = useDebouncedValue(
-    virtual && composed.channel ? JSON.stringify(composed.channel) : "",
+    virtual && !c.personal && (!isNew || Boolean(dirty)) && composed.channel
+      ? JSON.stringify(composed.channel)
+      : "",
     500,
   );
-  const [preview, setPreview] = useState<Programme[] | null>(null);
-  const [previewError, setPreviewError] = useState("");
   useEffect(() => {
     if (!previewKey) {
       setPreview(null);
@@ -219,19 +249,24 @@ export function ChannelStudio({
   const [viewer, setViewer] = useState(String(users[0]?.id ?? "1"));
   const [rundown, setRundown] = useState<Programme[]>([]);
   useEffect(() => {
-    if (!c.personal) return;
+    if (!c.personal || !c.id) {
+      setRundown([]);
+      return;
+    }
     const ctl = new AbortController();
     setRundown([]);
-    apiFetch<Programme[]>(
-      `/livetv/channels/${encodeURIComponent(c.id || "draft")}/rundown?viewer=${viewer}`,
-      { signal: ctl.signal },
-    )
-      .then(setRundown)
+    apiFetch<Programme[]>(`/livetv/channels/${encodeURIComponent(c.id)}/rundown?viewer=${viewer}`, {
+      signal: ctl.signal,
+    })
+      .then((items) => {
+        setRundown(items);
+        setPreviewError("");
+      })
       .catch((e) => {
         if (!isAbort(e)) setPreviewError(errorMessage(e));
       });
     return () => ctl.abort();
-  }, [c.id, Boolean(c.personal), viewer, previewKey]);
+  }, [c.id, Boolean(c.personal), viewer]);
   const schedule = c.personal
     ? rundownPreview(rundown, c.look)
     : virtual
@@ -352,9 +387,15 @@ export function ChannelStudio({
             ) : (
               <p className="text-sm text-fg-muted">
                 {virtual
-                  ? composed.error || previewError || t("Building the schedule…")
+                  ? isNew && c.personal
+                    ? t("Create this channel to build each viewer's schedule.")
+                    : isNew && !dirty
+                      ? composed.error || t("Create this channel to build its schedule.")
+                      : composed.error || previewError || t("Building the schedule…")
                   : coverage && coverage.programmes === 0
-                    ? t("No listings for this channel yet. Map a guide channel on the Guide tab.")
+                    ? c.guideId
+                      ? t("Mapped to a guide channel, but its guide has no upcoming listings.")
+                      : t("No listings for this channel yet. Map a guide channel on the Guide tab.")
                     : t("Live stream")}
               </p>
             )}
@@ -412,8 +453,8 @@ export function ChannelStudio({
             </label>
           </div>
         </div>
-        <div className="relative space-y-2 px-4 pb-4 sm:px-6">
-          {virtual && tab !== "schedule" ? (
+        {virtual && Boolean(c.id) && tab !== "schedule" ? (
+          <div className="relative space-y-2 px-4 pb-4 sm:px-6">
             <div
               className="flex flex-wrap items-center justify-end gap-2"
               role="group"
@@ -458,10 +499,8 @@ export function ChannelStudio({
                 </button>
               ))}
             </div>
-          ) : null}
-          {tab !== "schedule" && (
             <ScheduleTimeline
-              channelId={c.id || "draft"}
+              channelId={c.id}
               range={{ from: windowFrom, to: windowUntil }}
               selectedId={selectedElement?.id}
               onSelect={setSelectedElement}
@@ -470,8 +509,8 @@ export function ChannelStudio({
                 setTab("programming");
               }}
             />
-          )}
-        </div>
+          </div>
+        ) : null}
       </section>
 
       {selectedElement && (
@@ -539,15 +578,22 @@ export function ChannelStudio({
           </>
         ) : null}
         {tab === "schedule" && virtual ? (
-          <ScheduleTimeline
-            channelId={c.id || "draft"}
-            range={{ from: windowFrom, to: now + 7 * 24 * 60 * MINUTE }}
-            loadMore
-          />
+          c.id ? (
+            <ScheduleTimeline
+              channelId={c.id}
+              range={{ from: windowFrom, to: now + 7 * 24 * 60 * MINUTE }}
+              loadMore
+            />
+          ) : (
+            <p className="rounded-xl border border-border bg-surface p-4 text-sm text-fg-muted">
+              {t("Create this channel first to view its full schedule.")}
+            </p>
+          )
         ) : null}
         {tab === "stream" && !virtual ? (
           <section className="max-w-2xl space-y-4">
             <StreamSources channel={c} sources={sources} onChange={set} />
+            <MergeMatchingFeeds channel={c} sources={sources} onChange={set} />
             <Field label={t("Group")} htmlFor="ch-group">
               <Input
                 id="ch-group"
@@ -816,7 +862,10 @@ function StreamSources({
       clearInterval(timer);
     };
   }, [c.id]);
-  const commit = (next: StreamSource[]) => {
+  const commit = (
+    next: StreamSource[],
+    extra?: Pick<Channel, "suppressedAutoBackups" | "ownerStreamSources">,
+  ) => {
     const ranked = next.map((x, i) => ({ ...x, priority: i }));
     const first = ranked.find((x) => x.enabled && x.url.trim());
     onChange({
@@ -824,10 +873,24 @@ function StreamSources({
       // so removing a backup actually removes it server-side.
       streamSources: c.streamSources !== undefined || ranked.length > 1 ? ranked : undefined,
       streamUrl: first?.url ?? ranked[0]?.url ?? "",
+      ...extra,
     });
   };
   const update = (i: number, patch: Partial<StreamSource>) =>
-    commit(list.map((x, n) => (n === i ? { ...x, ...patch } : x)));
+    commit(
+      list.map((x, n) => (n === i ? { ...x, ...patch } : x)),
+      { ownerStreamSources: true },
+    );
+  const removeSource = (i: number) => {
+    const removed = list[i];
+    const next = list.filter((_, n) => n !== i);
+    if (removed?.autoFrom) {
+      const suppressed = [...new Set([...(c.suppressedAutoBackups ?? []), removed.autoFrom])];
+      commit(next, { suppressedAutoBackups: suppressed });
+      return;
+    }
+    commit(next, { ownerStreamSources: true });
+  };
   // Each source's role by position: 0 is the primary, -1 is off, n is backup n.
   const ranks = new Map<string, number>();
   let rank = 0;
@@ -852,16 +915,19 @@ function StreamSources({
           variant="outline"
           size="sm"
           onClick={() =>
-            commit([
-              ...list,
-              {
-                id: newSourceId(),
-                name: t("Backup {number}", { number: list.length }),
-                url: "",
-                enabled: true,
-                priority: list.length,
-              },
-            ])
+            commit(
+              [
+                ...list,
+                {
+                  id: newSourceId(),
+                  name: t("Backup {number}", { number: list.length }),
+                  url: "",
+                  enabled: true,
+                  priority: list.length,
+                },
+              ],
+              { ownerStreamSources: true },
+            )
           }
         >
           <Plus size={13} /> {t("Add backup")}
@@ -870,7 +936,7 @@ function StreamSources({
       <SortableList
         items={list}
         getId={(x) => x.id}
-        onReorder={(next) => commit(next)}
+        onReorder={(next) => commit(next, { ownerStreamSources: true })}
         className="space-y-2"
         renderItem={(x, handle, i) => {
           const role = ranks.get(x.id) ?? -1;
@@ -883,7 +949,7 @@ function StreamSources({
           return (
             <div
               className={cn(
-                "flex items-center gap-2 rounded-xl border bg-surface p-2",
+                "flex flex-wrap items-center gap-2 rounded-xl border bg-surface p-2",
                 role === 0 ? "border-primary/40" : "border-border",
                 !x.enabled && "opacity-60",
               )}
@@ -915,8 +981,22 @@ function StreamSources({
                   className="h-8 w-32 shrink-0 text-sm"
                 />
               ) : null}
+              {x.autoFrom ? (
+                <Badge variant="info" className="shrink-0">
+                  {t("Automatic")}
+                  {x.autoNumber ? ` · #${x.autoNumber.replace(/^#/, "")}` : ""}
+                </Badge>
+              ) : null}
+              {x.mergedFrom ||
+              (x.autoFrom && x.authSourceId && x.authSourceId !== c.sourceId) ||
+              (!x.autoFrom && !logins.length && x.authSourceId) ? (
+                <Badge className="shrink-0">
+                  {sources.find((s) => s.id === (x.authSourceId || c.sourceId))?.name ??
+                    x.authSourceId}
+                </Badge>
+              ) : null}
               <SourceHealth status={status.get(x.id)} />
-              {logins.length ? (
+              {!x.autoFrom && logins.length ? (
                 <ToolbarPicker
                   ariaLabel={t("Login for source {number}", { number: i + 1 })}
                   value={x.authSourceId ?? ""}
@@ -926,33 +1006,47 @@ function StreamSources({
                   menuClassName="w-64"
                 />
               ) : null}
-              <Input
-                value={x.url}
-                onChange={(e) => update(i, { url: e.currentTarget.value })}
-                aria-label={
-                  list.length > 1 ? t("Source {number} URL", { number: i + 1 }) : t("Stream URL")
-                }
-                placeholder="https://…/stream.m3u8"
-                className="h-8 min-w-0 flex-1 font-mono text-xs"
-              />
-              {list.length > 1 ? (
-                <>
-                  <Switch
-                    checked={x.enabled}
-                    onChange={(e) => update(i, { enabled: e.currentTarget.checked })}
-                    aria-label={t("Use source {number}", { number: i + 1 })}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="size-7 p-0 text-fg-subtle hover:text-danger"
-                    aria-label={t("Remove source {number}", { number: i + 1 })}
-                    onClick={() => commit(list.filter((_, n) => n !== i))}
-                  >
-                    <X size={14} />
-                  </Button>
-                </>
-              ) : null}
+              <div className="flex min-w-[18rem] flex-1 items-center gap-2">
+                <Input
+                  value={x.url}
+                  onChange={(e) => update(i, { url: e.currentTarget.value })}
+                  aria-label={
+                    list.length > 1 ? t("Source {number} URL", { number: i + 1 }) : t("Stream URL")
+                  }
+                  placeholder="https://…/stream.m3u8"
+                  className="h-8 min-w-0 flex-1 font-mono text-xs"
+                />
+                {list.length > 1 ? (
+                  <>
+                    <Switch
+                      checked={x.enabled}
+                      onChange={(e) => update(i, { enabled: e.currentTarget.checked })}
+                      aria-label={t("Use source {number}", { number: i + 1 })}
+                    />
+                    {x.autoFrom ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 px-2 text-xs text-fg-muted hover:text-danger"
+                        aria-label={t("Remove source {number}", { number: i + 1 })}
+                        onClick={() => removeSource(i)}
+                      >
+                        <X size={13} /> {t("Remove")}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="size-7 shrink-0 p-0 text-fg-subtle hover:text-danger"
+                        aria-label={t("Remove source {number}", { number: i + 1 })}
+                        onClick={() => removeSource(i)}
+                      >
+                        <X size={14} />
+                      </Button>
+                    )}
+                  </>
+                ) : null}
+              </div>
             </div>
           );
         }}
@@ -1011,6 +1105,253 @@ function SourceHealth({ status }: { status?: SourceStatus }) {
     >
       {h.label}
     </span>
+  );
+}
+
+const EMPTY_MERGE_RULES: OwnerGroupRule[] = [];
+
+function MergeMatchingFeeds({
+  channel: c,
+  sources,
+  onChange,
+}: {
+  channel: Channel;
+  sources: Source[];
+  onChange: (p: Partial<Channel>) => void;
+}) {
+  const headingId = useId();
+  const rules = c.inputMerge?.rules ?? EMPTY_MERGE_RULES;
+  const match: OwnerGroupMatch = c.inputMerge?.match === "all" ? "all" : "any";
+  const hideDuplicates = c.inputMerge?.hideDuplicates !== false;
+
+  const [ruleErrors, setRuleErrors] = useState<Record<number, string>>({});
+  const [preview, setPreview] = useState<ChannelMergePreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const initialRef = useRef(true);
+  const clearRuleErrors = () =>
+    setRuleErrors((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+
+  useEffect(() => {
+    clearRuleErrors();
+    setPreview(null);
+    initialRef.current = true;
+  }, [c.id]);
+
+  const setMerge = (
+    nextRules: OwnerGroupRule[],
+    nextMatch: OwnerGroupMatch = match,
+    nextHide: boolean = hideDuplicates,
+  ) => {
+    if (nextRules.length === 0) {
+      onChange({ inputMerge: undefined });
+      return;
+    }
+    onChange({
+      inputMerge: {
+        rules: nextRules,
+        match: nextMatch,
+        hideDuplicates: nextHide ? undefined : false,
+      },
+    });
+  };
+
+  const activeRules = useMemo(() => rules.filter((r) => r.value !== ""), [rules]);
+  const previewPayload = useMemo(
+    () => ({
+      channelId: c.id || undefined,
+      name: c.name || undefined,
+      sourceId: c.sourceId || undefined,
+      streamUrl: c.streamUrl || undefined,
+      rules,
+      match,
+    }),
+    [c.id, c.name, c.sourceId, c.streamUrl, rules, match],
+  );
+  const sourcesOrderKey = useMemo(() => sources.map((s) => s.id).join(","), [sources]);
+  const previewKey = useMemo(
+    () => `${sourcesOrderKey}:${JSON.stringify(previewPayload)}`,
+    [sourcesOrderKey, previewPayload],
+  );
+
+  useEffect(() => {
+    if (activeRules.length === 0) {
+      setPreview(null);
+      clearRuleErrors();
+      setPreviewLoading(false);
+      return;
+    }
+    const ctl = new AbortController();
+    const delay = initialRef.current ? 0 : 180;
+    initialRef.current = false;
+    setPreviewLoading(true);
+    const timer = window.setTimeout(() => {
+      tv.previewChannelMerge(previewPayload, ctl.signal)
+        .then((res) => {
+          if (ctl.signal.aborted) return;
+          setPreview({
+            matchCount: typeof res?.matchCount === "number" ? res.matchCount : 0,
+            totalFeeds: typeof res?.totalFeeds === "number" ? res.totalFeeds : 0,
+            maxInputs: typeof res?.maxInputs === "number" ? res.maxInputs : 16,
+            inputs: Array.isArray(res?.inputs) ? res.inputs : [],
+          });
+          clearRuleErrors();
+          setPreviewLoading(false);
+        })
+        .catch((err) => {
+          if (ctl.signal.aborted || isAbort(err)) return;
+          setRuleErrors(extractRuleErrors(err, rules));
+          setPreviewLoading(false);
+        });
+    }, delay);
+    return () => {
+      window.clearTimeout(timer);
+      ctl.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRules.length, previewKey]);
+
+  const updateRule = (idx: number, patch: Partial<OwnerGroupRule>) => {
+    setMerge(rules.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+    setRuleErrors((prev) => {
+      if (!(idx in prev)) return prev;
+      const next = { ...prev };
+      delete next[idx];
+      return next;
+    });
+  };
+
+  const removeRule = (idx: number) => {
+    setMerge(rules.filter((_, i) => i !== idx));
+    setRuleErrors({});
+  };
+
+  const addRule = () => {
+    setMerge([...rules, { field: "name", op: "contains", value: "" }]);
+  };
+
+  return (
+    <section
+      className="space-y-3 rounded-xl border border-border bg-surface p-4"
+      aria-labelledby={headingId}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="space-y-0.5">
+          <h3 id={headingId} className="text-sm font-semibold text-fg">
+            {t("Merge matching feeds")}
+          </h3>
+          <p className="text-xs text-fg-muted">
+            {t(
+              "Attach matching streams across your IPTV providers as automatic failover inputs, ordered by provider priority and stream quality.",
+            )}
+          </p>
+        </div>
+        {rules.length > 0 ? (
+          <Segmented
+            ariaLabel={t("Match mode")}
+            size="sm"
+            value={match}
+            onChange={(next) => setMerge(rules, next)}
+            options={[
+              { value: "any", label: t("Any rule") },
+              { value: "all", label: t("All rules") },
+            ]}
+          />
+        ) : null}
+      </div>
+
+      <MatchRuleRows
+        rules={rules}
+        ruleErrors={ruleErrors}
+        onUpdate={updateRule}
+        onRemove={removeRule}
+        onAdd={addRule}
+        regexPlaceholder="^(?:US\s*\|\s*)?ESPN\b"
+      />
+
+      {rules.length > 0 ? (
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-bg-subtle/40 p-2.5">
+          <Switch
+            checked={hideDuplicates}
+            onChange={(e) => setMerge(rules, match, e.currentTarget.checked)}
+            aria-label={t("Hide matched duplicate channels")}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium text-fg">
+              {t("Hide matched duplicate channels")}
+            </span>
+            <span className="block text-xs text-fg-muted">
+              {t("Hides extra provider channels from your lineup and guide without deleting them.")}
+            </span>
+          </span>
+        </label>
+      ) : null}
+
+      {activeRules.length > 0 && Object.keys(ruleErrors).length === 0 ? (
+        <div className="space-y-2 border-t border-border pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="font-medium text-fg">
+              {previewLoading && !preview
+                ? t("Checking matching feeds…")
+                : tn(preview?.matchCount ?? 0, "{count} matching feed", "{count} matching feeds")}
+            </span>
+            {preview && preview.totalFeeds > preview.maxInputs ? (
+              <span className="text-fg-muted">
+                {t("Top {max} feeds attach by provider priority.", { max: preview.maxInputs })}
+              </span>
+            ) : sources.filter((s) => s.hasPlaylist !== false).length > 1 ? (
+              <span className="text-fg-muted">{t("Ordered by provider priority and quality")}</span>
+            ) : null}
+          </div>
+
+          {preview && preview.inputs.length > 0 ? (
+            <ol className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-bg-subtle/30">
+              {preview.inputs.map((item, idx) => {
+                const roleLabel = !item.included
+                  ? t("Skipped")
+                  : idx === 0
+                    ? t("Primary")
+                    : t("Backup {number}", { number: idx });
+                return (
+                  <li
+                    key={`${item.channelId}-${item.id}`}
+                    className={cn(
+                      "flex flex-wrap items-center gap-2 px-3 py-2 text-xs",
+                      !item.included && "opacity-55",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "w-[4.75rem] shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-center text-[10.5px] font-semibold uppercase tracking-wider",
+                        !item.included
+                          ? "bg-bg-subtle text-fg-subtle"
+                          : idx === 0
+                            ? "bg-primary-subtle text-primary"
+                            : "bg-info/15 text-info",
+                      )}
+                    >
+                      {roleLabel}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium text-fg">{item.name}</span>
+                    {item.quality ? <Badge>{item.quality}</Badge> : null}
+                    {item.sourceName ? <Badge className="shrink-0">{item.sourceName}</Badge> : null}
+                    <SourceHealth
+                      status={{
+                        id: item.id,
+                        state: item.state,
+                        failures: item.failures,
+                        lastPlayed: item.lastPlayed,
+                        retryAfter: item.retryAfter,
+                        lastError: item.lastError,
+                      }}
+                    />
+                  </li>
+                );
+              })}
+            </ol>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

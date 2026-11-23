@@ -4,9 +4,12 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/rangefile"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -151,7 +154,7 @@ func (s *Server) prerollPart(w http.ResponseWriter, r *http.Request, key fronten
 		s.prerollStarted(ctx, pr, e)
 	}
 	w.Header().Set("Content-Type", "video/mp4")
-	http.ServeContent(w, r, "", st.ModTime(), f)
+	rangefile.Serve(w, r, "", filepath.Base(clip.Path), st.Size(), st.ModTime(), f)
 }
 
 // prerollStarted records the play against the feature it precedes.
@@ -192,13 +195,11 @@ func (s *Server) prerollThumb(w http.ResponseWriter, r *http.Request, key fronte
 		return true
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
+	w.Header().Set("Content-Type", "image/jpeg")
+	if err := rangefile.ServeFile(w, r, "", filepath.Base(path), time.Time{}, f); err != nil {
 		writeHTTPError(w, http.StatusNotFound)
 		return true
 	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeContent(w, r, "", st.ModTime(), f)
 	return true
 }
 

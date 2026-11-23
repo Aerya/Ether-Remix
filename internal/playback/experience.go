@@ -1,8 +1,10 @@
 package playback
 
 import (
-	"github.com/braedonsaunders/ether/internal/core"
+	"errors"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // Viewer-experience accounting: how long a play took to show a picture and
@@ -111,6 +113,7 @@ func (e *experienceState) observeStart(now time.Time, explicit bool, pos time.Du
 	if explicit {
 		if state == "playing" {
 			e.pictureAt = now
+			e.lastAt, e.lastPos = now, pos
 		}
 		return
 	}
@@ -152,6 +155,16 @@ func (e *experienceState) snapshot(now time.Time) *core.PlayExperience {
 	return out
 }
 
+// stallCount returns the number of mid-play stalls observed so far, including
+// an active explicit buffering spell once it crosses stallMinimum.
+func (e *experienceState) stallCount(now time.Time) int {
+	n := e.events
+	if _, ok := e.explicitStall(now); ok {
+		n++
+	}
+	return n
+}
+
 // explicitStall reports a Plex buffering spell as a stall: one that began
 // mid-play (not with a seek) and lasted at least stallMinimum, the same
 // floor inferred stalls use. Shorter blips and post-seek rebuffering are not
@@ -179,8 +192,18 @@ func (m *Manager) NotePlayRequest(id string, at time.Time) {
 // it reported playing (a stalled start the server ended).
 func (m *Manager) NoteFailedStart(id, reason string) {
 	if s := m.lookup(id); s != nil && reason != "" {
+		clean := OwnerError(errors.New(reason))
 		s.mu.Lock()
-		s.exp.failure = reason
+		s.exp.failure = clean
 		s.mu.Unlock()
+		m.log.Warn("playback start failed", "session", s.id, "reason", clean)
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "error",
+			Level:   "error",
+			Failing: true,
+			Message: "Playback failed before first frame",
+			Detail:  clean,
+		})
+		m.emitSessionFailed(s, s.snapshot(m.now()), "start", errors.New(clean))
 	}
 }

@@ -78,6 +78,11 @@ func TestHomeMemoExpiresAndEvictsWithoutTruncatingRows(t *testing.T) {
 func TestAssembledScreensAreMemoised(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := waitGenericReady(h.e, waitCtx); err != nil {
+		t.Fatal(err)
+	}
 	sciFiFan(h, 1)
 	u := core.User{ID: 1}
 	h.rebuild(u)

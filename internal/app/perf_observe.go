@@ -247,10 +247,17 @@ func streamingResponse(contentType string, r *http.Request) bool {
 		return true
 	}
 	ct := strings.ToLower(contentType)
-	for _, prefix := range []string{"video/", "audio/", "image/", "text/event-stream", "application/octet-stream", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml"} {
+	for _, prefix := range []string{"video/", "audio/", "image/", "text/event-stream", "text/x-ssa", "application/octet-stream", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml"} {
 		if strings.HasPrefix(ct, prefix) {
 			return true
 		}
+	}
+	// Live soft-subtitle streams (/subtitles/:/transcode/universal/start and
+	// /video/:/transcode/universal/subtitles) may stream SRT/VTT incrementally
+	// for the viewer's playback duration.
+	if (strings.HasPrefix(ct, "application/x-subrip") || strings.HasPrefix(ct, "text/vtt")) &&
+		(r.URL.Path == "/subtitles/:/transcode/universal/start" || r.URL.Path == "/video/:/transcode/universal/subtitles") {
+		return true
 	}
 	return false
 }

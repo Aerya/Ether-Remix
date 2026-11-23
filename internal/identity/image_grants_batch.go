@@ -2,9 +2,6 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -13,17 +10,9 @@ import (
 
 const maxImageBatchItems = 50
 const maxImageBatchInput = 256
-const imageBatchInsertChunk = 40
-
-type imageBatchRow struct {
-	hash  string
-	item  core.RatingKey
-	image frontend.Image
-}
 
 // IssueBatch returns at most one primary descriptor of each requested kind per
-// visible item. Source membership and each item's policy are rechecked before
-// inserting independent capabilities in a single transaction.
+// visible item using the unified stateless HMAC scheme, writing zero rows.
 func (s *ImageGrantService) IssueBatch(ctx context.Context, req frontend.ImageBatchRequest) ([]frontend.ImageBatchItem, error) {
 	if len(req.Items) > maxImageBatchInput || len(req.Kinds) > 6 {
 		return nil, frontend.ErrImageBatchLimit
@@ -55,17 +44,13 @@ func (s *ImageGrantService) IssueBatch(ctx context.Context, req frontend.ImageBa
 			return nil, frontend.ErrImageBatchLimit
 		}
 	}
-	viewer, err := s.grants.Resolve(ctx, string(s.surface), req.Credential)
+	viewer, source, err := s.resolveCredential(ctx, req.Credential)
 	if err != nil {
 		return nil, err
 	}
-	source, ok := grantHash(req.Credential)
-	if !ok {
-		return nil, core.ErrUnauthorized
-	}
-	device, err := json.Marshal(req.Device)
-	if err != nil || len(device) > 4096 {
-		return nil, core.ErrUnauthorized
+	macKey, encBlock, err := s.grantKeys()
+	if err != nil {
+		return nil, core.ErrNotAvailable
 	}
 	experience := s.experience()
 	if experience == nil {
@@ -82,8 +67,8 @@ func (s *ImageGrantService) IssueBatch(ctx context.Context, req frontend.ImageBa
 			return nil, err
 		}
 	}
-	var rows []imageBatchRow
 	out := make([]frontend.ImageBatchItem, 0, len(keys))
+	sealedAny := false
 	for _, key := range keys {
 		var images []frontend.Image
 		var complete bool
@@ -91,8 +76,6 @@ func (s *ImageGrantService) IssueBatch(ctx context.Context, req frontend.ImageBa
 			var present bool
 			images, present = listed[key]
 			if !present {
-				// Omitted keys were not authorized/listed. Never retry them
-				// through a weaker scalar capability.
 				continue
 			}
 			complete = true
@@ -113,42 +96,19 @@ func (s *ImageGrantService) IssueBatch(ctx context.Context, req frontend.ImageBa
 		if err != nil {
 			return nil, err
 		}
-		item := frontend.ImageBatchItem{Item: key, Authoritative: complete}
-		if complete {
-			chosen := make(map[string]bool, len(wanted))
-			for _, image := range images {
-				if !wanted[image.Kind] || chosen[image.Kind] {
-					continue
-				}
-				if image.Path == "" || len(image.Path) > 1024 || len(image.Kind) > 128 || len(image.Tag) > 256 || len(image.Subject) > 256 {
-					return nil, core.ErrNotAvailable
-				}
-				var raw [32]byte
-				if _, err := rand.Read(raw[:]); err != nil {
-					return nil, err
-				}
-				secret := base64.RawURLEncoding.EncodeToString(raw[:])
-				hash, _ := validImageSecret(secret)
-				item.Images = append(item.Images, frontend.GrantedImage{Image: image, Secret: secret})
-				rows = append(rows, imageBatchRow{hash: hash, item: key, image: image})
-				chosen[image.Kind] = true
-			}
+		item, err := sealTitleBatchItem(macKey, encBlock, string(s.surface), viewer.ID, req.Device.Language, key, images, complete, wanted)
+		if err != nil {
+			return nil, err
+		}
+		if len(item.Images) > 0 {
+			sealedAny = true
 		}
 		out = append(out, item)
 	}
-	if len(rows) == 0 {
-		return out, nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if err := s.insertAdmitted(ctx, tx, viewer.ID, source, req.Device.ID, string(device), "", rows); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
+	if sealedAny {
+		if err := s.sourceStillLive(ctx, viewer.ID, source); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

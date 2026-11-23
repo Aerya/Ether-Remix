@@ -15,6 +15,12 @@ type UpstreamHealth struct {
 	Kind string
 	// Connected reports a provider connection that is open and delivering.
 	Connected bool
+	// LiveSocket reports that the tap still holds an open upstream socket
+	// (including across normal inter-burst silence or quiet-socket holds).
+	LiveSocket bool
+	// StallAfter is the source's current stall threshold (adapted upward for
+	// bursty providers).
+	StallAfter time.Duration
 	// DataAge is the time since the provider last delivered: bytes on a TS
 	// tap, a new segment on an HLS playlist.
 	DataAge time.Duration
@@ -28,8 +34,9 @@ type UpstreamHealth struct {
 	// Stalled reports that the provider stopped delivering and Ether is
 	// reconnecting the same source while the reserve plays.
 	Stalled bool
-	// Failed reports that reconnecting the same source has failed repeatedly:
-	// fail over now. The reserve still plays out before the reader sees EOF.
+	// Failed reports that the transport is gone and reconnecting the same
+	// source has failed repeatedly: fail over now. The reserve still plays
+	// out before the reader sees EOF.
 	Failed bool
 	// Reconnects counts spliced same-source reconnects on this input.
 	Reconnects int
@@ -42,6 +49,16 @@ type UpstreamHealth struct {
 	// reserve, so a consumer can start a producer for the new format
 	// (relayInputFormat) before the old one reaches the change.
 	FormatGeneration uint64
+	// EdgePTS is the newest committed video PTS at the live edge (90 kHz,
+	// the stream's own timeline after splices); -1 when unknown.
+	EdgePTS int64
+	// PaceAhead is how far this session's paced reader is past its pace
+	// clock (negative: behind it); zero when unpaced.
+	PaceAhead time.Duration
+	// Readers is how many relay readers this session's grant has open, and
+	// Behind the media between the newest of them and the oldest.
+	Readers int
+	Spread  time.Duration
 }
 
 // UpstreamEventKind names a change in an input's health.
@@ -203,11 +220,25 @@ func (s *Service) sessionGrant(ss *session) *inputGrant {
 // notify delivers ev to the grant's watchers outside every lock.
 func (g *inputGrant) notify(ev UpstreamEvent) {
 	g.mu.Lock()
+	var stalledAt time.Time
+	switch ev.Kind {
+	case InputStalled:
+		if g.stalledAt.IsZero() {
+			g.stalledAt = ev.At
+		}
+		stalledAt = g.stalledAt
+	case InputRecovered:
+		stalledAt = g.stalledAt
+		g.stalledAt = time.Time{}
+	}
 	fns := make([]func(UpstreamEvent), 0, len(g.watchers))
 	for fn := range g.watchers {
 		fns = append(fns, *fn)
 	}
 	g.mu.Unlock()
+	if g.service != nil {
+		g.service.emitInputHealthEvent(g, ev, stalledAt)
+	}
 	for _, fn := range fns {
 		fn(ev)
 	}

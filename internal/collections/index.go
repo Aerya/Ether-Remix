@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/catalog"
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -29,6 +30,7 @@ type entry struct {
 	pop       float64
 	lang      string
 	crating   string
+	erating   string
 	collID    int64
 	poster    string
 	backdrop  string
@@ -42,6 +44,13 @@ type entry struct {
 	cast        []int64 // sorted
 	directors   []int64
 	writers     []int64
+}
+
+func (e *entry) enforcementRating() string {
+	if e.erating != "" {
+		return e.erating
+	}
+	return contentrating.EffectiveEnforcement("", e.crating, false, e.keywordsLC)
 }
 
 func (e *entry) hasPerson(rf ref) bool {
@@ -69,7 +78,7 @@ func (e *entry) hasPerson(rf ref) bool {
 func (e *entry) card() core.Title {
 	t := core.Title{
 		Key: e.key, Type: e.typ, Title: e.title, Year: e.year, Rating: e.rating, VoteCount: e.votes,
-		Popularity: e.pop, ContentRating: e.crating, PosterPath: e.poster, BackdropPath: e.backdrop,
+		Popularity: e.pop, ContentRating: e.crating, EnforcementRating: e.enforcementRating(), PosterPath: e.poster, BackdropPath: e.backdrop,
 		Runtime: time.Duration(e.runtime) * time.Minute, Language: e.lang, Genres: e.genres,
 		CollectionID: e.collID, Countries: e.countriesLC, Studios: e.studiosLC, Keywords: e.keywordsLC,
 	}
@@ -88,10 +97,11 @@ func (e *entry) card() core.Title {
 // entryFromTitle builds an entry from a full title (TMDB results joined to
 // the catalogue, or titles loaded from the mirror).
 func entryFromTitle(t core.Title, in *interner) *entry {
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
 	e := &entry{
 		key: t.Key, typ: t.Type, title: t.Title, sortTitle: t.SortTitle, year: t.Year,
 		runtime: int(t.Runtime / time.Minute), rating: t.Rating, votes: t.VoteCount, pop: t.Popularity,
-		lang: in.lower(t.Language), crating: in.str(t.ContentRating), collID: t.CollectionID,
+		lang: in.lower(t.Language), crating: in.str(t.ContentRating), erating: in.str(enf), collID: t.CollectionID,
 		poster: t.PosterPath, backdrop: t.BackdropPath,
 	}
 	if e.sortTitle == "" {

@@ -1,6 +1,6 @@
 import type { RawRequest, RawResponse } from "./types.ts";
 import type { PluginInstance } from "./router.ts";
-import { isHostedRuntime } from "./host.ts";
+import { decodeText, encodeText, isHostedRuntime } from "./host.ts";
 import {
   clearSavedCredential,
   CredentialError,
@@ -44,10 +44,10 @@ function serializeResponseBody(body: unknown): { bytes: Uint8Array; isBinary: bo
     return { bytes: body, isBinary: true };
   }
   if (typeof body === "string") {
-    return { bytes: new TextEncoder().encode(body), isBinary: false };
+    return { bytes: encodeText(body), isBinary: false };
   }
   const json = JSON.stringify(body ?? {});
-  return { bytes: new TextEncoder().encode(json), isBinary: false };
+  return { bytes: encodeText(json), isBinary: false };
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -138,7 +138,7 @@ export async function dispatchOverTunnelFrame<S>(
   }
   const decodedBodyBytes = frame.body ? base64ToBytes(frame.body) : new Uint8Array(0);
   const rawBodyText =
-    decodedBodyBytes.length > 0 ? new TextDecoder().decode(decodedBodyBytes) : undefined;
+    decodedBodyBytes.length > 0 ? decodeText(decodedBodyBytes) : undefined;
   const headers: Record<string, string | string[]> = {};
   if (frame.headers) {
     for (const [k, v] of Object.entries(frame.headers)) {
@@ -229,7 +229,7 @@ async function serveHttp<S>(
         chunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
       }
       const merged = concatBytes(chunks);
-      const rawBody = merged.byteLength > 0 ? new TextDecoder().decode(merged) : undefined;
+      const rawBody = merged.byteLength > 0 ? decodeText(merged) : undefined;
       const headers: Record<string, string | string[]> = {};
       for (const [k, v] of Object.entries(incoming.headers)) {
         if (typeof v === "string" || Array.isArray(v)) {
@@ -257,7 +257,7 @@ async function serveHttp<S>(
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const bodyBytes = new TextEncoder().encode(
+      const bodyBytes = encodeText(
         JSON.stringify({ error: { code: "internal_error", message: msg } }),
       );
       outgoing.writeHead(500, {

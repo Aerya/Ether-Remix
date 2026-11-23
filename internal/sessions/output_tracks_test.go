@@ -90,3 +90,63 @@ func TestScopedOutputTrackRestart(t *testing.T) {
 		t.Fatal("cue tee includes image subtitles or omitted explicit text capability", tracks)
 	}
 }
+
+func TestSideSubtitlePreservedOnPlayPlan(t *testing.T) {
+	info := core.MediaInfo{
+		Container: "mkv",
+		Size:      1 << 30,
+		Duration:  10 * time.Minute,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "aac", Language: "eng"},
+			{Index: 2, Type: "subtitle", Codec: "subrip", Language: "ara"},
+			{Index: 3, Type: "subtitle", Codec: "hdmv_pgs_subtitle", Language: "eng"},
+		},
+	}
+	ps := &core.PlaySession{ID: "ps", Info: info}
+
+	// Progressive side-rendered text subtitle (e.g. Jellyfin Web / Emby / Vela)
+	// clears Decision.SubtitleStream to -1 so ffmpeg does not burn it in, while
+	// PlayPlan.SubtitleStream() preserves the selected track.
+	progReq := frontend.PlanRequest{
+		Protocol: "jellyfin",
+		Caps: core.ClientCaps{
+			Profiles: &core.ClientCapabilityProfiles{
+				Subtitles: []core.ClientSubtitleProfile{{Format: progressiveSubtitleFormat, Method: "External"}},
+			},
+		},
+		Intent: frontend.PlayIntent{Options: core.DecideOptions{SubtitleStream: 2}},
+	}
+	got := sideSubtitleStream(ps, progReq, core.Decision{SubtitleStream: -1})
+	if got == nil || *got != 2 {
+		t.Fatalf("progressive side subtitle: got %v, want 2", got)
+	}
+	plan := frontend.PlayPlan{Decision: core.Decision{SubtitleStream: -1}, SelectedSubtitle: got}
+	if plan.SubtitleStream() != 2 {
+		t.Fatalf("PlayPlan.SubtitleStream() = %d, want 2", plan.SubtitleStream())
+	}
+
+	// HLS-only text client (e.g. Swiftfin / AVPlayer) behaves the same.
+	hlsReq := frontend.PlanRequest{
+		Protocol: "jellyfin",
+		Caps: core.ClientCaps{
+			Profiles: &core.ClientCapabilityProfiles{
+				Subtitles: []core.ClientSubtitleProfile{{Format: "vtt", Method: "Hls"}},
+			},
+		},
+		Intent: frontend.PlayIntent{Options: core.DecideOptions{SubtitleStream: 2}},
+	}
+	if got := sideSubtitleStream(ps, hlsReq, core.Decision{SubtitleStream: -1}); got == nil || *got != 2 {
+		t.Fatalf("hls-only side subtitle: got %v, want 2", got)
+	}
+
+	// Explicit off (-1) or image subtitle dropped by decideTracks must stay -1.
+	progReq.Intent.Options.SubtitleStream = -1
+	if got := sideSubtitleStream(ps, progReq, core.Decision{SubtitleStream: -1}); got != nil {
+		t.Fatalf("off subtitle unexpectedly preserved: %v", *got)
+	}
+	progReq.Intent.Options.SubtitleStream = 3
+	if got := sideSubtitleStream(ps, progReq, core.Decision{SubtitleStream: -1}); got != nil {
+		t.Fatalf("image subtitle unexpectedly preserved: %v", *got)
+	}
+}

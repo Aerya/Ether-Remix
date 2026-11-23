@@ -68,6 +68,7 @@ export interface TitleLibraryStatus {
 }
 
 const RULE_FIELDS = [
+  "title",
   "genre",
   "keyword",
   "person",
@@ -112,6 +113,7 @@ export interface Rule {
   op: RuleOp;
   value: unknown;
   label?: string;
+  labels?: string[];
 }
 
 type TmdbListName =
@@ -164,7 +166,7 @@ export type CollectionSort =
   | "personal"
   | "source";
 
-type Refresh = "live" | "hourly" | "daily" | "weekly" | `${number}h`; // PSE-HOOK: cadence libre « Nh » — voir docs/pse/FORK.fr.md
+export type Refresh = "live" | "hourly" | "daily" | "weekly" | `${number}h`; // PSE-HOOK: cadence libre « Nh » — voir docs/pse/FORK.fr.md
 export type ArtworkMode = "auto" | "collage" | "backdrop" | "tmdb" | "custom";
 export type DeviceClass = "tv" | "mobile" | "web" | "desktop";
 
@@ -214,8 +216,160 @@ export interface CollectionSpec {
   updatedAt?: string;
   lastBuiltAt?: string;
   itemCount?: number;
+  warnings?: string[];
   /** Set by the server on built-in collections (read-only in the studio). */
   builtIn?: boolean;
+  /** Optional folder name grouping collections in the console and frontends. */
+  folder?: string;
+  /** Optional 1-based display order within a folder or add-on import. */
+  sortOrder?: number;
+  /** Present when this collection is kept in sync with a Stremio add-on catalogue. */
+  addonSync?: CollectionAddonSync | null;
+}
+
+export interface CollectionAddonSync {
+  addonId: string;
+  addonName?: string;
+  catalogType: string;
+  catalogId: string;
+  catalogKey: string;
+  managedName?: string;
+  removed?: boolean;
+}
+
+export type AddonImportNameMode = "autoType" | "plain" | "appendType" | "prefix" | "suffix";
+
+export interface AddonCatalogExtra {
+  name: string;
+  label: string;
+  required?: boolean;
+  options?: string[];
+}
+
+export interface AddonCatalogPreviewItem {
+  key: string;
+  type: "movie" | "series" | string;
+  mediaType: "movie" | "show";
+  id: string;
+  name: string;
+  order: number;
+  supportsSkip?: boolean;
+  standalone: boolean;
+  extras?: AddonCatalogExtra[];
+  requiredExtras?: string[];
+  hasDuplicateName?: boolean;
+  imported?: boolean;
+  existingCollectionId?: string;
+  existingCollectionName?: string;
+  existingParams?: Record<string, string>;
+  existingMaxItems?: number;
+  existingRemoved?: boolean;
+}
+
+export interface AddonCatalogRemovedItem {
+  id: string;
+  name: string;
+  catalogType: string;
+  catalogId: string;
+  catalogKey: string;
+}
+
+export interface AddonImportSkippedItem {
+  key: string;
+  name: string;
+  reason: string;
+}
+
+export interface AddonImportSummary {
+  created: number;
+  updated: number;
+  removed: number;
+  restored: number;
+  skipped?: AddonImportSkippedItem[];
+}
+
+export interface AddonCatalogSubscription {
+  addonId: string;
+  addonName?: string;
+  addonLogo?: string;
+  host?: string;
+  addonEnabled: boolean;
+  folder: string;
+  nameMode: AddonImportNameMode;
+  nameAffix?: string;
+  followManifest: boolean;
+  refresh: Refresh;
+  maxItems: number;
+  enabled: boolean;
+  targets: CollectionSpec["targets"];
+  catalogCount: number;
+  managedCount: number;
+  removedCount: number;
+  lastSyncedAt?: string;
+  lastSummary?: AddonImportSummary;
+}
+
+export interface AddonCatalogAvailable {
+  addonId: string;
+  name: string;
+  logo?: string;
+  host?: string;
+  enabled: boolean;
+  catalogCount: number;
+  hasImport?: boolean;
+}
+
+export interface AddonCatalogImportList {
+  imports: AddonCatalogSubscription[];
+  availableAddons: AddonCatalogAvailable[];
+}
+
+export interface AddonCatalogPreview {
+  addonId: string;
+  installed: boolean;
+  addonName: string;
+  addonVersion?: string;
+  addonDescription?: string;
+  addonLogo?: string;
+  host?: string;
+  configureFirst?: boolean;
+  subscription?: AddonCatalogSubscription;
+  catalogs: AddonCatalogPreviewItem[];
+  removedCollections?: AddonCatalogRemovedItem[];
+}
+
+export interface AddonCatalogImportItem {
+  key: string;
+  name?: string;
+  params?: Record<string, string>;
+  maxItems?: number;
+}
+
+export interface AddonCatalogImportRequest {
+  url?: string;
+  addonId?: string;
+  folder?: string;
+  nameMode?: AddonImportNameMode;
+  nameAffix?: string;
+  followManifest: boolean;
+  refresh?: Refresh;
+  maxItems?: number;
+  enabled: boolean;
+  targets: CollectionSpec["targets"];
+  items: AddonCatalogImportItem[];
+}
+
+export interface AddonCatalogImportResult {
+  addonId: string;
+  addonName: string;
+  manifestChanged?: boolean;
+  created: number;
+  updated: number;
+  removed: number;
+  restored: number;
+  skipped?: AddonImportSkippedItem[];
+  collectionIds?: string[];
+  subscription: AddonCatalogSubscription;
 }
 
 export interface CollectionPreview {
@@ -304,7 +458,7 @@ export interface ViewerLifecycle {
   canRemove: boolean;
   canMerge: boolean;
   canPause: boolean;
-  /** "plex" when the account is managed on plex.tv, never in Ether. */
+  /** "plex" when the account is managed on plex.tv (remove and merge are refused in Ether). */
   managedBy: "plex" | "";
 }
 
@@ -401,7 +555,11 @@ export interface ViewerHome {
   homeDeduped?: number;
 }
 
-export type LayoutSection = "home" | "movies" | "shows";
+export type BuiltinLayoutSection = "home";
+export type LibraryLayoutSection = `library:${number}`;
+export type LayoutSection = BuiltinLayoutSection | LibraryLayoutSection;
+export type LibraryMediaSurface = "movies" | "shows";
+export type RowSectionTag = LayoutSection | LibraryMediaSurface;
 export type Device = "tv" | "mobile" | "web" | "desktop";
 export type Daypart = "morning" | "afternoon" | "evening" | "late";
 
@@ -422,6 +580,8 @@ export type RowStatus = "always" | "eligible" | "off";
 export interface RowPolicy {
   previewOnFocus?: boolean;
   rankedTop10?: boolean;
+  /** Keep titles that other rows on the page also show. */
+  showRepeats?: boolean;
   /** Kind ("short-on-time"), "collection:<id>", a hub id, or a glob ("because.*"). */
   row: string;
   status: RowStatus;
@@ -479,8 +639,8 @@ export interface AvailableRow {
   title: string;
   kind: string;
   description: string;
-  /** Pages the row can appear on; empty or missing means every page. */
-  sections?: LayoutSection[];
+  /** Pages or media surfaces the row can appear on; empty or missing means every page. */
+  sections?: RowSectionTag[];
   group?: RowGroup;
 }
 
@@ -500,10 +660,43 @@ export interface RankerInsight {
   features: RankerFeature[] | null;
 }
 
+/** A library with its own `library:<id>` Recommended rows page. */
+export interface LayoutLibrary {
+  id: number;
+  name: string;
+  slug: string;
+  type: "movie" | "show" | "plugin";
+  section: LibraryLayoutSection;
+  customized: boolean;
+}
+
+export interface LayoutDefaultsMaxRows {
+  home: number;
+  library?: number;
+  [section: string]: number | undefined;
+}
+
 export interface LayoutDoc {
   layout: HomeLayout;
   availableRows: AvailableRow[];
-  defaults: { maxRows: Record<LayoutSection, number> };
+  defaults: { maxRows: LayoutDefaultsMaxRows };
+  libraries?: LayoutLibrary[];
+}
+
+export interface ViewerLibraryPage {
+  userId: number;
+  page: LayoutPage;
+}
+
+export interface LibraryLayoutDoc {
+  library: LayoutLibrary;
+  customized: boolean;
+  effectivePage: LayoutPage;
+  viewerPages: ViewerLibraryPage[];
+  defaults: { maxRows: number };
+  availableRows: AvailableRow[];
+  collectionSchedules?: Record<string, TargetSchedule | null>;
+  layout: HomeLayout;
 }
 
 interface LayoutImpact {

@@ -112,7 +112,7 @@ func RunTests(ctx context.Context, pkg *Package, etherBin string) (TestReport, e
 		eng := wasm.NewEngine(nil)
 		defer func() { _ = eng.Close() }()
 
-		host := newRecordingHost(man)
+		host := newRecordingHost(man, pkg.Files)
 		var plug *wasm.Plugin
 		if man.Ether.Runtime.Module != "" {
 			mod, ok := pkg.Files[man.Ether.Runtime.Module]

@@ -154,8 +154,10 @@ export default function AskEtherPanel({
     };
   }, [descriptors, locale]);
 
+  // The Drawer already renders the 'Ask Ether' title bar and options menu,
+  // and AppKit's AgentPanel has no prop to omit its own <header>.
   return (
-    <div ref={panel} className="contents">
+    <div ref={panel} className="flex min-h-0 flex-1 flex-col [&>div>header]:hidden">
       <AgentPanel
         enabled
         initialMessages={messages}

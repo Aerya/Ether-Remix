@@ -97,9 +97,7 @@ describe("Owner usability", () => {
     });
     const log = await screen.findByRole("log", { name: "Server logs" }, WAIT);
     await within(log).findByText("last at ten");
-    expect(
-      Array.from(log.querySelectorAll("time")).map((t) => t.parentElement!.textContent),
-    ).toEqual([
+    expect(Array.from(log.querySelectorAll("[data-log-entry]")).map((e) => e.textContent)).toEqual([
       expect.stringContaining("last at ten"),
       expect.stringContaining("first at ten"),
       expect.stringContaining("oldest"),
@@ -112,7 +110,7 @@ describe("Owner usability", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     await within(log).findByText("new arrival");
-    expect(log.querySelector("time")!.parentElement).toHaveTextContent("new arrival");
+    expect(log.querySelector("[data-log-entry]")).toHaveTextContent("new arrival");
     expect(screen.getByLabelText("Live updates")).not.toBeChecked();
   });
 });

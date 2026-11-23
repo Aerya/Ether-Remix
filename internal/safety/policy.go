@@ -37,6 +37,22 @@ type Policy struct {
 	BlockedKeywords []string      `json:"blockedKeywords"`
 	RemoteDisabled  bool          `json:"remoteDisabled"`
 	MaxBitrateKbps  int           `json:"maxBitrateKbps"`
+	// VideoTranscodingDisabled plays this viewer's video only as it is
+	// (direct play or remux); the server-wide switch still applies when set.
+	VideoTranscodingDisabled bool `json:"videoTranscodingDisabled,omitempty"`
+	// DownloadTranscodingDisabled is the same rule for offline downloads only:
+	// a download is made from a release that needs no video re-encode, or not
+	// at all. It is independent of VideoTranscodingDisabled.
+	DownloadTranscodingDisabled bool `json:"downloadTranscodingDisabled,omitempty"`
+	// This viewer's download limit. DownloadLimitUnit is "" to follow the
+	// server default, "none" for no limit, "titles" or "gb";
+	// DownloadLimitPeriod is "day" (default) or "month".
+	DownloadLimitUnit   string `json:"downloadLimitUnit,omitempty"`
+	DownloadLimitAmount int    `json:"downloadLimitAmount,omitempty"`
+	DownloadLimitPeriod string `json:"downloadLimitPeriod,omitempty"`
+	// DownloadMaxHeight caps this viewer's download resolution below the
+	// server's cap. 0 follows the server.
+	DownloadMaxHeight int `json:"downloadMaxHeight,omitempty"`
 	// AllowedHours is empty for any time, otherwise hours 0..23 in Timezone.
 	AllowedHours []int  `json:"allowedHours"`
 	Timezone     string `json:"timezone"`
@@ -58,10 +74,28 @@ type Service struct {
 
 	plexShare        func(*core.User) PlexShare
 	friendsDownloads func() bool
+	downloadDefaults func() core.DownloadAllowance
+	downloadMu       sync.Mutex
+	now              func() time.Time
 	shareCache       map[int64]cachedShare
 
 	playbackMu    sync.Mutex
 	playbackEpoch map[int64]playbackConfirm
+
+	onPut atomic.Pointer[func(int64, Policy)]
+}
+
+// SetOnPut installs an optional non-blocking observer notified when a viewer's
+// safety policy is saved.
+func (s *Service) SetOnPut(fn func(viewerID int64, p Policy)) {
+	if s == nil {
+		return
+	}
+	if fn == nil {
+		s.onPut.Store(nil)
+		return
+	}
+	s.onPut.Store(&fn)
 }
 
 // Generation changes when a viewer's safety policy is saved.
@@ -132,10 +166,19 @@ func (s *Service) SetBus(bus clusterbus.Bus) {
 
 // Close disconnects the cluster bus.
 func (s *Service) Close() { s.SetBus(nil) }
+func cloneBoolPtr(p *bool) *bool {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 func (s *Service) Get(id int64) Policy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p := s.policies[id]
+	p.AllowDownloads = cloneBoolPtr(p.AllowDownloads)
 	p.Bedtime = cloneBedtime(p.Bedtime)
 	p.AllowedHours = append([]int(nil), p.AllowedHours...)
 	p.BlockedGenres = append([]string(nil), p.BlockedGenres...)
@@ -150,6 +193,17 @@ func (p Policy) Validate() error {
 	}
 	if p.MaxBitrateKbps < 0 {
 		return fmt.Errorf("invalid viewer or bitrate")
+	}
+	switch p.DownloadLimitUnit {
+	case "", "none", "titles", "gb":
+	default:
+		return fmt.Errorf("download limit unit must be titles or gb")
+	}
+	if p.DownloadLimitPeriod != "" && p.DownloadLimitPeriod != "day" && p.DownloadLimitPeriod != "month" {
+		return fmt.Errorf("download limit period must be day or month")
+	}
+	if p.DownloadLimitAmount < 0 || p.DownloadLimitAmount > 100000 || p.DownloadMaxHeight < 0 {
+		return fmt.Errorf("invalid download limit")
 	}
 	for _, h := range p.AllowedHours {
 		if h < 0 || h > 23 {
@@ -166,6 +220,7 @@ func (p Policy) Validate() error {
 
 func (s *Service) Put(ctx context.Context, id int64, p Policy) error {
 	// Cache an independent snapshot, just as Get returns one to callers.
+	p.AllowDownloads = cloneBoolPtr(p.AllowDownloads)
 	p.Bedtime = cloneBedtime(p.Bedtime)
 	p.AllowedHours = append([]int(nil), p.AllowedHours...)
 	p.BlockedGenres = append([]string(nil), p.BlockedGenres...)
@@ -213,6 +268,9 @@ func (s *Service) Put(ctx context.Context, id int64, p Policy) error {
 	iv := s.inval
 	s.invalMu.Unlock()
 	iv.Notify(strconv.FormatInt(id, 10))
+	if fn := s.onPut.Load(); fn != nil && *fn != nil {
+		(*fn)(id, p)
+	}
 	return nil
 }
 
@@ -328,7 +386,8 @@ func AllowedWithPolicy(u *core.User, t *core.Title, p Policy) bool {
 	if u == nil {
 		return true
 	}
-	if contentrating.Exceeds(t.ContentRating, u.MaxContentRating) {
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	if contentrating.EnforceExceeds(enf, u.MaxContentRating) {
 		return false
 	}
 	blocked := func(values, bans []string) bool {
@@ -486,6 +545,17 @@ func (s *Service) UserPolicy(u *core.User) *core.User {
 	return &out
 }
 func (s *Service) BitrateLimit(u *core.User) int { return s.ForUser(u).MaxBitrateKbps }
+
+// DownloadTranscodingDisabled reports whether u's downloads must not
+// re-encode video: the server default or the owner's switch for u.
+func (s *Service) DownloadTranscodingDisabled(u *core.User) bool {
+	return s.DownloadAllowance(u).NoTranscode
+}
+
+// VideoTranscodingDisabled reports the owner's per-viewer switch.
+func (s *Service) VideoTranscodingDisabled(u *core.User) bool {
+	return u != nil && s.ForUser(u).VideoTranscodingDisabled
+}
 
 func (s *Service) Restricted(u *core.User) bool {
 	if u == nil {

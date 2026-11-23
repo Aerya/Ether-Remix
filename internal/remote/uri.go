@@ -147,12 +147,132 @@ func BuildConnections(o BuildOptions) []Connection {
 		addIP(o.WAN, o.PublicPort, false)
 	}
 	for _, c := range parsedCustom {
+		// A container on a bridge network only sees its own address, so the
+		// owner names the host's LAN IP here. Publish its plex.direct form too:
+		// a browser client cannot use the plain-IP URL securely.
+		if ip := net.ParseIP(c.Address); ip != nil && c.Local && wantHTTPS {
+			if v4 := ip.To4(); v4 != nil {
+				ip = v4
+			}
+			add(Connection{Protocol: "https", Address: ip.String(), Port: c.Port, Local: true, IPv6: c.IPv6, Custom: true,
+				URI: "https://" + net.JoinHostPort(PlexDirectHost(ip, o.CertHash), strconv.Itoa(c.Port))})
+		}
 		if secure == SecureRequired && c.Protocol == "http" && (wantHTTPS || o.HTTPSOnPlainIP || hasCustomHTTPS) {
 			continue
 		}
 		add(c)
 	}
 	return out
+}
+
+// PublishedAddress is a validated owner-supplied URL for reaching an app.
+// Unlike Plex's CustomURLs, it may include a path prefix (for example
+// https://domain.com/jellyfin as well as https://jellyfin.domain.com).
+type PublishedAddress struct {
+	Scheme string // "http" or "https"
+	Host   string // hostname or IP literal without port or brackets
+	Port   int
+	Path   string // "" or "/jellyfin" (never trailing slash)
+	URI    string // normalized URL without trailing slash
+	Local  bool
+	IPv6   bool
+}
+
+// ParsePublishedAddress validates an optional per-app published address,
+// supporting both subdomain roots and path prefixes.
+func ParsePublishedAddress(raw string) (PublishedAddress, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return PublishedAddress{}, fmt.Errorf("published address %q: empty", raw)
+	}
+	if len(s) > 512 || strings.HasPrefix(s, "[") || strings.ContainsAny(s, " \t\r\n()<>\"'\\|?#") {
+		return PublishedAddress{}, fmt.Errorf("published address %q: must be an http(s) URL", raw)
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return PublishedAddress{}, err
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return PublishedAddress{}, fmt.Errorf("published address %q: scheme must be http or https", raw)
+	}
+	if u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return PublishedAddress{}, fmt.Errorf("published address %q: must not include credentials, query or fragment", raw)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return PublishedAddress{}, fmt.Errorf("published address %q: missing host", raw)
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return PublishedAddress{}, fmt.Errorf("published address %q: bad port", raw)
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsUnspecified() || (ip.To4() != nil && strings.ContainsAny(u.Host, "[]")) {
+			return PublishedAddress{}, fmt.Errorf("published address %q: invalid host", raw)
+		}
+	} else if strings.EqualFold(host, "localhost") || strings.ContainsAny(u.Host, "[]") || !isValidDNSName(host) {
+		return PublishedAddress{}, fmt.Errorf("published address %q: invalid host", raw)
+	}
+	port := 80
+	if u.Scheme == "https" {
+		port = 443
+	}
+	rawPort := u.Port()
+	if rawPort != "" {
+		n, err := strconv.Atoi(rawPort)
+		if err != nil || n <= 0 || n > 65535 {
+			return PublishedAddress{}, fmt.Errorf("published address %q: bad port", raw)
+		}
+		port = n
+	}
+	cleanPath := ""
+	if u.Path != "" && u.Path != "/" {
+		trimmed := strings.TrimRight(u.Path, "/")
+		if !strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "//") {
+			return PublishedAddress{}, fmt.Errorf("published address %q: invalid path", raw)
+		}
+		for _, seg := range strings.Split(trimmed[1:], "/") {
+			if seg == "" || seg == "." || seg == ".." {
+				return PublishedAddress{}, fmt.Errorf("published address %q: invalid path", raw)
+			}
+		}
+		cleanPath = trimmed
+	}
+	lowerHost := strings.ToLower(host)
+	u.Host = lowerHost
+	if rawPort != "" {
+		u.Host = net.JoinHostPort(lowerHost, rawPort)
+	} else if ip != nil && ip.To4() == nil {
+		u.Host = "[" + lowerHost + "]"
+	}
+	u.Path = cleanPath
+	u.RawPath = ""
+	u.RawQuery, u.Fragment = "", ""
+	resolvedIP := ip
+	if resolvedIP == nil {
+		if pdIP, _, ok := ParsePlexDirectHost(lowerHost); ok {
+			resolvedIP = pdIP
+		}
+	}
+	return PublishedAddress{
+		Scheme: u.Scheme,
+		Host:   lowerHost,
+		Port:   port,
+		Path:   cleanPath,
+		URI:    strings.TrimRight(u.String(), "/"),
+		Local:  resolvedIP != nil && (resolvedIP.IsPrivate() || resolvedIP.IsLoopback() || IsCGNAT(resolvedIP)),
+		IPv6:   resolvedIP != nil && resolvedIP.To4() == nil,
+	}, nil
+}
+
+// ParsePublishedURL validates raw and returns its normalized URL string.
+func ParsePublishedURL(raw string) (string, error) {
+	a, err := ParsePublishedAddress(raw)
+	if err != nil {
+		return "", err
+	}
+	return a.URI, nil
 }
 
 // ParseCustomURL validates an owner-supplied connection URL.

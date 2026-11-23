@@ -2,6 +2,7 @@ package debrid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/flight"
+	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
 // TorrentResolver fills a torrent release's info hash and magnet (by
@@ -85,12 +87,134 @@ func (x *Indexer) MissingSources() error {
 // Inner returns the wrapped indexer.
 func (x *Indexer) Inner() core.Indexer { return x.inner }
 
+// ResolveTorrent implements TorrentResolver by forwarding to the wrapped
+// indexer (for example VODIndexer -> StreamSources -> newznab.Manager ->
+// cardigann.Runner), filling a torrent release's info hash, magnet and
+// optional .torrent metainfo file list.
+func (x *Indexer) ResolveTorrent(ctx context.Context, r core.Release) (core.Release, error) {
+	if tr, ok := x.inner.(TorrentResolver); ok {
+		return tr.ResolveTorrent(ctx, r)
+	}
+	if r.InfoHash != "" {
+		return r, nil
+	}
+	return r, fmt.Errorf("debrid: torrent %q has no info hash: %w", r.Name, core.ErrReleaseRejected)
+}
+
+// StripLinkAuth forwards credential stripping to the wrapped indexer so
+// plugin-facing source candidates do not carry indexer API keys or secrets.
+func (x *Indexer) StripLinkAuth(r core.Release) core.Release {
+	if s, ok := x.inner.(interface {
+		StripLinkAuth(core.Release) core.Release
+	}); ok {
+		return s.StripLinkAuth(r)
+	}
+	return r
+}
+
 // Name implements core.Indexer.
 func (x *Indexer) Name() string { return x.inner.Name() }
 
 // Search implements core.Indexer.
 func (x *Indexer) Search(ctx context.Context, req core.SearchRequest) ([]core.Release, error) {
 	return x.SearchWith(ctx, req, nil)
+}
+
+// EnabledIndexerStatuses forwards enabled indexer status listing to the
+// wrapped indexer.
+func (x *Indexer) EnabledIndexerStatuses(status string) []core.IndexerSearchStatus {
+	if dir, ok := x.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexerStatuses(status)
+	}
+	return nil
+}
+
+// EnabledIndexers forwards enabled indexer listing to the wrapped indexer.
+func (x *Indexer) EnabledIndexers() []core.IndexerSearchStatus {
+	if dir, ok := x.inner.(core.IndexerDirectory); ok {
+		return dir.EnabledIndexers()
+	}
+	return []core.IndexerSearchStatus{}
+}
+
+// SearchWithOptions forwards controlled fan-out options to the wrapped indexer
+// and filters results through playable + debrid cache availability. Early
+// return and bounded-wait calls avoid adding a blocking post-search CheckCached
+// round-trip on top of the caller's wait budget.
+func (x *Indexer) SearchWithOptions(ctx context.Context, req core.SearchRequest, opts core.IndexerSearchOptions) (core.IndexerSearchResult, error) {
+	csi, ok := x.inner.(core.ControlledSearchIndexer)
+	if !ok {
+		started := time.Now()
+		rels, err := x.Search(ctx, req)
+		if err != nil {
+			return core.IndexerSearchResult{}, err
+		}
+		name := x.Name()
+		return core.IndexerSearchResult{
+			Releases: rels,
+			Indexers: []core.IndexerSearchStatus{{
+				IndexerID: name,
+				Indexer:   name,
+				Status:    core.IndexerStatusAnswered,
+				Results:   len(rels),
+				MS:        max(int64(0), time.Since(started).Milliseconds()),
+			}},
+		}, nil
+	}
+	res, err := csi.SearchWithOptions(ctx, req, opts)
+	if err != nil {
+		return res, err
+	}
+	enabled := x.svc != nil && x.svc.Enabled()
+	if enabled {
+		x.svc.ApplyHints(ctx, res.Releases)
+	}
+	var torrents []string
+	out := res.Releases[:0:0]
+	for _, r := range res.Releases {
+		r, ok := x.playable(r)
+		if !ok {
+			continue
+		}
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" {
+			torrents = append(torrents, r.InfoHash)
+		}
+		out = append(out, r)
+	}
+	bounded := opts.FirstResults || opts.MinResults > 0 || opts.WaitTimeout > 0 || len(res.Pending) > 0
+	if len(torrents) == 0 || !enabled || bounded {
+		if enabled && len(torrents) > 0 {
+			sort.SliceStable(out, func(i, j int) bool {
+				ci := out[i].Protocol == core.ProtocolTorrent && x.svc.KnownCached(out[i].InfoHash)
+				cj := out[j].Protocol == core.ProtocolTorrent && x.svc.KnownCached(out[j].InfoHash)
+				return ci && !cj
+			})
+		}
+		res.Releases = out
+		return res, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	cached, definitive := x.svc.CheckCached(cctx, torrents)
+	cancel()
+	kept := out[:0]
+	dropUncached := definitive && x.svc.Config().CachedOnly
+	explain := x.explainUncached(out, cached)
+	for _, r := range out {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
+			if explain == 0 {
+				continue
+			}
+			explain--
+		}
+		kept = append(kept, r)
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		ci := kept[i].Protocol == core.ProtocolTorrent && (cached[kept[i].InfoHash] || x.svc.KnownCached(kept[i].InfoHash))
+		cj := kept[j].Protocol == core.ProtocolTorrent && (cached[kept[j].InfoHash] || x.svc.KnownCached(kept[j].InfoHash))
+		return ci && !cj
+	})
+	res.Releases = kept
+	return res, nil
 }
 
 // SearchWith exposes arrivals from both sources while cache discovery continues.
@@ -158,7 +282,7 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 		}
 		out = append(out, r)
 	}
-	if len(torrents) == 0 {
+	if len(torrents) == 0 || core.HasIndexerStatusObserver(ctx) {
 		return out, nil
 	}
 	// One bulk availability call per provider that offers it: torrents
@@ -186,7 +310,7 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	explain := x.explainUncached(out, cached)
 	var explained []string // ids kept only to explain a not-cached failure
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && dropUncached && !cached[r.InfoHash] {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
 			if explain == 0 {
 				continue
 			}
@@ -370,7 +494,7 @@ func (x *Indexer) searchSeasonPacks(ctx context.Context, req core.SearchRequest)
 	}
 	kept := packs[:0]
 	for _, r := range packs {
-		if r.InfoHash != "" && definitive && !cached[r.InfoHash] {
+		if r.InfoHash != "" && definitive && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
 			continue
 		}
 		kept = append(kept, r)
@@ -435,7 +559,7 @@ func (x *Indexer) SearchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	dropUncached := definitive && x.svc.Config().CachedOnly
 	explain := x.explainUncached(out, cached)
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && dropUncached && !cached[r.InfoHash] {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] && !x.svc.mayBeZipOnlyCached(ctx, r) {
 			if explain == 0 {
 				continue
 			}
@@ -468,11 +592,34 @@ func (x *Indexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) 
 			return nil, fmt.Errorf("usenet release %q: %w", r.Name, core.ErrNotAvailable)
 		}
 		data, err := x.inner.FetchNZB(ctx, r)
-		if err != nil || !r.Info.FullSeason || r.Target == nil {
+		if err != nil || r.Target == nil {
 			return data, err
 		}
-		// A Usenet season pack plays as its wanted episode's files only.
-		return x.episodeNZB(ctx, r, data)
+		if r.Info.FullSeason {
+			// A Usenet season pack plays as its wanted episode's files only.
+			return x.episodeNZB(ctx, r, data)
+		}
+		if r.Target.AllowNonVideo && (r.Target.FileIndex != nil || r.Target.ExactFile != "" ||
+			r.Target.Member != "" || r.Target.MemberIndex != nil || nzb.IsNonVideoMIME(r.Target.MIME)) {
+			// A plugin targeted a non-video file, archive member, or media MIME:
+			// narrow to an explicit file when named and carry non-video metadata
+			// into the stream engine.
+			out, err := EpisodeNZB(data, r.Target)
+			if errors.Is(err, core.ErrWrongContent) && r.Target.ExactFile != "" && x.packNamer != nil && NeedsExactFileNaming(data, r.Target) {
+				named, nerr := x.packNamer.NameFiles(ctx, r.ID, data)
+				if nerr != nil {
+					return nil, nerr
+				}
+				return EpisodeNZB(named, r.Target)
+			}
+			return out, err
+		}
+		if len(r.Target.MovieTitles) > 0 || len(r.Target.WantedLanguages) > 0 {
+			if out, merr := EpisodeNZB(data, r.Target); merr == nil {
+				return out, nil
+			}
+		}
+		return data, nil
 	}
 	if !x.svc.Enabled() {
 		return nil, fmt.Errorf("torrent release %q: %w", r.Name, ErrNoProvider)
@@ -502,6 +649,9 @@ func (x *Indexer) fetchTorrentOnce(ctx context.Context, r core.Release) (data []
 		descriptor = time.Since(phase)
 		if err != nil {
 			return nil, err
+		}
+		if resolved.FileCount < r.FileCount {
+			resolved.FileCount = r.FileCount
 		}
 		r = resolved
 	}

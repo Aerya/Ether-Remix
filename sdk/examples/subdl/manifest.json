@@ -1,6 +1,6 @@
 {
   "id": "org.ether.examples.subdl",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "SubDL",
   "description": "Find subtitles with your SubDL account.",
   "types": [

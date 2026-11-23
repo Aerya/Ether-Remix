@@ -6,14 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
 
 var (
-	kindKeyRe   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	kindFieldRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,39}$`)
-	kindArtRe   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindKeyRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindFieldRe    = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,39}$`)
+	kindArtRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindShelfKeyRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 )
 
 // Envelope keys a declared field may not shadow (spec §2.1).
@@ -29,7 +36,57 @@ var kindFieldTypes = map[string]bool{
 }
 
 var kindSorts = map[string]bool{
-	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true,
+	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true, "lastViewed": true,
+}
+
+var kindLibraryCards = map[string]bool{
+	"poster": true, "landscape": true, "square": true,
+}
+
+var kindLibraryDateDisplays = map[string]bool{
+	"year": true, "date": true,
+}
+
+var kindLibraryTabKinds = map[string]bool{
+	"recommended": true, "library": true, "collections": true, "people": true, "view": true, "live": true,
+}
+
+var kindLibraryTabLayouts = map[string]bool{
+	"grid": true, "list": true, "timeline": true,
+}
+
+// KindRuleFields maps built-in rule facts (genre, studio, runtime, ...) onto
+// declared, indexed plugin field keys. Shared by manifest validation and
+// pluginitems SQL compilation so both agree on which built-in facts exist.
+func KindRuleFields(fields []KindField) map[string]string {
+	out := map[string]string{}
+	aliases := map[string][]string{
+		"genre":      {"genre", "genres", "tags", "tag"},
+		"studio":     {"studio", "studios"},
+		"country":    {"country", "countries"},
+		"keyword":    {"keyword", "keywords"},
+		"language":   {"language"},
+		"runtime":    {"runtime", "duration", "length"},
+		"votes":      {"votes"},
+		"popularity": {"popularity"},
+	}
+	for field, keys := range aliases {
+		wantNumeric := field == "runtime" || field == "votes" || field == "popularity"
+		for _, key := range keys {
+			for _, f := range fields {
+				text := f.Type == "string" || f.Type == "strings" || f.Type == "enum" || f.Type == "people"
+				numeric := f.Type == "int" || f.Type == "float" || f.Type == "duration"
+				if f.Key == key && f.Indexed && ((wantNumeric && numeric) || (!wantNumeric && text)) {
+					out[field] = key
+					break
+				}
+			}
+			if out[field] != "" {
+				break
+			}
+		}
+	}
+	return out
 }
 
 var mediaBrowserCollectionTypes = map[string]bool{
@@ -38,9 +95,13 @@ var mediaBrowserCollectionTypes = map[string]bool{
 }
 
 var mediaBrowserItemTypes = map[string]bool{
-	"Movie": true, "Series": true, "Season": true, "Episode": true,
-	"MusicAlbum": true, "Audio": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+	"Movie": true, "Series": true, "Season": true, "Episode": true, "Video": true,
+	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
+	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
+
+// mediaBrowserItemTypeList names the closed itemTypes set for error messages.
+const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, Video, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
 
 func validateMediaKinds(m Manifest, add func(string, string), label func(string, string, int)) {
 	e := m.Ether
@@ -72,10 +133,37 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		add(base+".key", "must be lower case letters, digits and dashes, at most 32 characters")
 	}
 	label(base+".label", k.Label, 60)
-	if k.Library != (KindLibraryDecl{}) {
+	if k.Media != "" && !core.ValidMediaClass(k.Media) {
+		add(base+".media", "must be video, music, audiobook, book, podcast or photo")
+	}
+	if !k.Library.IsZero() {
 		label(base+".library.name", k.Library.Name, 60)
 		if unsafePath(k.Library.Icon) {
 			add(base+".library.icon", "must stay inside the package")
+		}
+		if k.Library.Card != "" && !kindLibraryCards[k.Library.Card] {
+			add(base+".library.card", "must be poster, landscape or square")
+		}
+		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
+			add(base+".library.dateDisplay", "must be year or date")
+		}
+		if len(k.Library.Tabs) > MaxKindLibraryTabs {
+			add(base+".library.tabs", fmt.Sprintf("at most %d tabs may be declared", MaxKindLibraryTabs))
+		}
+		seenTab := map[string]bool{}
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
+			switch {
+			case !kindKeyRe.MatchString(tab.Key):
+				add(tbase+".key", "must be lower case letters, digits and dashes, at most 32 characters")
+			case seenTab[tab.Key]:
+				add(tbase+".key", "is listed twice")
+			}
+			seenTab[tab.Key] = true
+			label(tbase+".label", tab.Label, 40)
+			if !kindLibraryTabKinds[tab.Kind] {
+				add(tbase+".kind", "must be recommended, library, collections, people, view or live")
+			}
 		}
 	}
 
@@ -92,8 +180,24 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if levelKeys[lv.Key] {
 			add(lbase+".key", "is listed twice")
 		}
+		if lv.Parent != "" {
+			switch {
+			case j == 0:
+				add(lbase+".parent", "the root level cannot set parent")
+			case lv.Parent == lv.Key:
+				add(lbase+".parent", "cannot reference itself (cycle)")
+			case !levelKeys[lv.Parent]:
+				add(lbase+".parent", "must name an earlier level")
+			}
+		}
 		levelKeys[lv.Key] = true
 		label(lbase+".label", lv.Label, 40)
+		if lv.Media != "" && !core.ValidMediaClass(lv.Media) {
+			add(lbase+".media", "must be video, music, audiobook, book, podcast or photo")
+		}
+		if lv.Role != "" && !validKindLevelRole(lv.Role) {
+			add(lbase+".role", "must be trimmed printable text of at most 40 characters")
+		}
 		if lv.Playable {
 			playable = true
 		}
@@ -133,6 +237,20 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		} else if len(f.Enum) > 0 {
 			add(fbase+".enum", "only enum fields list values")
 		}
+		if len(f.Values) > 0 {
+			if f.Type != "strings" {
+				add(fbase+".values", "only strings fields may declare values")
+			} else {
+				seenValues := map[string]bool{}
+				for _, v := range f.Values {
+					if strings.TrimSpace(v) == "" || seenValues[v] {
+						add(fbase+".values", "values must be non-empty and listed once")
+						break
+					}
+					seenValues[v] = true
+				}
+			}
+		}
 	}
 
 	seenArt := map[string]bool{}
@@ -155,21 +273,297 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	seenSort := map[string]bool{}
 	for j, s := range k.Browse.Sorts {
 		if !kindSorts[s] || seenSort[s] {
-			add(fmt.Sprintf("%s.browse.sorts[%d]", base, j), "must be title, added, released, year, rating or index, listed once")
+			add(fmt.Sprintf("%s.browse.sorts[%d]", base, j), "must be title, added, released, year, rating, index or lastViewed, listed once")
 		}
 		seenSort[s] = true
 	}
+	seenFacet := map[string]bool{}
 	for j, f := range k.Browse.Facets {
+		if seenFacet[f] {
+			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "is listed twice")
+		}
+		seenFacet[f] = true
 		if f == "year" || f == "released" || f == "rating" {
 			continue
 		}
 		field, ok := fields[f]
 		if !ok {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "must name a declared field")
-		} else if !field.Indexed {
+		} else if !field.Indexed && field.Type != "people" {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "a facet field must be indexed")
 		}
 	}
+	if k.Browse.Expand != nil {
+		ebase := base + ".browse.expand"
+		if !hasProvider {
+			add(ebase, "expand needs the catalog_provider capability")
+		}
+		if len(k.Browse.Expand.Facets) == 0 && len(k.Browse.Expand.Levels) == 0 {
+			add(ebase, "must list at least one browse facet or container level")
+		}
+		seenExpand := map[string]bool{}
+		for j, f := range k.Browse.Expand.Facets {
+			fbase := fmt.Sprintf("%s.facets[%d]", ebase, j)
+			if seenExpand[f] {
+				add(fbase, "is listed twice")
+			}
+			seenExpand[f] = true
+			if !seenFacet[f] {
+				add(fbase, "must name a declared browse facet")
+			}
+		}
+		seenExpandLevel := map[string]bool{}
+		for j, lvKey := range k.Browse.Expand.Levels {
+			lbase := fmt.Sprintf("%s.levels[%d]", ebase, j)
+			if seenExpandLevel[lvKey] {
+				add(lbase, "is listed twice")
+			}
+			seenExpandLevel[lvKey] = true
+			lv, _, ok := k.Level(lvKey)
+			if !ok {
+				add(lbase, "must name a declared level")
+			} else if !lv.Container {
+				add(lbase, "must name a level with container: true")
+			}
+		}
+		if k.Browse.Expand.TTLHours < 0 {
+			add(ebase+".ttlHours", "must be positive")
+		}
+	}
+	if !k.Library.IsZero() {
+		declaredIndexed := make(map[string]string, len(k.Fields))
+		for _, f := range k.Fields {
+			if f.Indexed || f.Type == "people" {
+				declaredIndexed[f.Key] = f.Type
+			}
+		}
+		ruleFields := KindRuleFields(k.Fields)
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
+			if tab.Level != "" {
+				switch tab.Kind {
+				case "library", "view", "collections", "people":
+					if !levelKeys[tab.Level] {
+						add(tbase+".level", "must name a declared level")
+					}
+				default:
+					add(tbase+".level", "only library, view, collections or people tabs may set level")
+				}
+			}
+			switch tab.Kind {
+			case "collections":
+				if tab.Facet != "" && !seenFacet[tab.Facet] {
+					add(tbase+".facet", "must name a declared browse facet")
+				}
+				if tab.Sort != "" {
+					if tab.Facet == "" {
+						add(tbase+".sort", "requires facet to be set")
+					} else if !seenSort[tab.Sort] && !core.IsLastViewedSort(tab.Sort) {
+						add(tbase+".sort", "must name a declared browse sort")
+					}
+				}
+				if tab.Direction != "" {
+					if tab.Facet == "" {
+						add(tbase+".direction", "requires facet to be set")
+					} else if tab.Direction != "asc" && tab.Direction != "desc" {
+						add(tbase+".direction", "must be asc or desc")
+					}
+				}
+				if tab.Order != "" {
+					if tab.Facet == "" {
+						add(tbase+".order", "requires facet to be set")
+					} else if tab.Order != "count" && tab.Order != "name" {
+						add(tbase+".order", "must be count or name")
+					}
+				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live or recommended tabs may set card")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
+			case "people":
+				if tab.Facet == "" || !seenFacet[tab.Facet] {
+					add(tbase+".facet", "must name a declared browse facet")
+				} else if fields[tab.Facet].Type != "people" {
+					add(tbase+".facet", "must name a people field")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections or view tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections or view tabs may set direction")
+				}
+				if tab.Order != "" && tab.Order != "count" && tab.Order != "name" {
+					add(tbase+".order", "must be count or name")
+				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live or recommended tabs may set card")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
+			case "view":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live or recommended tabs may set card")
+				}
+				if tab.Layout != "" && !kindLibraryTabLayouts[tab.Layout] {
+					add(tbase+".layout", "must be grid, list or timeline")
+				}
+				if tab.Sort != "" && !seenSort[tab.Sort] && !core.IsLastViewedSort(tab.Sort) {
+					add(tbase+".sort", "must name a declared browse sort or lastViewed")
+				}
+				if tab.Direction != "" && tab.Direction != "asc" && tab.Direction != "desc" {
+					add(tbase+".direction", "must be asc or desc")
+				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
+				if tab.Filters != nil {
+					if tab.Filters.Match != "" && tab.Filters.Match != "all" && tab.Filters.Match != "any" {
+						add(tbase+".filters.match", "must be all or any")
+					}
+					if tab.Filters.VisibilityDefault != "" && tab.Filters.VisibilityDefault != "show" && tab.Filters.VisibilityDefault != "hide" {
+						add(tbase+".filters.visibilityDefault", "must be show or hide")
+					}
+					if !tab.Filters.IsEmpty() {
+						specs, fallback := tab.Filters.ToPolicy("")
+						if err := libraryfilter.ValidatePluginManifestPolicy(specs, fallback, declaredIndexed, ruleFields); err != nil {
+							add(tbase+".filters", err.Error())
+						}
+					}
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
+			case "live":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections or view tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections or view tabs may set direction")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" && !kindLibraryCards[tab.Card] {
+					add(tbase+".card", "must be poster, landscape or square")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
+			case "recommended":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections or view tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections or view tabs may set direction")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" && !kindLibraryCards[tab.Card] {
+					add(tbase+".card", "must be poster, landscape or square")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if tab.Search != nil {
+					add(tbase+".search", "only collections, people, view or live tabs may set search")
+				}
+				if tab.SearchPlaceholder != "" {
+					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
+				}
+				validateKindLibraryShelves(tbase+".shelves", tab.Shelves, levelKeys, fields, add, label)
+			default:
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections or view tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections or view tabs may set direction")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live or recommended tabs may set card")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+				if tab.Search != nil {
+					add(tbase+".search", "only collections, people, view or live tabs may set search")
+				}
+				if tab.SearchPlaceholder != "" {
+					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
+				}
+				if len(tab.Shelves) > 0 {
+					add(tbase+".shelves", "only recommended tabs may set shelves")
+				}
+			}
+		}
+	}
+	validateKindLibraryShelves(base+".library.shelves", k.Library.Shelves, levelKeys, fields, add, label)
 	for j, f := range k.Browse.SearchFields {
 		field, ok := fields[f]
 		if !ok {
@@ -222,6 +616,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys map[string]bool, add func(string, string)) {
 	p := k.Present
 	protocols := 0
+	if p.Vela != nil {
+		protocols++
+	}
 	if p.Plex != nil {
 		protocols++
 	}
@@ -247,16 +644,37 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		return
 	}
 	if protocols == 0 {
-		if k.HasLibrary() {
-			add(base, "declare at least one protocol presentation, or adapterOnly with a frontend adapter")
-		}
+		// Present is optional: Ether infers per-app presentations from the
+		// kind's media class, level roles, and hierarchy shape.
 		return
 	}
 	levels := len(k.Levels)
+	if p.Vela != nil {
+		switch p.Vela.Type {
+		case "":
+			if p.Vela.Default == nil {
+				add(base+".vela.type", "must be movies or shows")
+			}
+		case "movies":
+		case "shows":
+			if levels < 2 {
+				add(base+".vela.type", "shows needs at least two levels")
+			}
+		default:
+			add(base+".vela.type", "must be movies or shows")
+		}
+	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
-		case "movie", "photo":
-		case "show", "artist":
+		case "":
+			if p.Plex.Default == nil {
+				add(base+".plex.base", "must be movie, show, artist or photo")
+			}
+		case "movie", "photo", "artist":
+			// A single-level artist kind is a flat album list: its items
+			// present as albums (a level named artist/track presents as
+			// that instead), never as artists.
+		case "show":
 			if levels < 2 {
 				add(base+".plex.base", p.Plex.Base+" needs at least two levels")
 			}
@@ -265,7 +683,11 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		}
 	}
 	if p.MediaBrowser != nil {
-		if !mediaBrowserCollectionTypes[p.MediaBrowser.CollectionType] {
+		if p.MediaBrowser.CollectionType == "" {
+			if p.MediaBrowser.Default == nil && len(p.MediaBrowser.ItemTypes) == 0 {
+				add(base+".mediaBrowser.collectionType", "must be movies, tvshows, music, audiobooks, books, photos or homevideos")
+			}
+		} else if !mediaBrowserCollectionTypes[p.MediaBrowser.CollectionType] {
 			add(base+".mediaBrowser.collectionType", "must be movies, tvshows, music, audiobooks, books, photos or homevideos")
 		}
 		for level, itemType := range p.MediaBrowser.ItemTypes {
@@ -273,12 +695,16 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 				add(base+".mediaBrowser.itemTypes", "unknown level "+level)
 			}
 			if !mediaBrowserItemTypes[itemType] {
-				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType)
+				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType+" for level "+level+" (must be "+mediaBrowserItemTypeList+")")
 			}
 		}
 	}
 	if p.Stremio != nil {
 		switch p.Stremio.Type {
+		case "":
+			if p.Stremio.Default == nil {
+				add(base+".stremio.type", "must be movie, series, channel or tv")
+			}
 		case "movie", "channel", "tv":
 		case "series":
 			if levels < 2 {
@@ -290,6 +716,10 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Xtream != nil {
 		switch p.Xtream.Category {
+		case "":
+			if p.Xtream.Default == nil {
+				add(base+".xtream.category", "must be movie, series or live")
+			}
 		case "movie", "live":
 		case "series":
 			if levels < 2 {
@@ -299,8 +729,14 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 			add(base+".xtream.category", "must be movie, series or live")
 		}
 	}
-	if p.Silo != nil && !mediaBrowserItemTypes[p.Silo.Type] {
-		add(base+".silo.type", "must be a MediaBrowser item type such as Movie or Series")
+	if p.Silo != nil {
+		if p.Silo.Type == "" {
+			if p.Silo.Default == nil {
+				add(base+".silo.type", "must be movies, tvshows, or a MediaBrowser item type such as Movie or Series")
+			}
+		} else if !mediaBrowserItemTypes[p.Silo.Type] && !mediaBrowserCollectionTypes[p.Silo.Type] {
+			add(base+".silo.type", "must be movies, tvshows, or a MediaBrowser item type such as Movie or Series")
+		}
 	}
 }
 
@@ -342,6 +778,22 @@ func validateFrontendAdapters(m Manifest, add func(string, string), label func(s
 				add(fmt.Sprintf("%s.libraries[%d]", base, j), "must name a media kind declared by this plugin")
 			}
 		}
+		if len(a.SearchPaths) > MaxAdapterSearchPaths {
+			add(base+".searchPaths", fmt.Sprintf("must declare at most %d search paths", MaxAdapterSearchPaths))
+		}
+		seenSearch := map[string]bool{}
+		for j, sp := range a.SearchPaths {
+			norm, ok := normalizeAdapterSearchPath(sp)
+			if !ok {
+				add(fmt.Sprintf("%s.searchPaths[%d]", base, j), "must be a clean subpath starting with /, without ?, #, whitespace, or ..")
+				continue
+			}
+			if seenSearch[norm] {
+				add(fmt.Sprintf("%s.searchPaths[%d]", base, j), "must not repeat a search path")
+				continue
+			}
+			seenSearch[norm] = true
+		}
 	}
 }
 
@@ -372,6 +824,144 @@ func (k MediaKindMeta) Level(key string) (KindLevel, int, bool) {
 		}
 	}
 	return KindLevel{}, -1, false
+}
+
+// LevelParent returns the effective parent level key for key: the declared
+// KindLevel.Parent when set, or the preceding level's key by default. The root
+// level (index 0) and unknown keys return "".
+func (k MediaKindMeta) LevelParent(key string) string {
+	lv, idx, ok := k.Level(key)
+	if !ok || idx == 0 {
+		return ""
+	}
+	if lv.Parent != "" {
+		return lv.Parent
+	}
+	return k.Levels[idx-1].Key
+}
+
+// ChildLevels returns all declared levels whose effective parent is parentKey,
+// in manifest declaration order.
+func (k MediaKindMeta) ChildLevels(parentKey string) []KindLevel {
+	if parentKey == "" {
+		return nil
+	}
+	var out []KindLevel
+	for _, lv := range k.Levels {
+		if k.LevelParent(lv.Key) == parentKey {
+			out = append(out, lv)
+		}
+	}
+	return out
+}
+
+// PrimaryChildLevel returns the primary direct child level of parentKey.
+// For a branching container (more than one direct child level), it prefers
+// the first child level whose effective media class matches parentKey's own
+// effective media class, falling back to the first declared child level.
+func (k MediaKindMeta) PrimaryChildLevel(parentKey string, kindMedia core.MediaClass) (KindLevel, bool) {
+	children := k.ChildLevels(parentKey)
+	if len(children) == 0 {
+		return KindLevel{}, false
+	}
+	if len(children) == 1 {
+		return children[0], true
+	}
+	parentMedia := k.EffectiveLevelMedia(parentKey, kindMedia)
+	for _, lv := range children {
+		if k.EffectiveLevelMedia(lv.Key, kindMedia) == parentMedia {
+			return lv, true
+		}
+	}
+	return children[0], true
+}
+
+// HasChildLevels reports whether any declared level has key as its effective parent.
+func (k MediaKindMeta) HasChildLevels(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, lv := range k.Levels {
+		if k.LevelParent(lv.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// IsLeafLevel reports whether key is a declared level with no child levels.
+func (k MediaKindMeta) IsLeafLevel(key string) bool {
+	_, _, ok := k.Level(key)
+	return ok && !k.HasChildLevels(key)
+}
+
+// LeafLevels returns the set of all declared level keys that have no child levels.
+func (k MediaKindMeta) LeafLevels() map[string]bool {
+	out := make(map[string]bool, len(k.Levels))
+	for _, lv := range k.Levels {
+		if !k.HasChildLevels(lv.Key) {
+			out[lv.Key] = true
+		}
+	}
+	return out
+}
+
+// LevelDepth returns the zero-based tree depth of key (0 for the root level,
+// 1 for direct children of root, etc.), or -1 if key is not declared.
+func (k MediaKindMeta) LevelDepth(key string) int {
+	if _, _, ok := k.Level(key); !ok {
+		return -1
+	}
+	depth := 0
+	cur := key
+	for step := 0; step < len(k.Levels); step++ {
+		p := k.LevelParent(cur)
+		if p == "" {
+			return depth
+		}
+		depth++
+		cur = p
+	}
+	return depth
+}
+
+// EffectiveLevelMedia returns the effective media class for level key: the
+// level's explicit Media override when declared, else the kind's Media, else
+// fallback (or core.MediaClassVideo when fallback is empty).
+func (k MediaKindMeta) EffectiveLevelMedia(key string, fallback core.MediaClass) core.MediaClass {
+	if lv, _, ok := k.Level(key); ok && lv.Media != "" && core.ValidMediaClass(lv.Media) {
+		return core.MediaClass(lv.Media)
+	}
+	if k.Media != "" && core.ValidMediaClass(k.Media) {
+		return core.MediaClass(k.Media)
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return core.MediaClassVideo
+}
+
+// IsVideoTitleLevel reports whether key is a playable level that explicitly
+// declares media: "video", projecting as a video title (kind: "movie") inside
+// any library regardless of the library's own media class.
+func (k MediaKindMeta) IsVideoTitleLevel(key string) bool {
+	lv, _, ok := k.Level(key)
+	return ok && lv.Playable && lv.Media == string(core.MediaClassVideo)
+}
+
+func validKindLevelRole(role string) bool {
+	if role == "" || strings.TrimSpace(role) != role {
+		return false
+	}
+	if utf8.RuneCountInString(role) > 40 {
+		return false
+	}
+	for _, r := range role {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // DeclHash is the upgrade gate for an installed kind (spec §2.3/§2.5):
@@ -418,6 +1008,9 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 			if nl.Playable != lv.Playable || nl.Container != lv.Container {
 				add(lbase, "level "+lv.Key+" changed its playable or container flag")
 			}
+			if old.LevelParent(lv.Key) != nk.LevelParent(nl.Key) {
+				add(lbase+".parent", "level "+lv.Key+" changed its parent")
+			}
 		}
 		nextFields := map[string]KindField{}
 		for _, nf := range nk.Fields {
@@ -453,4 +1046,124 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 		return &ValidationError{f}
 	}
 	return nil
+}
+
+func validateKindLibraryShelves(shelvesPath string, shelves []KindLibraryShelf, levelKeys map[string]bool, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
+	if len(shelves) == 0 {
+		return
+	}
+	if len(shelves) > MaxKindLibraryShelves {
+		add(shelvesPath, fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
+	}
+	declaredIndexed := make(map[string]string, len(fields))
+	fieldList := make([]KindField, 0, len(fields))
+	for _, f := range fields {
+		fieldList = append(fieldList, f)
+		if f.Indexed || f.Type == "people" {
+			declaredIndexed[f.Key] = f.Type
+		}
+	}
+	ruleFields := KindRuleFields(fieldList)
+	checkFacet := func(fieldPath, fk string) {
+		if fk == "year" || fk == "released" || fk == "rating" {
+			return
+		}
+		field, ok := fields[fk]
+		if !ok {
+			add(fieldPath, "must name a declared field")
+		} else if !field.Indexed && field.Type != "people" {
+			add(fieldPath, "a shelf facet field must be indexed")
+		}
+	}
+	seenKey := map[string]bool{}
+	for j, sh := range shelves {
+		sbase := fmt.Sprintf("%s[%d]", shelvesPath, j)
+		if !kindShelfKeyRe.MatchString(sh.Key) {
+			add(sbase+".key", "must match ^[a-z][a-z0-9-]{0,39}$")
+		} else if seenKey[sh.Key] {
+			add(sbase+".key", "is listed twice")
+		}
+		seenKey[sh.Key] = true
+		label(sbase+".label", sh.Label, 60)
+		if sh.Level != "" && !levelKeys[sh.Level] {
+			add(sbase+".level", "must name a declared level")
+		}
+		if sh.Sort != "" && !kindSorts[sh.Sort] {
+			add(sbase+".sort", "must be title, added, released, year, rating, index or lastViewed")
+		}
+		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
+			add(sbase+".direction", "must be asc or desc")
+		}
+		if sh.Facet != "" && !sh.Filters.IsEmpty() {
+			add(sbase+".filters", "cannot be combined with facet")
+		}
+		if sh.Facet != "" {
+			checkFacet(sbase+".facet", sh.Facet)
+			switch {
+			case sh.Value != "" && len(sh.Values) > 0:
+				add(sbase+".values", "cannot be combined with value")
+			case sh.Value != "":
+				if strings.TrimSpace(sh.Value) == "" {
+					add(sbase+".value", "must not be empty")
+				}
+			case len(sh.Values) > 0:
+				for vi, v := range sh.Values {
+					if strings.TrimSpace(v) == "" {
+						add(fmt.Sprintf("%s.values[%d]", sbase, vi), "must not be empty")
+					}
+				}
+			default:
+				add(sbase+".value", "facet requires value or values")
+			}
+		} else {
+			if sh.Value != "" {
+				add(sbase+".value", "requires facet to be set")
+			}
+			if len(sh.Values) > 0 {
+				add(sbase+".values", "requires facet to be set")
+			}
+		}
+		if sh.Filters != nil {
+			if sh.Filters.Tab != nil {
+				tf := sh.Filters.Tab
+				if tf.Match != "" && tf.Match != "all" && tf.Match != "any" {
+					add(sbase+".filters.match", "must be all or any")
+				}
+				if tf.VisibilityDefault != "" && tf.VisibilityDefault != "show" && tf.VisibilityDefault != "hide" {
+					add(sbase+".filters.visibilityDefault", "must be show or hide")
+				}
+				if !tf.IsEmpty() {
+					specs, fallback := tf.ToPolicy("")
+					if err := libraryfilter.ValidatePluginManifestPolicy(specs, fallback, declaredIndexed, ruleFields); err != nil {
+						add(sbase+".filters", err.Error())
+					}
+				}
+			}
+			if len(sh.Filters.Facets) > 0 {
+				fkeys := make([]string, 0, len(sh.Filters.Facets))
+				for fk := range sh.Filters.Facets {
+					fkeys = append(fkeys, fk)
+				}
+				sort.Strings(fkeys)
+				for _, fk := range fkeys {
+					if strings.TrimSpace(fk) == "" {
+						add(sbase+".filters", "filter facet key must not be empty")
+						continue
+					}
+					fbase := sbase + ".filters." + fk
+					checkFacet(fbase, fk)
+					vals := sh.Filters.Facets[fk]
+					if len(vals) == 0 {
+						add(fbase, "must list at least one value")
+						continue
+					}
+					for vi, v := range vals {
+						if strings.TrimSpace(v) == "" {
+							add(fmt.Sprintf("%s[%d]", fbase, vi), "must not be empty")
+						}
+					}
+				}
+			}
+		}
+	}
 }

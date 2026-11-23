@@ -163,6 +163,25 @@ func TestLiveTVDVRGuideProviderAndTuneShapes(t *testing.T) {
 	if !strings.Contains(providers.Body.String(), livetv.Provider) {
 		t.Fatal("Live TV provider undiscoverable")
 	}
+	for _, platform := range []string{"Android", "iOS", "tvOS", "Web"} {
+		response := f.request(t, "GET", "/media/providers", map[string]string{"Accept": "application/json", "X-Plex-Platform": platform})
+		for _, raw := range decodeJSON(t, response)["MediaProvider"].([]any) {
+			provider := raw.(map[string]any)
+			if provider["identifier"] != livetv.Provider {
+				continue
+			}
+			features := provider["Feature"].([]any)
+			dirs := features[0].(map[string]any)["Directory"].([]any)
+			first := dirs[0].(map[string]any)
+			if platform == "Android" {
+				if len(dirs) != 2 || first["id"] != livetv.Provider || first["key"] != nil {
+					t.Fatalf("Android DVR pivots: %s", response.Body.String())
+				}
+			} else if len(dirs) != 1 || first["key"] != liveProviderPath+"/lineups/dvr/channels" || first["type"] != "livetv" {
+				t.Fatalf("%s duplicate or unkeyed Live TV entry: %s", platform, response.Body.String())
+			}
+		}
+	}
 	home := f.request(t, "GET", "/hubs", map[string]string{"Accept": "application/json"})
 	if !strings.Contains(home.Body.String(), "livetv.onnow") {
 		t.Fatalf("On Now row absent: %s", home.Body.String())

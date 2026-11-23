@@ -62,7 +62,7 @@ func TestServicePauseIsThrottledErrorAtEveryStage(t *testing.T) {
 	defer db.Close()
 	clock := &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)}
 	a := newThrottleAddon(t)
-	c := New(testConfig(a.srv.URL), db, Options{Now: clock.now, NZBDir: t.TempDir()})
+	c := New(testConfig(a.srv.URL), db, Options{Now: clock.now, Vault: &testVault{}})
 	rel := core.Release{ID: "test", GUID: "test", Indexer: c.Name()}
 
 	_, err = c.FetchNZB(ctx, rel)
@@ -95,7 +95,7 @@ func TestServicePauseGrowsThenResetsOnSuccess(t *testing.T) {
 	ctx := context.Background()
 	clock := &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)}
 	a := newThrottleAddon(t)
-	c := New(testConfig(a.srv.URL), nil, Options{Now: clock.now, NZBDir: t.TempDir()})
+	c := New(testConfig(a.srv.URL), nil, Options{Now: clock.now, Vault: &testVault{}})
 	rel := core.Release{ID: "test", GUID: "test", Indexer: c.Name()}
 
 	pauses := []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour, 24 * time.Hour, 24 * time.Hour}
@@ -139,7 +139,7 @@ func TestRetryAfterWinsOverGrowingPause(t *testing.T) {
 	ctx := context.Background()
 	clock := &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)}
 	a := newThrottleAddon(t)
-	c := New(testConfig(a.srv.URL), nil, Options{Now: clock.now, NZBDir: t.TempDir()})
+	c := New(testConfig(a.srv.URL), nil, Options{Now: clock.now, Vault: &testVault{}})
 	rel := core.Release{ID: "test", GUID: "test", Indexer: c.Name()}
 	for _, p := range []time.Duration{15 * time.Minute, 30 * time.Minute} {
 		_, err := c.FetchNZB(ctx, rel)
@@ -158,7 +158,7 @@ func TestLocalDailyLimitIsNotAServicePause(t *testing.T) {
 	ctx := context.Background()
 	cfg := testConfig("http://127.0.0.1:1")
 	cfg.DailyLimit = 1
-	c := New(cfg, nil, Options{NZBDir: t.TempDir()})
+	c := New(cfg, nil, Options{Vault: &testVault{}})
 	if err := c.reserve(ctx, "hit"); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestManagerReportsPausedIndexerAndOthersAnswered(t *testing.T) {
 	a, b := testConfig(paused.srv.URL), testConfig(empty.URL)
 	a.ID, a.Name = "a", "Nzb A"
 	b.ID, b.Name = "b", "Nzb B"
-	m := NewManager(nil, []config.Indexer{a, b}, Options{Now: clock.now, NZBDir: t.TempDir()})
+	m := NewManager(nil, []config.Indexer{a, b}, Options{Now: clock.now, Vault: &testVault{}})
 	req := core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{IMDB: "tt0133093"}, Title: "The Signal", Year: 1999}
 	var err error
 	for range 2 { // the second pass is served from the pause itself
@@ -253,7 +253,7 @@ func TestBackendPathThrottleGrowsAndNoRequestKeepsStep(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)}
 	b := &stubBackend{mode: "limit"}
 	cfg := testConfig("http://127.0.0.1:1")
-	c := New(cfg, nil, Options{Now: clock.now, NZBDir: t.TempDir(), Backend: func(config.Indexer) (Backend, error) { return b, nil }})
+	c := New(cfg, nil, Options{Now: clock.now, Vault: &testVault{}, Backend: func(config.Indexer) (Backend, error) { return b, nil }})
 	search := func() error {
 		_, err := c.stampBackend(ctx, "search", func(ctx context.Context, reserve func(context.Context, string) error) ([]core.Release, error) {
 			return b.Search(ctx, core.SearchRequest{}, reserve)

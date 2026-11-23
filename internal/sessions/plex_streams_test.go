@@ -174,3 +174,37 @@ func TestPlexSidecarFileHasNoReaderOnMiss(t *testing.T) {
 		t.Fatalf("missing file reader=%v err=%v", reader != nil, err)
 	}
 }
+
+func TestStreamTableEstimatedTransition(t *testing.T) {
+	table := NewStreamTable()
+	key := core.MovieKey(42)
+	audio := core.StreamInfo{Index: 1, Type: "audio", Codec: "aac", Channels: 2}
+
+	id, err := table.Bind(StreamBinding{Key: key, Index: 1, Info: audio, Estimated: true})
+	if err != nil || id == 0 {
+		t.Fatalf("bind estimated: id=%d err=%v", id, err)
+	}
+	got, ok := table.Lookup(id)
+	if !ok || !got.Estimated {
+		t.Fatalf("lookup estimated: got=%+v ok=%v", got, ok)
+	}
+
+	// Re-binding the same slot with a real probed stream clears Estimated.
+	id2, err := table.Bind(StreamBinding{Key: key, Index: 1, Info: audio, Estimated: false})
+	if err != nil || id2 != id {
+		t.Fatalf("bind real: id=%d want %d err=%v", id2, id, err)
+	}
+	got, ok = table.Lookup(id)
+	if !ok || got.Estimated {
+		t.Fatalf("lookup after real bind: got=%+v ok=%v", got, ok)
+	}
+
+	// A later estimated render never downgrades a real stream binding.
+	if _, err := table.Bind(StreamBinding{Key: key, Index: 1, Info: audio, Estimated: true}); err != nil {
+		t.Fatalf("rebind estimated: %v", err)
+	}
+	got, ok = table.Lookup(id)
+	if !ok || got.Estimated {
+		t.Fatalf("estimated render downgraded real binding: got=%+v ok=%v", got, ok)
+	}
+}

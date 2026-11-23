@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -112,6 +113,9 @@ func (c *Catalog) startHydration(ctx context.Context, refreshKey string, block b
 	c.hydrating[refreshKey] = h
 	c.hydrateMu.Unlock()
 	bg := context.WithoutCancel(ctx)
+	if deferred, _ := ctx.Value(deferAiredCountsKey{}).(bool); deferred {
+		bg = ctx
+	}
 	if !block {
 		// Nobody waits for a refresh behind the read: it is not the
 		// read's work (statements, writes, lock waits).
@@ -167,11 +171,19 @@ func (c *Catalog) waitHydrations() {
 			h = x
 			break
 		}
+		var seasonDone chan struct{}
+		for _, done := range c.seasonLoading {
+			seasonDone = done
+			break
+		}
 		c.hydrateMu.Unlock()
-		if h == nil {
+		if h != nil {
+			<-h.done
+		} else if seasonDone != nil {
+			<-seasonDone
+		} else {
 			return
 		}
-		<-h.done
 	}
 }
 
@@ -180,7 +192,7 @@ func (c *Catalog) waitHydrations() {
 func (c *Catalog) BackgroundBusy() int {
 	c.hydrateMu.Lock()
 	defer c.hydrateMu.Unlock()
-	return len(c.hydrating)
+	return len(c.hydrating) + len(c.seasonLoading)
 }
 
 // noReadWait reports an explicit local-response policy. Hydrations may still
@@ -189,4 +201,61 @@ func (c *Catalog) BackgroundBusy() int {
 func noReadWait(ctx context.Context) bool {
 	b, ok := ctx.Value(waitBudgetKey{}).(*waitBudget)
 	return ok && b.remaining.Load() <= 0
+}
+
+// Orchestrators use their own small, on-demand allowance: holding a hydration
+// slot while waiting for child hydrations can exhaust every slot and deadlock
+// discovery. No queue accumulates behind these two jobs; later reads can retry.
+func (c *Catalog) loadSeasonsLater(ctx context.Context, showID int64, seasons []core.Title) {
+	if c.tmdb() == nil {
+		return
+	}
+	c.hydrateMu.Lock()
+	if c.seasonLoading[showID] != nil || len(c.seasonLoading) >= 2 || c.now().Sub(c.seasonLoaded[showID]) < time.Minute {
+		c.hydrateMu.Unlock()
+		return
+	}
+	if c.seasonLoading == nil {
+		c.seasonLoading = make(map[int64]chan struct{})
+	}
+	done := make(chan struct{})
+	c.seasonLoading[showID] = done
+	c.hydrateMu.Unlock()
+	bg, cancel := context.WithTimeout(store.DetachQueryStats(reqmemo.With(context.WithoutCancel(ctx))), hydrateBudget)
+	go func() {
+		defer cancel()
+		worker := context.WithValue(context.WithValue(bg, deferAiredCountsKey{}, true), waitBudgetKey{}, struct{}{})
+		if len(seasons) == 0 {
+			if _, err := c.ensureShow(worker, showID); err == nil {
+				// Discovery must include undated summaries: their first aired
+				// episode can establish the premiere that makes them listable.
+				seasons, _ = c.scanTitleKeys(worker, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key=? ORDER BY season`, int64(core.ShowKey(showID)))
+			}
+		}
+		_ = c.loadSeasons(worker, showID, seasons)
+		// Publish final tallies only once, after the chunked fills. Intermediate
+		// metadata loads must not recount the show after each season/chunk.
+		c.cacheMu.Lock()
+		delete(c.titleCache, core.ShowKey(showID))
+		for _, season := range seasons {
+			delete(c.titleCache, season.Key)
+		}
+		c.cacheMu.Unlock()
+		keys := []core.RatingKey{core.ShowKey(showID)}
+		for _, season := range seasons {
+			keys = append(keys, season.Key)
+		}
+		// Read the committed records (including detail_at), not the original
+		// summary slice: caching summaries here would make a finished season
+		// look undetailed and force the next viewer to fetch it again.
+		c.PreloadStored(bg, keys)
+		c.hydrateMu.Lock()
+		if c.seasonLoaded == nil || len(c.seasonLoaded) >= 256 {
+			c.seasonLoaded = map[int64]time.Time{}
+		}
+		c.seasonLoaded[showID] = c.now()
+		delete(c.seasonLoading, showID)
+		close(done)
+		c.hydrateMu.Unlock()
+	}()
 }

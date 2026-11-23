@@ -11,6 +11,28 @@ import (
 	"strings"
 )
 
+// LayerTypes is the authoritative list of layer types supported by both the
+// Go rasterizer (internal/onair/raster) and the console canvas renderer.
+var LayerTypes = []string{
+	"group", "rect", "ellipse", "blob", "path", "text",
+	"image", "art", "logo", "gradient", "grid", "particles", "noise",
+}
+
+// Easings is the authoritative list of keyframe and reveal easing functions.
+var Easings = []string{"linear", "in", "out", "inOut", "back", "elastic", "spring"}
+
+// PostEffects is the authoritative list of scene post-processing passes.
+var PostEffects = []string{"grain", "scanlines", "vignette", "flicker"}
+
+// BehaviorKinds is the authoritative list of procedural layer behaviours.
+var BehaviorKinds = []string{"typewriter", "flicker", "wiggle", "bounce", "glint", "chroma", "drift", "pop", "squash"}
+
+var (
+	layerTypesAllowed  = strings.Join(LayerTypes, " ")
+	easingsAllowed     = strings.Join(Easings, " ")
+	postEffectsAllowed = strings.Join(PostEffects, " ")
+)
+
 type Value = any
 
 type Document struct {
@@ -173,7 +195,7 @@ func (d Document) Validate() error {
 			if math.IsNaN(l.Start) || math.IsNaN(l.End) || l.Start < 0 || l.End < 0 || l.Start > d.Duration || l.End > d.Duration || (l.End > 0 && l.End <= l.Start) {
 				return fmt.Errorf("layer %q: start and end must be within the scene, with end after start", l.ID)
 			}
-			if !one(l.Type, "rect ellipse path text image art logo blob particles gradient noise grid group") {
+			if !one(l.Type, layerTypesAllowed) {
 				return fmt.Errorf("layer %q: unknown type %q", l.ID, l.Type)
 			}
 			if l.Repeat < 0 || l.Repeat > 200 || l.Count < 0 || l.Count > 2000 {
@@ -193,7 +215,7 @@ func (d Document) Validate() error {
 					return fmt.Errorf("layer %q: %w", l.ID, err)
 				}
 			}
-			if l.Reveal != nil && (!one(l.Reveal.Wipe, "ltr rtl") || l.Reveal.To <= l.Reveal.From || !one(l.Reveal.Ease, " linear in out inOut back elastic spring")) {
+			if l.Reveal != nil && (!one(l.Reveal.Wipe, "ltr rtl") || l.Reveal.To <= l.Reveal.From || !one(l.Reveal.Ease, " "+easingsAllowed)) {
 				return fmt.Errorf("layer %q: invalid reveal direction or timing", l.ID)
 			}
 			for _, b := range l.Behave {
@@ -219,7 +241,7 @@ func (d Document) Validate() error {
 		return err
 	}
 	for _, p := range d.Post {
-		if !one(p.Type, "grain scanlines vignette flicker") {
+		if !one(p.Type, postEffectsAllowed) {
 			return fmt.Errorf("unknown post effect")
 		}
 		if err := validateValue(p.Amount); err != nil {
@@ -264,7 +286,7 @@ func validateValue(v any) error {
 				if err := validateValue(a[1]); err != nil {
 					return err
 				}
-				if len(a) == 3 && !one(fmt.Sprint(a[2]), "linear in out inOut back elastic spring") {
+				if len(a) == 3 && !one(fmt.Sprint(a[2]), easingsAllowed) {
 					return fmt.Errorf("unknown ease")
 				}
 			}

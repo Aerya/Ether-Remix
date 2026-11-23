@@ -45,6 +45,19 @@ const (
 	TypeTV     = "tv"
 )
 
+// IsCustomLiveType reports whether typ is a custom content type other than
+// movie, series, or tv (such as sport, events, or channel). Add-ons whose
+// stream resource serves such a type expose live or event-based feeds.
+func IsCustomLiveType(typ string) bool {
+	typ = strings.TrimSpace(typ)
+	if typ == "" {
+		return false
+	}
+	return !strings.EqualFold(typ, TypeMovie) &&
+		!strings.EqualFold(typ, TypeSeries) &&
+		!strings.EqualFold(typ, TypeTV)
+}
+
 // Resource is one manifest resource. The protocol allows a bare name, which
 // inherits the manifest's types and id prefixes, or an object with its
 // own; Short remembers which, so the manifest round-trips unchanged.
@@ -162,6 +175,15 @@ func (c Catalog) Extras() []Extra {
 		} else if name != "" {
 			have[name] = len(out)
 			out = append(out, Extra{Name: name, IsRequired: true})
+		}
+	}
+	if len(c.Genres) > 0 {
+		if i, ok := have["genre"]; ok {
+			if len(out[i].Options) == 0 {
+				out[i].Options = append([]string(nil), c.Genres...)
+			}
+		} else {
+			out = append(out, Extra{Name: "genre", Options: append([]string(nil), c.Genres...)})
 		}
 	}
 	return out
@@ -292,6 +314,42 @@ func (m Manifest) CatalogNamed(typ, id string) (Catalog, bool) {
 		}
 	}
 	return Catalog{}, false
+}
+
+// LiveEventCatalogs returns browsable catalogs of custom (non-movie,
+// non-series, non-tv) types for which this add-on also serves streams.
+func (m Manifest) LiveEventCatalogs() []Catalog {
+	if !m.HasResource(ResourceCatalog) {
+		return nil
+	}
+	type key struct{ typ, id string }
+	seen := map[key]bool{}
+	var out []Catalog
+	for _, c := range m.Catalogs {
+		if c.ID == "" || !IsCustomLiveType(c.Type) {
+			continue
+		}
+		if !m.Serves(ResourceCatalog, c.Type) || !m.Serves(ResourceStream, c.Type) {
+			continue
+		}
+		needsInput := false
+		for _, e := range c.Extras() {
+			if e.IsRequired && e.Name != "skip" {
+				needsInput = true
+				break
+			}
+		}
+		if needsInput {
+			continue
+		}
+		k := key{c.Type, c.ID}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 // Valid reports whether m looks like an add-on manifest at all.

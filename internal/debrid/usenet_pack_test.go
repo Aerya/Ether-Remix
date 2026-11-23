@@ -2,6 +2,7 @@ package debrid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -201,5 +202,188 @@ func TestEpisodeNZBOutputIsDeterministic(t *testing.T) {
 		if string(again) != string(first) {
 			t.Fatal("subset bytes differ between calls")
 		}
+	}
+}
+
+func TestChooseFileAndEpisodeNZBAcceptAliasNumberedFiles(t *testing.T) {
+	tgt := &core.ReleaseTarget{
+		Season:           1,
+		Episode:          750,
+		CanonicalSeason:  1,
+		CanonicalEpisode: 750,
+		AbsoluteEpisode:  750,
+		Aliases:          []core.EpisodeNumber{{Season: 18, Episode: 4}},
+		ShowYear:         1999,
+	}
+	got, err := ChooseFile([]File{
+		{Path: "One Piece Season 18/One.Piece.S18E03.1080p.WEB-DL.mkv", Size: 900 << 20},
+		{Path: "One Piece Season 18/One.Piece.S18E04.1080p.WEB-DL.mkv", Size: 920 << 20},
+	}, tgt)
+	if err != nil || !strings.Contains(got.Path, "S18E04") {
+		t.Fatalf("ChooseFile alias = %+v, err=%v", got, err)
+	}
+	if !chosenFileMatchesTarget("One.Piece.S18E04.1080p.WEB-DL.mkv", tgt) {
+		t.Fatal("chosenFileMatchesTarget rejected valid alias S18E04")
+	}
+	if chosenFileMatchesTarget("One.Piece.S18E05.1080p.WEB-DL.mkv", tgt) {
+		t.Fatal("chosenFileMatchesTarget accepted wrong alias S18E05")
+	}
+
+	data := packNZB(
+		`&quot;One.Piece.S18E03.1080p.WEB-DL.mkv&quot; yEnc (1/1)`,
+		`&quot;One.Piece.S18E04.1080p.WEB-DL.mkv&quot; yEnc (1/1)`,
+	)
+	out, err := EpisodeNZB(data, tgt)
+	if err != nil {
+		t.Fatalf("EpisodeNZB alias failed: %v", err)
+	}
+	doc, err := nzb.Parse(out)
+	if err != nil || len(doc.Files) != 1 || !strings.Contains(doc.Files[0].Name, "S18E04") {
+		t.Fatalf("EpisodeNZB alias doc = %+v, err=%v", doc, err)
+	}
+}
+
+// A plugin's explicit file choice narrows an NZB to that file (and its
+// archive set), by document index or by name (#644).
+func TestEpisodeNZBExactFileSelection(t *testing.T) {
+	data := packNZB(
+		`&quot;Collection/First.2020.mp4&quot; yEnc (1/1)`,
+		`&quot;Second.2021.mp4&quot; yEnc (1/1)`,
+		`&quot;Second.2021.par2&quot; yEnc (1/1)`,
+		`&quot;Third.2022.part1.rar&quot; yEnc (1/1)`,
+		`&quot;Third.2022.part2.rar&quot; yEnc (1/1)`,
+	)
+	names := func(out []byte) []string {
+		doc, err := nzb.Parse(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, f := range doc.Files {
+			got = append(got, f.Name)
+		}
+		return got
+	}
+
+	out, err := EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, ExactFile: "Second.2021.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(out); len(got) != 2 || got[0] != "Second.2021.mp4" || got[1] != "Second.2021.par2" {
+		t.Fatalf("exact name kept %v", got)
+	}
+
+	idx := 3 // first RAR volume: the whole set is kept, plus the pack PAR2 index
+	out, err = EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, FileIndex: &idx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(out); len(got) != 3 || got[0] != "Second.2021.par2" || got[1] != "Third.2022.part1.rar" || got[2] != "Third.2022.part2.rar" {
+		t.Fatalf("fileIndex kept %v", got)
+	}
+
+	if _, err := EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, ExactFile: "Missing.mp4"}); err == nil {
+		t.Fatal("expected error for missing exact file")
+	}
+	bad := 9
+	if _, err := EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, FileIndex: &bad}); err == nil {
+		t.Fatal("expected error for out-of-range fileIndex")
+	}
+	// Without AllowNonVideo the selectors stay video-target machinery and
+	// do not narrow on their own.
+	out, err = EpisodeNZB(data, &core.ReleaseTarget{ExactFile: "Second.2021.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(data) {
+		t.Fatal("non-plugin target unexpectedly narrowed the NZB")
+	}
+}
+
+func TestEpisodeNZBExactFileAcceptsSubjectAndLearnedNamesAfterRename(t *testing.T) {
+	raw := packNZB(
+		`Some Show Episode Title 4k.mp4 (1/2)`,
+		`&quot;Other.Episode.mkv&quot; yEnc (1/1)`,
+	)
+	doc, err := nzb.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate learned name written into subject via Subset re-encoding.
+	doc.Files[0].Name = "4k.mp4"
+	reencoded, ok := doc.Subset(func(*nzb.File) bool { return true })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+
+	idx0 := 0
+	// Accepts the original subject-derived name from release_files.
+	if _, err := EpisodeNZB(reencoded, &core.ReleaseTarget{
+		AllowNonVideo: true,
+		FileIndex:     &idx0,
+		ExactFile:     "Some Show Episode Title 4k.mp4",
+	}); err != nil {
+		t.Fatalf("expected subject-derived name match, got: %v", err)
+	}
+	// Accepts the learned name as well.
+	if _, err := EpisodeNZB(reencoded, &core.ReleaseTarget{
+		AllowNonVideo: true,
+		FileIndex:     &idx0,
+		ExactFile:     "4k.mp4",
+	}); err != nil {
+		t.Fatalf("expected learned name match, got: %v", err)
+	}
+	// Still rejects an unrelated file name, reporting both learned and subject names.
+	_, err = EpisodeNZB(reencoded, &core.ReleaseTarget{
+		AllowNonVideo: true,
+		FileIndex:     &idx0,
+		ExactFile:     "Unrelated.File.mp4",
+	})
+	if !errors.Is(err, core.ErrWrongContent) {
+		t.Fatalf("err = %v, want ErrWrongContent", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "4k.mp4") || !strings.Contains(msg, "Some Show Episode Title 4k.mp4") {
+		t.Fatalf("wrong-content error missing both names: %q", msg)
+	}
+}
+
+type stubRawNZBIndexer struct{ data []byte }
+
+func (s stubRawNZBIndexer) Name() string { return "stub" }
+func (s stubRawNZBIndexer) Search(context.Context, core.SearchRequest) ([]core.Release, error) {
+	return nil, nil
+}
+func (s stubRawNZBIndexer) FetchNZB(context.Context, core.Release) ([]byte, error) {
+	return s.data, nil
+}
+
+func TestIndexerFetchNZBExactFileIndexNamesObfuscatedFile(t *testing.T) {
+	obf := packNZB(`&quot;a1b2c3d4e5f6a1b2c3d4e5f6&quot; yEnc (1/1)`)
+	namedDoc, err := nzb.Parse(obf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namedDoc.Files[0].Name = "01 - Hidden.flac"
+	namedDoc.Files[0].Obfuscated = false
+	namedXML, _ := namedDoc.Subset(func(*nzb.File) bool { return true })
+
+	idx0 := 0
+	x := &Indexer{inner: stubRawNZBIndexer{data: obf}, packNamer: fakeNamer{out: namedXML}}
+	out, err := x.FetchNZB(context.Background(), core.Release{
+		ID:       "rel-1",
+		Protocol: core.ProtocolUsenet,
+		Target: &core.ReleaseTarget{
+			AllowNonVideo: true,
+			FileIndex:     &idx0,
+			ExactFile:     "01 - Hidden.flac",
+		},
+	})
+	if err != nil {
+		t.Fatalf("FetchNZB with FileIndex + PAR2-learned ExactFile failed: %v", err)
+	}
+	parsed, err := nzb.Parse(out)
+	if err != nil || len(parsed.Files) != 1 || parsed.Files[0].Name != "01 - Hidden.flac" {
+		t.Fatalf("parsed = %+v, err=%v", parsed, err)
 	}
 }

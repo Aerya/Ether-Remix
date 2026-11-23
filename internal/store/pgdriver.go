@@ -109,7 +109,13 @@ func (c *pgConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx,
 		start := time.Now()
 		defer func() { rec.waited(time.Since(start)) }()
 	}
-	return c.inner.BeginTx(ctx, opts)
+	tx, err := c.inner.BeginTx(ctx, opts)
+	if err == nil && !opts.ReadOnly {
+		if rec := recorderFrom(ctx); rec != nil {
+			rec.beganWrite()
+		}
+	}
+	return tx, err
 }
 
 func (c *pgConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {

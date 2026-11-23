@@ -114,10 +114,35 @@ func TestParseTorrent(t *testing.T) {
 	if meta.InfoHash != want || meta.Name != "Show.S01.1080p" || len(meta.Trackers) != 2 {
 		t.Fatalf("meta %+v want %s", meta, want)
 	}
+	if len(meta.Files) != 1 || meta.Files[0].Index != 0 || meta.Files[0].Path != "Show.S01.1080p" || meta.Files[0].Size != 1234 {
+		t.Fatalf("single-file meta.Files = %+v", meta.Files)
+	}
 	for _, bad := range []string{"", "<html>", "d4:infoi1e", "d4:info", "l1:ae"} {
 		if _, err := ParseTorrent([]byte(bad)); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
+	}
+}
+
+func TestParseTorrentMultiFileAndPadding(t *testing.T) {
+	file1 := "d" + bstr("length") + "i25000000e" + bstr("path") + "l" + bstr("Disc 1") + bstr("01 - Opening.flac") + "ee"
+	pad := "d" + bstr("attr") + bstr("p") + bstr("length") + "i4096e" + bstr("path") + "l" + bstr(".pad") + bstr("4096") + "ee"
+	file2 := "d" + bstr("length") + "i18000000e" + bstr("path") + "l" + bstr("02 - Fallback.flac") + "e" + bstr("path.utf-8") + "l" + bstr("02 - Café.flac") + "ee"
+	info := "d" + bstr("files") + "l" + file1 + pad + file2 + "e" + bstr("name") + bstr("Album") + bstr("piece length") + "i262144e" + bstr("pieces") + bstr(strings.Repeat("x", 20)) + "e"
+	doc := []byte("d" + bstr("info") + info + "e")
+
+	meta, err := ParseTorrent(doc)
+	if err != nil {
+		t.Fatalf("ParseTorrent: %v", err)
+	}
+	if len(meta.Files) != 2 {
+		t.Fatalf("len(Files) = %d, want 2 (padding excluded): %+v", len(meta.Files), meta.Files)
+	}
+	if meta.Files[0].Index != 0 || meta.Files[0].Path != "Album/Disc 1/01 - Opening.flac" || meta.Files[0].Size != 25000000 {
+		t.Fatalf("file 0 = %+v", meta.Files[0])
+	}
+	if meta.Files[1].Index != 1 || meta.Files[1].Path != "Album/02 - Café.flac" || meta.Files[1].Size != 18000000 {
+		t.Fatalf("file 1 = %+v", meta.Files[1])
 	}
 }
 

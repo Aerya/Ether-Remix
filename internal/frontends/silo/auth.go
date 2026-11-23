@@ -185,10 +185,16 @@ func (i *instance) refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	access, refresh, err := i.host.Identity.Refresh(i.identityContext(r), b.Token, device(r))
 	if err != nil {
-		if errors.Is(err, frontend.ErrRateLimited) {
+		switch {
+		case errors.Is(err, frontend.ErrRateLimited):
 			http.Error(w, "Too Many Requests", 429)
-		} else {
+		case errors.Is(err, frontend.ErrUnauthorized):
 			http.Error(w, "Unauthorized", 401)
+		default:
+			// The app signs the user out on a 401 here, so a database
+			// that is merely busy (a long writer hold) must not read as a
+			// revoked credential: answer 503 and let it retry.
+			http.Error(w, "Unavailable", 503)
 		}
 		return
 	}

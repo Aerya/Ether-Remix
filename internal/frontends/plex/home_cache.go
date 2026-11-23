@@ -242,12 +242,12 @@ func (s *Server) homeKey(route string, r *http.Request, pr *Request) string {
 func (s *Server) homeStamps(pr *Request, rev frontend.HomeRevision) (string, string) {
 	restricted := s.viewerRestricted(pr.User)
 	userJSON, _ := json.Marshal(pr.User)
-	var layout, config, catalog uint64
+	var layout, config, catalog, libs, kindSync uint64
 	if fn := s.getHost().PageFreshness; fn != nil {
 		f := fn()
-		layout, config, catalog = f.Layout, f.Config, f.Catalog
+		layout, config, catalog, libs, kindSync = f.Layout, f.Config, f.Catalog, f.Libraries, f.KindSync
 	}
-	hard := rev.Viewer + "|" + strconv.FormatUint(layout, 36) + "|" + strconv.FormatUint(config, 36) + "|" + strconv.FormatBool(restricted) + "|" + strconv.FormatBool(pr.User.Delegated) + "|" + string(userJSON)
+	hard := rev.Viewer + "|" + strconv.FormatUint(layout, 36) + "|" + strconv.FormatUint(config, 36) + "|" + strconv.FormatUint(libs, 36) + "|" + strconv.FormatUint(kindSync, 36) + "|" + strconv.FormatBool(restricted) + "|" + strconv.FormatBool(pr.User.Delegated) + "|" + string(userJSON)
 	soft := strconv.FormatUint(catalog, 36)
 	if restricted {
 		hard += "|" + strconv.FormatInt(rev.Policy, 36)
@@ -491,7 +491,7 @@ func (s *Server) recordCompactImpressions(pr *Request, hc frontend.HubContext, r
 }
 
 func (s *Server) warmKey(ctx context.Context, pr *Request, key frontend.RatingKey) {
-	if key == 0 || pr == nil || pr.User == nil || frontend.PSEListOnly(ctx) { // PSE-HOOK: listes légères, aucun préchauffage — voir docs/pse/FORK.fr.md
+	if key == 0 || pr == nil || pr.User == nil || libraryToolClient(pr) || frontend.PSEListOnly(ctx) {
 		return
 	}
 	if pw, ok := s.playback().(frontend.Prewarmer); ok {

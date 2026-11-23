@@ -242,6 +242,27 @@ describe("Collection Studio editor", () => {
     expect(await screen.findByDisplayValue("Saturday matinee", {}, WAIT)).toBeInTheDocument();
     expect(screen.getByText(/Restored unsaved changes/)).toBeInTheDocument();
   });
+
+  it("never saves an untouched new draft or previews blankSpec() when opening an existing collection's Artwork", async () => {
+    const fresh = renderApp("/collections/new?draft=new-untouched-b2");
+    await screen.findByLabelText("Collection name", {}, WAIT);
+    await new Promise((r) => setTimeout(r, 700));
+    expect(localStorage.getItem("ether.draft.collection.new-untouched-b2")).toBeNull();
+    fresh.unmount();
+
+    const { fake } = renderApp("/collections/c1?section=artwork");
+    const drawer = await screen.findByRole("dialog", { name: "Edit collection" }, WAIT);
+    expect(
+      await within(drawer).findByDisplayValue("Edge of Your Seat", {}, WAIT),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(previewBodies(fake).length).toBeGreaterThan(0), WAIT);
+    await new Promise((r) => setTimeout(r, 700));
+    // Every preview call from the editor must use c1's own spec, never blankSpec() (50 whole-catalogue items).
+    expect(previewBodies(fake).every((s) => s.name === "Edge of Your Seat" && s.limit !== 50)).toBe(
+      true,
+    );
+    expect(localStorage.getItem("ether.draft.collection.c1")).toBeNull();
+  });
 });
 
 describe("Collection Studio gallery", () => {

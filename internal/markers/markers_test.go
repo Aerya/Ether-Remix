@@ -1,13 +1,18 @@
 package markers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -159,5 +164,119 @@ func TestMergePreservesMultipleRemoteRanges(t *testing.T) {
 	got := merge(chapter, remote)
 	if len(got) != 2 || got[0].StartMS != 9 || got[1].Type != "credits" {
 		t.Fatalf("source priority: %+v", got)
+	}
+}
+
+func TestWarmSingleFlightBoundedAndLogsOnce(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var calls atomic.Int32
+	gate := make(chan struct{})
+	started := make(chan struct{}, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		started <- struct{}{}
+		<-gate
+		if r.URL.Query().Get("tmdb_id") == "999" {
+			http.Error(w, "boom", http.StatusBadGateway)
+			return
+		}
+		if r.URL.Query().Get("tmdb_id") == "888" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = n
+		io.WriteString(w, `{"intro":[{"start_ms":13000,"end_ms":97000}]}`)
+	}))
+	defer srv.Close()
+
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s := New(Options{DB: db, Enabled: true, BaseURL: srv.URL, Logger: log})
+	defer s.Close()
+
+	key := core.EpisodeKey(247718, 2, 1)
+	info := core.MediaInfo{Duration: 52 * time.Minute}
+
+	// Estimated media is skipped without touching TheIntroDB.
+	<-s.Warm(key, core.MediaInfo{Duration: info.Duration, Estimated: true})
+	if calls.Load() != 0 {
+		t.Fatalf("estimated media warmed remote: calls=%d", calls.Load())
+	}
+
+	// Concurrent Warm + Markers for the same (key, duration) share one HTTP request.
+	w1 := s.Warm(key, info)
+	w2 := s.Warm(key, info)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var direct []Marker
+	var directErr error
+	go func() {
+		defer wg.Done()
+		direct, directErr = s.Markers(ctx, key, info)
+	}()
+	<-started
+	close(gate)
+	<-w1
+	<-w2
+	wg.Wait()
+	if directErr != nil || len(direct) != 1 || direct[0].StartMS != 13000 {
+		t.Fatalf("coalesced fetch = %+v err=%v", direct, directErr)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected 1 single-flight fetch, got %d", calls.Load())
+	}
+	// CachedMarkers serves the warmed result with zero additional network calls.
+	cached, err := s.CachedMarkers(ctx, key, info)
+	if err != nil || len(cached) != 1 || cached[0].StartMS != 13000 || calls.Load() != 1 {
+		t.Fatalf("cached = %+v err=%v calls=%d", cached, err, calls.Load())
+	}
+
+	// Fetch errors and 404/empty results log once through Options.Logger.
+	errKey := core.EpisodeKey(999, 1, 1)
+	_, _ = s.Markers(ctx, errKey, info)
+	_, _ = s.Markers(ctx, errKey, info)
+	if n := strings.Count(logBuf.String(), "theintrodb marker fetch failed"); n != 1 {
+		t.Fatalf("expected error logged once, got %d in %q", n, logBuf.String())
+	}
+	emptyKey := core.EpisodeKey(888, 1, 1)
+	_, _ = s.Markers(ctx, emptyKey, info)
+	if n := strings.Count(logBuf.String(), "theintrodb returned no markers"); n != 1 {
+		t.Fatalf("expected empty logged once, got %d in %q", n, logBuf.String())
+	}
+
+	// Background warm concurrency is bounded at maxConcurrentWarms.
+	block := make(chan struct{})
+	var concurrent atomic.Int32
+	var maxSeen atomic.Int32
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := concurrent.Add(1)
+		for {
+			prev := maxSeen.Load()
+			if cur <= prev || maxSeen.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		defer concurrent.Add(-1)
+		select {
+		case <-block:
+		case <-r.Context().Done():
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer slowSrv.Close()
+	bounded := New(Options{Enabled: true, BaseURL: slowSrv.URL, Logger: log})
+	for i := 1; i <= maxConcurrentWarms+3; i++ {
+		bounded.Warm(core.EpisodeKey(int64(1000+i), 1, 1), info)
+	}
+	close(block)
+	bounded.Close()
+	if maxSeen.Load() > maxConcurrentWarms {
+		t.Fatalf("warm concurrency exceeded bound: max=%d bound=%d", maxSeen.Load(), maxConcurrentWarms)
 	}
 }

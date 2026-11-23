@@ -3,10 +3,11 @@ import {
   conditionValue,
   browseFields,
   conditionTitle,
+  formatPluginCondition,
   newBrowseCondition,
 } from "./RuleCondition";
 import { PluginBrowse } from "../PluginBrowse";
-import { librariesApi, type Library as PluginLibrary } from "../api";
+import { librariesApi, type Library as PluginLibrary, type MediaKind } from "../api";
 import { Link } from "react-router-dom";
 import { CatalogBrowser } from "./Catalog";
 import { Button, Input, Select } from "@braedonsaunders/appkit-ui";
@@ -42,7 +43,7 @@ export type VisibilityRule = {
   mediaType: string;
   match: string;
   rules: Rule[];
-  /** "discovery" hides from browsing only; empty or "everywhere" hides everywhere. */
+  /** "discovery" hides from browsing only; "library" hides from this library only; empty or "everywhere" hides everywhere. */
   scope?: string;
 };
 
@@ -59,7 +60,43 @@ type Preview = {
   rules?: { movies: number; shows: number }[] | null;
 };
 
+type OpenRuleState = {
+  index: number;
+  isNew: boolean;
+  initial: VisibilityRule;
+  before: VisibilityRule[];
+  beforeFallback: string;
+};
+
+function pruneIncompleteCondition(rule: Rule): Rule | null {
+  if (rule.field === "group") {
+    if (!Array.isArray(rule.value)) return null;
+    const children = (rule.value as Rule[])
+      .map(pruneIncompleteCondition)
+      .filter((c): c is Rule => c !== null);
+    return children.length > 0 ? { ...rule, value: children } : null;
+  }
+  return isRuleComplete(rule) ? rule : null;
+}
+
+function previewableVisibilityRules(rules: VisibilityRule[]): {
+  rules: VisibilityRule[];
+  indexMap: Map<number, number>;
+} {
+  const out: VisibilityRule[] = [];
+  const indexMap = new Map<number, number>();
+  rules.forEach((g, i) => {
+    const kept = g.rules.map(pruneIncompleteCondition).filter((c): c is Rule => c !== null);
+    if (kept.length > 0) {
+      indexMap.set(i, out.length);
+      out.push({ ...g, rules: kept });
+    }
+  });
+  return { rules: out, indexMap };
+}
+
 const FIELDS: RuleField[] = [
+  "title",
   "genre",
   "keyword",
   "studio",
@@ -76,6 +113,7 @@ const FIELDS: RuleField[] = [
 function metaFor(field: RuleField): FieldMeta | undefined {
   const base = fieldMeta(field);
   if (!base) return undefined;
+  if (field === "title") return { ...base, label: t("Specific titles") };
   const extra = [...base.ops, "unknown" as const, "known" as const];
   if (field === "keyword")
     return { ...base, kind: "facet", facet: "keyword", ops: extra, defaultOp: "in" };
@@ -99,25 +137,48 @@ function actionOf(rule: VisibilityRule) {
   return rule.action === "show" ? "show" : "hide";
 }
 
-function browsingOnly(rule: VisibilityRule) {
-  return actionOf(rule) === "hide" && rule.scope === "discovery";
+export function isShowOnlyRules(rules: VisibilityRule[]): boolean {
+  return rules.length > 0 && rules.every((rule) => actionOf(rule) === "show");
 }
 
-function conditionLine(rule: Rule): string {
+function hideScopeOf(rule: VisibilityRule): "everywhere" | "discovery" | "library" {
+  if (actionOf(rule) !== "hide") return "everywhere";
+  if (rule.scope === "discovery") return "discovery";
+  if (rule.scope === "library") return "library";
+  return "everywhere";
+}
+
+function conditionLine(rule: Rule, kind?: MediaKind): string {
+  const formattedPlugin = formatPluginCondition(rule, kind);
+  if (formattedPlugin) return formattedPlugin;
   if (rule.field === "group" && Array.isArray(rule.value) && rule.value.length === 0)
-    return conditionTitle(rule);
+    return conditionTitle(rule, kind);
   if (rule.field === "group")
-    return `${conditionTitle(rule)} (${(rule.value as Rule[]).map(conditionLine).join(" · ")})`;
+    return `${conditionTitle(rule, kind)} (${(rule.value as Rule[]).map((r) => conditionLine(r, kind)).join(" · ")})`;
   if (rule.field.startsWith("browse:") || rule.field === "viewer")
-    return `${conditionTitle(rule)}: ${conditionValue(rule.value, rule.field)}`;
+    return kind
+      ? rule.op === "isNot"
+        ? t("{field} is not {value}", {
+            field: conditionTitle(rule, kind),
+            value: conditionValue(rule.value),
+          })
+        : t("{field} is {value}", {
+            field: conditionTitle(rule, kind),
+            value: conditionValue(rule.value),
+          })
+      : `${conditionTitle(rule)}: ${conditionValue(rule.value, rule.field)}`;
   if (rule.op === "in") return describeRule({ ...rule, op: "is" });
   return describeRule(rule);
 }
 
 /** "Hide · Genre is Horror, Thriller". The stored name stays in the drawer. */
-function ruleLabel(rule: VisibilityRule, pinnedMediaType?: "movie" | "show") {
+export function ruleLabel(
+  rule: VisibilityRule,
+  pinnedMediaType?: "movie" | "show",
+  kind?: MediaKind,
+) {
   const action = actionOf(rule) === "show" ? t("Show") : t("Hide");
-  const bits = rule.rules.filter(isRuleComplete).map(conditionLine);
+  const bits = rule.rules.filter(isRuleComplete).map((r) => conditionLine(r, kind));
   const body =
     rule.match === "any" && bits.length > 1
       ? bits.reduce((left, right) => t("{left} or {right}", { left, right }))
@@ -130,7 +191,13 @@ function ruleLabel(rule: VisibilityRule, pinnedMediaType?: "movie" | "show") {
         : rule.mediaType === "show"
           ? t("TV")
           : "";
-  const scope = browsingOnly(rule) ? t("Browsing only") : "";
+  const hideScope = hideScopeOf(rule);
+  const scope =
+    hideScope === "discovery"
+      ? t("Browsing only")
+      : hideScope === "library"
+        ? t("Only this library")
+        : "";
   return [action, body, media, scope].filter(Boolean).join(" · ");
 }
 
@@ -149,7 +216,7 @@ export function RulesPanel({
   pluginLibrary?: PluginLibrary;
   rules: VisibilityRule[];
   fallback: string;
-  onRules: (rules: VisibilityRule[]) => void;
+  onRules: (rules: VisibilityRule[], nextFallback?: string) => void;
   onFallback: (value: string) => void;
   region: string;
   libraryId?: number;
@@ -180,7 +247,7 @@ export function RulesPanel({
       pluginLibrary?.kind?.fields?.some(
         (f) =>
           f.key === k &&
-          f.indexed &&
+          (f.indexed || f.type === "people") &&
           (["runtime", "votes", "popularity"].includes(field)
             ? ["int", "float", "duration"].includes(f.type)
             : ["string", "strings", "enum", "people"].includes(f.type)),
@@ -192,30 +259,40 @@ export function RulesPanel({
     ? FIELDS.filter((f) => f === "year" || f === "rating" || !!pluginFields[f])
     : FIELDS;
   const newCondition = (): Rule =>
-    pluginLibrary ? { field: "year", op: "gte", value: "" } : blank();
+    pluginLibrary ? newBrowseCondition("year", pluginLibrary.kind) : blank();
   const [browse, setBrowse] = useState<"hidden" | "shown" | null>(null);
   const [browseParams, setBrowseParams] = useState(new URLSearchParams());
+  // i18n: memo holds no copy
+  const { rules: previewRules, indexMap: previewRuleIndex } = useMemo(
+    () => previewableVisibilityRules(rules),
+    [rules],
+  );
+  const [openState, setOpenState] = useState<OpenRuleState | null>(null);
+  const open = openState?.index ?? null;
+  const [drag, setDrag] = useState<number | null>(null);
+  const [fresh, setFresh] = useState<number | null>(null);
+  const showOnly = isShowOnlyRules(rules);
+  const previewFallback =
+    previewRules.length === 0 && rules.length > 0 && openState
+      ? openState.beforeFallback
+      : fallback;
   const ruleFilter = useMemo(
     () => ({
       ruleVisibility: browse ?? "shown",
-      rules: JSON.stringify(rules),
-      ruleFallback: fallback,
+      rules: JSON.stringify(previewRules),
+      ruleFallback: previewFallback,
     }),
-    [browse, rules, fallback],
+    [browse, previewRules, previewFallback],
   );
-  const [open, setOpen] = useState<number | null>(null);
-  const [drag, setDrag] = useState<number | null>(null);
-  const [fresh, setFresh] = useState<number | null>(null);
   const complete = rules.every((g) => g.rules.length > 0 && g.rules.every(isRuleComplete));
   const spec = useMemo(
-    () => ({ rules, fallback, libraryId, sources, mediaType }),
-    [rules, fallback, libraryId, sources, mediaType],
+    () => ({ rules: previewRules, fallback: previewFallback, libraryId, sources, mediaType }),
+    [previewRules, previewFallback, libraryId, sources, mediaType],
   );
   const draft = useDebouncedValue(spec, 400);
   const preview = useAsync(
-    async (signal) => {
-      if (!complete) return null;
-      return apiFetch<Preview>(
+    async (signal) =>
+      apiFetch<Preview>(
         sources && !libraryId ? "/libraries/preview" : "/catalog/visibility/preview",
         {
           method: "POST",
@@ -228,10 +305,28 @@ export function RulesPanel({
           }),
           signal,
         },
-      );
-    },
-    [draft, complete],
+      ),
+    [draft],
   );
+  const commitRules = (next: VisibilityRule[]) => {
+    if (!showOnly && isShowOnlyRules(next) && fallback !== "hide") {
+      onRules(next, "hide");
+      return;
+    }
+    onRules(next);
+  };
+  const openExistingRule = (i: number) => {
+    const target = rules[i];
+    if (!target) return;
+    setFresh(null);
+    setOpenState({
+      index: i,
+      isNew: false,
+      initial: target,
+      before: rules,
+      beforeFallback: fallback,
+    });
+  };
   const move = (i: number, dir: number) => {
     const j = i + dir;
     if (j < 0 || j >= rules.length) return;
@@ -239,11 +334,29 @@ export function RulesPanel({
     const [row] = next.splice(i, 1);
     next.splice(j, 0, row!);
     onRules(next);
-    setOpen((cur) => (cur === i ? j : cur === j ? i : cur));
+    setOpenState((cur) =>
+      cur ? { ...cur, index: cur.index === i ? j : cur.index === j ? i : cur.index } : null,
+    );
   };
   const update = (i: number, patch: Partial<VisibilityRule>) =>
-    onRules(rules.map((g, n) => (n === i ? { ...g, ...patch } : g)));
+    commitRules(rules.map((g, n) => (n === i ? { ...g, ...patch } : g)));
   const editing = open != null ? rules[open] : undefined;
+  const closeRuleDrawer = () => {
+    if (
+      openState?.isNew &&
+      editing &&
+      JSON.stringify(editing) === JSON.stringify(openState.initial)
+    ) {
+      onRules(openState.before, openState.beforeFallback);
+    }
+    setFresh(null);
+    setOpenState(null);
+  };
+  const cancelRuleDrawer = () => {
+    if (openState) onRules(openState.before, openState.beforeFallback);
+    setFresh(null);
+    setOpenState(null);
+  };
   const hiddenItems = preview.data?.items ?? [];
   const shownItems = preview.data?.shown ?? [];
   const visible =
@@ -262,6 +375,8 @@ export function RulesPanel({
         onChange={change}
         onRemove={remove}
         renderChild={renderCondition}
+        kind={pluginLibrary?.kind}
+        libraryId={pluginLibrary?.id}
       />
     ) : (
       <RuleRow
@@ -269,7 +384,7 @@ export function RulesPanel({
         rule={rule}
         index={j}
         kind="include"
-        mediaType={mediaType ?? "mixed"}
+        mediaType={mediaType ?? editing?.mediaType ?? "mixed"}
         region={region}
         allowedFields={allowedFields}
         facetLibraryId={pluginLibrary?.id}
@@ -281,12 +396,18 @@ export function RulesPanel({
         onRemove={remove}
       />
     );
+  const inheritedRules = useMemo(
+    () => (inheritedPolicy?.rules ?? []).filter((r) => hideScopeOf(r) !== "library"),
+    [inheritedPolicy],
+  );
+  const allowLibraryScope =
+    libraryId === 1 || libraryId === 2 || (editing ? hideScopeOf(editing) === "library" : false);
   return (
     <div className="@container">
       <div className="grid grid-cols-1 gap-6 @3xl:grid-cols-[minmax(0,1fr)_300px]">
         <div className="space-y-4">
           {inheritedPolicy &&
-          (inheritedPolicy.rules?.length || inheritedPolicy.visibilityDefault === "hide") ? (
+          (inheritedRules.length > 0 || inheritedPolicy.visibilityDefault === "hide") ? (
             <section className="space-y-2 rounded-xl border border-border bg-surface p-4">
               <div className="flex items-center justify-between">
                 <p className="font-medium">
@@ -295,19 +416,19 @@ export function RulesPanel({
                 <Link to={`/libraries/${canonicalId}/rules`}>{t("Edit")}</Link>
               </div>
               <ul className="space-y-1 text-sm">
-                {inheritedPolicy.rules?.map((rule, i) => (
-                  <li key={i}>{ruleLabel(rule, mediaType)}</li>
+                {inheritedRules.map((rule, i) => (
+                  <li key={i}>{ruleLabel(rule, mediaType, pluginLibrary?.kind)}</li>
                 ))}
               </ul>
               <p className="text-sm text-fg-muted">
-                {t("Everything else")} ·{" "}
+                {t("Titles not matched above")} ·{" "}
                 {inheritedPolicy.visibilityDefault === "hide" ? t("Hide") : t("Show")}
               </p>
             </section>
           ) : null}
           <div className="flex items-center gap-3 rounded-xl border border-border bg-surface p-5 text-lg font-semibold">
             <Library className="shrink-0 text-primary" size={24} aria-hidden />
-            {preview.loading
+            {preview.loading && !preview.data
               ? t("Loading titles…")
               : libraryId
                 ? tn(
@@ -337,7 +458,9 @@ export function RulesPanel({
             ) : null}
             <ol className="space-y-2">
               {rules.map((rule, i) => {
-                const counts = preview.data?.rules?.[i];
+                const previewIdx = previewRuleIndex.get(i);
+                const counts =
+                  previewIdx !== undefined ? preview.data?.rules?.[previewIdx] : undefined;
                 return (
                   <li
                     key={i}
@@ -364,10 +487,10 @@ export function RulesPanel({
                     <button
                       type="button"
                       className="col-span-5 min-w-0 flex-1 text-left"
-                      onClick={() => setOpen(i)}
+                      onClick={() => openExistingRule(i)}
                     >
                       <span className="block text-sm font-medium sm:truncate">
-                        {ruleLabel(rule, mediaType)}
+                        {ruleLabel(rule, mediaType, pluginLibrary?.kind)}
                       </span>
                     </button>
                     {counts ? (
@@ -409,7 +532,7 @@ export function RulesPanel({
                       variant="ghost"
                       size="icon"
                       aria-label={t("Edit rule {n}", { n: i + 1 })}
-                      onClick={() => setOpen(i)}
+                      onClick={() => openExistingRule(i)}
                     >
                       <Pencil size={16} />
                     </Button>
@@ -418,8 +541,9 @@ export function RulesPanel({
                       size="icon"
                       aria-label={t("Delete rule {n}", { n: i + 1 })}
                       onClick={() => {
-                        onRules(rules.filter((_, n) => n !== i));
-                        setOpen(null);
+                        commitRules(rules.filter((_, n) => n !== i));
+                        setFresh(null);
+                        setOpenState(null);
                       }}
                     >
                       <Trash2 size={16} />
@@ -428,41 +552,52 @@ export function RulesPanel({
                 );
               })}
             </ol>
-            <div className="flex items-center gap-3 rounded-lg border border-border bg-surface-alt px-3 py-2">
-              <span className="flex-1 text-sm font-medium">{t("Everything else")}</span>
-              <Segmented
-                ariaLabel={t("Everything else")}
-                size="sm"
-                value={fallback === "hide" ? "hide" : "show"}
-                onChange={onFallback}
-                options={[
-                  { value: "show", label: t("Show") },
-                  { value: "hide", label: t("Hide") },
-                ]}
-              />
-            </div>
             <Button
               variant="outline"
               size="sm"
               disabled={rules.length >= 32}
               onClick={() => {
-                onRules([
-                  ...rules,
-                  {
-                    name: "",
-                    action: "hide",
-                    mediaType: mediaType ?? "mixed",
-                    match: "all",
-                    rules: [newCondition()],
-                  },
-                ]);
+                const initial: VisibilityRule = {
+                  name: "",
+                  action: "hide",
+                  mediaType: mediaType ?? "mixed",
+                  match: "all",
+                  rules: [newCondition()],
+                };
+                const before = rules;
+                const beforeFallback = fallback;
+                commitRules([...rules, initial]);
                 setFresh(0);
-                setOpen(rules.length);
+                setOpenState({ index: rules.length, isNew: true, initial, before, beforeFallback });
               }}
             >
               <Plus size={14} />
               {t("Add rule")}
             </Button>
+            <div className="space-y-1.5 rounded-xl border border-border bg-surface-alt px-3.5 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-sm font-medium">{t("Titles not matched above")}</span>
+                <Segmented
+                  ariaLabel={t("Titles not matched above")}
+                  size="sm"
+                  value={fallback === "hide" ? "hide" : "show"}
+                  onChange={onFallback}
+                  options={[
+                    { value: "show", label: t("Show") },
+                    { value: "hide", label: t("Hide") },
+                  ]}
+                />
+              </div>
+              {showOnly ? (
+                <p className="text-xs text-fg-muted">
+                  {fallback === "hide"
+                    ? t("Only Show rules are set above, so unmatched titles default to Hide.")
+                    : t(
+                        "Only Show rules are set above. Switch to Hide so only matching titles appear.",
+                      )}
+                </p>
+              ) : null}
+            </div>
             <ArrowDown className="text-fg-muted" size={20} aria-hidden />
           </div>
           <div
@@ -482,14 +617,12 @@ export function RulesPanel({
         >
           <section className="min-h-fit rounded-xl border border-border bg-surface p-5 pb-6">
             <CheckCircle2 className="mb-4 text-success" size={32} aria-hidden />
-            {!complete ? (
-              <p className="text-sm text-fg-muted">{t("Finish each condition to preview.")}</p>
-            ) : preview.error ? (
+            {preview.error ? (
               <p className="text-sm text-fg-muted">{t("Preview isn't available.")}</p>
             ) : (
               <>
                 <p className="text-3xl font-semibold">
-                  {preview.loading ? "…" : formatNumber(visible)}
+                  {preview.loading && !preview.data ? "…" : formatNumber(visible)}
                 </p>
                 <p className="text-sm text-fg-muted">
                   {(preview.data?.hidden ?? 0) > 0
@@ -516,6 +649,11 @@ export function RulesPanel({
                               ),
                               shows: tn(preview.data?.shows ?? 0, "{count} show", "{count} shows"),
                             })}
+                  </p>
+                ) : null}
+                {!complete ? (
+                  <p className="mt-2 text-xs text-fg-muted">
+                    {t("Unfinished rules aren't included in the preview yet.")}
                   </p>
                 ) : null}
               </>
@@ -547,6 +685,12 @@ export function RulesPanel({
           onClose={() => setBrowse(null)}
           title={browse === "hidden" ? t("Hidden by rules") : t("Shown by rules")}
           size="2xl"
+          // The browser is its own height-bounded scroller (.catalog-scroll);
+          // a scrolling drawer body would let it grow to all its pages and
+          // make its infinite scroll load the whole library.
+          bodyClassName={
+            browse && !pluginLibrary ? "flex min-h-0 flex-col overflow-hidden" : undefined
+          }
         >
           {browse && pluginLibrary ? (
             <PluginBrowse
@@ -567,9 +711,23 @@ export function RulesPanel({
         </Drawer>
         <Drawer
           open={editing != null}
-          onClose={() => setOpen(null)}
-          title={editing ? editing.name.trim() || ruleLabel(editing, mediaType) : t("Rule")}
+          onClose={closeRuleDrawer}
+          title={
+            editing
+              ? editing.name.trim() || ruleLabel(editing, mediaType, pluginLibrary?.kind)
+              : t("Rule")
+          }
           size="lg"
+          footer={
+            <div className="flex w-full justify-end gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={cancelRuleDrawer}>
+                {t("Cancel")}
+              </Button>
+              <Button type="button" size="sm" onClick={closeRuleDrawer}>
+                {t("Done")}
+              </Button>
+            </div>
+          }
         >
           {editing && open != null ? (
             <div className="space-y-4">
@@ -618,20 +776,34 @@ export function RulesPanel({
                   <Select
                     aria-label={t("Where to hide")}
                     className="max-w-xs"
-                    value={browsingOnly(editing) ? "discovery" : "everywhere"}
+                    value={hideScopeOf(editing)}
                     onChange={(e) =>
                       update(open, {
-                        scope: e.target.value === "discovery" ? "discovery" : undefined,
+                        scope:
+                          e.target.value === "discovery" || e.target.value === "library"
+                            ? e.target.value
+                            : undefined,
                       })
                     }
                   >
                     <option value="everywhere">{t("Hide everywhere")}</option>
                     <option value="discovery">{t("Hide from browsing only")}</option>
+                    {allowLibraryScope ? (
+                      <option value="library">{t("Only this library")}</option>
+                    ) : null}
                   </Select>
                   <p className="text-xs text-fg-muted">
-                    {t(
-                      "Browsing only keeps these titles out of Home, rows, recommendations, New Releases and Trending. Anyone can still search for them and play them.",
-                    )}
+                    {hideScopeOf(editing) === "discovery"
+                      ? t(
+                          "Browsing only keeps these titles out of Home, rows, recommendations, New Releases and Trending. Anyone can still search for them and play them.",
+                        )
+                      : hideScopeOf(editing) === "library"
+                        ? t(
+                            "Hides matching titles from this library only. They remain visible in custom libraries, collections, search and playback.",
+                          )
+                        : t(
+                            "Hides matching titles everywhere, including Home, library browsing, recommendations and search.",
+                          )}
                   </p>
                 </div>
               ) : null}
@@ -652,25 +824,26 @@ export function RulesPanel({
                   () => update(open, { rules: editing.rules.filter((_, k) => k !== j) }),
                 ),
               )}
-              {!pluginLibrary ? (
-                <Select
-                  aria-label={t("Add condition")}
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value)
-                      update(open, {
-                        rules: [...editing.rules, newBrowseCondition(e.target.value)],
-                      });
-                  }}
-                >
-                  <option value="">{t("More conditions")}</option>
-                  {browseFields().map(([key, label]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </Select>
-              ) : null}
+              <Select
+                aria-label={t("Add condition")}
+                value=""
+                onChange={(e) => {
+                  if (e.target.value)
+                    update(open, {
+                      rules: [
+                        ...editing.rules,
+                        newBrowseCondition(e.target.value, pluginLibrary?.kind),
+                      ],
+                    });
+                }}
+              >
+                <option value="">{t("More conditions")}</option>
+                {browseFields(pluginLibrary?.kind).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
               <Button
                 size="sm"
                 variant="outline"

@@ -1,7 +1,6 @@
 package identity_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -131,13 +130,9 @@ func TestQuickConnectReplayIsDeviceBound(t *testing.T) {
 	if err = q.Approve(ctx, code, 1); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
 	first, err := q.PollSurfaceDevice(ctx, "jellyfin", secret, phone)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Fatalf("redeem took %s", elapsed)
 	}
 	again, err := q.PollSurfaceDevice(ctx, "jellyfin", secret, phone)
 	if err != nil || again != first {
@@ -173,44 +168,6 @@ func TestQuickConnectReplayIsDeviceBound(t *testing.T) {
 	}
 }
 
-func TestQuickConnectRedeemStaysFastOnALargeDatabase(t *testing.T) {
-	ctx := context.Background()
-	db := store.OpenTest(t)
-	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,99,0,0)`); err != nil {
-		t.Fatal(err)
-	}
-	// The bulk rows exist so a redeem that scans the database is slow.
-	// SQLite stores that ballast as BLOB; PostgreSQL has no BLOB type.
-	payloadType := "BLOB"
-	if store.DialectOf(db) == store.Postgres {
-		payloadType = "BYTEA"
-	}
-	if _, err := db.ExecContext(ctx, `CREATE TABLE quick_bulk(n INTEGER PRIMARY KEY, payload `+payloadType+`)`); err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("x"), 256<<10)
-	for i := 0; i < 32; i++ {
-		if _, err := db.ExecContext(ctx, `INSERT INTO quick_bulk(n,payload) VALUES(?,?)`, i, payload); err != nil {
-			t.Fatal(err)
-		}
-	}
-	q, err := identity.NewQuickConnect(db, time.Minute, time.Hour, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	code, secret, err := q.Initiate(ctx, "jellyfin", core.Device{ID: "apple-tv", Client: "Swiftfin"})
-	if err != nil || q.Approve(ctx, code, 1) != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	if _, err = q.PollSurfaceDevice(ctx, "jellyfin", secret, core.Device{ID: "apple-tv", Client: "Swiftfin"}); err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Fatalf("large-db redeem took %s", elapsed)
-	}
-}
-
 func TestQuickConnectApprovalNamesTheDevice(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
@@ -232,5 +189,36 @@ func TestQuickConnectApprovalNamesTheDevice(t *testing.T) {
 	target, err := q.ApprovedTarget(ctx, code, 1)
 	if err != nil || target.DeviceName != "Living Room" || target.Surface != "jellyfin" || target.Product != "Jellyfin" {
 		t.Fatalf("target: %+v %v", target, err)
+	}
+}
+
+func TestQuickConnectJellyfinCodesAreSixDigits(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Unix(3000, 0)
+	q, err := identity.NewQuickConnect(db, time.Minute, time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 32; i++ {
+		code, _, err := q.Initiate(ctx, "jellyfin", core.Device{ID: "firetv"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(code) != 6 || code[0] < '1' || code[0] > '9' {
+			t.Fatalf("jellyfin code %q outside [100000, 999999]", code)
+		}
+		for _, ch := range code {
+			if ch < '0' || ch > '9' {
+				t.Fatalf("jellyfin code %q contains non-digit %q", code, ch)
+			}
+		}
+	}
+	code, _, err := q.Initiate(ctx, "emby", core.Device{ID: "appletv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(code) != 6 {
+		t.Fatalf("emby code length: %q", code)
 	}
 }

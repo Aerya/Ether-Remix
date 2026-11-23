@@ -80,7 +80,7 @@ func OpenShared(dir string, budget int64, db *sql.DB, node string, logger *slog.
 	if logger == nil {
 		logger = slog.Default()
 	}
-	c := &Cache{dir: dir, logger: logger.With("component", "shared-cache"), budget: budget, now: time.Now}
+	c := &Cache{dir: dir, logger: logger.With("component", "shared-cache"), budget: max(budget, 0), now: time.Now, protectTTL: defaultProtectTTL}
 	s := &sharedCache{db: db, node: node, c: c, active: map[string]map[string]bool{}}
 	c.shared = s
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -126,6 +126,7 @@ func OpenShared(dir string, budget int64, db *sql.DB, node string, logger *slog.
 	if err = os.MkdirAll(c.dataDir, 0755); err != nil {
 		return nil, err
 	}
+	c.initEvictWorker(false)
 	return c, nil
 }
 func randomName() string {
@@ -262,6 +263,7 @@ func (s *sharedCache) put(id string, seg int, b []byte) error {
 	}
 	var err error
 	var old string
+	var used int64
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		var size int64
 		err := tx.QueryRowContext(ctx, `SELECT file,size FROM segcache_segments WHERE release_id=? AND segment=?`, id, seg).Scan(&old, &size)
@@ -278,8 +280,10 @@ func (s *sharedCache) put(id string, seg int, b []byte) error {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO segcache_releases(release_id,bytes,segments,touched) VALUES(?,?,?,?) ON CONFLICT(release_id) DO UPDATE SET bytes=segcache_releases.bytes+excluded.bytes,segments=segcache_releases.segments+excluded.segments,touched=excluded.touched`, id, int64(len(b))-size, count, time.Now().Unix()); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE segcache_pool SET used=used+? WHERE id=1`, int64(len(b))-size)
-		return err
+		if _, err = tx.ExecContext(ctx, `UPDATE segcache_pool SET used=used+? WHERE id=1`, int64(len(b))-size); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `SELECT used FROM segcache_pool WHERE id=1`).Scan(&used)
 	})
 	if err != nil {
 		return err
@@ -287,7 +291,9 @@ func (s *sharedCache) put(id string, seg int, b []byte) error {
 	if old != "" {
 		s.unlink(old)
 	}
-	s.sweep(false)
+	if s.c.shouldWakeSharedEvict(used) {
+		s.c.signalEvict()
+	}
 	return nil
 }
 func (s *sharedCache) unlink(file string) {
@@ -391,8 +397,12 @@ func (s *sharedCache) releaseBytes(id string) int64 {
 }
 
 type sharedProvenance struct {
-	Source string            `json:"source,omitempty"`
-	Causes []core.CacheCause `json:"causes,omitempty"`
+	Source    string            `json:"source,omitempty"`
+	Indexer   string            `json:"indexer,omitempty"`
+	Origin    string            `json:"origin,omitempty"`
+	RatingKey core.RatingKey    `json:"ratingKey,omitempty"`
+	CachedAt  time.Time         `json:"cachedAt,omitzero"`
+	Causes    []core.CacheCause `json:"causes,omitempty"`
 }
 
 func (s *sharedCache) recordProvenance(p core.CacheProvenance) {
@@ -422,8 +432,20 @@ func (s *sharedCache) recordProvenance(p core.CacheProvenance) {
 				prov = sharedProvenance{}
 			}
 		}
+		if prov.CachedAt.IsZero() {
+			prov.CachedAt = now
+		}
 		if p.Source != "" {
 			prov.Source = p.Source
+		}
+		if p.Indexer != "" {
+			prov.Indexer = p.Indexer
+		}
+		if p.Origin != "" {
+			prov.Origin = p.Origin
+		}
+		if p.RatingKey != 0 {
+			prov.RatingKey = p.RatingKey
 		}
 		if p.Cause != "" {
 			prov.Causes = mergeCause(prov.Causes, core.CacheCause{Code: p.Cause, FirstSeen: now, Shelf: p.Shelf})
@@ -470,6 +492,10 @@ func (s *sharedCache) releases() []ReleaseUsage {
 				s.log(err)
 			} else {
 				r.source = prov.Source
+				r.indexer = prov.Indexer
+				r.origin = prov.Origin
+				r.ratingKey = prov.RatingKey
+				r.cachedAt = prov.CachedAt
 				r.causes = prov.Causes
 			}
 		}
@@ -494,17 +520,88 @@ func (s *sharedCache) releases() []ReleaseUsage {
 	}
 	return out
 }
-func (s *sharedCache) remove(id string) error { return s.evictWhere(id, false) }
-func (s *sharedCache) sweep(expire bool)      { s.log(s.evictWhere("", expire)) }
-func (s *sharedCache) evictWhere(id string, expire bool) error {
+func (s *sharedCache) releaseDetail(id string) (ReleaseDetail, bool) {
+	ctx, cancel := s.context()
+	defer cancel()
+	var bytes, size int64
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT bytes,size,COALESCE(provenance,'') FROM segcache_releases WHERE release_id=?`, id).Scan(&bytes, &size, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		if len(s.pins()[id]) == 0 {
+			return ReleaseDetail{}, false
+		}
+		return buildReleaseDetail(id, nil, 0, 0, time.Time{}), true
+	}
+	if err != nil {
+		s.log(err)
+		return ReleaseDetail{}, false
+	}
+	var first time.Time
+	if raw != "" {
+		var prov sharedProvenance
+		if json.Unmarshal([]byte(raw), &prov) == nil {
+			first = earliestTime(prov.CachedAt, prov.Causes)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT segment,touched FROM segcache_segments WHERE release_id=? ORDER BY segment`, id)
+	if err != nil {
+		s.log(err)
+		return ReleaseDetail{}, false
+	}
+	defer rows.Close()
+	var keys []int
+	var earliest int64
+	for rows.Next() {
+		var seg int
+		var touched int64
+		if rows.Scan(&seg, &touched) == nil {
+			keys = append(keys, seg)
+			if touched > 0 && (earliest == 0 || touched < earliest) {
+				earliest = touched
+			}
+		}
+	}
+	s.logRows("release_detail", rows.Err())
+	if len(keys) == 0 && len(s.pins()[id]) == 0 {
+		return ReleaseDetail{}, false
+	}
+	if earliest > 0 {
+		t := time.Unix(earliest, 0)
+		if first.IsZero() || t.Before(first) {
+			first = t
+		}
+	}
+	return buildReleaseDetail(id, keys, bytes, size, first), true
+}
+func (s *sharedCache) remove(id string) error {
+	_, err := s.evictWhere(id, false, false)
+	return err
+}
+func (s *sharedCache) sweep(expire bool) {
+	_, err := s.evictWhere("", expire, false)
+	s.log(err)
+}
+func (s *sharedCache) sweepWatermarked() {
+	for !s.closed() {
+		more, err := s.evictWhere("", false, true)
+		if err != nil {
+			s.log(err)
+			return
+		}
+		if !more {
+			return
+		}
+	}
+}
+func (s *sharedCache) evictWhere(id string, expire bool, watermarked bool) (bool, error) {
 	if err := s.checkMount(); err != nil {
-		return err
+		return false, err
 	}
 	s.c.mu.Lock()
 	budget, p, closed := s.c.budget, s.c.policy, s.c.closed
 	s.c.mu.Unlock()
 	if closed {
-		return ErrClosed
+		return false, ErrClosed
 	}
 	prot, _ := s.c.protected()
 	s.c.evictMu.Lock()
@@ -515,6 +612,7 @@ func (s *sharedCache) evictWhere(id string, expire bool) error {
 	var files []string
 	var reclaimed int64
 	var reclaimID string
+	var more bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		var used int64
 		if err := tx.QueryRowContext(ctx, `SELECT used FROM segcache_pool WHERE id=1`).Scan(&used); err != nil {
@@ -524,7 +622,30 @@ func (s *sharedCache) evictWhere(id string, expire bool) error {
 		// The cap is absolute, so a pass that runs after another node's
 		// eviction compares against the pool usage that eviction left.
 		limit := usageLimit(budget, floorCap, floorOK)
-		within := func() bool { return limit < 0 || used <= limit }
+		target := limit
+		if watermarked {
+			if limit < 0 {
+				return nil
+			}
+			trigger := false
+			if budget > 0 {
+				high := highWatermark(budget)
+				low := lowWatermark(budget)
+				if low < target {
+					target = low
+				}
+				if used >= high && used > target {
+					trigger = true
+				}
+			}
+			if floorOK && used > floorCap {
+				trigger = true
+			}
+			if !trigger || used <= target {
+				return nil
+			}
+		}
+		within := func() bool { return target < 0 || used <= target }
 		if id == "" && !expire && within() {
 			return nil
 		}
@@ -576,6 +697,9 @@ func (s *sharedCache) evictWhere(id string, expire bool) error {
 			if prot[v.id] || (id == "" && !expired && within()) {
 				continue
 			}
+			if watermarked && limit >= 0 && used <= limit && used == v.size {
+				break
+			}
 			if _, err = tx.ExecContext(ctx, `DELETE FROM segcache_segments WHERE release_id=? AND segment=? AND file=?`, v.id, v.seg, v.file); err != nil {
 				return err
 			}
@@ -600,11 +724,14 @@ func (s *sharedCache) evictWhere(id string, expire bool) error {
 			// space yet; floor measurements on any node count it as free.
 			reclaimID = rand.Text()
 			_, err = tx.ExecContext(ctx, `INSERT INTO segcache_reclaim(id,node,bytes,at) VALUES(?,?,?,`+s.nowSQL()+`)`, reclaimID, s.node, reclaimed)
+			if watermarked && !within() {
+				more = true
+			}
 		}
 		return err
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if s.beforeUnlink != nil {
 		s.beforeUnlink()
@@ -621,7 +748,7 @@ func (s *sharedCache) evictWhere(id string, expire bool) error {
 	s.c.mu.Lock()
 	s.c.metrics.EvictedBytes += reclaimed
 	s.c.mu.Unlock()
-	return nil
+	return more, nil
 }
 func (s *sharedCache) heartbeat() {
 	ctx, cancel := s.context()

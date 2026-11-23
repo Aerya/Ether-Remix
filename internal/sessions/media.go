@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -17,6 +18,11 @@ import (
 )
 
 func waitReadRetirement(reads []*core.ReadRetirement) {
+	for _, tracker := range reads {
+		if tracker != nil {
+			tracker.Interrupt()
+		}
+	}
 	for _, tracker := range reads {
 		if tracker != nil {
 			<-tracker.Seal()
@@ -66,7 +72,11 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	default:
 		return "", &frontend.SessionBusyError{RetryAfter: time.Second}
 	}
-	unlock, err := b.gates.Acquire(ctx, fmt.Sprintf("broker/owner/%d/%s", s.public.ViewerID, s.clientID))
+	gateKey := ownerGateKey(s.public.ViewerID, s.clientID)
+	if s.live && s.multiviewGroup != "" {
+		gateKey = tileGateKey(s.public.ViewerID, s.clientID, s.multiviewGroup, s.multiviewTile)
+	}
+	unlock, err := b.gates.Acquire(ctx, gateKey)
 	if err != nil {
 		return "", err
 	}
@@ -109,8 +119,13 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			return "", frontend.ErrSourceGone
 		}
 	}
-	if req.Format != frontend.StreamDirect && req.Format != frontend.StreamHLS && req.Format != frontend.StreamDASH {
+	if req.Format != frontend.StreamDirect && req.Format != frontend.StreamHLS && req.Format != frontend.StreamDASH && req.Format != frontend.StreamHTTP {
 		return "", core.ErrNotAvailable
+	}
+	if !req.PrepareOnly && (s.format == "" || req.Position != s.streamPosition) {
+		if noter, ok := b.deps.Playback.(interface{ NoteStartPosition(string, time.Duration) }); ok {
+			noter.NoteStartPosition(s.playID, req.Position)
+		}
 	}
 	path := "/sessions/media/" + s.public.ID + "/" + s.grant + "/"
 	if s.live {
@@ -119,6 +134,9 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		}
 		if req.Format != frontend.StreamHLS {
 			return "", core.ErrNotAvailable
+		}
+		if req.MaxHeight != nil {
+			return b.replanLive(ctx, viewer, s, *req.MaxHeight)
 		}
 		return path + "live/index.m3u8", nil
 	}
@@ -140,13 +158,15 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		b.mu.Lock()
 		if live := b.sessions[id]; live != nil {
 			live.format = req.Format
+			live.public.MediaPath = path + "file"
+			live.public.PlayMethod = "DirectPlay"
 		}
 		b.mu.Unlock()
 		// The original file is what the client now plays, whatever the
 		// plan said; say so even if an encoder ran for this session before.
-		b.recordPlaybackDecision(s.playID, core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true})
-		b.ensureTrickplay(ctx, s, req.Position)
 		ps, _ := b.deps.Playback.Session(s.playID)
+		b.recordPlaybackDecision(s.playID, core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: ps == nil || !ps.Info.AudioOnly(), AudioCopy: true})
+		b.ensureTrickplay(ctx, s, req.Position)
 		// The file URL is an in-memory grant. ServeMedia rechecks the viewer
 		// and the current policy on every byte. The durable delivery row is
 		// published beside that, not in front of the first byte.
@@ -163,27 +183,43 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if b.deps.Transcoder == nil {
 		return "", core.ErrNotAvailable
 	}
-	tracksChanged := req.AudioStream != nil || req.SubtitleStream != nil
-	if !tracksChanged && (s.format == req.Format || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect)) && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
+	qualityChanged := req.MaxHeight != nil && *req.MaxHeight >= 0 && (req.Format == frontend.StreamHLS || req.Format == frontend.StreamDASH)
+	tracksChanged := req.AudioStream != nil || req.SubtitleStream != nil || qualityChanged
+	reencode := req.ReencodeVideo && s.opts.DirectStream
+	if !tracksChanged && !reencode && (s.format == req.Format || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect && req.Format == frontend.StreamHLS)) && s.streamPosition == req.Position && s.segmentDuration == req.SegmentDuration {
 		if hs, ok := b.transcodeSession(id); ok && hs != nil {
-			if !req.PrepareOnly && s.format != req.Format {
-				b.mu.Lock()
-				if live := b.sessions[id]; live != nil {
-					live.format = req.Format
-				}
-				b.mu.Unlock()
-			}
-			if entry, ok := b.bindings.Get(id); ok && entry.Started {
-				b.recordPlaybackDecision(s.playID, entry.Decision)
-			}
+			var mediaPath string
 			if req.Format == frontend.StreamDASH {
 				if _, ok := hs.(core.DASHSession); ok {
-					b.ensureTrickplay(ctx, s, req.Position)
-					return path + "manifest.mpd", nil
+					mediaPath = path + "manifest.mpd"
+				}
+			} else if req.Format == frontend.StreamHTTP {
+				if _, ok := hs.(core.HTTPSession); ok {
+					ext := s.httpExt
+					if ext == "" {
+						ext = httpStreamExt(s.decision.Container, s.decision.AudioCodec)
+					}
+					mediaPath = path + "stream." + ext
 				}
 			} else {
-				b.ensureTrickplay(ctx, s, req.Position)
-				return path + "master.m3u8", nil
+				mediaPath = path + "master.m3u8"
+			}
+			if mediaPath != "" {
+				if !req.PrepareOnly && s.format != req.Format {
+					b.mu.Lock()
+					if live := b.sessions[id]; live != nil {
+						live.format = req.Format
+						live.public.MediaPath = mediaPath
+					}
+					b.mu.Unlock()
+				}
+				if entry, ok := b.bindings.Get(id); ok && entry.Started {
+					b.recordPlaybackDecision(s.playID, entry.Decision)
+				}
+				if req.Format != frontend.StreamHTTP {
+					b.ensureTrickplay(ctx, s, req.Position)
+				}
+				return mediaPath, nil
 			}
 		}
 	}
@@ -193,8 +229,31 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 
 	dec := s.decision
-	if tracksChanged || dec.Reason == "original_runtime" {
+	if tracksChanged || reencode || dec.Reason == "original_runtime" || ((req.Format == frontend.StreamHLS || req.Format == frontend.StreamHTTP) && dec.Kind == core.DecisionDirectPlay) {
 		options := s.opts
+		if reencode {
+			// No copy: the client refused the copied video. Later restarts
+			// (seeks) keep encoding.
+			options.DirectStream = false
+		}
+		if qualityChanged {
+			cap := *req.MaxHeight
+			options.MaxHeight = cap
+			source := 0
+			if v := ps.Info.Video(); v != nil {
+				source = v.Height
+			}
+			if cap > 0 && source > cap {
+				// A copy cannot be smaller: encode to the picked height.
+				if options.DirectStream {
+					s.qualityCapped = true
+				}
+				options.DirectStream = false
+			} else if s.qualityCapped {
+				options.DirectStream = true
+				s.qualityCapped = false
+			}
+		}
 		if req.AudioStream != nil {
 			if !validObservedTrack(ps.Info, "audio", *req.AudioStream) {
 				return "", core.ErrNotAvailable
@@ -228,10 +287,31 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if req.Format == frontend.StreamDASH {
 		proto = core.ProtocolDASH
 		if dec.Kind == core.DecisionDirectPlay {
-			dec.Kind, dec.VideoCopy, dec.AudioCopy = core.DecisionRemux, true, true
+			if ps.Info.Video() != nil && s.caps.EffectiveAlwaysEncodeVideo() && (s.live || !b.videoOff(s.caps)) {
+				options := s.opts
+				options.DirectPlay = false
+				options.DirectStream = false
+				options.Protocol = core.ProtocolDASH
+				dec = b.deps.Transcoder.Decide(ps.Info, s.caps, options)
+			} else {
+				dec.Kind, dec.VideoCopy, dec.AudioCopy = core.DecisionRemux, !ps.Info.AudioOnly(), true
+			}
+		}
+	} else if req.Format == frontend.StreamHTTP {
+		proto = core.ProtocolHTTP
+		var allowed bool
+		dec, allowed = b.httpOutputDecision(ps, s.caps, s.opts, s.allowTranscoding, dec)
+		if !allowed {
+			if !s.live && b.videoOff(s.caps) && decisionEncodesVideo(dec, ps.Info) {
+				return "", &frontend.NoCompatiblePathError{
+					RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
+					Cause:         core.ErrVideoTranscodingDisabled,
+				}
+			}
+			return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 		}
 	} else {
-		if len(progressiveTextTracks(string(s.public.Protocol), s.caps, ps.Info)) > 0 && dec.Kind == core.DecisionDirectPlay {
+		if len(textSubtitleStreams(string(s.public.Protocol), s.caps, ps.Info)) > 0 && dec.Kind == core.DecisionDirectPlay {
 			// Negotiate the real segmented container/codecs, rather than
 			// assuming a direct-file codec can be copied into MPEG-TS.
 			options := s.opts
@@ -243,7 +323,19 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		var allowed bool
 		dec, allowed = b.hlsOutputDecision(ps, s.caps, s.opts, s.allowTranscoding, dec)
 		if !allowed {
+			if !s.live && b.videoOff(s.caps) && decisionEncodesVideo(dec, ps.Info) {
+				return "", &frontend.NoCompatiblePathError{
+					RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
+					Cause:         core.ErrVideoTranscodingDisabled,
+				}
+			}
 			return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
+		}
+	}
+	if !s.live && b.videoOff(s.caps) && decisionEncodesVideo(dec, ps.Info) {
+		return "", &frontend.NoCompatiblePathError{
+			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
+			Cause:         core.ErrVideoTranscodingDisabled,
 		}
 	}
 	if s.allowTranscoding != nil && !*s.allowTranscoding && decisionEncodes(dec, ps.Info) {
@@ -255,7 +347,24 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if dec.Kind == core.DecisionRemux && !s.opts.DirectStream {
 		return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 	}
-	request := core.HLSRequest{LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: req.Position, SegmentDuration: req.SegmentDuration, Protocol: proto}
+	// A combined multi-episode file starts at the requested episode's
+	// segment: the client's position is episode-relative, the source's
+	// timeline is not. DASH spans the whole file whatever the offset, and
+	// a live channel's position is already in source time.
+	startAt := req.Position
+	var firstSegmentAt time.Duration
+	if req.FullTimeline && proto == core.ProtocolHLS && !s.live {
+		// The playlist starts at the title's (or episode's) beginning; the
+		// client seeks to its resume point, so encode from there first.
+		startAt = 0
+		if req.Position > 0 {
+			firstSegmentAt = ps.SourcePosition(req.Position)
+		}
+	}
+	if proto != core.ProtocolDASH && !s.live {
+		startAt = ps.SourcePosition(startAt)
+	}
+	request := core.HLSRequest{FirstSegmentAt: firstSegmentAt, LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), NoVideoTranscode: !s.live && b.videoOff(s.caps), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
 	if req.Continuous && s.public.Protocol == "vela" {
 		variants, _, e := b.qualityPlan(ctx, s, viewer)
 		if e != nil {
@@ -272,11 +381,15 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		// A continuous playback client declares its decoder set. Optional
 		// encoded rungs must also respect its session's transcoding policy.
 		request.LadderVideoCodecs = []string{}
-		if s.allowTranscoding == nil || *s.allowTranscoding {
+		if (s.allowTranscoding == nil || *s.allowTranscoding) && (s.live || !b.videoOff(s.caps)) {
 			request.LadderVideoCodecs = append(request.LadderVideoCodecs, s.caps.VideoCodecs...)
 		}
 	}
-	request.TextSubtitleStreams = progressiveTextTracks(string(s.public.Protocol), s.caps, ps.Info)
+	if s.caps.NoVideoTranscode && !s.live && request.LadderVideoCodecs == nil {
+		// This viewer's video is never re-encoded: offer the primary rung only.
+		request.LadderVideoCodecs = []string{}
+	}
+	request.TextSubtitleStreams = textSubtitleStreams(string(s.public.Protocol), s.caps, ps.Info)
 	if len(request.TextSubtitleStreams) > 0 {
 		request.TextSubtitleSource = sourceRevision(ps)
 	}
@@ -327,6 +440,16 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			return "", core.ErrNotAvailable
 		}
 	}
+	if req.Format == frontend.StreamHTTP {
+		if _, ok := hs.(core.HTTPSession); !ok {
+			b.transcodeStop(id)
+			return "", core.ErrNotAvailable
+		}
+	}
+	httpExt := ""
+	if req.Format == frontend.StreamHTTP {
+		httpExt = httpStreamExt(dec.Container, dec.AudioCodec)
+	}
 	entry, ok := b.bindings.Get(id)
 	if ok {
 		entry.Started = true
@@ -335,16 +458,25 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		entry.UpdatedAt = b.deps.Now()
 		b.bindings.Put(entry)
 	}
+	mediaPath := path + "master.m3u8"
+	if req.Format == frontend.StreamDASH {
+		mediaPath = path + "manifest.mpd"
+	} else if req.Format == frontend.StreamHTTP {
+		mediaPath = path + "stream." + httpExt
+	}
 	b.mu.Lock()
 	if live := b.sessions[id]; live != nil {
 		if !req.PrepareOnly || live.format != frontend.StreamDirect {
 			live.format = req.Format
+			live.public.MediaPath = mediaPath
 		}
+		live.httpExt = httpExt
 		live.streamPosition = req.Position
 		live.segmentDuration = req.SegmentDuration
-		if tracksChanged {
+		if tracksChanged || reencode {
 			live.opts = s.opts
 			live.decision = dec
+			live.qualityCapped = s.qualityCapped
 		}
 	}
 	b.mu.Unlock()
@@ -358,10 +490,80 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		b.transcodeStop(id)
 		return "", err
 	}
-	if req.Format == frontend.StreamDASH {
-		return path + "manifest.mpd", nil
+	return mediaPath, nil
+}
+
+func httpStreamExt(container, audioCodec string) string {
+	switch strings.ToLower(strings.TrimSpace(container)) {
+	case "mp3":
+		return "mp3"
+	case "aac", "adts":
+		return "aac"
+	case "mp4", "m4a", "m4b", "fmp4":
+		return "m4a"
+	case "ogg", "oga":
+		return "ogg"
+	case "opus":
+		return "opus"
+	case "webm", "weba":
+		return "webm"
+	case "flac":
+		return "flac"
+	case "wav":
+		return "wav"
+	case "ts", "mpegts":
+		return "ts"
+	case "mkv", "matroska", "mka":
+		return "mkv"
 	}
-	return path + "master.m3u8", nil
+	switch strings.ToLower(strings.TrimSpace(audioCodec)) {
+	case "mp3":
+		return "mp3"
+	case "opus", "vorbis":
+		return "ogg"
+	case "flac":
+		return "flac"
+	case "aac":
+		return "m4a"
+	}
+	return "mkv"
+}
+
+// httpOutputDecision is shared by advisory planning and StreamHTTP startup.
+func (b *Broker) httpOutputDecision(ps *core.PlaySession, caps core.ClientCaps, opts core.DecideOptions, allowTranscoding *bool, dec core.Decision) (core.Decision, bool) {
+	if ps == nil || b.deps.Transcoder == nil {
+		return core.Decision{}, false
+	}
+	if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+		if dec.Kind != core.DecisionDirectPlay && profileDeliveryAllowed(caps.Profiles, dec, ps.Info, "http") {
+			if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(dec, ps.Info) {
+				return dec, false
+			}
+			if dec.Kind == core.DecisionRemux && !opts.DirectStream {
+				return dec, false
+			}
+			return dec, true
+		}
+		return b.decideAudioProfile(ps, caps, opts, allowTranscoding, "http")
+	}
+	opts.DirectPlay = false
+	opts.Protocol = core.ProtocolHTTP
+	if b.videoOff(caps) {
+		caps.NoVideoTranscode = true
+	}
+	if dec.Kind == core.DecisionDirectPlay || dec.Container != transcode.ContainerMatroska {
+		dec = b.deps.Transcoder.Decide(ps.Info, caps, opts)
+	}
+	if b.videoOff(caps) && decisionEncodesVideo(dec, ps.Info) {
+		return dec, false
+	}
+	if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(dec, ps.Info) {
+		return dec, false
+	}
+	if dec.Kind == core.DecisionRemux && !opts.DirectStream {
+		return dec, false
+	}
+	return dec, profileDeliveryAllowed(caps.Profiles, dec, ps.Info, "http")
 }
 
 // hlsOutputDecision is shared by advisory planning and stream startup, so a
@@ -371,7 +573,39 @@ func (b *Broker) hlsOutputDecision(ps *core.PlaySession, caps core.ClientCaps, o
 	if ps == nil || b.deps.Transcoder == nil {
 		return core.Decision{}, false
 	}
-	dec = HLSDecision(dec, opts.DirectPlay, func() core.Decision { return b.deps.Transcoder.Decide(ps.Info, caps, opts) }, nil)
+	if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+		if dec.Kind != core.DecisionDirectPlay &&
+			(dec.Container == transcode.ContainerFMP4 || dec.Container == transcode.ContainerMPEGTS || dec.Container == transcode.ContainerMatroska) &&
+			profileDeliveryAllowed(caps.Profiles, dec, ps.Info, "hls") {
+			if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(dec, ps.Info) {
+				return dec, false
+			}
+			if dec.Kind == core.DecisionRemux && !opts.DirectStream {
+				return dec, false
+			}
+			return dec, true
+		}
+		return b.decideAudioProfile(ps, caps, opts, allowTranscoding, "hls")
+	}
+	if b.videoOff(caps) {
+		caps.NoVideoTranscode = true
+	}
+	dec = HLSDecision(dec, opts.DirectPlay, func() core.Decision {
+		retry := opts
+		retry.DirectPlay = false
+		return b.deps.Transcoder.Decide(ps.Info, caps, retry)
+	}, func(d core.Decision) core.Decision {
+		if ps.Info.Video() != nil && caps.EffectiveAlwaysEncodeVideo() {
+			retry := opts
+			retry.DirectPlay = false
+			retry.DirectStream = false
+			return b.deps.Transcoder.Decide(ps.Info, caps, retry)
+		}
+		return d
+	})
+	if b.videoOff(caps) && decisionEncodesVideo(dec, ps.Info) {
+		return dec, false
+	}
 	if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(dec, ps.Info) {
 		return dec, false
 	}
@@ -484,13 +718,31 @@ func (b *Broker) currentMediaPolicy(ctx context.Context, viewer *core.Viewer, s 
 	}
 	viewer = confirmed
 	if s.live {
-		return b.deps.Live != nil && b.deps.Live.Allowed(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Channel) == nil
+		if b.deps.Live == nil {
+			return false
+		}
+		liveCtx := core.WithLiveApp(ctx, string(s.public.Protocol))
+		if s.directLive != nil {
+			db, ok := b.deps.Live.(DirectLiveBackend)
+			return ok && db.DirectAllowed(liveCtx, viewer, s.directLive) == nil
+		}
+		return b.deps.Live.Allowed(liveCtx, viewer, s.public.Channel) == nil
 	}
-	lookup := b.deps.MediaLookup
+	lookup := b.deps.CurrentMediaLookup
+	if lookup == nil {
+		lookup = b.deps.MediaLookup
+	}
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(ctx, viewer, s.public.Device, s.public.Item)
+	if lookup == nil {
+		if s.public.Item.IsPluginKey() && b.deps.KindSource != nil {
+			in, err := b.deps.KindSource(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Item)
+			return err == nil && in != nil && in.Title != nil && in.Title.Key == s.public.Item && (in.Title.Released.IsZero() || !in.Title.Released.After(b.deps.Now()))
+		}
+		return false
+	}
+	title, err := lookup(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Device, s.public.Item)
 	return err == nil && title != nil && title.Key == s.public.Item && (title.Released.IsZero() || !title.Released.After(b.deps.Now()))
 }
 
@@ -524,12 +776,29 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 	live, ok := b.sessions[parts[0]]
 	var tracker *core.ReadRetirement
 	var s *brokerSession
+	var interruptMu sync.Mutex
+	interruptible := false
 	if ok {
 		tracker = &core.ReadRetirement{}
 		live.servingReads = append(live.servingReads, tracker)
 		copied := *live
 		s = &copied
-		r = r.WithContext(core.WithReadRetirement(r.Context(), tracker))
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		// Retirement cuts this response short: cancel its reads and fail a
+		// write blocked on a client that stopped reading. The response
+		// controller is valid only while this handler runs.
+		controller := http.NewResponseController(w)
+		interruptible = true
+		tracker.OnInterrupt(func() {
+			cancel()
+			interruptMu.Lock()
+			defer interruptMu.Unlock()
+			if interruptible {
+				_ = controller.SetWriteDeadline(time.Now())
+			}
+		})
+		r = r.WithContext(core.WithReadRetirement(ctx, tracker))
 	}
 	b.mu.Unlock()
 	if !ok {
@@ -545,6 +814,10 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		return
 	}
 	defer func() {
+		interruptMu.Lock()
+		interruptible = false
+		interruptMu.Unlock()
+		tracker.OnInterrupt(nil)
 		<-tracker.Seal()
 		b.mu.Lock()
 		if cur := b.sessions[parts[0]]; cur != nil {
@@ -610,16 +883,25 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		return
 	}
 	if s.live && len(tail) >= 2 && tail[0] == "live" && b.deps.Live != nil {
+		if s.multiviewGroup != "" {
+			b.mu.Lock()
+			b.touchMultiviewLocked(s.multiviewGroup, b.deps.Now())
+			b.mu.Unlock()
+		}
 		if liveBase == "" {
 			liveBase = "/sessions/media/" + s.public.ID + "/" + s.grant + "/live/"
 		}
 		b.deps.Live.Serve(w, r, viewer, s.playID, strings.Join(tail[1:], "/"), liveBase)
 		return
 	}
-	if !s.live && s.playID != "" {
-		if reader, ok := b.deps.Playback.(interface{ BeginMediaRead(string) func() }); ok {
-			defer reader.BeginMediaRead(s.playID)()
+	beginMediaRead := func() func() {
+		if r.Method == http.MethodHead || s.live || s.playID == "" {
+			return func() {}
 		}
+		if reader, ok := b.deps.Playback.(interface{ BeginMediaRead(string) func() }); ok {
+			return reader.BeginMediaRead(s.playID)
+		}
+		return func() {}
 	}
 	if len(tail) == 2 && tail[0] == "subtitles" {
 		b.serveSubtitle(w, r, s, tail[1])
@@ -644,9 +926,18 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		http.NotFound(w, r)
 		return
 	}
+	if s.format == frontend.StreamHTTP {
+		if httpSess, ok := hs.(core.HTTPSession); ok && len(tail) == 1 && (tail[0] == "stream" || strings.HasPrefix(tail[0], "stream.")) {
+			httpSess.ServeHTTP(w, r)
+			return
+		}
+	}
 	if s.format == frontend.StreamHLS || (s.public.Protocol == "vela" && s.format == frontend.StreamDirect) {
 		if len(tail) == 1 && tail[0] == "master.m3u8" {
 			b.serveMaster(w, r, s, hs)
+			return
+		}
+		if serveTextRendition(w, r, hs, tail) {
 			return
 		}
 		// Keep the initial single-variant URLs working for already-open clients.
@@ -656,6 +947,7 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 				return
 			}
 			if n, ok := transcode.ParseSegmentName(tail[0]); ok {
+				defer beginMediaRead()()
 				hs.ServeSegment(w, r, n)
 				return
 			}
@@ -673,6 +965,7 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 							return
 						}
 						if n, ok := transcode.ParseSegmentName(name); ok {
+							defer beginMediaRead()()
 							ls.ServeRungSegment(w, r, rung, n)
 							return
 						}
@@ -684,6 +977,7 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 					return
 				}
 				if n, ok := transcode.ParseSegmentName(name); ok {
+					defer beginMediaRead()()
 					hs.ServeSegment(w, r, n)
 					return
 				}
@@ -704,10 +998,12 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 			rep, err := strconv.Atoi(tail[2])
 			if err == nil && rep >= 0 {
 				if tail[3] == "header" {
+					defer beginMediaRead()()
 					ds.ServeInit(w, r, rep)
 					return
 				}
 				if n, ok := transcode.ParseSegmentName(tail[3]); ok && n >= 0 {
+					defer beginMediaRead()()
 					ds.ServeMedia(w, r, rep, n)
 					return
 				}
@@ -767,19 +1063,32 @@ func (b *Broker) serveMaster(w http.ResponseWriter, r *http.Request, s *brokerSe
 		}
 		dec := entry.Decision
 		bw := ps.Info.BitrateKbps
-		if !dec.VideoCopy && dec.BitrateKbps > 0 {
+		if (!dec.VideoCopy || !dec.AudioCopy || ps.Info.Video() == nil) && dec.BitrateKbps > 0 {
 			bw = dec.BitrateKbps
 		}
 		if bw <= 0 {
-			bw = 8000
+			if ps.Info.Video() == nil {
+				bw = 192
+			} else {
+				bw = 8000
+			}
 		}
-		fmt.Fprintf(&body, "#EXT-X-STREAM-INF:BANDWIDTH=%d%s\nbase/index.m3u8\n", bw*1000, transcode.HLSVariantAttributes(ps.Info, dec))
+		fmt.Fprintf(&body, "#EXT-X-STREAM-INF:BANDWIDTH=%d%s%s\nbase/index.m3u8\n", bw*1000, transcode.HLSVariantGeometry(ps.Info, dec), transcode.HLSVariantAttributes(ps.Info, dec))
 	}
 	if body.String() == "#EXTM3U\n" {
 		http.Error(w, "no playable rendition", http.StatusServiceUnavailable)
 		return
 	}
 	master := body.String()
+	if tags, group := textRenditionTags(s, hs, ps.Info); tags != "" {
+		lines := strings.Split(strings.TrimPrefix(master, "#EXTM3U\n"), "\n")
+		for n, line := range lines {
+			if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
+				lines[n] = line + group
+			}
+		}
+		master = "#EXTM3U\n" + tags + strings.Join(lines, "\n")
+	}
 	if b.policy(s.public.Protocol).MasterMetadata {
 		independent, ok := hs.(core.HLSIndependentSegments)
 		version := 7 // conservative if the selected media format is unavailable

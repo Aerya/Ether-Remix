@@ -83,7 +83,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 		return err
 	}
 	// seasonsOfShow: hydrated season rows, then listableSeason.
-	all, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='season' AND show_key IN (`+in+`) ORDER BY show_key ASC, season ASC`, keys...)
+	all, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key IN (`+in+`) ORDER BY show_key ASC, season ASC`, keys...)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 	type mirrored struct{ episodes, pending int }
 	have := map[core.RatingKey]map[int]mirrored{}
 	rows, err = c.db.QueryContext(ctx, `SELECT show_key,season,COUNT(*),COUNT(CASE WHEN release_known=0 OR released_ts>? THEN 1 END)
-		FROM catalog_titles WHERE type='episode' AND show_key IN (`+in+`) GROUP BY show_key,season`, append([]any{now.Unix()}, keys...)...)
+		FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key IN (`+in+`) GROUP BY show_key,season`, append([]any{now.Unix()}, keys...)...)
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 		episodes        int
 	}
 	records := map[core.RatingKey]map[int]record{}
-	rows, err = c.db.QueryContext(ctx, `SELECT show_key,season,detail,detail_at,child_count FROM catalog_titles WHERE type='season' AND show_key IN (`+in+`)`, keys...)
+	rows, err = c.db.QueryContext(ctx, `SELECT show_key,season,detail,detail_at,child_count FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key IN (`+in+`)`, keys...)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func (c *Catalog) storedGrandchildren(ctx context.Context, shows []core.RatingKe
 		query = c.queryEpisodeCandidates
 		columns = "key,show_key,season,episode,released_ts,adult"
 	}
-	eps, err := query(ctx, `SELECT `+columns+` FROM catalog_titles WHERE type='episode' AND show_key IN (`+placeholders(len(ask))+`) ORDER BY show_key ASC, season ASC, episode ASC`, ask...)
+	eps, err := query(ctx, `SELECT `+columns+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key IN (`+placeholders(len(ask))+`) ORDER BY show_key ASC, season ASC, episode ASC`, ask...)
 	if err != nil {
 		return err
 	}

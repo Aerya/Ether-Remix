@@ -220,3 +220,118 @@ func TestAnonymousStreamWorksForEmbyAudioAlias(t *testing.T) {
 		t.Fatalf("served paths = %v", state.served)
 	}
 }
+
+// Findroid posts PlaybackInfo for every queued episode before it reads the
+// one it plays. The broker keeps one session per device, so those opens
+// retire the playing episode's session; its credential-less stream reopens
+// it. A stopped title is never reopened.
+func TestAnonymousStreamReopensSessionSupersededOnDevice(t *testing.T) {
+	state := &anonState{}
+	device := frontend.Device{ID: "tv"}
+	broker := newAnonBroker(state, device)
+	opened := 0
+	var planned []frontend.RatingKey
+	broker.PlanFunc = func(_ context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+		planned = append(planned, req.Item)
+		return frontend.PlayPlan{ID: "plan-" + ids.RatingKeyGUID(req.Item), Decision: frontend.Decision{Kind: "directplay"}, DirectPlay: true}, nil
+	}
+	broker.OpenFunc = func(_ context.Context, req frontend.OpenRequest) (frontend.Session, error) {
+		opened++
+		item := frontend.RatingKey(5)
+		if req.PlanID == "plan-"+ids.RatingKeyGUID(6) {
+			item = 6
+		}
+		id := "session-" + string(rune('0'+opened))
+		// One session per device: every open supersedes the previous one.
+		state.live = []frontend.Session{{ID: id, Item: item, Protocol: "jellyfin", Device: device, MediaPath: "/sessions/media/" + id + "/scoped/file"}}
+		return state.live[0], nil
+	}
+	inst := mountAnonTest(t, "jellyfin", broker)
+	openSession(t, inst, "jellyfin", 5, "192.0.2.1")
+	openSession(t, inst, "jellyfin", 6, "192.0.2.1") // the queued next episode
+
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent {
+		t.Fatalf("superseded stream = %d, want 206: %s", w.Code, w.Body.String())
+	}
+	if len(state.served) != 1 || state.served[0] != "/sessions/media/session-3/scoped/file" || planned[len(planned)-1] != 5 {
+		t.Fatalf("served %v after planning %v, want a reopened session for item 5", state.served, planned)
+	}
+	// A second ranged GET rides the reopened session.
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent || opened != 3 {
+		t.Fatalf("second GET = %d with %d opens, want 206 without another open", w.Code, opened)
+	}
+
+	stop := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/jellyfin/Sessions/Playing/Stopped", strings.NewReader(`{"ItemId":"`+ids.RatingKeyGUID(5)+`","PlaySessionId":"session-3"}`))
+	r.Header.Set("X-Emby-Token", "grant")
+	r.Header.Set("X-Emby-Device-Id", "tv")
+	r.Header.Set("X-Test-IP", "192.0.2.1")
+	inst.Handler().ServeHTTP(stop, r)
+	state.live = nil
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("stopped stream = %d, want 401", w.Code)
+	}
+}
+
+// While a credential-less stream is playing, a PlaybackInfo for another item
+// from the same device is a queue prefetch: nothing opens, the playing
+// session stays, and the queued item opens when its stream is requested.
+func TestAnonymousQueuePrefetchDefersOpen(t *testing.T) {
+	state := &anonState{}
+	device := frontend.Device{ID: "tv"}
+	broker := newAnonBroker(state, device)
+	opened := 0
+	broker.PlanFunc = func(_ context.Context, req frontend.PlanRequest) (frontend.PlayPlan, error) {
+		return frontend.PlayPlan{ID: "plan-" + ids.RatingKeyGUID(req.Item), Decision: frontend.Decision{Kind: "directplay"}, DirectPlay: true, Estimated: req.Intent.Estimate}, nil
+	}
+	broker.OpenFunc = func(_ context.Context, req frontend.OpenRequest) (frontend.Session, error) {
+		opened++
+		item := frontend.RatingKey(5)
+		if req.PlanID == "plan-"+ids.RatingKeyGUID(6) {
+			item = 6
+		}
+		id := "session-" + string(rune('0'+opened))
+		state.live = []frontend.Session{{ID: id, Item: item, Protocol: "jellyfin", Device: device, MediaPath: "/sessions/media/" + id + "/scoped/file"}}
+		return state.live[0], nil
+	}
+	inst := mountAnonTest(t, "jellyfin", broker)
+	openSession(t, inst, "jellyfin", 5, "192.0.2.1")
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent {
+		t.Fatalf("playing stream = %d", w.Code)
+	}
+	openSession(t, inst, "jellyfin", 6, "192.0.2.1") // the queued next episode
+	if opened != 1 || state.live[0].ID != "session-1" {
+		t.Fatalf("queue prefetch opened a session: opens=%d live=%v", opened, state.live)
+	}
+	if w := anonymousStream(inst, "jellyfin", 5, "192.0.2.1", ""); w.Code != http.StatusPartialContent || state.served[len(state.served)-1] != "/sessions/media/session-1/scoped/file" {
+		t.Fatalf("playing stream after prefetch = %d %v", w.Code, state.served)
+	}
+	if w := anonymousStream(inst, "jellyfin", 6, "192.0.2.1", ""); w.Code != http.StatusPartialContent || opened != 2 || state.served[len(state.served)-1] != "/sessions/media/session-2/scoped/file" {
+		t.Fatalf("queued stream = %d opens=%d served=%v", w.Code, opened, state.served)
+	}
+}
+
+// A stream alias for an already-started HLS session must redirect straight to
+// its active master playlist instead of calling StartStream again at position 0.
+func TestServeAliasSessionReusesActiveHLSMaster(t *testing.T) {
+	device := frontend.Device{ID: "tablet"}
+	startCalls := 0
+	broker := frontendtest.Sessions{
+		SessionsFunc: func(context.Context, frontend.SessionAccess) ([]frontend.Session, error) {
+			return []frontend.Session{{ID: "hls-session", Item: 5, Protocol: "jellyfin", Device: device, MediaPath: "/sessions/media/hls-session/scoped/master.m3u8"}}, nil
+		},
+		StartStreamFunc: func(context.Context, frontend.SessionAccess, string, frontend.StreamRequest) (string, error) {
+			startCalls++
+			return "/sessions/media/hls-session/scoped/master.m3u8", nil
+		},
+	}
+	inst := mountAnonTest(t, "jellyfin", broker)
+	r := httptest.NewRequest("GET", "/jellyfin/Videos/"+ids.RatingKeyGUID(5)+"/master.m3u8?PlaySessionId=hls-session", nil)
+	r.Header.Set("X-Emby-Token", "grant")
+	r.Header.Set("X-Emby-Device-Id", "tablet")
+	w := httptest.NewRecorder()
+	inst.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusTemporaryRedirect || w.Header().Get("Location") != "/jellyfin/sessions/media/hls-session/scoped/master.m3u8" || startCalls != 0 {
+		t.Fatalf("HLS alias = %d loc=%q startCalls=%d, want 307 without restarting stream", w.Code, w.Header().Get("Location"), startCalls)
+	}
+}

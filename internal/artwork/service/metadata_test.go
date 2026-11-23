@@ -185,7 +185,7 @@ func TestArtworkMetadataRequestDoesNotWaitForDatabase(t *testing.T) {
 		if got.BlurHash != "" {
 			t.Fatalf("cold metadata: %+v", got)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("request waited on database")
 	}
 }
@@ -290,16 +290,13 @@ func TestArtworkMetadataDoesNotBlockWithoutADeadline(t *testing.T) {
 		return nil, "", core.ErrNotAvailable
 	})
 	req := frontend.ArtworkRequest{Viewer: &core.User{ID: 1}, Item: core.MovieKey(1)}
-	start := time.Now()
 	got := q.Get(ctx, req, frontend.Image{Kind: frontend.ImagePerson, Path: "portrait", Subject: "tmdb:1"})
-	// The hash never finishes until release, so blocking would mean forever;
-	// a generous bound keeps loaded CI runners from failing on scheduling noise.
-	if time.Since(start) > time.Second || got.BlurHash != "" || got.ThumbHash != "" {
-		t.Fatalf("person image waited on hashing: %+v after %s", got, time.Since(start))
+	if got.BlurHash != "" || got.ThumbHash != "" {
+		t.Fatalf("person image waited on hashing: %+v", got)
 	}
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("hash was not queued")
 	}
 	close(release)

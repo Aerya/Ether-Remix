@@ -70,14 +70,16 @@ type Provider struct {
 	NodeShare         int    `json:"nodeShare"`
 }
 type Indexer struct {
-	Slot           int   `json:"slot"`
-	HitsUsed       int   `json:"hitsUsed"`
-	HitsRemaining  int   `json:"hitsRemaining"`
-	GrabsUsed      int   `json:"grabsUsed"`
-	GrabsRemaining int   `json:"grabsRemaining"`
-	RetryAt        int64 `json:"retryAt"`
-	Enabled        bool  `json:"enabled"`
-	Torrent        bool  `json:"torrent"`
+	Slot              int   `json:"slot"`
+	HitsUsed          int   `json:"hitsUsed"`
+	HitsRemaining     int   `json:"hitsRemaining"`
+	GrabsUsed         int   `json:"grabsUsed"`
+	GrabsRemaining    int   `json:"grabsRemaining"`
+	RetryAt           int64 `json:"retryAt"`
+	PausedUntil       int64 `json:"pausedUntil,omitempty"`
+	MissingDefinition bool  `json:"missingDefinition,omitempty"`
+	Enabled           bool  `json:"enabled"`
+	Torrent           bool  `json:"torrent"`
 }
 type Cache struct {
 	Used     int64 `json:"used"`

@@ -56,6 +56,7 @@ describe("registry navigation", () => {
       "/services",
       "/plugins",
       "/notifications",
+      "/flows",
       "/cluster",
       "/maintenance",
     ]);

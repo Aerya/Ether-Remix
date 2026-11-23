@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 // rescueCandidates is the single discovery/ranking path for both empty-search
@@ -24,7 +25,9 @@ func (s *Service) rescueCandidates(ctx context.Context, req core.ResolveRequest,
 }
 
 func (s *Service) acceptResolution(ctx context.Context, key core.RatingKey, candidates []candidate, index int, nzb []byte, trace *Trace) *core.Resolution {
-	s.setAvailability(ctx, int64(key), true, s.searchTTL())
+	if candidates[index].rel.IndexerID != vault.IndexerID {
+		s.setAvailability(ctx, int64(key), true, s.searchTTL())
+	}
 	trace.Winner = candidates[index].rel.ID
 	return s.resolution(key, candidates, index, nzb, trace)
 }
@@ -61,7 +64,7 @@ func (s *Service) resolvePreferred(ctx context.Context, req core.ResolveRequest,
 	}
 	note := func(status PinStatus, reason, display string) {
 		if pin != nil {
-			s.notePin(ctx, req.Title.Key, pinID, status, reason)
+			s.notePinForClient(ctx, req.Title.Key, pinID, status, reason, clientDisplayName(req.Client))
 			trace.PinStatus = display
 		}
 	}
@@ -75,7 +78,21 @@ func (s *Service) resolvePreferred(ctx context.Context, req core.ResolveRequest,
 		return out, nil
 	}
 	out.attempted = true
+	var inconclusive *unverifiedPool
+	if pin != nil {
+		// The owner has already selected this source. Keep an NZB whose
+		// sampling merely timed out, without relaxing confirmed failures or
+		// the health behaviour of explicit viewer choices and automatic picks.
+		ctx, inconclusive = withUnverifiedPool(ctx)
+	}
 	winner, nzb, err := s.validateCandidates(ctx, []candidate{candidates[index]}, trace, race)
+	if pin != nil && winner < 0 {
+		if res := s.lastResort(ctx, inconclusive, req.Title.Key, []candidate{candidates[index]}, trace); res != nil {
+			note(PinHealthy, unverifiedReason, "used unverified")
+			out.resolution = res
+			return out, nil
+		}
+	}
 	switch {
 	case err != nil:
 		note(PinUnavailable, err.Error(), "unavailable: "+err.Error())

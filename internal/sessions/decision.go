@@ -23,6 +23,9 @@ type DecisionRequest struct {
 	// PreserveSourceOnFailure lets a broker avoid stopping a reused source
 	// when an attempted decision cannot be served without a transcoder.
 	PreserveSourceOnFailure bool
+	// NoVideoTranscode keeps a direct-playable source on DirectPlay rather than
+	// letting optional PreferRemux promote it into a video encode.
+	NoVideoTranscode bool
 }
 
 // Decide preserves the playback remux override for on-demand sources and
@@ -32,7 +35,10 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound
 	}
-	dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, Container: ps.Info.Container, AudioStream: r.Options.AudioStream, SubtitleStream: r.Options.SubtitleStream}
+	if r.NoVideoTranscode {
+		r.Caps.NoVideoTranscode = true
+	}
+	dec := core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: !ps.Info.AudioOnly(), AudioCopy: true, Container: ps.Info.Container, AudioStream: r.Options.AudioStream, SubtitleStream: r.Options.SubtitleStream}
 	if transcoder != nil {
 		dec = transcoder.Decide(ps.Info, r.Caps, r.Options)
 	} else {
@@ -79,7 +85,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 	original := dec
 	if (preferRemux || requiresRemux) && r.Options.DirectStream && onDemand && dec.Kind == core.DecisionDirectPlay && transcoder != nil {
 		dec.Kind = core.DecisionRemux
-		dec.VideoCopy, dec.AudioCopy = true, true
+		dec.VideoCopy, dec.AudioCopy = !ps.Info.AudioOnly(), true
 		videoCodec, audioCodec := "", ""
 		if v := ps.Info.Video(); v != nil {
 			videoCodec = v.Codec
@@ -99,7 +105,7 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 		if healthSafety {
 			dec.Reason = "remux for failover safety: health unverified"
 		}
-		videoCopyOK := videoCodec == "" || transcode.SegmentedVideoCopyOK(r.Caps, videoCodec)
+		videoCopyOK := !(ps.Info.Video() != nil && r.Caps.EffectiveAlwaysEncodeVideo()) && (videoCodec == "" || transcode.SegmentedVideoCopyOK(r.Caps, videoCodec))
 		audioCopyOK := audioCodec == "" || transcode.SegmentedAudioCopyOK(r.Caps, audioCodec)
 		if !videoCopyOK || !audioCopyOK {
 			opts := r.Options
@@ -111,10 +117,39 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 		}
 	}
 	// Optional health safety must never force quality loss or an encoder on a
-	// client that can only play the original representation.
-	if healthSafety && !r.PreferRemux && !requiresRemux && original.Kind == core.DecisionDirectPlay &&
-		(!dec.VideoCopy || !dec.AudioCopy) {
+	// client that can only play the original representation. Likewise, when
+	// video transcoding is off, an optional PreferRemux must never push a
+	// direct-playable file into a video encode.
+	if original.Kind == core.DecisionDirectPlay && !requiresRemux &&
+		((healthSafety && !r.PreferRemux && (dec.EncodesVideo(ps.Info) || !dec.AudioCopy)) ||
+			(r.NoVideoTranscode && dec.EncodesVideo(ps.Info))) {
 		dec = original
+	}
+	// The optional health-safety remux above is assembled from per-codec
+	// checks. Take it only when the real segmented decision is a lossless
+	// copy: a stream that drops Dolby Vision to its base layer or cannot
+	// carry the source audio (TrueHD in fMP4) is worse than the file the
+	// client already plays, and AVPlayer refuses some of them outright.
+	if healthSafety && !requiresRemux && !r.PreferRemux && original.Kind == core.DecisionDirectPlay && dec.Kind == core.DecisionRemux && transcoder != nil {
+		opts := r.Options
+		opts.DirectPlay = false
+		segmented := transcoder.Decide(ps.Info, r.Caps, opts)
+		if segmented.EncodesVideo(ps.Info) || !segmented.AudioCopy || (segmented.StripDolbyVision && !original.StripDolbyVision) {
+			dec = original
+		}
+		// The codec lists say the copy fits, but a declared streaming profile
+		// may not take it (Wholphin, Jellyfin for Android and Silo stream only
+		// H.264 in TS). The profile check would then replace the optional
+		// copy with a full encode; the original file plays as it is.
+		if dec.Kind == core.DecisionRemux && r.Caps.Profiles != nil && len(r.Caps.Profiles.Transcoding) > 0 {
+			delivery := "hls"
+			if r.Protocol == core.ProtocolDASH {
+				delivery = "dash"
+			}
+			if !profileDeliveryAllowed(r.Caps.Profiles, dec, ps.Info, delivery) {
+				dec = original
+			}
+		}
 	}
 	return dec, nil
 }

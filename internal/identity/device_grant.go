@@ -31,12 +31,18 @@ func (g *Grants) ResolveGrantDevice(ctx context.Context, surface, credential, cl
 	var owner int
 	var device core.Device
 	err := g.db.QueryRowContext(ctx, `SELECT g.viewer_id,u.is_owner,g.expires,g.device_id,g.client,g.product,g.version FROM identity_grants g JOIN auth_users u ON u.id=g.viewer_id
- WHERE g.hash=? AND g.surface=? AND g.device_id<>'' AND (?='' OR g.device_id=?) AND g.revoked=0 AND g.expires>? AND u.active=1 AND (u.origin<>'dlna_guest' OR g.surface='dlna')`, hash, surface, claim, claim, g.now().UnixMilli()).Scan(&id, &owner, &expires, &device.ID, &device.Client, &device.Product, &device.Version)
+ WHERE g.hash=? AND g.surface=? AND g.device_id<>'' AND (?='' OR g.device_id=?) AND g.revoked=0 AND u.active=1 AND (u.origin<>'dlna_guest' OR g.surface='dlna')`, hash, surface, claim, claim).Scan(&id, &owner, &expires, &device.ID, &device.Client, &device.Product, &device.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, core.Device{}, time.Time{}, core.ErrUnauthorized
 	}
 	if err != nil {
 		return nil, core.Device{}, time.Time{}, err
+	}
+	// A queued sliding refresh already extends the grant (#648); report
+	// and judge the effective expiry, not the not-yet-written row.
+	expires = g.effectiveExpiry(hash, surface, expires)
+	if expires <= g.now().UnixMilli() {
+		return nil, core.Device{}, time.Time{}, core.ErrUnauthorized
 	}
 	viewer, err := g.viewers.ActiveUser(ctx, id)
 	if err != nil {

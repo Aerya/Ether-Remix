@@ -373,3 +373,161 @@ func TestUpstreamHeadersUseOnlyTheInputsProvider(t *testing.T) {
 		t.Fatalf("manual channel received credentials: %v", manual)
 	}
 }
+
+func TestXtreamRefreshUpdatesProviderGuideIDUnlessOwnerPinned(t *testing.T) {
+	ctx := context.Background()
+	var paths []string
+	streams := `[
+		{"num":1,"name":"News Network","stream_type":"live","stream_id":101,"epg_channel_id":"news.us","category_id":"3"},
+		{"num":2,"name":"Big Event","stream_type":"live","stream_id":102,"epg_channel_id":null,"category_id":"7"},
+		{"num":3,"name":"Pinned Same","stream_type":"live","stream_id":103,"epg_channel_id":"news.us","category_id":"3"},
+		{"num":4,"name":"Pinned Cross","stream_type":"live","stream_id":104,"epg_channel_id":"news.us","category_id":"3"},
+		{"num":5,"name":"Cleared By Owner","stream_type":"live","stream_id":105,"epg_channel_id":"news.us","category_id":"3"}
+	]`
+	up := xtreamPanel(t, "u", "p", &paths, &streams)
+	s := testService(t, Options{HTTPClient: up.Client()})
+	if _, err := s.ImportSource(ctx, Source{
+		ID:   "ext",
+		Name: "External Guide",
+		Guide: xmltvFixture(4,
+			"news.us=External News",
+		),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ImportSource(ctx, Source{
+		ID:   "x",
+		Name: "Panel",
+		Auth: &SourceAuth{Type: "xtream", Server: up.URL, Username: "u", Password: "p"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	byName := func() map[string]Channel {
+		t.Helper()
+		cs, err := s.Channels(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make(map[string]Channel, len(cs))
+		for _, c := range cs {
+			out[c.Name] = c
+		}
+		return out
+	}
+
+	// Simulate an unrelated channel save that omits ProviderGuideID: must not pin GuideID.
+	cs := byName()
+	news := cs["News Network"]
+	news.Favorite = true
+	news.ProviderGuideID = ""
+	if _, err := s.SaveChannel(ctx, news); err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner overrides on channels 103, 104, 105.
+	pinnedSame := cs["Pinned Same"]
+	pinnedSame.GuideID = "sport.uk"
+	if _, err := s.SaveChannel(ctx, pinnedSame); err != nil {
+		t.Fatal(err)
+	}
+	pinnedCross := cs["Pinned Cross"]
+	pinnedCross.GuideSourceID = "ext" // same GuideID ("news.us"), different source
+	if _, err := s.SaveChannel(ctx, pinnedCross); err != nil {
+		t.Fatal(err)
+	}
+	cleared := cs["Cleared By Owner"]
+	cleared.GuideID = ""
+	if _, err := s.SaveChannel(ctx, cleared); err != nil {
+		t.Fatal(err)
+	}
+
+	// Provider reassigns guide IDs on every stream (101 news.us -> sport.uk, 102 "" -> news.us,
+	// 103 -> other.epg, 104/105 -> sport.uk).
+	streams = `[
+		{"num":1,"name":"News Network","stream_type":"live","stream_id":101,"epg_channel_id":"sport.uk","category_id":"3"},
+		{"num":2,"name":"Big Event","stream_type":"live","stream_id":102,"epg_channel_id":"news.us","category_id":"7"},
+		{"num":3,"name":"Pinned Same","stream_type":"live","stream_id":103,"epg_channel_id":"other.epg","category_id":"3"},
+		{"num":4,"name":"Pinned Cross","stream_type":"live","stream_id":104,"epg_channel_id":"sport.uk","category_id":"3"},
+		{"num":5,"name":"Cleared By Owner","stream_type":"live","stream_id":105,"epg_channel_id":"sport.uk","category_id":"3"}
+	]`
+	if _, err := s.RefreshSource(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	cs = byName()
+	if cs["News Network"].GuideID != "sport.uk" || cs["News Network"].ProviderGuideID != "sport.uk" || !cs["News Network"].Favorite {
+		t.Fatalf("unpinned provider change did not apply: %+v", cs["News Network"])
+	}
+	if cs["Big Event"].GuideID != "news.us" || cs["Big Event"].ProviderGuideID != "news.us" {
+		t.Fatalf("empty->set provider change did not apply: %+v", cs["Big Event"])
+	}
+	if cs["Pinned Same"].GuideID != "sport.uk" || cs["Pinned Same"].ProviderGuideID != "other.epg" {
+		t.Fatalf("same-source owner override was lost: %+v", cs["Pinned Same"])
+	}
+	if cs["Pinned Cross"].GuideID != "news.us" || cs["Pinned Cross"].GuideSourceID != "ext" || cs["Pinned Cross"].ProviderGuideID != "sport.uk" {
+		t.Fatalf("cross-source owner override was lost: %+v", cs["Pinned Cross"])
+	}
+	if cs["Cleared By Owner"].GuideID != "" || cs["Cleared By Owner"].ProviderGuideID != "sport.uk" {
+		t.Fatalf("owner explicit unmap was lost: %+v", cs["Cleared By Owner"])
+	}
+
+	// Provider clears Big Event's epg_channel_id; no channel in source "x" still uses news.us,
+	// so guideAllow drops news.us programmes from source "x" on the same refresh.
+	streams = `[
+		{"num":1,"name":"News Network","stream_type":"live","stream_id":101,"epg_channel_id":"sport.uk","category_id":"3"},
+		{"num":2,"name":"Big Event","stream_type":"live","stream_id":102,"epg_channel_id":"","category_id":"7"},
+		{"num":3,"name":"Pinned Same","stream_type":"live","stream_id":103,"epg_channel_id":"other.epg","category_id":"3"},
+		{"num":4,"name":"Pinned Cross","stream_type":"live","stream_id":104,"epg_channel_id":"sport.uk","category_id":"3"},
+		{"num":5,"name":"Cleared By Owner","stream_type":"live","stream_id":105,"epg_channel_id":"sport.uk","category_id":"3"}
+	]`
+	gotSrc, err := s.RefreshSource(ctx, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs = byName()
+	if cs["Big Event"].GuideID != "" || cs["Big Event"].ProviderGuideID != "" {
+		t.Fatalf("set->empty provider change did not apply: %+v", cs["Big Event"])
+	}
+	if gotSrc.GuideChannelCount != 1 {
+		t.Fatalf("stale unpinned guide id kept in guideAllow: GuideChannelCount=%d, want 1", gotSrc.GuideChannelCount)
+	}
+
+	// Legacy stored rows (no ProviderGuideID yet): a mismatching provider value preserves
+	// the stored GuideID (protecting pre-upgrade owner overrides), while a matching refresh
+	// backfills ProviderGuideID so future provider changes follow automatically.
+	legacyPinned := cs["Pinned Same"]
+	legacyPinned.ProviderGuideID = ""
+	b, _ := json.Marshal(legacyPinned)
+	if _, err := s.o.DB.Exec(`UPDATE livetv_channels SET data=? WHERE id=?`, b, legacyPinned.ID); err != nil {
+		t.Fatal(err)
+	}
+	legacy := cs["News Network"]
+	legacy.ProviderGuideID = ""
+	b, _ = json.Marshal(legacy)
+	if _, err := s.o.DB.Exec(`UPDATE livetv_channels SET data=? WHERE id=?`, b, legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RefreshSource(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	cs = byName()
+	if got := cs["Pinned Same"]; got.GuideID != "sport.uk" || got.ProviderGuideID != "other.epg" {
+		t.Fatalf("legacy pre-upgrade override was clobbered: %+v", got)
+	}
+	if got := cs["News Network"]; got.GuideID != "sport.uk" || got.ProviderGuideID != "sport.uk" {
+		t.Fatalf("legacy matching refresh did not backfill ProviderGuideID: %+v", got)
+	}
+	// Subsequent provider change on the backfilled channel now applies automatically.
+	streams = `[
+		{"num":1,"name":"News Network","stream_type":"live","stream_id":101,"epg_channel_id":"news.us","category_id":"3"},
+		{"num":2,"name":"Big Event","stream_type":"live","stream_id":102,"epg_channel_id":"","category_id":"7"},
+		{"num":3,"name":"Pinned Same","stream_type":"live","stream_id":103,"epg_channel_id":"other.epg","category_id":"3"},
+		{"num":4,"name":"Pinned Cross","stream_type":"live","stream_id":104,"epg_channel_id":"sport.uk","category_id":"3"},
+		{"num":5,"name":"Cleared By Owner","stream_type":"live","stream_id":105,"epg_channel_id":"sport.uk","category_id":"3"}
+	]`
+	if _, err := s.RefreshSource(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if got := byName()["News Network"]; got.GuideID != "news.us" || got.ProviderGuideID != "news.us" {
+		t.Fatalf("legacy channel did not follow subsequent provider change: %+v", got)
+	}
+}

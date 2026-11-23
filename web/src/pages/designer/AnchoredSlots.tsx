@@ -7,6 +7,7 @@ import type {
   AvailableRow,
   HomeLayout,
   LayoutSection,
+  LibraryMediaSurface,
   RowPolicy,
   Viewer,
 } from "../../lib/contract";
@@ -15,8 +16,10 @@ import {
   anchorsOf,
   effectivePolicy,
   freeSlot,
+  isLibrarySection,
   policyIn,
   reorderAnchors,
+  rowFits,
   setPolicy,
   type LayerKey,
 } from "../../lib/layout";
@@ -35,6 +38,7 @@ export function AnchoredSlots({
   layer,
   section,
   available,
+  mediaSection,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
@@ -42,22 +46,24 @@ export function AnchoredSlots({
   section: LayoutSection;
   viewers: Viewer[];
   available: AvailableRow[];
+  mediaSection?: LibraryMediaSurface | null;
 }) {
   const [adding, setAdding] = useState("");
+  const onLibraryTab = isLibrarySection(section);
   const own = anchorsOf(draft, layer, section);
-  // Global anchors a viewer inherits (unless they override that row).
+  // Global anchors a viewer inherits (in slot order) unless overridden.
   const inherited =
     layer === "global"
       ? []
       : anchorsOf(draft, "global", section).filter((g) => {
-          const eff = effectivePolicy(draft, layer, section, g.row);
+          const eff = effectivePolicy(draft, layer, section, g.row, g.row);
           return eff?.layer === "global";
         });
   const unanchor = (p: RowPolicy) =>
     onChange(setPolicy(draft, layer, section, { ...p, slot: undefined, status: "always" }));
   const anchor = (row: string) => {
     const base = policyIn(draft, layer, section, row) ??
-      effectivePolicy(draft, layer === "global" ? null : layer, section, row)?.policy ?? {
+      effectivePolicy(draft, layer === "global" ? null : layer, section, row, row)?.policy ?? {
         row,
         status: "always" as const,
       };
@@ -74,29 +80,41 @@ export function AnchoredSlots({
   };
   const options = available
     .filter(
-      (a) => !FRONT_END_ROWS.has(a.kind) && (section === "home" || a.kind !== "continue-watching"),
+      (a) =>
+        !FRONT_END_ROWS.has(a.kind) &&
+        (section === "home" || a.kind !== "continue-watching") &&
+        rowFits(a, section, mediaSection),
     )
     .filter((a) => !own.some((p) => p.row === a.hubId))
     .map((a) => ({ value: a.hubId, label: a.title, hint: a.description }));
   return (
-    <section className="space-y-2" aria-label={t("Anchored slots")}>
+    <section
+      className="space-y-2"
+      aria-label={onLibraryTab ? t("Pinned rows") : t("Anchored slots")}
+    >
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-          {t("Page structure")}
+          {onLibraryTab ? t("Pinned rows") : t("Page structure")}
         </h2>
         <p className="mt-0.5 text-xs text-fg-muted">
-          {layer === "global"
+          {onLibraryTab
             ? t(
-                "Anchored rows hold their slot for everyone; personalization fills the slots between them. Drag to swap.",
+                "Pin rows to fixed positions on this tab and drag to reorder them. Personalization fills the rest.",
               )
-            : t(
-                "Anchored rows hold their slot for this viewer; personalization fills the slots between them. Drag to swap.",
-              )}
+            : layer === "global"
+              ? t(
+                  "Anchored rows hold their slot for everyone; personalization fills the slots between them. Drag to swap.",
+                )
+              : t(
+                  "Anchored rows hold their slot for this viewer; personalization fills the slots between them. Drag to swap.",
+                )}
         </p>
       </div>
       {own.length === 0 && inherited.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border px-3 py-2.5 text-xs text-fg-muted">
-          {t("No anchored slots: every position is personalized.")}
+          {onLibraryTab
+            ? t("No pinned rows — personalization orders the rows below.")
+            : t("No anchored slots: every position is personalized.")}
         </p>
       ) : null}
       {own.length ? (
@@ -165,8 +183,8 @@ export function AnchoredSlots({
             value={adding}
             onChange={setAdding}
             options={options}
-            ariaLabel={t("Row to anchor")}
-            placeholder={t("Anchor a row…")}
+            ariaLabel={onLibraryTab ? t("Row to pin") : t("Row to anchor")}
+            placeholder={onLibraryTab ? t("Pin a row…") : t("Anchor a row…")}
             searchPlaceholder={t("Search…")}
             noMatchesLabel={t("No matches")}
             selectLabel={t("Select")}
@@ -184,7 +202,7 @@ export function AnchoredSlots({
           }}
         >
           <Plus size={14} />
-          <Anchor size={13} /> {t("Anchor")}
+          <Anchor size={13} /> {onLibraryTab ? t("Pin") : t("Anchor")}
         </Button>
       </div>
     </section>

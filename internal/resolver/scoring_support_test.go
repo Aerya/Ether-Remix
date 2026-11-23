@@ -69,7 +69,7 @@ func languageScore(info core.ReleaseInfo, prefs []string) float64 {
 func languageScoreFrom(info core.ReleaseInfo, sourceLang string, prefs []string) float64 {
 	scores := map[string]int{core.FormatPreferredLanguage: 5, core.FormatPreferredLanguageRegion: 2, core.FormatOtherLanguage: -25, core.FormatPreferredSubtitles: 2}
 	total := 0
-	for _, id := range languageFormats(info, sourceLang, prefs) {
+	for _, id := range languageFormats(info, sourceLang, prefs, "") {
 		total += scores[id]
 	}
 	return float64(total)

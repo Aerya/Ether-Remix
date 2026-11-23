@@ -87,7 +87,7 @@ func jellyfinRouter(t *testing.T, client *webclient.Installer) http.Handler {
 	t.Helper()
 	r := &route.Router{}
 	info := PublicInfo{ID: "123", ServerName: "Ether", Version: "12.4.0", ProductName: "Jellyfin Server"}
-	if err := publicRoutes(r, func() PublicInfo { return info }, nil, nil, client); err != nil {
+	if err := publicRoutes(r, func() PublicInfo { return info }, nil, nil, nil, nil, client); err != nil {
 		t.Fatal(err)
 	}
 	return StripPrefix("/jellyfin", r)

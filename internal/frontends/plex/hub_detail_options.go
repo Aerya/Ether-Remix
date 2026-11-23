@@ -21,6 +21,32 @@ func (s *Server) applyHubDetailOptions(ctx context.Context, mc *model.MediaConta
 	}
 	ctx = context.WithValue(ctx, structuralProjectionKey{}, true)
 	pr := FromContext(ctx)
+	var missing []frontend.RatingKey
+	seenMissing := map[frontend.RatingKey]bool{}
+	for hi := range mc.Hub {
+		for i := range mc.Hub[hi].Metadata {
+			n, err := strconv.ParseInt(mc.Hub[hi].Metadata[i].RatingKey, 10, 64)
+			if err != nil {
+				continue
+			}
+			k := frontend.RatingKey(n)
+			if titles := s.titleDetails(); titles != nil && titles.get(k) != nil {
+				continue
+			}
+			if !seenMissing[k] {
+				seenMissing[k] = true
+				missing = append(missing, k)
+			}
+		}
+	}
+	if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(missing) > 1 {
+		pre.PreloadStored(ctx, missing)
+	}
+	type hubSlot struct {
+		row   *model.Metadata
+		title frontend.Title
+	}
+	var slots []hubSlot
 	for hi := range mc.Hub {
 		for i := range mc.Hub[hi].Metadata {
 			row := &mc.Hub[hi].Metadata[i]
@@ -44,14 +70,32 @@ func (s *Server) applyHubDetailOptions(ctx context.Context, mc *model.MediaConta
 			if title == nil {
 				continue
 			}
-			full := s.detail(ctx, pr, title, children, onDeck, related, extras, q.Get("extraTypes"))
-			row.Children, row.OnDeck, row.Related, row.Extras = full.Children, full.OnDeck, full.Related, full.Extras
-			if preferences {
-				row.Preferences = s.itemTrackPreferences(ctx, pr, title)
-			}
-			if extras {
-				row.PrimaryExtraKey = full.PrimaryExtraKey
-			}
+			slots = append(slots, hubSlot{row: row, title: *title})
+		}
+	}
+	var memo showEpisodes
+	if (children || onDeck) && len(slots) > 1 {
+		batch := make([]frontend.Title, len(slots))
+		for i := range slots {
+			batch[i] = slots[i].title
+		}
+		memo, _ = s.prefetchListEpisodes(ctx, pr, batch)
+	}
+	if memo == nil {
+		memo = showEpisodes{}
+	}
+	extraTypes := q.Get("extraTypes")
+	for i := range slots {
+		title := &slots[i].title
+		row := slots[i].row
+		var proj model.Metadata
+		s.projectDetailBlocks(ctx, pr, title, &proj, memo, children, onDeck, related, extras, extraTypes)
+		row.Children, row.OnDeck, row.Related, row.Extras = proj.Children, proj.OnDeck, proj.Related, proj.Extras
+		if preferences {
+			row.Preferences = s.itemTrackPreferences(ctx, pr, title)
+		}
+		if extras {
+			row.PrimaryExtraKey = proj.PrimaryExtraKey
 		}
 	}
 }

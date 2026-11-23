@@ -1,7 +1,7 @@
 {
   "$id": "https://ether.dev/schemas/plugin-sources.v1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Plugin source host queries, candidates and release hints. File selectors apply to torrents only. See docs/plugin-kinds.md.",
+  "description": "Plugin source host queries, candidates and release hints. File selectors apply to torrents (provider file list) and NZBs (document order). See docs/plugin-kinds.md.",
   "$defs": {
     "sourceQuery": {
       "type": "object",
@@ -12,16 +12,77 @@
         "kind": {
           "enum": [
             "indexer_search",
+            "indexer_search_results",
+            "indexer_search_cancel",
+            "indexers",
             "debrid_check",
-            "debrid_acquire"
+            "debrid_acquire",
+            "release_files",
+            "usenet_check"
           ]
         },
         "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Search text for indexer_search. May be omitted or empty when category is set to fetch the newest up to 100 recent releases."
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search only."
+          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Quality profile name used to score video release names on indexer_search; omit or leave empty to use the owner's default profile."
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "indexer_search only. When true, starts the indexer fan-out and answers immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel."
+        },
+        "searchId": {
+          "type": "string",
+          "description": "Streaming search handle returned by indexer_search with stream: true. Required on indexer_search_results and indexer_search_cancel; scoped to the calling plugin."
+        },
+        "waitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "indexer_search_results only. How long in milliseconds to wait for at least one new arrival or search completion before returning (capped at 10000 ms; 0 returns immediately with buffered arrivals)."
+        },
+        "firstResults": {
+          "type": "boolean",
+          "description": "indexer_search only. When true, return as soon as the fastest indexers produce results plus the settleMs window (250 ms by default), while slower indexers continue populating Ether's search cache in the background."
+        },
+        "settleMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000,
+          "description": "indexer_search only. Grace window in milliseconds after the first matching result arrives before returning early (default 250 when firstResults is true; 0 returns immediately). Also applies when minResults is met if explicitly provided. Capped at 30000 ms."
+        },
+        "minResults": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "indexer_search only. Minimum deduplicated candidate count required before returning early. Combined with firstResults, returns as soon as either minResults is met or firstResults' settleMs window expires."
+        },
+        "skipIndexers": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string"
+          },
+          "description": "indexer_search only. Indexer IDs or display names (case-insensitive) to exclude from this search. Skipped indexers are reported with status \"skipped\" and take precedence over onlyIndexers."
+        },
+        "onlyIndexers": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string"
+          },
+          "description": "indexer_search only. Restrict this search to matching indexer IDs or display names (case-insensitive). Non-matching enabled indexers are reported with status \"skipped\"."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000,
+          "description": "indexer_search only. Per-call wait budget in milliseconds, capped at Ether's 30000 ms ceiling and any tighter deadline-aware reserve. On viewer/deadline-bounded requests when timeoutMs is omitted (or exceeds the reserve), Ether automatically caps the wait to remaining time minus max(1.5 s, 35% of remaining time) — at least 25% of remaining time when under 2 s — returning arrived results while stragglers are reported as \"pending\" (and listed in top-level pending) and continue filling Ether's search cache up to the 30000 ms ceiling. Unbounded/background job calls wait up to the 30000 ms ceiling unchanged. Indexers that hit the 30000 ms ceiling are reported as \"timed_out\"."
         },
         "infoHashes": {
           "type": "array",
@@ -34,6 +95,284 @@
         },
         "magnet": {
           "type": "string"
+        },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
+        },
+        "nzbUrl": {
+          "type": "string",
+          "description": "Usenet NZB download link for usenet_check when not passing a full candidate."
+        },
+        "candidate": {
+          "$ref": "#/$defs/sourceCandidate",
+          "description": "A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list, so zip-only debrid caches (e.g. TorBox at 100+ files) are checked via cached-only add."
+        }
+      }
+    },
+    "indexerRef": {
+      "type": "object",
+      "description": "Enabled indexer identity returned in the top-level pending list on early-returning and streaming indexer_search / indexer_search_results responses.",
+      "required": [
+        "indexerId",
+        "indexer"
+      ],
+      "properties": {
+        "indexerId": {
+          "type": "string",
+          "description": "Configured indexer ID in Ether."
+        },
+        "indexer": {
+          "type": "string",
+          "description": "Display name of the indexer."
+        }
+      }
+    },
+    "indexerSearchStatus": {
+      "type": "object",
+      "description": "Per-indexer outcome entry returned alongside candidates on indexer_search / indexer_search_results / indexer_search_cancel responses (status, results?, ms, reason?, error?), or an enabled indexer summary returned on kind:\"indexers\" responses (kind, medianMs?, lastMs?, lastError? without secrets or credentials).",
+      "required": [
+        "indexerId",
+        "indexer"
+      ],
+      "properties": {
+        "indexerId": {
+          "type": "string",
+          "description": "Configured indexer ID in Ether."
+        },
+        "indexer": {
+          "type": "string",
+          "description": "Display name of the indexer."
+        },
+        "status": {
+          "enum": [
+            "answered",
+            "pending",
+            "timed_out",
+            "skipped",
+            "error"
+          ],
+          "description": "Outcome for this indexer on indexer_search, indexer_search_results, and indexer_search_cancel. \"pending\" means the indexer is still running in the background; \"timed_out\" means it hit the ceiling; \"skipped\" includes caller filters as well as indexers paused in circuit-breaker backoff (with reason \"paused_backoff\")."
+        },
+        "results": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Raw release count returned by this indexer when status is \"answered\"."
+        },
+        "ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Elapsed milliseconds until this indexer answered, failed, timed out, or the caller stopped waiting (0 for skipped indexers). Present on search status entries; omitted on kind:\"indexers\" listings."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Machine-readable reason when status is \"skipped\" automatically (for example \"paused_backoff\" when the indexer's circuit breaker paused it after repeated failures or timeouts)."
+        },
+        "error": {
+          "type": "string",
+          "description": "Sanitized short error code when status is \"error\" (for example budget_exhausted, rate_limited, auth_failed, upstream_error, canceled, search_failed)."
+        },
+        "kind": {
+          "enum": [
+            "newznab",
+            "torznab",
+            "builtin",
+            "stremio",
+            "zilean",
+            "addon"
+          ],
+          "description": "Indexer kind on kind:\"indexers\" responses."
+        },
+        "medianMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Median recent search duration in milliseconds on kind:\"indexers\" responses; omitted when no searches have been recorded yet."
+        },
+        "lastMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Most recent search duration in milliseconds on kind:\"indexers\" responses; omitted when no searches have been recorded yet."
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Sanitized short error code from the indexer's most recent failed search on kind:\"indexers\" responses; omitted when the last search succeeded or none failed."
+        }
+      }
+    },
+    "sourceResolveResult": {
+      "type": "object",
+      "description": "Response envelope returned by sources.resolve (both POST /ether/plugin-host/sources/resolve and ether.sources.resolve).",
+      "required": [
+        "candidates"
+      ],
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceCandidate"
+          }
+        },
+        "indexers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/indexerSearchStatus"
+          },
+          "description": "Per-indexer search outcomes for indexer_search, indexer_search_results, and indexer_search_cancel, or the owner's enabled indexer listing for kind:\"indexers\"; omitted for other source query kinds."
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/indexerRef"
+          },
+          "description": "Indexers still running in the background (present on early-returning indexer_search responses and on streaming indexer_search / indexer_search_results / indexer_search_cancel responses)."
+        },
+        "searchId": {
+          "type": "string",
+          "description": "Streaming search handle returned on indexer_search with stream: true and echoed on indexer_search_results and indexer_search_cancel."
+        },
+        "done": {
+          "type": "boolean",
+          "description": "True once every indexer in a streaming search has answered, failed, timed out, been skipped, or been cancelled; omitted on non-streaming queries."
+        }
+      }
+    },
+    "usenetCheckResult": {
+      "type": "object",
+      "required": [
+        "available",
+        "checked",
+        "missing"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "True when all sampled NZB articles were confirmed available and no playback failure is recorded for this NZB."
+        },
+        "checked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled articles evaluated (bounded by Ether's per-check sample cap)."
+        },
+        "missing": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled or playback-observed articles confirmed missing."
+        },
+        "cached": {
+          "type": "boolean",
+          "description": "True when the verdict was served from Ether's bounded per-NZB cache (including a recorded playback failure) without running a fresh NNTP check."
+        },
+        "playbackFailed": {
+          "type": "boolean",
+          "description": "True when a real playback attempt against this NZB failed with an article or release error."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Short diagnostic code when available is false (e.g. articles_missing, segment_absent_from_nzb, playback_article_missing, playback_article_corrupt, playback_release_rejected)."
+        },
+        "checkedAt": {
+          "type": "integer",
+          "description": "Unix timestamp (seconds) when this verdict or playback failure was recorded."
+        }
+      }
+    },
+    "releaseMember": {
+      "type": "object",
+      "required": [
+        "index",
+        "path",
+        "size"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based non-directory member index inside the archive."
+        },
+        "path": {
+          "type": "string",
+          "description": "Inner member path inside the archive; hand back as release.fileHint (or container.member) to open that exact member."
+        },
+        "size": {
+          "type": "integer"
+        },
+        "stored": {
+          "type": "boolean",
+          "description": "True when the member is stored uncompressed and can stream directly by byte range."
+        }
+      }
+    },
+    "releaseFile": {
+      "type": "object",
+      "required": [
+        "index",
+        "path",
+        "size"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Position Ether's file selection counts: provider file-list order for torrents, NZB document order for Usenet."
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "description": "Decoded file size in bytes (exact when known from torrent/debrid, PAR2, or yEnc headers; segment-derived estimate when sizeApproximate is true)."
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is a segment-derived decoded estimate rather than an exact byte count."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/releaseMember"
+          },
+          "description": "Non-directory files inside this archive (RAR, 7z, ZIP), populated on the first volume of readable Usenet archives."
+        }
+      }
+    },
+    "trackHint": {
+      "type": "object",
+      "properties": {
+        "disc": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional one-based disc number for multi-disc releases."
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based track number; matched first alongside disc."
+        },
+        "title": {
+          "type": "string",
+          "description": "Optional track title used to disambiguate track-number ties or match by normalised title tokens when track numbers are absent."
+        }
+      }
+    },
+    "debridServiceRef": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Configured debrid service ID in Ether."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name for the debrid service (the owner's configured account name, or the provider label such as TorBox or Real-Debrid)."
         }
       }
     },
@@ -46,8 +385,13 @@
         "magnet": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string",
+          "description": "Key-less torrent download or details page link for torrent indexers (same-origin indexer credentials are stripped and re-attached by Ether at fetch time when handed back with indexerId); torrent candidates never populate nzbUrl."
+        },
         "nzbUrl": {
-          "type": "string"
+          "type": "string",
+          "description": "Key-less Usenet NZB download link populated only for Usenet candidates. Same-origin indexer API keys and secrets are stripped so candidates are safe to cache in plugin storage; Ether re-attaches credentials on same-origin fetches when handed back with indexerId."
         },
         "title": {
           "type": "string"
@@ -65,6 +409,51 @@
         },
         "cached": {
           "type": "boolean"
+        },
+        "cachedBy": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/debridServiceRef"
+          },
+          "description": "Configured debrid services holding this torrent in Ether's acquisition priority order (or, on debrid_acquire, the service that served it). Omitted when uncached."
+        },
+        "indexer": {
+          "type": "string"
+        },
+        "indexerId": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "description": "Owner quality-profile score for video release names on indexer_search; omitted on non-video candidates."
+        },
+        "resolution": {
+          "type": "integer",
+          "description": "Parsed vertical resolution (e.g. 2160, 1080) for video release names; omitted on non-video candidates."
+        },
+        "source": {
+          "type": "string",
+          "description": "Parsed video source (e.g. remux, bluray, webdl, webrip, hdtv) for video release names; omitted on non-video candidates."
+        },
+        "codec": {
+          "type": "string",
+          "description": "Parsed video codec (e.g. av1, hevc, h264) for video release names; omitted on non-video candidates."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/releaseFile"
+          },
+          "description": "Files inside this release; populated only by a release_files query."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Known file count of the torrent when reported by an indexer or release_files query."
+        },
+        "usenetCheck": {
+          "$ref": "#/$defs/usenetCheckResult",
+          "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
         }
       }
     },
@@ -80,6 +469,9 @@
         "infoHash": {
           "type": "string"
         },
+        "torrentUrl": {
+          "type": "string"
+        },
         "passwordSecret": {
           "type": "string"
         },
@@ -89,15 +481,216 @@
         "fileIndex": {
           "type": "integer",
           "minimum": 0,
-          "description": "Zero-based index in the provider torrent file list. Omit for automatic video selection."
+          "description": "Zero-based index in the provider torrent file list, or NZB document order for Usenet. Omit for automatic video selection."
         },
         "file": {
           "type": "string",
-          "description": "Exact torrent path or unambiguous basename; if combined with fileIndex both must match."
+          "description": "Exact torrent path or unambiguous basename (either protocol); if combined with fileIndex both must match."
         },
         "fileHint": {
           "type": "string",
-          "description": "Archive member hint when composing a release with container extraction."
+          "description": "Exact archive member path or unique basename when composing a release with container extraction."
+        },
+        "track": {
+          "$ref": "#/$defs/trackHint",
+          "description": "Structured audio track hint ({disc?, number?, title?}) matched against release files or archive members by disc/track number first, then normalised title tokens, failing on ambiguity."
+        },
+        "cachedOnly": {
+          "type": "boolean",
+          "description": "Require an already-cached debrid copy even when the owner turned \"Cached torrents only\" off. Omit or set false to follow the owner's debrid setting (queueing an uncached download and answering preparing / 503 Retry-After until ready when cached-only is off)."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional torrent file count hint when Ether has not seen the torrent's file list yet (e.g. a magnet from a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss."
+        }
+      }
+    },
+    "volumeRef": {
+      "type": "object",
+      "required": [
+        "size"
+      ],
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "keepHeadersOnRedirect": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blobRef": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "containerRef": {
+      "type": "object",
+      "required": [
+        "volumes"
+      ],
+      "properties": {
+        "format": {
+          "enum": [
+            "",
+            "rar",
+            "7z",
+            "zip"
+          ]
+        },
+        "volumes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/volumeRef"
+          }
+        },
+        "member": {
+          "type": "string"
+        },
+        "memberIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passwordSecret": {
+          "type": "string"
+        }
+      }
+    },
+    "playableSource": {
+      "type": "object",
+      "description": "One candidate way to acquire bytes for a content-kind item (returned by /resolve and accepted by media.probe).",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "pattern": {
+          "enum": [
+            "range",
+            "download",
+            "direct",
+            "container",
+            "release",
+            "file"
+          ]
+        },
+        "mime": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "integer",
+          "description": "Optional quality-tier marker for interchangeable sources. Sources sharing the same tier may be reordered by Ether's source routing (owner auto/usenet/debrid preference, measured startup, and stall demotion) and may overtake each other after the ranked open grace period. Distinct tiers keep the plugin's tier order; omitting tier keeps the plugin's exact order."
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sizeApproximate": {
+          "type": "boolean",
+          "description": "True when size is an approximate decoded estimate rather than an exact byte count."
+        },
+        "durationSec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Expected running time in seconds. Estimated metadata only unless durationToleranceSec is also positive."
+        },
+        "durationToleranceSec": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Opts into open-time container duration verification when durationSec > 0. Ether probes the container (reusing the durable release_probes cache) and refuses the source as wrong content (trying the next candidate and flagging the plugin answer) if the observed duration differs from durationSec by more than this many seconds."
+        },
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "keepHeadersOnRedirect": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blobRef": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "sha1": {
+          "type": "string"
+        },
+        "crc32": {
+          "type": "string"
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expiresAt": {
+          "type": "integer"
+        },
+        "container": {
+          "$ref": "#/$defs/containerRef"
+        },
+        "release": {
+          "$ref": "#/$defs/releaseHint"
+        }
+      }
+    },
+    "mediaProbeResult": {
+      "type": "object",
+      "description": "Container metadata returned by the media.probe(source) host service (jobs/actions/sync only; requires permissions.media: \"probe\").",
+      "required": [
+        "durationSec",
+        "container",
+        "width",
+        "height",
+        "sizeBytes"
+      ],
+      "properties": {
+        "durationSec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "container": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

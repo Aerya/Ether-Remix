@@ -5,6 +5,9 @@ import {
   assertValidViewSpec,
   createCatalogTemplate,
   createConditionTemplate,
+  createHostedHostClient,
+  type BadgeUsage,
+  type KVUsage,
   createI18n,
   createMockHostClient,
   createRankerTemplate,
@@ -18,6 +21,7 @@ import {
   fixtures,
   lintCopy,
   lintSettingsSchema,
+  PosterBadgeQuotaTitles,
   plugin,
   PluginRouteError,
   serve,
@@ -113,6 +117,7 @@ test("plugin router dispatches all standard and capability endpoints", async () 
             "tools",
             "ranking_step",
             "rule_condition",
+            "poster_badges",
           ],
           summary: "Test plugin covering all capabilities.",
           runtime: { kind: "hosted", entry: "plugin.ts" },
@@ -128,6 +133,13 @@ test("plugin router dispatches all standard and capability endpoints", async () 
             ],
           },
           contributes: {
+            posterBadges: [
+              {
+                key: "dub_languages",
+                label: "Dub languages",
+                description: "Audio dub availability on series posters",
+              },
+            ],
             pages: [
               {
                 key: "home",
@@ -520,6 +532,16 @@ test("createRemoteHostClient talks to /ether/plugin-host/* endpoints with creden
       res.end(JSON.stringify({ key: "greeting", value: "hello" }));
       return;
     }
+    if (req.url === "/ether/plugin-host/kv-usage" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ bytes: 263, keys: 1, quotaBytes: 52428800, quotaKeys: 10000 }));
+      return;
+    }
+    if (req.url === "/ether/plugin-host/badges-usage" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ titles: 2, quotaTitles: PosterBadgeQuotaTitles }));
+      return;
+    }
     if (req.url?.startsWith("/ether/plugin-host/kv") && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ keys: ["greeting"] }));
@@ -542,10 +564,32 @@ test("createRemoteHostClient talks to /ether/plugin-host/* endpoints with creden
     await client.kv.put("greeting", "updated");
     const keys = await client.kv.list("");
     assert.deepEqual(keys, ["greeting"]);
+    const usage: KVUsage = await client.kv.usage();
+    assert.deepEqual(usage, { bytes: 263, keys: 1, quotaBytes: 52428800, quotaKeys: 10000 });
+
+    await client.badges.set("dub_languages", [
+      { title: { type: "show", tmdb: 95479 }, labels: ["EN DUB"] },
+    ]);
+    const badgeUsage: BadgeUsage = await client.badges.usage();
+    assert.deepEqual(badgeUsage, { titles: 2, quotaTitles: PosterBadgeQuotaTitles });
+    await client.badges.clear("dub_languages");
 
     await client.collections.upsert({ name: "Top picks", itemIds: ["tt0133093"] });
     await client.notify.owner("Sync complete.");
     assert.ok(receivedRequests.every((r) => r.cred === "cred-xyz"));
+    assert.ok(
+      receivedRequests.some(
+        (r) =>
+          r.method === "PUT" &&
+          r.url === "/ether/plugin-host/badges/dub_languages" &&
+          r.body.includes('"EN DUB"'),
+      ),
+    );
+    assert.ok(
+      receivedRequests.some(
+        (r) => r.method === "DELETE" && r.url === "/ether/plugin-host/badges/dub_languages",
+      ),
+    );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -625,4 +669,226 @@ test("subtitle listing is separate from viewer-picked downloads", async () => {
   const download = await instance.handle({ method: "POST", path: "/ether/subtitles/download", headers: { "X-Ether-Pick": "pick" }, body: { id: "a", lang: "en", format: "srt" } });
   assert.equal(download.status, 200);
   assert.deepEqual(download.body, { format: "srt", encoding: "utf8", data: "a" });
+});
+
+test("kv.usage reports value bytes plus 256-byte key charge in mock and hosted clients", async () => {
+  const mock = createMockHostClient();
+  assert.deepEqual(mock.kv.usage(), {
+    bytes: 0,
+    keys: 0,
+    quotaBytes: 50 * 1024 * 1024,
+    quotaKeys: 10000,
+  });
+  mock.kv.put("save:slot-1", "abcd");
+  mock.kv.put("index:snes", "0123456789");
+  assert.deepEqual(mock.kv.usage(), {
+    bytes: 4 + 10 + 2 * 256,
+    keys: 2,
+    quotaBytes: 50 * 1024 * 1024,
+    quotaKeys: 10000,
+  });
+  mock.kv.delete("save:slot-1");
+  assert.deepEqual(mock.kv.usage(), {
+    bytes: 10 + 256,
+    keys: 1,
+    quotaBytes: 50 * 1024 * 1024,
+    quotaKeys: 10000,
+  });
+
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  g.__ether_host = (name: string, argsJson: string) => {
+    assert.equal(name, "kv.usage");
+    assert.equal(argsJson, "[]");
+    return JSON.stringify({ bytes: 1024, keys: 3, quotaBytes: 52428800, quotaKeys: 10000 });
+  };
+  try {
+    const hosted = createHostedHostClient();
+    assert.deepEqual(hosted.kv.usage(), {
+      bytes: 1024,
+      keys: 3,
+      quotaBytes: 52428800,
+      quotaKeys: 10000,
+    });
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
+});
+
+test("badges.set, badges.clear, and badges.usage enforce bounds in mock and hosted clients", () => {
+  const mock = createMockHostClient({ badgeQuotaTitles: 2 });
+  assert.deepEqual(mock.badges.usage(), { titles: 0, quotaTitles: 2 });
+
+  mock.badges.set("dub_languages", [
+    { title: { type: "show", tmdb: 95479 }, labels: ["en dub", "es dub"] },
+    { title: { type: "movie", imdb: "tt0245429" }, labels: ["director's cut"] },
+  ]);
+  assert.deepEqual(mock.badges.usage(), { titles: 2, quotaTitles: 2 });
+  assert.deepEqual(mock.state.badges.get("dub_languages")?.get("tmdb:show:95479"), [
+    "EN DUB",
+    "ES DUB",
+  ]);
+  assert.deepEqual(mock.state.badges.get("dub_languages")?.get("imdb:movie:tt0245429"), [
+    "DIRECTOR'S CUT",
+  ]);
+
+  // Same title in a second set does not increase distinct badged title count.
+  mock.badges.set("editions", [
+    { title: { type: "movie", imdb: "tt0245429" }, labels: ["IMAX + 4K/DV-1.0"] },
+  ]);
+  assert.deepEqual(mock.badges.usage(), { titles: 2, quotaTitles: 2 });
+
+  // Exceeding title quota rejects without mutating stored badges.
+  assert.throws(
+    () =>
+      mock.badges.set("dub_languages", [
+        { title: { type: "show", tmdb: 1429 }, labels: ["EN DUB"] },
+      ]),
+    /quota exceeded/,
+  );
+
+  // Empty labels deletes that title's badges from the set.
+  mock.badges.set("dub_languages", [{ title: { type: "show", tmdb: 95479 }, labels: [] }]);
+  assert.deepEqual(mock.badges.usage(), { titles: 1, quotaTitles: 2 });
+
+  // Validation checks: bad set key, >500 entries, >3 labels, bad characters, >16 chars.
+  assert.throws(
+    () => mock.badges.set("Invalid-Key", []),
+    /badge set key/,
+  );
+  assert.throws(
+    () =>
+      mock.badges.set(
+        "dub_languages",
+        Array.from({ length: 501 }, (_, i) => ({
+          title: { type: "movie" as const, tmdb: i + 1 },
+          labels: ["EN DUB"],
+        })),
+      ),
+    /500/,
+  );
+  assert.throws(
+    () =>
+      mock.badges.set("dub_languages", [
+        { title: { type: "show", tmdb: 95479 }, labels: ["A", "B", "C", "D"] },
+      ]),
+    /at most 3/,
+  );
+  assert.throws(
+    () =>
+      mock.badges.set("dub_languages", [
+        { title: { type: "show", tmdb: 95479 }, labels: ["BAD_UNDERSCORE"] },
+      ]),
+    /characters/,
+  );
+  assert.throws(
+    () =>
+      mock.badges.set("dub_languages", [
+        { title: { type: "show", tmdb: 95479 }, labels: ["ß"] },
+      ]),
+    /characters/,
+  );
+  assert.throws(
+    () =>
+      mock.badges.set("dub_languages", [
+        { title: { type: "show", tmdb: 95479 }, labels: ["12345678901234567"] },
+      ]),
+    /1..16/,
+  );
+
+  mock.badges.clear("dub_languages");
+  mock.badges.clear("editions");
+  assert.deepEqual(mock.badges.usage(), { titles: 0, quotaTitles: 2 });
+
+  const calls: Array<[string, unknown]> = [];
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  g.__ether_host = (name: string, argsJson: string) => {
+    calls.push([name, JSON.parse(argsJson)]);
+    if (name === "badges.usage") {
+      return JSON.stringify({ titles: 5, quotaTitles: PosterBadgeQuotaTitles });
+    }
+    return "null";
+  };
+  try {
+    const hosted = createHostedHostClient();
+    hosted.badges.set("editions", [{ title: { type: "movie", tmdb: 603 }, labels: ["IMAX"] }]);
+    assert.deepEqual(hosted.badges.usage(), { titles: 5, quotaTitles: PosterBadgeQuotaTitles });
+    hosted.badges.clear("editions");
+    assert.deepEqual(calls, [
+      ["badges.set", ["editions", [{ title: { type: "movie", tmdb: 603 }, labels: ["IMAX"] }]]],
+      ["badges.usage", []],
+      ["badges.clear", ["editions"]],
+    ]);
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
+});
+
+test("hosted and remote host clients preserve rate_limited retry metadata", async () => {
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  g.__ether_host = () => {
+    const err = new Error(
+      "__ETHER_FAULT__" +
+        JSON.stringify({
+          code: "rate_limited",
+          message: "daily allowance exhausted",
+          retryAfterSec: 3600,
+          retryAt: "2026-11-23T00:00:00Z",
+        }),
+    );
+    throw err;
+  };
+  try {
+    const hosted = createHostedHostClient();
+    let caught: (Error & { code?: string; retryAfterSec?: number; retryAt?: string }) | undefined;
+    try {
+      await hosted.kinds.resolveSources({ kind: "usenet_check", nzbUrl: "https://idx.example/a.nzb" });
+    } catch (e) {
+      caught = e as typeof caught;
+    }
+    assert.equal(caught?.code, "rate_limited");
+    assert.equal(caught?.retryAfterSec, 3600);
+    assert.equal(caught?.retryAt, "2026-11-23T00:00:00Z");
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
+
+  const srv = http.createServer((_req, res) => {
+    res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "3600" });
+    res.end(
+      JSON.stringify({
+        error: {
+          code: "rate_limited",
+          message: "daily allowance exhausted",
+          retryAfterSec: 3600,
+          retryAt: "2026-11-23T00:00:00Z",
+        },
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+  const addr = srv.address() as { port: number };
+  try {
+    const remote = createRemoteHostClient({
+      baseUrl: `http://127.0.0.1:${addr.port}`,
+      credential: "cred",
+    });
+    let caught: (Error & { code?: string; status?: number; retryAfterSec?: number; retryAt?: string }) | undefined;
+    try {
+      await remote.kinds.resolveSources({ kind: "usenet_check", nzbUrl: "https://idx.example/a.nzb" });
+    } catch (e) {
+      caught = e as typeof caught;
+    }
+    assert.equal(caught?.code, "rate_limited");
+    assert.equal(caught?.status, 429);
+    assert.equal(caught?.retryAfterSec, 3600);
+    assert.equal(caught?.retryAt, "2026-11-23T00:00:00Z");
+  } finally {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  }
 });

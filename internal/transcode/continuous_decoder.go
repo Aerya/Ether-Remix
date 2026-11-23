@@ -34,6 +34,17 @@ type continuousDecoder struct {
 	otherAtWait  atomic.Int64 // its buffers read when the wait began
 	errorLines   atomic.Int64 // decoder error lines on stderr
 	errorsAtWait atomic.Int64
+	// fillSkipped counts filler ticks liveFill dropped; lastPTS is the newest
+	// picture's source time (ns), for live diagnostics.
+	fillSkipped atomic.Int64
+	lastPTS     atomic.Int64
+	// Queue depths for live diagnostics: picture timestamps parsed from
+	// stderr, raw pictures and raw sound read from ffmpeg's sockets.
+	ptsQ      chan time.Duration
+	vq, aq    chan []byte
+	ptsLines  atomic.Int64
+	assembled atomic.Int64
+	stage     atomic.Int32 // where the assembler waits: 1 picture, 2 stamp, 3 sound, 4 handoff
 }
 
 // StarvingErrors is Starving plus whether the decoders reported errors
@@ -140,7 +151,10 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		videoFilter = "trim=start=" + trim + "," + videoFilter
 		audioFilter = "atrim=start=" + trim + ",asetpts=PTS-STARTPTS," + audioFilter
 	}
-	pts := make(chan time.Duration, 16)
+	// One stamp per picture, parsed from showinfo. ffmpeg's filter thread runs
+	// ahead of the sockets by its own queues, so stamps may lead pictures by
+	// dozens; the queue holds far more than that.
+	pts := make(chan time.Duration, 4096)
 	ptsStop := make(chan struct{})
 	if r.Live {
 		args = append(args, "-loglevel", "info")
@@ -150,7 +164,16 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		audioFilter = liveAudioJumps(liveForwardJump(r, u)) + "ashowinfo," + "aresample=48000:async=1"
 	}
 	videoFilter += fmt.Sprintf("setpts=N*%d/(%d*TB)", f.FPSDen, f.FPSNum)
-	args = append(args, "-i", r.InputURL, "-map", "0:v:0", "-vf", videoFilter, "-pix_fmt", "yuv420p", "-c:v", "rawvideo", "-threads:v", "1", "-f", "rawvideo", sockets[0].url(), "-map", fmt.Sprintf("0:a:%d", max(r.AudioIndex, 0)), "-af", audioFilter, "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", "-f", "s16le", sockets[1].url())
+	videoOut := []string{"-c:v", "rawvideo", "-threads:v", "1"}
+	if r.Live {
+		// Every filtered picture (each with its showinfo stamp) is written
+		// exactly once: ffmpeg's default constant-rate output dropped about
+		// one picture in a hundred, leaving stamps without pictures.
+		videoOut = append(videoOut, "-fps_mode", "passthrough")
+	}
+	args = append(args, "-i", r.InputURL, "-map", "0:v:0", "-vf", videoFilter, "-pix_fmt", "yuv420p")
+	args = append(args, videoOut...)
+	args = append(args, "-f", "rawvideo", sockets[0].url(), "-map", fmt.Sprintf("0:a:%d", max(r.AudioIndex, 0)), "-af", audioFilter, "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", "-f", "s16le", sockets[1].url())
 	d := &continuousDecoder{readDone: make(chan struct{}), ptsStop: ptsStop}
 	d.audioStart.Store(-1)
 	p, e := m.startContinuous(ctx, args, "", true, sockets, nil, nil, func(line string) {
@@ -170,11 +193,14 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		if !ok {
 			return
 		}
+		d.ptsLines.Add(1)
+		// Never block ffmpeg's log. A log reader that waits for the assembler
+		// stalls ffmpeg itself (it cannot write its next line), and with it
+		// the pictures the assembler is waiting for: a deadlock that froze
+		// live channels every 25-45 s whenever stamps ran 16 ahead of pictures.
 		select {
 		case pts <- stamp:
-		case <-ptsStop:
-		case <-ctx.Done():
-		case <-m.stop:
+		default:
 		}
 	})
 	if e != nil {
@@ -189,6 +215,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 	// blocks before the next picture. Bounded queues propagate prewarm pressure.
 	vq := make(chan []byte, 8)
 	aq := make(chan []byte, 32)
+	d.ptsQ, d.vq, d.aq = pts, vq, aq
 	for i, ch := range []chan []byte{vq, aq} {
 		d.workers.Add(1)
 		go func(s *rawSocket, ch chan []byte, video bool) {
@@ -227,6 +254,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		var pcm []byte
 		ticks := int64(0)
 		for {
+			d.stage.Store(1)
 			v, err := d.receive(p, vq, aq, watch && paired, liveVideoStarved)
 			if err != nil {
 				d.readErr = err
@@ -234,6 +262,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 			}
 			stamp := time.Duration(0)
 			if r.Live {
+				d.stage.Store(2)
 				select {
 				case stamp = <-pts:
 				case <-p.ctx.Done():
@@ -256,6 +285,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 				}
 			}
 			for len(pcm) < tickPCM(f, ticks) {
+				d.stage.Store(3)
 				b, err := d.receive(p, aq, vq, watch && paired, liveAudioStarved)
 				if err != nil {
 					d.readErr = err
@@ -271,7 +301,11 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 			out := []RawFrame{frame}
 			if r.Live {
 				out = fill.next(frame, time.Now())
+				d.fillSkipped.Store(int64(fill.skipped))
+				d.lastPTS.Store(int64(stamp))
 			}
+			d.stage.Store(4)
+			d.assembled.Add(1)
 			for _, frame := range out {
 				select {
 				case d.frames <- frame:
@@ -380,7 +414,10 @@ func liveHLS(r DecoderRequest, u *url.URL) bool {
 
 // liveDecoderInputArgs are the input options of a live provider decoder.
 // The loopback relay owns provider connections; ffmpeg resumes a dropped
-// relay read in-process and bounds a read that never returns. Damaged
+// relay read in-process and bounds a read that never returns. Tapped streams
+// hold open across bursty provider gaps (up to 8 s) and quiet-socket holds
+// (up to 20 s), so non-HLS loopback reads match the relay's 30 s I/O bound
+// instead of timing out mid-gap and sending a Range reconnect. Damaged
 // pictures keep libavcodec's error concealment: dropping corrupt packets
 // measured no better and lost whole GOPs on packet loss.
 func liveDecoderInputArgs(r DecoderRequest, u *url.URL) []string {
@@ -389,7 +426,11 @@ func liveDecoderInputArgs(r DecoderRequest, u *url.URL) []string {
 	// seconds (or any long bound) of real-time media again before decoding.
 	args := []string{"-copyts", "-fflags", "+genpts", "-probesize", "5000000", "-analyzeduration", "1000000"}
 	if u.Scheme == "http" {
-		args = append(args, "-rw_timeout", "5000000", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "2")
+		rwTimeout := "30000000"
+		if liveHLS(r, u) {
+			rwTimeout = "5000000"
+		}
+		args = append(args, "-rw_timeout", rwTimeout, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "2")
 	}
 	switch {
 	case liveHLS(r, u):
@@ -399,7 +440,7 @@ func liveDecoderInputArgs(r DecoderRequest, u *url.URL) []string {
 		} else if r.PrimeLive {
 			start = "-4"
 		}
-		args = append(args, "-live_start_index", start)
+		args = append(args, "-f", "hls", "-live_start_index", start)
 	case r.InputFormat == "mpegts":
 		// Keep stream identity across PMT version bumps that add or drop
 		// unrelated PIDs; a real codec change is caught by starvation.
@@ -437,7 +478,9 @@ func (d *continuousDecoder) Close() error {
 
 // Diagnostics reports bounded decoder progress without exposing the input URL.
 func (d *continuousDecoder) Diagnostics() string {
-	return fmt.Sprintf("videoFrames=%d audioTicks=%d queued=%d stderr=%s", d.reads[0].Load(), d.reads[1].Load(), len(d.frames), d.stderr.String())
+	return fmt.Sprintf("videoFrames=%d audioTicks=%d assembled=%d ptsLines=%d stage=%d ptsQ=%d vq=%d aq=%d queued=%d fillSkipped=%d lastPTS=%s exited=%t stderr=%s",
+		d.reads[0].Load(), d.reads[1].Load(), d.assembled.Load(), d.ptsLines.Load(), d.stage.Load(), len(d.ptsQ), len(d.vq), len(d.aq), len(d.frames),
+		d.fillSkipped.Load(), time.Duration(d.lastPTS.Load()), d.processExited(), d.stderr.String())
 }
 
 func liveFramePTS(line string) (time.Duration, bool) {
@@ -566,4 +609,13 @@ func (d *continuousDecoder) alignAudio(p *continuousProcess, aq, vq chan []byte,
 		*pcm, drop = (*pcm)[n:], drop-n
 	}
 	return false, nil
+}
+
+func (d *continuousDecoder) processExited() bool {
+	select {
+	case <-d.done:
+		return true
+	default:
+		return false
+	}
 }

@@ -59,8 +59,13 @@ func TestSelectProfileSelectionKeyIsPreClamp(t *testing.T) {
 	// of the definition too.
 	q = mkQuality(2160, nil)
 	q.Profiles[0].Language = "en"
-	if edited := SelectProfile(q, tv, nil); edited.SelectionKey == pTV.SelectionKey {
+	langKey := SelectProfile(q, tv, nil).SelectionKey
+	if langKey == pTV.SelectionKey {
 		t.Fatal("language edit kept the selection key")
+	}
+	q.Profiles[0].AudioLanguageMode = core.AudioLanguageModePreferred
+	if SelectProfile(q, tv, nil).SelectionKey == langKey {
+		t.Fatal("audioLanguageMode edit kept the selection key")
 	}
 	q = mkQuality(2160, nil)
 	minScore := 100

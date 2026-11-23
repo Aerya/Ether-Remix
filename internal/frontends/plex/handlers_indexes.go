@@ -124,8 +124,8 @@ func (s *Server) cancelTrickplayIfIdle(ps *frontend.PlaySession) {
 // expressed in milliseconds, matching Plex Web's indexes/{index}/{offset}
 // request form.
 func (s *Server) handleIndexFrame(w http.ResponseWriter, r *http.Request) {
-	_, releaseID, ok := s.indexPart(r)
-	if !ok || chi.URLParam(r, "index") != "sd" {
+	id, err := strconv.ParseInt(chi.URLParam(r, "part"), 10, 64)
+	if err != nil {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
@@ -134,7 +134,16 @@ func (s *Server) handleIndexFrame(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	frame, ok := s.trickplayFrame(releaseID, time.Duration(ms)*time.Millisecond)
+	s.serveIndexFrame(w, r, id, chi.URLParam(r, "index"), ms)
+}
+
+func (s *Server) serveIndexFrame(w http.ResponseWriter, r *http.Request, partID int64, index string, offsetMS int64) {
+	_, releaseID, ok := s.indexPartByID(r, partID)
+	if !ok || index != "sd" || offsetMS < 0 {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	frame, ok := s.trickplayFrame(releaseID, time.Duration(offsetMS)*time.Millisecond)
 	if !ok {
 		writeHTTPError(w, http.StatusNotFound)
 		return
@@ -148,10 +157,16 @@ func (s *Server) handleIndexFrame(w http.ResponseWriter, r *http.Request) {
 // indexPart resolves a virtual part to the active session for this viewer,
 // applying the same title visibility and playback policy as handlePart.
 func (s *Server) indexPart(r *http.Request) (frontend.RatingKey, string, bool) {
-	pr := FromContext(r.Context())
 	id, err := strconv.ParseInt(chi.URLParam(r, "part"), 10, 64)
-	if err != nil || pr.User == nil ||
-		s.playback() == nil || s.catalog() == nil {
+	if err != nil {
+		return 0, "", false
+	}
+	return s.indexPartByID(r, id)
+}
+
+func (s *Server) indexPartByID(r *http.Request, id int64) (frontend.RatingKey, string, bool) {
+	pr := FromContext(r.Context())
+	if pr.User == nil || s.playback() == nil || s.catalog() == nil {
 		return 0, "", false
 	}
 	key, wantedReleaseID, found := s.partTitle(id)
@@ -166,6 +181,21 @@ func (s *Server) indexPart(r *http.Request) (frontend.RatingKey, string, bool) {
 		return 0, "", false
 	}
 	ps, ok := s.playback().SessionFor(pr.User.ID, pr.ClientID, key)
+	if (!ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID == "") && pr.User.IsOwner {
+		// Monitoring tools such as Tautulli request BIF thumbnails with the
+		// owner's token and their own X-Plex-Client-Identifier for any active
+		// stream's part.
+		for _, active := range s.playback().Sessions() {
+			if active == nil || active.Key != key || active.Resolution == nil || active.Resolution.Release.ID == "" {
+				continue
+			}
+			if wantedReleaseID != "" && active.Resolution.Release.ID != wantedReleaseID {
+				continue
+			}
+			ps, ok = active, true
+			break
+		}
+	}
 	if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID == "" {
 		return 0, "", false
 	}

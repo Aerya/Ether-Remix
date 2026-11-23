@@ -78,7 +78,7 @@ const PAGES = localized<PageDef[]>(() => [
     sections: [],
     keywords: searchTerms(
       msg(
-        "users friends accounts people overview home taste recent activity audio subtitles limits sign-in devices lists alerts watchlist monitoring",
+        "users friends accounts people overview home taste recent activity audio subtitles limits sign-in lockouts devices lists alerts watchlist monitoring",
       ),
     ),
   },
@@ -99,11 +99,6 @@ const PAGES = localized<PageDef[]>(() => [
     title: t("Live TV"),
     sections: [
       { key: "channels", title: t("Channels"), keywords: searchTerms(msg("virtual channel")) },
-      {
-        key: "sources",
-        title: t("IPTV sources"),
-        keywords: searchTerms(msg("m3u xmltv playlist")),
-      },
       { key: "guide", title: t("Guide"), keywords: searchTerms(msg("epg schedule")) },
       {
         key: "looks",
@@ -189,6 +184,11 @@ const PAGES = localized<PageDef[]>(() => [
         key: "usenet",
         title: t("Usenet"),
         keywords: searchTerms(msg("nntp backfill connections")),
+      },
+      {
+        key: "iptv",
+        title: t("IPTV"),
+        keywords: searchTerms(msg("m3u xmltv playlist")),
       },
       {
         key: "indexers",
@@ -397,6 +397,12 @@ const PAGES = localized<PageDef[]>(() => [
         href: "/services/overview#subdl",
         title: "SubDL",
         keywords: searchTerms(msg("subtitles subdl")),
+      },
+      {
+        key: "subsource",
+        href: "/services/overview#subsource",
+        title: "SubSource",
+        keywords: searchTerms(msg("subtitles subsource")),
       },
       {
         key: "ratings",

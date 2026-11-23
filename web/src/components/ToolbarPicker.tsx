@@ -22,10 +22,12 @@ export interface ToolbarOption<T extends string> {
  * list of choices.
  */
 export function ToolbarPicker<T extends string>({
+  id,
   value,
   options,
   onChange,
   ariaLabel,
+  disabled,
   trigger,
   iconOnly,
   searchPlaceholder = t("Search…"),
@@ -36,10 +38,12 @@ export function ToolbarPicker<T extends string>({
   side,
   matchWidth,
 }: {
+  id?: string;
   value: T;
   options: ToolbarOption<T>[];
   onChange: (v: T) => void;
   ariaLabel: string;
+  disabled?: boolean;
   /** Override the trigger's content (defaults to the chosen option). */
   trigger?: ReactNode;
   /** Show only the chosen option's icon in the trigger. */
@@ -95,6 +99,9 @@ export function ToolbarPicker<T extends string>({
   const current = options.find((o) => o.value === value);
   const showSearch = searchable ?? options.length > 8;
   useEffect(() => {
+    if (disabled && open) setOpen(false);
+  }, [disabled, open]);
+  useEffect(() => {
     if (!open) return;
     window.addEventListener("resize", measure);
     window.addEventListener("scroll", measure, true);
@@ -121,6 +128,7 @@ export function ToolbarPicker<T extends string>({
     <Popover
       open={open}
       onOpenChange={(o) => {
+        if (disabled && o) return;
         setOpen(o);
         if (!o) setQ("");
       }}
@@ -133,18 +141,21 @@ export function ToolbarPicker<T extends string>({
       )}
       trigger={
         <button
+          id={id}
           ref={triggerRef}
           type="button"
+          disabled={disabled}
           aria-label={ariaLabel}
           aria-haspopup="menu"
           aria-expanded={open}
           title={iconOnly ? `${ariaLabel}: ${current?.label ?? ""}` : undefined}
           onClick={() => {
+            if (disabled) return;
             measure();
             setOpen((o) => !o);
           }}
           className={cn(
-            "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2 text-sm font-medium text-fg shadow-xs transition-colors hover:border-border-strong hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+            "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 text-sm font-medium text-fg shadow-xs transition-colors hover:border-border-strong hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50",
             open && "border-primary/40 bg-primary-subtle",
             className,
           )}

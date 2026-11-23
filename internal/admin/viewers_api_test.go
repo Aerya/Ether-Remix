@@ -104,7 +104,7 @@ func (f *fakeEngine) SetHomeLayout(_ context.Context, d core.HomeLayout) (core.H
 	return d, nil
 }
 func (f *fakeEngine) LayoutDefaults() map[string]int {
-	return map[string]int{"home": 14, "movies": 10, "shows": 10}
+	return map[string]int{"home": 14, "library": 10}
 }
 func (f *fakeEngine) PreviewLayout(_ context.Context, u *core.User, hc core.HubContext, sec string, n int, d core.HomeLayout) (*core.HomePreview, error) {
 	f.draft = d
@@ -116,7 +116,7 @@ func (f *fakeEngine) PreviewLayout(_ context.Context, u *core.User, hc core.HubC
 	if len(d.Global) > 0 {
 		p.Rows = append(p.Rows, core.HomeRow{HubID: "new", Title: "New", Kind: "new", Layer: "personalized", Slot: 2})
 	}
-	if sec == "movies" || sec == "shows" {
+	if strings.HasPrefix(sec, "library:") {
 		p.HomeDeduped = 12
 	}
 	return p, nil
@@ -212,7 +212,7 @@ func TestViewersEndpoints(t *testing.T) {
 func TestViewerHomeEndpoint(t *testing.T) {
 	eng := &fakeEngine{}
 	h := personalizationHandler(t, eng)
-	rec := serve(h, req(http.MethodGet, "/ether/api/viewers/1/home?device=mobile&at=2026-10-17T20:30:00Z&section=movies&count=20", ""))
+	rec := serve(h, req(http.MethodGet, "/ether/api/viewers/1/home?device=mobile&at=2026-10-17T20:30:00Z&section=library:1&count=20", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("home: %d %s", rec.Code, rec.Body)
 	}
@@ -230,7 +230,7 @@ func TestViewerHomeEndpoint(t *testing.T) {
 		Context     map[string]any `json:"context"`
 	}
 	decode(t, rec, &body)
-	if eng.hc.Device != "mobile" || !eng.hc.Now.Equal(time.Date(2026, 10, 17, 20, 30, 0, 0, time.UTC)) || eng.section != "movies" || eng.limit != 20 {
+	if eng.hc.Device != "mobile" || !eng.hc.Now.Equal(time.Date(2026, 10, 17, 20, 30, 0, 0, time.UTC)) || eng.section != "library:1" || eng.limit != 20 {
 		t.Fatalf("engine got %+v section %q limit %d", eng.hc, eng.section, eng.limit)
 	}
 	if len(body.Rows) != 2 || body.Rows[0].HubID != "home.top10" || body.Rows[0].Items[0]["title"] != "The Signal" ||

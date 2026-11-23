@@ -184,13 +184,14 @@ func (s *selectedCollectionSource) ListSpecs(context.Context) ([]core.Collection
 func (s *selectedCollectionSource) LayoutRow(ctx context.Context, u *core.User, hc core.HubContext, id string) (*core.CollectionRow, error) {
 	s.mu.Lock()
 	s.selectedCalls++
+	picks := s.picks
 	s.mu.Unlock()
 	select {
 	case <-time.After(20 * time.Millisecond):
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	return &core.CollectionRow{CollectionID: id, HomeRow: true, SectionRow: true, Schedule: s.schedule, Hub: core.Hub{ID: "collection." + id, Title: "Just for this viewer", Items: s.picks}}, nil
+	return &core.CollectionRow{CollectionID: id, HomeRow: true, SectionRow: true, Schedule: s.schedule, Hub: core.Hub{ID: "collection." + id, Title: "Just for this viewer", Items: picks}}, nil
 }
 
 // A collection row follows its collection's schedule, wherever the layout
@@ -199,11 +200,15 @@ func (s *selectedCollectionSource) LayoutRow(ctx context.Context, u *core.User, 
 func TestCollectionRowFollowsCollectionSchedule(t *testing.T) {
 	today := int(testNow.Weekday())
 	source := &selectedCollectionSource{schedule: &core.CollectionSchedule{Days: []int{(today + 1) % 7}}}
-	h := newHarness(t, func(o *Options) { o.Collections = source; o.OwnerRowsWait = time.Millisecond })
+	h := newHarness(t, func(o *Options) {
+		cat := o.Catalog.(*fakeCatalog)
+		for i := 0; i < 6; i++ {
+			source.picks = append(source.picks, cat.titles[movieKey(8, i)])
+		}
+		o.Collections = source
+		o.OwnerRowsWait = time.Millisecond
+	})
 	ctx := context.Background()
-	for i := 0; i < 6; i++ {
-		source.picks = append(source.picks, h.cat.titles[movieKey(8, i)])
-	}
 	u := core.User{ID: 1}
 	h.rebuild(u)
 	hc := hubContext(testNow, core.DeviceTV)
@@ -269,11 +274,15 @@ func TestEveryonePolicyCannotScheduleACollectionRow(t *testing.T) {
 }
 func TestViewerAddsCollectionWithoutChangingPublicationTargets(t *testing.T) {
 	source := &selectedCollectionSource{}
-	h := newHarness(t, func(o *Options) { o.Collections = source; o.OwnerRowsWait = time.Millisecond })
+	h := newHarness(t, func(o *Options) {
+		cat := o.Catalog.(*fakeCatalog)
+		for i := 0; i < 6; i++ {
+			source.picks = append(source.picks, cat.titles[movieKey(8, i)])
+		}
+		o.Collections = source
+		o.OwnerRowsWait = time.Millisecond
+	})
 	ctx := context.Background()
-	for i := 0; i < 6; i++ {
-		source.picks = append(source.picks, h.cat.titles[movieKey(8, i)])
-	}
 	u := core.User{ID: 1}
 	h.rebuild(u)
 	hc := hubContext(testNow, core.DeviceTV)
@@ -679,11 +688,11 @@ func TestPreviewLayoutExplainsAbsentAlwaysRows(t *testing.T) {
 	}
 
 	// 3. Wrong surface on TV page.
-	showsLayout := core.HomeLayout{Global: []core.LayoutPage{{Section: "shows", Rows: []core.RowPolicy{
+	showsLayout := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:2", Rows: []core.RowPolicy{
 		{Row: "collection:movies_only", Status: "always"},
 		{Row: KindAcclaimed, Status: "always"},
 	}}}}
-	showsPrev, err := h.e.PreviewLayout(ctx, &coldViewer, hc, "shows", 12, showsLayout)
+	showsPrev, err := h.e.PreviewLayout(ctx, &coldViewer, hc, "library:2", 12, showsLayout)
 	if err != nil {
 		t.Fatal(err)
 	}

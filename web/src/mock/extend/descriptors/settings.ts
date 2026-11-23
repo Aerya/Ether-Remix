@@ -96,13 +96,14 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
               {
                 key: "trustedProxyCIDRs",
                 label: {
-                  source: "Trusted proxy networks",
+                  source: "Trusted reverse proxies",
                 },
                 help: {
-                  source: "Networks whose forwarding headers Ether trusts. Empty trusts none.",
+                  source:
+                    "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
                 },
                 kind: "list",
-                placeholder: "10.0.0.0/8",
+                placeholder: "192.168.1.5, 10.0.0.0/8",
               },
               {
                 key: "logLevel",
@@ -319,6 +320,42 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 kind: "text",
                 wide: true,
+              },
+            ],
+          },
+          {
+            id: "delivery",
+            title: {
+              source: "Media delivery",
+            },
+            description: {
+              source: "How a direct play reaches the player.",
+            },
+            fields: [
+              {
+                key: "delivery",
+                label: {
+                  source: "Delivery",
+                },
+                help: {
+                  source:
+                    "Relay is the default. Redirect gives eligible Plex players a temporary TorBox file URL that they can use until it expires. Ether cannot measure bytes delivered directly by TorBox.",
+                },
+                kind: "select",
+                options: [
+                  {
+                    value: "relay",
+                    label: {
+                      source: "Relay through Ether",
+                    },
+                  },
+                  {
+                    value: "redirect",
+                    label: {
+                      source: "Redirect to the provider",
+                    },
+                  },
+                ],
               },
             ],
           },
@@ -803,6 +840,31 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
             },
             fields: [
               {
+                key: "videoTranscoding",
+                label: {
+                  source: "Video transcoding",
+                },
+                help: {
+                  source:
+                    "Turn off to never re-encode video for movies and shows. Direct play, remuxing, and audio or subtitle conversion still work. Live TV is unaffected.",
+                },
+                kind: "select",
+                options: [
+                  {
+                    value: "on",
+                    label: {
+                      source: "On",
+                    },
+                  },
+                  {
+                    value: "off",
+                    label: {
+                      source: "Off",
+                    },
+                  },
+                ],
+              },
+              {
                 key: "hwAccel",
                 label: {
                   source: "Hardware acceleration",
@@ -878,6 +940,20 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 step: 1,
               },
               {
+                key: "throttleSeconds",
+                label: {
+                  source: "Throttle buffer (seconds)",
+                },
+                help: {
+                  source:
+                    "How far ahead of the viewer Ether prepares video before it pauses the work, in every app (16–600 seconds; Live TV is unaffected). 0 uses the built-in distance: 16 seconds when converting, two minutes otherwise. A larger number survives short network drops but uses more processor, disk and download quota for video that may never be watched.",
+                },
+                kind: "number",
+                min: 0,
+                max: 600,
+                step: 1,
+              },
+              {
                 key: "remoteMaxBitrateKbps",
                 label: {
                   source: "Remote bitrate cap",
@@ -889,6 +965,22 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 kind: "number",
                 min: 0,
                 step: 500,
+                unit: {
+                  source: "kbps",
+                },
+              },
+              {
+                key: "remoteUploadBudgetKbps",
+                label: {
+                  source: "Internet upload speed",
+                },
+                help: {
+                  source:
+                    "Total upload speed shared across all remote streams. 0 lets Ether measure it automatically from real remote streams.",
+                },
+                kind: "number",
+                min: 0,
+                step: 1000,
                 unit: {
                   source: "kbps",
                 },
@@ -1988,13 +2080,14 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
               {
                 key: "trustedProxyCIDRs",
                 label: {
-                  source: "Trusted proxy networks",
+                  source: "Trusted reverse proxies",
                 },
                 help: {
-                  source: "Networks whose forwarding headers Ether trusts. Empty trusts none.",
+                  source:
+                    "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
                 },
                 kind: "list",
-                placeholder: "10.0.0.0/8",
+                placeholder: "192.168.1.5, 10.0.0.0/8",
               },
               {
                 key: "logLevel",

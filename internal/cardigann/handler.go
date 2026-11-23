@@ -20,6 +20,8 @@ type HandlerDeps struct {
 	Indexers func() []config.Indexer
 	// Unredact restores secrets the UI sent back as placeholders.
 	Unredact func(config.Indexer) config.Indexer
+	// OnChange notifies the dashboard when definitions are installed or removed.
+	OnChange func()
 }
 
 // Handler serves the owner API for built-in indexers:
@@ -34,6 +36,11 @@ type HandlerDeps struct {
 //	POST   /test                   test an indexer config (saved or not)
 //	GET    /status                 last test result per indexer
 func (s *Service) Handler(deps HandlerDeps) http.Handler {
+	notify := func() {
+		if deps.OnChange != nil {
+			deps.OnChange()
+		}
+	}
 	m := http.NewServeMux()
 	m.HandleFunc("GET /definitions", func(w http.ResponseWriter, r *http.Request) {
 		list, err := s.Definitions(r.Context())
@@ -56,6 +63,7 @@ func (s *Service) Handler(deps HandlerDeps) http.Handler {
 			writeDefinitionError(w, err)
 			return
 		}
+		notify()
 		writeJSON(w, http.StatusOK, map[string]any{"definition": sum})
 	})
 	m.HandleFunc("GET /definitions/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +92,7 @@ func (s *Service) Handler(deps HandlerDeps) http.Handler {
 			writeDefinitionError(w, err)
 			return
 		}
+		notify()
 		writeJSON(w, http.StatusOK, map[string]any{"removed": id})
 	})
 	m.HandleFunc("GET /catalog", func(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +119,7 @@ func (s *Service) Handler(deps HandlerDeps) http.Handler {
 			writeDefinitionError(w, err)
 			return
 		}
+		notify()
 		writeJSON(w, http.StatusOK, map[string]any{"definition": sum})
 	})
 	m.HandleFunc("POST /update", func(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +130,7 @@ func (s *Service) Handler(deps HandlerDeps) http.Handler {
 			writeDefinitionError(w, err)
 			return
 		}
+		notify()
 		writeJSON(w, http.StatusOK, rep)
 	})
 	m.HandleFunc("POST /test", func(w http.ResponseWriter, r *http.Request) {

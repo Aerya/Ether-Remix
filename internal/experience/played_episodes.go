@@ -38,13 +38,13 @@ func (s *Service) playedEpisodePage(ctx context.Context, v *core.User, library *
 	if !d.complete() || library == nil || library.Type != core.TypeShow || !q.Recursive ||
 		len(q.Types) != 1 || q.Types[0] != core.TypeEpisode ||
 		q.Watched == nil || !*q.Watched || q.Favorite != nil || q.Season != nil ||
-		q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0 {
+		q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0 || q.Filter.IncludeKeys != nil {
 		return core.Page{}, false, nil
 	}
 	// Only the order this path serves correctly: the viewer's last-played
 	// time (Jellyfin/Emby "DatePlayed"). Any other order keeps today's path,
 	// which never becomes a last-played scan.
-	if q.Sort != core.SortPlayed {
+	if !q.Sort.IsLastViewed() {
 		return core.Page{}, false, nil
 	}
 	// A viewer's own episode-group or hidden-specials setting changes which
@@ -54,7 +54,7 @@ func (s *Service) playedEpisodePage(ctx context.Context, v *core.User, library *
 			return core.Page{}, false, err
 		}
 	}
-	show := core.Filter{Type: core.TypeShow, MaxContentRating: v.MaxContentRating}
+	show := scopedShowFilter(q.Filter, v)
 	if s.d.PageExclusions != nil {
 		ex := s.d.PageExclusions(ctx, v, core.TypeEpisode)
 		if ex.Err != nil {
@@ -73,8 +73,10 @@ func (s *Service) playedEpisodePage(ctx context.Context, v *core.User, library *
 		if s.d.PageExclusions == nil {
 			return core.Page{}, false, nil
 		}
-		if id, ok := s.d.Visibility.SectionFor(core.TypeEpisode); !ok || !SectionAllowed(v, id) {
-			return core.Page{Items: []core.Title{}}, true, nil
+		if !library.Virtual {
+			if id, ok := s.d.Visibility.SectionFor(core.TypeEpisode); !ok || !SectionAllowed(v, id) {
+				return core.Page{Items: []core.Title{}}, true, nil
+			}
 		}
 	}
 	if s.d.ParentTitles == nil {
@@ -101,6 +103,9 @@ func (s *Service) playedEpisodePage(ctx context.Context, v *core.User, library *
 	// per-item watched re-check here would read state again for nothing.
 	visq := q
 	visq.Watched = nil
+	if visq.Filter.Type == library.Type {
+		visq.Filter.Type = ""
+	}
 	for reads, at := 0, 0; len(kept) < want && reads < maxPlayedEpisodeBatches; reads++ {
 		batch, err := d.Page(ctx, show, v.ID, showKey, desc, at, playedEpisodeBatch)
 		if err != nil {
@@ -110,7 +115,7 @@ func (s *Service) playedEpisodePage(ctx context.Context, v *core.User, library *
 			break
 		}
 		at += len(batch)
-		visible, err := s.visibleEpisodes(ctx, v, batch, visq, show.HiddenShowSeq != 0)
+		visible, err := s.visibleEpisodes(ctx, v, batch, visq, show.HiddenShowSeq != 0, library.Virtual)
 		if err != nil {
 			return core.Page{}, false, err
 		}

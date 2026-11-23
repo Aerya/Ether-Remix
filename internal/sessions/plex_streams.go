@@ -86,13 +86,19 @@ func (t *StreamTable) Bind(binding StreamBinding) (int64, error) {
 				ref.binding.Index = binding.Index
 				ref.binding.Info = binding.Info
 				ref.binding.WireID = id
+				if !binding.Estimated {
+					ref.binding.Estimated = false
+				}
 				t.byID[id] = ref
 				return id, nil
 			}
 			stored := binding
 			stored.WireID = id
-			if ok && stored.SessionID == "" {
-				stored.SessionID = ref.binding.SessionID
+			if ok {
+				if stored.SessionID == "" {
+					stored.SessionID = ref.binding.SessionID
+				}
+				stored.Estimated = ref.binding.Estimated && binding.Estimated
 			}
 			t.byID[id] = adapterStreamRef{binding: stored, slot: slot}
 			return id, nil
@@ -175,7 +181,14 @@ func (b *Broker) OpenSidecar(ctx context.Context, access frontend.SessionAccess,
 		sess = b.sessions[binding.SessionID]
 		b.mu.Unlock()
 	}
-	reader, info, err := b.openExternalSidecar(ctx, sess, binding.Info)
+	if sess == nil {
+		sess = b.activeSidecarSession(viewer.ID, access.Device.ID, binding.Key)
+	}
+	source := b.playSource(sess)
+	if source == "" {
+		source = b.activePlaybackSource(viewer.ID, access.Device.ID, binding.Key)
+	}
+	reader, info, err := b.openExternalSidecar(ctx, source, binding.Info)
 	if err != nil || reader == nil {
 		if reader != nil {
 			_ = reader.Close()
@@ -186,6 +199,62 @@ func (b *Broker) OpenSidecar(ctx context.Context, access frontend.SessionAccess,
 		return nil, core.StreamInfo{}, err
 	}
 	return reader, info, nil
+}
+
+func (b *Broker) activeSidecarSession(viewer int64, deviceID string, key core.RatingKey) *brokerSession {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var fallback *brokerSession
+	for _, s := range b.sessions {
+		if s == nil || s.public.ViewerID != viewer || s.public.Item != key {
+			continue
+		}
+		if deviceID != "" && s.clientID == deviceID {
+			return s
+		}
+		if fallback == nil {
+			fallback = s
+		}
+	}
+	return fallback
+}
+
+func (b *Broker) activePlaybackSource(viewer int64, deviceID string, key core.RatingKey) string {
+	if b.deps.Playback == nil {
+		return ""
+	}
+	var found *core.PlaySession
+	if deviceID != "" {
+		if ps, ok := b.deps.Playback.SessionFor(viewer, deviceID, key); ok && ps != nil && !ps.PreparedOnly {
+			found = ps
+		}
+	}
+	if found == nil {
+		for _, ps := range b.deps.Playback.Sessions() {
+			if ps == nil || ps.PreparedOnly || ps.UserID != viewer || ps.Key != key {
+				continue
+			}
+			if deviceID != "" && ps.ClientID == deviceID {
+				found = ps
+				break
+			}
+			if found == nil {
+				found = ps
+			}
+		}
+	}
+	if found == nil {
+		return ""
+	}
+	if keyer, ok := b.deps.Playback.(interface{ SourceKey(string) string }); ok && found.ID != "" {
+		if k := keyer.SourceKey(found.ID); k != "" {
+			return k
+		}
+	}
+	if found.Resolution != nil && found.Resolution.Release.ID != "" {
+		return found.Resolution.Release.ID
+	}
+	return found.ID
 }
 
 func (b *Broker) confirmPlex(ctx context.Context, access frontend.SessionAccess) (*core.Viewer, error) {
@@ -199,7 +268,7 @@ func (b *Broker) adapterSessionOwned(id string, viewer int64) bool {
 	return s != nil && b.policy(s.public.Protocol).ExternalAdmission && s.public.ViewerID == viewer
 }
 
-func (b *Broker) openExternalSidecar(ctx context.Context, s *brokerSession, info core.StreamInfo) (io.ReadCloser, core.StreamInfo, error) {
+func (b *Broker) openExternalSidecar(ctx context.Context, source string, info core.StreamInfo) (io.ReadCloser, core.StreamInfo, error) {
 	src := info.ExternalURL
 	if strings.HasPrefix(src, "ether-subtitle:") {
 		_, format := frontend.StreamServeFrom(ctx)
@@ -211,8 +280,8 @@ func (b *Broker) openExternalSidecar(ctx context.Context, s *brokerSession, info
 			actual string
 			err    error
 		)
-		if s != nil {
-			reader, actual, err = b.openSubtitle(s, src, format)
+		if source != "" && b.deps.OpenSubtitleFrom != nil {
+			reader, actual, err = b.deps.OpenSubtitleFrom(src, format, source)
 		} else if b.deps.OpenSubtitle == nil {
 			return nil, core.StreamInfo{}, core.ErrNotAvailable
 		} else {

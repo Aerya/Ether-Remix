@@ -1,12 +1,27 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { ActionMenu } from "../../components/ActionMenu";
+import { AddonCatalogDrawer } from "../collections/AddonCatalogDrawer";
 import { newCollectionHref } from "../collections/links";
 import { BulkBar } from "../../components/BulkBar";
 import { Drawer } from "../../components/Drawer";
-import { Badge, Button, Checkbox, Input, cn } from "@braedonsaunders/appkit-ui";
+import { SubtabNav } from "../../components/layout";
+import { PosterGrid } from "../../components/Poster";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  EmptyState,
+  Input,
+  Spinner,
+  cn,
+} from "@braedonsaunders/appkit-ui";
 import {
   ChevronDown,
   ChevronRight,
+  Film,
+  Layers,
   Plus,
+  Puzzle,
   RotateCcw,
   Search,
   SlidersHorizontal,
@@ -18,17 +33,21 @@ import type {
   AvailableRow,
   HomeLayout,
   LayoutSection,
+  LibraryMediaSurface,
+  RowSectionTag,
   RowGroup,
   RowInsight,
   RowPolicy,
   RowStatus,
+  Source,
   TargetSchedule,
   Viewer,
   ViewerHome,
 } from "../../lib/contract";
-import { api } from "../../lib/api";
+import { api, isAbort } from "../../lib/api";
 import { localized, t, tn, tx } from "../../i18n";
 import { WEEKDAYS, formatNumber } from "../../lib/format";
+import { useDebouncedValue } from "../../lib/hooks";
 import {
   CONTINUE,
   FRONT_END_ROWS,
@@ -36,6 +55,7 @@ import {
   describeHiddenRow,
   collectionSchedule,
   effectivePolicy,
+  isLibrarySection,
   matchRank,
   setCollectionSchedule,
   STATUS_HINT,
@@ -55,7 +75,6 @@ import { PolicyEditor, type ScheduleSource } from "./PolicyEditor";
 
 import { isPluginDescriptor, textOf, useRegistry, type Descriptor } from "../../lib/extend";
 import { useLocale } from "../../i18n/react";
-import { useNavigate } from "react-router-dom";
 import { blankSpec, newSourceFromDescriptor, type CollectionSourceMeta } from "../../lib/rules";
 
 interface PoolEntry {
@@ -131,6 +150,30 @@ const GROUPS = localized<{ key: PoolGroup; label: string; hint: string }[]>(() =
   { key: "custom", label: t("Custom patterns"), hint: t("Hub ids, kinds or globs") },
 ]);
 
+/** Context used to fetch an on-demand preview for a single row whose items are absent from the page preview. */
+export interface RowPreviewRequest {
+  viewerId: number | null;
+  device: "tv" | "mobile" | "web" | "desktop";
+  at: string;
+}
+
+function probeLayoutForRow(draft: HomeLayout, section: LayoutSection, row: string): HomeLayout {
+  const cur = draft.global.find((p) => p.section === section);
+  const home = section !== "home" ? draft.global.find((p) => p.section === "home") : undefined;
+  const isPattern = /[*?[]/.test(row);
+  const page = {
+    section,
+    ...(cur?.dedupeHome !== undefined ? { dedupeHome: cur.dedupeHome } : {}),
+    ...(cur?.tuning ? { tuning: cur.tuning } : {}),
+    rows: [{ row, status: "always" as const, ...(isPattern ? {} : { slot: 1 }) }],
+  };
+  return {
+    global: home ? [home, page] : [page],
+    viewers: [],
+    ...(draft.collectionSchedules ? { collectionSchedules: draft.collectionSchedules } : {}),
+  };
+}
+
 /**
  * The row catalogue: every row the engine, Plex or the owner's collections
  * can put on the page, with its status and constraints in this layer.
@@ -140,29 +183,35 @@ export function RowPool({
   onChange,
   layer,
   section,
+  mediaSection,
   viewers,
   available,
   focusRow,
   onFocusRow,
   preview,
   previewWho,
+  previewRequest,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
   layer: LayerKey;
   section: LayoutSection;
+  mediaSection?: LibraryMediaSurface | null;
   viewers: Viewer[];
   available: AvailableRow[];
   focusRow: string | null;
   onFocusRow: (row: string | null) => void;
   preview?: ViewerHome | null;
   previewWho?: string;
+  previewRequest?: RowPreviewRequest | null;
 }) {
   const navigate = useNavigate();
+  const onLibraryTab = isLibrarySection(section);
   const collectionKinds = useRegistry<CollectionSourceMeta>("collectionSource");
   const [q, setQ] = useState("");
   const [custom, setCustom] = useState("");
   const [patternOpen, setPatternOpen] = useState(false);
+  const [addonPickerOpen, setAddonPickerOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [folded, setFolded] = useState<Partial<Record<PoolGroup, boolean>>>({});
@@ -200,7 +249,7 @@ export function RowPool({
         (a) =>
           !FRONT_END_ROWS.has(a.kind) &&
           !byKind.get(a.kind)?.meta?.collectionSource &&
-          rowFits(a, section),
+          rowFits(a, section, mediaSection),
       )
       .map((a) => {
         const d = byKind.get(a.kind);
@@ -217,8 +266,10 @@ export function RowPool({
       if (!isPluginDescriptor(d)) continue;
       const hubId = d.meta?.hubId ?? d.id;
       if (known.has(hubId)) continue;
-      if (!rowFits({ sections: d.meta?.sections as LayoutSection[] | undefined }, section))
+      const descSections = d.meta?.sections as RowSectionTag[] | undefined;
+      if (isLibrarySection(section) && mediaSection === null && !descSections?.includes(section))
         continue;
+      if (!rowFits({ sections: descSections }, section, mediaSection)) continue;
       known.add(hubId);
       out.push({
         row: hubId,
@@ -244,7 +295,7 @@ export function RowPool({
       }
     }
     return out;
-  }, [available, draft, layer, section, locale, registry.descriptors]);
+  }, [available, draft, layer, section, mediaSection, locale, registry.descriptors]);
   const needle = q.trim().toLowerCase();
   const resolved = useMemo(
     () => new Map(entries.map((e) => [e.row, resolve(draft, layer, section, e)])),
@@ -287,23 +338,72 @@ export function RowPool({
     ).length;
   const filtering = Boolean(needle) || filter !== "all";
   const statuses: RowStatus[] = ["always", "eligible", "off"];
+  const effectiveMedia = (mediaSection ?? section) === "shows" ? "show" : "movie";
   return (
     <section
-      className={cn("space-y-2", pickedRows.length > 0 && "pb-16")}
-      aria-label={t("Row catalogue")}
+      className={cn("space-y-2", !onLibraryTab && pickedRows.length > 0 && "pb-16")}
+      aria-label={onLibraryTab ? t("Available rows") : t("Row catalogue")}
     >
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-          {t("Row catalogue")}
-        </h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+            {onLibraryTab ? t("Available rows") : t("Row catalogue")}
+          </h2>
+          <ActionMenu
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 px-2 text-xs"
+            label={t("Add row")}
+            items={[
+              ...(mediaSection === null
+                ? []
+                : [
+                    {
+                      key: "collection",
+                      label: t("New collection row…"),
+                      icon: Layers,
+                      onSelect: () => {
+                        const spec = blankSpec(effectiveMedia);
+                        spec.targets = {
+                          ...spec.targets,
+                          collectionsTab: false,
+                          homeRow: section === "home",
+                          sectionRow: section !== "home",
+                        };
+                        navigate(newCollectionHref(), { state: { spec } });
+                      },
+                    },
+                    {
+                      key: "addon-catalog",
+                      label: t("From a Stremio catalog…"),
+                      icon: Puzzle,
+                      onSelect: () => setAddonPickerOpen(true),
+                    },
+                    { key: "sep", separator: true as const },
+                  ]),
+              {
+                key: "pattern",
+                label: t("Custom row pattern…"),
+                icon: SlidersHorizontal,
+                onSelect: () => setPatternOpen(true),
+              },
+            ]}
+          >
+            <Plus size={13} /> {t("Add row")}
+          </ActionMenu>
+        </div>
         <p className="mt-0.5 text-xs text-fg-muted">
-          {layer === "global"
+          {onLibraryTab
             ? t(
-                "Always: on the page whenever it has titles. Eligible: personalization decides. Off: never.",
+                "Always: shown whenever it has titles. Eligible: personalization decides. Off: hidden.",
               )
-            : t(
-                "Changes here override Everyone for this viewer only; reset to follow Everyone again.",
-              )}
+            : layer === "global"
+              ? t(
+                  "Always: on the page whenever it has titles. Eligible: personalization decides. Off: never.",
+                )
+              : t(
+                  "Changes here override Everyone for this viewer only; reset to follow Everyone again.",
+                )}
         </p>
       </div>
       <div className="relative">
@@ -330,12 +430,6 @@ export function RowPool({
           { value: "changed", label: layer === "global" ? t("Changed") : t("Overridden") },
         ]}
       />
-      <Link
-        to={newCollectionHref({ source: "addonCatalog" })}
-        className="block rounded-lg border border-border bg-surface p-3 text-sm text-primary"
-      >
-        {t("Create a Home row from a Stremio catalog")}
-      </Link>
       {GROUPS.map((g) => {
         const rows = shown.filter((e) => e.group === g.key);
         if (!rows.length) return null;
@@ -404,10 +498,9 @@ export function RowPool({
                                 (d) => d.id === e.collectionSource,
                               );
                               if (!descriptor) return;
-                              const media = section === "shows" ? "show" : "movie";
-                              const spec = blankSpec(media);
+                              const spec = blankSpec(effectiveMedia);
                               spec.name = e.title;
-                              spec.sources = [newSourceFromDescriptor(descriptor, media)];
+                              spec.sources = [newSourceFromDescriptor(descriptor, effectiveMedia)];
                               spec.targets.homeRow = true;
                               spec.enabled = true;
                               navigate(newCollectionHref(), { state: { spec } });
@@ -422,6 +515,7 @@ export function RowPool({
                       viewers={viewers}
                       preview={preview}
                       previewWho={previewWho}
+                      previewRequest={previewRequest}
                       open={focusRow === e.row}
                       onToggle={() => onFocusRow(focusRow === e.row ? null : e.row)}
                     />
@@ -455,6 +549,8 @@ export function RowPool({
         <BulkBar
           count={pickedRows.length}
           label={t("Selected rows")}
+          floating={!onLibraryTab}
+          className={onLibraryTab ? "sticky bottom-2 z-10" : undefined}
           onClear={() => setPicked(new Set())}
         >
           {statuses.map((s) => (
@@ -481,6 +577,31 @@ export function RowPool({
             <RotateCcw size={14} /> {layer === "global" ? t("Default") : t("Reset to Everyone")}
           </Button>
         </BulkBar>
+      ) : null}
+      {addonPickerOpen ? (
+        <AddonCatalogDrawer
+          open
+          onClose={() => setAddonPickerOpen(false)}
+          onPick={(choice) => {
+            const media = choice.mediaType ?? effectiveMedia;
+            const descriptor = collectionKinds.descriptors.find((d) => d.id === choice.kind);
+            const spec = blankSpec(media);
+            spec.name = choice.label;
+            spec.sources = [
+              descriptor
+                ? newSourceFromDescriptor(descriptor, media)
+                : ({ kind: choice.kind } as Source),
+            ];
+            spec.localOnly = false;
+            spec.targets = {
+              ...spec.targets,
+              collectionsTab: false,
+              homeRow: section === "home",
+              sectionRow: section !== "home",
+            };
+            navigate(newCollectionHref(), { state: { spec } });
+          }}
+        />
       ) : null}
       <Drawer
         open={patternOpen}
@@ -536,8 +657,9 @@ function insightFor(all: RowInsight[], e: PoolEntry): RowInsight | undefined {
 }
 
 function Engagement({ insight }: { insight?: RowInsight }) {
-  if (!insight || insight.impressions7d < 5) return null;
-  const pct = Math.round(insight.playRate * 1000) / 10;
+  if (!insight || insight.impressions7d < 5 || !Number.isFinite(insight.playRate)) return null;
+  const rate = Math.min(1, Math.max(0, insight.playRate));
+  const pct = Math.round(rate * 1000) / 10;
   return (
     <span
       className="inline-flex shrink-0 items-center gap-1.5 text-[11px] tabular-nums text-fg-muted"
@@ -551,7 +673,7 @@ function Engagement({ insight }: { insight?: RowInsight }) {
       <span className="relative h-1 w-10 overflow-hidden rounded-full bg-border">
         <span
           className="absolute inset-y-0 left-0 rounded-full bg-primary"
-          style={{ width: `${Math.min(100, insight.playRate * 400)}%` }}
+          style={{ width: `${Math.min(100, rate * 400)}%` }}
         />
       </span>
       {t("{pct}% played", { pct: formatNumber(pct, 1) })}
@@ -574,6 +696,7 @@ function PoolItem({
   viewers,
   preview,
   previewWho,
+  previewRequest,
   open,
   onToggle,
 }: {
@@ -592,11 +715,21 @@ function PoolItem({
   viewers: Viewer[];
   preview?: ViewerHome | null;
   previewWho?: string;
+  previewRequest?: RowPreviewRequest | null;
   open: boolean;
   onToggle: () => void;
 }) {
   const { locale } = useLocale();
+  const onLibraryTab = isLibrarySection(section);
   const ref = useRef<HTMLLIElement>(null);
+  const [drawerTab, setDrawerTab] = useState<"settings" | "content">("settings");
+  const openedDraftRef = useRef<HomeLayout>(draft);
+  const wasOpenRef = useRef(false);
+  if (open && !wasOpenRef.current) {
+    openedDraftRef.current = draft;
+    if (drawerTab !== "settings") setDrawerTab("settings");
+  }
+  wasOpenRef.current = open;
   useEffect(() => {
     if (open) ref.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }, [open]);
@@ -651,39 +784,144 @@ function PoolItem({
       ? t("Default")
       : t("Reset to Everyone");
   const who = previewWho || t("Typical viewer");
+  // i18n: memo holds no copy
+  const pageMatchedRows = useMemo(
+    () => (preview?.rows ?? []).filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0),
+    [preview, entry.row],
+  );
+  // i18n: memo holds no copy
+  const pageActiveRows = useMemo(
+    () => pageMatchedRows.filter((r) => r.items.length > 0),
+    [pageMatchedRows],
+  );
+  const pageHiddenMatch = pageMatchedRows.find((r) => r.hidden);
+  // Rows that did not land on the assembled page (e.g. a Home-only default
+  // row or one cut by page length on a library tab) probe on demand via
+  // /layout/preview with the row pinned so Content still shows its real titles.
+  const debouncedDraft = useDebouncedValue(draft, 200);
+  const needsRowFallback =
+    open && !onCreate && Boolean(preview) && Boolean(previewRequest) && pageActiveRows.length === 0;
+  const fallbackPayload = useMemo(
+    () =>
+      needsRowFallback && previewRequest
+        ? {
+            viewerId: previewRequest.viewerId,
+            device: previewRequest.device,
+            at: previewRequest.at,
+            section,
+            layout: probeLayoutForRow(debouncedDraft, section, entry.row),
+          }
+        : null,
+    [
+      needsRowFallback,
+      previewRequest?.viewerId,
+      previewRequest?.device,
+      previewRequest?.at,
+      section,
+      entry.row,
+      debouncedDraft,
+    ],
+  );
+  const fallbackKey = useMemo(
+    () => (fallbackPayload ? JSON.stringify(fallbackPayload) : null),
+    [fallbackPayload],
+  );
+  const fallbackPayloadRef = useRef(fallbackPayload);
+  fallbackPayloadRef.current = fallbackPayload;
+  const [rowFallback, setRowFallback] = useState<{
+    key: string;
+    data: ViewerHome | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!fallbackKey || !fallbackPayloadRef.current) return;
+    const req = fallbackPayloadRef.current;
+    const ac = new AbortController();
+    api
+      .previewLayout(req, ac.signal)
+      .then((data) => {
+        if (!ac.signal.aborted) setRowFallback({ key: fallbackKey, data });
+      })
+      .catch((e) => {
+        if (!isAbort(e) && !ac.signal.aborted) {
+          setRowFallback({ key: fallbackKey, data: null });
+        }
+      });
+    return () => ac.abort();
+  }, [fallbackKey]);
+  const fallbackCurrent = fallbackKey !== null && rowFallback?.key === fallbackKey;
+  const fallbackLoading = fallbackKey !== null && !fallbackCurrent;
+  // i18n: memo holds no copy
+  const fallbackRows = useMemo(
+    () =>
+      fallbackCurrent
+        ? (rowFallback?.data?.rows ?? []).filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0)
+        : [],
+    [fallbackCurrent, rowFallback, entry.row],
+  );
+  // i18n: memo holds no copy
+  const matchedRows = useMemo(
+    () =>
+      pageActiveRows.length > 0
+        ? pageMatchedRows
+        : fallbackRows.length > 0
+          ? fallbackRows
+          : pageMatchedRows,
+    [pageActiveRows.length, pageMatchedRows, fallbackRows],
+  );
+  // i18n: memo holds no copy
+  const activePreviewRows = useMemo(
+    () => matchedRows.filter((r) => r.items.length > 0),
+    [matchedRows],
+  );
+  const contentCount = activePreviewRows.reduce((n, r) => n + r.items.length, 0);
+  const hiddenMatch = matchedRows.find((r) => r.hidden);
   const absenceNote = useMemo(() => {
     if (!preview || onCreate) return "";
-    const matched = preview.rows.filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0);
-    if (matched.some((r) => !r.hidden && r.items.length > 0)) return "";
-    const hiddenMatch = matched.find((r) => r.hidden);
+    if (pageMatchedRows.some((r) => !r.hidden && r.items.length > 0)) return "";
     if (effective.status === "always") {
-      if (matched.some((r) => !r.hidden && r.kind === CONTINUE && r.items.length === 0)) {
+      if (pageMatchedRows.some((r) => !r.hidden && r.kind === CONTINUE && r.items.length === 0)) {
         return t("Hidden for {who}: nothing in progress", { who });
       }
-      if (hiddenMatch) return describeHiddenRow(hiddenMatch, who);
+      if (pageHiddenMatch) return describeHiddenRow(pageHiddenMatch, who);
       return t("Hidden for {who}: no matching titles", { who });
     }
     if (
       effective.status === "eligible" &&
-      hiddenMatch?.hiddenCode &&
+      pageHiddenMatch?.hiddenCode &&
       [
         "outside_collection_schedule",
         "collection_disabled",
         "collection_not_shared",
         "outside_schedule",
         "weekly_cap",
-      ].includes(hiddenMatch.hiddenCode)
+      ].includes(pageHiddenMatch.hiddenCode)
     ) {
-      return describeHiddenRow(hiddenMatch, who);
+      return describeHiddenRow(pageHiddenMatch, who);
     }
     return "";
-  }, [preview, onCreate, entry.row, effective.status, who, locale]);
+  }, [preview, onCreate, pageMatchedRows, pageHiddenMatch, effective.status, who, locale]);
   return (
     <li
       ref={ref}
       aria-label={t("Row {title}", { title: entry.title })}
+      onClick={
+        !onCreate
+          ? (ev) => {
+              if (
+                !ev.currentTarget.contains(ev.target as Node) ||
+                (ev.target as HTMLElement).closest(
+                  'button, input, label, a, [role="radiogroup"], [role="checkbox"]',
+                )
+              ) {
+                return;
+              }
+              onToggle();
+            }
+          : undefined
+      }
       className={cn(
-        "rounded-lg border bg-surface p-2.5",
+        "rounded-lg border bg-surface p-2.5 transition-colors",
+        !onCreate && "cursor-pointer hover:border-border-strong",
         own && layer !== "global" ? "border-info/40" : "border-border",
         picked && "border-primary/50 bg-primary-subtle/30",
         open && "ring-2 ring-primary/30",
@@ -784,7 +1022,7 @@ function PoolItem({
           <Engagement insight={insight} />
         </div>
       )}
-      {layer === "global" && own ? (
+      {layer === "global" && own && viewers.length > 0 ? (
         <p className="mt-1.5 text-[11px] text-fg-muted">
           {tn(
             viewers.length - overriding.length,
@@ -800,49 +1038,150 @@ function PoolItem({
         open={open}
         onClose={onToggle}
         title={entry.title}
-        description={t(
-          "Adjust this row in the current Home draft. Save the Home layout to apply it.",
-        )}
+        description={
+          onLibraryTab
+            ? t("Adjust this row on this tab. Save the tab to apply it.")
+            : t("Adjust this row in the current Home draft. Save the Home layout to apply it.")
+        }
         size="lg"
-      >
-        {" "}
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Segmented
-            ariaLabel={t("Status of {title}", { title: entry.title })}
-            size="sm"
-            value={effective.status}
-            onChange={setStatus}
-            options={statuses.map((s) => ({
-              value: s,
-              label: <span title={STATUS_HINT[s]}>{STATUS_LABEL[s]}</span>,
-            }))}
-          />
-          {own ? (
+        footer={
+          <div className="flex justify-end gap-2">
             <Button
+              type="button"
               variant="ghost"
               size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={reset}
-              aria-label={
-                pattern
-                  ? t("Remove the rule {title}", { title: entry.title })
-                  : layer === "global"
-                    ? t("Back to default: {title}", { title: entry.title })
-                    : t("Reset to Everyone: {title}", { title: entry.title })
-              }
+              onClick={() => {
+                onChange(openedDraftRef.current);
+                onToggle();
+              }}
             >
-              {pattern ? <Trash2 size={12} /> : <RotateCcw size={12} />} {resetLabel}
+              {t("Cancel")}
             </Button>
-          ) : null}
-        </div>
-        {resolved.origin === "pattern" ? (
-          <p className="mt-2 text-xs text-fg-muted">
-            {t("Set by the rule {pattern}. Changing it here gives this row its own setting.", {
-              pattern: resolved.via ?? "",
-            })}
-          </p>
-        ) : null}
-        <PolicyEditor policy={effective} title={entry.title} onChange={edit} schedule={schedule} />
+            <Button type="button" size="sm" onClick={onToggle}>
+              {t("Done")}
+            </Button>
+          </div>
+        }
+      >
+        <SubtabNav
+          ariaLabel={t("Row sections")}
+          active={drawerTab}
+          onSelect={(key) => setDrawerTab(key as "settings" | "content")}
+          tabs={[
+            { key: "settings", label: t("Settings") },
+            {
+              key: "content",
+              label: t("Content"),
+              count: contentCount || undefined,
+            },
+          ]}
+        />
+        {drawerTab === "settings" ? (
+          <div className="space-y-5">
+            <section className="space-y-2 text-xs" aria-label={t("Visibility")}>
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+                  {t("Visibility")}
+                </h3>
+                <p className="mt-0.5 text-fg-muted">{STATUS_HINT[effective.status]}</p>
+              </div>
+              <div className="space-y-2.5 rounded-xl border border-border bg-surface p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Segmented
+                    ariaLabel={t("Status of {title}", { title: entry.title })}
+                    size="sm"
+                    value={effective.status}
+                    onChange={setStatus}
+                    options={statuses.map((s) => ({
+                      value: s,
+                      label: <span title={STATUS_HINT[s]}>{STATUS_LABEL[s]}</span>,
+                    }))}
+                  />
+                  {own ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={reset}
+                      aria-label={
+                        pattern
+                          ? t("Remove the rule {title}", { title: entry.title })
+                          : layer === "global"
+                            ? t("Back to default: {title}", { title: entry.title })
+                            : t("Reset to Everyone: {title}", { title: entry.title })
+                      }
+                    >
+                      {pattern ? <Trash2 size={12} /> : <RotateCcw size={12} />} {resetLabel}
+                    </Button>
+                  ) : null}
+                </div>
+                {resolved.origin === "pattern" ? (
+                  <p className="text-xs text-fg-muted">
+                    {t(
+                      "Set by the rule {pattern}. Changing it here gives this row its own setting.",
+                      { pattern: resolved.via ?? "" },
+                    )}
+                  </p>
+                ) : null}
+              </div>
+            </section>
+            <PolicyEditor
+              policy={effective}
+              title={entry.title}
+              onChange={edit}
+              schedule={schedule}
+            />
+          </div>
+        ) : !preview ? (
+          <EmptyState
+            icon={<Film />}
+            title={t("Preview unavailable")}
+            description={t("Waiting for the current preview to finish loading.")}
+          />
+        ) : fallbackLoading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-xs text-fg-muted">
+            <Spinner size={16} label={t("Loading preview")} />
+            <span>{t("Loading preview…")}</span>
+          </div>
+        ) : activePreviewRows.length === 0 ? (
+          <EmptyState
+            icon={<Film />}
+            title={t("No titles in this preview")}
+            description={
+              (hiddenMatch ? describeHiddenRow(hiddenMatch, who) : absenceNote) ||
+              t("No matching titles for {who} right now.", { who })
+            }
+          />
+        ) : (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-fg-muted">
+              <span>
+                {tn(
+                  contentCount,
+                  "{count} title in the current preview for {who}",
+                  "{count} titles in the current preview for {who}",
+                  { who },
+                )}
+              </span>
+              {matchedRows.every((r) => r.hidden) && hiddenMatch ? (
+                <Badge variant="warning">{describeHiddenRow(hiddenMatch, who)}</Badge>
+              ) : null}
+            </div>
+            {activePreviewRows.map((r) => (
+              <div key={r.hubId} className="space-y-2.5">
+                {activePreviewRows.length > 1 || r.title !== entry.title || r.reason ? (
+                  <div className="space-y-0.5">
+                    {activePreviewRows.length > 1 || r.title !== entry.title ? (
+                      <h3 className="text-sm font-semibold text-fg">{r.title}</h3>
+                    ) : null}
+                    {r.reason ? <p className="text-xs text-fg-muted">{r.reason}</p> : null}
+                  </div>
+                ) : null}
+                <PosterGrid items={r.items} reasons={r.itemReasons} />
+              </div>
+            ))}
+          </div>
+        )}
       </Drawer>
     </li>
   );

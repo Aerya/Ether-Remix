@@ -31,3 +31,9 @@ const GrantCredentialPrefix = "eg1_"
 
 // IsGrantCredential reports whether a credential uses Ether's reserved prefix.
 func IsGrantCredential(s string) bool { return strings.HasPrefix(s, GrantCredentialPrefix) }
+
+// APIKeyCredentialPrefix reserves Ether-issued API keys from external providers.
+const APIKeyCredentialPrefix = "ek1_"
+
+// IsAPIKeyCredential reports whether a credential uses Ether's reserved API key prefix.
+func IsAPIKeyCredential(s string) bool { return strings.HasPrefix(s, APIKeyCredentialPrefix) }

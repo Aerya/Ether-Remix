@@ -12,6 +12,7 @@ import (
 type RARFile struct {
 	NonRegular   bool        // Unix special file, reparse point or RAR redirection
 	UnsafeName   bool        // name used a backslash before normalization
+	StoredName   string      // decoded original name, before separator normalization
 	Name         string      // path inside the archive, '/'-separated
 	HeaderOffset int64       // offset of the block header in this volume
 	DataOffset   int64       // offset of this file's data in this volume
@@ -48,9 +49,13 @@ type RAROptions struct {
 	// MaxFiles stops parsing after this many file headers (0 = no limit).
 	MaxHeaderBytes int64 // optional pre-allocation header ceiling (0 = format maximum)
 	MaxFiles       int
-	Password       string `json:"-"`
-	Context        context.Context
-	PasswordCache  *RARPasswordCache
+	// SizeEstimated indicates size is only an estimate of r's byte length,
+	// so header-declared data sizes may exceed size. Short header reads and
+	// genuinely truncated volumes still fail with ErrCorrupt.
+	SizeEstimated bool
+	Password      string `json:"-"`
+	Context       context.Context
+	PasswordCache *RARPasswordCache
 }
 
 // ReadRARVolume parses the block headers of one RAR4 or RAR5 volume without
@@ -71,19 +76,46 @@ func ReadRARVolume(r io.ReaderAt, size int64, opts *RAROptions) (*RARVolume, err
 			return nil, err
 		}
 	}
-	n := min(int64(SignatureLen), max(size, 0))
-	head := make([]byte, n)
-	if err := readAt(r, head, 0, size); err != nil {
-		return nil, err
+	limit := size
+	var head []byte
+	if o.SizeEstimated {
+		limit = math.MaxInt64
+		buf := make([]byte, SignatureLen)
+		n, err := r.ReadAt(buf, 0)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("archive: read at offset 0: %w", err)
+		}
+		head = buf[:n]
+	} else {
+		n := min(int64(SignatureLen), max(size, 0))
+		head = make([]byte, n)
+		if err := readAt(r, head, 0, size); err != nil {
+			return nil, err
+		}
 	}
 	switch Detect(head) {
 	case FormatRAR4:
-		return readRAR4(r, size, o)
+		return readRAR4(r, limit, o)
 	case FormatRAR5:
-		return readRAR5(r, size, o)
+		return readRAR5(r, limit, o)
 	default:
 		return nil, fmt.Errorf("archive: no RAR signature: %w", ErrNotArchive)
 	}
+}
+
+// atEstimatedVolumeEnd reports whether r ends cleanly on block boundary pos
+// (such as a volume without an end-of-archive block) rather than before pos.
+func atEstimatedVolumeEnd(r io.ReaderAt, pos int64) bool {
+	if pos <= 0 {
+		return false
+	}
+	var b [1]byte
+	n, err := r.ReadAt(b[:], pos)
+	if n > 0 || (err != io.EOF && err != io.ErrUnexpectedEOF) {
+		return false
+	}
+	n, _ = r.ReadAt(b[:], pos-1)
+	return n == 1
 }
 
 // MethodName returns the human-readable compression method of a RAR file header.

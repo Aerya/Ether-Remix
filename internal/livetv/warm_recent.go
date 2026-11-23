@@ -1,10 +1,21 @@
 package livetv
 
-import "time"
+import (
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+)
 
 // warmWatchedWindow is how long after a channel was last watched its
 // recent-activity entry remains recorded.
 const warmWatchedWindow = 2 * time.Hour
+
+// viewerWatchedWindow and viewerWatchedCap bound per-viewer recent channel
+// watch memory used for watch-target preference ranking.
+const (
+	viewerWatchedWindow = 7 * 24 * time.Hour
+	viewerWatchedCap    = 64
+)
 
 // activeWatchGrace bounds direct noteWatchedLocked marks when no session struct
 // is attached; closing the last session on a channel clears activeWatched at once.
@@ -124,4 +135,96 @@ func (s *Service) recentlyWatched() map[string]bool {
 		out[id] = true
 	}
 	return out
+}
+
+// NoteViewerWatched records that viewerID recently tuned channelID, bumping
+// that viewer's watch-preference revision for sports watch-target ranking.
+func (s *Service) NoteViewerWatched(viewerID int64, channelID string) {
+	if s == nil || viewerID <= 0 || channelID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.noteViewerWatchedLocked(viewerID, channelID)
+	s.mu.Unlock()
+}
+
+// noteViewerWatchedLocked records a bounded per-viewer channel tune; s.mu held.
+func (s *Service) noteViewerWatchedLocked(viewerID int64, channelID string) {
+	if viewerID <= 0 || channelID == "" {
+		return
+	}
+	now := s.o.Now()
+	if s.viewerWatched == nil {
+		s.viewerWatched = make(map[int64]map[string]time.Time)
+	}
+	if s.viewerWatchedGen == nil {
+		s.viewerWatchedGen = make(map[int64]uint64)
+	}
+	m := s.viewerWatched[viewerID]
+	if m == nil {
+		m = make(map[string]time.Time)
+		s.viewerWatched[viewerID] = m
+	}
+	m[channelID] = now
+	for id, at := range m {
+		if now.Sub(at) > viewerWatchedWindow {
+			delete(m, id)
+		}
+	}
+	for len(m) > viewerWatchedCap {
+		var oldestID string
+		var oldestAt time.Time
+		for id, at := range m {
+			if oldestID == "" || at.Before(oldestAt) {
+				oldestID = id
+				oldestAt = at
+			}
+		}
+		if oldestID == "" {
+			break
+		}
+		delete(m, oldestID)
+	}
+	s.viewerWatchedGen[viewerID]++
+}
+
+func (s *Service) viewerRecentWatched(u *core.User) (map[string]time.Time, uint64) {
+	if s == nil || u == nil || u.ID <= 0 {
+		return nil, 0
+	}
+	now := s.o.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out map[string]time.Time
+	if m := s.viewerWatched[u.ID]; len(m) > 0 {
+		for id, at := range m {
+			if now.Sub(at) > viewerWatchedWindow {
+				delete(m, id)
+				continue
+			}
+			if out == nil {
+				out = make(map[string]time.Time, len(m))
+			}
+			out[id] = at
+		}
+	}
+	for _, ss := range s.sessions {
+		if ss.info.UserID != u.ID || ss.info.Channel.ID == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]time.Time, 1)
+		}
+		out[ss.info.Channel.ID] = now
+	}
+	return out, s.viewerWatchedGen[u.ID]
+}
+
+func (s *Service) viewerRecentWatchedGen(u *core.User) uint64 {
+	if s == nil || u == nil || u.ID <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.viewerWatchedGen[u.ID]
 }

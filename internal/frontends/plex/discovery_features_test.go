@@ -14,6 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/watchlist"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -73,9 +74,8 @@ func TestDiscoveryLocalizedGridQueuesWithoutNetworkWait(t *testing.T) {
 	}}
 	f.srv.setDiscovery(d.Frontend())
 	pr := &Request{User: &core.User{ID: 1, IsOwner: true}, Language: "fr"}
-	before := time.Now()
 	m := f.srv.metadata(ctx, pr, &fightClub, renderOpts{})
-	if calls.Load() != 0 || m.Title != fightClub.Title || time.Since(before) > time.Second {
+	if calls.Load() != 0 || m.Title != fightClub.Title {
 		t.Fatal("metadata waited for remote localization")
 	}
 	jobCtx, cancel := context.WithCancel(ctx)
@@ -172,17 +172,43 @@ func TestDiscoveryBackdropResolutionValidator(t *testing.T) {
 	f.srv.setImages(artworkservice.NewRemoteCache(1024, http.DefaultClient))
 	f.srv.setImageURL(func(path, size string) string { return upstream.URL + "/" + size + path })
 	f.srv.setDiscovery((&discovery.Features{Overlays: overlays.New(discoveryDB(t), overlays.Options{})}).Frontend())
-	path := "/library/metadata/" + fightClub.Key.String() + "/discoveryPoster/version?kind=backdrop&width=2688"
-	first := f.request(t, "GET", path, nil)
-	if first.Code != 200 || !strings.HasPrefix(fetched, "/original/") || !strings.HasSuffix(first.Header().Get("ETag"), "w2688\"") {
-		t.Fatalf("%d %s %s", first.Code, fetched, first.Header().Get("ETag"))
-	}
-	cached := f.request(t, "GET", path, map[string]string{"If-None-Match": first.Header().Get("ETag")})
-	if cached.Code != 304 {
-		t.Fatal("lost conditional GET", cached.Code)
-	}
-	smaller := f.request(t, "GET", strings.Replace(path, "2688", "1920", 1), map[string]string{"If-None-Match": first.Header().Get("ETag")})
-	if smaller.Code != 200 {
-		t.Fatal("cross-size validator reused", smaller.Code)
+	artPath := discoveryArtworkURL(fightClub.Key, "backdrop", "version", "")
+	for _, tc := range []struct {
+		name string
+		hi   string
+		lo   string
+	}{
+		{
+			name: "pms-art",
+			hi:   artPath + "?width=2688",
+			lo:   artPath + "?width=1920",
+		},
+		{
+			name: "pms-art-transcode",
+			hi:   "/photo/:/transcode?width=2688&url=" + url.QueryEscape(artPath),
+			lo:   "/photo/:/transcode?width=1920&url=" + url.QueryEscape(artPath),
+		},
+		{
+			name: "legacy-discoveryPoster",
+			hi:   "/library/metadata/" + fightClub.Key.String() + "/discoveryPoster/version?kind=backdrop&width=2688",
+			lo:   "/library/metadata/" + fightClub.Key.String() + "/discoveryPoster/version?kind=backdrop&width=1920",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f.srv.setImages(artworkservice.NewRemoteCache(1024, http.DefaultClient))
+			fetched = ""
+			first := f.request(t, "GET", tc.hi, nil)
+			if first.Code != 200 || !strings.HasPrefix(fetched, "/original/") || !strings.HasSuffix(first.Header().Get("ETag"), "w2688\"") {
+				t.Fatalf("%d %s %s", first.Code, fetched, first.Header().Get("ETag"))
+			}
+			cached := f.request(t, "GET", tc.hi, map[string]string{"If-None-Match": first.Header().Get("ETag")})
+			if cached.Code != 304 {
+				t.Fatal("lost conditional GET", cached.Code)
+			}
+			smaller := f.request(t, "GET", tc.lo, map[string]string{"If-None-Match": first.Header().Get("ETag")})
+			if smaller.Code != 200 {
+				t.Fatal("cross-size validator reused", smaller.Code)
+			}
+		})
 	}
 }

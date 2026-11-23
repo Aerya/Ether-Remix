@@ -39,7 +39,7 @@ type assembly struct {
 	// pageLen is the page length the final layout pass will truncate to
 	// (0 = unknown: every selected row drafts titles as equals).
 	pageLen int
-	// lead is what the viewer's Home leads with (Movies/TV pages with
+	// lead is what the viewer's Home leads with (library pages with
 	// DedupeHome); nil = no dedupe.
 	lead    *homeLead
 	weights map[*candRow]float64 // surface prior weight of admitted rows
@@ -107,10 +107,12 @@ func (a *assembly) run() []core.HomeRow {
 		}
 		rr := &rankedRow{c: c, items: items, hubID: hubID}
 		if a.layout != nil {
-			p, _ := effectiveHomePolicy(*a.layout, a.user.ID, sectionName(a.section), core.HomeRow{HubID: rr.hubID, Kind: c.kind})
+			target := a.layoutTarget()
+			p, _ := effectiveHomePolicy(*a.layout, a.user.ID, target, core.HomeRow{HubID: rr.hubID, Kind: c.kind})
 			if p != nil {
 				rr.d.hidden = p.Status == "off" || !whenMatches(p.When, a.hc) || !weekEligible(a.user.ID, p.Row, a.hc, p.MaxDaysPerWeek)
 				rr.d.pinned = !rr.d.hidden && p.Status == "always"
+				rr.d.repeats = p.ShowRepeats != nil && *p.ShowRepeats
 				if p.Slot > 0 {
 					rr.d.position = p.Slot - 1
 				}
@@ -332,6 +334,18 @@ func (a *assembly) fill(ordered []*rankedRow, maxRows int) []core.HomeRow {
 				claimed[it.t.Key] = true
 			}
 		}
+		// Rows that show repeats take their own shelf without claiming it, so
+		// they neither lose titles to other rows nor take any from them.
+		for _, r := range sel {
+			if !r.d.repeats || r.c.kind == KindFavorites || behaviorForRowSource(r.c.source).claimsFirst {
+				continue
+			}
+			items := r.items
+			if n := a.rowCap(r.c); len(items) > n {
+				items = items[:n]
+			}
+			picked[r] = items
+		}
 		// Pinned ("always") rows rescued from dedupe starvation claim their
 		// reserved title before greedy/round-robin rows draft.
 		for _, r := range sel {
@@ -354,7 +368,7 @@ func (a *assembly) fill(ordered []*rankedRow, maxRows int) []core.HomeRow {
 			// Ordered utility/collection rows retain their live order and priority.
 			if len(a.previous) > 0 {
 				for _, r := range sel {
-					if r.c.kind == KindFavorites || !behaviorForRowSource(r.c.source).participatesInDraft || (r.c.source == core.RowSourceEngine && !r.c.keepOrder) || !draftsFirst(r.c) || !inPhase(r) {
+					if r.c.kind == KindFavorites || r.d.repeats || !behaviorForRowSource(r.c.source).participatesInDraft || (r.c.source == core.RowSourceEngine && !r.c.keepOrder) || !draftsFirst(r.c) || !inPhase(r) {
 						continue
 					}
 					for _, it := range r.items {
@@ -370,7 +384,7 @@ func (a *assembly) fill(ordered []*rankedRow, maxRows int) []core.HomeRow {
 				a.retainItems(sel, picked, claimed, inPhase)
 			}
 			for _, r := range draftOrder {
-				if r.c.kind == KindFavorites || !behaviorForRowSource(r.c.source).participatesInDraft || !draftsFirst(r.c) || !inPhase(r) {
+				if r.c.kind == KindFavorites || r.d.repeats || !behaviorForRowSource(r.c.source).participatesInDraft || !draftsFirst(r.c) || !inPhase(r) {
 					continue
 				}
 				for _, it := range r.items {
@@ -387,7 +401,7 @@ func (a *assembly) fill(ordered []*rankedRow, maxRows int) []core.HomeRow {
 			for progress := true; progress; {
 				progress = false
 				for _, r := range sel {
-					if !behaviorForRowSource(r.c.source).participatesInDraft || draftsFirst(r.c) || !inPhase(r) || len(picked[r]) >= a.rowCap(r.c) {
+					if r.d.repeats || !behaviorForRowSource(r.c.source).participatesInDraft || draftsFirst(r.c) || !inPhase(r) || len(picked[r]) >= a.rowCap(r.c) {
 						continue
 					}
 					for cursor[r] < len(r.items) {
@@ -410,6 +424,9 @@ func (a *assembly) fill(ordered []*rankedRow, maxRows int) []core.HomeRow {
 		if attempt < maxAttempts {
 			claimedBy := map[core.RatingKey]*rankedRow{}
 			for _, r := range sel {
+				if r.d.repeats {
+					continue // its titles stay available to every other row
+				}
 				for _, it := range picked[r] {
 					if claimedBy[it.t.Key] == nil {
 						claimedBy[it.t.Key] = r
@@ -515,7 +532,8 @@ func (a *assembly) survivors(sel []*rankedRow) map[*rankedRow]bool {
 		d = *a.layout
 	}
 	out := make(map[*rankedRow]bool, len(sel))
-	for _, hr := range arrangeLayout(rows, d, a.user.ID, a.hc, a.surface(), a.pageLen) {
+	target := a.layoutTarget()
+	for _, hr := range arrangeLayoutFor(rows, d, a.user.ID, a.hc, target, a.pageLen) {
 		if r := byID[hr.HubID]; r != nil && !hr.Hidden {
 			out[r] = true
 		}

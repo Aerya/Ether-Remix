@@ -1,0 +1,115 @@
+{
+  "id": "org.ether.sports",
+  "version": "1.0.0",
+  "name": "Sports",
+  "description": "Live scores, standings and schedules across 17 leagues from ESPN.",
+  "ether": {
+    "protocol": 1,
+    "kind": "extension",
+    "capabilities": [
+      "live_events"
+    ],
+    "summary": "$t:summary",
+    "icon": "assets/icon.svg",
+    "runtime": {
+      "kind": "hosted",
+      "entry": "src/plugin.ts",
+      "limits": {
+        "memoryBytes": 67108864
+      }
+    },
+    "permissions": {
+      "network": [
+        "site.api.espn.com",
+        "site.web.api.espn.com"
+      ]
+    },
+    "strings": {
+      "en": "i18n/en.json",
+      "fr": "i18n/fr.json"
+    },
+    "settings": {
+      "$ref": "settings.schema.json"
+    },
+    "contributes": {
+      "liveFeeds": [
+        {
+          "id": "sports",
+          "title": "$t:feed_title",
+          "minIntervalSec": 15,
+          "entityKinds": [
+            "team"
+          ]
+        }
+      ],
+      "screens": [
+        {
+          "id": "sports",
+          "title": "$t:screen_title",
+          "icon": "trophy",
+          "sections": [
+            {
+              "id": "leagues",
+              "type": "leagues",
+              "feed": "sports"
+            },
+            {
+              "id": "hero",
+              "type": "hero",
+              "feed": "sports"
+            },
+            {
+              "id": "live",
+              "type": "events",
+              "title": "$t:section_live_now",
+              "feed": "sports",
+              "query": {
+                "state": [
+                  "in"
+                ]
+              }
+            },
+            {
+              "id": "your-teams",
+              "type": "events",
+              "title": "$t:section_your_teams",
+              "feed": "sports",
+              "query": {
+                "favorites": true,
+                "window": "week"
+              }
+            },
+            {
+              "id": "today",
+              "type": "events",
+              "title": "$t:section_today",
+              "feed": "sports",
+              "query": {
+                "window": "today"
+              }
+            },
+            {
+              "id": "schedule",
+              "type": "schedule",
+              "title": "$t:section_schedule",
+              "feed": "sports"
+            },
+            {
+              "id": "standings",
+              "type": "table",
+              "title": "$t:section_standings",
+              "feed": "sports"
+            },
+            {
+              "id": "teams",
+              "type": "entities",
+              "title": "$t:section_teams",
+              "feed": "sports",
+              "entityKind": "team"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

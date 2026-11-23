@@ -34,7 +34,9 @@ func TestSharedArtworkDiscoveryIdentityAndBytesMatchPlex(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := f.srv.metadata(ctx, &Request{User: &ownerUser, Language: "fr"}, &fightClub, renderOpts{})
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%s\x00%s", ownerUser.ID, fightClub.Key, "fr", frontend.ImagePoster, md.Thumb, "artwork-v1")))
+	selected := f.srv.discovery().SelectArtwork(ctx, &ownerUser, &fightClub, "fr")
+	legacyIdentity := fmt.Sprintf("/library/metadata/%s/discoveryPoster/%s?lang=fr", fightClub.Key.String(), selected.PosterVersion)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%s\x00%s", ownerUser.ID, fightClub.Key, "fr", frontend.ImagePoster, legacyIdentity, "artwork-v1")))
 	expected := base64.RawURLEncoding.EncodeToString(sum[:])
 	var poster frontend.Image
 	for _, image := range images {
@@ -50,7 +52,7 @@ func TestSharedArtworkDiscoveryIdentityAndBytesMatchPlex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct := f.get(t, md.Thumb+"&width=300")
+	direct := f.get(t, md.Thumb+"?width=300")
 	if direct.Code != 200 || ct != direct.Header().Get("Content-Type") || !bytes.Equal(got, direct.Body.Bytes()) {
 		t.Fatalf("shared discovery differs: %q %s versus %q %d", got, ct, direct.Body.Bytes(), direct.Code)
 	}

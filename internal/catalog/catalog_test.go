@@ -498,3 +498,30 @@ func TestRecentAirMatchesAddedOrder(t *testing.T) {
 		t.Fatalf("show added %v browse %v err %v", shows[0].AddedAt, added, err)
 	}
 }
+
+func TestTitlesInFilterBatch(t *testing.T) {
+	ctx := context.Background()
+	c := newTestCatalog(t, fakeTMDB(t))
+	if err := c.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(ctx, core.MovieKey(550)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(ctx, core.MovieKey(551)); err != nil {
+		t.Fatal(err)
+	}
+	f := core.Filter{Type: core.TypeMovie, Genres: []string{"Family"}}
+	keys := []core.RatingKey{core.MovieKey(550), core.MovieKey(551), core.MovieKey(999999)}
+	members, err := c.TitlesInFilter(ctx, f, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if members[core.MovieKey(550)] || !members[core.MovieKey(551)] || members[core.MovieKey(999999)] {
+		t.Fatalf("batch membership = %v", members)
+	}
+	one, err := c.TitleInFilter(ctx, f, core.MovieKey(551))
+	if err != nil || !one {
+		t.Fatalf("TitleInFilter = %v, %v", one, err)
+	}
+}

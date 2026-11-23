@@ -67,6 +67,9 @@ func TestQueryStatsCountsStatementsRowsAndTransactions(t *testing.T) {
 	if got := stats.Writes(); got != 1 {
 		t.Fatalf("writes = %d, want 1", got)
 	}
+	if got := stats.WriteTransactions(); got != 1 {
+		t.Fatalf("write transactions = %d, want 1", got)
+	}
 	st := stats.Statements()
 	if len(st) != 3 {
 		t.Fatalf("statements = %+v", st)

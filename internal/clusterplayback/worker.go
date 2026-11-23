@@ -82,7 +82,7 @@ func (r *Runtime) authorizeWorker(ctx context.Context, peer, op string, id remot
 		info.Keyframes = append([]core.KeyframePoint(nil), start.Keyframes...)
 		// ManifestSessionID is set only by the primitive after request admission;
 		// the external SupportsRequest gate intentionally rejects caller markers.
-		request := core.HLSRequest{MediaGeneration: start.MediaGeneration, Ramp: start.Ramp, Resume: start.Resume, SessionID: id.Session, ReleaseID: start.ReleaseID, Info: info, Decision: start.Decision, Protocol: start.Protocol, StartOffset: start.Offset, SegmentDuration: start.SegmentDuration, SoftSubtitleStream: start.SoftSubtitleStream, RequireIndependentProof: start.IndependentProof, RecoveryStart: core.CloneRecoveryStart(start.RecoveryStart)}
+		request := core.HLSRequest{MediaGeneration: start.MediaGeneration, Ramp: start.Ramp, Resume: start.Resume, SessionID: id.Session, ReleaseID: start.ReleaseID, Info: info, Decision: start.Decision, Protocol: start.Protocol, StartOffset: start.Offset, SegmentDuration: start.SegmentDuration, PMSDASH: start.PMSDASH, SoftSubtitleStream: start.SoftSubtitleStream, RequireIndependentProof: start.IndependentProof, RecoveryStart: core.CloneRecoveryStart(start.RecoveryStart)}
 		if !r.supportsBackend(request) {
 			return ErrDenied
 		}

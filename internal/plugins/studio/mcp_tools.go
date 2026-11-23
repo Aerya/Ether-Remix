@@ -500,6 +500,17 @@ func Scaffold(req ScaffoldRequest) (ScaffoldResult, error) {
 			m.Ether.Contributes.Events = &plugins.EventsMeta{
 				Subscribe: []string{plugins.EventPlaybackCompleted},
 			}
+		case plugins.CapFlowActions:
+			needHandle = true
+			m.Ether.Contributes.FlowActions = []plugins.FlowActionMeta{
+				{
+					Key:        "run_action",
+					Label:      "Run custom action",
+					Route:      "/ether/v1/flow-actions/run_action",
+					Idempotent: true,
+					Timeout:    "15s",
+				},
+			}
 		case plugins.CapRankingStep:
 			m.Ether.Contributes.RankingSteps = []plugins.RankingStepMeta{
 				{Key: "prefer_custom", Label: "Prefer matching releases"},

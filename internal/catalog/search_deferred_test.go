@@ -40,9 +40,7 @@ func TestSearchMergesAndHydratesRankedCandidates(t *testing.T) {
 					t.Fatal(err)
 				}
 				if indexed {
-					if c.searchIndex(ctx, true) == nil {
-						t.Fatal("index did not build")
-					}
+					waitSearchIndex(t, c, ctx)
 				} else {
 					c.searchIx.next = now.Add(time.Hour)
 				}

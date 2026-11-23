@@ -146,8 +146,8 @@ func TestProwlarrImportIsAdditiveNeverRemovesAbsent(t *testing.T) {
 	}
 }
 
-// A per-indexer identity is the owner's answer to a site that treats
-// unfamiliar clients badly; a sync must not silently drop it.
+// A per-indexer identity rule matches by indexer ID; a Prowlarr sync must keep
+// both the indexer ID and the matching rule intact.
 func TestProwlarrImportKeepsIndexerClientIdentity(t *testing.T) {
 	body := `[{"id":4,"name":"News","enable":true,"protocol":"usenet"}]`
 	status := http.StatusOK
@@ -157,11 +157,13 @@ func TestProwlarrImportKeepsIndexerClientIdentity(t *testing.T) {
 	}
 	prefix := newznab.ProwlarrIDPrefix(config.Prowlarr{URL: url})
 	if err := store.Update(func(c *config.Config) error {
-		for i := range c.Indexers {
-			if c.Indexers[i].ID == prefix+"4" {
-				c.Indexers[i].ClientIdentity = config.IdentitySonarr
-			}
-		}
+		c.ClientIdentity.Rules = []config.IdentityRule{{
+			ID:        "r-prowlarr-4",
+			Target:    config.TargetIndexer,
+			IndexerID: prefix + "4",
+			Profile:   "custom",
+			Headers:   []config.KVOverride{{Name: "User-Agent", Value: "CustomAgent/1.0"}},
+		}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -169,10 +171,12 @@ func TestProwlarrImportKeepsIndexerClientIdentity(t *testing.T) {
 	if w := postProwlarr(t, a, url, true); w.Code != http.StatusOK {
 		t.Fatalf("import2 code=%d body=%s", w.Code, w.Body.String())
 	}
-	for _, ix := range store.Get().Indexers {
+	cfg := store.Get()
+	for _, ix := range cfg.Indexers {
 		if ix.ID == prefix+"4" {
-			if ix.ClientIdentity != config.IdentitySonarr {
-				t.Fatalf("override lost on sync: %+v", ix)
+			got := cfg.ClientIdentity.ResolveIndexer(ix, config.RequestSearch, ix.URL)
+			if got.UserAgent != "CustomAgent/1.0" {
+				t.Fatalf("rule lost on sync: %+v", got)
 			}
 			return
 		}

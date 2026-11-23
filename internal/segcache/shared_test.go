@@ -234,3 +234,36 @@ func TestSharedPruneKeepsLiveReleases(t *testing.T) {
 		t.Fatalf("kept %s", got)
 	}
 }
+
+func TestSharedCacheAsyncEvictWatermarks(t *testing.T) {
+	db, err := store.OpenMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	c, err := OpenShared(t.TempDir(), 200, db, "node-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// 18 * 10 = 180 < 190 (95%): no eviction.
+	for seg := range 18 {
+		if err := c.Put("film", seg, payload("film", seg, 1, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.waitEvict()
+	if used, _ := c.Usage(); used != 180 {
+		t.Fatalf("used=%d want 180 below 95%%", used)
+	}
+
+	// 190 >= 95%: background worker evicts down to 180 (90%).
+	if err := c.Put("film", 18, payload("film", 18, 1, 10)); err != nil {
+		t.Fatal(err)
+	}
+	c.waitEvict()
+	if used, _ := c.Usage(); used != 180 {
+		t.Fatalf("used=%d want 180 at 90%% low watermark", used)
+	}
+}

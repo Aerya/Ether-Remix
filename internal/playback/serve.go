@@ -6,10 +6,181 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/sockerr"
 )
+
+// RemoteDeliveryEvent captures one sustained outbound write window on a remote
+// direct-play HTTP stream so the upload budget estimator can observe real
+// sustained throughput, buffer-starved clients, and TCP send congestion.
+type RemoteDeliveryEvent struct {
+	SessionID        string
+	Bytes            int64
+	Duration         time.Duration
+	MediaBitrateKbps int
+	TCPBacklogBytes  int
+	TCPStall         sockerr.TCPStallKind
+	BufferFilling    bool
+	Starved          bool
+}
+
+const (
+	// directBufferFillWindow bounds initial/post-seek buffer-fill observation
+	// on a direct-play media range. Exited immediately if TCP_INFO observes
+	// receiver-window limiting (client buffer full).
+	directBufferFillWindow = 10 * time.Second
+
+	// directRangeSeekSlack tolerates small overlaps or gaps between sequential
+	// chunked Range requests so only genuine seeks re-arm buffer-fill mode.
+	directRangeSeekSlack = 2 << 20
+
+	// directSampleBytes limits TCP_INFO sampling frequency on small writes.
+	directSampleBytes = 64 << 10
+)
+
+// SetRemoteDeliveryObserver installs an optional passive observer for remote
+// direct-play delivery windows. LAN streams are never reported.
+func (m *Manager) SetRemoteDeliveryObserver(fn func(RemoteDeliveryEvent)) {
+	if m == nil {
+		return
+	}
+	if fn == nil {
+		m.remoteDelivery.Store(nil)
+		return
+	}
+	m.remoteDelivery.Store(&fn)
+}
+
+func (m *Manager) notifyRemoteDelivery(ev RemoteDeliveryEvent) {
+	if m == nil {
+		return
+	}
+	if ptr := m.remoteDelivery.Load(); ptr != nil && *ptr != nil {
+		(*ptr)(ev)
+	}
+}
+
+type remoteDeliveryMeter struct {
+	m            *Manager
+	ctx          context.Context
+	s            *session
+	w            io.Writer
+	pos          int64
+	isMediaRange bool
+	mediaKbps    int
+	windowB      int64
+	windowDur    time.Duration
+	lastWriteDur time.Duration
+	sinceSample  int64
+	tcp          sockerr.TCPDeliveryTracker
+	lastFlush    time.Time
+	lastBufEv    int
+}
+
+func (rm *remoteDeliveryMeter) Write(p []byte) (int, error) {
+	rm.tcp.Begin(rm.ctx)
+	if rm.windowB > 0 && (rm.lastWriteDur >= 5*time.Millisecond || rm.sinceSample >= directSampleBytes) {
+		// Sample pre-write socket state when prior writes blocked or after a
+		// full sampling stride: on a client-paced stream the kernel send buffer
+		// is often already full with rwnd closed right before Write blocks.
+		rm.tcp.Sample(rm.ctx)
+	}
+	start := rm.m.now()
+	n, err := rm.w.Write(p)
+	now := rm.m.now()
+	dur := max(0, now.Sub(start))
+	rm.lastWriteDur = dur
+	if n > 0 {
+		rm.pos += int64(n)
+		if rm.isMediaRange {
+			rm.s.directRangeEnd.Store(rm.pos)
+		}
+		rm.windowB += int64(n)
+		rm.windowDur += dur
+		rm.sinceSample += int64(n)
+		if dur >= 5*time.Millisecond || rm.sinceSample >= directSampleBytes {
+			rm.tcp.Sample(rm.ctx)
+			rm.sinceSample = 0
+		}
+		if rm.lastFlush.IsZero() {
+			rm.lastFlush = now
+		}
+		if now.Sub(rm.lastFlush) >= 2*time.Second {
+			rm.flush(now)
+		}
+	}
+	return n, err
+}
+
+func (rm *remoteDeliveryMeter) flush(now time.Time) {
+	if rm.windowB == 0 {
+		rm.windowDur = 0
+		rm.sinceSample = 0
+		rm.lastFlush = now
+		return
+	}
+	backlog, stall := rm.tcp.Finish(rm.ctx)
+	if rm.windowB >= 64<<10 && rm.windowDur >= 100*time.Millisecond {
+		starved := false
+		inactive := false
+		bufferFilling := false
+		rm.s.mu.Lock()
+		inactive = rm.s.closed || rm.s.viewerState == "paused" || rm.s.viewerState == "stopped" || !rm.s.stopAt.IsZero() || rm.s.stoppedBySurface
+		if !inactive {
+			if !rm.s.caps.NoPlaybackTelemetry {
+				if snap := rm.s.exp.snapshot(now); snap != nil && snap.BufferEvents > rm.lastBufEv {
+					starved = true
+					rm.lastBufEv = snap.BufferEvents
+				}
+			}
+			if rm.isMediaRange && !rm.s.directFillUntil.IsZero() && !now.After(rm.s.directFillUntil) {
+				bufferFilling = true
+			}
+			if stall == sockerr.TCPStallRwnd {
+				// Peer receive window closed: client buffer is full.
+				rm.s.directFillUntil = time.Time{}
+			}
+		}
+		rm.s.mu.Unlock()
+		if !inactive {
+			rm.m.notifyRemoteDelivery(RemoteDeliveryEvent{
+				SessionID:        rm.s.id,
+				Bytes:            rm.windowB,
+				Duration:         rm.windowDur,
+				MediaBitrateKbps: rm.mediaKbps,
+				TCPBacklogBytes:  backlog,
+				TCPStall:         stall,
+				BufferFilling:    bufferFilling,
+				Starved:          starved,
+			})
+		}
+	}
+	rm.windowB = 0
+	rm.windowDur = 0
+	rm.sinceSample = 0
+	rm.lastFlush = now
+}
+
+// beginDirectRangeLocked classifies a direct-play range request as a media
+// playback range (excluding tiny header probes and near-EOF tail probes) and
+// arms the initial/post-seek buffer-fill window when starting or jumping
+// non-sequentially. Caller holds s.mu.
+func (s *session) beginDirectRangeLocked(start, length int64, now time.Time) bool {
+	tailProbe := s.virtual.Size > 64<<20 && start >= s.virtual.Size-(32<<20)
+	isMediaRange := length >= 1<<20 && !tailProbe
+	if !isMediaRange {
+		return false
+	}
+	prevEnd := s.directRangeEnd.Load()
+	if prevEnd < 0 || start < prevEnd-directRangeSeekSlack || start > prevEnd+directRangeSeekSlack {
+		s.directFillUntil = now.Add(directBufferFillWindow)
+		s.directRangeEnd.Store(start)
+	}
+	return true
+}
 
 var (
 	// errDirectReadDeadline marks an active range that delivered no bytes
@@ -37,13 +208,27 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		http.Error(w, "unknown playback session", http.StatusNotFound)
 		return
 	}
-	s.activeReads.Add(1)
-	defer func() {
-		s.activeReads.Add(-1)
-		s.touchMedia(m.now())
-	}()
-	s.touchMedia(m.now())
-	s.markDirectPlay()
+	if measurement := core.MediaCapWaitFrom(r.Context()); measurement != nil {
+		if g := s.current(); g != nil {
+			if source, ok := g.src.(core.MediaCapWaitSource); ok && source.MediaCapWaitKnown() {
+				measurement.MarkKnown()
+			}
+		}
+	}
+	if s.markDirectPlay() {
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "decision",
+			Level:   "info",
+			Message: "Delivery: Direct play",
+			Detail:  "Serving original container byte ranges",
+		})
+		m.emitStreamDecision(s, "", core.Decision{
+			Kind:      core.DecisionDirectPlay,
+			VideoCopy: true,
+			AudioCopy: true,
+			Reason:    "Serving original container byte ranges",
+		})
+	}
 	if !s.directRangeCompatible() {
 		// The client still holds the original file's container headers and
 		// byte coordinates. A remux handoff needs a new playback decision;
@@ -61,14 +246,65 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		contentType:           s.contentType,
 		deferStatusOnZeroRead: true,
 	}
+	if s.cur != nil {
+		if ct := contentTypeForInfo(s.cur.infoSnapshot(), s.cur.src.Name(), sourceMIME(s.cur.src)); ct != "" && ct != "application/octet-stream" {
+			rep.contentType = ct
+		}
+	}
 	policy, customResponse := core.RangeResponseFrom(r.Context())
 	if customResponse && policy.MIME != nil {
-		rep.contentType = policy.MIME(s.name)
+		if pm := policy.MIME(s.name); pm != "" && (pm != "application/octet-stream" || !strings.HasPrefix(rep.contentType, "audio/")) {
+			rep.contentType = pm
+		}
 	}
 	s.mu.Unlock()
 	rep.body = func(w io.Writer, start, length int64) error {
+		s.activeReads.Add(1)
+		defer s.activeReads.Add(-1)
 		began := time.Now()
+		var meter *remoteDeliveryMeter
+		if m.remoteDelivery.Load() != nil {
+			now := m.now()
+			s.mu.Lock()
+			isRemote := s.caps.Remote
+			mediaKbps := 0
+			lastBufEv := 0
+			isMediaRange := false
+			if isRemote {
+				if g := s.cur; g != nil {
+					info := g.infoSnapshot()
+					mediaKbps = info.BitrateKbps
+					if mediaKbps <= 0 && info.Size > 0 && info.Duration > 0 {
+						mediaKbps = int(float64(info.Size*8) / info.Duration.Seconds() / 1000)
+					}
+				}
+				if !s.caps.NoPlaybackTelemetry {
+					if snap := s.exp.snapshot(now); snap != nil {
+						lastBufEv = snap.BufferEvents
+					}
+				}
+				isMediaRange = s.beginDirectRangeLocked(start, length, now)
+			}
+			s.mu.Unlock()
+			if isRemote {
+				meter = &remoteDeliveryMeter{
+					m:            m,
+					ctx:          r.Context(),
+					s:            s,
+					w:            w,
+					pos:          start,
+					isMediaRange: isMediaRange,
+					mediaKbps:    mediaKbps,
+					lastFlush:    now,
+					lastBufEv:    lastBufEv,
+				}
+				w = meter
+			}
+		}
 		err := m.streamClient(r.Context(), w, s, start, length)
+		if meter != nil {
+			meter.flush(m.now())
+		}
 		if m.opts.TracePlayback {
 			m.log.Info("direct range", "session", s.id, "offset", start, "length", length,
 				"took", time.Since(began), "err", err)
@@ -125,7 +361,7 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 			g.retryEpoch++
 			g.retryPending = false
 			g.mu.Unlock()
-			s.touchMedia(now)
+			s.recordMediaBytes(n, now)
 		}
 	}
 	for vpos < vend {
@@ -163,6 +399,14 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 		case errors.Is(rerr, errDirectReadDeadline) && ctx.Err() == nil:
 			// The backend has not returned a chunk in the entire budget;
 			// do not wait for its internal retries before replacing it.
+			m.log.Warn("direct-play source read stalled", "session", s.id, "release", g.releaseID(), "offset", srcpos)
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "stall",
+				Level:   "warn",
+				Failing: true,
+				Message: "Source read stalled during direct play",
+				Detail:  releaseLabel(g.res.Release),
+			})
 			g.noteReadFailure(core.ErrSourceUnavailable)
 			at = g.timeMapSnapshot().TimeAt(srcpos)
 			res, err := m.failoverWith(ctx, s, g, at, failoverOpts{reason: "media source stalled", strictDirect: true, stallRecovery: true})
@@ -383,6 +627,14 @@ func (m *Manager) copyFrom(ctx context.Context, w io.Writer, g *generation, off,
 		}
 		return 0, errRetired, nil
 	}
+	// A tiny header or tail request is container discovery, not a playhead.
+	if g.warmReads != nil && !background && off >= firstReadAlign && off < g.src.Size()-(32<<20) {
+		g.warmReads.Observe(off)
+		if g.prewarmReads != nil {
+			g.prewarmReads.Observe(off)
+		}
+	}
+	ctx = core.WithReadOrigin(ctx, "playback.loopback", "client Range")
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g.sess.mu.Lock()
@@ -578,7 +830,7 @@ func (m *Manager) serveLoopback(w http.ResponseWriter, r *http.Request) {
 	rep := representation{
 		size:        size,
 		etag:        `"` + sum + "-" + g.token[:8] + `"`,
-		contentType: contentTypeFor("", g.src.Name()),
+		contentType: contentTypeForInfo(g.infoSnapshot(), g.src.Name(), sourceMIME(g.src)),
 	}
 	background := r.URL.Query().Get("background") == "1"
 	if background {

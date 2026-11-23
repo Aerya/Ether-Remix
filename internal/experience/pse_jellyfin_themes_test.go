@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -107,7 +108,7 @@ func TestPSEJellyfinThemeViewsKeepExplicitAndExistingLibraryRights(t *testing.T)
 	if err != nil || len(rows) != 2 || rows[0].ID != pseJellyfinThemeRowID("5101", "mixed") || rows[0].Type != "mixed" || rows[1].Name != "Autre sélection" {
 		t.Fatalf("rows of mixed theme: %+v, %v", rows, err)
 	}
-	if detail, err := s.PSEThemeRowView(ctx, viewer, rows[0].ID); err != nil || detail != rows[0] {
+	if detail, err := s.PSEThemeRowView(ctx, viewer, rows[0].ID); err != nil || !reflect.DeepEqual(detail, rows[0]) {
 		t.Fatalf("row detail: %+v, %v", detail, err)
 	}
 	privateRow := pseJellyfinThemeRowID("5101", "private")

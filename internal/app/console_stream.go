@@ -64,7 +64,13 @@ func (a *App) publishDashboard() {
 }
 
 func (a *App) notifySessionsChanged() {
-	if a == nil || a.streamRT == nil {
+	if a == nil {
+		return
+	}
+	if a.uploadBudget != nil {
+		a.uploadBudget.OnSessionsChanged()
+	}
+	if a.streamRT == nil {
 		return
 	}
 	owner := ownerPlayback{Playback: a.playback, app: a}

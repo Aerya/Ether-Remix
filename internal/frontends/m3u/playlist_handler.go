@@ -75,7 +75,11 @@ func (i *instance) playlist(w http.ResponseWriter, r *http.Request) {
 		channelURL.Path = strings.TrimRight(u.Path, "/") + path + base64.RawURLEncoding.EncodeToString([]byte(channel.ID)) + "/live/index.m3u8"
 		channelURL.RawPath = ""
 		channelURL.RawQuery = ""
-		entries = append(entries, playlistEntry{ID: channel.ID, Name: channel.Name, Group: channel.Group, StreamURL: channelURL.String(), LogoURL: i.imageURL(r, credential, device, 0, channel.ID, channel.Images)})
+		group := channel.Group
+		if len(channel.Groups) > 0 {
+			group = channel.Groups[0].Name
+		}
+		entries = append(entries, playlistEntry{ID: channel.ID, Name: channel.Name, Group: group, StreamURL: channelURL.String(), LogoURL: i.imageURL(r, credential, device, 0, channel.ID, channel.Images)})
 	}
 	var output bytes.Buffer
 	if err := writePlaylist(&output, entries); err != nil {

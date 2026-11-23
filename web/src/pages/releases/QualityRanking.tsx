@@ -10,7 +10,7 @@ import { ChevronDown, Merge, Plus, RotateCcw, Split, Trash2 } from "lucide-react
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { MoreOptions } from "../../components/ConfigSection";
-import { ChipGroup, NumberInput } from "../../components/fields";
+import { ChipGroup, NumberInput, Segmented } from "../../components/fields";
 import { SettingsRow } from "../../components/SettingsRow";
 import { t, tx } from "../../i18n";
 import { useLocale } from "../../i18n/react";
@@ -233,9 +233,10 @@ export function QualityOrderSection({ draft, patch }: { draft: QualityProfile; p
 }
 
 /**
- * The profile's audio language, as in Radarr: Original plays each title's
- * own language, Any plays every language, and a language plays only
- * releases with that audio.
+ * The profile's audio language: Original plays each title's own language
+ * alongside the viewer's audio languages, Any plays every language, and a
+ * specific language can be Preferred (rank first, compose with viewer's
+ * language list, fall back to original) or Required (strict, fail fast).
  */
 export function LanguageSection({ draft, patch }: { draft: QualityProfile; patch: Patch }) {
   const { locale } = useLocale();
@@ -278,21 +279,61 @@ export function LanguageSection({ draft, patch }: { draft: QualityProfile; patch
     }
     return { options: all, current: match ? match.value : stored };
   }, [locale, stored]);
+  const isSpecific = current !== "original" && current !== "any";
+  // Existing profiles with a specific language and no saved mode keep Required.
+  const mode: "preferred" | "required" =
+    draft.audioLanguageMode === "preferred" ? "preferred" : "required";
   return (
     <SettingsSection title={t("Language")}>
       <SettingsRow
         title={t("Audio language")}
-        description={t(
-          "As in Radarr: Original is each title's own language. A language plays only releases with that audio; releases with several audio tracks always play.",
-        )}
+        description={
+          isSpecific ? (
+            <span className="flex flex-col gap-1">
+              <span>
+                {t(
+                  "Preferred: ranks this language first (multi-audio included), then the viewer's audio languages, then original language as fallback.",
+                )}
+              </span>
+              <span>
+                {t("Required: plays only releases with this audio; fails fast if none match.")}
+              </span>
+            </span>
+          ) : (
+            t(
+              "Original plays each title's own language alongside the viewer's audio languages. Any accepts every language.",
+            )
+          )
+        }
         control={
-          <SearchSelect
-            {...searchSelectLabels()}
-            ariaLabel={t("Audio language")}
-            value={current}
-            options={options}
-            onChange={(v) => patch({ language: v })}
-          />
+          <div className="flex flex-col items-end gap-2 max-sm:items-stretch">
+            <SearchSelect
+              {...searchSelectLabels()}
+              ariaLabel={t("Audio language")}
+              value={current}
+              options={options}
+              onChange={(v) => {
+                const nextSpecific = v !== "original" && v !== "any";
+                if (nextSpecific && !isSpecific && !draft.audioLanguageMode) {
+                  patch({ language: v, audioLanguageMode: "preferred" });
+                } else {
+                  patch({ language: v });
+                }
+              }}
+            />
+            {isSpecific && (
+              <Segmented
+                size="sm"
+                ariaLabel={t("Audio language mode")}
+                value={mode}
+                options={[
+                  { value: "preferred", label: t("Preferred") },
+                  { value: "required", label: t("Required") },
+                ]}
+                onChange={(v) => patch({ audioLanguageMode: v })}
+              />
+            )}
+          </div>
         }
       />
     </SettingsSection>

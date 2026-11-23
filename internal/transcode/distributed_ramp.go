@@ -23,14 +23,14 @@ func ValidDistributedRamp(q core.HLSRequest) bool {
 	if steady == 0 {
 		steady = DefaultSegmentDuration
 	}
-	return r.Segments > 0 && r.Segments <= 16 && r.Duration >= 100*time.Millisecond && r.Duration < steady && steady <= time.Minute && q.Info.Duration > 0 && !q.Info.Estimated && q.Info.Video() != nil && q.Decision.Kind == core.DecisionTranscode && !q.Decision.VideoCopy && (q.Decision.VideoCodec == "" || q.Decision.VideoCodec == "h264") && (q.Decision.Container == ContainerMPEGTS || q.Decision.Container == ContainerFMP4) && (q.Protocol == "" || q.Protocol == core.ProtocolHLS) && !q.LiveInput && q.StartOffset == 0 && q.SoftSubtitleStream == nil && len(q.TextSubtitleStreams) == 0 && q.RecoveryStart == nil && !enhancementSelected(q.Decision)
+	return r.Segments > 0 && r.Segments <= 16 && r.Duration >= 100*time.Millisecond && r.Duration < steady && steady <= time.Minute && q.Info.Duration > 0 && !q.Info.Estimated && q.Info.Video() != nil && q.Decision.Kind == core.DecisionTranscode && !q.Decision.VideoCopy && (q.Decision.VideoCodec == "" || q.Decision.VideoCodec == "h264") && (q.Decision.Container == ContainerMPEGTS || q.Decision.Container == ContainerFMP4) && (q.Protocol == "" || q.Protocol == core.ProtocolHLS) && !q.LiveInput && !q.NoVideoTranscode && q.StartOffset == 0 && q.SoftSubtitleStream == nil && len(q.TextSubtitleStreams) == 0 && q.RecoveryStart == nil && !enhancementSelected(q.Decision)
 }
 
 // AuthorDistributedRamp snapshots shared configuration once, before durable
 // admission. Unsupported requests remain on their legacy steady private path.
 // Reencoded audio stays steady until combined ramp/audio recovery is qualified.
 func AuthorDistributedRamp(q core.HLSRequest, c config.Transcode) core.HLSRequest {
-	if q.Ramp != (core.HLSRamp{}) || q.Resume != nil || !c.FastStart || !q.Decision.AudioCopy {
+	if c.VideoTranscodingOff() || q.NoVideoTranscode || q.Ramp != (core.HLSRamp{}) || q.Resume != nil || !c.FastStart || !q.Decision.AudioCopy {
 		return q
 	}
 	original := q

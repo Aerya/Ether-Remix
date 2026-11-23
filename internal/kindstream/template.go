@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
 var (
@@ -200,4 +203,77 @@ func expandSecretString(ctx context.Context, s string, secretFn func(ctx context
 		rest = after[end+1:]
 	}
 	return b.String(), nil
+}
+
+// secretHeaderNames returns canonical names of headers whose unexpanded value
+// references a {secret:...} placeholder so they are always stripped on
+// untrusted redirects even if the header name is otherwise safe (e.g. User-Agent).
+func secretHeaderNames(headers map[string]string) []string {
+	if len(headers) == 0 {
+		return nil
+	}
+	var out []string
+	for k, v := range headers {
+		if strings.Contains(v, "{secret:") {
+			out = append(out, http.CanonicalHeaderKey(k))
+		}
+	}
+	return out
+}
+
+func validateRedirectHeaderPatterns(raw []string, allowHost func(host string) bool) ([]safefetch.RedirectHeaderPattern, error) {
+	patterns, err := safefetch.ParseRedirectHeaderPatterns(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: keepHeadersOnRedirect: %v", ErrInvalidTemplate, err)
+	}
+	if allowHost != nil {
+		for _, p := range patterns {
+			checkHost := p.Host
+			if p.Wildcard {
+				checkHost = "probe." + p.Host
+			}
+			if !allowHost(checkHost) {
+				return nil, fmt.Errorf("%w: keepHeadersOnRedirect %q", ErrHostNotAllowed, p.Raw)
+			}
+		}
+	}
+	return patterns, nil
+}
+
+func wrapRedirectClient(
+	base *http.Client,
+	initial *url.URL,
+	initialHeaders http.Header,
+	secretHeaderKeys []string,
+	patterns []safefetch.RedirectHeaderPattern,
+	allowHost func(host string) bool,
+) *http.Client {
+	client := *base
+	redirectHeaders := safefetch.NewRedirectHeaderState(initial, safefetch.RedirectHeaderOptions{
+		Patterns:       patterns,
+		InitialHeaders: initialHeaders,
+		StripHeaders:   secretHeaderKeys,
+	})
+	previous := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("kindstream: stopped after 10 redirects")
+		}
+		if next.URL == nil {
+			return fmt.Errorf("%w: redirect missing URL", ErrInvalidTemplate)
+		}
+		scheme := strings.ToLower(next.URL.Scheme)
+		if (scheme != "http" && scheme != "https") || next.URL.Hostname() == "" {
+			return fmt.Errorf("%w: redirect to disallowed scheme %q", ErrInvalidTemplate, next.URL.Scheme)
+		}
+		if allowHost != nil && !allowHost(next.URL.Hostname()) {
+			return fmt.Errorf("%w: redirect host %q", ErrHostNotAllowed, next.URL.Hostname())
+		}
+		redirectHeaders.Apply(next)
+		if previous != nil {
+			return previous(next, via)
+		}
+		return nil
+	}
+	return &client
 }

@@ -10,9 +10,16 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
+type recordedActivity struct {
+	ownerID  int64
+	activity model.Activity
+}
+
 // recordActivities keeps only actual in-flight tasks. Completion removes a row
 // before sending the ended frame so a client refetch never sees a stale spinner.
-func (s *Server) recordActivities(nc model.NotificationContainer) {
+// userID is Ether's internal viewer ID used for visibility checks, while
+// activity.UserID holds the canonical Plex wire account ID.
+func (s *Server) recordActivities(nc model.NotificationContainer, userID int64) {
 	if len(nc.ActivityNotification) == 0 {
 		return
 	}
@@ -27,19 +34,24 @@ func (s *Server) recordActivities(nc model.NotificationContainer) {
 			a := *event.Activity
 			a.UUID = event.UUID
 			if s.activities == nil {
-				s.activities = make(map[string]model.Activity)
+				s.activities = make(map[string]recordedActivity)
 			}
-			s.activities[event.UUID] = a
+			s.activities[event.UUID] = recordedActivity{ownerID: userID, activity: a}
 		}
 	}
 }
 
 func (s *Server) handleActivities(w http.ResponseWriter, r *http.Request) {
 	pr := FromContext(r.Context())
+	var callerAccountID int64
+	if pr.User != nil && !pr.User.IsOwner {
+		callerAccountID = s.plexAccountIDFor(r.Context(), pr.User)
+	}
 	s.activityMu.Lock()
 	rows := make([]model.Activity, 0, len(s.activities))
-	for _, a := range s.activities {
-		if pr.User != nil && (pr.User.IsOwner || a.UserID == pr.User.ID) {
+	for _, rec := range s.activities {
+		if pr.User != nil && (pr.User.IsOwner || (rec.ownerID > 0 && rec.ownerID == pr.User.ID) || (rec.ownerID == 0 && rec.activity.UserID == callerAccountID)) {
+			a := rec.activity
 			a.Title = activityTitle(a.Title, notificationLanguage(r))
 			rows = append(rows, a)
 		}

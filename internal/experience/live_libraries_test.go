@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 func TestViewsFollowLiveNamesAndSectionPolicy(t *testing.T) {
@@ -61,5 +62,31 @@ func TestViewsCopyVirtualOriginAndSectionPolicy(t *testing.T) {
 	restricted, err := s.Views(context.Background(), &core.User{ID: 2})
 	if err != nil || len(restricted) != 1 || restricted[0].ID != "1" || !restricted[0].Virtual {
 		t.Fatalf("restricted views = %+v %v", restricted, err)
+	}
+}
+
+func TestDeletedLibrariesFailClosedAndRemainEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := &fakePluginLibraries{}
+	s := &Service{d: ServiceDeps{
+		PluginLibraries: store,
+		Libraries:       []Library{{ID: 1, Type: core.TypeMovie}},
+		LiveLibraries:   func() []Library { return nil },
+		Active:          func(_ context.Context, id int64) (*core.User, error) { return &core.User{ID: id, IsOwner: true}, nil },
+	}}
+	if len(s.libraries()) != 0 {
+		t.Fatal("empty live list fell back to startup defaults")
+	}
+	for _, viewer := range []*core.User{{ID: 1, IsOwner: true}, {ID: 2}, {ID: 3, AllowedLibraries: []core.LibraryID{1}}} {
+		views, err := s.Views(ctx, viewer)
+		if err != nil || len(views) != 0 {
+			t.Fatalf("phantom views: %+v %v", views, err)
+		}
+		if s.sectionOrFilterAllowed(ctx, viewer, &core.Title{Key: core.MovieKey(1), Type: core.TypeMovie}, func(core.MediaType) (int, bool) { return 1, true }) {
+			t.Fatal("missing default library granted access")
+		}
+		if _, err := s.LibraryItems(ctx, viewer, core.Device{}, "1", frontend.ItemQuery{}); err == nil {
+			t.Fatal("deleted library route remained available")
+		}
 	}
 }

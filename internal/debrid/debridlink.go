@@ -64,6 +64,12 @@ func newDebridLink(key string, opts ProviderOptions) *debridLink {
 
 func (p *debridLink) Kind() string { return "debridlink" }
 
+// supportsAtomicHashCache reports whether Debrid-Link can query its cache
+// with a bare 40-character hex info hash without adding an uncached torrent.
+func (p *debridLink) supportsAtomicHashCache(infoHash string) bool {
+	return reInfoHash.MatchString(infoHash)
+}
+
 type dlEnvelope struct {
 	Success bool            `json:"success"`
 	Error   string          `json:"error"`
@@ -162,9 +168,11 @@ func dlClassify(status int, env dlEnvelope) error {
 		return fmt.Errorf("debrid-link: %s: %w", msg, ErrGone)
 	case "infringingFile": // unavailable for legal reasons
 		return fmt.Errorf("debrid-link: %s: %w", msg, ErrBlocked)
-	case "notAddTorrent", "torrentTooBig":
-		// The torrent could not be added, or is too big for this service:
-		// another provider may still have it.
+	case "torrentTooBig":
+		// Exceeds this service's torrent size limit; another provider may still have it.
+		return fmt.Errorf("debrid-link: %s: %w", msg, ErrTooLarge)
+	case "notAddTorrent":
+		// The torrent could not be added: another provider may still have it.
 		return fmt.Errorf("debrid-link: %s: %w", msg, core.ErrNotCached)
 	case "badTorrentFile":
 		return fmt.Errorf("debrid-link: %s: %w", msg, core.ErrReleaseRejected)
@@ -251,6 +259,13 @@ func dlFileByID(t *dlTorrent, id string) *dlFile {
 }
 
 func (p *debridLink) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, error) {
+	if req.Private && !req.privateChecked {
+		var perr error
+		req, perr = prepareAcquire(ctx, p, req, false)
+		if perr != nil {
+			return nil, perr
+		}
+	}
 	id, added := req.TorrentID, false
 	var t *dlTorrent
 	if id == "" {
@@ -326,6 +341,10 @@ func (p *debridLink) Acquire(ctx context.Context, req AcquireRequest) (*Acquired
 		}
 	}
 	if !ready {
+		if t != nil && t.IsZip && dlComplete(t) {
+			cleanup()
+			return nil, fmt.Errorf("debrid-link: torrent cached as zipped archive: %w", errProviderZipped)
+		}
 		err := fmt.Errorf("debrid-link: torrent is not ready: %w", core.ErrNotCached)
 		if req.CachedOnly && cleanup() {
 			return nil, err

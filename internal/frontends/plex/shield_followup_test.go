@@ -4,10 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/catalog"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/playback"
+	"github.com/braedonsaunders/ether/internal/releaseparse"
+	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/trackprefs"
 	"github.com/braedonsaunders/ether/internal/transcode"
@@ -187,4 +193,162 @@ func TestShieldDisabledDetailUsesPersistedProbe(t *testing.T) {
 	if x.idx.searches.Load() != 0 || x.idx.fetches.Load() != 0 {
 		t.Fatal("disabled detail fetched fresh source")
 	}
+}
+
+type shieldLocalIndexer struct {
+	release  core.Release
+	searches atomic.Int32
+	fetches  atomic.Int32
+}
+
+func (*shieldLocalIndexer) Name() string { return "offline-shield-local" }
+func (i *shieldLocalIndexer) Search(context.Context, core.SearchRequest) ([]core.Release, error) {
+	i.searches.Add(1)
+	return []core.Release{i.release}, nil
+}
+func (i *shieldLocalIndexer) FetchNZB(_ context.Context, r core.Release) ([]byte, error) {
+	i.fetches.Add(1)
+	return []byte("nzb-" + r.ID), nil
+}
+
+type shieldLocalEngine struct {
+	size  int64
+	opens atomic.Int32
+}
+
+func (e *shieldLocalEngine) Open(_ context.Context, id string, _ []byte) (core.MediaSource, error) {
+	e.opens.Add(1)
+	return &playedSource{id: id, size: e.size}, nil
+}
+func (*shieldLocalEngine) Prefetch(context.Context, string, []byte, int64, int64) error { return nil }
+
+func TestAndroidColdLocalDetailSchedulesBackgroundPrewarm(t *testing.T) {
+	run := func(t *testing.T, disableSpeculation bool) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := config.Defaults(dir)
+		cfg.Quality.Default = "lab1080"
+		cfg.Quality.Remote = ""
+		cfg.Quality.Rules = nil
+		cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
+		cfg.Cache.DisableSpeculation = disableSpeculation
+
+		relName := "Fjord.Harbor.1999.1080p.WEB-DL.DDP5.1.H.264-LAB"
+		const relSize = int64(4) << 30
+		idx := &shieldLocalIndexer{
+			release: core.Release{
+				ID: "shield-local-rel", GUID: "shield-local-rel", Indexer: "offline-shield-local",
+				Name: relName, Size: relSize, PubDate: fixedNow.Add(-24 * time.Hour),
+				NZBURL: "offline", Info: releaseparse.Parse(relName),
+			},
+		}
+		engine := &shieldLocalEngine{size: relSize}
+
+		f := newFixture(func(d *testServerDeps) {
+			setDepsConfig(d, func() config.Config { return cfg })
+			d.DisableEnrichment = true
+			d.HomeCache = &testHomeCache{NoProviderWait: func(ctx context.Context) context.Context {
+				return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
+			}}
+		})
+		defer f.srv.Close()
+
+		rs := resolver.New(idx, nil, nil, cfg, resolver.Options{Now: func() time.Time { return fixedNow }})
+		defer rs.Close()
+
+		db, err := store.Open(context.Background(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		mgr, err := playback.New(playback.Deps{
+			Catalog:       f.catalog,
+			State:         f.state,
+			Resolver:      rs,
+			Engine:        engine,
+			Transcoder:    f.trans,
+			SelectProfile: func(c core.ClientCaps, u *core.User, _ string) core.QualityProfile { return rs.ProfileFor(c, u) },
+			DB:            db,
+			NativeProbe: func(_ context.Context, s core.MediaSource) (*core.MediaInfo, error) {
+				info := core.CloneMediaInfo(sampleInfo)
+				info.Duration = fightClub.Runtime
+				info.Size = s.Size()
+				return &info, nil
+			},
+		}, cfg, playback.Options{
+			SessionSurface: func(surface string) string {
+				if surface == "plex" {
+					return ""
+				}
+				return surface
+			},
+			DataDir: dir,
+			Now:     func() time.Time { return fixedNow },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+
+		f.srv.setPlayback(mgr)
+		f.srv.setVariants(rs)
+
+		headers := map[string]string{
+			"X-Plex-Product":           "Plex for Android (TV)",
+			"X-Plex-Platform":          "Android",
+			"X-Plex-Device":            "SHIELD Android TV",
+			"X-Plex-Client-Identifier": "shield-cold-local",
+		}
+		path := "/library/metadata/" + fightClub.Key.String()
+
+		start := time.Now()
+		first := f.request(t, "GET", path, headers)
+		elapsed := time.Since(start)
+		if first.Code != 200 {
+			t.Fatalf("cold detail: %d %s", first.Code, first.Body.String())
+		}
+		if elapsed >= time.Second {
+			t.Fatalf("cold local detail blocked for %s", elapsed)
+		}
+
+		if disableSpeculation {
+			if idx.searches.Load() != 0 || idx.fetches.Load() != 0 || engine.opens.Load() != 0 {
+				t.Fatalf("disabled speculation touched sources: searches=%d fetches=%d opens=%d",
+					idx.searches.Load(), idx.fetches.Load(), engine.opens.Load())
+			}
+			return
+		}
+
+		caps := (&Request{
+			User:     &ownerUser,
+			ClientID: headers["X-Plex-Client-Identifier"],
+			Product:  headers["X-Plex-Product"],
+			Platform: headers["X-Plex-Platform"],
+			Device:   headers["X-Plex-Device"],
+		}).ClientCaps(cfg.Transcode.RemoteMaxBitrateKbps)
+		info, ok := mgr.WaitWarmProbe(t.Context(), &ownerUser, caps, fightClub.Key, 2*time.Second)
+		if !ok || info.Estimated || len(info.Streams) < 4 {
+			t.Fatalf("background Prewarm did not publish real tracks: ok=%v info=%+v", ok, info)
+		}
+
+		second := f.request(t, "GET", path, headers)
+		if second.Code != 200 {
+			t.Fatalf("warm detail: %d %s", second.Code, second.Body.String())
+		}
+		if gotA, gotS := len(audioTags(second.Body.String())), len(subtitleTags(second.Body.String())); gotA < 2 || gotS < 2 {
+			t.Fatalf("warm detail missing probed tracks: audio=%d subs=%d", gotA, gotS)
+		}
+
+		pq := f.request(t, "POST", "/playQueues?type=video&uri="+url.QueryEscape(path), headers)
+		if pq.Code != 200 {
+			t.Fatalf("playQueue: %d %s", pq.Code, pq.Body.String())
+		}
+		if gotA, gotS := len(audioTags(pq.Body.String())), len(subtitleTags(pq.Body.String())); gotA < 2 || gotS < 2 {
+			t.Fatalf("playQueue missing probed tracks: audio=%d subs=%d", gotA, gotS)
+		}
+	}
+
+	t.Run("schedules-prewarm", func(t *testing.T) { run(t, false) })
+	t.Run("disable-speculation", func(t *testing.T) { run(t, true) })
 }

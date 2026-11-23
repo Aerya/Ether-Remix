@@ -18,7 +18,7 @@ func TestChannelAndEventDescriptorsValidate(t *testing.T) {
 	if err := r.Register(append(channels, events...)...); err != nil {
 		t.Fatal(err)
 	}
-	wantChannels := []string{"webpush", "webhook", "discord", "slack", "telegram", "smtp", "ntfy", "gotify"}
+	wantChannels := []string{"webpush", "webhook", "discord", "slack", "telegram", "smtp", "ntfy", "gotify", "pushover", "mqtt"}
 	gotChannels := r.List(extend.KindChannelKind)
 	if len(gotChannels) != len(wantChannels) {
 		t.Fatalf("channel kinds = %d, want %d", len(gotChannels), len(wantChannels))
@@ -175,6 +175,11 @@ func TestEveryBuiltinKindValidation(t *testing.T) {
 		{"smtp bad port", Channel{Kind: "smtp", Secrets: map[string]string{"endpoint": "smtp.example.test:99999"}, Settings: map[string]string{"from": "a@example.test", "to": "b@example.test"}}, "SMTP host and port"},
 		{"smtp bad mode", Channel{Kind: "smtp", Secrets: map[string]string{"endpoint": "smtp.example.test:587"}, Settings: map[string]string{"smtpMode": "plain", "from": "a@example.test", "to": "b@example.test"}}, "STARTTLS or implicit TLS"},
 		{"smtp password without user", Channel{Kind: "smtp", Secrets: map[string]string{"endpoint": "smtp.example.test:587", "password": "pw"}, Settings: map[string]string{"from": "a@example.test", "to": "b@example.test"}}, "SMTP username required"},
+		{"pushover valid", Channel{Kind: "pushover", Secrets: map[string]string{"token": "appTok123", "user": "usrKey456"}, Settings: map[string]string{"device": "iphone", "sound": "cosmic"}}, ""},
+		{"pushover missing user", Channel{Kind: "pushover", Secrets: map[string]string{"token": "appTok123"}}, "Pushover application token and user key required"},
+		{"mqtt valid", Channel{Kind: "mqtt", Secrets: map[string]string{"endpoint": "mqtt.local:1883"}, Settings: map[string]string{"tlsMode": "none", "topic": "ether/alerts", "qos": "1"}}, ""},
+		{"mqtt wildcard topic", Channel{Kind: "mqtt", Secrets: map[string]string{"endpoint": "mqtt.local:1883"}, Settings: map[string]string{"topic": "ether/#"}}, "cannot contain wildcards"},
+		{"mqtt password without user", Channel{Kind: "mqtt", Secrets: map[string]string{"endpoint": "mqtt.local:1883", "password": "pw"}, Settings: map[string]string{"topic": "ether/alerts"}}, "MQTT username required"},
 		{"bad event rule", Channel{Kind: "webhook", Secrets: map[string]string{"endpoint": "https://hooks.example.test/a"}, Events: []string{"not.an.event"}}, "unsupported event rule"},
 	}
 	for _, tc := range cases {

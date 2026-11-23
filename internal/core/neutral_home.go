@@ -11,6 +11,7 @@ type HomeSituation struct {
 	Weekend                                bool
 	Now                                    time.Time
 	LibraryID                              int
+	DefaultMaxRows                         int
 	Product, Platform, SessionID, ClientID string
 }
 

@@ -64,6 +64,9 @@ type Caps struct {
 	Roles config.NodeRoles `json:"roles,omitempty"`
 	// Transcode is true when ffmpeg is available on the node.
 	Transcode bool `json:"transcode"`
+	// VideoTranscoding is "off" when this node has disabled movie/show video
+	// re-encoding (empty or "on" means enabled).
+	VideoTranscoding string `json:"videoTranscoding,omitempty"`
 	// HWAccel names the hardware transcoder ("videotoolbox", "nvenc", …);
 	// empty or "none" for software only.
 	HWAccel string `json:"hwAccel,omitempty"`

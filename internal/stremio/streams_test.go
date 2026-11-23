@@ -70,7 +70,7 @@ func TestAnimeOnlyAddonIsAskedByMappedEntryEpisode(t *testing.T) {
 		t.Fatalf("releases %+v", rels)
 	}
 	// The entry's third episode is the requested S3E15...
-	if i := rels[0].Info; len(i.Seasons) != 1 || i.Seasons[0] != 3 || len(i.Episodes) != 1 || i.Episodes[0] != 15 {
+	if i := rels[0].Info; len(i.Seasons) != 1 || i.Seasons[0] != 3 || len(i.Episodes) != 1 || i.Episodes[0] != 15 || len(i.AbsoluteEpisodes) != 0 {
 		t.Fatalf("entry episode identity %+v", i)
 	}
 	// ...a series-absolute number keeps its own identity...
@@ -117,15 +117,16 @@ func TestIDChoicePrefersIMDbThenTMDB(t *testing.T) {
 		manifest string
 		req      core.SearchRequest
 		want     string
+		wantAbs  string // the ":1:<absolute>" follow-up for absolute-numbered anime
 	}{
 		{`{"id":"x","resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tt","tmdb:","kitsu:"]}]}`,
-			animeRequest(), "/stream/series/tt2560140:3:15.json"},
+			animeRequest(), "/stream/series/tt2560140:3:15.json", "/stream/series/tt2560140:1:52.json"},
 		{`{"id":"x","resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tmdb:","kitsu:"]}]}`,
-			animeRequest(), "/stream/series/tmdb:1429:3:15.json"},
+			animeRequest(), "/stream/series/tmdb:1429:3:15.json", "/stream/series/tmdb:1429:1:52.json"},
 		{`{"id":"x","resources":[{"name":"stream","types":["movie"],"idPrefixes":["tt","tmdb"]}]}`,
-			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 603}, Title: "M"}, "/stream/movie/tmdb:603.json"},
+			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 603}, Title: "M"}, "/stream/movie/tmdb:603.json", ""},
 		{`{"id":"x","resources":[{"name":"stream","types":["movie"],"idPrefixes":["kitsu"]}]}`,
-			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 5000}, Title: "Film", Anime: true}, "/stream/movie/kitsu:108.json"},
+			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 5000}, Title: "Film", Anime: true}, "/stream/movie/kitsu:108.json", ""},
 	} {
 		f := &fakeAddon{manifest: tc.manifest}
 		srv := httptest.NewServer(f.handler(t))
@@ -134,8 +135,12 @@ func TestIDChoicePrefersIMDbThenTMDB(t *testing.T) {
 		if _, err := b.Search(t.Context(), tc.req, noReserve); err != nil {
 			t.Fatal(err)
 		}
-		if got := f.streamRequests(); len(got) != 1 || got[0] != tc.want {
-			t.Errorf("manifest %s: requests %v, want %s", tc.manifest, got, tc.want)
+		want := []string{tc.want}
+		if tc.wantAbs != "" {
+			want = append(want, tc.wantAbs)
+		}
+		if got := f.streamRequests(); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("manifest %s: requests %v, want %v", tc.manifest, got, want)
 		}
 		srv.Close()
 	}
@@ -254,5 +259,193 @@ func TestFetchNZBFromAddonOriginOnly(t *testing.T) {
 	rel.NZBURL = addon.URL + "/" + secret + "/get.nzb"
 	if _, err := b.FetchNZB(t.Context(), rel, func(context.Context, string) error { return budget }); !errors.Is(err, budget) {
 		t.Fatalf("grab budget ignored: %v", err)
+	}
+}
+
+func TestFetchNZBAppliesDownloadIdentityRules(t *testing.T) {
+	var gotUA, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `<?xml version="1.0"?><nzb><file/></nzb>`)
+	}))
+	defer srv.Close()
+
+	rel := core.Release{Name: "Movie 2024 1080p", Protocol: core.ProtocolUsenet, NZBURL: srv.URL + "/get.nzb?id=1"}
+	reserve := func(context.Context, string) error { return nil }
+
+	b := backendWith(t, srv.URL+"/manifest.json", Options{
+		ClientIdentity: func() config.ClientIdentity {
+			return config.ClientIdentity{
+				Rules: []config.IdentityRule{{
+					ID:      "r-sab",
+					Target:  config.TargetNZBDownloads,
+					Profile: "sabnzbd",
+					Params:  []config.KVOverride{{Name: "dl", Value: "1"}},
+				}},
+			}
+		},
+	}, "ix-stremio")
+
+	body, err := b.FetchNZB(t.Context(), rel, reserve)
+	if err != nil || !strings.Contains(string(body), "<nzb") {
+		t.Fatalf("stremio FetchNZB with rule: %v %q", err, body)
+	}
+	if gotUA != config.ProfileUserAgent("sabnzbd") || gotQuery != "dl=1&id=1" {
+		t.Fatalf("stremio FetchNZB wire: ua=%q query=%q", gotUA, gotQuery)
+	}
+}
+
+func TestAddonFixtureQueriesCanonicalAndAliasNumbering(t *testing.T) {
+	const manifest = `{"id":"addon","resources":[{"name":"stream","types":["series","movie"],"idPrefixes":["tt"]}],"types":["series","movie"]}`
+	canonicalBody := `{"streams":[
+	 {"name":"Torrentio","title":"One.Piece.-.750.-.ENG.UNCUT.1080p.WEB.H.264.-NanDesuKa.(FUNi)\n👤 42 💾 1.2 GB","infoHash":"` + hashA + `"},
+	 {"name":"Torrentio","title":"One Piece Season 18 Complete 1080p WEB-DL\nOne.Piece.S18E04.A.Desperate.Situation.1080p.WEB-DL.mkv\n👤 20 💾 900 MB","infoHash":"` + hashC + `","fileIdx":3}
+	]}`
+	aliasBody := `{"streams":[
+	 {"name":"Torrentio","title":"[Judas] One Piece - S18E04 [1080p]\n👤 35 💾 550 MB","infoHash":"` + hashB + `"},
+	 {"name":"Torrentio","title":"One Piece Season 18 Complete 1080p WEB-DL\nOne.Piece.S18E04.A.Desperate.Situation.1080p.WEB-DL.mkv\n👤 20 💾 900 MB","infoHash":"` + hashC + `","fileIdx":3}
+	]}`
+	f := &fakeAddon{
+		manifest: manifest,
+		streams: map[string]string{
+			"/stream/series/tt0388629:1:750.json": canonicalBody,
+			"/stream/series/tt0388629:18:4.json":  aliasBody,
+		},
+	}
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+
+	b := backendWith(t, srv.URL, Options{Client: srv.Client()}, "ix1")
+	req := core.SearchRequest{
+		Type:            core.TypeEpisode,
+		IDs:             core.IDs{IMDB: "tt0388629", TMDB: 37854, TVDB: 81797},
+		Title:           "One Piece",
+		Season:          1,
+		Episode:         750,
+		AbsoluteEpisode: 750,
+		Anime:           true,
+		ReleaseAliases:  []core.EpisodeNumber{{Season: 18, Episode: 4}},
+	}
+	rels, err := b.Search(t.Context(), req, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotReqs := f.streamRequests()
+	if len(gotReqs) != 2 || gotReqs[0] != "/stream/series/tt0388629:1:750.json" || gotReqs[1] != "/stream/series/tt0388629:18:4.json" {
+		t.Fatalf("stream requests = %v, want canonical then alias", gotReqs)
+	}
+	if len(rels) != 3 {
+		t.Fatalf("got %d releases (%+v), want 3 deduplicated releases", len(rels), rels)
+	}
+	if rels[0].InfoHash != hashA || len(rels[0].Info.AbsoluteEpisodes) != 1 || rels[0].Info.AbsoluteEpisodes[0] != 750 {
+		t.Fatalf("rels[0] = %+v", rels[0])
+	}
+	if rels[1].InfoHash != hashC || rels[1].FileName != "One.Piece.S18E04.A.Desperate.Situation.1080p.WEB-DL" || len(rels[1].Info.Seasons) != 1 || rels[1].Info.Seasons[0] != 18 || len(rels[1].Info.Episodes) != 1 || rels[1].Info.Episodes[0] != 4 {
+		t.Fatalf("pack alias line was not chosen by shared matcher: %+v", rels[1])
+	}
+	if rels[2].InfoHash != hashB || len(rels[2].Info.Seasons) != 1 || rels[2].Info.Seasons[0] != 18 || rels[2].Info.Episodes[0] != 4 {
+		t.Fatalf("rels[2] = %+v", rels[2])
+	}
+
+	// Straight-through TMDB numbering (#613: One Piece S15E583 is absolute
+	// 583) asks ":1:<absolute>" first, the season form second, then the
+	// group alias (S16E05), even with no XEM alias beyond the group, and
+	// merges the answers.
+	f613 := &fakeAddon{
+		manifest: manifest,
+		streams: map[string]string{
+			"/stream/series/tt0388629:1:583.json":  `{"streams":[{"name":"AIO","title":"[Group] One Piece - 583 (1080p)","infoHash":"` + hashA + `"}]}`,
+			"/stream/series/tt0388629:15:583.json": `{"streams":[{"name":"AIO","title":"One.Piece.S15E583.1080p.WEB-DL-GRP","infoHash":"` + hashB + `"}]}`,
+			"/stream/series/tt0388629:16:5.json":   `{"streams":[{"name":"AIO","title":"One.Piece.S16E005.1080p.WEB-DL-GRP","infoHash":"` + hashC + `"}]}`,
+		},
+	}
+	srv613 := httptest.NewServer(f613.handler(t))
+	defer srv613.Close()
+	b613 := backendWith(t, srv613.URL, Options{Client: srv613.Client()}, "ix613")
+	req613 := core.SearchRequest{
+		Type: core.TypeEpisode, IDs: core.IDs{IMDB: "tt0388629", TMDB: 37854, TVDB: 81797}, Title: "One Piece",
+		Season: 15, Episode: 583, AbsoluteEpisode: 583, Anime: true,
+		ReleaseAliases: []core.EpisodeNumber{{Season: 16, Episode: 5}},
+	}
+	rels613, err := b613.Search(t.Context(), req613, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got613 := f613.streamRequests()
+	if len(got613) < 3 || got613[0] != "/stream/series/tt0388629:1:583.json" || got613[1] != "/stream/series/tt0388629:15:583.json" || got613[2] != "/stream/series/tt0388629:16:5.json" {
+		t.Fatalf("straight-through requests = %v, want absolute, season, group in that order", got613)
+	}
+	hashes := map[string]bool{}
+	for _, r := range rels613 {
+		hashes[r.InfoHash] = true
+	}
+	if !hashes[hashA] || !hashes[hashB] || !hashes[hashC] {
+		t.Fatalf("merged releases missing a lookup's answer: %+v", rels613)
+	}
+
+	// Automatic mode (no XEM/group alias at all) still asks the absolute form.
+	fAuto := &fakeAddon{manifest: manifest, streams: map[string]string{
+		"/stream/series/tt0388629:1:1161.json":  `{"streams":[{"name":"AIO","title":"[Group] One Piece - 1161 (1080p)","infoHash":"` + hashA + `"}]}`,
+		"/stream/series/tt0388629:23:1161.json": `{"streams":[]}`,
+	}}
+	srvAuto := httptest.NewServer(fAuto.handler(t))
+	defer srvAuto.Close()
+	bAuto := backendWith(t, srvAuto.URL, Options{Client: srvAuto.Client()}, "ixauto")
+	reqAuto := req613
+	reqAuto.Season, reqAuto.Episode, reqAuto.AbsoluteEpisode, reqAuto.ReleaseAliases = 23, 1161, 1161, nil
+	relsAuto, err := bAuto.Search(t.Context(), reqAuto, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fAuto.streamRequests(); len(got) < 2 || got[0] != "/stream/series/tt0388629:1:1161.json" || got[1] != "/stream/series/tt0388629:23:1161.json" || len(relsAuto) != 1 {
+		t.Fatalf("automatic requests=%v rels=%+v", got, relsAuto)
+	}
+
+	// ReleaseAliasesOnly queries only the alias route without repeating canonical.
+	fOnly := &fakeAddon{
+		manifest: manifest,
+		streams:  map[string]string{"/stream/series/tt0388629:18:4.json": aliasBody},
+	}
+	srvOnly := httptest.NewServer(fOnly.handler(t))
+	defer srvOnly.Close()
+	bOnly := backendWith(t, srvOnly.URL, Options{Client: srvOnly.Client()}, "ix2")
+	aliasOnly := req
+	aliasOnly.ReleaseAliasesOnly = true
+	relsOnly, err := bOnly.Search(t.Context(), aliasOnly, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fOnly.streamRequests(); len(got) != 1 || got[0] != "/stream/series/tt0388629:18:4.json" || len(relsOnly) != 2 {
+		t.Fatalf("alias-only requests=%v rels=%+v", got, relsOnly)
+	}
+}
+
+func TestConvertPerEpisodeUsenetSeasonPackTargetsEpisode(t *testing.T) {
+	packStream := stream{
+		Name:   "AIO Usenet",
+		Title:  "Ride.or.Die.S01.2160p.WEB-DL\nRide.or.Die.S01E04.2160p.WEB-DL.mkv\n💾 7.3 GB",
+		NZBURL: "https://addon.example/nzb/season1.nzb",
+	}
+	req4 := core.SearchRequest{Type: core.TypeEpisode, Title: "Ride or Die", Season: 1, Episode: 4}
+	req5 := core.SearchRequest{Type: core.TypeEpisode, Title: "Ride or Die", Season: 1, Episode: 5}
+	packStream5 := packStream
+	packStream5.Title = "Ride.or.Die.S01.2160p.WEB-DL\nRide.or.Die.S01E05.2160p.WEB-DL.mkv\n💾 6.8 GB"
+
+	rels4, _, _ := convertWith([]stream{packStream}, req4, false, convertOptions{instance: "aio"})
+	rels5, _, _ := convertWith([]stream{packStream5}, req5, false, convertOptions{instance: "aio"})
+	if len(rels4) != 1 || len(rels5) != 1 {
+		t.Fatalf("got rels4=%d rels5=%d, want 1 each", len(rels4), len(rels5))
+	}
+	if rels4[0].Target == nil || rels4[0].Target.Season != 1 || rels4[0].Target.Episode != 4 {
+		t.Fatalf("ep4 Usenet pack target = %+v, want S01E04", rels4[0].Target)
+	}
+	if rels5[0].Target == nil || rels5[0].Target.Season != 1 || rels5[0].Target.Episode != 5 {
+		t.Fatalf("ep5 Usenet pack target = %+v, want S01E05", rels5[0].Target)
+	}
+	k4 := rels4[0].ScopedContentID("nzb:samepack")
+	k5 := rels5[0].ScopedContentID("nzb:samepack")
+	if k4 == "nzb:samepack" || k5 == "nzb:samepack" || k4 == k5 {
+		t.Fatalf("Usenet pack episodes did not get distinct scoped keys: k4=%q k5=%q", k4, k5)
 	}
 }

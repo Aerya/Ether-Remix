@@ -27,6 +27,11 @@ const (
 	// list: Overview and Activity both refetch GET /api/status/sessions, so
 	// they always show the same streams.
 	StreamSessions = "sessions.changed"
+	// StreamFlowsChanged announces flow definition changes (create, update,
+	// delete, enable, disable, webhook token rotation, auto-disable).
+	StreamFlowsChanged = "flows.changed"
+	// StreamFlowRun announces flow run lifecycle and step progress updates.
+	StreamFlowRun = "flows.run"
 )
 
 // KnownStreamType reports whether typ is a console event type.
@@ -39,7 +44,9 @@ func KnownStreamType(typ string) bool {
 		StreamStudioReload,
 		StreamAgentApproval,
 		StreamNotice,
-		StreamSessions:
+		StreamSessions,
+		StreamFlowsChanged,
+		StreamFlowRun:
 		return true
 	}
 	return false

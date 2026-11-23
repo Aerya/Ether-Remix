@@ -151,6 +151,28 @@ func (s *Service) screenStyle(c Channel, offair bool) string {
 // source, or a host without encode capacity, and take a direct path. A channel
 // whose owner chose no screen at all ("error") never shows one, so it plays
 // direct.
+// preferSteadyAtTune reports whether a channel should start directly on the
+// Steady decode/re-encode pipeline instead of trying direct copy/remux first.
+// Standard IPTV channels copy or remux by default and only escalate to Steady
+// when the viewer cannot decode the source video, the owner opts in (force
+// transcode, rock-solid reserve, or station look), a shared Steady broadcast
+// is already active, or the channel's preferred source has proven flaky.
+func (s *Service) preferSteadyAtTune(c Channel, key broadcastKey) bool {
+	if c.Kind != "iptv" {
+		return true
+	}
+	if c.Transcode || s.stabilityPreset(c) == stabilityRockSolid || (c.Look != nil && c.Look.LookID != "") {
+		return true
+	}
+	if s.broadcasts.running(key) != nil {
+		return true
+	}
+	for _, src := range s.orderedSourceCandidates(c) {
+		return s.steadyClass(c, src) == steadyClassFlaky
+	}
+	return false
+}
+
 func (s *Service) useBroadcast(c Channel) bool {
 	if c.Kind == "virtual" {
 		return true
@@ -397,10 +419,20 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 		full := 0
 		if running := s.broadcasts.running(key); running != nil {
 			format, full = running.format, running.steadyBitrate
+		} else if !s.preferSteadyAtTune(c, key) {
+			s.sessionLog(ss).Debug("live steady deferred", "reason", steadyRefusedCopy)
+			ss.mu.Lock()
+			ss.steadyRefused = steadyRefusedCopy
+			ss.mu.Unlock()
+			return fmt.Errorf("%w: direct copy preferred", errSteadyRefused)
 		} else {
 			var code, detail string
 			var admissionErr error
-			admitted, code, detail, admissionErr = s.admitSteady(ctx, c)
+			ss.mu.Lock()
+			direct := ss.direct
+			inputURL := ss.inputURL
+			ss.mu.Unlock()
+			admitted, code, detail, admissionErr = s.admitSteadySeed(ctx, c, direct, ss.cachedMasterFor(inputURL))
 			if admissionErr != nil {
 				return admissionErr
 			}
@@ -447,7 +479,22 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 	if admitted != nil {
 		attrs = []any{"allocation", admitted.class}
 	}
-	lease, info, err := s.launchBroadcast(ctx, ss, broadcastLaunch{channel: c, user: user, caps: caps, key: key, runner: runner, format: format, outputHeight: outputHeight, bitrate: bitrate, admitted: admitted, logAttrs: attrs})
+	startCtx := ctx
+	if c.Kind == "iptv" {
+		budget := iptvStartFloor
+		if admitted != nil && admitted.startBudget > 0 {
+			budget = admitted.startBudget
+		}
+		if core.LiveHandover(ctx) {
+			if running := s.broadcasts.running(key); running != nil {
+				budget = max(budget, 3*running.segment+3*time.Second)
+			}
+		}
+		var cancel context.CancelFunc
+		startCtx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
+	lease, info, err := s.launchBroadcast(startCtx, ss, broadcastLaunch{channel: c, user: user, caps: caps, key: key, runner: runner, format: format, outputHeight: outputHeight, bitrate: bitrate, admitted: admitted, logAttrs: attrs})
 	if err != nil {
 		return err
 	}
@@ -461,13 +508,27 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 	ss.info.MediaInfo = &info
 	ss.mu.Unlock()
 	if provider, ok := lease.broadcast.planner.(*providerBroadcastPlanner); ok && !s.coldFallbackAllowed(c) {
-		if err := provider.awaitFirstPicture(ctx); err != nil {
+		if err := provider.awaitFirstPicture(startCtx); err != nil {
+			ss.mu.Lock()
+			if ss.broadcast == lease {
+				ss.broadcast = nil
+			}
+			ss.mu.Unlock()
 			lease.close()
 			s.broadcasts.discardCold(lease.broadcast)
 			return err
 		}
 	}
-	awaitBroadcastCushion(ctx, lease, c.Kind == "iptv")
+	if err := awaitBroadcastCushion(startCtx, lease, c.Kind == "iptv"); err != nil {
+		ss.mu.Lock()
+		if ss.broadcast == lease {
+			ss.broadcast = nil
+		}
+		ss.mu.Unlock()
+		lease.close()
+		s.broadcasts.discardCold(lease.broadcast)
+		return err
+	}
 	return nil
 }
 
@@ -512,11 +573,15 @@ func (s *Service) launchBroadcast(ctx context.Context, ss *session, l broadcastL
 	decision.AudioCodec = "aac"
 	decision.AudioChannels = 2
 	decision.AudioSampleRate = 48000
+	container := "mpegts"
+	if broadcastUsesFMP4(caps) {
+		container = transcode.ContainerFMP4
+	}
 	decision.MaxHeight = outputHeight
 	decision.BitrateKbps = bitrate
-	decision.Container = "mpegts"
+	decision.Container = container
 
-	info := core.MediaInfo{Container: "mpegts", Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "h264", Profile: "High", Width: outputHeight * 16 / 9, Height: outputHeight, FrameRate: rate}, {Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000}}}
+	info := core.MediaInfo{Container: container, Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "h264", Profile: "High", Width: outputHeight * 16 / 9, Height: outputHeight, FrameRate: rate}, {Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000}}}
 	// Resolve a shared catalogue source as the owner, then enforce every viewer's
 	// channel/title policy again at playlist and segment boundaries.
 	inputUser := user
@@ -532,7 +597,18 @@ func (s *Service) launchBroadcast(ctx context.Context, ss *session, l broadcastL
 		if c.Kind == "virtual" {
 			planner = &scheduleBroadcastPlanner{s: s, channel: c, user: inputUser, caps: core.ClientCaps{MaxHeight: format.Height, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}}, format: format, runner: runner}
 		} else {
-			provider := &providerBroadcastPlanner{s: s, channel: c, format: format, runner: runner, ladder: newSteadyLadder()}
+			ss.mu.Lock()
+			direct := ss.direct
+			ssURL := ss.inputURL
+			ss.mu.Unlock()
+			cm := ss.cachedMasterFor(ssURL)
+			if cm == nil && admitted != nil && admitted.link != nil && admitted.link.ss != nil {
+				admitted.link.ss.mu.Lock()
+				adURL := admitted.link.ss.inputURL
+				admitted.link.ss.mu.Unlock()
+				cm = admitted.link.ss.cachedMasterFor(adURL)
+			}
+			provider := &providerBroadcastPlanner{s: s, channel: c, format: format, runner: runner, ladder: newSteadyLadder(), direct: direct, manifest: cm}
 			if admitted != nil && admitted.link != nil {
 				provider.primed = admitted.link
 				provider.ladder.next = admitted.link.src.ID

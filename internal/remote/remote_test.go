@@ -89,6 +89,7 @@ func TestBuildConnections(t *testing.T) {
 		"https://203-0-113-7.hash.plex.direct:40000",
 		"http://203.0.113.7:40000",
 		"https://plex.example.com",
+		"https://10-0-0-2.hash.plex.direct:8080",
 		"http://10.0.0.2:8080",
 	}
 	if got := URIs(cs); strings.Join(got, " ") != strings.Join(want, " ") {
@@ -97,7 +98,7 @@ func TestBuildConnections(t *testing.T) {
 	if !cs[0].Local || cs[2].Local || cs[2].Port != 40000 || cs[0].Address != "192.168.1.5" {
 		t.Fatalf("flags: %+v", cs)
 	}
-	if !cs[4].Custom || cs[4].Port != 443 || cs[4].Local || !cs[5].Local {
+	if !cs[4].Custom || cs[4].Port != 443 || cs[4].Local || !cs[5].Local || !cs[5].Custom || !cs[6].Local {
 		t.Fatalf("custom: %+v %+v", cs[4], cs[5])
 	}
 

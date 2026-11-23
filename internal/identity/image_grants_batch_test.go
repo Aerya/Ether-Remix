@@ -6,10 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
-	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -100,6 +98,7 @@ func TestImageGrantBatchPreservesPolicyAndOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.SetImageKey([]byte("unified-scheme-key"))
 	batch, err := service.IssueBatch(ctx, frontend.ImageBatchRequest{Credential: credential, Device: device, Items: []core.RatingKey{first, hidden, first, empty, unavailable}, Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop}})
 	if err != nil {
 		t.Fatal(err)
@@ -110,9 +109,31 @@ func TestImageGrantBatchPreservesPolicyAndOrdering(t *testing.T) {
 	if calls[first] != 1 || len(batch[0].Images) != 2 || batch[0].Images[0].Image.Path != "back" || batch[0].Images[1].Image.Path != "primary" || batch[0].Images[0].Secret == batch[0].Images[1].Secret || len(batch[1].Images) != 0 || len(batch[2].Images) != 0 {
 		t.Fatalf("batch order: %+v calls=%v", batch, calls)
 	}
+	// Issue, IssueBatch, and SignPage emit the exact same secret under the single stateless scheme.
+	singleSecret, err := service.Issue(ctx, frontend.ImageGrantRequest{
+		Credential: credential,
+		Device:     device,
+		Item:       first,
+		Image:      frontend.Image{Kind: frontend.ImagePoster, Path: "primary"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedPage, err := service.SignPage(ctx, frontend.ImagePageRequest{
+		Credential: credential,
+		Device:     device,
+		Titles:     []core.Title{{Key: first, Type: core.TypeMovie}},
+		Kinds:      []string{frontend.ImagePoster},
+	})
+	if err != nil || len(signedPage) != 1 || len(signedPage[0].Images) != 1 {
+		t.Fatalf("SignPage: %+v err=%v", signedPage, err)
+	}
+	if singleSecret != batch[0].Images[1].Secret || signedPage[0].Images[0].Secret != batch[0].Images[1].Secret {
+		t.Fatalf("expected unified secret across Issue/IssueBatch/SignPage: issue=%q batch=%q signPage=%q", singleSecret, batch[0].Images[1].Secret, signedPage[0].Images[0].Secret)
+	}
 	var count int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM frontend_image_grants`).Scan(&count); err != nil || count != 2 {
-		t.Fatal("persisted grants", count, err)
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM capability_headers WHERE namespace='image'`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("persisted image capability headers", count, err)
 	}
 	w := httptest.NewRecorder()
 	service.Serve(w, httptest.NewRequest("GET", "/", nil), batch[0].Images[1].Secret)
@@ -166,12 +187,12 @@ func TestImageGrantBatchRejectsRevokedSourceBeforeInsert(t *testing.T) {
 		t.Fatal("revoked source", err)
 	}
 	var count int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM frontend_image_grants`).Scan(&count); err != nil || count != 0 {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM capability_headers WHERE namespace='image'`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("partial grant", count, err)
 	}
 }
 
-func TestImageGrantBatchInsertsFullPage(t *testing.T) {
+func TestImageGrantBatchIssuesFullPageStatelessly(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
@@ -201,12 +222,12 @@ func TestImageGrantBatchInsertsFullPage(t *testing.T) {
 		t.Fatalf("batch size %d: %v", len(result), err)
 	}
 	var count int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM frontend_image_grants`).Scan(&count); err != nil || count != len(items) {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM capability_headers WHERE namespace='image'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("stored %d: %v", count, err)
 	}
 }
 
-func TestSignedPageGrantWritesNothingAndKeepsRevocation(t *testing.T) {
+func TestSignedPageGrantWritesNothingAndRechecksPolicyAndViewer(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
@@ -230,15 +251,15 @@ func TestSignedPageGrantWritesNothingAndKeepsRevocation(t *testing.T) {
 	service.SetImageGeneration(func() uint64 { return 1 })
 	title := core.Title{Key: core.MovieKey(9), Type: core.TypeMovie, Title: "Bench"}
 	page, err := service.SignPage(ctx, frontend.ImagePageRequest{Credential: credential, Device: core.Device{ID: "tv"}, Titles: []core.Title{title}, Kinds: []string{frontend.ImagePoster}})
-	if err != nil || len(page) != 1 || len(page[0].Images) != 1 || !shortImageTag(page[0].Images[0].Secret) {
+	if err != nil || len(page) != 1 || len(page[0].Images) != 1 || page[0].Images[0].Secret == "" {
 		t.Fatalf("page %+v err=%v", page, err)
 	}
 	var count int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM frontend_image_grants`).Scan(&count); err != nil || count != 0 || calls != 1 {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM capability_headers WHERE namespace='image'`).Scan(&count); err != nil || count != 0 || calls != 1 {
 		t.Fatalf("writes=%d calls=%d err=%v", count, calls, err)
 	}
 	again, err := service.SignPage(ctx, frontend.ImagePageRequest{Credential: credential, Device: core.Device{ID: "tv"}, Titles: []core.Title{title}})
-	if err != nil || calls != 1 || len(again) != 1 {
+	if err != nil || calls != 1 || len(again) != 1 || again[0].Images[0].Secret != page[0].Images[0].Secret {
 		t.Fatalf("cache calls=%d err=%v", calls, err)
 	}
 	secret := page[0].Images[0].Secret
@@ -259,20 +280,16 @@ func TestSignedPageGrantWritesNothingAndKeepsRevocation(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	service.Serve(rec, httptest.NewRequest("GET", "/image", nil), secret)
-	if rec.Code != 404 {
-		t.Fatalf("revoke %d", rec.Code)
+	if rec.Code != 200 {
+		t.Fatalf("revoke no-op denied active grant: %d", rec.Code)
 	}
-	fresh, err := service.SignPage(ctx, frontend.ImagePageRequest{Credential: credential, Titles: []core.Title{title}})
-	if err != nil || len(fresh) != 1 || len(fresh[0].Images) != 1 {
-		t.Fatalf("fresh %+v %v", fresh, err)
-	}
-	if err := grants.RevokeViewer(ctx, 1); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE auth_users SET active=0 WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
-	service.Serve(rec, httptest.NewRequest("GET", "/image", nil), fresh[0].Images[0].Secret)
+	service.Serve(rec, httptest.NewRequest("GET", "/image", nil), secret)
 	if rec.Code != 404 {
-		t.Fatalf("credential revoke %d", rec.Code)
+		t.Fatalf("deactivated viewer %d", rec.Code)
 	}
 }
 
@@ -281,12 +298,18 @@ type pageArtwork struct {
 	allow  *bool
 	calls  *int
 	images []frontend.Image
+	byKey  map[core.RatingKey][]frontend.Image
 }
 
-func (p *pageArtwork) ItemArtwork(context.Context, *core.Viewer, core.Device, core.RatingKey) ([]frontend.Image, bool, error) {
+func (p *pageArtwork) ItemArtwork(_ context.Context, _ *core.Viewer, _ core.Device, key core.RatingKey) ([]frontend.Image, bool, error) {
 	*p.calls++
 	if p.allow == nil || !*p.allow {
 		return nil, false, core.ErrNotFound
+	}
+	if p.byKey != nil {
+		if imgs, ok := p.byKey[key]; ok {
+			return imgs, true, nil
+		}
 	}
 	if len(p.images) > 0 {
 		return p.images, true, nil
@@ -329,7 +352,7 @@ func TestSignedPageGrantSealsOncePerTitle(t *testing.T) {
 	service.SetImageKey([]byte("test-image-page-key"))
 	title := core.Title{Key: core.MovieKey(9), Type: core.TypeMovie, Title: "Bench"}
 	page, err := service.SignPage(ctx, frontend.ImagePageRequest{Credential: credential, Device: core.Device{ID: "tv"}, Titles: []core.Title{title}, Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop}})
-	if err != nil || len(page) != 1 || len(page[0].Images) != 2 || !shortImageTag(page[0].Images[0].Secret) || page[0].Images[0].Secret == page[0].Images[1].Secret {
+	if err != nil || len(page) != 1 || len(page[0].Images) != 2 || page[0].Images[0].Secret == "" || page[0].Images[0].Secret == page[0].Images[1].Secret {
 		t.Fatalf("page %+v err=%v", page, err)
 	}
 	rec := httptest.NewRecorder()
@@ -349,14 +372,6 @@ func TestSignedPageGrantSealsOncePerTitle(t *testing.T) {
 	}
 }
 
-func shortImageTag(secret string) bool {
-	if len(secret) != 32 {
-		return false
-	}
-	_, err := hex.DecodeString(secret)
-	return err == nil
-}
-
 func TestPageGrantTagStaysStableAndImageRevalidates(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
@@ -374,9 +389,14 @@ func TestPageGrantTagStaysStableAndImageRevalidates(t *testing.T) {
 	}
 	allowed := true
 	calls := 0
+	art := &pageArtwork{
+		allow:  &allowed,
+		calls:  &calls,
+		images: []frontend.Image{{Kind: frontend.ImagePoster, Path: "primary", Tag: "v1"}},
+	}
 	images := &imageFixture{}
 	service, err := identity.NewImageGrantService(db, "jellyfin", grants, func() frontend.Experience {
-		return &pageArtwork{allow: &allowed, calls: &calls}
+		return art
 	}, images, 10*time.Minute, func() time.Time { return now }, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken, PublicContentTags: true})
 	if err != nil {
 		t.Fatal(err)
@@ -399,7 +419,7 @@ func TestPageGrantTagStaysStableAndImageRevalidates(t *testing.T) {
 	rec := httptest.NewRecorder()
 	service.Serve(rec, httptest.NewRequest("GET", "/Items/9/Images/Primary", nil), secret)
 	etag := rec.Header().Get("ETag")
-	if rec.Code != 200 || etag == "" || !strings.Contains(rec.Header().Get("Cache-Control"), "max-age=86400") || images.calls != 1 {
+	if rec.Code != 200 || etag == "" || rec.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" || images.calls != 1 {
 		t.Fatalf("serve %d etag=%q cache=%q calls=%d", rec.Code, etag, rec.Header().Get("Cache-Control"), images.calls)
 	}
 	revalidating := httptest.NewRequest("GET", "/Items/9/Images/Primary", nil)
@@ -412,9 +432,14 @@ func TestPageGrantTagStaysStableAndImageRevalidates(t *testing.T) {
 	if err := service.Revoke(ctx, credential, secret); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := service.SignPage(ctx, req)
-	if err != nil || fresh[0].Images[0].Secret == secret {
-		t.Fatalf("revoke did not rotate the tag: %v", fresh)
+	sameAfterNoopRevoke, err := service.SignPage(ctx, req)
+	if err != nil || sameAfterNoopRevoke[0].Images[0].Secret != secret {
+		t.Fatalf("expected documented no-op Revoke to keep URL unchanged: %v", sameAfterNoopRevoke)
+	}
+	art.images = []frontend.Image{{Kind: frontend.ImagePoster, Path: "primary", Tag: "v2"}}
+	rotated, err := service.SignPage(ctx, req)
+	if err != nil || rotated[0].Images[0].Secret == secret {
+		t.Fatalf("expected changed image Tag to mint a new URL: %v", rotated)
 	}
 }
 
@@ -431,9 +456,9 @@ func (p pageArtworkBatch) ItemArtworkPage(ctx context.Context, v *core.Viewer, d
 	return out, nil
 }
 
-// A page listed in one batch reads its revoked tags in one query and still
-// rotates a revoked tag.
-func TestBatchListedPageRotatesARevokedTag(t *testing.T) {
+// A page listed in one batch produces deterministic secrets across nodes sharing
+// the server image key, and rotates only the item whose image tag changed.
+func TestBatchListedPageRotatesOnTagChangeAcrossNodes(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
@@ -449,89 +474,53 @@ func TestBatchListedPageRotatesARevokedTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed, calls := true, 0
-	service, err := identity.NewImageGrantService(db, "jellyfin", grants, func() frontend.Experience {
-		return pageArtworkBatch{&pageArtwork{allow: &allowed, calls: &calls}}
-	}, &imageFixture{}, 10*time.Minute, func() time.Time { return now }, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken, PublicContentTags: true})
-	if err != nil {
-		t.Fatal(err)
+	art := &pageArtwork{
+		allow: &allowed,
+		calls: &calls,
+		byKey: map[core.RatingKey][]frontend.Image{
+			core.MovieKey(9):  {{Kind: frontend.ImagePoster, Path: "nine", Tag: "v1"}},
+			core.MovieKey(10): {{Kind: frontend.ImagePoster, Path: "ten", Tag: "v1"}},
+		},
 	}
-	service.SetImageKey([]byte("test-image-page-key"))
+	makeNode := func() *identity.ImageGrantService {
+		s, err := identity.NewImageGrantService(db, "jellyfin", grants, func() frontend.Experience {
+			return pageArtworkBatch{art}
+		}, &imageFixture{}, 10*time.Minute, func() time.Time { return now }, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken, PublicContentTags: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.SetImageKey([]byte("test-image-page-key"))
+		return s
+	}
+	service, other := makeNode(), makeNode()
 	titles := []core.Title{{Key: core.MovieKey(9), Type: core.TypeMovie}, {Key: core.MovieKey(10), Type: core.TypeMovie}}
 	req := frontend.ImagePageRequest{Credential: credential, Device: core.Device{ID: "tv"}, Titles: titles, Kinds: []string{frontend.ImagePoster}}
 	first, err := service.SignPage(ctx, req)
 	if err != nil || len(first) != 2 {
 		t.Fatalf("sign %v %v", first, err)
 	}
-	secret := first[0].Images[0].Secret
-	if err := service.Revoke(ctx, credential, secret); err != nil {
-		t.Fatal(err)
+	otherFirst, err := other.SignPage(ctx, req)
+	if err != nil || otherFirst[0].Images[0].Secret != first[0].Images[0].Secret || otherFirst[1].Images[0].Secret != first[1].Images[0].Secret {
+		t.Fatalf("expected identical secrets across nodes: %v vs %v", first, otherFirst)
 	}
-	// Another node knows the revocation only from the database.
-	other, err := identity.NewImageGrantService(db, "jellyfin", grants, func() frontend.Experience {
-		return pageArtworkBatch{&pageArtwork{allow: &allowed, calls: &calls}}
-	}, &imageFixture{}, 10*time.Minute, func() time.Time { return now }, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken, PublicContentTags: true})
-	if err != nil {
-		t.Fatal(err)
+	rec := httptest.NewRecorder()
+	other.Serve(rec, httptest.NewRequest("GET", "/Items/9/Images/Primary", nil), first[0].Images[0].Secret)
+	if rec.Code != 200 {
+		t.Fatalf("cross-node serve failed: %d", rec.Code)
 	}
-	other.SetImageKey([]byte("test-image-page-key"))
+
+	art.byKey[core.MovieKey(9)] = []frontend.Image{{Kind: frontend.ImagePoster, Path: "nine", Tag: "v2"}}
 	for _, s := range []*identity.ImageGrantService{service, other} {
 		fresh, err := s.SignPage(ctx, req)
-		if err != nil || fresh[0].Images[0].Secret == secret || fresh[1].Images[0].Secret != first[1].Images[0].Secret {
-			t.Fatalf("revoked tag not rotated, or a live one changed: %v", fresh)
+		if err != nil || fresh[0].Images[0].Secret == first[0].Images[0].Secret || fresh[1].Images[0].Secret != first[1].Images[0].Secret {
+			t.Fatalf("changed tag did not rotate item 9 or unexpectedly changed item 10: %v", fresh)
 		}
 	}
 }
 
-// A revocation that cannot be persisted is reported (it would otherwise come
-// back after a restart or on another node), while this node keeps denying it.
-func TestImagePageRevokeReportsAFailedPersist(t *testing.T) {
-	ctx := context.Background()
-	db := store.OpenTest(t)
-	if store.DialectOf(db) != store.SQLite {
-		t.Skip("uses a SQLite trigger to fail the write")
-	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Unix(1_700_000_000, 0)
-	grants, err := identity.NewGrants(db, members{db}, time.Hour, func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	credential, err := grants.Issue(ctx, 1, nil, "jellyfin", core.Device{ID: "tv"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	allowed, calls := true, 0
-	service, err := identity.NewImageGrantService(db, "jellyfin", grants, func() frontend.Experience {
-		return pageArtworkBatch{&pageArtwork{allow: &allowed, calls: &calls}}
-	}, &imageFixture{}, 10*time.Minute, func() time.Time { return now }, identity.ImageGrantOptions{Token: authhdr.MediaBrowserToken, PublicContentTags: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service.SetImageKey([]byte("test-image-page-key"))
-	req := frontend.ImagePageRequest{Credential: credential, Device: core.Device{ID: "tv"}, Titles: []core.Title{{Key: core.MovieKey(9), Type: core.TypeMovie}}, Kinds: []string{frontend.ImagePoster}}
-	page, err := service.SignPage(ctx, req)
-	if err != nil || len(page) != 1 {
-		t.Fatalf("sign %v %v", page, err)
-	}
-	secret := page[0].Images[0].Secret
-	if _, err := db.ExecContext(ctx, `CREATE TRIGGER fail_revoke BEFORE UPDATE OF revoked ON frontend_image_grants BEGIN SELECT RAISE(ABORT,'disk gone'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Revoke(ctx, credential, secret); err == nil {
-		t.Fatal("a revocation that was not persisted reported success")
-	}
-	rec := httptest.NewRecorder()
-	service.Serve(rec, httptest.NewRequest("GET", "/Items/9/Images/Primary", nil), secret)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("revoked grant served %d on the revoking node", rec.Code)
-	}
-}
-
-// A renewal keeps a cached listing's image tags serving past the page grant
-// lifetime, and authorizes nothing the viewer's artwork policy refuses.
-func TestRenewPageExtendsTagsWithoutWideningPolicy(t *testing.T) {
+// Stateless page image URLs carry no expiry and remain valid indefinitely while
+// viewer membership and artwork policy allow.
+func TestSignedPageTagsNeverExpireWhilePolicyAllows(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
 	if _, err := db.ExecContext(ctx, `INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
@@ -564,21 +553,12 @@ func TestRenewPageExtendsTagsWithoutWideningPolicy(t *testing.T) {
 		service.Serve(rec, httptest.NewRequest("GET", "/xtream/image/"+page[0].Images[0].Secret, nil), page[0].Images[0].Secret)
 		return rec.Code
 	}
-	now = now.Add(11 * time.Minute)
-	if code := serve(); code != 404 {
-		t.Fatalf("expired tag served %d", code)
-	}
-	if err := service.RenewPage(ctx, frontend.ImagePageRenewal{Credential: "not-a-credential", Items: page}); err == nil {
-		t.Fatal("renewed for an unknown credential")
-	}
-	if err := service.RenewPage(ctx, frontend.ImagePageRenewal{Credential: credential, Device: core.Device{ID: "app"}, Items: page}); err != nil {
-		t.Fatal(err)
-	}
+	now = now.Add(30 * 24 * time.Hour)
 	if code := serve(); code != 200 {
-		t.Fatalf("renewed tag served %d", code)
+		t.Fatalf("stateless page tag expired: %d", code)
 	}
 	allowed = false
 	if code := serve(); code != 404 {
-		t.Fatalf("renewal widened artwork policy: %d", code)
+		t.Fatalf("hidden title still served: %d", code)
 	}
 }

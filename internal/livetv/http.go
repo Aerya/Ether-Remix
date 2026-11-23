@@ -25,7 +25,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request, id string, u
 	if err != nil {
 		return err
 	}
-	hs.ServeHTTP(w, r)
+	s.touchMedia(ss)
+	observed := s.observeContinuousMedia(w, ss)
+	defer observed.done()
+	ss.activeReads.Add(1)
+	defer ss.activeReads.Add(-1)
+	hs.ServeHTTP(observed, r)
 	return nil
 }
 

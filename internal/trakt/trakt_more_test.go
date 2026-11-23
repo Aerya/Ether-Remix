@@ -304,16 +304,133 @@ func TestQueueBoundAndPacing(t *testing.T) {
 	if n != 3 || first != core.MovieKey(8) {
 		t.Fatalf("queue bound: n=%d first=%v", n, first)
 	}
+}
 
-	c.minPost = 40 * time.Millisecond
+type stubCatalog struct {
+	core.Catalog
+	titles map[core.RatingKey]*core.Title
+}
+
+func (s *stubCatalog) Get(_ context.Context, key core.RatingKey) (*core.Title, error) {
+	if t, ok := s.titles[key]; ok {
+		return t, nil
+	}
+	return nil, core.ErrNotFound
+}
+
+func TestShowAndSeasonKeysNeverSentAsMovies(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeTrakt{}
+	c := newTestClient(t, f)
 	connect(t, c, 1)
-	start := time.Now()
-	for i := 0; i < 3; i++ {
-		if err := c.AddRating(context.Background(), 1, core.MovieKey(1), 8); err != nil {
-			t.Fatal(err)
+
+	showKey := core.ShowKey(1396)
+	seasonKey := core.SeasonKey(1396, 2)
+	epKey := core.EpisodeKey(1396, 2, 5)
+	collKey := core.CollectionKey(10)
+	localKey := core.LocalKey(42)
+
+	c.catalog = &stubCatalog{titles: map[core.RatingKey]*core.Title{
+		showKey: {
+			Key: showKey, Type: core.TypeShow, Title: "Breaking Bad", Year: 2008,
+			IDs: core.IDs{TMDB: 1396, IMDB: "tt0903747", TVDB: 81189},
+		},
+		seasonKey: {
+			// Real catalogue season rows hold the TMDB season id in IDs and the
+			// show's ids in ShowIDs; Trakt must use ShowIDs, never IDs.
+			Key: seasonKey, Type: core.TypeSeason, Title: "Season 2", Season: 2,
+			IDs: core.IDs{TMDB: 3573}, ShowKey: showKey,
+			ShowIDs:   core.IDs{TMDB: 1396, IMDB: "tt0903747", TVDB: 81189},
+			ShowTitle: "Breaking Bad", ShowYear: 2008,
+		},
+		epKey: {
+			Key: epKey, Type: core.TypeEpisode, Title: "Breakage", Season: 2, Episode: 5,
+			IDs: core.IDs{TMDB: 62090}, ShowKey: showKey,
+			ShowIDs:   core.IDs{TMDB: 1396, IMDB: "tt0903747", TVDB: 81189},
+			ShowTitle: "Breaking Bad",
+		},
+		collKey:  {Key: collKey, Type: core.TypeMovie, Title: "Collection", IDs: core.IDs{TMDB: 10}},
+		localKey: {Key: localKey, Type: core.TypeMovie, Title: "Local Film", IDs: core.IDs{TMDB: 999}},
+	}}
+
+	at := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	// Parent-touch scrobble/unscrobble/progress events for shows, seasons,
+	// collections, and local keys must never hit Trakt (and must never be
+	// wrapped as movies).
+	for _, k := range []core.RatingKey{showKey, seasonKey, collKey, localKey} {
+		c.HandleEvent(ctx, state.Event{Kind: state.EventScrobble, UserID: 1, Key: k, At: at})
+		c.HandleEvent(ctx, state.Event{Kind: state.EventUnscrobble, UserID: 1, Key: k, At: at})
+		c.HandleEvent(ctx, state.Event{Kind: state.EventProgress, UserID: 1, Key: k, State: "playing", Fraction: 0.5, At: at})
+	}
+	c.HandleEvent(ctx, state.Event{Kind: state.EventRated, UserID: 1, Key: collKey, Rating: 8})
+	c.HandleEvent(ctx, state.Event{Kind: state.EventRated, UserID: 1, Key: localKey, Rating: 8})
+
+	f.mu.Lock()
+	if len(f.history) != 0 || len(f.scrobbles) != 0 || len(f.removed) != 0 || len(f.ratings) != 0 {
+		t.Fatalf("unexpected Trakt calls for non-playable/non-ratable keys: history=%+v scrobbles=%+v removed=%+v ratings=%+v",
+			f.history, f.scrobbles, f.removed, f.ratings)
+	}
+	f.mu.Unlock()
+
+	// Episode scrobble pushes nested show/season/episode.
+	c.HandleEvent(ctx, state.Event{Kind: state.EventScrobble, UserID: 1, Key: epKey, At: at})
+	// Show and season ratings push under "shows", never "movies".
+	c.HandleEvent(ctx, state.Event{Kind: state.EventRated, UserID: 1, Key: showKey, Rating: 9})
+	c.HandleEvent(ctx, state.Event{Kind: state.EventRated, UserID: 1, Key: seasonKey, Rating: 8})
+	c.HandleEvent(ctx, state.Event{Kind: state.EventRated, UserID: 1, Key: showKey, Rating: 0})
+	c.HandleEvent(ctx, state.Event{Kind: state.EventRated, UserID: 1, Key: seasonKey, Rating: 0})
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.history) != 1 {
+		t.Fatalf("expected 1 episode history push, got %+v", f.history)
+	}
+	if _, hasMovies := f.history[0]["movies"]; hasMovies {
+		t.Fatalf("episode history pushed as movies: %+v", f.history[0])
+	}
+	if len(f.ratings) != 2 {
+		t.Fatalf("expected 2 ratings (show + season), got %+v", f.ratings)
+	}
+	showRating := f.ratings[0]
+	if _, hasMovies := showRating["movies"]; hasMovies {
+		t.Fatalf("show rating pushed as movies: %+v", showRating)
+	}
+	sr := showRating["shows"].([]any)[0].(map[string]any)
+	if sr["ids"].(map[string]any)["tmdb"] != 1396.0 || sr["rating"] != 9.0 {
+		t.Fatalf("unexpected show rating payload: %+v", showRating)
+	}
+	seasonRating := f.ratings[1]
+	if _, hasMovies := seasonRating["movies"]; hasMovies {
+		t.Fatalf("season rating pushed as movies: %+v", seasonRating)
+	}
+	snr := seasonRating["shows"].([]any)[0].(map[string]any)
+	if snr["ids"].(map[string]any)["tmdb"] != 1396.0 {
+		t.Fatalf("season rating must use show TMDB id, not season TMDB id: %+v", seasonRating)
+	}
+	snEntry := snr["seasons"].([]any)[0].(map[string]any)
+	if snEntry["number"] != 2.0 || snEntry["rating"] != 8.0 {
+		t.Fatalf("unexpected season rating entry: %+v", seasonRating)
+	}
+	if len(f.removed) != 2 {
+		t.Fatalf("expected 2 rating removals, got %+v", f.removed)
+	}
+	for i, rem := range f.removed {
+		if _, hasMovies := rem["movies"]; hasMovies {
+			t.Fatalf("removal %d pushed as movies: %+v", i, rem)
+		}
+		if _, hasShows := rem["shows"]; !hasShows {
+			t.Fatalf("removal %d missing shows key: %+v", i, rem)
 		}
 	}
-	if el := time.Since(start); el < 80*time.Millisecond {
-		t.Fatalf("POST pacing not applied: %v", el)
+
+	// Import queue must ignore show/season scrobble parent-touches.
+	c.enqueueImport(state.Event{Kind: state.EventScrobble, UserID: 1, Key: showKey, At: at, Imported: true})
+	c.enqueueImport(state.Event{Kind: state.EventScrobble, UserID: 1, Key: seasonKey, At: at, Imported: true})
+	var queued int
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM trakt_import_queue`).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 0 {
+		t.Fatalf("import queue accepted %d show/season scrobble events, want 0", queued)
 	}
 }

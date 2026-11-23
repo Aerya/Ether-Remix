@@ -1,20 +1,211 @@
 import { apiFetch } from "../../lib/api";
+import type { Rule, TitleCard } from "../../lib/contract";
 import type { VisibilityRule } from "./browser/LibraryVisibility";
 
 /** Owner API shapes for /libraries and /plugins-setup (spec §11). */
 
+export type LibraryCardShape = "poster" | "landscape" | "square";
+
+export type MediaClass = "video" | "music" | "audiobook" | "book" | "podcast" | "photo";
+
+export type MediaRole =
+  | "item"
+  | "artist"
+  | "album"
+  | "track"
+  | "series"
+  | "book"
+  | "audiobook"
+  | "part"
+  | "show"
+  | "episode"
+  | "collection";
+
+export type PresentationAppKey = "vela" | "plex" | "mediaBrowser" | "stremio" | "xtream" | "silo";
+
+export type PresentationSource = "plugin" | "inferred" | "unavailable";
+
 export interface Presentations {
   adapterOnly?: boolean;
-  plex?: { base: string };
-  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
-  stremio?: { type: string };
-  xtream?: { category: string };
-  silo?: { type: string };
+  vela?: { type?: string; default?: boolean };
+  plex?: { base?: string; default?: boolean };
+  mediaBrowser?: {
+    collectionType?: string;
+    itemTypes?: Record<string, string>;
+    default?: boolean;
+  };
+  stremio?: { type?: string; default?: boolean };
+  xtream?: { category?: string; default?: boolean };
+  silo?: { type?: string; default?: boolean };
+}
+
+export interface ResolvedAppPresentation {
+  app: PresentationAppKey;
+  available: boolean;
+  enabled: boolean;
+  defaultOn: boolean;
+  overridden?: boolean;
+  source: PresentationSource;
+  hintValue?: string;
+  reason?: string;
+}
+
+export interface ResolvedPresentations {
+  mediaClass: MediaClass;
+  adapterOnly?: boolean;
+  effective: Presentations;
+  available: Presentations;
+  apps: ResolvedAppPresentation[];
+}
+
+export interface AppSwitchPatch {
+  adapterOnly?: boolean;
+  vela?: boolean;
+  plex?: boolean;
+  mediaBrowser?: boolean;
+  stremio?: boolean;
+  xtream?: boolean;
+  silo?: boolean;
+}
+
+export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view" | "live";
+
+export type LibraryTabLayout = "grid" | "list" | "timeline";
+
+export type LibraryFacetCategory = "essentials" | "people" | "technical" | "plugin";
+
+export interface LibraryFacetOption {
+  id: string;
+  label: string;
+  category?: LibraryFacetCategory;
+}
+
+export interface LibraryAvailableFacets {
+  collections: LibraryFacetOption[];
+  people: LibraryFacetOption[];
+}
+
+export interface LibraryTabFilter {
+  match?: "all" | "any";
+  rules: Rule[];
+}
+
+export interface LibraryTab {
+  key: string;
+  label: string;
+  kind: LibraryTabKind;
+  level?: string;
+  facet?: string;
+  order?: "count" | "name";
+  sort?: string;
+  direction?: "asc" | "desc";
+  card?: LibraryCardShape;
+  layout?: LibraryTabLayout;
+  search?: boolean;
+  searchPlaceholder?: string;
+  filters?: LibraryTabFilter;
+  hidden?: boolean;
+}
+
+export interface LibraryTabsResponse {
+  libraryId: number;
+  customized: boolean;
+  tabs: LibraryTab[];
+  effectiveTabs: LibraryTab[];
+  defaults: LibraryTab[];
+  scopeNote: string;
+  availableFacets: LibraryAvailableFacets;
+  availableSorts: string[];
+}
+
+export interface LibraryTabPreviewItem {
+  key?: string | number;
+  title: string;
+  year?: number;
+  poster?: string;
+  posterPath?: string;
+  art?: { role: string; url: string; width?: number; height?: number }[];
+}
+
+export interface LibraryTabPreviewCollection {
+  id: string;
+  bucketId?: string;
+  name: string;
+  itemCount: number;
+  newestItem?: TitleCard | KindItem;
+}
+
+export interface LibraryTabPreviewPerson {
+  id: number | string;
+  name: string;
+  itemCount: number;
+  thumb?: string;
+}
+
+export type LibraryTabPreviewResponse =
+  | {
+      kind: "recommended";
+      scopeNote: string;
+    }
+  | {
+      kind: "library" | "view";
+      sort: string;
+      direction: string;
+      total: number;
+      items: LibraryTabPreviewItem[];
+    }
+  | {
+      kind: "collections";
+      facet: string;
+      order: string;
+      collections: LibraryTabPreviewCollection[];
+      more: boolean;
+    }
+  | {
+      kind: "people";
+      facet: string;
+      order: string;
+      people: LibraryTabPreviewPerson[];
+      more: boolean;
+    }
+  | {
+      kind: "live";
+      card: LibraryCardShape;
+      scopeNote: string;
+    };
+
+export interface LibraryLiveItem {
+  id: string;
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  viewers?: number;
+  tags?: string[];
+  thumb?: string;
+  live: boolean;
+}
+
+export interface LibraryLiveFilter {
+  key: string;
+  label: string;
+}
+
+export interface LibraryLivePage {
+  items: LibraryLiveItem[];
+  filters?: LibraryLiveFilter[];
+  nextCursor?: string;
+}
+
+export interface LibraryLiveSession {
+  id: string;
+  title?: string;
+  playlist: string;
 }
 
 export interface KindLevel {
   key: string;
   label: string;
+  role?: MediaRole;
   playable?: boolean;
   container?: boolean;
 }
@@ -24,19 +215,44 @@ export interface KindField {
   label: string;
   indexed?: boolean;
   enum?: string[];
+  values?: string[];
 }
 export interface MediaKind {
   key: string;
   label: string;
-  library: { name: string; icon?: string };
+  media?: MediaClass;
+  library: {
+    name: string;
+    icon?: string;
+    card?: LibraryCardShape;
+    dateDisplay?: "year" | "date";
+  };
   levels: KindLevel[];
   fields?: KindField[];
   art?: { role: string; label: string }[];
-  present: Presentations;
+  present?: Presentations;
   browse: { sorts?: string[]; facets?: string[]; search: boolean; searchFields?: string[] };
   sync: { mode: string; refresh?: string };
   cache?: { maxBytes?: number; ttl?: string };
   match?: { thresholdDefault?: number };
+}
+
+export interface LibrarySyncDeleteGuard {
+  source: "walk" | "changes" | string;
+  missing: number;
+  total: number;
+  protected?: number;
+}
+
+export interface LibrarySyncOutcome {
+  mode: string;
+  upserted?: number;
+  deleted?: number;
+  skipped?: number;
+  protected?: number;
+  total: number;
+  summary: string;
+  finishedAt?: string;
 }
 
 export interface LibrarySync {
@@ -46,7 +262,31 @@ export interface LibrarySync {
   lastStarted?: string;
   lastOk?: string;
   lastError?: string;
+  deleteGuard?: LibrarySyncDeleteGuard;
+  lastOutcome?: LibrarySyncOutcome;
   items: number;
+  running?: boolean;
+  phase?: string;
+  syncedItems?: number;
+  pages?: number;
+}
+
+export interface LibrarySyncRequest {
+  fullWalk?: boolean;
+  force?: boolean;
+  keepExisting?: boolean;
+}
+
+export interface LibrarySyncResponse {
+  started?: boolean;
+  alreadyRunning?: boolean;
+  running?: boolean;
+  kept?: boolean;
+  upserted?: number;
+  deleted?: number;
+  skipped?: number;
+  protected?: number;
+  sync?: LibrarySync;
 }
 
 export interface CatalogueSource {
@@ -65,6 +305,7 @@ export interface CatalogueSource {
 }
 
 export interface Library {
+  rulesBroken?: boolean;
   id: number;
   key: string;
   name: string;
@@ -77,14 +318,24 @@ export interface Library {
   collectionId?: number;
   rules?: VisibilityRule[];
   visibilityDefault?: string;
+  /** Owner card-shape choice ("poster" | "landscape" | "square"); omitted/"" = default. */
+  cardShape?: "" | LibraryCardShape;
   present?: Presentations;
+  /** Server-resolved per-app presentations separating HOW (plugin/inferred/unavailable) from WHETHER (owner switches). */
+  presentations?: ResolvedPresentations;
   /** Quality profile titles in this library rank with; "" = Default. */
   qualityProfile?: string;
+  tabs?: LibraryTab[];
+  tabsCustomized?: boolean;
+  effectiveTabs?: LibraryTab[];
   sort: number;
   hidden: boolean;
   createdAt: string;
   updatedAt: string;
   itemCount?: number;
+  storedItems?: number;
+  pluginItems?: number;
+  maxPluginItems?: number;
   sync?: LibrarySync;
   kind?: MediaKind;
   pluginName?: string;
@@ -194,6 +445,25 @@ export const librariesApi = {
   list: (signal?: AbortSignal) =>
     apiFetch<{ libraries: Library[] }>("/libraries", { signal }).then((r) => r.libraries),
   get: (id: number, signal?: AbortSignal) => apiFetch<Library>(`/libraries/${id}`, { signal }),
+  tabs: (id: number, signal?: AbortSignal) =>
+    apiFetch<LibraryTabsResponse>(`/libraries/${id}/tabs`, { signal }),
+  putTabs: (id: number, tabs: LibraryTab[]) =>
+    apiFetch<LibraryTabsResponse>(`/libraries/${id}/tabs`, {
+      method: "PUT",
+      body: JSON.stringify({ tabs }),
+    }),
+  resetTabs: (id: number) =>
+    apiFetch<LibraryTabsResponse>(`/libraries/${id}/tabs`, { method: "DELETE" }),
+  previewTab: (
+    id: number,
+    body: { tab: LibraryTab; query?: string; limit?: number },
+    signal?: AbortSignal,
+  ) =>
+    apiFetch<LibraryTabPreviewResponse>(`/libraries/${id}/tabs/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
   create: (
     name: string,
     mediaType: string,
@@ -242,11 +512,55 @@ export const librariesApi = {
       `/libraries/${id}/items?${new URLSearchParams(params)}`,
       { signal },
     ),
+  live: (id: number, params: Record<string, string>, signal?: AbortSignal) =>
+    apiFetch<LibraryLivePage>(`/libraries/${id}/live?${new URLSearchParams(params)}`, { signal }),
+  playLive: (id: number, itemId: string, tab?: string, hevc = false, hevc10 = false) => {
+    const q = new URLSearchParams();
+    if (hevc) q.set("hevc", "1");
+    if (hevc10) q.set("hevc10", "1");
+    const suffix = q.size ? `?${q}` : "";
+    return apiFetch<LibraryLiveSession>(`/libraries/${id}/live/play${suffix}`, {
+      method: "POST",
+      body: JSON.stringify({ itemId, ...(tab ? { tab } : {}) }),
+    });
+  },
+  stopLive: (id: number, sessionId: string) =>
+    apiFetch<{ ok: boolean }>(`/libraries/${id}/live/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
   facets: (id: number, field: string, level = "", signal?: AbortSignal) =>
     apiFetch<{ field: string; values: { value?: string; title?: string; count: number }[] }>(
       `/libraries/${id}/facets/${encodeURIComponent(field)}${level ? `?level=${encodeURIComponent(level)}` : ""}`,
       { signal },
     ),
+  fieldValues: (
+    id: number,
+    field: string,
+    opts: {
+      q?: string;
+      offset?: number;
+      limit?: number;
+      order?: "count" | "name";
+      declared?: boolean;
+      level?: string;
+    } = {},
+    signal?: AbortSignal,
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.q) p.set("q", opts.q);
+    if (opts.offset && opts.offset > 0) p.set("offset", String(opts.offset));
+    if (opts.limit && opts.limit > 0) p.set("limit", String(opts.limit));
+    if (opts.order) p.set("order", opts.order);
+    if (opts.declared) p.set("declared", "1");
+    if (opts.level) p.set("level", opts.level);
+    const qs = p.toString();
+    return apiFetch<{
+      field: string;
+      values: { value: string; count: number }[];
+      more?: boolean;
+      truncated?: boolean;
+    }>(`/libraries/${id}/facets/${encodeURIComponent(field)}${qs ? `?${qs}` : ""}`, { signal });
+  },
   item: (id: number, ref: string, signal?: AbortSignal) =>
     apiFetch<{
       item: KindItem;
@@ -255,11 +569,13 @@ export const librariesApi = {
       kind?: MediaKind;
       resolution?: Record<string, unknown>;
     }>(`/libraries/${id}/item/${encodeURIComponent(ref)}`, { signal }),
-  sync: (id: number, fullWalk = false) =>
-    apiFetch<{ upserted: number; deleted: number; skipped: number }>(`/libraries/${id}/sync`, {
+  sync: (id: number, opts: boolean | LibrarySyncRequest = false) => {
+    const body: LibrarySyncRequest = typeof opts === "boolean" ? { fullWalk: opts } : opts;
+    return apiFetch<LibrarySyncResponse>(`/libraries/${id}/sync`, {
       method: "POST",
-      body: JSON.stringify({ fullWalk }),
-    }),
+      body: JSON.stringify(body),
+    });
+  },
   pinMatch: (id: number, ref: string, candidateRef: string) =>
     apiFetch<{ matches: MatchRecord[] }>(`/libraries/${id}/item/${encodeURIComponent(ref)}/match`, {
       method: "PUT",
@@ -288,10 +604,13 @@ export const librariesApi = {
     apiFetch<{ plugins: PluginLibrarySource[] }>("/plugins-setup", { signal }).then(
       (r) => r.plugins ?? [],
     ),
-  ensurePluginSetup: (plugin: string) =>
-    apiFetch<PluginSetup>(`/plugins-setup/${encodeURIComponent(plugin)}/ensure`, {
-      method: "POST",
-    }),
+  ensurePluginSetup: (plugin: string, kind?: string) =>
+    apiFetch<PluginSetup>(
+      `/plugins-setup/${encodeURIComponent(plugin)}/ensure${kind ? "?kind=" + encodeURIComponent(kind) : ""}`,
+      {
+        method: "POST",
+      },
+    ),
   setup: (plugin: string, signal?: AbortSignal) =>
     apiFetch<PluginSetup>(`/plugins-setup/${encodeURIComponent(plugin)}`, { signal }),
   librarySetup: (id: number, signal?: AbortSignal) =>
@@ -316,10 +635,12 @@ export const librariesApi = {
 /** Protocols a library is published to, for list-card badges. */
 export function publishedTo(lib: Library): string[] {
   if (lib.hidden) return [];
-  if (lib.source === "builtin") return ["plex", "mediaBrowser", "stremio", "xtream", "silo"];
+  if (lib.source === "builtin")
+    return ["vela", "plex", "mediaBrowser", "stremio", "xtream", "silo"];
   const p = lib.present ?? {};
   const out: string[] = [];
   if (p.adapterOnly) out.push("adapter");
+  if (p.vela) out.push("vela");
   if (p.plex) out.push("plex");
   if (p.mediaBrowser) out.push("mediaBrowser");
   if (p.stremio) out.push("stremio");
@@ -331,4 +652,19 @@ export function publishedTo(lib: Library): string[] {
 export function artUrl(item: KindItem, role = "poster"): string {
   const hit = item.art?.find((a) => a.role === role) ?? item.art?.[0];
   return hit && /^https?:\/\//.test(hit.url) ? hit.url : "";
+}
+
+/**
+ * Format a plugin item's date according to the kind's dateDisplay preference:
+ * full UTC YYYY-MM-DD when dateDisplay === "date" and released is set,
+ * otherwise year only.
+ */
+export function formatItemDate(
+  item: Pick<KindItem, "year" | "released">,
+  dateDisplay?: "year" | "date",
+): string {
+  if (dateDisplay === "date" && typeof item.released === "number" && item.released > 0) {
+    return new Date(item.released * 1000).toISOString().slice(0, 10);
+  }
+  return item.year ? String(item.year) : "";
 }

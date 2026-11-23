@@ -38,3 +38,27 @@ type WarmProbeWaiter interface {
 type MetadataProber interface {
 	ProbeMetadata(context.Context, *User, RatingKey, ClientCaps) error
 }
+
+// PlayMetadataProber joins or starts the shared resolve+probe flight for a
+// client's play-time metadata re-ask and waits bounded by ctx.
+type PlayMetadataProber interface {
+	ProbePlayMetadata(context.Context, *User, RatingKey, ClientCaps) error
+}
+
+// VersionHeaderProber runs bounded header probes on unprobed free-source
+// offered versions (cached debrid / vaulted Usenet) ahead of play.
+type VersionHeaderProber interface {
+	ProbeVersionHeaders(context.Context, *User, RatingKey, ClientCaps) error
+}
+
+// WithVersionProbeSearchWait attaches a concurrent Auto-probe completion signal
+// to ctx for ProbeVersionHeaders.
+func WithVersionProbeSearchWait(ctx context.Context, done <-chan struct{}) context.Context {
+	return core.WithVersionProbeSearchWait(ctx, done)
+}
+
+// DetailRevealer schedules a background season-drop check when a viewer opens
+// a show, season, or episode detail page, subject to detail-burst gating.
+type DetailRevealer interface {
+	RevealDetail(user *User, clientID string, key RatingKey)
+}

@@ -86,6 +86,7 @@ func (h *Handler) handleCatalogBrowse(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "invalid_filter", "Invalid rules")
 			return
 		}
+		q.Filter.PreviewRules, _ = libraryfilter.PreviewableRules(q.Filter.PreviewRules)
 		if _, err := libraryfilter.CompilePolicy(q.Filter.PreviewRules, q.Filter.PreviewFallback); err != nil {
 			writeError(w, 400, "invalid_filter", "Invalid rules")
 			return
@@ -620,12 +621,21 @@ func (h *Handler) handleVisibilityPreview(w http.ResponseWriter, r *http.Request
 		writeError(w, 400, "bad_json", "Invalid filter")
 		return
 	}
-	if _, err := libraryfilter.CompilePolicy(body.Exclusions, body.VisibilityDefault); err != nil {
+	kept, _ := libraryfilter.PreviewableRules(body.Exclusions)
+	if _, err := libraryfilter.CompilePolicy(kept, body.VisibilityDefault); err != nil && (body.LibraryID == 0 || body.LibraryID == core.LibraryMovies || body.LibraryID == core.LibraryShows) {
 		writeError(w, 400, "invalid_filter", "Could not preview catalogue")
 		return
 	}
 	p, err := h.deps.CatalogVisibility(r.Context(), body.Exclusions, body.VisibilityDefault, body.LibraryID)
 	if err != nil {
+		if isNotFound(err) {
+			writeError(w, 404, "not_found", "Library not found")
+			return
+		}
+		if libraryfilter.IsInvalidFilter(err) {
+			writeError(w, 400, "invalid_filter", "Could not preview catalogue")
+			return
+		}
 		writeError(w, 500, "preview_failed", "Could not preview catalogue")
 		return
 	}

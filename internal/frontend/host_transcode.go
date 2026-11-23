@@ -2,6 +2,7 @@ package frontend
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -40,16 +41,26 @@ func WithSubtitleSource(ctx context.Context, source string) context.Context {
 	return transcode.WithSubtitleSource(ctx, source)
 }
 
+// WithSubtitleReader hands a subtitle extraction the opened source, so an
+// indexed text track is read line by line instead of from the whole file.
+func WithSubtitleReader(ctx context.Context, open func() (io.ReaderAt, int64, func(), bool)) context.Context {
+	return transcode.WithSubtitleReader(ctx, open)
+}
+
 func HasQuirk(product, platform, device, model, version, name string) bool {
 	return transcode.HasQuirk(product, platform, device, model, version, name)
 }
 
-func PolicyStamp(product, platform, device, model, version string, overrides []core.ClientCapabilityOverride) (dv []int, subs []string, dvChanged, subsChanged bool) {
-	return transcode.PolicyStamp(product, platform, device, model, version, overrides)
+func PolicyStamp(product, platform, device, deviceName, model, version string, overrides []core.ClientCapabilityOverride) (dv []int, subs []string, dvChanged, subsChanged bool) {
+	return transcode.PolicyStamp(product, platform, device, deviceName, model, version, overrides)
 }
 
-func PlaybackDefaultsFor(product, platform, device, model, version string, overrides []core.ClientCapabilityOverride) PlaybackDefaults {
-	return transcode.PlaybackDefaultsFor(product, platform, device, model, version, overrides)
+func PlaybackDefaultsFor(product, platform, device, deviceName, model, version string, overrides []core.ClientCapabilityOverride) PlaybackDefaults {
+	return transcode.PlaybackDefaultsFor(product, platform, device, deviceName, model, version, overrides)
+}
+
+func ApplyForcedOverrides(c ClientCaps, model string, overrides []core.ClientCapabilityOverride) ClientCaps {
+	return transcode.ApplyForcedOverrides(c, model, overrides)
 }
 
 func ClientPolicyFor(c ClientCaps) ClientPolicy { return transcode.ClientPolicyFor(c) }
@@ -88,4 +99,10 @@ func HLSCopyPeakKbps(info MediaInfo, segDur time.Duration) int {
 
 func HLSVariantAttributes(info MediaInfo, d Decision) string {
 	return transcode.HLSVariantAttributes(info, d)
+}
+
+// TranscodeOutputSize is the encoded (square-pixel) picture size a
+// decision produces from v; see transcode.DecisionOutputSize.
+func TranscodeOutputSize(v *StreamInfo, d Decision) (int, int) {
+	return transcode.DecisionOutputSize(v, d)
 }

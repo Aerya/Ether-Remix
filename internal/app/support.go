@@ -77,6 +77,7 @@ func (a *App) supportSettings(cfg config.Config) diagnostics.Settings {
 		ProfileName:           name,
 		ProfileMaxHeight:      height,
 		ProfileAllowHDR:       hdr,
+		VideoTranscoding:      cfg.Transcode.VideoTranscoding,
 		HWAccel:               cfg.Transcode.HWAccel,
 		MaxTranscodes:         cfg.Transcode.MaxTranscodes,
 		RemoteMaxBitrateKbps:  cfg.Transcode.RemoteMaxBitrateKbps,

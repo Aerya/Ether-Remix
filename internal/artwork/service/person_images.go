@@ -46,9 +46,16 @@ func (a Source) PersonImages(ctx context.Context, req frontend.ArtworkRequest, t
 	if req.Viewer == nil || req.Item == 0 || title.Key != req.Item || req.Channel != "" {
 		return nil, core.ErrUnauthorized
 	}
+	identityReq := req
+	if a.LandscapeThumb {
+		identityReq.Device.Language = ""
+		viewer := *req.Viewer
+		viewer.ID = 0
+		identityReq.Viewer = &viewer
+	}
 	images := []frontend.Image{}
 	for _, portrait := range creditedPortraits(title) {
-		ref := artworkReference(req, frontend.ImagePerson, portrait.source)
+		ref := artworkReference(identityReq, frontend.ImagePerson, portrait.source)
 		images = append(images, frontend.Image{Kind: frontend.ImagePerson, Path: ref, Tag: ref, Subject: portrait.subject})
 	}
 	return images, nil

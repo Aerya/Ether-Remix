@@ -404,3 +404,55 @@ func TestDecodeLineInPlace(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePartDistrustsContradictedSize(t *testing.T) {
+	h, err := ParseBegin([]byte("=ybegin part=3 total=261 line=128 size=84436 name=obfuscated.bin"))
+	if err != nil {
+		t.Fatalf("ParseBegin: %v", err)
+	}
+	if err := ParsePart([]byte("=ypart begin=200001 end=300000"), &h); err != nil {
+		t.Fatalf("ParsePart with contradicted size: %v", err)
+	}
+	if h.Begin != 200_001 || h.End != 300_000 || h.PartSize() != 100_000 || h.Part != 3 {
+		t.Fatalf("extent = %+v", h)
+	}
+	if h.Size != 0 || h.Total != 0 || h.Name != "" {
+		t.Fatalf("contradicted =ybegin metadata retained: %+v", h)
+	}
+
+	// Full article decode keeps the =ypart slice and verifies CRC when =ybegin size < end.
+	data := randBytes(577, 100_000)
+	enc, err := EncodeBytes(data, EncodeOptions{
+		Name: "real.rar", Part: 3, Total: 3, Begin: 200_001, FileSize: 300_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nl := bytes.Index(enc, []byte("\r\n"))
+	rewritten := append([]byte("=ybegin part=3 total=261 line=128 size=84436 name=obfuscated.bin"), enc[nl:]...)
+	p, err := Decode(rewritten)
+	if err != nil {
+		t.Fatalf("Decode with contradicted size: %v", err)
+	}
+	if !bytes.Equal(p.Data, data) {
+		t.Fatal("decoded payload mismatch")
+	}
+	if p.Header.Begin != 200_001 || p.Header.End != 300_000 || p.Header.Size != 0 || p.Header.Total != 0 || p.Header.Name != "" {
+		t.Fatalf("decoded header = %+v", p.Header)
+	}
+
+	// Consistent =ypart preserves =ybegin metadata; inverted range is still malformed.
+	consistent, err := ParseBegin([]byte("=ybegin part=3 total=3 line=128 size=300000 name=honest.rar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ParsePart([]byte("=ypart begin=200001 end=300000"), &consistent); err != nil {
+		t.Fatal(err)
+	}
+	if consistent.Size != 300_000 || consistent.Total != 3 || consistent.Name != "honest.rar" {
+		t.Fatalf("consistent metadata lost: %+v", consistent)
+	}
+	if err := ParsePart([]byte("=ypart begin=300000 end=200001"), &consistent); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("inverted range err = %v, want ErrMalformed", err)
+	}
+}

@@ -72,7 +72,7 @@ type Conn struct {
 	onCommand      func(string)
 
 	recoveryProbe bool // pool-owned half-open breaker lease
-	bodyStarted   bool // current pipeline reply accepted BODY before transport failed
+	bodyStarted   bool // current command or pipeline reply accepted BODY (222)
 	broken        bool
 	inBody        bool
 	group         string
@@ -548,6 +548,7 @@ func (c *Conn) Body(ctx context.Context, messageID string) (*BodyReader, error) 
 	if c.inBody {
 		return nil, errors.New("nntp: BODY while a body is being read")
 	}
+	c.bodyStarted = false
 	end, err := c.begin(ctx, c.commandTimeout)
 	if err != nil {
 		return nil, err
@@ -565,6 +566,7 @@ func (c *Conn) Body(ctx context.Context, messageID string) (*BodyReader, error) 
 		}
 		return nil, &ProtocolError{Cmd: "BODY", Code: code, Msg: msg}
 	}
+	c.bodyStarted = true
 	c.inBody = true
 	return &BodyReader{c: c, end: end}, nil
 }

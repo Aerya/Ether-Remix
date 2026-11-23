@@ -905,6 +905,9 @@ func (s *Service) MatchGuides(ctx context.Context, req GuideMatchRequest) (Guide
 			return res, err
 		}
 	}
+	if _, _, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil); err != nil {
+		return res, err
+	}
 	if err := tx.Commit(); err != nil {
 		return res, err
 	}
@@ -1058,7 +1061,7 @@ func refreshInterval(src Source) (time.Duration, bool) {
 	if src.Disabled {
 		return 0, false
 	}
-	if !defaultGuideFeatures(src).Remote && src.PlaylistURL == "" && src.GuideURL == "" || src.RefreshHours < 0 {
+	if !defaultGuideFeatures(src).Remote && src.PlaylistURL == "" && src.GuideURL == "" && !src.PlaylistGuide || src.RefreshHours < 0 {
 		return 0, false
 	}
 	if src.RefreshHours == 0 {
@@ -1084,7 +1087,7 @@ func nextRefresh(src Source, horizon *time.Time) (time.Time, bool) {
 		return src.LastErrorAt.Add(backoff).UTC(), true
 	}
 	next := src.UpdatedAt.Add(iv)
-	if horizon != nil && (src.GuideURL != "" || defaultGuideFeatures(src).Remote) {
+	if horizon != nil && (src.GuideURL != "" || src.PlaylistGuide || defaultGuideFeatures(src).Remote) {
 		if h := horizon.Add(-guideHorizonMargin); h.Before(next) {
 			next = h
 		}
@@ -1147,12 +1150,20 @@ func (s *Service) planRefresh(ctx context.Context, srcs []Source) error {
 			return err
 		}
 	}
+	now := s.o.Now()
 	for i := range srcs {
+		srcs[i].NextRefresh = nil
+		if od := s.onDemandInterval(srcs[i]); od > 0 {
+			if s.sourceInUse(srcs[i].ID, now) {
+				next := onDemandNextRefresh(srcs[i], od)
+				srcs[i].NextRefresh = &next
+			}
+			continue
+		}
 		var horizon *time.Time
 		if h, ok := horizons[srcs[i].ID]; ok {
 			horizon = msTime(h)
 		}
-		srcs[i].NextRefresh = nil
 		if next, ok := nextRefresh(srcs[i], horizon); ok {
 			if s.sourceGuideFeatures(srcs[i]).Remote && (srcs[i].LastErrorAt == nil || !srcs[i].LastErrorAt.After(srcs[i].UpdatedAt)) {
 				for key := range used {
@@ -1204,7 +1215,7 @@ func (s *Service) refreshSource(ctx context.Context, id, reason string) (Source,
 		src = current[0]
 		due := src.NextRefresh != nil && !s.o.Now().Before(*src.NextRefresh)
 		if reason == "activity" {
-			due = activityRefreshDue(src, s.o.Now())
+			due = s.activityRefreshDue(src, s.o.Now())
 		}
 		if !due {
 			return src, nil
@@ -1252,7 +1263,7 @@ func (s *Service) wakeSourceRefresh() {
 func (s *Service) loadScheduledSources(ctx context.Context) ([]Source, error) {
 	// Only scheduling fields are read; inline uploads can be large.
 	d := store.DialectOf(s.o.DB)
-	rows, err := s.o.DB.QueryContext(ctx, `SELECT id, `+store.JSONText(d, "data", "kind")+`, `+store.JSONText(d, "data", "playlistUrl")+`, `+store.JSONText(d, "data", "guideUrl")+`, `+store.JSONInt(d, "data", "refreshHours")+`, `+store.JSONText(d, "data", "updatedAt")+`, `+store.JSONText(d, "data", "lastErrorAt")+`, `+store.JSONInt(d, "data", "refreshFailures")+`, `+store.JSONInt(d, "data", "activityRefreshMinutes")+` FROM livetv_sources WHERE COALESCE(CAST(`+store.JSONText(d, "data", "disabled")+` AS TEXT), 'false') NOT IN ('true', '1') ORDER BY id`)
+	rows, err := s.o.DB.QueryContext(ctx, `SELECT id, `+store.JSONText(d, "data", "kind")+`, `+store.JSONText(d, "data", "playlistUrl")+`, `+store.JSONText(d, "data", "guideUrl")+`, `+store.JSONText(d, "data", "playlistGuide")+`, `+store.JSONInt(d, "data", "refreshHours")+`, `+store.JSONText(d, "data", "updatedAt")+`, `+store.JSONText(d, "data", "lastErrorAt")+`, `+store.JSONInt(d, "data", "refreshFailures")+`, `+store.JSONInt(d, "data", "activityRefreshMinutes")+` FROM livetv_sources WHERE COALESCE(CAST(`+store.JSONText(d, "data", "disabled")+` AS TEXT), 'false') NOT IN ('true', '1') ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1260,12 +1271,12 @@ func (s *Service) loadScheduledSources(ctx context.Context) ([]Source, error) {
 	var srcs []Source
 	for rows.Next() {
 		var id string
-		var kind, playlist, guide, updated, failed sql.NullString
+		var kind, playlist, guide, playlistGuide, updated, failed sql.NullString
 		var hours, failures, activityMinutes sql.NullInt64
-		if rows.Scan(&id, &kind, &playlist, &guide, &hours, &updated, &failed, &failures, &activityMinutes) != nil {
+		if rows.Scan(&id, &kind, &playlist, &guide, &playlistGuide, &hours, &updated, &failed, &failures, &activityMinutes) != nil {
 			continue
 		}
-		src := Source{ID: id, Kind: kind.String, PlaylistURL: playlist.String, GuideURL: guide.String, RefreshHours: int(hours.Int64), RefreshFailures: int(failures.Int64)}
+		src := Source{ID: id, Kind: kind.String, PlaylistURL: playlist.String, GuideURL: guide.String, PlaylistGuide: playlistGuide.String == "true" || playlistGuide.String == "1", RefreshHours: int(hours.Int64), RefreshFailures: int(failures.Int64)}
 		src.ActivityRefreshMinutes = int(activityMinutes.Int64)
 		src.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated.String)
 		if t, e := time.Parse(time.RFC3339Nano, failed.String); e == nil {
@@ -1284,7 +1295,7 @@ func (s *Service) refreshSources(ctx context.Context, activity bool) []string {
 	now := s.o.Now()
 	var due []string
 	for _, src := range srcs {
-		if (!activity && src.NextRefresh != nil && !now.Before(*src.NextRefresh)) || (activity && activityRefreshDue(src, now)) {
+		if (!activity && src.NextRefresh != nil && !now.Before(*src.NextRefresh)) || (activity && s.activityRefreshDue(src, now)) {
 			due = append(due, src.ID)
 		}
 	}
@@ -1308,13 +1319,23 @@ func (s *Service) nextSourceRefreshWait(ctx context.Context) (time.Duration, boo
 	if err != nil {
 		return refreshCheckInterval, true
 	}
+	anyOnDemand := false
+	for _, src := range srcs {
+		if s.onDemandInterval(src) > 0 {
+			anyOnDemand = true
+			break
+		}
+	}
+	s.hasOnDemand.Store(anyOnDemand)
 	standalone := store.DialectOf(s.o.DB) == store.SQLite
 	if standalone {
-		anyActivity := false
-		for _, src := range srcs {
-			if _, enabled := refreshInterval(src); enabled && src.ActivityRefreshMinutes > 0 {
-				anyActivity = true
-				break
+		anyActivity := anyOnDemand
+		if !anyActivity {
+			for _, src := range srcs {
+				if _, enabled := refreshInterval(src); enabled && src.ActivityRefreshMinutes > 0 {
+					anyActivity = true
+					break
+				}
 			}
 		}
 		s.noActivitySources.Store(!anyActivity)

@@ -1,0 +1,958 @@
+{
+  "leagues": [
+    {
+      "id": "3321",
+      "uid": "s:3301~l:3321",
+      "name": "Ultimate Fighting Championship",
+      "abbreviation": "UFC",
+      "slug": "ufc",
+      "logos": [
+        {
+          "href": "https://a.espncdn.com/i/teamlogos/leagues/500/ufc.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+            "full",
+            "default"
+          ],
+          "lastUpdated": "2018-12-21T18:30Z"
+        },
+        {
+          "href": "https://a.espncdn.com/i/teamlogos/leagues/500/ufc.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+            "full",
+            "dark"
+          ],
+          "lastUpdated": "2018-12-21T18:30Z"
+        }
+      ]
+    }
+  ],
+  "season": {
+    "type": 2,
+    "year": 2026
+  },
+  "day": {
+    "date": "2026-11-21"
+  },
+  "events": [
+    {
+      "id": "600061665",
+      "uid": "s:3301~l:3321~e:600061665",
+      "date": "2026-11-21T15:00Z",
+      "name": "UFC Fight Night: Procházka vs. Stirling",
+      "shortName": "UFC Fight Night",
+      "season": {
+        "year": 2026,
+        "type": 2,
+        "slug": "regular-season"
+      },
+      "status": {
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final",
+          "shortDetail": "Final"
+        }
+      },
+      "links": [
+        {
+          "language": "en-US",
+          "rel": [
+            "summary",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/mma/fightcenter/_/id/600061665/league/ufc",
+          "text": "Gamecast",
+          "shortText": "Gamecast",
+          "isExternal": false,
+          "isPremium": false
+        }
+      ],
+      "venues": [
+        {
+          "id": "11560",
+          "fullName": "ABHA Arena",
+          "address": {
+            "city": "Doha",
+            "country": "Qatar"
+          }
+        }
+      ],
+      "competitions": [
+        {
+          "id": "401927855",
+          "uid": "s:3301~l:3321~e:600061665~c:401927855",
+          "date": "2026-11-21T18:00Z",
+          "startDate": "2026-11-21T18:00Z",
+          "type": {
+            "id": "956",
+            "abbreviation": "Flyweight"
+          },
+          "venue": {
+            "id": "11560",
+            "fullName": "ABHA Arena",
+            "address": {
+              "city": "Doha",
+              "country": "Qatar"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 300.0,
+            "displayClock": "5:00",
+            "period": 3,
+            "type": {
+              "id": "3",
+              "name": "STATUS_FINAL",
+              "state": "post",
+              "completed": true,
+              "description": "Final",
+              "detail": "Final",
+              "shortDetail": "Final"
+            },
+            "featured": false
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "Paramount+"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "4",
+                "shortName": "Streaming"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "Paramount+"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "2613374",
+              "uid": "s:3301~a:2613374",
+              "type": "athlete",
+              "order": 1,
+              "winner": true,
+              "linescores": [
+                {
+                  "value": 89.0,
+                  "displayValue": "89.0",
+                  "period": 0,
+                  "linescores": [
+                    {
+                      "value": 29.0,
+                      "displayValue": "29",
+                      "period": 0
+                    },
+                    {
+                      "value": 30.0,
+                      "displayValue": "30",
+                      "period": 0
+                    },
+                    {
+                      "value": 30.0,
+                      "displayValue": "30",
+                      "period": 0
+                    }
+                  ]
+                }
+              ],
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "37-6-0"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Kyoji Horiguchi",
+                "displayName": "Kyoji Horiguchi",
+                "shortName": "K. Horiguchi",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/jpn.png",
+                  "alt": "Japan",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "4294926",
+              "uid": "s:3301~a:4294926",
+              "type": "athlete",
+              "order": 2,
+              "winner": false,
+              "linescores": [
+                {
+                  "value": 82.0,
+                  "displayValue": "82.0",
+                  "period": 0,
+                  "linescores": [
+                    {
+                      "value": 28.0,
+                      "displayValue": "28",
+                      "period": 0
+                    },
+                    {
+                      "value": 27.0,
+                      "displayValue": "27",
+                      "period": 0
+                    },
+                    {
+                      "value": 27.0,
+                      "displayValue": "27",
+                      "period": 0
+                    }
+                  ]
+                }
+              ],
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "24-4-0"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Asu Almabayev",
+                "displayName": "Asu Almabayev",
+                "shortName": "A. Almabayev",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/kaz.png",
+                  "alt": "Kazakhstan",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            }
+          ],
+          "details": [
+            {
+              "id": "27196",
+              "type": {
+                "id": "22",
+                "text": "Unofficial Winner Decision"
+              }
+            },
+            {
+              "id": "27195",
+              "type": {
+                "id": "23",
+                "text": "Results"
+              }
+            },
+            {
+              "id": "27194",
+              "type": {
+                "id": "19",
+                "text": "Fight Over"
+              }
+            },
+            {
+              "id": "27193",
+              "type": {
+                "id": "18",
+                "text": "Round End"
+              }
+            },
+            {
+              "id": "27192",
+              "type": {
+                "id": "16",
+                "text": "Submission Attempt"
+              }
+            },
+            {
+              "id": "27191",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            },
+            {
+              "id": "27190",
+              "type": {
+                "id": "13",
+                "text": "Takedown"
+              }
+            },
+            {
+              "id": "27169",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            }
+          ],
+          "format": {
+            "regulation": {
+              "periods": 3
+            }
+          }
+        },
+        {
+          "id": "401922278",
+          "uid": "s:3301~l:3321~e:600061665~c:401922278",
+          "date": "2026-11-21T18:00Z",
+          "startDate": "2026-11-21T18:00Z",
+          "type": {
+            "id": "986",
+            "abbreviation": "Lightweight"
+          },
+          "venue": {
+            "id": "11560",
+            "fullName": "ABHA Arena",
+            "address": {
+              "city": "Doha",
+              "country": "Qatar"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 300.0,
+            "displayClock": "5:00",
+            "period": 3,
+            "type": {
+              "id": "3",
+              "name": "STATUS_FINAL",
+              "state": "post",
+              "completed": true,
+              "description": "Final",
+              "detail": "Final",
+              "shortDetail": "Final"
+            },
+            "featured": false
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "Paramount+"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "4",
+                "shortName": "Streaming"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "Paramount+"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "3045737",
+              "uid": "s:3301~a:3045737",
+              "type": "athlete",
+              "order": 2,
+              "winner": false,
+              "linescores": [
+                {
+                  "value": 81.0,
+                  "displayValue": "81.0",
+                  "period": 0,
+                  "linescores": [
+                    {
+                      "value": 27.0,
+                      "displayValue": "27",
+                      "period": 0
+                    },
+                    {
+                      "value": 27.0,
+                      "displayValue": "27",
+                      "period": 0
+                    },
+                    {
+                      "value": 27.0,
+                      "displayValue": "27",
+                      "period": 0
+                    }
+                  ]
+                }
+              ],
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "16-6-0"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Brian Ortega",
+                "displayName": "Brian Ortega",
+                "shortName": "B. Ortega",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "3109135",
+              "uid": "s:3301~a:3109135",
+              "type": "athlete",
+              "order": 1,
+              "winner": true,
+              "linescores": [
+                {
+                  "value": 90.0,
+                  "displayValue": "90.0",
+                  "period": 0,
+                  "linescores": [
+                    {
+                      "value": 30.0,
+                      "displayValue": "30",
+                      "period": 0
+                    },
+                    {
+                      "value": 30.0,
+                      "displayValue": "30",
+                      "period": 0
+                    },
+                    {
+                      "value": 30.0,
+                      "displayValue": "30",
+                      "period": 0
+                    }
+                  ]
+                }
+              ],
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "25-15-0"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Dan Hooker",
+                "displayName": "Dan Hooker",
+                "shortName": "D. Hooker",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/nzl.png",
+                  "alt": "New Zealand",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            }
+          ],
+          "details": [
+            {
+              "id": "27227",
+              "type": {
+                "id": "22",
+                "text": "Unofficial Winner Decision"
+              }
+            },
+            {
+              "id": "27226",
+              "type": {
+                "id": "23",
+                "text": "Results"
+              }
+            },
+            {
+              "id": "27225",
+              "type": {
+                "id": "19",
+                "text": "Fight Over"
+              }
+            },
+            {
+              "id": "27224",
+              "type": {
+                "id": "18",
+                "text": "Round End"
+              }
+            },
+            {
+              "id": "27223",
+              "type": {
+                "id": "16",
+                "text": "Submission Attempt"
+              }
+            },
+            {
+              "id": "27222",
+              "type": {
+                "id": "13",
+                "text": "Takedown"
+              }
+            },
+            {
+              "id": "27221",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            },
+            {
+              "id": "27220",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            }
+          ],
+          "format": {
+            "regulation": {
+              "periods": 3
+            }
+          }
+        },
+        {
+          "id": "401927850",
+          "uid": "s:3301~l:3321~e:600061665~c:401927850",
+          "date": "2026-11-21T18:00Z",
+          "startDate": "2026-11-21T18:00Z",
+          "type": {
+            "id": "999",
+            "abbreviation": "Featherweight"
+          },
+          "venue": {
+            "id": "11560",
+            "fullName": "ABHA Arena",
+            "address": {
+              "city": "Doha",
+              "country": "Qatar"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 300.0,
+            "displayClock": "5:00",
+            "period": 3,
+            "type": {
+              "id": "3",
+              "name": "STATUS_FINAL",
+              "state": "post",
+              "completed": true,
+              "description": "Final",
+              "detail": "Final",
+              "shortDetail": "Final"
+            },
+            "featured": false
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "Paramount+"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "4",
+                "shortName": "Streaming"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "Paramount+"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "3031559",
+              "uid": "s:3301~a:3031559",
+              "type": "athlete",
+              "order": 1,
+              "winner": false,
+              "linescores": [
+                {
+                  "value": 82.0,
+                  "displayValue": "82.0",
+                  "period": 0,
+                  "linescores": [
+                    {
+                      "value": 28.0,
+                      "displayValue": "28",
+                      "period": 0
+                    },
+                    {
+                      "value": 27.0,
+                      "displayValue": "27",
+                      "period": 0
+                    },
+                    {
+                      "value": 27.0,
+                      "displayValue": "27",
+                      "period": 0
+                    }
+                  ]
+                }
+              ],
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "26-6-0"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Aljamain Sterling",
+                "displayName": "Aljamain Sterling",
+                "shortName": "A. Sterling",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "5145681",
+              "uid": "s:3301~a:5145681",
+              "type": "athlete",
+              "order": 2,
+              "winner": true,
+              "linescores": [
+                {
+                  "value": 89.0,
+                  "displayValue": "89.0",
+                  "period": 0,
+                  "linescores": [
+                    {
+                      "value": 29.0,
+                      "displayValue": "29",
+                      "period": 0
+                    },
+                    {
+                      "value": 30.0,
+                      "displayValue": "30",
+                      "period": 0
+                    },
+                    {
+                      "value": 30.0,
+                      "displayValue": "30",
+                      "period": 0
+                    }
+                  ]
+                }
+              ],
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "19-1-0"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Kevin Vallejos",
+                "displayName": "Kevin Vallejos",
+                "shortName": "K. Vallejos",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/arg.png",
+                  "alt": "Argentina",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            }
+          ],
+          "details": [
+            {
+              "id": "27261",
+              "type": {
+                "id": "22",
+                "text": "Unofficial Winner Decision"
+              }
+            },
+            {
+              "id": "27260",
+              "type": {
+                "id": "23",
+                "text": "Results"
+              }
+            },
+            {
+              "id": "27259",
+              "type": {
+                "id": "19",
+                "text": "Fight Over"
+              }
+            },
+            {
+              "id": "27258",
+              "type": {
+                "id": "18",
+                "text": "Round End"
+              }
+            },
+            {
+              "id": "27257",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            },
+            {
+              "id": "27256",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            },
+            {
+              "id": "27243",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            },
+            {
+              "id": "27255",
+              "type": {
+                "id": "12",
+                "text": "Takedown Attempt"
+              }
+            }
+          ],
+          "format": {
+            "regulation": {
+              "periods": 3
+            }
+          }
+        },
+        {
+          "id": "401922277",
+          "uid": "s:3301~l:3321~e:600061665~c:401922277",
+          "date": "2026-11-21T18:00Z",
+          "startDate": "2026-11-21T18:00Z",
+          "type": {
+            "id": "990",
+            "abbreviation": "Light Heavyweight"
+          },
+          "venue": {
+            "id": "11560",
+            "fullName": "ABHA Arena",
+            "address": {
+              "city": "Doha",
+              "country": "Qatar"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 298.0,
+            "displayClock": "4:58",
+            "period": 2,
+            "type": {
+              "id": "3",
+              "name": "STATUS_FINAL",
+              "state": "post",
+              "completed": true,
+              "description": "Final",
+              "detail": "Final",
+              "shortDetail": "Final"
+            },
+            "featured": false
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "Paramount+"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "4",
+                "shortName": "Streaming"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "Paramount+"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "3156612",
+              "uid": "s:3301~a:3156612",
+              "type": "athlete",
+              "order": 1,
+              "winner": false,
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "32-7-1"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Jiří Procházka",
+                "displayName": "Jiří Procházka",
+                "shortName": "J. Procházka",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/cze.png",
+                  "alt": "Czechia",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "5216713",
+              "uid": "s:3301~a:5216713",
+              "type": "athlete",
+              "order": 2,
+              "winner": true,
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOT",
+                  "type": "total",
+                  "summary": "12-0-0"
+                }
+              ],
+              "statistics": [],
+              "athlete": {
+                "fullName": "Navajo Stirling",
+                "displayName": "Navajo Stirling",
+                "shortName": "N. Stirling",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/nzl.png",
+                  "alt": "New Zealand",
+                  "rel": [
+                    "country-flag"
+                  ]
+                }
+              }
+            }
+          ],
+          "details": [
+            {
+              "id": "27267",
+              "type": {
+                "id": "21",
+                "text": "Unofficial Winner Kotko"
+              }
+            },
+            {
+              "id": "27266",
+              "type": {
+                "id": "23",
+                "text": "Results"
+              }
+            },
+            {
+              "id": "27265",
+              "type": {
+                "id": "19",
+                "text": "Fight Over"
+              }
+            },
+            {
+              "id": "27264",
+              "type": {
+                "id": "18",
+                "text": "Round End"
+              }
+            },
+            {
+              "id": "27263",
+              "type": {
+                "id": "17",
+                "text": "Knockdown"
+              }
+            },
+            {
+              "id": "27270",
+              "type": {
+                "id": "5",
+                "text": "Round Start"
+              }
+            },
+            {
+              "id": "27262",
+              "type": {
+                "id": "18",
+                "text": "Round End"
+              }
+            },
+            {
+              "id": "27249",
+              "type": {
+                "id": "5",
+                "text": "Round Start"
+              }
+            }
+          ],
+          "format": {
+            "regulation": {
+              "periods": 5
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

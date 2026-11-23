@@ -332,6 +332,27 @@ func TestObscureTitleEquivalenceAndAliases(t *testing.T) {
 	}
 }
 
+func TestSubtitleAliases(t *testing.T) {
+	if got := SubtitleAliases("Demon Slayer: Kimetsu no Yaiba", []string{"Demon Slayer", "Kimetsu no Yaiba", "鬼滅の刃"}); !reflect.DeepEqual(got, []string{"Demon Slayer", "Kimetsu no Yaiba"}) {
+		t.Fatalf("SubtitleAliases(Demon Slayer) = %v", got)
+	}
+	if got := SubtitleAliases("The Lord of the Rings: The Rings of Power", []string{"The Rings of Power", "Rings of Power"}); !reflect.DeepEqual(got, []string{"The Rings of Power"}) {
+		t.Fatalf("SubtitleAliases(LOTR) = %v, want [The Rings of Power]", got)
+	}
+	if got := SubtitleAliases("The Signal: Reloaded", []string{"Das Signal: Reloaded"}); len(got) != 0 {
+		t.Fatalf("unconfirmed sequel prefix emitted: %v", got)
+	}
+	if got := SubtitleAliases("IT: Welcome to Derry", []string{"IT", "Welcome to Derry"}); !reflect.DeepEqual(got, []string{"Welcome to Derry"}) {
+		t.Fatalf("short prefix should be skipped: got %v", got)
+	}
+	if got := SubtitleAliases("The Studio", []string{"The Studio"}); len(got) != 0 {
+		t.Fatalf("title without colon emitted aliases: %v", got)
+	}
+	if got := SubtitleAliases("Demon Slayer: Kimetsu no Yaiba", nil); len(got) != 0 {
+		t.Fatalf("missing alternatives emitted aliases: %v", got)
+	}
+}
+
 func TestRevisionCourAndAnimeFlags(t *testing.T) {
 	v2 := Parse("[SubsPlease] Frieren - S01E05v2 (1080p) [12345678].mkv")
 	if v2.Revision != 2 || !v2.Proper || v2.Repack || !reflect.DeepEqual(v2.Seasons, []int{1}) || !reflect.DeepEqual(v2.Episodes, []int{5}) {

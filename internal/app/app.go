@@ -26,14 +26,22 @@ import (
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/discovery"
 	"github.com/braedonsaunders/ether/internal/episodeorder"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/favorites"
+	"github.com/braedonsaunders/ether/internal/flows"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
+	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/libraries"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
+	"github.com/braedonsaunders/ether/internal/liveevents"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/logredact"
@@ -77,7 +85,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/transcode"
 	"github.com/braedonsaunders/ether/internal/trickplay"
 	"github.com/braedonsaunders/ether/internal/updater"
+	"github.com/braedonsaunders/ether/internal/uploadbudget"
 	"github.com/braedonsaunders/ether/internal/usenet"
+	"github.com/braedonsaunders/ether/internal/vault"
+	"github.com/braedonsaunders/ether/internal/veladist"
 	"github.com/braedonsaunders/ether/internal/watchlist"
 	"log/slog"
 	"net/http"
@@ -123,8 +134,13 @@ type Options struct {
 	// CatalogNow, when set, is the catalog clock from construction. Tests
 	// pin it so a minute snapshot cannot expire while a background browse runs.
 	CatalogNow func() time.Time
+	// FlowActions optionally injects a Flows action registry; nil creates an
+	// empty registry ready for dynamic built-in and plugin action registration.
+	FlowActions flows.ActionRegistry
 	// plextvHTTP, when set, is the HTTP client used by the plex.tv client in tests.
 	plextvHTTP *http.Client
+	// urlImages, when set, replaces the untrusted remote image fetcher in tests.
+	urlImages frontend.UntrustedImageFetcher
 	// diskUsage, when set, replaces the cache volume measurement behind the
 	// segment cache's free-space floor, so tests never depend on the free
 	// space of the machine running them.
@@ -145,13 +161,20 @@ type App struct {
 	brokerTranscoder core.Transcoder
 	perf             *perfObserver // per-request database cost, budgets and trace
 	availability     *availability.Service
+	// availabilityLive publishes availability to background workers (the
+	// personalization builder) that start before buildAvailability runs.
+	availabilityLive atomic.Pointer[availability.Service]
 	opts             Options
 	log              *slog.Logger
 	logs             *admin.LogBuffer
+	playLogs         *stats.SessionLogSink
 	support          *diagnostics.Recorder
 	cfg              *config.Store
 	proxyMu          sync.Mutex
+	pluginLiveTVMu   sync.Mutex
 	prowlarrMu       sync.Mutex
+	apiKeysMu        sync.Mutex
+	apiKeys          *identity.APIKeys
 	prowlarrState    string
 	prowlarrKept     bool
 	proxyGen         uint64
@@ -206,6 +229,7 @@ type App struct {
 	cache               *segcache.Cache
 	cacheConfig         atomic.Pointer[config.Cache]
 	engine              *stream.Engine
+	vault               vault.Store
 	indexers            *newznab.Manager
 	sites               *cardigann.Service // built-in indexer sites from owner-installed definitions
 	addons              *stremio.Service   // Stremio stream addons configured as indexers
@@ -224,6 +248,7 @@ type App struct {
 	trickplay           *trickplay.Owner
 	load                *sysload.Sampler // machine load for the Overview
 	playback            *playback.Manager
+	uploadBudget        *uploadbudget.Manager
 	tracePlayback       bool // ETHER_TRACE_PLAYBACK, set in buildPlayback
 	prefetch            *prefetch.Prefetcher
 	cachefill           *cachefill.Manager
@@ -262,6 +287,11 @@ type App struct {
 	safety            *safety.Service
 	updates           *updateState
 	frontends         *frontendRuntime
+	velaOnce          sync.Once
+	velaDist          *veladist.Manager
+	velaSkinsOnce     sync.Once
+	velaSkins         *vela.SkinStore
+	velaSkinHTTP      *http.Client
 	frontendClients   *frontendClients
 	artwork           *artworkservice.Source
 	downloadRemuxer   core.DownloadRemuxer
@@ -269,6 +299,8 @@ type App struct {
 	plexMetaClose     func()
 	spikeLibrary      *spike.Library
 	handler           http.Handler
+	consoleHandler    http.Handler
+	front             atomic.Pointer[frontDoor]
 	instanceLock      *instanceLock
 	closers           []func()
 	closeOnce         sync.Once
@@ -292,10 +324,21 @@ type App struct {
 	// Extensibility (docs/extend/SPEC.md). Each runtime type lives in its own
 	// file and is owned by one workstream: extend.go, console_stream.go,
 	// plugins.go and agent.go.
-	extendRT  *extendRuntime
-	streamRT  *consoleStreamRuntime
-	pluginsRT *pluginRuntime
-	agentRT   *agentRuntime
+	extendRT           *extendRuntime
+	streamRT           *consoleStreamRuntime
+	pluginsRT          *pluginRuntime
+	agentRT            *agentRuntime
+	eventBus           *events.Bus
+	eventRegistry      *events.Registry
+	systemEvents       *systemEventHooks
+	flowsRT            *flowsRuntime
+	liveEvents         *liveevents.Hub
+	liveWatchMatcher   *liveevents.WatchMatcher
+	liveTicker         *liveevents.TickerService
+	liveAlertEngine    *liveevents.AlertEngine
+	liveAlertScheduler *liveevents.AlertScheduler
+	pluginLiveOnce     sync.Once
+	pluginLive         *PluginLiveService
 }
 
 // New builds every component. Nothing listens until Run.
@@ -306,7 +349,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	if opts.Version == "" {
 		opts.Version = updater.Version
 	}
-	a := &App{opts: opts, logs: admin.NewLogBuffer(4000)}
+	a := &App{opts: opts, logs: admin.NewLogBuffer(4000), playLogs: stats.NewSessionLogSink()}
 	base := opts.Logger
 	if base == nil {
 		if a.opts.LogLevel == nil {
@@ -314,8 +357,8 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		}
 		base = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: a.opts.LogLevel}))
 	}
-	// The in-memory buffer behind Logs gets the same scrubbing as the file.
-	a.log = slog.New(logredact.Handler(admin.TeeHandler(base.Handler(), a.logs)))
+	// The in-memory buffer behind Logs and the per-play session sink get the same scrubbing as the file.
+	a.log = slog.New(logredact.Handler(a.playLogs.Wrap(admin.TeeHandler(base.Handler(), a.logs))))
 	slog.SetDefault(a.log)
 	// Serve holds the data directory's lock across starts, so a retried
 	// start never lets another instance in; an App run on its own takes it.
@@ -347,6 +390,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	a.tracker = startup.NewTracker(opts.Version, time.Now)
 	if opts.front != nil && (a.deployment == nil || a.deployment.settings.Roles.FullServer()) {
 		a.tracker = opts.front.tracker
+		a.front.Store(opts.front)
 		a.tracker.Begin()
 		if err := a.openFrontDoor(); err != nil {
 			return nil, err
@@ -497,6 +541,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.Close()
 		return nil, fmt.Errorf("cluster: %w", err)
 	}
+	a.initEventBus()
 	// A restored PostgreSQL-style bundle leaves a logical dump to import.
 	if err := a.importRestoredDump(ctx); err != nil {
 		a.Close()
@@ -504,7 +549,17 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	}
 	// Libraries (v0.3.8 §1): seed Movies/TV Shows and move the retired
 	// config library names onto libraries 1/2 exactly once.
-	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log, OnChange: a.publishLibrarySections}); err != nil {
+	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log, OnChange: a.publishLibrarySections, CompileCataloguePolicy: func(specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+		if a.catalog == nil {
+			return nil, fmt.Errorf("catalogue unavailable")
+		}
+		return a.catalog.CompileLibraryRules(specs, fallback)
+	}, CompilePluginPolicy: func(ctx context.Context, id core.LibraryID, specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+		if a.pluginsRT == nil || a.pluginsRT.pluginitems == nil {
+			return nil, fmt.Errorf("plugin items unavailable")
+		}
+		return a.pluginsRT.pluginitems.CompilePolicy(ctx, id, specs, fallback)
+	}}); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("libraries: %w", err)
 	}
@@ -552,6 +607,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 			}
 			a.connectServerHooks()
 			a.initUpdates()
+			a.wireSystemEvents()
 			a.syncOwnerRecovery(ctx)
 			started = true
 			return a, nil
@@ -591,6 +647,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	phase("service construction")
 	a.connectClusterHooks()
 	a.initUpdates()
+	a.wireSystemEvents()
 	// Keep the owner's recovery sign-in in step with the database.
 	a.syncOwnerRecovery(ctx)
 	phase("hooks and recovery")
@@ -605,7 +662,7 @@ func (a *App) build(ctx context.Context, cfg config.Config) error {
 	a.support = diagnostics.New(a.supportDeps())
 	// One guide client serves the import console and the background sync,
 	// so a listing fetched by either is cached for the other.
-	ua := "Ether/" + a.opts.Version + " (+https://github.com/braedonsaunders/ether)"
+	ua := httpclient.FormatUserAgent(a.opts.Version)
 	a.guides = resolver.NewTrashGuides(resolver.TrashOptions{UserAgent: ua})
 	a.dictionarry = resolver.NewDictionarry(resolver.DictionarryOptions{UserAgent: ua})
 	a.qualitySync = resolver.NewQualitySyncer(resolver.QualitySyncDeps{
@@ -663,10 +720,23 @@ func (a *App) applyConfig(c config.Config) {
 	a.prefetch.SetConfig(c.Cache)
 	if a.transcoder != nil {
 		a.transcoder.UpdateConfig(c.Transcode)
+		a.transcoder.SetPauseRetention(c.Server.PausedStreamRetention())
+	}
+	if a.state != nil {
+		a.state.SetResumeAfter(c.Server.ResumeAfterSeconds)
+	}
+	timeline.SetResumeAfter(c.Server.ResumeAfterSeconds)
+	if a.uploadBudget != nil {
+		a.uploadBudget.OnSessionsChanged()
+	}
+	if a.deployment != nil && a.deployment.encoder != nil {
+		a.deployment.encoder.UpdateConfig(privateEncoderConfig(c, a.deployment.settings.Capacity))
+		a.deployment.encoder.SetPauseRetention(c.Server.PausedStreamRetention())
 	}
 	a.trakt.UpdateConfig(c.Trakt)
 	a.subtitles.UpdateConfig(c.OpenSubtitles)
 	a.subtitles.UpdateSubDL(c.SubDL)
+	a.subtitles.UpdateSubSource(c.SubSource)
 	a.subtitles.UpdateProviders(c.Subtitles.Providers)
 	// Re-publish section titles when Movies / TV Shows library names change.
 	a.publishLibrarySections()
@@ -763,28 +833,47 @@ func (a *App) Run(ctx context.Context) error {
 		front.serve(ln)
 		defer front.close()
 	}
+	a.front.Store(front)
 	addr := front.ln.Addr()
 	a.frontends.start(ctx, addr)
 	defer a.frontends.stop()
 	cfg = a.cfg.Get() // the port may have moved off a busy default
-	// Publish the actual listener, including automatic port fallback, without
-	// exposing the service's protected configuration to the desktop user.
-	if err := service.PublishLocalURL(a.opts.DataDir, strings.TrimSuffix(probeURL(addr), "/identity")); err != nil {
-		a.log.Warn("publish local tray endpoint", "err", err)
-	}
 	front.setTLS(a.certs.TLSConfig)
 	front.setProxies(a.cfg.TrustedProxyCIDRs)
 	front.setRemote(a.cfg.AllowRemoteConsole)
+	front.reconcileConsole(cfg.Server)
+	a.frontends.setConsoleAddr(front.consoleAddr(), front.consoleOnMain.Load())
+	var consoleLiveStopped atomic.Bool
+	defer consoleLiveStopped.Store(true)
+	a.cfg.Subscribe(func(c config.Config) {
+		if consoleLiveStopped.Load() {
+			return
+		}
+		front.reconcileConsole(c.Server)
+		a.frontends.setConsoleAddr(front.consoleAddr(), front.consoleOnMain.Load())
+		if activeAddr := front.activeConsoleAddr(); activeAddr != nil {
+			_ = service.PublishLocalURL(a.opts.DataDir, strings.TrimSuffix(probeURL(activeAddr), "/identity"))
+		}
+	})
+	// Publish the actual listener, including automatic port fallback, without
+	// exposing the service's protected configuration to the desktop user.
+	publishAddr := front.activeConsoleAddr()
+	if publishAddr == nil {
+		publishAddr = addr
+	}
+	if err := service.PublishLocalURL(a.opts.DataDir, strings.TrimSuffix(probeURL(publishAddr), "/identity")); err != nil {
+		a.log.Warn("publish local tray endpoint", "err", err)
+	}
 	// A restore applied at this start counts from here: the server is
 	// about to serve on it. If it cannot be recorded, nothing is served
 	// and Serve puts the original data back.
 	if err := a.confirmRestore(); err != nil {
 		return err
 	}
-	front.gate.Open(a.handler)
+	front.open(a.handler, a.consoleHandler)
 	a.markPublicReady()
 	a.log.Info("startup phase", "phase", "public listener", "duration", time.Since(runStart))
-	uiURL := fmt.Sprintf("http://localhost:%d/ether/", cfg.Server.Port)
+	uiURL := fmt.Sprintf("http://localhost:%d/ether/", front.activeConsolePort())
 	a.log.Info("Ether listening", "addr", addr.String(), "ui", uiURL,
 		"version", a.opts.Version, "spike", cfg.Spike.Enabled)
 	background.start(func() { a.warmPlaybackPolicy(ctx) })
@@ -792,7 +881,11 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.playback.FinishStartup(ctx) })
 
 	background.start(func() { a.runNodeControl(ctx) })
+	background.start(func() { a.ensureVelaInstalled(ctx) })
 	background.start(func() { a.watchConsoleSessions(ctx) })
+	if a.uploadBudget != nil {
+		background.start(func() { a.uploadBudget.Run(ctx) })
+	}
 
 	// Singleton work runs only on the cluster leader (always, standalone).
 	// trakt.Start stays on every node: it delivers this node's own
@@ -869,6 +962,9 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.runBudgets(ctx) })
 	background.start(func() { a.cluster.RunAsLeader(ctx, "prowlarr indexer sync", a.runProwlarrSync) })
 	background.start(func() { a.runEgress(ctx) })
+	background.start(func() { a.runSystemEvents(ctx) })
+	background.start(func() { a.runFlows(ctx) })
+	background.start(func() { a.runLiveEvents(ctx) })
 
 	if next := startupNextStep(cfg, uiURL); next != "" {
 		a.log.Info(next)
@@ -889,6 +985,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.registrar.ListenerReady()
 	}
 	background.start(func() { a.checkIntegrityLater(ctx) })
+	a.emitServerStarted()
 	a.notifyLifecycle("server.started", "Ether is online", cfg.Server.FriendlyName+" is ready for connections.")
 	// Hang watchdog: restart via the supervisor if we stop answering.
 	watchdogErr := make(chan error, 1)
@@ -927,7 +1024,10 @@ func (a *App) Run(ctx context.Context) error {
 		a.drainPrivate()
 	}
 	if runErr == nil {
+		a.emitServerStopping("shutdown")
 		a.notifyLifecycle("server.stopping", "Ether is stopping", "The server is shutting down or restarting.")
+	} else if !errors.Is(runErr, errClusterSetup) {
+		a.emitServerCrashed(runErr.Error(), "runtime")
 	}
 	// Hand leadership over first: another node takes over singleton work
 	// and plex.tv publication while this one finishes shutting down.
@@ -936,7 +1036,7 @@ func (a *App) Run(ctx context.Context) error {
 	// flight finish (at most 10s, as before).
 	shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
 	defer done()
-	front.gate.Close(shutdown)
+	front.closeGates(shutdown)
 	a.registrar.Stop()
 	if runErr != nil {
 		return runErr
@@ -997,9 +1097,9 @@ func (a *App) runQualitySync(ctx context.Context) {
 func (a *App) housekeeping(ctx context.Context) {
 	pins := time.NewTicker(5 * time.Minute)
 	defer pins.Stop()
-	imageTimer := time.NewTicker(5 * time.Second)
-	defer imageTimer.Stop()
-	var imageSweep, receiptSweep headerMaintenance
+	receiptTimer := time.NewTicker(5 * time.Second)
+	defer receiptTimer.Stop()
+	var receiptSweep headerMaintenance
 	// The PMS release check is cluster-wide: leader only. Pins and
 	// seen-token flushes are this node's own.
 	lastCompat := time.Now()
@@ -1012,15 +1112,8 @@ func (a *App) housekeeping(ctx context.Context) {
 		case <-ctx.Done():
 			_ = a.users.FlushSeen(context.Background())
 			return
-		case <-imageTimer.C:
-			err := imageSweep.pass(ctx, a.cluster.IsLeader(), time.Now, func(ctx context.Context, now time.Time, shard int64) error {
-				_, err := identity.PruneImageGrantShard(ctx, a.db, now, shard)
-				return err
-			})
-			if err != nil && ctx.Err() == nil {
-				a.log.Warn("image grant maintenance failed", "err", err)
-			}
-			err = receiptSweep.pass(ctx, a.cluster.IsLeader(), time.Now, func(ctx context.Context, now time.Time, shard int64) error {
+		case <-receiptTimer.C:
+			err := receiptSweep.pass(ctx, a.cluster.IsLeader(), time.Now, func(ctx context.Context, now time.Time, shard int64) error {
 				_, err := experience.PruneReceiptShard(ctx, a.db, now, shard)
 				return err
 			})

@@ -84,7 +84,7 @@ func TestSettledMovieAndEndedShowDetailsKeptForever(t *testing.T) {
 		case "/tv/200":
 			endedShowDetails.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":200,"name":"Finished Masterpiece","first_air_date":"2015-01-10","status":"Ended","episode_run_time":[55],"number_of_seasons":2,"number_of_episodes":20,"vote_average":9.1,"vote_count":8000,"popularity":45.0,"original_language":"en","genres":[{"id":18,"name":"Drama"}],"created_by":[{"id":901,"name":"Creator One","profile_path":"/c1.jpg"}],"credits":{"cast":[{"id":287,"name":"Theo Varga","character":"Lead"}],"crew":[{"id":902,"name":"Roger Lens","job":"Director of Photography"},{"id":903,"name":"Score Master","job":"Original Music Composer"}]},"seasons":[{"id":2001,"name":"Season 1","season_number":1,"episode_count":10,"air_date":"2015-01-10","vote_average":8.8},{"id":2002,"name":"Season 2","season_number":2,"episode_count":10,"air_date":"2016-01-10","vote_average":9.4}]}`))
+			_, _ = w.Write([]byte(`{"id":200,"name":"Finished Masterpiece","first_air_date":"2015-01-10","status":"Ended","episode_run_time":[55],"number_of_seasons":2,"number_of_episodes":20,"vote_average":9.1,"vote_count":8000,"popularity":45.0,"original_language":"en","genres":[{"id":18,"name":"Drama"}],"created_by":[{"id":901,"name":"Creator One","profile_path":"/c1.jpg"}],"credits":{"cast":[{"id":287,"name":"Theo Varga","character":"Lead"}],"crew":[{"id":904,"name":"Larry Brezner","job":"Producer"},{"id":902,"name":"Roger Lens","job":"Director of Photography"},{"id":903,"name":"Score Master","job":"Original Music Composer"}]},"seasons":[{"id":2001,"name":"Season 1","season_number":1,"episode_count":10,"air_date":"2015-01-10","vote_average":8.8},{"id":2002,"name":"Season 2","season_number":2,"episode_count":10,"air_date":"2016-01-10","vote_average":9.4}]}`))
 			return
 		case "/person/999/combined_credits":
 			w.Header().Set("Content-Type", "application/json")
@@ -119,8 +119,8 @@ func TestSettledMovieAndEndedShowDetailsKeptForever(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(show.Crew) < 3 {
-		t.Fatalf("expected Creator, Cinematographer and Composer in Crew, got %+v", show.Crew)
+	if len(show.Crew) < 4 || show.Crew[len(show.Crew)-1].Role != "Producer" || show.Crew[len(show.Crew)-1].TMDB != 904 {
+		t.Fatalf("expected Creator, Cinematographer, Composer, and trailing Producer in Crew, got %+v", show.Crew)
 	}
 	// Advance 30 days: neither the 1999 movie nor the Ended 2015 show should ever re-query TMDB.
 	now = now.Add(30 * 24 * time.Hour)

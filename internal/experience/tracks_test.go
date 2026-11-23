@@ -55,3 +55,15 @@ func TestResolveSubtitlePrefersCodecOverTheOldSlot(t *testing.T) {
 		t.Fatalf("Spanish SRT at the new index = %d, want 2", got)
 	}
 }
+
+func TestPickAudioPenalizesCommentaryAndVisualImpaired(t *testing.T) {
+	tr := true
+	info := core.MediaInfo{Streams: []core.StreamInfo{
+		{Type: "audio", Language: "en", Commentary: &tr},
+		{Type: "audio", Language: "en", VisualImpaired: &tr},
+		{Type: "audio", Language: "en"},
+	}}
+	if got := PickAudio(info, []string{"en"}); got != 2 {
+		t.Fatalf("PickAudio = %d, want 2 (main track over commentary/AD)", got)
+	}
+}

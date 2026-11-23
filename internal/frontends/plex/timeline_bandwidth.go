@@ -13,10 +13,21 @@ func (s *Server) timelineBandwidths(pr *Request, key frontend.RatingKey, ids []s
 	var info frontend.MediaInfo
 	var dec frontend.Decision
 	found := false
-	for _, id := range ids {
-		if e, ok := s.transcodes.get(id); ok && e.userID == pr.User.ID && e.clientID == pr.ClientID && e.key == key && e.playbackID == pr.SessionID {
-			info, dec, found = e.info, e.decision, true
-			break
+	if te, ok := s.activeTranscodeForClient(pr.User.ID, pr.ClientID, pr.SessionID, key, ""); ok {
+		live := s.liveTranscode(te)
+		info, dec, found = live.info, live.decision, true
+	}
+	if !found {
+		var best *transcodeEntry
+		for _, id := range ids {
+			if e, ok := s.transcodes.get(id); ok && e.failErr == nil && e.userID == pr.User.ID && e.clientID == pr.ClientID && e.key == key && (e.playbackID == pr.SessionID || e.playbackID == "") {
+				if best == nil || e.updatedAt.After(best.updatedAt) || (e.updatedAt.Equal(best.updatedAt) && e.id > best.id) {
+					best = e
+				}
+			}
+		}
+		if best != nil {
+			info, dec, found = best.info, best.decision, true
 		}
 	}
 	if !found && ps != nil {
@@ -30,32 +41,25 @@ func (s *Server) timelineBandwidths(pr *Request, key frontend.RatingKey, ids []s
 	if !found {
 		return nil
 	}
-	w, h := 0, 0
+	w, h, srcH := 0, 0, 0
 	if v := info.Video(); v != nil {
-		w, h = v.Width, v.Height
-		if !dec.VideoCopy && dec.MaxHeight > 0 && h > dec.MaxHeight {
-			w = w * dec.MaxHeight / h
-			h = dec.MaxHeight
-		}
+		srcH = v.Height
+		w, h = transcodeOutputSize(v, dec)
 	}
 
-	return []model.TimelineBandwidths{{Bandwidth: []model.TimelineBandwidth{{Time: 0, Bandwidth: plannedBandwidth(info, dec), Resolution: resolutionLabel(w, h)}}}}
+	return []model.TimelineBandwidths{{Bandwidth: []model.TimelineBandwidth{{Time: 0, Bandwidth: plannedBandwidth(info, dec), Resolution: transcodeResolutionLabel(w, h, srcH, dec)}}}}
 }
 
 func (s *Server) timelineTranscodeSessions(pr *Request, key frontend.RatingKey, ids []string) []model.TranscodeSess {
-	for _, id := range ids {
-		if e, ok := s.transcodes.get(id); ok && e.started && e.decision.Kind != frontend.DecisionDirectPlay && e.userID == pr.User.ID && e.clientID == pr.ClientID && e.key == key && e.playbackID == pr.SessionID {
-			ts := transcodeSessionModel(e)
-			if e.requested.protocol != "" {
-				ts.Protocol = string(e.requested.protocol)
-			}
-			if e.decision.Container != "" {
-				ts.Container = e.decision.Container
-			}
-			return []model.TranscodeSess{ts}
-		}
+	te, ok := s.activeTranscodeForClient(pr.User.ID, pr.ClientID, pr.SessionID, key, "")
+	if !ok {
+		return nil
 	}
-	return nil
+	live := s.liveTranscode(te)
+	if live.decision.Kind == frontend.DecisionDirectPlay && live.decision.VideoCopy && live.decision.AudioCopy {
+		return nil
+	}
+	return []model.TranscodeSess{s.servedTranscodeSessionModel(te)}
 }
 
 func plannedBandwidth(info frontend.MediaInfo, dec frontend.Decision) int {
@@ -75,22 +79,28 @@ func plannedBandwidth(info frontend.MediaInfo, dec frontend.Decision) int {
 	return rate
 }
 
-func (s *Server) sessionBandwidth(e playEntry, md model.Metadata) int {
-	for _, id := range s.transcodes.forClient(e.user.ID, e.client.ClientID, e.key) {
-		if entry, ok := s.transcodes.get(id); ok && entry.playbackID == e.client.SessionID {
-			return plannedBandwidth(entry.info, entry.decision)
-		}
-	}
-	if pb := s.playback(); pb != nil {
-		if ps, ok := pb.SessionFor(e.user.ID, e.client.ClientID, e.key); ok && ps != nil {
-			dec := frontend.Decision{Kind: ps.Decision}
-			if ps.DeliveryDecision != nil {
-				dec = *ps.DeliveryDecision
+func (s *Server) sessionBandwidth(e playEntry, activeTE *transcodeEntry, md model.Metadata) int {
+	if activeTE != nil {
+		live := s.liveTranscode(activeTE)
+		dec := live.decision
+		if dec.Kind == "" || dec.Kind == frontend.DecisionDirectPlay {
+			if !dec.VideoCopy {
+				dec.Kind = frontend.DecisionTranscode
+			} else {
+				dec.Kind = frontend.DecisionRemux
 			}
-			return plannedBandwidth(ps.Info, dec)
 		}
+		return plannedBandwidth(live.info, dec)
 	}
-	if e.node != "" && len(md.Media) > 0 && md.Media[0].Bitrate > 0 {
+	if e.node == "" {
+		if pb := s.playback(); pb != nil {
+			if ps, ok := pb.SessionFor(e.user.ID, e.client.ClientID, e.key); ok && ps != nil {
+				return plannedBandwidth(ps.Info, frontend.Decision{Kind: frontend.DecisionDirectPlay})
+			}
+		}
+		return 0
+	}
+	if len(md.Media) > 0 && md.Media[0].Bitrate > 0 {
 		dec := frontend.Decision{Kind: frontend.DecisionDirectPlay}
 		if md.TranscodeSession != nil {
 			dec.Kind = frontend.DecisionRemux

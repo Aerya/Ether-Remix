@@ -59,9 +59,13 @@ func (k *channelSourceKind) fetchAddon(ctx context.Context, s *livetv.Service, s
 		return livetv.Fetched{}, err
 	}
 	addon := k.mgr.Addon(rec)
-	entries, read, err := readAddonChannels(ctx, addon)
-	if err != nil {
-		return livetv.Fetched{}, err
+
+	hasTV := addon.Manifest.HasResource(stremio.ResourceCatalog) &&
+		len(addon.Manifest.CatalogsOfType(stremio.TypeTV)) > 0 &&
+		addon.Manifest.Serves(stremio.ResourceStream, stremio.TypeTV)
+	eventCats := addon.Manifest.LiveEventCatalogs()
+	if !hasTV && len(eventCats) == 0 {
+		return livetv.Fetched{}, errNoLiveAddOnPlayable
 	}
 
 	previous := map[string]livetv.Channel{}
@@ -73,13 +77,70 @@ func (k *channelSourceKind) fetchAddon(ctx context.Context, s *livetv.Service, s
 		previous[c.ID] = c
 	}
 
+	var channels []livetv.Channel
+	guide := livetv.XMLGuide{Channels: map[string]livetv.Channel{}, Names: map[string][]string{}}
+
+	if hasTV {
+		tvChannels, tvGuide, tvErr := k.fetchAddonTV(ctx, s, rec, src, addon, previous)
+		if tvErr != nil && len(eventCats) == 0 {
+			return livetv.Fetched{}, tvErr
+		}
+		if tvErr == nil {
+			channels = append(channels, tvChannels...)
+			mergeGuide(&guide, tvGuide)
+		}
+	}
+
+	if len(eventCats) > 0 {
+		evChannels, evGuide, totalEvents, evErr := k.fetchEventCatalogs(ctx, addon, src, eventCats, s.Now())
+		if evErr != nil {
+			if len(channels) == 0 {
+				return livetv.Fetched{}, evErr
+			}
+		} else if len(channels) == 0 && totalEvents == 0 && len(previous) == 0 {
+			return livetv.Fetched{}, errors.New("the add-on currently lists no playable live events")
+		} else {
+			channels = append(channels, evChannels...)
+			mergeGuide(&guide, evGuide)
+		}
+	}
+
+	if len(channels) == 0 {
+		return livetv.Fetched{}, errNoLiveAddOnPlayable
+	}
+	return livetv.Fetched{Channels: channels, Guide: guide, AddonInputs: true}, nil
+}
+
+func mergeGuide(dst *livetv.XMLGuide, src livetv.XMLGuide) {
+	for id, ch := range src.Channels {
+		dst.Channels[id] = ch
+	}
+	for id, names := range src.Names {
+		dst.Names[id] = names
+	}
+	dst.Programmes = append(dst.Programmes, src.Programmes...)
+}
+
+func (k *channelSourceKind) fetchAddonTV(
+	ctx context.Context,
+	s *livetv.Service,
+	rec plugins.Record,
+	src *livetv.Source,
+	addon stremio.Addon,
+	previous map[string]livetv.Channel,
+) ([]livetv.Channel, livetv.XMLGuide, error) {
+	entries, read, err := readAddonChannels(ctx, addon)
+	if err != nil {
+		return nil, livetv.XMLGuide{}, err
+	}
+
 	streams := make([][]stremio.Stream, len(entries))
 	errs := make([]error, len(entries))
 	forEachBounded(ctx, len(entries), addonStreamWorkers, func(i int) {
 		streams[i], errs[i] = addon.StreamsFor(ctx, stremio.TypeTV, entries[i].meta.ID)
 	})
 	if err := ctx.Err(); err != nil {
-		return livetv.Fetched{}, err
+		return nil, livetv.XMLGuide{}, err
 	}
 
 	channels := make([]livetv.Channel, 0, len(entries))
@@ -119,7 +180,7 @@ func (k *channelSourceKind) fetchAddon(ctx context.Context, s *livetv.Service, s
 		channels = append(channels, ch)
 	}
 	if failed == len(entries) {
-		return livetv.Fetched{}, fmt.Errorf("the add-on's streams could not be read for any channel: %w", firstErr)
+		return nil, livetv.XMLGuide{}, fmt.Errorf("the add-on's streams could not be read for any channel: %w", firstErr)
 	}
 
 	guide := livetv.XMLGuide{Channels: map[string]livetv.Channel{}, Names: map[string][]string{}}
@@ -130,9 +191,9 @@ func (k *channelSourceKind) fetchAddon(ctx context.Context, s *livetv.Service, s
 		guide, err = addonNativeGuide(ctx, s, addon, read, channels)
 	}
 	if err != nil {
-		return livetv.Fetched{}, err
+		return nil, livetv.XMLGuide{}, err
 	}
-	return livetv.Fetched{Channels: channels, Guide: guide, AddonInputs: true}, nil
+	return channels, guide, nil
 }
 
 // readAddonChannels reads every `tv` catalog the add-on lists, up to

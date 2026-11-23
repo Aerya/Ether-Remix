@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // Blocklist sources.
@@ -22,6 +23,7 @@ const (
 // expired by retention pruning.
 type BlockEntry struct {
 	ReleaseID string         `json:"releaseId"`
+	ContentID string         `json:"-"`
 	Name      string         `json:"name,omitempty"`
 	Indexer   string         `json:"indexer,omitempty"`
 	TitleKey  core.RatingKey `json:"titleKey,string"`
@@ -45,7 +47,14 @@ type BlockFilter struct {
 // blockEntryFor builds a blocklist row, naming the release and title from
 // recent search results (or a pin) when known.
 func (s *Service) blockEntryFor(releaseID, reason string, manual bool) BlockEntry {
-	e := BlockEntry{ReleaseID: releaseID, Reason: reason, Source: BlockAuto, Manual: manual}
+	contentKeys := s.idContentKeys(releaseID)
+	e := BlockEntry{
+		ReleaseID: releaseID,
+		ContentID: preferredContentKey(contentKeys),
+		Reason:    reason,
+		Source:    BlockAuto,
+		Manual:    manual,
+	}
 	if manual {
 		e.Source = BlockOwner
 	}
@@ -68,6 +77,9 @@ func (s *Service) blockEntryFor(releaseID, reason string, manual bool) BlockEntr
 			e.CreatedAt = prev.CreatedAt
 			if prev.Manual && !manual {
 				e.Reason, e.Source, e.Manual = prev.Reason, prev.Source, true
+			}
+			if e.ContentID == "" {
+				e.ContentID = prev.ContentID
 			}
 			if e.Name == "" {
 				e.Name = prev.Name
@@ -126,12 +138,18 @@ func (s *Service) Block(ctx context.Context, req BlockRequest, reason string) (B
 		}
 	}
 
+	contentKeys := s.idContentKeysDB(ctx, req.ReleaseID)
+	mark := badMark{reason: reason, at: s.now(), manual: true}
 	s.mu.Lock()
-	s.bad[req.ReleaseID] = badMark{reason: reason, at: s.now(), manual: true}
+	s.bad[req.ReleaseID] = mark
+	s.markBadContentLocked(contentKeys, mark)
 	s.mu.Unlock()
-	s.forgetVerified(ctx, req.ReleaseID)
+	s.forgetVerifiedWithContent(ctx, req.ReleaseID, contentKeys...)
 	s.notePinsBlocked(ctx, req.ReleaseID, reason)
 	e := s.blockEntryFor(req.ReleaseID, reason, true)
+	if e.ContentID == "" {
+		e.ContentID = preferredContentKey(contentKeys)
+	}
 	if e.Name == "" {
 		e.Name = req.Name
 	}
@@ -148,12 +166,17 @@ func (s *Service) Block(ctx context.Context, req BlockRequest, reason string) (B
 		s.con.mu.Lock()
 		s.con.blocks[req.ReleaseID] = e
 		s.con.mu.Unlock()
+		s.emitReleaseBlocklisted(e, BlockOwner)
 		return e, nil
 	}
 	if err := s.persistBad(ctx, e); err != nil {
 		return BlockEntry{}, err
 	}
-	return s.blockEntry(ctx, req.ReleaseID)
+	saved, err := s.blockEntry(ctx, req.ReleaseID)
+	if err == nil {
+		s.emitReleaseBlocklisted(saved, BlockOwner)
+	}
+	return saved, err
 }
 
 func (s *Service) blockEntry(ctx context.Context, id string) (BlockEntry, error) {
@@ -173,16 +196,22 @@ func (s *Service) Unblock(ctx context.Context, releaseID string) (BlockEntry, er
 	if err := s.forgetRejection(ctx, releaseID); err != nil {
 		return BlockEntry{}, err
 	}
+	contentKeys := s.idContentKeysDB(ctx, releaseID)
 	s.mu.Lock()
 	mark, had := s.bad[releaseID]
 	reason := mark.reason
 	delete(s.bad, releaseID)
+	for _, k := range contentKeys {
+		delete(s.badContent, k)
+	}
 	s.mu.Unlock()
-	s.forgetVerified(ctx, releaseID)
 	s.con.mu.Lock()
 	delete(s.con.checks, releaseID)
 	e, inMem := s.con.blocks[releaseID]
 	delete(s.con.blocks, releaseID)
+	if e.ContentID != "" {
+		contentKeys = appendUniqueKey(contentKeys, e.ContentID)
+	}
 	s.con.mu.Unlock()
 	if s.db != nil {
 		// One statement: delete and report the row.
@@ -191,10 +220,49 @@ func (s *Service) Unblock(ctx context.Context, releaseID string) (BlockEntry, er
 		switch {
 		case err == nil:
 			e, inMem = got, true
+			if got.ContentID != "" {
+				contentKeys = appendUniqueKey(contentKeys, got.ContentID)
+			}
 			s.notify("bad:" + releaseID)
 		case !errors.Is(err, sql.ErrNoRows):
 			return BlockEntry{}, err
 		}
+		for _, k := range contentKeys {
+			if k == "" {
+				continue
+			}
+			rows, derr := s.db.QueryContext(ctx, `DELETE FROM resolver_bad WHERE content_id=? RETURNING release_id`, k)
+			if derr == nil {
+				var otherIDs []string
+				for rows.Next() {
+					var oid string
+					if rows.Scan(&oid) == nil && oid != "" {
+						otherIDs = append(otherIDs, oid)
+					}
+				}
+				rows.Close()
+				if len(otherIDs) > 0 {
+					s.mu.Lock()
+					for _, oid := range otherIDs {
+						delete(s.bad, oid)
+					}
+					s.mu.Unlock()
+					for _, oid := range otherIDs {
+						s.notify("bad:" + oid)
+					}
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	for _, k := range contentKeys {
+		delete(s.badContent, k)
+	}
+	s.mu.Unlock()
+	s.forgetVerifiedWithContent(ctx, releaseID, contentKeys...)
+	s.forgetFailedGrabs(ctx, append(append([]string(nil), contentKeys...), releaseID))
+	if urlKey, nzbHash, contentID := s.usenetKeysForReleaseID(releaseID, contentKeys); urlKey != "" || nzbHash != "" || contentID != "" {
+		s.usenetVerdicts.Delete(urlKey, nzbHash, contentID)
 	}
 	if !inMem {
 		if !had {
@@ -210,7 +278,7 @@ func (s *Service) Unblock(ctx context.Context, releaseID string) (BlockEntry, er
 	return e, nil
 }
 
-const blockColumns = `release_id, reason, created_at, name, indexer, rating_key, title_name, source, manual, updated_at`
+const blockColumns = `release_id, content_id, reason, created_at, name, indexer, rating_key, title_name, source, manual, updated_at`
 
 type rowScanner interface{ Scan(...any) error }
 
@@ -218,7 +286,7 @@ func scanBlock(r rowScanner) (BlockEntry, error) {
 	var e BlockEntry
 	var created, updated, key int64
 	var manual int
-	if err := r.Scan(&e.ReleaseID, &e.Reason, &created, &e.Name, &e.Indexer, &key, &e.TitleName, &e.Source, &manual, &updated); err != nil {
+	if err := r.Scan(&e.ReleaseID, &e.ContentID, &e.Reason, &created, &e.Name, &e.Indexer, &key, &e.TitleName, &e.Source, &manual, &updated); err != nil {
 		return BlockEntry{}, err
 	}
 	e.TitleKey = core.RatingKey(key)
@@ -336,7 +404,10 @@ func (s *Service) memBlocklist(f BlockFilter) []BlockEntry {
 
 func (s *Service) memBlocklistTotal(f BlockFilter) int { return len(s.memBlocklistAll(f)) }
 
-var _ core.ReleaseBlockChecker = (*Service)(nil)
+var (
+	_ core.ReleaseBlockChecker      = (*Service)(nil)
+	_ core.ReleaseBatchBlockChecker = (*Service)(nil)
+)
 
 func (s *Service) ReleaseBlocked(ctx context.Context, id string) (bool, error) {
 	if s.isBad(id) {
@@ -346,13 +417,137 @@ func (s *Service) ReleaseBlocked(ctx context.Context, id string) (bool, error) {
 		return false, nil
 	}
 	e, err := s.blockEntry(ctx, id)
-	if errors.Is(err, core.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
+	if err == nil {
+		if e.Manual || s.now().Sub(e.UpdatedAt) < badRetention {
+			return true, nil
+		}
+	} else if !errors.Is(err, core.ErrNotFound) {
 		return false, err
 	}
-	return e.Manual || s.now().Sub(e.UpdatedAt) < badRetention, nil
+	contentKeys := s.idContentKeysDB(ctx, id)
+	for _, k := range contentKeys {
+		if k == "" {
+			continue
+		}
+		var manual int
+		var created, updated int64
+		qerr := s.db.QueryRowContext(ctx,
+			`SELECT manual, created_at, updated_at FROM resolver_bad WHERE content_id=? ORDER BY manual DESC, updated_at DESC LIMIT 1`,
+			k).Scan(&manual, &created, &updated)
+		if qerr == nil {
+			if updated == 0 {
+				updated = created
+			}
+			if manual == 1 || s.now().Sub(time.Unix(updated, 0)) < badRetention {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// ReleasesBlocked checks a batch of release IDs against the in-memory bad marks
+// and durable resolver_bad table (including cross-indexer content identities).
+// Every non-empty input ID is populated in the returned map (true when blocked,
+// false otherwise).
+func (s *Service) ReleasesBlocked(ctx context.Context, ids []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var pending []any
+	contentToIDs := map[string][]string{}
+	var pendingContent []any
+	seenContent := map[string]bool{}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if s.isBad(id) {
+			out[id] = true
+			continue
+		}
+		out[id] = false
+		if s.db != nil {
+			pending = append(pending, id)
+			for _, k := range s.idContentKeys(id) {
+				if k == "" {
+					continue
+				}
+				contentToIDs[k] = append(contentToIDs[k], id)
+				if !seenContent[k] {
+					seenContent[k] = true
+					pendingContent = append(pendingContent, k)
+				}
+			}
+		}
+	}
+	if len(pending) == 0 || s.db == nil {
+		return out, nil
+	}
+	now := s.now()
+	const batch = 500
+	for chunk := range store.Chunks(pending, batch) {
+		rows, err := s.db.QueryContext(ctx, `SELECT release_id, manual, created_at, updated_at FROM resolver_bad WHERE release_id IN (`+store.Placeholders(len(chunk))+`)`, chunk...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var (
+				relID            string
+				manual           int
+				created, updated int64
+			)
+			if err := rows.Scan(&relID, &manual, &created, &updated); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if updated == 0 {
+				updated = created
+			}
+			if manual == 1 || now.Sub(time.Unix(updated, 0)) < badRetention {
+				out[relID] = true
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for chunk := range store.Chunks(pendingContent, batch) {
+		rows, err := s.db.QueryContext(ctx, `SELECT content_id, manual, created_at, updated_at FROM resolver_bad WHERE content_id IN (`+store.Placeholders(len(chunk))+`)`, chunk...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var (
+				cid              string
+				manual           int
+				created, updated int64
+			)
+			if err := rows.Scan(&cid, &manual, &created, &updated); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if updated == 0 {
+				updated = created
+			}
+			if manual == 1 || now.Sub(time.Unix(updated, 0)) < badRetention {
+				for _, origID := range contentToIDs[cid] {
+					out[origID] = true
+				}
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // LocalReleaseBlocked reads the in-memory snapshot without database access.

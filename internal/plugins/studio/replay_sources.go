@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
 // ListItem is one entry returned by a list source plugin's catalog route.
@@ -499,7 +500,22 @@ func (r *Runner) defaultProbeStream(ctx context.Context, rawURL string, headers 
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
-		resp, err := r.deps.HTTPClient.Do(req)
+		client := *r.deps.HTTPClient
+		redirectHeaders := safefetch.NewRedirectHeaderState(parsed, safefetch.RedirectHeaderOptions{
+			InitialHeaders: req.Header,
+		})
+		previous := client.CheckRedirect
+		client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+			redirectHeaders.Apply(next)
+			if previous != nil {
+				return previous(next, via)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return StreamProbeResult{
 				URL:       rawURL,

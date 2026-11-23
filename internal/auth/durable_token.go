@@ -13,7 +13,7 @@ import (
 // not enroll upstream credentials or validate delegations, grants or sessions.
 func (s *Service) DurableTokenCurrent(ctx context.Context, token string, viewerID int64) error {
 	token = strings.TrimSpace(token)
-	if s == nil || s.db == nil || ctx == nil || viewerID <= 0 || token == "" || core.IsGrantCredential(token) || IsOwnerSession(token) || strings.HasPrefix(token, delegationPrefix) {
+	if s == nil || s.db == nil || ctx == nil || viewerID <= 0 || token == "" || core.IsGrantCredential(token) || core.IsAPIKeyCredential(token) || IsOwnerSession(token) || strings.HasPrefix(token, delegationPrefix) {
 		return core.ErrUnauthorized
 	}
 	var current int64

@@ -79,6 +79,47 @@ func TestDASHCopySessionLadderUnderCopyEnabled(t *testing.T) {
 	}
 }
 
+// Codec-family and PMS shape are lasting DASH session invariants, independent
+// of configured ABR and whether the primary is copied or encoded.
+func TestDASHCodecFamilyAndPMSShape(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		hevc, encode, pms bool
+		wantLadder        bool
+	}{
+		{"web-avc-copy", false, false, false, true},
+		{"web-avc-encode", false, true, false, true},
+		{"web-hevc-copy", true, false, false, false},
+		{"tv-avc-copy", false, false, true, false},
+		{"tv-avc-encode", false, true, true, false},
+		{"tv-hevc-copy", true, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestManager(t, newFakeRunner(), config.Transcode{ABRLadder: true, ABRLadderUnderCopy: true})
+			req := dashRequest(t, tc.name, time.Minute)
+			if tc.encode {
+				req = ladderEncodeDASHRequest(t, tc.name, time.Minute)
+			}
+			if tc.hevc {
+				req.Info.Streams[0].Codec = "hevc"
+			}
+			req.PMSDASH = tc.pms
+			s := startDASHSession(t, m, req)
+			if (len(s.rungs) > 1) != tc.wantLadder {
+				t.Fatalf("ladder=%+v, want ladder=%t", s.rungs, tc.wantLadder)
+			}
+			if tc.pms {
+				rec := httptest.NewRecorder()
+				s.ServeManifest(rec, httptest.NewRequest(http.MethodGet, "/start.mpd", nil))
+				body := rec.Body.String()
+				if s.segDur != 5*time.Second || strings.Count(body, "<Representation ") != 2 || strings.Contains(body, "contentType=") || !strings.Contains(body, `minBufferTime="PT10S"`) {
+					t.Fatalf("invalid PMS shape: %s", body)
+				}
+			}
+		})
+	}
+}
+
 // Real muxer coverage: the copied primary can have GOPs longer than the
 // grid, while encoded lower rungs must start on that same grid after seeks.
 // ABRLadderUnderCopy is explicit because UpdateConfig replaces the whole

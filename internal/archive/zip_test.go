@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
+	"io"
+	"sync/atomic"
 	"testing"
 )
 
@@ -201,4 +204,108 @@ func TestListZIP64Store(t *testing.T) {
 	if len(members[0].Extents) != 1 || members[0].Extents[0].Offset != int64(dataStart) || members[0].Extents[0].Size != int64(len(payload)) {
 		t.Fatalf("extents = %+v, want offset %d size %d", members[0].Extents, dataStart, len(payload))
 	}
+}
+
+type countingReaderAt struct {
+	r     io.ReaderAt
+	reads atomic.Int64
+}
+
+func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	c.reads.Add(1)
+	return c.r.ReadAt(p, off)
+}
+
+// ReadZIPDirectory + ResolveZIPEntry must inspect only the central directory
+// and the single chosen member's local file header (never scanning all N LFHs),
+// and OpenZIPDataReader must verify uncompressed size and CRC-32 for both
+// stored and deflate members (#709).
+func TestReadZIPDirectoryAndResolveEntrySingleLFH(t *testing.T) {
+	const totalFiles = 250
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	wantStored := bytes.Repeat([]byte("stored-rom-payload-0123456789-"), 128)
+	wantDeflate := bytes.Repeat([]byte("deflated-book-payload-abcdef-"), 256)
+	for i := range totalFiles {
+		method := uint16(zip.Store)
+		data := []byte(fmt.Sprintf("file-%03d-body", i))
+		if i == 177 {
+			data = wantStored
+		} else if i == 211 {
+			method = zip.Deflate
+			data = wantDeflate
+		}
+		w, err := zw.CreateHeader(&zip.FileHeader{
+			Name:   fmt.Sprintf("Pack/Item_%03d.bin", i),
+			Method: method,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	cr := &countingReaderAt{r: bytes.NewReader(raw)}
+	vols := []Volume{{R: cr, Size: int64(len(raw))}}
+
+	entries, err := ReadZIPDirectory(vols)
+	if err != nil {
+		t.Fatalf("ReadZIPDirectory: %v", err)
+	}
+	if len(entries) != totalFiles {
+		t.Fatalf("entries = %d, want %d", len(entries), totalFiles)
+	}
+	if reads := cr.reads.Load(); reads >= totalFiles/10 {
+		t.Fatalf("ReadZIPDirectory made %d ReadAt calls for %d entries; must not scan per-file LFHs", reads, totalFiles)
+	}
+
+	// Resolve and read the stored member.
+	before := cr.reads.Load()
+	storedMem, storedOff, err := ResolveZIPEntry(vols, entries[177])
+	if err != nil {
+		t.Fatalf("ResolveZIPEntry stored: %v", err)
+	}
+	if !storedMem.Stored || len(storedMem.Extents) != 1 || storedMem.Extents[0].Offset != storedOff {
+		t.Fatalf("stored member = %+v off=%d", storedMem, storedOff)
+	}
+	if cr.reads.Load()-before > 2 {
+		t.Fatalf("ResolveZIPEntry made %d reads, want single LFH read", cr.reads.Load()-before)
+	}
+	if !bytes.Equal(raw[storedOff:storedOff+storedMem.Size], wantStored) {
+		t.Fatal("stored payload mismatch at resolved offset")
+	}
+
+	// Resolve and inflate the deflate member with OpenZIPDataReader.
+	deflateMem, deflateOff, err := ResolveZIPEntry(vols, entries[211])
+	if err != nil {
+		t.Fatalf("ResolveZIPEntry deflate: %v", err)
+	}
+	if deflateMem.Stored || entries[211].MethodCode != ZIPMethodDeflate {
+		t.Fatalf("deflate entry = %+v mem=%+v", entries[211], deflateMem)
+	}
+	comp := raw[deflateOff : deflateOff+entries[211].CompSize]
+	rc, err := OpenZIPDataReader(bytes.NewReader(comp), deflateMem.Name, entries[211].MethodCode, deflateMem.Size, entries[211].CRC32)
+	if err != nil {
+		t.Fatalf("OpenZIPDataReader: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || !bytes.Equal(got, wantDeflate) {
+		t.Fatalf("deflate decode err=%v len=%d want=%d", err, len(got), len(wantDeflate))
+	}
+
+	// Bad CRC must fail at EOF.
+	rcBad, err := OpenZIPDataReader(bytes.NewReader(comp), deflateMem.Name, entries[211].MethodCode, deflateMem.Size, entries[211].CRC32^1)
+	if err != nil {
+		t.Fatalf("OpenZIPDataReader bad crc open: %v", err)
+	}
+	if _, err := io.ReadAll(rcBad); err == nil {
+		t.Fatal("expected CRC mismatch error")
+	}
+	_ = rcBad.Close()
 }

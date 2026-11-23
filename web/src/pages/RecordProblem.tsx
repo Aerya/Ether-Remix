@@ -1,15 +1,25 @@
-import { Button, Input } from "@braedonsaunders/appkit-ui";
+import { Button, Input, SearchSelect } from "@braedonsaunders/appkit-ui";
 import { useCallback, useEffect, useState } from "react";
 import { Drawer } from "../components/Drawer";
-import { t } from "../i18n";
+import { Field } from "../components/fields";
+import { localized, t } from "../i18n";
+import { searchSelectLabels } from "../i18n/appkit-labels";
 import { api, errorMessage, type SupportCapture, type SupportDevice } from "../lib/api";
 
-const CATEGORIES = ["playback", "picture", "subtitles", "library", "other"] as const;
+type ProblemCategory = "playback" | "picture" | "subtitles" | "library" | "other";
+
+const CATEGORIES = localized((): { value: ProblemCategory; label: string }[] => [
+  { value: "playback", label: t("Playback") },
+  { value: "picture", label: t("Picture") },
+  { value: "subtitles", label: t("Subtitles") },
+  { value: "library", label: t("Library") },
+  { value: "other", label: t("Other") },
+]);
 
 export function RecordProblem({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [devices, setDevices] = useState<SupportDevice[]>([]);
   const [deviceId, setDeviceId] = useState("");
-  const [category, setCategory] = useState<(typeof CATEGORIES)[number]>("playback");
+  const [category, setCategory] = useState<ProblemCategory>("playback");
   const [note, setNote] = useState("");
   const [capture, setCapture] = useState<SupportCapture | null>(null);
   const [titles, setTitles] = useState(true);
@@ -150,6 +160,7 @@ export function RecordProblem({ open, onClose }: { open: boolean; onClose: () =>
       open={open}
       onClose={() => void close()}
       title={t("Record a problem")}
+      documentTitle={t("Record a problem")}
       description={t("One support package for the device you choose. It does not change playback.")}
       size="lg"
       footer={
@@ -188,44 +199,47 @@ export function RecordProblem({ open, onClose }: { open: boolean; onClose: () =>
         {error && <p className="text-sm text-danger">{error}</p>}
         {!capture && (
           <>
-            <label className="block text-sm">
-              <span className="mb-1 block text-fg-muted">{t("Device")}</span>
-              <select
-                className="h-9 w-full rounded-md border border-line bg-transparent px-2"
+            <Field label={t("Device")} htmlFor="record-problem-device">
+              <SearchSelect
+                {...searchSelectLabels()}
+                id="record-problem-device"
+                ariaLabel={t("Device")}
                 value={deviceId}
-                onChange={(e) => setDeviceId(e.currentTarget.value)}
-              >
-                <option value="">{t("I don't know which device")}</option>
-                {devices.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {[d.name, d.model, d.product, d.version].filter(Boolean).join(" · ") || d.id}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-fg-muted">{t("Category")}</span>
-              <select
-                className="h-9 w-full rounded-md border border-line bg-transparent px-2"
+                onChange={setDeviceId}
+                searchable={devices.length > 7}
+                options={[
+                  { value: "", label: t("I don't know which device") },
+                  ...devices.map((d) => ({
+                    value: d.id,
+                    label:
+                      [d.name, d.model, d.product, d.version].filter(Boolean).join(" · ") || d.id,
+                  })),
+                ]}
+              />
+            </Field>
+            <Field label={t("Category")} htmlFor="record-problem-category">
+              <SearchSelect
+                {...searchSelectLabels()}
+                id="record-problem-category"
+                ariaLabel={t("Category")}
                 value={category}
-                onChange={(e) => setCategory(e.currentTarget.value as (typeof CATEGORIES)[number])}
-              >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {t(c)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-fg-muted">{t("Note")}</span>
-              <Input value={note} onChange={(e) => setNote(e.currentTarget.value)} />
-              <span className="mt-1 block text-fg-subtle">
-                {t(
-                  "The note is saved as data, not instructions. Links and addresses are redacted.",
-                )}
-              </span>
-            </label>
+                onChange={(next) => setCategory(next as ProblemCategory)}
+                options={CATEGORIES}
+              />
+            </Field>
+            <Field
+              label={t("Note")}
+              htmlFor="record-problem-note"
+              hint={t(
+                "The note is saved as data, not instructions. Links and addresses are redacted.",
+              )}
+            >
+              <Input
+                id="record-problem-note"
+                value={note}
+                onChange={(e) => setNote(e.currentTarget.value)}
+              />
+            </Field>
           </>
         )}
         {capture && (

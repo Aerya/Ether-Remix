@@ -4,7 +4,7 @@ import { LinkImport } from "./LinkImport";
 import type { DownloaderStatus } from "./model";
 
 describe("LinkImport", () => {
-  it("offers one-click yt-dlp install and supports both link clips and eager imports", async () => {
+  it("opens in a drawer, hides downloader status once ready, and supports link clips and imports", async () => {
     let status: DownloaderStatus = {
       available: false,
       source: "none",
@@ -47,16 +47,18 @@ describe("LinkImport", () => {
     render(<LinkImport reelId="saturday" onImported={onImported} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Add from link/i }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
 
-    const installBtn = await screen.findByRole("button", { name: /^Install yt-dlp$/i });
+    expect(screen.getByText(/Video downloader isn’t installed yet/i)).toBeInTheDocument();
+    const installBtn = await screen.findByRole("button", { name: /^Install downloader$/i });
     expect(installBtn).toBeInTheDocument();
 
     fireEvent.click(installBtn);
 
     await waitFor(() => {
-      expect(screen.getByText(/yt-dlp 2026\.10\.26 ready/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Video downloader isn’t installed yet/i)).not.toBeInTheDocument();
     });
-    expect(screen.getByRole("button", { name: /^Update yt-dlp$/i })).toBeInTheDocument();
+    expect(screen.queryByText(/yt-dlp/i)).not.toBeInTheDocument();
 
     const textarea = screen.getByLabelText("Media links");
     fireEvent.change(textarea, {

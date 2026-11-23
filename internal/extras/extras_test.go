@@ -51,7 +51,14 @@ func TestListOrderingFilteringCap(t *testing.T) {
 		{Site: "Vimeo", Key: "123456789", Name: "Featurette", Type: "Featurette", Size: 1080, ISO639: "en"},
 	}
 	s := New(Options{Videos: fakeVideos{vs}, Config: enabledCfg("yt-dlp"), LookPath: lookOK, Now: func() time.Time { return testNow }})
-	got, err := s.List(context.Background(), movie(), "de-DE")
+	defer s.Close()
+	local := core.WithLocalResponse(context.Background())
+	cold, err := s.List(local, movie(), "de-DE")
+	if err != nil || len(cold) != 0 {
+		t.Fatalf("cold local list: %d %v", len(cold), err)
+	}
+	s.listWG.Wait()
+	got, err := s.List(local, movie(), "de-DE")
 	if err != nil {
 		t.Fatal(err)
 	}

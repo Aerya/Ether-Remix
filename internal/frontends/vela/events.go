@@ -20,11 +20,26 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
+		var liveEventC <-chan time.Time
+		if i.host.LiveEventLink != nil {
+			s.mu.Lock()
+			isLiveChannel := s.channelID != ""
+			s.mu.Unlock()
+			if isLiveChannel {
+				lt := time.NewTicker(i.liveEventPollInterval())
+				defer lt.Stop()
+				liveEventC = lt.C
+			}
+		}
+
 		t := time.NewTicker(250 * time.Millisecond)
 		defer t.Stop()
 		output := t.C
 		for {
 			select {
+
+			case <-liveEventC:
+				i.refreshSessionLiveEvent(ctx, viewer, s)
 
 			case <-output:
 				s.mu.Lock()
@@ -32,7 +47,16 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 					s.mu.Unlock()
 					return
 				}
-				if i.refreshOutput(ctx, id, s) {
+				if s.commandActive {
+					s.mu.Unlock()
+					continue
+				}
+				copy, revision := s.outputSnapshot(), s.revision
+				s.mu.Unlock()
+				changed := i.refreshOutput(ctx, id, copy)
+				s.mu.Lock()
+				if changed && !s.commandActive && s.revision == revision && s.source == copy.source && s.seek == copy.seek && s.ended.IsZero() {
+					s.applyOutput(copy)
 					s.publish("plan")
 				}
 				s.mu.Unlock()
@@ -54,6 +78,7 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 				ended := !s.ended.IsZero()
 				if err != nil && !ended {
 					s.ended = time.Now()
+					s.clearDisconnectTimerLocked()
 					s.plan["state"] = "ended"
 					s.publish("ended")
 				}
@@ -78,6 +103,7 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 				case "SessionStopped":
 					s.plan["state"] = "ended"
 					s.ended = time.Now()
+					s.clearDisconnectTimerLocked()
 					s.publish("ended")
 					s.mu.Unlock()
 					return

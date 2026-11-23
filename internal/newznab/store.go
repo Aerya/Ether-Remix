@@ -13,6 +13,7 @@ import (
 )
 
 func init() {
+	store.Register("newznab", 5, `CREATE TABLE newznab_search_modes (indexer_id TEXT PRIMARY KEY, identity TEXT NOT NULL, mode INTEGER NOT NULL DEFAULT 0, verified INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL);`)
 	store.Register("newznab", 4, `CREATE TABLE newznab_feed_modes (indexer_id TEXT PRIMARY KEY, identity TEXT NOT NULL, unfiltered INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL);`)
 	// endpoint fingerprints the URL and API key the caps were fetched
 	// from: an indexer edited to point elsewhere must not reuse them.
@@ -39,22 +40,40 @@ CREATE TABLE newznab_caps (
 );`)
 }
 
+// ErrMissingDefinition reports a built-in site indexer whose definition is not
+// installed on the server.
+var ErrMissingDefinition = fmt.Errorf("indexer definition is not installed: %w", core.ErrSourceUnavailable)
+
 // Remaining reports one indexer's budget state for today (UTC).
 // A remaining value of -1 means there is no personal cap; service limits still apply.
 type Remaining struct {
-	Indexer        string `json:"indexer"`
-	Day            string `json:"day"`
-	HitsUsed       int    `json:"hitsUsed"`
-	HitsLimit      int    `json:"hitsLimit"`
-	HitsRemaining  int    `json:"hitsRemaining"`
-	GrabsUsed      int    `json:"grabsUsed"`
-	GrabsLimit     int    `json:"grabsLimit"`
-	GrabsRemaining int    `json:"grabsRemaining"`
-	RetryAt        int64  `json:"retryAt,omitempty"` // service-reported throttling; automatic retry (Unix seconds)
+	Indexer           string `json:"indexer"`
+	Day               string `json:"day"`
+	HitsUsed          int    `json:"hitsUsed"`
+	HitsLimit         int    `json:"hitsLimit"`
+	HitsRemaining     int    `json:"hitsRemaining"`
+	GrabsUsed         int    `json:"grabsUsed"`
+	GrabsLimit        int    `json:"grabsLimit"`
+	GrabsRemaining    int    `json:"grabsRemaining"`
+	RetryAt           int64  `json:"retryAt,omitempty"`     // service-reported throttling; automatic retry (Unix seconds)
+	PausedUntil       int64  `json:"pausedUntil,omitempty"` // circuit-breaker pause after repeated failures (Unix seconds)
+	MissingDefinition bool   `json:"missingDefinition,omitempty"`
 	// Enabled and Torrent let the dashboard warn when nothing can be
 	// searched, or when debrid has no torrent indexer to search.
 	Enabled bool `json:"enabled"`
 	Torrent bool `json:"torrent"` // Torznab, a Stremio addon or a torrent built-in site
+}
+
+func (c *Client) missingDefinition() bool {
+	cfg := c.Config()
+	if !cfg.IsBuiltin() {
+		return false
+	}
+	if c.backends == nil {
+		return true
+	}
+	_, err := c.backends(cfg)
+	return errors.Is(err, ErrMissingDefinition)
 }
 
 func (c *Client) indexerID() string {
@@ -134,7 +153,6 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 	day := c.today()
 	if c.db == nil {
 		c.budgetMu.Lock()
-		defer c.budgetMu.Unlock()
 		if c.mem.day != day {
 			c.mem = memBudget{day: day}
 		}
@@ -143,14 +161,22 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 			used = c.mem.grabs
 		}
 		if limit > 0 && used >= limit {
+			c.budgetMu.Unlock()
+			c.emitBudgetExhausted(day, kind, used, limit)
 			return c.pseDailyLimitErr(kind) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 		}
 		if kind == "hit" {
 			c.mem.hits++
+			used = c.mem.hits
 		} else {
 			c.mem.grabs++
+			used = c.mem.grabs
 		}
+		c.budgetMu.Unlock()
 		c.recordUsage(ctx, kind)
+		if limit > 0 {
+			c.emitBudgetWarning(day, kind, used, limit)
+		}
 		return nil
 	}
 	col := "hits"
@@ -179,9 +205,16 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 		return err
 	}
 	if n == 0 {
+		c.emitBudgetExhausted(day, kind, limit, limit)
 		return c.pseDailyLimitErr(kind) // PSE-HOOK: pause d'indexeur — voir docs/pse/FORK.fr.md
 	}
 	c.recordUsage(ctx, kind)
+	if limit > 0 && c.events != nil {
+		var used int
+		if err := c.db.QueryRowContext(ctx, `SELECT `+col+` FROM newznab_budget WHERE indexer_id=? AND day=?`, c.indexerID(), day).Scan(&used); err == nil {
+			c.emitBudgetWarning(day, kind, used, limit)
+		}
+	}
 	return nil
 }
 
@@ -189,11 +222,14 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 func (c *Client) Remaining(ctx context.Context) (Remaining, error) {
 	hits, grabs, err := c.counts(ctx)
 	cfg := c.Config()
+	now := c.now()
 	r := Remaining{
 		Indexer: c.Name(), Day: c.today(),
 		HitsUsed: hits, HitsLimit: cfg.DailyLimit, HitsRemaining: -1,
 		GrabsUsed: grabs, GrabsLimit: cfg.DailyGrabs, GrabsRemaining: -1,
-		Enabled: cfg.Enabled, Torrent: cfg.IsTorrent(),
+		PausedUntil:       c.br.pausedUntil(now),
+		MissingDefinition: c.missingDefinition(),
+		Enabled:           cfg.Enabled, Torrent: cfg.IsTorrent(),
 	}
 	if cfg.DailyLimit > 0 {
 		r.HitsRemaining = max(0, cfg.DailyLimit-hits)
@@ -203,7 +239,7 @@ func (c *Client) Remaining(ctx context.Context) (Remaining, error) {
 	}
 	if until, rateErr := c.rateLimitUntil(ctx); rateErr != nil && err == nil {
 		err = rateErr
-	} else if c.now().Before(until) {
+	} else if now.Before(until) {
 		r.RetryAt = until.Unix()
 	}
 	return r, err
@@ -262,6 +298,9 @@ func (c *Client) cachePut(ctx context.Context, key string, results []core.Releas
 	results = c.bindReleases(results)
 	// The owner's "Remember searches for" is a hard cap: age may only shorten it.
 	ttl := min(searchCacheTTL(c.ttl(), cacheAge(ctx), c.now(), len(results) == 0), c.ttl())
+	if isRecentSearchCache(ctx) {
+		ttl = min(ttl, emptySearchCacheTTL)
+	}
 	if ttl <= 0 {
 		return
 	}

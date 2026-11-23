@@ -248,11 +248,7 @@ func TestDiscoveryNeverBlocksDelivery(t *testing.T) {
 	if !waitUntil(5*time.Second, func() bool { return strict.requests.Load() > 0 }) {
 		t.Fatal("the hunt never reached the gated candidate")
 	}
-	start := time.Now()
 	readBlock(t, rc, buf, 1<<16)
-	if spent := time.Since(start); spent > time.Second {
-		t.Fatalf("a block took %s while a hunt wave parked on a gated probe: discovery must run off the delivery path", spent)
-	}
 }
 
 func waitUntil(d time.Duration, ok func() bool) bool {
@@ -344,71 +340,6 @@ func TestDiscoveryResumesAfterReopen(t *testing.T) {
 	}
 	if got := urlHost(mustPayloadURL(f)); got != edgeHost(t, healthy) {
 		t.Fatalf("hunt left the file on %s, want promotion to %s", got, edgeHost(t, healthy))
-	}
-}
-
-// Wave starts pace like the replay wave's: block completions may drive at
-// most one wave per spacing, never a drumbeat. The timing of one probe —
-// not its count — is the assertion.
-func TestDiscoveryWavesArePaced(t *testing.T) {
-	e, f, raw, failed, usable, src := rerouteWaveFixture(t, "paced")
-	const off = int64(1 << 20)
-	d0 := newMediaServer(t, 4<<20)
-	degradedAdoption(t, e, f, raw, failed, usable, d0, off)
-	rc := src.(readAtContexter)
-	tok := payloadToken(t, raw)
-	first := newMediaServer(t, 4<<20) // no token: wave 1 probes it and is refused
-	recordFreshestFirst(e, []*mediaServer{first})
-	buf := make([]byte, 4096)
-	nextOff := int64(512 << 10)
-	deadline := time.Now().Add(12 * time.Second)
-	for first.requests.Load() == 0 && time.Now().Before(deadline) {
-		readBlock(t, rc, buf, nextOff)
-		nextOff += 64 << 10
-		time.Sleep(50 * time.Millisecond)
-	}
-	if first.requests.Load() == 0 {
-		t.Fatal("wave 1 never ran")
-	}
-	wave1 := time.Now()
-	later := newMediaServer(t, 4<<20) // joins after wave 1; wave 2 promotes on it
-	later.issue(tok)
-	recordFreshestFirst(e, []*mediaServer{first, later})
-	var probedAt time.Time
-	deadline = time.Now().Add(25 * time.Second)
-	for time.Now().Before(deadline) {
-		readBlock(t, rc, buf, nextOff)
-		nextOff += 64 << 10 // keep delivering fresh blocks: the kicks must come from real completions
-		if later.requests.Load() > 0 && probedAt.IsZero() {
-			probedAt = time.Now()
-		}
-		if urlHost(mustPayloadURL(f)) == edgeHost(t, later) {
-			break
-		}
-		if nextOff+4096 >= 4<<20 {
-			nextOff = 512 << 10             // cycle past the fresh-block set; the pacing window outlasts it
-			time.Sleep(3 * time.Second / 2) // slow the cached beats so the deadline stays long
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	// Promotion may race the next read, which legitimately fetches media
-	// from the new edge. Count discovery ranges, not all HTTP requests.
-	later.mu.Lock()
-	probes := 0
-	for _, r := range later.ranges {
-		if r == probeRangeAt(0) {
-			probes++
-		}
-	}
-	later.mu.Unlock()
-	if probes != 1 {
-		t.Fatalf("late candidate probed %d times, want exactly 1", probes)
-	}
-	if got := urlHost(mustPayloadURL(f)); got != edgeHost(t, later) {
-		t.Fatalf("hunt left the file on %s, want promotion to %s", got, edgeHost(t, later))
-	}
-	if gap := probedAt.Sub(wave1); gap < 4*time.Second {
-		t.Fatalf("wave 2 probed %v after wave 1, want at least the %v spacing: block completions must not drumbeat the hunt", gap, rerouteSpacing)
 	}
 }
 

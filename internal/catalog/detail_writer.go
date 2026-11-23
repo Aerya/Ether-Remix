@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"time"
 
@@ -147,4 +148,34 @@ func (c *Catalog) flushDetailsBudget(batch []detailWrite, budget time.Duration) 
 		w.done <- err
 	}
 	flush(batch)
+}
+
+// upsertSeasonRows publishes provider season payloads in short transactions.
+// The season header and episode payload already commit separately; each chunk
+// is independently readable, and a later refresh can finish an interrupted fill.
+// In particular guest-star credits must not hold the sole writer for an entire
+// long anime season. Timed-out chunks roll back before smaller retries.
+func (c *Catalog) upsertSeasonRows(ctx context.Context, titles []core.Title, o upsertOpts) error {
+	var write func([]core.Title) error
+	write = func(titles []core.Title) error {
+		items := make([]upsertItem, len(titles))
+		for i, t := range titles {
+			items[i] = upsertItem{t: t, o: o}
+		}
+		err := c.upsertItemsBudget(ctx, items, detailWriteBudget)
+		if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || len(titles) <= 1 {
+			return err
+		}
+		n := len(titles) / 2
+		if err := write(titles[:n]); err != nil {
+			return err
+		}
+		return write(titles[n:])
+	}
+	for start := 0; start < len(titles); start += detailBatchMax {
+		if err := write(titles[start:min(start+detailBatchMax, len(titles))]); err != nil {
+			return err
+		}
+	}
+	return nil
 }

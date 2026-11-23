@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -15,7 +17,8 @@ import (
 
 type rowSizeSource struct {
 	frontendtest.Experience
-	pages []frontend.RowViewPageRequest
+	pages    []frontend.RowViewPageRequest
+	distinct bool
 }
 
 func (f *rowSizeSource) ListRowViews(context.Context, frontend.RowViewRequest) ([]frontend.RowView, error) {
@@ -27,30 +30,40 @@ func (f *rowSizeSource) ListRowViews(context.Context, frontend.RowViewRequest) (
 }
 func (f *rowSizeSource) ResolveRowView(_ context.Context, q frontend.RowViewPageRequest) (frontend.RowViewPage, error) {
 	f.pages = append(f.pages, q)
+	base := 0
+	if f.distinct {
+		row, _ := strconv.Atoi(q.ID)
+		base = row * 100
+	}
 	entries := make([]frontend.RowEntry, min(q.Limit, 100-q.Offset))
 	for n := range entries {
-		entries[n] = frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &frontend.Title{Key: frontend.MovieKey(int64(q.Offset + n + 1)), Title: "Movie"}, Handle: fmt.Sprintf("receipt-%d", q.Offset+n)}
+		entries[n] = frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &frontend.Title{Key: frontend.MovieKey(int64(base + q.Offset + n + 1)), Title: "Movie"}, Handle: fmt.Sprintf("receipt-%d", q.Offset+n)}
 	}
 	return frontend.RowViewPage{Entries: entries, ImpressionHandle: "row-receipt", More: q.Offset+len(entries) < 100}, nil
 }
 
 type rowSizeImages struct {
 	frontend.ImageGrants
-	batches []int
+	batches [][]frontend.RatingKey
 }
 
 func (f *rowSizeImages) SignPage(_ context.Context, q frontend.ImagePageRequest) ([]frontend.ImageBatchItem, error) {
-	f.batches = append(f.batches, len(q.Titles))
+	keys := make([]frontend.RatingKey, len(q.Titles))
+	for n, title := range q.Titles {
+		keys[n] = title.Key
+	}
+	f.batches = append(f.batches, keys)
 	return nil, nil
 }
 
 // Paging must keep the issued source offset even when hero-family exclusions
-// require backfill, and conversion cost must grow by page, not by item.
+// require backfill. Card conversion batches distinct titles across all shelves
+// in the response; each shelf retains its own receipts and source cursor.
 func TestVelaRowSizeAndContinuation(t *testing.T) {
 	source := &rowSizeSource{}
-	states := []int{}
+	states := [][]frontend.RatingKey{}
 	source.UserDataFunc = func(_ context.Context, _ *frontend.Viewer, keys []frontend.RatingKey) (map[frontend.RatingKey]frontend.WatchStatus, error) {
-		states = append(states, len(keys))
+		states = append(states, append([]frontend.RatingKey(nil), keys...))
 		return nil, nil
 	}
 	images := &rowSizeImages{}
@@ -65,35 +78,69 @@ func TestVelaRowSizeAndContinuation(t *testing.T) {
 		r.Header.Set("X-Vela-Device-Id", "device")
 		return r
 	}
-	for _, path := range []string{"/vela/v0/bootstrap", "/vela/v0/rows", "/vela/v0/rows?limit=2"} {
-		source.pages = nil
-		states = nil
-		images.batches = nil
-		r := request(path)
-		rows, _, err := i.home(r, viewer, "token")
-		wantRows := 10
-		if r.URL.Query().Get("limit") == "2" {
-			wantRows = 2
-		}
-		if err != nil || len(rows) != wantRows {
-			t.Fatalf("%s: rows=%d err=%v", path, len(rows), err)
-		}
-		if len(source.pages) != wantRows || len(states) != wantRows || len(images.batches) != wantRows {
-			t.Fatal("conversion must batch once per row", source.pages, states, images.batches)
-		}
-		for n, row := range rows {
-			if source.pages[n].Limit != 20 || len(row["items"].([]object)) != 20 || states[n] != 20 || images.batches[n] != 20 {
-				t.Fatal("wrong per-row page size", row)
+	for _, distinct := range []bool{false, true} {
+		source.distinct = distinct
+		for _, path := range []string{"/vela/v0/bootstrap", "/vela/v0/rows", "/vela/v0/rows?limit=2"} {
+			source.pages = nil
+			states = nil
+			images.batches = nil
+			r := request(path)
+			rows, _, err := i.home(r, viewer, "token")
+			wantRows := 10
+			if r.URL.Query().Get("limit") == "2" {
+				wantRows = 2
 			}
-			if row["receiptToken"] != "row-receipt" || row["style"] != "shelf" || row["previewOnFocus"] != true {
-				t.Fatal("row metadata lost", row)
+			if err != nil || len(rows) != wantRows {
+				t.Fatalf("%s distinct=%t: rows=%d err=%v", path, distinct, len(rows), err)
 			}
-			cursor, err := i.readRowToken(r, viewer, row["nextCursor"].(string))
-			if err != nil || cursor.Offset != 20 {
-				t.Fatal("wrong source offset", cursor, err)
+			// Repeated titles cost one conversion regardless of shelf count. Disjoint
+			// shelves must include every title in the shared state/artwork batch.
+			var wantKeys []frontend.RatingKey
+			for row := 0; row < wantRows; row++ {
+				if !distinct && row > 0 {
+					break
+				}
+				base := 0
+				if distinct {
+					base = row * 100
+				}
+				for n := 1; n <= 20; n++ {
+					wantKeys = append(wantKeys, frontend.MovieKey(int64(base+n)))
+				}
+			}
+			if len(source.pages) != wantRows || len(states) != 1 || len(images.batches) != 1 {
+				t.Fatalf("%s distinct=%t: expected one source page per shelf and one shared conversion, pages=%d state batches=%d image batches=%d", path, distinct, len(source.pages), len(states), len(images.batches))
+			}
+			if !slices.Equal(states[0], wantKeys) || !slices.Equal(images.batches[0], wantKeys) {
+				t.Fatalf("%s distinct=%t: shared batches lost or duplicated titles: state=%v images=%v want=%v", path, distinct, states[0], images.batches[0], wantKeys)
+			}
+			for n, row := range rows {
+				items := row["items"].([]object)
+				if source.pages[n].Limit != 20 || len(items) != 20 {
+					t.Fatal("wrong per-row page size", row)
+				}
+				base := 0
+				if distinct {
+					base = n * 100
+				}
+				for offset, item := range items {
+					title := item["title"].(object)
+					if title["id"] != ids.RatingKeyGUID(frontend.MovieKey(int64(base+offset+1))) || item["receiptToken"] != fmt.Sprintf("receipt-%d", offset) {
+						t.Fatal("shared conversion changed row title or receipt", item)
+					}
+				}
+				if row["receiptToken"] != "row-receipt" || row["style"] != "shelf" || row["previewOnFocus"] != true {
+					t.Fatal("row metadata lost", row)
+				}
+				cursor, err := i.readRowToken(r, viewer, row["nextCursor"].(string))
+				if err != nil || cursor.Offset != 20 {
+					t.Fatal("wrong source offset", cursor, err)
+				}
 			}
 		}
 	}
+	source.distinct = false
+
 	for _, tc := range []struct {
 		query string
 		want  int

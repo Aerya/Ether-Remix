@@ -14,6 +14,9 @@ func collectionStamp(c *core.Collection) string {
 	return strconv.FormatInt(c.UpdatedAt.Unix(), 10)
 }
 func (s Source) collection(ctx context.Context, req frontend.ArtworkRequest) (*core.Collection, error) {
+	if c, ok := frontend.ArtworkCollection(ctx, req.Item); ok {
+		return c, nil
+	}
 	if s.Collections == nil {
 		return nil, core.ErrNotFound
 	}
@@ -40,6 +43,12 @@ func (s Source) ArtPath(ctx context.Context, req frontend.ArtworkRequest, elemen
 	key := req.Item
 	switch key.Kind() {
 	case core.KindCollection, core.KindSmart:
+		if pre, ok := frontend.ArtworkCollection(ctx, key); ok {
+			if element == "art" {
+				return pre.BackdropPath, 1280, nil
+			}
+			return pre.PosterPath, 500, nil
+		}
 		if s.Collections == nil {
 			return "", 0, core.ErrNotFound
 		}

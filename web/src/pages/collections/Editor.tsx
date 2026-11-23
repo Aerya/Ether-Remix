@@ -36,6 +36,7 @@ import { ErrorPanel, PosterSkeletons } from "../../components/feedback";
 import { Segmented } from "../../components/fields";
 import { PosterGrid } from "../../components/Poster";
 import { api, apiFetch, ApiError, errorMessage, isAbort } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { t, tn } from "../../i18n";
 import type { CollectionPreview, CollectionSpec, Source } from "../../lib/contract";
 import { formatNumber, relativeTime } from "../../lib/format";
@@ -58,7 +59,7 @@ import {
 } from "../../lib/rules";
 import { BuildPanel } from "./BuildPanel";
 import { DescribeDialog } from "./DescribeDialog";
-import { newCollectionHref } from "./links";
+import { isBlankCollectionSpec, newCollectionHref } from "./links";
 import {
   ArtworkPanel,
   ArtworkPreview,
@@ -166,9 +167,13 @@ export default function CollectionEditor() {
 
   const history = useHistory<CollectionSpec>(blankSpec());
   const spec = history.value;
+  const loadedMatches = !id || source.data?.id === id;
+  usePageTitle(loadedMatches && spec.name.trim() ? [t("Collections"), spec.name.trim()] : null);
   const [baseline, setBaseline] = useState<CollectionSpec | null>(null);
   const [restored, setRestored] = useState<StoredDraft<CollectionSpec> | null>(null);
   const [savedLocallyAt, setSavedLocallyAt] = useState<string | null>(null);
+  const [hydration, setHydration] = useState<{ rev: number; key: string }>({ rev: 0, key: "" });
+  const [userEdited, setUserEdited] = useState(false);
   const dKey = draftKey("collection", id ?? newDraftId);
 
   // Initialise from the server copy (or template), restoring a newer local draft.
@@ -176,15 +181,25 @@ export default function CollectionEditor() {
     if (!source.data) return;
     const base = source.data;
     const stored = loadDraft<CollectionSpec>(dKey);
+    // Discard any blank placeholder draft that could never represent a real edit
+    // of a saved collection (or an untouched new draft).
+    const staleBlank =
+      stored !== null &&
+      isBlankCollectionSpec(stored.value) &&
+      (!id || !isBlankCollectionSpec(base));
+    if (staleBlank) clearDraft(dKey);
+    const active =
+      stored && !staleBlank && !same(stored.value, base) ? normalizeSpec(stored.value) : base;
     setBaseline(base);
-    if (stored && !same(stored.value, base)) {
-      history.reset(normalizeSpec(stored.value));
-      setRestored(stored);
-    } else {
-      history.reset(base);
-      setRestored(null);
-    }
-  }, [source.data, dKey]);
+    setUserEdited(false);
+    history.reset(active);
+    setRestored(active === base ? null : stored);
+    setSavedLocallyAt(null);
+    setHydration((prev) => ({
+      rev: prev.rev + 1,
+      key: JSON.stringify(previewableSpec(active)),
+    }));
+  }, [source.data, dKey, id]);
 
   const ready = baseline !== null;
   useEffect(() => {
@@ -194,18 +209,35 @@ export default function CollectionEditor() {
   const isNew = !id;
   const readOnly = Boolean(baseline?.builtIn);
 
-  // Autosave the working copy locally.
-  const debouncedSpec = useDebouncedValue(spec, 600);
+  // Autosave the working copy locally — only after hydration and a real user edit,
+  // so initial blank state can never overwrite a collection's draft or save an
+  // untouched new draft.
+  const draftCandidate = useMemo(
+    () => ({ dKey, rev: hydration.rev, userEdited, spec }),
+    [dKey, hydration.rev, userEdited, spec],
+  );
+  const debouncedDraft = useDebouncedValue(draftCandidate, 600);
   useEffect(() => {
-    if (!ready) return;
-    if (!same(debouncedSpec, baseline)) {
-      saveDraft(dKey, debouncedSpec, baseline?.updatedAt);
+    if (
+      !ready ||
+      readOnly ||
+      debouncedDraft.dKey !== dKey ||
+      debouncedDraft.rev !== hydration.rev ||
+      !debouncedDraft.userEdited
+    ) {
+      return;
+    }
+    if (
+      !same(debouncedDraft.spec, baseline) &&
+      !(isNew && isBlankCollectionSpec(debouncedDraft.spec))
+    ) {
+      saveDraft(dKey, debouncedDraft.spec, baseline?.updatedAt);
       setSavedLocallyAt(new Date().toISOString());
     } else {
       clearDraft(dKey);
       setSavedLocallyAt(null);
     }
-  }, [debouncedSpec, baseline, dKey, ready, readOnly]);
+  }, [debouncedDraft, baseline, dKey, hydration.rev, isNew, ready, readOnly]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -218,6 +250,7 @@ export default function CollectionEditor() {
 
   const update = useCallback(
     (patch: Partial<CollectionSpec>, key?: string) => {
+      setUserEdited(true);
       history.set({ ...history.value, ...patch }, key);
     },
     [history],
@@ -226,17 +259,22 @@ export default function CollectionEditor() {
   // ---- Live preview ---------------------------------------------------------
   // i18n: memo holds no copy (the server preview request key)
   const previewKey = useMemo(() => JSON.stringify(previewableSpec(spec)), [spec]);
-  const debouncedPreview = useDebouncedValue(previewKey, 450);
+  const taggedPreviewKey = `${dKey}\n${hydration.rev}\n${previewKey}`;
+  const debouncedTaggedPreview = useDebouncedValue(taggedPreviewKey, 450);
+  const previewPrefix = `${dKey}\n${hydration.rev}\n`;
+  const activePreviewKey = debouncedTaggedPreview.startsWith(previewPrefix)
+    ? debouncedTaggedPreview.slice(previewPrefix.length)
+    : hydration.key;
   const [preview, setPreview] = useState<CollectionPreview | null>(null);
   const [previewError, setPreviewError] = useState<unknown>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewNonce, setPreviewNonce] = useState(0);
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !activePreviewKey) return;
     const ctl = new AbortController();
     setPreviewLoading(true);
     api
-      .previewCollection(JSON.parse(debouncedPreview) as CollectionSpec, ctl.signal)
+      .previewCollection(JSON.parse(activePreviewKey) as CollectionSpec, ctl.signal)
       .then((p) => {
         setPreview(p);
         setPreviewError(null);
@@ -248,7 +286,7 @@ export default function CollectionEditor() {
         if (!ctl.signal.aborted) setPreviewLoading(false);
       });
     return () => ctl.abort();
-  }, [debouncedPreview, ready, previewNonce]);
+  }, [activePreviewKey, ready, previewNonce]);
 
   // ---- Persistence ------------------------------------------------------------
   const [saving, setSaving] = useState(false);
@@ -278,8 +316,14 @@ export default function CollectionEditor() {
         );
         clearDraft(dKey);
         setRestored(null);
+        setSavedLocallyAt(null);
+        setUserEdited(false);
         setBaseline(saved);
         history.reset(saved);
+        setHydration((prev) => ({
+          rev: prev.rev + 1,
+          key: JSON.stringify(previewableSpec(saved)),
+        }));
         toast.success(
           publish === true ? t("Published") : publish === false ? t("Unpublished") : t("Saved"),
           {
@@ -356,7 +400,13 @@ export default function CollectionEditor() {
     if (!baseline) return;
     clearDraft(dKey);
     setRestored(null);
+    setSavedLocallyAt(null);
+    setUserEdited(false);
     history.reset(baseline);
+    setHydration((prev) => ({
+      rev: prev.rev + 1,
+      key: JSON.stringify(previewableSpec(baseline)),
+    }));
   };
 
   // Keyboard: undo/redo outside text fields, save anywhere.
@@ -373,9 +423,11 @@ export default function CollectionEditor() {
       if (isTextTarget(e.target)) return;
       if (k === "z" && !e.shiftKey) {
         e.preventDefault();
+        setUserEdited(true);
         history.undo();
       } else if ((k === "z" && e.shiftKey) || k === "y") {
         e.preventDefault();
+        setUserEdited(true);
         history.redo();
       }
     };
@@ -441,7 +493,10 @@ export default function CollectionEditor() {
               variant="ghost"
               size="icon"
               className="size-9"
-              onClick={history.undo}
+              onClick={() => {
+                setUserEdited(true);
+                history.undo();
+              }}
               disabled={!history.canUndo}
               aria-label={t("Undo")}
               title={t("Undo (⌘Z)")}
@@ -452,7 +507,10 @@ export default function CollectionEditor() {
               variant="ghost"
               size="icon"
               className="size-9"
-              onClick={history.redo}
+              onClick={() => {
+                setUserEdited(true);
+                history.redo();
+              }}
               disabled={!history.canRedo}
               aria-label={t("Redo")}
               title={t("Redo (⇧⌘Z)")}

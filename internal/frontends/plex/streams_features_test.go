@@ -78,7 +78,6 @@ func TestPersistentShowChoiceAppliesToNextEpisodeDecision(t *testing.T) {
 	if err = prefs.PutRules(context.Background(), 0, r); err != nil {
 		t.Fatal(err)
 	}
-	f.get(t, "/library/metadata/"+bbE1.Key.String())
 	frID := f.bindStream(bbE1.Key, 2, sampleInfo.Streams[2])
 	f.request(t, http.MethodPut, fmt.Sprintf("/library/parts/%s?audioStreamID=%d&subtitleStreamID=0", bbE1.Key, frID), nil)
 	f.get(t, "/video/:/transcode/universal/decision?path=/library/metadata/"+bbE2.Key.String()+"&session=showmemory")

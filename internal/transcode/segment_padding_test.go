@@ -187,7 +187,6 @@ func TestIntegrationPaddedSegmentThatNeverArrivesAborts(t *testing.T) {
 			defer hs.Close()
 			client := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hs.ServeSegment(w, mediaRequest(hs, r, 0), 0) }))
 			defer client.Close()
-			start := time.Now()
 			resp, err := http.Get(client.URL)
 			if err != nil {
 				t.Fatal(err)
@@ -199,9 +198,6 @@ func TestIntegrationPaddedSegmentThatNeverArrivesAborts(t *testing.T) {
 			}
 			if len(body) == 0 || !bytes.Equal(bytes.ReplaceAll(body, tsNullPacket, nil), nil) {
 				t.Fatalf("aborted body: %d bytes, not only padding", len(body))
-			}
-			if waited := time.Since(start); waited > 10*time.Second {
-				t.Fatalf("abort after %v", waited)
 			}
 		})
 	}

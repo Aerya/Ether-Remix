@@ -180,27 +180,35 @@ func sharePassesCompiled(t *core.Title, f compiledFilter) bool {
 	if t == nil {
 		return true
 	}
-	if !ratingCompiledPasses(t.ContentRating, f) {
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	if !ratingCompiledPasses(t.ContentRating, enf, f) {
 		return false
 	}
 	return labelCompiledPasses(t, f)
 }
 
-func ratingCompiledPasses(rating string, f compiledFilter) bool {
+func (f compiledFilter) hasRatingRestriction() bool {
+	return f.maxRating != "" || f.minRating != "" || len(f.allowRatings) > 0 || len(f.denyRatings) > 0
+}
+
+func ratingCompiledPasses(rating, enf string, f compiledFilter) bool {
+	if f.hasRatingRestriction() && enf == contentrating.UncertifiedAdult {
+		return false
+	}
 	if f.maxRating != "" {
-		if !ratingClausePasses(rating, shareClause{lte: true, values: []string{f.maxRating}}) {
+		if !ratingClausePasses(rating, enf, shareClause{lte: true, values: []string{f.maxRating}}) {
 			return false
 		}
 	}
 	if f.minRating != "" {
-		if !ratingClausePasses(rating, shareClause{gte: true, values: []string{f.minRating}}) {
+		if !ratingClausePasses(rating, enf, shareClause{gte: true, values: []string{f.minRating}}) {
 			return false
 		}
 	}
-	if len(f.allowRatings) > 0 && !ratingClausePasses(rating, shareClause{values: f.allowRatings}) {
+	if len(f.allowRatings) > 0 && !ratingClausePasses(rating, enf, shareClause{values: f.allowRatings}) {
 		return false
 	}
-	if len(f.denyRatings) > 0 && !ratingClausePasses(rating, shareClause{negate: true, values: f.denyRatings}) {
+	if len(f.denyRatings) > 0 && !ratingClausePasses(rating, enf, shareClause{negate: true, values: f.denyRatings}) {
 		return false
 	}
 	return true
@@ -216,17 +224,17 @@ func labelCompiledPasses(t *core.Title, f compiledFilter) bool {
 	return true
 }
 
-func ratingClausePasses(rating string, c shareClause) bool {
+func ratingClausePasses(rating, enf string, c shareClause) bool {
 	if c.lte || c.gte {
 		if len(c.values) == 0 {
 			return true
 		}
-		limit := contentrating.LevelOf(c.values[0])
-		have := contentrating.LevelOf(rating)
-		if limit == contentrating.Unrated {
-			return false
-		}
+		limit := contentrating.EnforceLevelOf(c.values[0])
+		have := contentrating.EnforceLevelOf(enf)
 		if have == contentrating.Unrated {
+			have = contentrating.EnforceLevelOf(rating)
+		}
+		if limit == contentrating.Unrated || have == contentrating.Unrated {
 			return false
 		}
 		if c.lte {
@@ -234,24 +242,42 @@ func ratingClausePasses(rating string, c shareClause) bool {
 		}
 		return have >= limit
 	}
-	match := ratingValueMatch(rating, c.values)
+	match := ratingValueMatch(rating, enf, c.values)
 	if c.negate {
 		return !match
 	}
 	return match
 }
 
-func ratingValueMatch(rating string, values []string) bool {
+func ratingValueMatch(rating, enf string, values []string) bool {
 	have := strings.TrimSpace(rating)
+	haveLevel := contentrating.EnforceLevelOf(enf)
+	if haveLevel == contentrating.Unrated {
+		haveLevel = contentrating.EnforceLevelOf(have)
+	}
+	nonUSOrUnratedDisplay := have == "" || contentrating.IsNotRated(have) || contentrating.Parse(have).Country != "US"
 	for _, want := range values {
-		if isNoneRating(want) {
-			if have == "" || contentrating.IsNotRated(have) {
+		w := strings.TrimSpace(want)
+		if isNoneRating(w) {
+			if enf == "" && haveLevel == contentrating.Unrated && (have == "" || contentrating.IsNotRated(have)) {
 				return true
 			}
 			continue
 		}
-		if strings.EqualFold(have, want) {
+		if strings.EqualFold(have, w) {
 			return true
+		}
+		if nonUSOrUnratedDisplay && contentrating.Parse(w).Country == "US" {
+			wantLevel := contentrating.EnforceLevelOf(w)
+			if wantLevel == contentrating.Unrated {
+				continue
+			}
+			if haveLevel == wantLevel {
+				return true
+			}
+			if strings.EqualFold(w, "TV-MA") && haveLevel == contentrating.Adult {
+				return true
+			}
 		}
 	}
 	return false

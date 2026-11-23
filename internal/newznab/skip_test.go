@@ -21,7 +21,7 @@ func TestManagerSearchSkipsIndexers(t *testing.T) {
 	a, b := newFakeIndexer(t, ""), newFakeIndexer(t, "")
 	ca, cb := testConfig(a.server.URL), testConfig(b.server.URL)
 	ca.ID, ca.Name, cb.ID, cb.Name = "a", "A", "b", "B"
-	m := NewManager(db, []config.Indexer{ca, cb}, Options{NZBDir: t.TempDir()})
+	m := NewManager(db, []config.Indexer{ca, cb}, Options{Vault: &testVault{}})
 	var events []string
 	m.Subscribe(func(e Event) { events = append(events, e.Indexer) })
 	skipID := m.Clients()[1].indexerID()

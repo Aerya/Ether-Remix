@@ -18,9 +18,18 @@ export function installMockBackend(): void {
   setMockAgentPace(Number(params.get("agentPace") ?? 70));
   const fake = createFakeServer({
     latencyMs: 120,
+    // `?vela` previews an owner-installed Vela client.
+    velaInstalled: params.has("vela"),
+    velaDistribution:
+      params.get("velaDist") === "installing"
+        ? "installing"
+        : params.get("velaDist") === "rollback"
+          ? "rollback"
+          : undefined,
     liveTVEmpty: params.get("livetv") === "empty",
     onAirLayout: params.get("onair") ?? undefined,
     householdAudio: true,
+    remoteBudgetDemo: params.get("sessions") !== "single",
     cluster,
     startup: params.get("startup") ?? undefined,
     viewers: Number(params.get("viewers") ?? 0),
@@ -29,6 +38,7 @@ export function installMockBackend(): void {
     cacheRestart: params.has("cacheRestart"),
     restore: params.get("restore") ?? undefined,
     prerolls: params.has("prerolls"),
+    portConflict: params.get("portConflict") || (params.has("portConflict") ? true : undefined),
   });
   // Configured through the API, but the owner has not closed setup yet.
   if (params.get("setup") === "resume") {
@@ -37,10 +47,16 @@ export function installMockBackend(): void {
     fake.state.boot.ownerConfigured = true;
   }
   if (params.get("backups") === "empty") fake.state.backups = [];
+  const offApps = new Set(
+    (params.get("off") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
   fake.state.config.frontends = Object.fromEntries(
     ["plex", "jellyfin", "emby", "silo", "stremio", "webdav", "m3u", "xtream", "dlna"].map((id) => [
       id,
-      { enabled: true },
+      { enabled: !offApps.has(id) },
     ]),
   );
   if (params.get("catalogKey") === "missing") fake.state.config.catalog.tmdbKey = "";
@@ -58,6 +74,7 @@ export function installMockBackend(): void {
       password: "[configured]",
     };
     c.subdl = { enabled: true, apiKey: "[configured]" };
+    c.subsource = { enabled: true, apiKey: "[configured]" };
     c.markers = { ...c.markers, theIntroDb: true, apiKey: "[configured]" };
     c.posters = {
       version: 1,
@@ -260,6 +277,16 @@ export function installMockBackend(): void {
       input instanceof Request ? input.url : String(input),
       window.location.origin,
     );
+    if (url.origin === window.location.origin && url.pathname === "/vela/skins/catalog.json")
+      return Promise.resolve(
+        new Response(JSON.stringify({ documents: [] }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    if (url.origin === window.location.origin && url.pathname.startsWith("/vela/v0/branding/"))
+      return Promise.resolve(
+        fake.velaBranding.serveAsset(url.pathname.slice("/vela/v0/branding/".length)),
+      );
     if (url.origin === window.location.origin && url.pathname.startsWith("/ether/api/"))
       return fake.fetch(url.toString(), init);
     return real(input, init);

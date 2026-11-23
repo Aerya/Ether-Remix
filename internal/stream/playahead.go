@@ -99,15 +99,18 @@ func (s *source) playAheadLoop() {
 				break
 			}
 			parallel := max(1, min(s.e.opts.PrefetchParallel, s.raLimit()/2))
-			err := s.e.prefetchRangeN(s.ctx, s.rel, s.plan, s.releaseID, from, to-from, parallel, &s.meter)
+			err := s.e.prefetchRangeN(s.ctx, s.rel, s.plan, s.fo.cacheID, from, to-from, parallel, &s.meter)
 			if s.ctx.Err() != nil {
 				return
 			}
-			// Holes are left to the reader: a missing article goes through
-			// its repair, a failing provider is retried by demand reads.
-			s.mu.Lock()
-			c.playNext = max(c.playNext, to)
-			s.mu.Unlock()
+			// Missing articles are left to the reader's repair path, while
+			// transient/backoff errors keep [from, to) eligible for retry once
+			// providers recover instead of falsely inflating BufferedAhead.
+			if err == nil || isMissing(err) {
+				s.mu.Lock()
+				c.playNext = max(c.playNext, to)
+				s.mu.Unlock()
+			}
 			if err != nil && !isMissing(err) {
 				s.e.log.Debug("playback read-ahead failed", "name", s.plan.name, "err", err)
 				t := time.NewTimer(playBackoff)

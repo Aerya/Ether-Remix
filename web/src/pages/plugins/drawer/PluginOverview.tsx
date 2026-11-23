@@ -1,6 +1,4 @@
-import { RuntimeLimitsEditor } from "../RuntimeLimitsEditor";
 import { ActionJobs } from "./ActionJobs";
-import { SaveBarHost } from "../../../components/SaveBar";
 import { pluginCollectionHref } from "../../collections/links";
 import { DashboardPanel } from "@braedonsaunders/appkit-dashboard/primitives";
 import { Badge, Button, Skeleton, cn } from "@braedonsaunders/appkit-ui";
@@ -8,25 +6,55 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Film,
+  LayoutGrid,
   Library,
   Plus,
+  Radio,
   RefreshCw,
   Subtitles,
   Tv,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Artwork } from "../../../components/Artwork";
-import { t, tn } from "../../../i18n";
+import { getLocale, t, tn } from "../../../i18n";
 import { useLocale } from "../../../i18n/react";
-import { apiFetch, errorMessage } from "../../../lib/api";
+import {
+  API_BASE,
+  SESSION_HEADER,
+  apiFetch,
+  errorMessage,
+  getToken,
+  isAbort,
+} from "../../../lib/api";
 import { invalidateRegistry, textOf, useRegistry } from "../../../lib/extend";
-import { relativeTime } from "../../../lib/format";
+import { formatDateTime, formatNumber, parseTime, relativeTime } from "../../../lib/format";
+import { createStreamParser } from "../../../lib/stream";
+import {
+  librariesApi,
+  type Library as LibraryRecord,
+  type LibrarySyncRequest,
+} from "../../libraries/api";
+import {
+  DeleteGuardChoice,
+  formatItemStorageSummary,
+  formatSyncStatusLine,
+  notifySyncError,
+  notifySyncResponse,
+  resolveDeleteGuard,
+} from "../../libraries/syncStatus";
 import { GuideStrip, type GuideChannel } from "../Stage";
 import { SidecarPairing } from "../SidecarPairing";
-import { buildPlacements, type PluginDetail } from "../types";
+import {
+  buildPlacements,
+  type PluginDetail,
+  type PluginFeedOverview,
+  type PluginLiveEventSummary,
+  type PluginLiveEventsOverview,
+  type PluginScreenOverview,
+} from "../types";
 import { callImdb, resolveTitles, resultCount, type PluginCall, type TitleCardLite } from "./calls";
-import { healthSummary, type HealthSummary } from "./health";
+import { formatPollInterval, healthSummary, type HealthSummary } from "./health";
 import { liveTVKind, primaryContribution } from "./kinds";
 
 /**
@@ -41,6 +69,7 @@ export function PluginOverview({
   onRetry,
   onFresh,
   onActivity,
+  onLiveFeeds,
 }: {
   detail: PluginDetail;
   calls: PluginCall[] | null;
@@ -50,34 +79,150 @@ export function PluginOverview({
   onFresh?: () => void;
   /** Open the Activity tab, where the technical detail lives. */
   onActivity?: () => void;
+  /** Share live feed health with the drawer header and Activity tiles. */
+  onLiveFeeds?: (feeds?: PluginFeedOverview[]) => void;
 }) {
-  const health = healthSummary(detail);
+  const liveEvents = usePluginLiveEvents(detail, onLiveFeeds);
+  const health = healthSummary(detail, liveEvents.data?.feeds);
+  const primary = primaryContribution(detail);
+  const handleRetry = useCallback(async () => {
+    await onRetry();
+    liveEvents.reload();
+  }, [onRetry, liveEvents.reload]);
+
   return (
     <div className="space-y-5">
       {detail.manifest.ether?.runtime?.kind === "remote" ? (
         <SidecarPairing key={detail.id} id={detail.id} sidecar={detail.manifest.ether?.sidecar} />
       ) : null}
       {health.card ? (
-        <ProblemCard health={health} onRetry={onRetry} onActivity={onActivity} />
+        <ProblemCard health={health} onRetry={handleRetry} onActivity={onActivity} />
       ) : null}
-      <LiveNow detail={detail} calls={calls} onClose={onClose} onFresh={onFresh} />
+      {detail.manifest.ether?.contributes?.mediaKinds?.length ? (
+        <LibrarySyncNow detail={detail} onClose={onClose} onSyncActivity={onFresh} />
+      ) : null}
+      <LiveNow
+        detail={detail}
+        calls={calls}
+        liveEvents={liveEvents}
+        onClose={onClose}
+        onFresh={onFresh}
+      />
+      {liveEvents.hasLiveFeeds && primary !== "live_events" ? (
+        <LiveEventsNow detail={detail} state={liveEvents} onClose={onClose} />
+      ) : null}
       {detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data" ? (
         <ActionJobs id={detail.id} />
       ) : null}
-      {detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data" ? (
-        <SaveBarHost>
-          <RuntimeLimitsEditor
-            key={detail.id}
-            plugin={detail.id}
-            limits={detail.runtimeLimits}
-            requested={detail.manifest.ether?.runtime?.limits}
-            onSaved={onFresh}
-          />
-        </SaveBarHost>
-      ) : null}
-      <Placements detail={detail} onClose={onClose} />
+      <Placements detail={detail} liveEvents={liveEvents.data} onClose={onClose} />
     </div>
   );
+}
+
+interface PluginLiveEventsState {
+  needed: boolean;
+  hasLiveFeeds: boolean;
+  hasScreens: boolean;
+  data: PluginLiveEventsOverview | null;
+  loading: boolean;
+  error: string;
+  reload: () => void;
+}
+
+const LIVE_EVENTS_LIMIT = 12;
+
+function usePluginLiveEvents(
+  detail: PluginDetail,
+  onFeeds?: (feeds?: PluginFeedOverview[]) => void,
+): PluginLiveEventsState {
+  const caps = detail.capabilities ?? detail.manifest.ether?.capabilities ?? [];
+  const hasLiveFeeds =
+    Boolean(detail.manifest.ether?.contributes?.liveFeeds?.length) || caps.includes("live_events");
+  const hasScreens = Boolean(detail.manifest.ether?.contributes?.screens?.length);
+  const needed = hasLiveFeeds || hasScreens;
+
+  const [data, setData] = useState<PluginLiveEventsOverview | null>(null);
+  const [loading, setLoading] = useState(needed);
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+  const onFeedsRef = useRef(onFeeds);
+  onFeedsRef.current = onFeeds;
+
+  const reload = useCallback(() => setTick((n) => n + 1), []);
+
+  useEffect(() => {
+    if (!needed) {
+      setData(null);
+      setLoading(false);
+      setError("");
+      onFeedsRef.current?.(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    const ctrl = new AbortController();
+    setLoading(true);
+    setError("");
+
+    const path = `/plugins/${encodeURIComponent(detail.id)}/live-events?limit=${LIVE_EVENTS_LIMIT}`;
+
+    void (async () => {
+      try {
+        const snapshot = await apiFetch<PluginLiveEventsOverview>(path, { signal: ctrl.signal });
+        if (cancelled) return;
+        setData(snapshot);
+        setLoading(false);
+        onFeedsRef.current?.(snapshot.feeds);
+      } catch (e) {
+        if (cancelled || isAbort(e)) return;
+        setLoading(false);
+        setError(errorMessage(e));
+      }
+
+      // Subscribe briefly while the drawer Overview is open, following hub
+      // subscriber rules without forcing extra plugin polling.
+      if (cancelled || !hasLiveFeeds || !detail.enabled || detail.shadow) return;
+      try {
+        const headers: Record<string, string> = { Accept: "text/event-stream" };
+        const token = getToken();
+        if (token) headers[SESSION_HEADER] = token;
+        const res = await fetch(`${API_BASE}${path}&stream=1`, {
+          headers,
+          signal: ctrl.signal,
+        });
+        const ct = res.headers.get("content-type") ?? "";
+        if (!res.ok || !ct.includes("text/event-stream") || !res.body) return;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        const parser = createStreamParser((ev) => {
+          if (ev.type !== "overview" || !ev.data || cancelled) return;
+          try {
+            const parsed = JSON.parse(ev.data) as PluginLiveEventsOverview;
+            setData(parsed);
+            setError("");
+            onFeedsRef.current?.(parsed.feeds);
+          } catch {
+            // Ignore malformed SSE frame.
+          }
+        });
+        while (!cancelled) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          parser.push(decoder.decode(value, { stream: true }));
+        }
+      } catch {
+        // Closing the drawer or running against a non-SSE mock ends here.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+    };
+  }, [detail.id, detail.enabled, detail.shadow, needed, hasLiveFeeds, tick]);
+
+  return { needed, hasLiveFeeds, hasScreens, data, loading, error, reload };
 }
 
 function ProblemCard({
@@ -108,6 +253,7 @@ function ProblemCard({
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-fg">{card.title}</p>
         <p className="mt-0.5 text-xs text-fg-muted">{card.line}</p>
+        {card.meta ? <p className="mt-1 text-xs text-fg-subtle">{card.meta}</p> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {onActivity ? (
@@ -135,18 +281,215 @@ function ProblemCard({
 
 /* ---------------------------------------------------------------- live card */
 
+type OverviewSyncAction = "sync" | "full" | "keep" | "force";
+
+function LibrarySyncNow({
+  detail,
+  onClose,
+  onSyncActivity,
+}: {
+  detail: PluginDetail;
+  onClose: () => void;
+  onSyncActivity?: () => void;
+}) {
+  const [libs, setLibs] = useState<LibraryRecord[] | null>(null);
+  const [busyLib, setBusyLib] = useState<{ id: number; action: OverviewSyncAction } | null>(null);
+
+  const anyRunning = Boolean(libs?.some((l) => l.sync?.running));
+  const anyPendingFirstSync = Boolean(
+    detail.enabled &&
+    libs?.some(
+      (l) =>
+        l.kind?.sync?.mode !== "push" &&
+        !l.sync?.lastOk &&
+        !l.sync?.lastError &&
+        (l.storedItems ?? l.itemCount ?? l.sync?.items ?? 0) === 0,
+    ),
+  );
+  const shouldPoll = anyRunning || anyPendingFirstSync;
+  const wasRunning = useRef(false);
+
+  useEffect(() => {
+    if (wasRunning.current && !anyRunning) {
+      onSyncActivity?.();
+    }
+    wasRunning.current = anyRunning;
+  }, [anyRunning, onSyncActivity]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ctrl = new AbortController();
+    const load = async () => {
+      try {
+        const all = await librariesApi.list(ctrl.signal);
+        if (!cancelled) {
+          setLibs(all.filter((l) => l.pluginId === detail.id));
+        }
+      } catch {
+        // Ignore abort / transient errors while polling.
+      }
+    };
+    void load();
+    if (!shouldPoll) {
+      return () => {
+        cancelled = true;
+        ctrl.abort();
+      };
+    }
+    const timer = window.setInterval(() => {
+      void load();
+    }, 1500);
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+      window.clearInterval(timer);
+    };
+  }, [detail.id, shouldPoll]);
+
+  const runSync = async (id: number, action: OverviewSyncAction, opts: LibrarySyncRequest) => {
+    setBusyLib({ id, action });
+    try {
+      const res = await librariesApi.sync(id, opts);
+      notifySyncResponse(res);
+    } catch (e) {
+      notifySyncError(e);
+    } finally {
+      setBusyLib(null);
+      try {
+        const all = await librariesApi.list();
+        setLibs(all.filter((l) => l.pluginId === detail.id));
+      } catch {
+        // Ignore transient refresh failure.
+      }
+      onSyncActivity?.();
+    }
+  };
+
+  if (!libs || libs.length === 0) return null;
+
+  return (
+    <DashboardPanel title={t("Library sync")}>
+      <p className="mb-3 text-sm text-muted-foreground">
+        {anyRunning
+          ? t("Syncing items in the background. Items appear in your apps as pages arrive.")
+          : t("Libraries populated by this plugin.")}
+      </p>
+      <div className="space-y-3">
+        {libs.map((lib) => {
+          const sync = lib.sync;
+          const running = Boolean(sync?.running);
+          const guard = running ? null : resolveDeleteGuard(sync);
+          const count = lib.storedItems ?? lib.itemCount ?? sync?.items ?? 0;
+          const capSummary = formatItemStorageSummary(lib);
+          const statusLine = guard
+            ? ""
+            : formatSyncStatusLine(sync, { count, preferRelative: true });
+          const line =
+            !running && !guard && !sync?.lastError && !sync?.lastOk && count === 0
+              ? t("Waiting for first sync")
+              : capSummary && statusLine
+                ? `${capSummary} · ${statusLine}`
+                : capSummary || statusLine;
+          const libAction = busyLib?.id === lib.id ? busyLib.action : null;
+          const isBusy = running || Boolean(libAction);
+          return (
+            <div
+              key={lib.id}
+              className="rounded-lg border border-border/60 bg-surface-muted/40 px-3.5 py-2.5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate text-sm font-medium text-fg">
+                      {lib.kind?.label ?? lib.name}
+                    </span>
+                    {running ? (
+                      <Badge variant="secondary" className="gap-1">
+                        <RefreshCw size={11} className="animate-spin" aria-hidden />
+                        {sync?.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
+                      </Badge>
+                    ) : guard ? (
+                      <Badge variant="outline" className="gap-1 border-warning/50 text-warning">
+                        <AlertTriangle size={11} aria-hidden />
+                        {t("Needs review")}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 text-xs text-fg-muted">{line}</p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  {detail.enabled && lib.kind?.sync?.mode !== "push" ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isBusy}
+                        onClick={() => void runSync(lib.id, "full", { fullWalk: true })}
+                      >
+                        {libAction === "full" ? (
+                          <RefreshCw size={13} className="animate-spin" aria-hidden />
+                        ) : null}
+                        {t("Full re-sync")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isBusy}
+                        onClick={() => void runSync(lib.id, "sync", { fullWalk: false })}
+                      >
+                        <RefreshCw
+                          size={13}
+                          className={cn((running || libAction === "sync") && "animate-spin")}
+                          aria-hidden
+                        />{" "}
+                        {running ? t("Syncing…") : t("Sync now")}
+                      </Button>
+                    </>
+                  ) : null}
+                  <Button size="sm" variant="outline" asChild>
+                    <Link to={`/libraries/${lib.id}`} onClick={onClose}>
+                      {t("Open")} <ArrowUpRight size={13} />
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+              {guard ? (
+                <DeleteGuardChoice
+                  guard={guard}
+                  busyAction={libAction}
+                  onKeep={() => void runSync(lib.id, "keep", { keepExisting: true })}
+                  onRemoveMissing={() =>
+                    void runSync(lib.id, "force", {
+                      force: true,
+                      fullWalk: guard.source === "walk",
+                    })
+                  }
+                />
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </DashboardPanel>
+  );
+}
+
 function LiveNow({
   detail,
   calls,
+  liveEvents,
   onClose,
   onFresh,
 }: {
   detail: PluginDetail;
   calls: PluginCall[] | null;
+  liveEvents: PluginLiveEventsState;
   onClose: () => void;
   onFresh?: () => void;
 }) {
   switch (primaryContribution(detail)) {
+    case "live_events":
+      return <LiveEventsNow detail={detail} state={liveEvents} onClose={onClose} />;
     case "livetv_channels":
       return <LiveTVNow detail={detail} onClose={onClose} />;
     case "list_source":
@@ -193,6 +536,196 @@ function LiveNow({
     default:
       return null;
   }
+}
+
+function formatUpcomingWhen(ev: PluginLiveEventSummary): string {
+  if (ev.status.detail) return ev.status.detail;
+  const d = parseTime(ev.start);
+  if (!d) return t("Upcoming");
+  const diffDays = Math.abs(d.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+  if (diffDays <= 6) {
+    return d.toLocaleString(getLocale(), {
+      weekday: "short",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+  return formatDateTime(d);
+}
+
+function orderedCompetitors(ev: PluginLiveEventSummary) {
+  const list = ev.competitors ?? [];
+  if (list.length !== 2) return list;
+  const [a, b] = list;
+  if (a?.home && !b?.home) return [b!, a!];
+  return [a!, b!];
+}
+
+function LiveEventsNow({
+  detail,
+  state,
+  onClose,
+}: {
+  detail: PluginDetail;
+  state: PluginLiveEventsState;
+  onClose: () => void;
+}) {
+  useLocale();
+  const { data, loading, error } = state;
+  const hasVelaScreen = Boolean(
+    (data?.screens ?? []).some((s) => s.frontends.some((fe) => fe.id === "vela")) ||
+    (detail.manifest.ether?.contributes?.screens ?? []).some(
+      (s) => !s.frontends?.length || s.frontends.includes("vela"),
+    ),
+  );
+  const anyFailing = Boolean(
+    data?.feeds?.some((f) => f.health.consecutiveErrors > 0 || Boolean(f.health.lastError)),
+  );
+
+  const actions = (
+    <div className="flex flex-wrap items-center gap-2">
+      {detail.enabled && !detail.shadow && data ? (
+        <>
+          {data.liveCount > 0 ? (
+            <Badge variant="success">
+              {t("{count} live", { count: formatNumber(data.liveCount, 0) })}
+            </Badge>
+          ) : null}
+          {data.upcomingCount > 0 ? (
+            <Badge variant="secondary">
+              {t("{count} upcoming", { count: formatNumber(data.upcomingCount, 0) })}
+            </Badge>
+          ) : null}
+        </>
+      ) : null}
+      {hasVelaScreen ? <OpenLink to="/apps/vela" label={t("Open Vela")} onClose={onClose} /> : null}
+    </div>
+  );
+
+  let body: ReactNode;
+  if (!detail.enabled) {
+    body = <p className="text-sm text-fg-muted">{t("Turn it on to show live events.")}</p>;
+  } else if (detail.shadow) {
+    body = <p className="text-sm text-fg-muted">{t("Make it live to show live events.")}</p>;
+  } else if (loading && !data) {
+    body = (
+      <div className="space-y-2">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-14 rounded-lg" />
+        ))}
+      </div>
+    );
+  } else if (error && !data) {
+    body = <p className="text-sm text-danger">{error}</p>;
+  } else if (!data || data.events.length === 0) {
+    body = (
+      <div>
+        <p className="text-sm text-fg-muted">
+          {anyFailing
+            ? t("Live events will appear here when the feed recovers.")
+            : t("No live or upcoming events right now.")}
+        </p>
+        {data && data.totalEvents > 0 ? (
+          <p className="mt-1 text-xs text-fg-subtle">
+            {tn(data.totalEvents, "{count} recent event cached", "{count} recent events cached")}
+          </p>
+        ) : null}
+      </div>
+    );
+  } else {
+    body = (
+      <ul className="space-y-2">
+        {data.events.map((ev) => {
+          const comps = orderedCompetitors(ev);
+          const pair = comps.length === 2 ? ([comps[0]!, comps[1]!] as const) : null;
+          const hasScore = Boolean(pair && (pair[0].score || pair[1].score));
+          const leagueLabel = ev.league?.abbr || ev.league?.name || "";
+          const leagueTitle = ev.league?.name || ev.league?.abbr || "";
+          const leader = ev.ranking?.[0];
+          return (
+            <li
+              key={ev.id}
+              className="rounded-lg border border-border/60 bg-surface-muted/40 px-3.5 py-2.5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  {leagueLabel ? (
+                    <Badge variant="secondary" title={leagueTitle}>
+                      {leagueLabel}
+                    </Badge>
+                  ) : null}
+                  {ev.status.state === "in" ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
+                      <span className="size-1.5 rounded-full bg-success" aria-hidden />
+                      {ev.status.detail || t("Live")}
+                    </span>
+                  ) : ev.status.state === "delayed" ? (
+                    <Badge variant="warning">{ev.status.detail || t("Delayed")}</Badge>
+                  ) : (
+                    <span className="text-xs text-fg-muted">{formatUpcomingWhen(ev)}</span>
+                  )}
+                </div>
+                <span
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1 text-xs",
+                    ev.watchCount > 0 ? "font-medium text-fg-muted" : "text-fg-subtle",
+                  )}
+                >
+                  <Tv size={12} aria-hidden />
+                  {tn(ev.watchCount, "{count} watch target", "{count} watch targets")}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                {pair && hasScore ? (
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg">
+                    <span
+                      className={cn("truncate", pair[0].winner ? "font-semibold" : "font-medium")}
+                    >
+                      {pair[0].name || pair[0].short || pair[0].abbr}
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-surface px-2 py-0.5 text-xs font-semibold tabular-nums text-fg ring-1 ring-border/70">
+                      <span>{pair[0].score || "0"}</span>
+                      <span className="text-fg-subtle" aria-hidden>
+                        –
+                      </span>
+                      <span>{pair[1].score || "0"}</span>
+                    </span>
+                    <span
+                      className={cn("truncate", pair[1].winner ? "font-semibold" : "font-medium")}
+                    >
+                      {pair[1].name || pair[1].short || pair[1].abbr}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
+                    {ev.title ||
+                      (pair
+                        ? t("{first} vs {second}", {
+                            first: pair[0].name || pair[0].short || pair[0].abbr || "",
+                            second: pair[1].name || pair[1].short || pair[1].abbr || "",
+                          })
+                        : ev.id)}
+                  </p>
+                )}
+                {!pair && leader ? (
+                  <span className="shrink-0 text-xs tabular-nums text-fg-muted">
+                    {leader.pos}. {leader.name}
+                    {leader.detail ? ` · ${leader.detail}` : ""}
+                  </span>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+
+  return (
+    <DashboardPanel title={t("Live now")} icon={<Radio size={16} />} actions={actions}>
+      {body}
+    </DashboardPanel>
+  );
 }
 
 interface LiveSource {
@@ -684,9 +1217,92 @@ function OpenLink({ to, label, onClose }: { to: string; label: string; onClose: 
 
 /* ---------------------------------------------------------- where it appears */
 
-function Placements({ detail, onClose }: { detail: PluginDetail; onClose: () => void }) {
+function fallbackScreens(detail: PluginDetail): PluginScreenOverview[] {
+  const declared = detail.manifest.ether?.contributes?.screens ?? [];
+  const published = detail.enabled && !detail.shadow;
+  const reason = !detail.enabled ? "plugin_disabled" : detail.shadow ? "shadow" : "published";
+  return declared.map((sc) => ({
+    id: sc.id,
+    title: sc.title && !sc.title.startsWith("$t:") ? sc.title : sc.id,
+    icon: sc.icon,
+    feed: sc.feed,
+    frontends: (sc.frontends?.length ? sc.frontends : ["vela"]).map((id) => ({
+      id,
+      name: id === "vela" ? "Vela" : id,
+      published,
+      reason,
+    })),
+  }));
+}
+
+function fallbackFeeds(detail: PluginDetail): PluginFeedOverview[] {
+  const declared = detail.manifest.ether?.contributes?.liveFeeds ?? [];
+  return declared.map((lf) => ({
+    id: lf.id,
+    title: lf.title && !lf.title.startsWith("$t:") ? lf.title : lf.id,
+    minIntervalSec: lf.minIntervalSec ?? 0,
+    entityKinds: lf.entityKinds,
+    active: detail.enabled && !detail.shadow,
+    health: { consecutiveErrors: 0, subscribers: 0, polling: false },
+    eventCount: 0,
+    liveCount: 0,
+    upcomingCount: 0,
+    leagues: [],
+    entityTotal: 0,
+  }));
+}
+
+function screenPublishCopy(fe: { name: string; published: boolean; reason?: string }): {
+  badge: string;
+  variant: "success" | "info" | "warning" | "secondary";
+  detail: string;
+} {
+  if (fe.published) {
+    return {
+      badge: t("Published"),
+      variant: "success",
+      detail: t("Shown in {app} navigation.", { app: fe.name }),
+    };
+  }
+  switch (fe.reason) {
+    case "shadow":
+      return {
+        badge: t("Trying out"),
+        variant: "info",
+        detail: t("Make this plugin live to publish this screen."),
+      };
+    case "frontend_disabled":
+      return {
+        badge: t("{app} off", { app: fe.name }),
+        variant: "warning",
+        detail: t("Turn on {app} in Apps to publish this screen.", { app: fe.name }),
+      };
+    case "capability_off":
+      return {
+        badge: t("Not published"),
+        variant: "secondary",
+        detail: t("Live events are turned off for this plugin."),
+      };
+    default:
+      return {
+        badge: t("Not published"),
+        variant: "secondary",
+        detail: t("Turn on this plugin to publish this screen."),
+      };
+  }
+}
+
+function Placements({
+  detail,
+  liveEvents,
+  onClose,
+}: {
+  detail: PluginDetail;
+  liveEvents: PluginLiveEventsOverview | null;
+  onClose: () => void;
+}) {
   const { descriptors } = useRegistry();
-  const placements = buildPlacements(descriptors, detail.id);
+  const placements = buildPlacements(descriptors, detail.id, detail.manifest);
   const [collections, setCollections] = useState(0);
   useEffect(() => {
     let live = true;
@@ -704,10 +1320,15 @@ function Placements({ detail, onClose }: { detail: PluginDetail; onClose: () => 
     };
   }, [detail.id]);
 
+  const screens = liveEvents?.screens?.length ? liveEvents.screens : fallbackScreens(detail);
+  const feeds = liveEvents?.feeds?.length ? liveEvents.feeds : fallbackFeeds(detail);
+  const hasRichPlacements = screens.length > 0 || feeds.length > 0;
+
   // One chip per surface; a plugin with many catalogues still reads as one.
   const chips = new Map<string, { label: string; href: string }>();
   for (const p of placements) {
     if (p.kind === "console") continue;
+    if (hasRichPlacements && (p.kind === "screen" || p.kind === "liveFeed")) continue;
     const label = p.kind === "page" ? p.label : p.area;
     if (!chips.has(label)) chips.set(label, { label, href: p.href });
   }
@@ -717,20 +1338,121 @@ function Placements({ detail, onClose }: { detail: PluginDetail; onClose: () => 
       href: "/collections",
     });
   }
-  if (!chips.size) return null;
+  if (!hasRichPlacements && !chips.size) return null;
+
   return (
-    <div className="flex flex-wrap items-center gap-2" aria-label={t("Where it appears")}>
-      <span className="text-xs font-medium text-fg-subtle">{t("Appears in")}</span>
-      {[...chips.values()].map((c) => (
-        <Link
-          key={c.label}
-          to={c.href}
-          onClick={onClose}
-          className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-fg transition-colors hover:border-primary/40 hover:text-primary"
-        >
-          {c.label} <ArrowUpRight size={12} aria-hidden />
-        </Link>
-      ))}
+    <div className="space-y-4">
+      {hasRichPlacements ? (
+        <DashboardPanel title={t("Placements")} icon={<LayoutGrid size={16} />}>
+          <div className="space-y-2.5">
+            {screens.flatMap((sc) =>
+              sc.frontends.map((fe) => {
+                const status = screenPublishCopy(fe);
+                return (
+                  <div
+                    key={`screen:${sc.id}:${fe.id}`}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-muted/40 px-3.5 py-2.5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="truncate text-sm font-medium text-fg">
+                          {t("{app} › {screen}", { app: fe.name, screen: sc.title })}
+                        </span>
+                        <Badge variant={status.variant}>{status.badge}</Badge>
+                      </div>
+                      <p className="mt-0.5 text-xs text-fg-muted">{status.detail}</p>
+                    </div>
+                    <Button size="sm" variant="outline" asChild>
+                      <Link to={`/apps/${encodeURIComponent(fe.id)}`} onClick={onClose}>
+                        {t("Manage in Apps")} <ArrowUpRight size={13} />
+                      </Link>
+                    </Button>
+                  </div>
+                );
+              }),
+            )}
+            {feeds.map((feed) => {
+              const leagues = feed.leagues ?? [];
+              const entityEntries = Object.entries(feed.entityCounts ?? {})
+                .filter(([, n]) => n > 0)
+                .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+              const summaryParts: string[] = [
+                leagues.length > 0
+                  ? tn(leagues.length, "{count} league", "{count} leagues")
+                  : t("No leagues cached"),
+                tn(feed.entityTotal, "{count} entity", "{count} entities"),
+              ];
+              const interval = formatPollInterval(feed.minIntervalSec);
+              if (interval) {
+                summaryParts.push(t("Polls every {interval}", { interval }));
+              }
+              return (
+                <div
+                  key={`feed:${feed.id}`}
+                  className="rounded-lg border border-border/60 bg-surface-muted/40 px-3.5 py-2.5"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium text-fg">{feed.title}</span>
+                      <Badge variant="secondary">{t("Live feed")}</Badge>
+                    </div>
+                    {feed.health.lastOkAt &&
+                    parseTime(feed.health.lastOkAt) &&
+                    !feed.health.lastError ? (
+                      <span className="text-xs text-fg-subtle">
+                        {t("Updated {when}", { when: relativeTime(feed.health.lastOkAt) })}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 text-xs text-fg-muted">{summaryParts.join(" · ")}</p>
+                  {leagues.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {leagues.slice(0, 8).map((lg) => (
+                        <Badge
+                          key={lg.id}
+                          variant="outline"
+                          title={lg.name || lg.abbr}
+                          className="text-[11px] font-normal"
+                        >
+                          {lg.abbr || lg.name}
+                          {lg.eventCount > 0 ? ` · ${formatNumber(lg.eventCount, 0)}` : ""}
+                        </Badge>
+                      ))}
+                      {leagues.length > 8 ? (
+                        <Badge variant="secondary" className="text-[11px] font-normal">
+                          {t("+{count} more", { count: formatNumber(leagues.length - 8, 0) })}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {entityEntries.length > 0 ? (
+                    <p className="mt-1.5 text-[11px] text-fg-subtle">
+                      {entityEntries
+                        .map(([kind, n]) => `${formatNumber(n, 0)} ${kind}`)
+                        .join(" · ")}
+                    </p>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </DashboardPanel>
+      ) : null}
+      {chips.size > 0 ? (
+        <div className="flex flex-wrap items-center gap-2" aria-label={t("Where it appears")}>
+          <span className="text-xs font-medium text-fg-subtle">{t("Appears in")}</span>
+          {[...chips.values()].map((c) => (
+            <Link
+              key={c.label}
+              to={c.href}
+              onClick={onClose}
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-fg transition-colors hover:border-primary/40 hover:text-primary"
+            >
+              {c.label} <ArrowUpRight size={12} aria-hidden />
+            </Link>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

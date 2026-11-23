@@ -1,6 +1,10 @@
 package transcode
 
-import "math"
+import (
+	"math"
+
+	"github.com/braedonsaunders/ether/internal/core"
+)
 
 // h264LevelLimits are H.264 Annex A frame, rate and decoded-picture-buffer
 // bounds. Bitrate limits below use the conservative High-profile VCL factor.
@@ -50,10 +54,12 @@ func H264HighLevelLimits(level int) (int, int, bool) {
 	return 0, 0, false
 }
 
-// OutputGeometry uses the same geometry as the encoder's scale plan.
-func OutputGeometry(width, height, maxHeight int) (int, int) {
-	if width <= 0 || height <= 0 {
+// OutputGeometry uses the same geometry as the encoder's scale plan:
+// the square-pixel display size at the height cap.
+func OutputGeometry(v *core.StreamInfo, maxHeight int) (int, int) {
+	w, h := displaySize(v)
+	if w <= 0 || h <= 0 {
 		return 0, 0
 	}
-	return outputSize(width, height, maxHeight)
+	return outputSize(w, h, maxHeight)
 }

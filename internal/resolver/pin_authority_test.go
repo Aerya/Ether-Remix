@@ -2,11 +2,73 @@ package resolver
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
+
+// An owner pin tolerates inconclusive sampling, but never confirmed damage,
+// missing sets, an unfetched NZB or cancellation of the viewer's request.
+func TestPinHealthTimeoutKeepsOwnerSource(t *testing.T) {
+	missing := fmt.Errorf("incomplete RAR set: %w", core.ErrArticleMissing)
+	for _, tc := range []struct {
+		name   string
+		health error
+		fetch  error
+		cancel bool
+		plays  bool
+	}{
+		{name: "sampling deadline", health: context.DeadlineExceeded, plays: true},
+		{name: "missing set", health: missing},
+		{name: "missing outweighs deadline", health: errors.Join(missing, context.DeadlineExceeded)},
+		{name: "rejected archive", health: fmt.Errorf("incomplete RAR set: %w", core.ErrReleaseRejected)},
+		{name: "NZB fetch deadline", fetch: context.DeadlineExceeded},
+		{name: "cancelled play", health: context.DeadlineExceeded, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			pinned := movieReleases()[0]
+			idx := fetchFailIndexer{fakeIndexer: &fakeIndexer{releases: movieReleases()}, fail: map[string]error{pinned.ID: tc.fetch}}
+			svc := New(idx, timeoutHealth(map[string]error{pinned.ID: tc.health}), nil, testCfg(), Options{})
+			defer svc.Close()
+			req := core.ResolveRequest{Title: matrixTitle(), Client: webCaps()}
+			if _, err := svc.Pin(ctx, req.Title.Key, "", pinned, ""); err != nil {
+				t.Fatal(err)
+			}
+			if tc.cancel {
+				cancel()
+			}
+			res, err := svc.Resolve(ctx, req)
+			if tc.plays {
+				if err != nil || res == nil {
+					t.Fatalf("timed-out pin did not play: %+v %v", res, err)
+				}
+				assertUnverifiedPlay(t, svc, res, pinned.ID)
+				if res.HealthVerified || len(res.Alternates) != 0 {
+					t.Fatalf("unverified pin gained verification or alternates: %+v", res)
+				}
+				p, _ := svc.PinFor(req.Title.Key)
+				if p.LastStatus != PinHealthy || p.LastReason != unverifiedReason {
+					t.Fatalf("pin outcome: %+v", p)
+				}
+			} else {
+				if res != nil || err == nil || !strings.Contains(err.Error(), "pinned release "+pinned.ID+" cannot be played") {
+					t.Fatalf("failed pin lost its clear failure: %+v %v", res, err)
+				}
+				if tc.health != nil && !tc.cancel && !strings.Contains(err.Error(), tc.health.Error()) {
+					t.Fatalf("failure lost its reason: %v", err)
+				}
+			}
+			if idx.searches.Load() != 0 {
+				t.Fatal("pin searched for substitutes")
+			}
+		})
+	}
+}
 
 // A pin is a source constraint across cached discovery, Auto and failover;
 // changing it must not reuse a previous automatic choice or check alternatives.

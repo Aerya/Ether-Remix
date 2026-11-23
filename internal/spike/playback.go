@@ -176,6 +176,18 @@ func (p *playback) Failover(context.Context, string, time.Duration) (*core.PlayS
 	return nil, core.ErrNotAvailable // a local file has no alternates
 }
 
+// KeepAlive renews an existing local-file session without preparing a source.
+func (p *playback) KeepAlive(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.sessions[id]
+	if s == nil {
+		return false
+	}
+	s.active = p.now()
+	return true
+}
+
 func (p *playback) Stop(id string) {
 	p.mu.Lock()
 	s, ok := p.sessions[id]

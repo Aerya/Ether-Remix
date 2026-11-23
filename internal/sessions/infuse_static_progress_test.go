@@ -145,6 +145,8 @@ func TestJellyfinStaticMissingSourceMatchesMissingFile(t *testing.T) {
 	}{
 		{name: "not-found", err: core.ErrNotFound, status: http.StatusNotFound, body: "Error processing request.", content: "text/plain"},
 		{name: "unavailable", err: core.ErrNotAvailable, status: http.StatusNotFound, body: "Error processing request.", content: "text/plain"},
+		{name: "preparing-queued", err: &core.PreparingError{RetryAfter: 5 * time.Second, Err: &core.UncachedError{Err: core.ErrDownloadQueued}}, status: http.StatusServiceUnavailable, retry: "5", body: "The item is still being prepared. Try again shortly.\n", content: "text/plain; charset=utf-8"},
+		{name: "preparing-queued-behind", err: &core.PreparingError{RetryAfter: 5 * time.Second, Err: &core.UncachedError{Err: &core.DownloadQueuedError{Provider: "TorBox", ActiveDownloads: 3, Err: core.ErrDownloadQueued}}}, status: http.StatusServiceUnavailable, retry: "5", body: "The item is still being prepared (queued at TorBox behind 3 active downloads). Try again shortly.\n", content: "text/plain; charset=utf-8"},
 		{name: "busy", err: &frontend.SessionBusyError{RetryAfter: 1500 * time.Millisecond}, status: http.StatusServiceUnavailable, retry: "2", body: "playback unavailable\n", content: "text/plain; charset=utf-8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -50,3 +50,23 @@ func TestWarmInputIgnoresUnknownInputs(t *testing.T) {
 	h.m.WarmInput("https://iptv.example/live.m3u8", 0, time.Minute)
 	h.m.WarmInput("::bad::", 0, time.Minute)
 }
+
+// Speculative warming must stay near the resume point even when an index is
+// sparse. The actual demuxer remains free to request an older keyframe.
+func TestStartupWarmOffsetBounds(t *testing.T) {
+	tm := TimeMap{Size: 70 << 30, Duration: 2 * time.Hour}
+	at := 25 * time.Minute
+	estimate := tm.OffsetAt(at)
+	if got := tm.WarmOffsetAt(at); got < estimate-(4<<20) || got > estimate {
+		t.Fatalf("unindexed warm %d vs %d", got, estimate)
+	}
+	tm.Points = []IndexPoint{{Offset: estimate - (190 << 20), Time: at - 23*time.Second}, {Offset: estimate + (50 << 20), Time: at + 6*time.Second}}
+	estimate = tm.OffsetAt(at)
+	if got := tm.WarmOffsetAt(at); got < estimate-(4<<20) || got > estimate {
+		t.Fatalf("sparse warm %d vs %d", got, estimate)
+	}
+	tm.Points = []IndexPoint{{Offset: estimate - (8 << 20), Time: at - time.Second}}
+	if got := tm.WarmOffsetAt(at); got != tm.Points[0].Offset {
+		t.Fatalf("nearby indexed keyframe padded: %d", got)
+	}
+}

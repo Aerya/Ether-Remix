@@ -2,6 +2,7 @@ package nzb
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -170,6 +171,127 @@ func TestNameFromSubject(t *testing.T) {
 		if got := NameFromSubject(subj); got != want {
 			t.Errorf("NameFromSubject(%q) = %q, want %q", subj, got, want)
 		}
+	}
+}
+
+func TestNameFromSubjectRealWorldUnquoted(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject string
+		want    string
+	}{
+		{
+			name:    "quoted with spaces",
+			subject: `"Concert Recording 2019 Full Show.mkv" yEnc (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "unquoted with spaces and segment counter",
+			subject: `Concert Recording 2019 Full Show.mkv (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "unquoted with spaces and hyphen in title",
+			subject: `Some Show - Episode Title 1080p.mp4 yEnc (1/50)`,
+			want:    "Some Show - Episode Title 1080p.mp4",
+		},
+		{
+			name:    "unquoted with parens and bracket tag",
+			subject: `My Holiday Video (Part 2) [Extended].mp4 yEnc (1/80)`,
+			want:    "My Holiday Video (Part 2) [Extended].mp4",
+		},
+		{
+			name:    "leading bracket counter with dash",
+			subject: `[1/50] - name.ext yEnc (1/50)`,
+			want:    "name.ext",
+		},
+		{
+			name:    "leading bracket counter with spaces in filename",
+			subject: `[01/42] - Concert Recording 2019 Full Show.mkv yEnc (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "leading counter with spaces in multipart rar",
+			subject: `[03/20] - Some Show - Episode Title.part03.rar yEnc (1/50)`,
+			want:    "Some Show - Episode Title.part03.rar",
+		},
+		{
+			name:    "post title and mid counter before unquoted filename",
+			subject: `Movie 2024 [03/42] - Movie 2024 Part 3.r01 yEnc (12/50)`,
+			want:    "Movie 2024 Part 3.r01",
+		},
+		{
+			name:    "leading paren counter and of wording",
+			subject: `(01 of 10) - Artist Name - 01 Track Title.flac yEnc (1/20)`,
+			want:    "Artist Name - 01 Track Title.flac",
+		},
+		{
+			name:    "bare leading counter without brackets",
+			subject: `01/10 - Concert Recording 2019.7z.001 yEnc (1/50)`,
+			want:    "Concert Recording 2019.7z.001",
+		},
+		{
+			name:    "reply prefix plus counter and size noise",
+			subject: `Re: [01/10] - Concert Recording 2019 Full Show.mkv - 1.2 GB - yEnc (1/50)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "mid-title of wording is preserved",
+			subject: `Book 1 of 3 - The Beginning.epub yEnc (1/5)`,
+			want:    "Book 1 of 3 - The Beginning.epub",
+		},
+		{
+			name:    "mid-title size token is preserved",
+			subject: `Linux Live 4GB Edition.iso yEnc (1/50)`,
+			want:    "Linux Live 4GB Edition.iso",
+		},
+		{
+			name:    "embedded dotted codec bracket does not steal unquoted filename",
+			subject: `Show Name [H.264] [1080p].mkv yEnc (1/50)`,
+			want:    "Show Name [H.264] [1080p].mkv",
+		},
+		{
+			name:    "yEnc with byte size before segment counter",
+			subject: `Concert Recording 2019 Full Show.mkv yEnc 52428800 (1/120)`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "segment counter before yEnc",
+			subject: `Concert Recording 2019 Full Show.mkv (1/120) yEnc`,
+			want:    "Concert Recording 2019 Full Show.mkv",
+		},
+		{
+			name:    "plain filename ending in digits without yEnc trailer",
+			subject: `Concert Recording 2019.mp4`,
+			want:    "Concert Recording 2019.mp4",
+		},
+		{
+			name:    "plain 7z split without yEnc trailer",
+			subject: `Concert Recording 2019.7z.001`,
+			want:    "Concert Recording 2019.7z.001",
+		},
+		{
+			name:    "standalone bracketed filename still extracted",
+			subject: `[#a.b.moovee@EFNet]-[FULL]-[Movie.2024.part01.rar] yEnc (1/50)`,
+			want:    "Movie.2024.part01.rar",
+		},
+		{
+			name:    "second quote with known extension beats dotted first quote",
+			subject: `Post "Mr. Smith" - "Movie.2024.mkv" yEnc (1/50)`,
+			want:    "Movie.2024.mkv",
+		},
+		{
+			name:    "trailing promo domain does not override real extension",
+			subject: `Concert Recording 2019.mkv - Visit Site.com yEnc (1/50)`,
+			want:    "Concert Recording 2019.mkv",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NameFromSubject(tc.subject); got != tc.want {
+				t.Errorf("NameFromSubject(%q) = %q, want %q", tc.subject, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -364,6 +486,15 @@ func TestGroupSetsZSplit(t *testing.T) {
 	if !reflect.DeepEqual(names, []string{"Pack.z01", "Pack.z02", "Pack.zip"}) {
 		t.Fatalf("order = %v, want [Pack.z01 Pack.z02 Pack.zip]", names)
 	}
+
+	// Missing closing .zip volume must mark the WinZip split set incomplete.
+	incomplete := GroupSets([]*File{
+		fileNamed("Pack.z01", 100),
+		fileNamed("Pack.z02", 100),
+	})
+	if len(incomplete) != 1 || incomplete[0].Complete() || !reflect.DeepEqual(incomplete[0].Missing, []int{2}) {
+		t.Fatalf("zSplit without .zip = %+v, want Missing=[2]", incomplete)
+	}
 }
 
 // GroupSets used to renumber the files it was given, so grouping the same
@@ -486,5 +617,112 @@ func TestRejectsHostilePartCounts(t *testing.T) {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Fatal("accepted hostile sparse file")
 		}
+	}
+}
+
+func TestOldRARThreeDigitVolumes(t *testing.T) {
+	var files []*File
+	add := func(name string) {
+		files = append(files, &File{
+			Name:     name,
+			Info:     Classify(name),
+			Segments: []Segment{{Number: 1, Bytes: 1000, MessageID: name}},
+		})
+	}
+	add("The.Runner.2026.rar")
+	for i := 0; i <= 105; i++ {
+		if i < 100 {
+			add(fmt.Sprintf("The.Runner.2026.r%02d", i))
+		} else {
+			add(fmt.Sprintf("The.Runner.2026.r%03d", i))
+		}
+	}
+	sets := GroupSets(files)
+	if len(sets) != 1 {
+		t.Fatalf("got %d sets, want 1", len(sets))
+	}
+	s := sets[0]
+	if s.Kind != KindRAR || len(s.Volumes) != 107 || len(s.Missing) != 0 {
+		t.Fatalf("set = kind=%v vols=%d missing=%v", s.Kind, len(s.Volumes), s.Missing)
+	}
+	if s.Volumes[101].Name != "The.Runner.2026.r100" || s.Volumes[106].Name != "The.Runner.2026.r105" {
+		t.Fatalf("tail volumes = %q .. %q", s.Volumes[101].Name, s.Volumes[106].Name)
+	}
+}
+
+func TestEstimatedDecodedBytes(t *testing.T) {
+	empty := &File{}
+	if got := empty.EstimatedDecodedBytes(); got != 0 {
+		t.Fatalf("empty EstimatedDecodedBytes = %d, want 0", got)
+	}
+	tiny := &File{Segments: []Segment{{Number: 1, Bytes: 1}}}
+	if got := tiny.EstimatedDecodedBytes(); got != 1 {
+		t.Fatalf("tiny EstimatedDecodedBytes = %d, want 1", got)
+	}
+	// Typical 30 MiB FLAC posted as ~3.1% larger yEnc segments (~31.4 MiB encoded).
+	const encoded = int64(31_457_280)
+	f := &File{Segments: []Segment{
+		{Number: 1, Bytes: encoded / 2},
+		{Number: 2, Bytes: encoded - encoded/2},
+	}}
+	est := f.EstimatedDecodedBytes()
+	if est <= 0 || est >= f.Bytes() {
+		t.Fatalf("EstimatedDecodedBytes = %d, encoded Bytes = %d", est, f.Bytes())
+	}
+	// ~3.1% overhead removed: est should be roughly 96.5%..97.5% of encoded bytes.
+	if est < encoded*965/1000 || est > encoded*975/1000 {
+		t.Fatalf("EstimatedDecodedBytes = %d out of expected ~97%% band for %d", est, encoded)
+	}
+}
+
+func TestSubsetPreservesSubjectNameAcrossReencoding(t *testing.T) {
+	raw := []byte(`<nzb>` +
+		`<file poster="p" date="1" subject="Other.File.mkv (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">id0@x</segment></segments></file>` +
+		`<file poster="p" date="1" subject="Some Show Episode Title 4k.mp4 (1/2)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">id1@x</segment></segments></file>` +
+		`<file poster="p" date="1" subject="&quot;a1b2c3d4e5f6a1b2c3d4e5f6&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">id2@x</segment></segments></file>` +
+		`</nzb>`)
+	doc, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Un-renamed NZBs should not emit ether-subject-names metadata.
+	plain, ok := doc.Subset(func(*File) bool { return true })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+	if strings.Contains(string(plain), MetaSubjectNames) {
+		t.Fatalf("unexpected %s in un-renamed subset:\n%s", MetaSubjectNames, plain)
+	}
+
+	// Simulate learned names diverging from original subject names.
+	doc.Files[1].Name = "4k.mp4"
+	doc.Files[2].Name = "01 - Hidden.flac"
+	doc.Files[2].Obfuscated = false
+
+	// Subset dropping index 0 must remap subject-names indices cleanly.
+	sub, ok := doc.Subset(func(f *File) bool { return f.Index >= 1 })
+	if !ok {
+		t.Fatal("Subset failed")
+	}
+	reparsed, err := Parse(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reparsed.Files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(reparsed.Files))
+	}
+	// File 0 (was 1): learned Name="4k.mp4", preserved SubjectName="Some Show Episode Title 4k.mp4".
+	if reparsed.Files[0].Name != "4k.mp4" || reparsed.Files[0].OriginalName() != "Some Show Episode Title 4k.mp4" {
+		t.Fatalf("file 0 = name=%q orig=%q", reparsed.Files[0].Name, reparsed.Files[0].OriginalName())
+	}
+	if got := reparsed.Files[0].StableName(); got != "Some Show Episode Title 4k.mp4" {
+		t.Fatalf("non-obfuscated StableName = %q, want subject name", got)
+	}
+	// File 1 (was 2): obfuscated subject -> StableName uses learned name.
+	if reparsed.Files[1].Name != "01 - Hidden.flac" || reparsed.Files[1].OriginalName() != "a1b2c3d4e5f6a1b2c3d4e5f6" {
+		t.Fatalf("file 1 = name=%q orig=%q", reparsed.Files[1].Name, reparsed.Files[1].OriginalName())
+	}
+	if got := reparsed.Files[1].StableName(); got != "01 - Hidden.flac" {
+		t.Fatalf("obfuscated StableName = %q, want learned name", got)
 	}
 }

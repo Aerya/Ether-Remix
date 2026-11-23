@@ -158,6 +158,16 @@ func secretIn(m map[string]any, parent, k string) bool {
 			return true
 		}
 	}
+	if strings.EqualFold(k, "value") {
+		if name, ok := m["name"].(string); ok {
+			if strings.EqualFold(parent, "headers") && SensitiveHeader(name) {
+				return true
+			}
+			if strings.EqualFold(parent, "params") && SensitiveParam(name) {
+				return true
+			}
+		}
+	}
 	return false
 }
 

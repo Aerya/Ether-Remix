@@ -43,8 +43,8 @@ func titleDTO(t frontend.Title, state frontend.WatchStatus) map[string]any {
 	if t.Type == "movie" || t.Type == "episode" {
 		out["play_content_id"] = id
 	}
-	// Captured silo-apple and silo-android home cards carry progress only in
-	// user_state. Position and duration belong on the item user_data rollup.
+	// Progress is not part of a title: in-progress home cards add it
+	// (sectionCards), and item pages carry it on the user_data rollup.
 	if t.ShowKey != 0 {
 		out["series_id"] = ids.RatingKeyGUID(t.ShowKey)
 		out["series_title"] = t.ShowTitle
@@ -105,6 +105,39 @@ func (i *instance) rememberedLiveCard(channelGUID string) (liveChannelCardMeta, 
 	defer i.liveMu.Unlock()
 	meta, ok := i.liveCards[channelGUID]
 	return meta, ok
+}
+
+// paintLiveCardArtwork gives On Now cards their channel's artwork, the same
+// grant the channel's detail page issues. Without it every live card was a
+// blank tile with a TV glyph.
+func (i *instance) paintLiveCardArtwork(r *http.Request, v *frontend.Viewer, credential string, items []any) {
+	if i.host.ImageGrants == nil || i.host.LiveTV == nil {
+		return
+	}
+	prefix := i.pathPrefix(r)
+	for _, raw := range items {
+		card, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		guid, _ := card["content_id"].(string)
+		ch, err := i.host.LiveTV.ResolveChannelGUID(r.Context(), v, guid)
+		if err != nil || ch.ID == "" {
+			continue
+		}
+		for _, img := range ch.Images {
+			if img.Path == "" {
+				continue
+			}
+			grant, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: credential, Device: device(r), Channel: ch.ID, Image: img})
+			if err != nil || grant == "" {
+				continue
+			}
+			path := prefix + "/api/v2/images/" + grant
+			card["backdrop_url"], card["poster_url"] = path, path
+			break
+		}
+	}
 }
 
 func (i *instance) buildLiveChannelCards(row frontend.Row) []any {
@@ -235,6 +268,52 @@ func (i *instance) views(w http.ResponseWriter, r *http.Request) {
 	}
 	reply(w, 200, map[string]any{"items": items})
 }
+
+// pluginLibraryRows serves a plugin library's own rows (as Vela's library
+// page does). The shared library placement does not know plugin views, so
+// without this a plugin library's tab answered 503 and the app showed it as
+// empty. ok is false for ordinary libraries.
+func (i *instance) pluginLibraryRows(r *http.Request, v *frontend.Viewer, placement frontend.Placement, view string, limit int) ([]frontend.Row, bool, error) {
+	if placement != frontend.PlacementLibrary || view == "" {
+		return nil, false, nil
+	}
+	reader, ok := i.host.Experience.(frontend.PluginLibraryRowsReader)
+	if !ok {
+		return nil, false, nil
+	}
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		return nil, false, nil
+	}
+	plugin := false
+	for _, candidate := range views {
+		if candidate.ID == view {
+			plugin = candidate.PluginID != "" || candidate.KindKey != ""
+			break
+		}
+	}
+	if !plugin {
+		return nil, false, nil
+	}
+	rows, err := reader.PluginLibraryRows(r.Context(), v, device(r), view)
+	if err != nil {
+		return nil, true, err
+	}
+	if limit > 0 {
+		for n := range rows {
+			if len(rows[n].Items) > limit {
+				rows[n].Items = rows[n].Items[:limit]
+				rows[n].More = true
+			}
+			if len(rows[n].Entries) > limit {
+				rows[n].Entries = rows[n].Entries[:limit]
+				rows[n].More = true
+			}
+		}
+	}
+	return rows, true, nil
+}
+
 func (i *instance) logSectionError(stage string, placement frontend.Placement, view, row string, err error) {
 	if i.host.Log != nil {
 		i.host.Log.Warn("silo section unavailable", "stage", stage, "placement", placement, "view", view, "row", row, "err", err)
@@ -252,7 +331,11 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(frontend.WithRequestMemo(r.Context()))
-	cacheKey := siloSectionKey(v, device(r), r.URL.RequestURI())
+	var configGen uint64
+	if i.host.PageFreshness != nil {
+		configGen = i.host.PageFreshness().Config
+	}
+	cacheKey := siloSectionKey(v, configGen, device(r), r.URL.RequestURI())
 	if cached, ok := i.cachedSections(cacheKey); ok {
 		reply(w, 200, map[string]any{"sections": cached})
 		return
@@ -281,6 +364,8 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 	var rows []frontend.Row
 	if view == nowAvailableLibraryID {
 		rows, err = i.snapshotHome(r, v, limit)
+	} else if pluginRows, ok, e := i.pluginLibraryRows(r, v, placement, view, limit); ok {
+		rows, err = pluginRows, e
 	} else {
 		rows, err = i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: device(r), Placement: placement, ViewID: view, Limit: limit})
 	}
@@ -320,6 +405,7 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		var e error
 		if row.Purpose == frontend.RowLive {
 			items = i.buildLiveChannelCards(row)
+			i.paintLiveCardArtwork(r, v, credential, items)
 			if len(items) == 0 {
 				continue
 			}
@@ -348,7 +434,11 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 			id = base + ":" + strconv.Itoa(seen[base])
 		}
 		used[id] = true
-		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": row.Promoted, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
+		// The app shows a library tab's featured sections only in its hero,
+		// so a library whose rows were all promoted rendered as "Movies is
+		// empty". Featured is a Home distinction.
+		featured := row.Promoted && placement != frontend.PlacementLibrary
+		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": featured, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
 		if !row.More {
 			section["total_count"] = len(items)
 		}
@@ -367,12 +457,12 @@ type siloSectionPage struct {
 	sections []any
 }
 
-func siloSectionKey(v *frontend.Viewer, dev frontend.Device, uri string) string {
+func siloSectionKey(v *frontend.Viewer, configGen uint64, dev frontend.Device, uri string) string {
 	id := int64(0)
 	if v != nil {
 		id = v.ID
 	}
-	return strconv.FormatInt(id, 10) + "\n" + dev.ID + "\n" + uri
+	return strconv.FormatInt(id, 10) + "\n" + strconv.FormatUint(configGen, 10) + "\n" + dev.ID + "\n" + uri
 }
 
 func (i *instance) cachedSections(key string) ([]any, bool) {
@@ -596,10 +686,7 @@ func (i *instance) liveChannelDetail(w http.ResponseWriter, r *http.Request, v *
 		out["content_rating"] = contentrating.Prefixed(contentRating)
 	}
 	if i.host.ImageGrants != nil {
-		prefix := ""
-		if r.Context().Value(sharedPrefix{}) != nil {
-			prefix = "/silo"
-		}
+		prefix := i.pathPrefix(r)
 		for _, img := range ch.Images {
 			if img.Path == "" {
 				continue
@@ -641,7 +728,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	d, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	d, err := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), key), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
 	if err != nil {
 		notFound(w)
 		return
@@ -674,7 +761,9 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 			credit["person_id"] = id
 		}
 		if p.TMDB > 0 {
-			credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+			if !frontend.IsPluginPersonID(p.TMDB) {
+				credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+			}
 			if portrait := portraits[p.TMDB]; portrait.url != "" {
 				credit["photo_url"] = portrait.url
 				if portrait.thumbHash != "" {
@@ -695,7 +784,9 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 				credit["person_id"] = id
 			}
 			if p.TMDB > 0 {
-				credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+				if !frontend.IsPluginPersonID(p.TMDB) {
+					credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+				}
 				if portrait := portraits[p.TMDB]; portrait.url != "" {
 					credit["photo_url"] = portrait.url
 					if portrait.thumbHash != "" {
@@ -772,7 +863,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 	out["versions"] = []any{}
 	if (d.Title.Type == "movie" || d.Title.Type == "episode") && i.host.Sessions != nil && i.host.Capabilities != nil {
 		dev := device(r)
-		capability, e := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: dev.ID, Product: dev.Client, Version: dev.Version}, UserAgent: r.UserAgent()})
+		capability, e := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "silo", ClientID: dev.ID, Product: dev.Client, Platform: dev.Platform, Version: dev.Version, DeviceName: dev.DeviceName}, UserAgent: r.UserAgent()})
 		if warmer, ok := i.host.Sessions.(frontend.DetailWarmer); ok && e == nil {
 			// The broker warms with this device's last declared play caps,
 			// never these generic ones (which supply network locality only).

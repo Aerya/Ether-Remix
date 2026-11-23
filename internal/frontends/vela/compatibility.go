@@ -5,7 +5,8 @@ import (
 	"strings"
 )
 
-// The supported interval is >=0.1.0 <0.2.0. Validate full semver syntax before
+// The supported interval is >=0.1.0 <0.3.0: 0.1.x is the web client and
+// 0.2.x the React Native client, both on /vela/v0. Validate full semver syntax before
 // comparing its relevant components; build metadata never changes precedence.
 var buildVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
 
@@ -28,8 +29,11 @@ func compatibleBuild(version string) bool {
 	if parts[1] != "0" {
 		return false
 	}
-	if parts[2] == "1" {
+	switch parts[2] {
+	case "1":
 		return parts[3] != "0" || prerelease == ""
+	case "2":
+		return true
 	}
-	return parts[2] == "2" && parts[3] == "0" && prerelease != ""
+	return parts[2] == "3" && parts[3] == "0" && prerelease != ""
 }

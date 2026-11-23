@@ -8,7 +8,7 @@ import "fmt"
 // it again. Return false when the installed FFmpeg lacks the complete graph;
 // planVideo then retains the software-filter path (including subtitle burn-in).
 func gpuPipeline(s runSpec, accel string, w, h int, toneMap, tenBit, burn bool) (input, filters []string, ok bool) {
-	if burn || w <= 0 || h <= 0 {
+	if burn || !s.canGPUDecode() || w <= 0 || h <= 0 {
 		return nil, nil, false
 	}
 	format := "nv12"
@@ -18,12 +18,6 @@ func gpuPipeline(s runSpec, accel string, w, h int, toneMap, tenBit, burn bool) 
 	switch accel {
 	case AccelNVENC:
 		if toneMap && tenBit && !s.Features.cudaP010ToneMap {
-			return nil, nil, false
-		}
-		// H.264 High 10 is not decoded by the validated pre-Blackwell
-		// NVDEC devices. Keep software decoding/filtering with NVENC
-		// encoding instead of launching an unusable CUDA frame graph.
-		if v := s.Info.Video(); v != nil && v.Codec == "h264" && v.BitDepth > 8 {
 			return nil, nil, false
 		}
 		if !s.Features.hwaccels["cuda"] || !s.Features.hasFilter("scale_cuda") || (toneMap && !s.Features.hasFilter("tonemap_cuda")) {
@@ -60,10 +54,14 @@ func gpuPipeline(s runSpec, accel string, w, h int, toneMap, tenBit, burn bool) 
 		if !s.Features.hwaccels["qsv"] || !s.Features.hasFilter("vpp_qsv") {
 			return nil, nil, false
 		}
-		// Hardware VPP tone mapping is driver-dependent. Keep the existing
-		// software HDR path until the device has been validated for it.
 		if toneMap {
-			return nil, nil, false
+			if tenBit || s.Accel.NoGPUTonemap || s.Features.qsvToneMap == nil {
+				return nil, nil, false
+			}
+			if v := s.Info.Video(); v != nil && v.DolbyVision && v.DolbyVisionProfile == 5 {
+				return nil, nil, false
+			}
+			return qsvToneMapGraph(s.Features.qsvToneMap.method(s.Accel, s.Features, s.waitDecode), s.Accel.Device, w, h)
 		}
 		input = []string{"-hwaccel", "qsv", "-hwaccel_output_format", "qsv"}
 		filters = []string{fmt.Sprintf("vpp_qsv=w=%d:h=%d:format=%s", w, h, format)}

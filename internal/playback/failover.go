@@ -19,6 +19,17 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
+type deferGenerationFillsKey struct{}
+
+func withDeferredGenerationFills(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deferGenerationFillsKey{}, true)
+}
+
+func generationFillsDeferred(ctx context.Context) bool {
+	v, _ := ctx.Value(deferGenerationFillsKey{}).(bool)
+	return v
+}
+
 // errSourceBroken marks a release whose articles went missing while it was
 // being opened or probed.
 var errSourceBroken = fmt.Errorf("playback: source broken: %w", core.ErrArticleMissing)
@@ -46,8 +57,18 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 	}
 	if res == nil {
 		res = m.resumeResolution(ctx, s.ident.userID, s.ident.key, profile, s.caps, original)
-		if res != nil && prefer != "" && !res.MatchesVersion(prefer) {
-			res = nil // a picked version wins over the remembered release
+		if res != nil {
+			if prefer != "" && !isAutoVersionSelector(prefer) {
+				if !res.MatchesVersion(prefer) {
+					res = nil // a picked version wins over the remembered release
+				}
+			} else if core.IsExplicitVersionSlotSelector(res.VersionSelector) {
+				// An explicit non-Auto slot pick stays behind its own version slot
+				// instead of replacing Auto, unless promoted by a remembered choice.
+				if reader, ok := m.deps.Resolver.(viewerChoiceReader); !ok || s.title == nil || reader.ActiveViewerChoiceRelease(core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: prefer}) != res.Release.ID {
+					res = nil
+				}
+			}
 		}
 		if res != nil {
 			fromResume = true
@@ -61,7 +82,52 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 			}
 		}
 	}
-	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
+	// For a new quality request, look for an HD source matching the output
+	// before reusing an oversized stored source. Active sessions are reused by
+	// prepareOwnedWithin before this path; explicit picks remain authoritative.
+	if res != nil && prefer == "" && s.caps.PreferredSourceHeight >= 720 && (res.Release.Info.Height == 0 || res.Release.Info.Height > s.caps.PreferredSourceHeight) {
+		return nil, nil, false
+	}
+	if res != nil && prefer == "" && !s.caps.DefaultRemoteBitrate && s.caps.MaxBitrateKbps > 0 {
+		if cached != nil && cached.info.BitrateKbps > 0 {
+			if cached.info.BitrateKbps > s.caps.MaxBitrateKbps {
+				return nil, nil, false
+			}
+		} else {
+			dur := time.Duration(0)
+			if cached != nil && cached.info.Duration > 0 {
+				dur = cached.info.Duration
+			} else if s.title != nil {
+				dur = s.title.Runtime
+			}
+			if !sourceFitsBitrate(res.Release.Size, dur, 0, s.caps.MaxBitrateKbps) {
+				return nil, nil, false
+			}
+		}
+	}
+	if res != nil && m.videoOff(s.caps) {
+		if cached != nil {
+			if _, needs := m.probedNeedsVideoTranscode(cached.info, s.caps); needs {
+				return nil, nil, false
+			}
+		} else {
+			capKbps := s.caps.MaxBitrateKbps
+			if capKbps <= 0 && s.caps.Remote {
+				capKbps = m.config().Transcode.RemoteMaxBitrateKbps
+			}
+			dur := time.Duration(0)
+			if s.title != nil {
+				dur = s.title.Runtime
+			}
+			if !rememberedCodecCurrent(res.Release, s.caps) || !sourceFitsBitrate(res.Release.Size, dur, 0, capKbps) {
+				return nil, nil, false
+			}
+		}
+	}
+	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || !m.rememberedChoiceAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
+		return nil, nil, false
+	}
+	if res != nil && core.IsExplicitVersionSlotSelector(prefer) && m.isReleaseStale(s.ident.key, res.Release.ID) {
 		return nil, nil, false
 	}
 	if res != nil && (!m.rememberedReleaseMatchesTitle(ctx, res.Release, s.title) || !payloadMatchesTitle(res.NZB, s.title)) {
@@ -83,33 +149,30 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	if s.title != nil {
 		original = s.title.Language
 	}
+	isSlot := core.IsExplicitVersionSlotSelector(s.prefer)
 	res, cached, fromResume := m.preparedResolution(ctx, s, profile, original, s.prefer)
 	if res != nil && s.prefer == "" && m.verifiedFilesFirst() && isAddonStream(res.Release) {
-		// A warm-up or resume on an add-on stream was made without the
-		// verified file that may lead now: rank afresh (verified_first.go).
-		m.log.Info("remembered choice is an add-on stream; ranking afresh for a verified file", "key", s.ident.key, "release", res.Release.ID)
 		res, cached, fromResume = nil, nil, false
 	}
-	if res == nil && s.prefer != "" && !s.exact {
+	if res == nil && s.prefer != "" && !s.exact && !isSlot {
 		if auto, facts, remembered := m.preparedResolution(ctx, s, profile, original, ""); auto != nil {
 			// Resolve only the explicit pick. Resolving a fresh automatic
 			// fallback would health-check a source we then discard in favour
 			// of the already checked remembered source below.
-			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true})
+			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true, PlayedRelease: auto.Release.ID})
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			if err == nil && pick != nil && pick.MatchesVersion(s.prefer) {
 				res = pick
 			} else if err == nil || errors.Is(err, core.ErrNotAvailable) {
-				if m.verifiedFilesFirst() && isAddonStream(auto.Release) {
-					// The remembered choice (warm-up or resume) is an add-on
-					// stream, made before a verified file could lead: rank
-					// afresh below instead of replaying it (verified_first.go).
-					m.log.Info("remembered choice is an add-on stream; ranking afresh for a verified file", "key", s.ident.key, "release", auto.Release.ID)
-				} else {
+				if !m.verifiedFilesFirst() || !isAddonStream(auto.Release) {
 					res, cached, fromResume = auto, facts, remembered
-					m.notePreferenceStale(s.ident.key, s.prefer, auto.Release.ID)
+					reason := "picked version failed availability checks"
+					if err != nil {
+						reason = err.Error()
+					}
+					m.notePreferenceStale(ctx, s, auto.Release.ID, reason)
 				}
 			} else {
 				return nil, err
@@ -117,12 +180,14 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		}
 	}
 	var (
-		tried             []string
-		alternates        []core.Release
-		lastErr           error
-		fallbackGen       *generation
-		fallbackBurned    bool
-		wrongContentSkips int
+		tried              []string
+		audioRejected      []core.Release
+		alternates         []core.Release
+		lastErr            error
+		fallbackGen        *generation
+		fallbackBurned     bool
+		wrongContentSkips  int
+		unknownAudioProbes int
 		// allUncached: every release that failed to open was a torrent
 		// no debrid account could serve (uncached, blocked, add refused).
 		allUncached = true
@@ -136,57 +201,186 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			m.dropGeneration(fallbackGen)
 		}
 	}()
+	rt := newRuntimeTracker(func(g *generation, res *core.Resolution) bool {
+		info := g.infoSnapshot()
+		if m.videoOff(s.caps) {
+			if _, needs := m.probedNeedsVideoTranscode(info, s.caps); needs {
+				return false
+			}
+		}
+		if s.caps.BroadcastBitrateKbps > 0 {
+			file := res.Release
+			file.Size, file.Info.FullSeason = info.Size, false
+			if video := info.Video(); video != nil && video.Height > file.Info.Height {
+				file.Info.Height = video.Height
+			}
+			if !m.channelSourceAllowed(s, file) {
+				return false
+			}
+		}
+		if m.knownHardSubbed(ctx, g) && m.hardSubtitleBlocked(ctx, res.Release) {
+			return false
+		}
+		if s.prefer == "" && probedRequiredAudioRejection(profile, s.title, res.Release, info, false) != "" {
+			return false
+		}
+		return true
+	})
+	defer rt.close(m)
+	adoptInitial := func(g *generation, extraTried ...string) (*generation, error) {
+		rt.commitPendingRejections(m.ctx, m, s)
+		s.mu.Lock()
+		s.tried = append(s.tried, tried...)
+		s.tried = append(s.tried, extraTried...)
+		s.mu.Unlock()
+		m.startGenerationFills(g)
+		return g, nil
+	}
+	adoptRuntimeFallback := func(extraTried ...string) (*generation, error) {
+		g, fRes, med, disagree, ok := rt.takeFallback()
+		if !ok {
+			return nil, nil
+		}
+		m.recordConsensusRuntime(m.ctx, s.title, med)
+		for _, r := range disagree {
+			if err := m.RejectRelease(m.ctx, s.title.Key, r); err != nil {
+				m.log.Debug("persist runtime rejection failed", "key", s.title.Key, "release", r.ID, "err", err)
+			}
+			m.rememberOpenFailure(s, r, core.ErrReleaseRejected)
+		}
+		m.log.Info("probed runtime consensus overrides catalogue runtime",
+			"session", s.id, "release", fRes.Release.Name, "consensus", med, "catalogue", s.title.Runtime, "fallback", true)
+		return adoptInitial(g, extraTried...)
+	}
 	fallback := func(size int64) core.MediaInfo {
 		info := EstimateInfo(s.title, s.caps, profile)
 		info.Size = size
 		return info
 	}
-	for attempt := 0; attempt < m.failoverAttempts(); attempt++ {
+	if res != nil {
+		msg := "Reused prepared release " + releaseLabel(res.Release)
+		if fromResume {
+			msg = "Reused remembered release " + releaseLabel(res.Release)
+		}
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "resolve",
+			Level:   "info",
+			Message: msg,
+			Detail:  timelineCandidateDetail(res.Release, len(res.Alternates)),
+		})
+	}
+	openCtx := withDeferredGenerationFills(ctx)
+	if !s.exact {
+		openCtx = withRuntimeTracker(openCtx, rt)
+	}
+	const maxMoreCandidatePasses = 8
+	morePasses := 0
+	for attempt := 0; m.attemptAllowed(attempt) && ctx.Err() == nil; attempt++ {
+		if res == nil && attempt > 0 && !s.exact && (s.prefer == "" || isSlot) && m.deps.FetchNZB != nil &&
+			s.caps.BroadcastReadyRelease == "" && !s.isKind() && fallbackGen == nil && len(alternates) >= 2 {
+			maxBudget := 0
+			if m.failoverAttempts() > 0 {
+				maxBudget = m.failoverAttempts() - attempt
+			}
+			out := m.raceInitialAlternates(openCtx, s, profile, tried, audioRejected, alternates, fallback, failoverRaceWidth, maxBudget)
+			tried = append(tried, out.failed...)
+			if isSlot {
+				reason := "failed to open during picked version failover"
+				if out.lastErr != nil {
+					reason = out.lastErr.Error()
+				}
+				for _, failedID := range out.failed {
+					m.noteStaleRelease(s.ident.key, failedID, s.title, "", reason)
+				}
+			}
+			audioRejected = append(audioRejected, out.audioRejected...)
+			alternates = out.remaining
+			if out.g != nil {
+				return adoptInitial(out.g)
+			}
+			if out.fallbackGen != nil {
+				fallbackGen = out.fallbackGen
+				fallbackBurned = out.fallbackBurned
+			}
+			if ctx.Err() != nil {
+				break
+			}
+			if out.attempted > 0 {
+				allUncached = allUncached && out.allUncached
+				if out.lastErr != nil {
+					lastErr = out.lastErr
+				}
+				attempt += out.attempted - 1
+				continue
+			}
+		}
 		if res == nil {
 			fromResume = false
 			var err error
-			res, err = m.nextResolution(ctx, s, tried, alternates)
-			if err == nil && len(tried) == 0 && s.prefer != "" && !s.exact && !res.MatchesVersion(s.prefer) {
+			res, err = m.nextResolutionTracking(ctx, s, &tried, audioRejected, alternates)
+			if err == nil && len(tried) == 0 && s.prefer != "" && !s.exact && !isSlot && !res.MatchesVersion(s.prefer) {
 				// The picked version fell back to normal ranking. Play the
 				// automatic choice the warm-up (or resume) already holds, so
 				// the opening prefetch is not wasted on another release, and
 				// stop asking for the pick on every open.
-				m.notePreferenceStale(s.ident.key, s.prefer, res.Release.ID)
 				if auto, autoCached, autoResume := m.preparedResolution(ctx, s, profile, original, ""); auto != nil && !m.verifiedFileOutranks(res.Release, auto.Release) {
 					res, cached, fromResume = auto, autoCached, autoResume
 				}
+				m.notePreferenceStale(ctx, s, res.Release.ID, "picked version was unavailable; resolver selected Auto")
 			}
 			if err != nil {
-				if fallbackGen != nil {
-					g := fallbackGen
-					fallbackGen = nil
-					s.mu.Lock()
-					s.tried = append(s.tried, tried...)
-					s.mu.Unlock()
-					return g, nil
+				if errors.Is(err, core.ErrMoreCandidates) && ctx.Err() == nil && morePasses < maxMoreCandidatePasses {
+					morePasses++
+					alternates = nil
+					attempt--
+					continue
+				}
+				if !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
+					if fallbackGen != nil {
+						g := fallbackGen
+						fallbackGen = nil
+						return adoptInitial(g)
+					}
+					if g, aerr := adoptRuntimeFallback(); g != nil || aerr != nil {
+						return g, aerr
+					}
 				}
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
+				rt.commitPendingRejections(m.ctx, m, s)
 				if errors.Is(lastErr, frontend.ErrTrackSourceUnavailable) {
 					return nil, lastErr
 				}
 				if lastErr != nil && errors.Is(err, core.ErrNotAvailable) {
+					if errors.Is(err, core.ErrVideoTranscodingDisabled) {
+						return nil, err
+					}
+					var reqLang *core.RequiredAudioLanguageError
+					if errors.As(err, &reqLang) {
+						return nil, err
+					}
+					if errors.Is(lastErr, core.ErrVideoTranscodingDisabled) {
+						return nil, fmt.Errorf("%w: %w", err, core.ErrVideoTranscodingDisabled)
+					}
+					if errors.As(lastErr, &reqLang) {
+						return nil, fmt.Errorf("%w: %w", err, reqLang)
+					}
 					if errors.Is(lastErr, core.ErrDebridAuth) {
-						return nil, fmt.Errorf("%w (last failure: %v): %w", err, lastErr, core.ErrDebridAuth)
+						return nil, fmt.Errorf("%w: every release failed (%d tried) (last failure: %v): %w", err, len(tried), lastErr, core.ErrDebridAuth)
 					}
 					if errors.Is(lastErr, core.ErrDebridQuota) {
-						return nil, fmt.Errorf("%w (last failure: %v): %w", err, lastErr, core.ErrDebridQuota)
+						return nil, fmt.Errorf("%w: every release failed (%d tried) (last failure: %v): %w", err, len(tried), lastErr, core.ErrDebridQuota)
 					}
 					if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, core.ErrNoSources) {
 						switch {
 						case errors.Is(lastErr, context.DeadlineExceeded):
-							return nil, fmt.Errorf("%w: %w", err, context.DeadlineExceeded)
+							return nil, fmt.Errorf("%w: every release failed (%d tried) (last failure: %v): %w", err, len(tried), lastErr, context.DeadlineExceeded)
 						case errors.Is(lastErr, core.ErrSourceUnavailable), errors.Is(lastErr, core.ErrArticleMissing), errors.Is(lastErr, core.ErrArticleCorrupt), errors.Is(lastErr, core.ErrReleaseRejected):
-							return nil, fmt.Errorf("%w: %w", err, core.ErrSourceUnavailable)
+							return nil, fmt.Errorf("%w: every release failed (%d tried) (last failure: %v): %w", err, len(tried), lastErr, core.ErrSourceUnavailable)
 						}
 					}
-					return nil, fmt.Errorf("%w (last failure: %v)", err, lastErr)
+					return nil, fmt.Errorf("%w: every release failed (%d tried) (last failure: %v)", err, len(tried), lastErr)
 				}
 				return nil, err
 			}
@@ -212,10 +406,11 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if s.exact && !res.MatchesVersion(s.prefer) {
 			return nil, fmt.Errorf("%w: %w", core.ErrNotAvailable, core.ErrSourceChanged)
 		}
+		s.setAlternateMeta(res.VersionSelector, res.QualityFallback)
 		if len(res.NZB) > 0 {
 			res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
 		}
-		if m.titleReleaseRejected(ctx, s.ident.key, res.Release) {
+		if m.titleReleaseRejected(ctx, s.ident.key, res.Release) || (!s.exact && s.prefer == "" && audioExcluded(audioRejected, res.Release)) {
 			tried = append(tried, res.Release.ID)
 			alternates = res.Alternates
 			res, cached, fromResume = nil, nil, false
@@ -232,7 +427,51 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if cached == nil {
 			cached = m.persistedProbe(ctx, s.ident.userID, s.ident.key, res.Release.ID, res.NZB)
 		}
-		g, err := m.openGeneration(ctx, s, res, fallback, cached)
+		needsAudioProbe := false
+		if !s.exact && m.ownerPinAllows(s, "") {
+			if langs, unverified := candidateNeedsAudioVerification(profile, s.title, res.Release); unverified {
+				if unknownAudioProbes >= maxUnknownAudioProbes {
+					if reqLang := normalizedProfileLanguage(profile); reqLang != "" && strings.EqualFold(langs[0], reqLang) {
+						lastErr = &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+					} else {
+						lastErr = fmt.Errorf("audio is not in the profile's language (%s)", langs[0])
+					}
+					allUncached = false
+					tried = append(tried, res.Release.ID)
+					alternates = res.Alternates
+					res, cached, fromResume = nil, nil, false
+					continue
+				}
+				unknownAudioProbes++
+				needsAudioProbe = true
+			}
+		}
+		g, err := m.openGeneration(openCtx, s, res, fallback, cached)
+		if err == nil && m.videoOff(s.caps) {
+			if dec, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), s.caps); needs {
+				reason := core.ErrVideoTranscodingDisabled.Error()
+				if dec.Reason != "" {
+					reason += " (" + dec.Reason + ")"
+				}
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", reason)
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "info",
+					Message: "Skipped candidate " + releaseLabel(res.Release),
+					Detail:  reason,
+				})
+				m.dropGeneration(g)
+				if s.exact {
+					return nil, core.ErrVideoTranscodingDisabled
+				}
+				lastErr = core.ErrVideoTranscodingDisabled
+				allUncached = false
+				tried = append(tried, res.Release.ID)
+				alternates = res.Alternates
+				res, cached, fromResume = nil, nil, false
+				continue
+			}
+		}
 		if err == nil && fromResume && !s.exact && !rememberedInfoCodecCurrent(g.infoSnapshot(), s.caps) {
 			m.dropGeneration(g)
 			tried = append(tried, res.Release.ID)
@@ -250,36 +489,80 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			res, cached, fromResume = nil, nil, false
 			continue
 		}
-		if err == nil && !s.exact && s.prefer == "" && (burned || !m.probedAudioAcceptable(s, profile, g.infoSnapshot())) {
-			reason := "probed release lacks viewer audio language"
-			if burned {
-				reason = "burned-in subtitles detected"
-			}
-			m.log.Info("trying next candidate", "release", res.Release.Name, "reason", reason)
-			if fallbackGen == nil || fallbackBurned && !burned {
-				if fallbackGen != nil {
-					m.dropGeneration(fallbackGen)
-				}
-				fallbackGen = g
-				fallbackBurned = burned
-			} else {
+		if err == nil && !s.exact && s.prefer == "" {
+			info := g.infoSnapshot()
+			if reqReason := probedRequiredAudioRejection(profile, s.title, res.Release, info, fromResume); reqReason != "" {
+				m.noteReleaseProbeMemory(res.Release, res.NZB, info)
+				m.log.Info("trying next candidate", "release", res.Release.Name, "reason", reqReason)
 				m.dropGeneration(g)
-			}
-			allUncached = false
-			tried = append(tried, res.Release.ID)
-			if len(res.Alternates) > 0 {
+				if reqLang := normalizedProfileLanguage(profile); reqLang != "" && strings.HasPrefix(reqReason, "audio is not in the profile's language (") {
+					lastErr = &core.RequiredAudioLanguageError{Language: releaseparse.LanguageDisplayName(reqLang)}
+				} else {
+					lastErr = errors.New(reqReason)
+				}
+				allUncached = false
+				if needsAudioProbe && unknownAudioProbes < maxUnknownAudioProbes {
+					attempt--
+				}
+				tried = append(tried, res.Release.ID)
+				audioRejected = append(audioRejected, res.Release)
 				alternates = res.Alternates
+				res, cached, fromResume = nil, nil, false
+				continue
 			}
-			res, cached, fromResume = nil, nil, false
-			continue
+		}
+		if err == nil && !s.exact && s.prefer == "" {
+			info := g.infoSnapshot()
+			audioOK := m.probedAudioAcceptable(s, profile, info)
+			if burned || !audioOK {
+				reason := "probed release lacks viewer audio language"
+				if burned {
+					reason = "burned-in subtitles detected"
+				} else {
+					m.noteReleaseProbeMemory(res.Release, res.NZB, info)
+				}
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", reason)
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "info",
+					Message: "Skipped candidate " + releaseLabel(res.Release),
+					Detail:  reason,
+				})
+				if fallbackGen == nil || fallbackBurned && !burned {
+					if fallbackGen != nil {
+						m.dropGeneration(fallbackGen)
+					}
+					fallbackGen = g
+					fallbackBurned = burned
+				} else {
+					m.dropGeneration(g)
+				}
+				allUncached = false
+				tried = append(tried, res.Release.ID)
+				if !audioOK {
+					audioRejected = append(audioRejected, res.Release)
+				}
+				alternates = res.Alternates
+				res, cached, fromResume = nil, nil, false
+				continue
+			}
 		}
 		if err == nil {
-			s.mu.Lock()
-			s.tried = append(s.tried, tried...)
-			s.mu.Unlock()
-			return g, nil
+			return adoptInitial(g)
 		}
 		if ctx.Err() != nil {
+			if !s.exact && errors.Is(ctx.Err(), context.DeadlineExceeded) && m.ctx.Err() == nil {
+				m.log.Warn("release failed to open", "session", s.id, "release", res.Release.Name, "err", err)
+				if fallbackGen != nil {
+					g := fallbackGen
+					fallbackGen = nil
+					return adoptInitial(g, res.Release.ID)
+				}
+				if g, aerr := adoptRuntimeFallback(res.Release.ID); g != nil || aerr != nil {
+					return g, aerr
+				}
+				rt.commitPendingRejections(m.ctx, m, s)
+			}
 			return nil, ctx.Err()
 		}
 		lastErr = err
@@ -298,24 +581,42 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			return nil, fmt.Errorf("%w: selected release could not be opened", core.ErrNotAvailable)
 		}
 		allUncached = allUncached && errors.Is(err, core.ErrNotCached)
-		m.log.Warn("release failed to open", "release", res.Release.Name, "err", err)
-		tried = append(tried, res.Release.ID)
-		if len(res.Alternates) > 0 {
-			alternates = res.Alternates
+		m.log.Warn("release failed to open", "session", s.id, "release", res.Release.Name, "err", err)
+		if isSlot {
+			m.noteStaleRelease(s.ident.key, res.Release.ID, s.title, "", err.Error())
 		}
+		tried = append(tried, res.Release.ID)
+		alternates = res.Alternates
 		if accountError(err) {
 			debridDown = true
 			alternates = withoutDebrid(alternates)
 		}
 		res, cached, fromResume = nil, nil, false
 	}
-	if fallbackGen != nil {
-		g := fallbackGen
-		fallbackGen = nil
-		s.mu.Lock()
-		s.tried = append(s.tried, tried...)
-		s.mu.Unlock()
-		return g, nil
+	if ctx.Err() != nil {
+		if !s.exact && errors.Is(ctx.Err(), context.DeadlineExceeded) && m.ctx.Err() == nil {
+			if fallbackGen != nil {
+				g := fallbackGen
+				fallbackGen = nil
+				return adoptInitial(g)
+			}
+			if g, aerr := adoptRuntimeFallback(); g != nil || aerr != nil {
+				return g, aerr
+			}
+			rt.commitPendingRejections(m.ctx, m, s)
+		}
+		return nil, ctx.Err()
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
+		if fallbackGen != nil {
+			g := fallbackGen
+			fallbackGen = nil
+			return adoptInitial(g)
+		}
+		if g, aerr := adoptRuntimeFallback(); g != nil || aerr != nil {
+			return g, aerr
+		}
+		rt.commitPendingRejections(m.ctx, m, s)
 	}
 	return nil, releasesFailed(len(tried), lastErr, allUncached)
 }
@@ -327,7 +628,12 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 // errors stay text only, so release-level sentinels (ErrNotFound and the
 // like) cannot change how the failure is reported to the client.
 func releasesFailed(n int, lastErr error, allUncached bool) error {
+	var reqLang *core.RequiredAudioLanguageError
 	switch {
+	case errors.Is(lastErr, core.ErrVideoTranscodingDisabled):
+		return fmt.Errorf("%d releases failed: %w", n, lastErr)
+	case errors.As(lastErr, &reqLang):
+		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, frontend.ErrTrackSourceUnavailable):
 		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, core.ErrDebridAuth):
@@ -339,9 +645,9 @@ func releasesFailed(n int, lastErr error, allUncached bool) error {
 		// UncachedError's settings, for the protocol adapter to explain.
 		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, context.DeadlineExceeded):
-		return fmt.Errorf("%w: %d releases failed: %w", core.ErrNotAvailable, n, context.DeadlineExceeded)
+		return fmt.Errorf("%w: %d releases failed (last: %v): %w", core.ErrNotAvailable, n, lastErr, context.DeadlineExceeded)
 	case errors.Is(lastErr, core.ErrSourceUnavailable), errors.Is(lastErr, core.ErrArticleMissing), errors.Is(lastErr, core.ErrArticleCorrupt), errors.Is(lastErr, core.ErrReleaseRejected):
-		return fmt.Errorf("%w: %d releases failed: %w", core.ErrNotAvailable, n, core.ErrSourceUnavailable)
+		return fmt.Errorf("%w: %d releases failed (last: %v): %w", core.ErrNotAvailable, n, lastErr, core.ErrSourceUnavailable)
 	}
 	return fmt.Errorf("%w: %d releases failed (last: %v)", core.ErrNotAvailable, n, lastErr)
 }
@@ -349,52 +655,92 @@ func releasesFailed(n int, lastErr error, allUncached bool) error {
 // nextResolution returns the next release to try: an untried alternate when
 // NZBs can be fetched directly, else a fresh Resolve excluding tried ones.
 func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string, alternates []core.Release) (*core.Resolution, error) {
+	return m.nextResolutionTracking(ctx, s, &tried, nil, alternates)
+}
+
+// nextResolutionTracking returns the next release to try and appends any
+// alternates whose FetchNZB fails into *tried so subsequent Resolve calls
+// exclude them instead of retrying dead links.
+func (m *Manager) nextResolutionTracking(ctx context.Context, s *session, tried *[]string, audioRejected []core.Release, alternates []core.Release) (*core.Resolution, error) {
 	ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
-	tried = append(slices.Clone(tried), s.caps.BroadcastExclude...)
+	exclude := append(slices.Clone(*tried), s.caps.BroadcastExclude...)
+	isSlot := core.IsExplicitVersionSlotSelector(s.prefer)
 	m.mu.Lock()
 	for id := range m.openFailures[s.ident.key] {
-		if !slices.Contains(tried, id) {
-			tried = append(tried, id)
+		if !slices.Contains(exclude, id) {
+			exclude = append(exclude, id)
+		}
+	}
+	if isSlot {
+		for _, id := range m.staleReleasesLocked(s.ident.key, m.now()) {
+			if !slices.Contains(exclude, id) {
+				exclude = append(exclude, id)
+			}
 		}
 	}
 	m.mu.Unlock()
 	if m.deps.FetchNZB != nil {
+		altSel, altFallback := s.alternateMeta()
 		// Fetches run sequentially. A timed-out on-demand fetch has returned
 		// and cancelled its request, so the next eligible source may open.
 		var fetchErr error
 		fetched := 0
 		for i, alt := range alternates {
-			if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(tried, alt.ID) || !releaseMatchesTitle(alt, s.title) {
+			if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(exclude, alt.ID) || audioExcluded(audioRejected, alt) || !releaseMatchesTitle(alt, s.title) {
 				continue
 			}
-			if fetched >= m.failoverAttempts() {
+			if m.failoverAttempts() > 0 && fetched >= m.failoverAttempts() {
 				return nil, fetchErr
 			}
 			fetched++
 			nzb, err := m.deps.FetchNZB(ctx, alt)
 			if err != nil {
 				if ctx.Err() != nil {
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) && m.ctx.Err() == nil {
+						m.log.Warn("alternate nzb fetch failed", "session", s.id, "release", alt.Name, "err", err)
+					}
 					return nil, ctx.Err()
 				}
-				m.log.Warn("alternate nzb fetch failed", "release", alt.Name, "err", err)
+				m.log.Warn("alternate nzb fetch failed", "session", s.id, "release", alt.Name, "err", err)
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "warn",
+					Failing: true,
+					Message: "Candidate failed: " + releaseLabel(alt),
+					Detail:  OwnerError(err),
+				})
 				fetchErr = err
-				// A fresh Resolve must not retry a link that just timed out.
-				tried = append(tried, alt.ID)
+				if isSlot {
+					m.noteStaleRelease(s.ident.key, alt.ID, s.title, "", err.Error())
+				}
+				// A fresh Resolve must not retry a link that just failed.
+				exclude = append(exclude, alt.ID)
+				if !slices.Contains(*tried, alt.ID) {
+					*tried = append(*tried, alt.ID)
+				}
 				continue
 			}
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "resolve",
+				Level:   "info",
+				Message: "Selected alternate " + releaseLabel(alt),
+				Detail:  timelineCandidateDetail(alt, len(alternates)-i-1),
+			})
 			return &core.Resolution{
-				Title:      s.ident.key,
-				Release:    alt,
-				NZB:        nzb,
-				Alternates: slices.Clone(alternates[i+1:]),
-				ResolvedAt: m.now(),
+				VersionSelector: altSel,
+				QualityFallback: altFallback,
+				Title:           s.ident.key,
+				Release:         alt,
+				NZB:             nzb,
+				Alternates:      slices.Clone(alternates[i+1:]),
+				ResolvedAt:      m.now(),
 			}, nil
 		}
-		if fetchErr != nil && fetched >= m.failoverAttempts() {
+		if fetchErr != nil && m.failoverAttempts() > 0 && fetched >= m.failoverAttempts() {
 			return nil, fetchErr
 		}
 	}
-	u := s.user
+	u := m.effectiveResolveUser(ctx, s.user)
 	if s.caps.BroadcastReadyRelease != "" {
 		ready, ok := m.deps.Resolver.(interface {
 			ResolveReadyChannel(context.Context, core.ResolveRequest) (*core.Resolution, error)
@@ -402,7 +748,7 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 		if !ok {
 			return nil, core.ErrNotAvailable
 		}
-		req := core.ResolveRequest{Title: s.title, Client: s.caps, User: &u, Exclude: tried, Prefer: s.caps.BroadcastReadyRelease}
+		req := core.ResolveRequest{Title: s.title, Client: s.caps, User: &u, Exclude: exclude, ExcludeReleases: slices.Clone(audioRejected), Prefer: s.caps.BroadcastReadyRelease}
 		// A freshly verified source may already have its exact payload on
 		// disk. Revalidate evidence, then avoid another indexer/provider grab.
 		if evidence, ok := m.deps.Resolver.(interface {
@@ -422,19 +768,40 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 		Title:              s.title,
 		Client:             s.caps,
 		User:               &u,
-		Exclude:            slices.Clone(tried),
+		Exclude:            slices.Clone(exclude),
+		ExcludeReleases:    slices.Clone(audioRejected),
 		Prefer:             s.prefer,
 		ExactHEVCTranscode: s.exact && s.ident.surface != "" && allowsH264Transcode(s.caps),
 	})
 	if err != nil {
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "resolve",
+				Level:   "warn",
+				Failing: true,
+				Message: "Release search failed",
+				Detail:  OwnerError(err),
+			})
+		}
 		return nil, err
 	}
 	if res == nil || res.Release.ID == "" || len(res.NZB) == 0 {
 		return nil, fmt.Errorf("%w: resolver returned no usable release", core.ErrNotAvailable)
 	}
-	if slices.Contains(tried, res.Release.ID) {
+	if isSlot && len(res.FailedReleases) > 0 {
+		for _, failedID := range res.FailedReleases {
+			m.noteStaleRelease(s.ident.key, failedID, s.title, res.Release.ID, "failed validation during picked version failover")
+		}
+	}
+	if slices.Contains(exclude, res.Release.ID) {
 		return nil, fmt.Errorf("%w: resolver returned an excluded release", core.ErrNotAvailable)
 	}
+	m.recordTimeline(s, TimelineEvent{
+		Kind:    "resolve",
+		Level:   "info",
+		Message: "Resolved " + releaseLabel(res.Release),
+		Detail:  timelineCandidateDetail(res.Release, len(res.Alternates)),
+	})
 	return res, nil
 }
 
@@ -484,11 +851,31 @@ func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Reso
 		if permanentSourceFailure(err) {
 			m.markBad(res.Release.ID, "invalid source on open")
 		}
-		return nil, fmt.Errorf("open %s: %w", res.Release.Name, err)
+		openErr := fmt.Errorf("open %s: %w", res.Release.Name, err)
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Candidate failed: " + releaseLabel(res.Release),
+				Detail:  OwnerError(openErr),
+			})
+		}
+		return nil, openErr
 	}
 	if src.Size() <= 0 {
 		finish(src.Close())
-		return nil, fmt.Errorf("open %s: empty media file", res.Release.Name)
+		openErr := fmt.Errorf("open %s: empty media file", res.Release.Name)
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Candidate failed: " + releaseLabel(res.Release),
+				Detail:  OwnerError(openErr),
+			})
+		}
+		return nil, openErr
 	}
 	g, err := m.probeGeneration(ctx, s, res, src, finish, fallback, cached...)
 	if err == nil && g != nil && s.caps.BroadcastBitrateKbps > 0 {
@@ -501,11 +888,43 @@ func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Reso
 		}
 		if !m.channelSourceAllowed(s, file) {
 			m.dropGeneration(g)
-			return nil, fmt.Errorf("%w: selected file exceeds channel delivery budget", core.ErrNotAvailable)
+			budgetErr := fmt.Errorf("%w: selected file exceeds channel delivery budget", core.ErrNotAvailable)
+			if ctx.Err() == nil {
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "warn",
+					Failing: true,
+					Message: "Candidate failed: " + releaseLabel(res.Release),
+					Detail:  OwnerError(budgetErr),
+				})
+			}
+			return nil, budgetErr
 		}
 	}
-	m.rememberOpenFailure(s, res.Release, err)
-	return g, err
+	if !errors.Is(err, errRuntimeMismatchDeferred) {
+		m.rememberOpenFailure(s, res.Release, err)
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Candidate failed: " + releaseLabel(res.Release),
+				Detail:  OwnerError(err),
+			})
+		}
+		return nil, err
+	}
+	if g != nil {
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "candidate",
+			Level:   "info",
+			Message: "Opened candidate " + releaseLabel(res.Release),
+			Detail:  timelineOpenedDetail(g.infoSnapshot(), res.Release, src.Size()),
+		})
+	}
+	return g, nil
 }
 
 func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Resolution, src core.MediaSource, finish func(error), fallback func(int64) core.MediaInfo, cached ...*probeCache) (*generation, error) {
@@ -514,8 +933,24 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	// not the refcount wrapper. Close stays on the wrapper.
 	share := src
 	src = inner
+	if isNonAVDocumentSource(src) {
+		if finish != nil {
+			finish(core.ErrNoUsableFile)
+		}
+		if closeShared != nil {
+			_ = closeShared()
+		} else {
+			_ = share.Close()
+		}
+		return nil, core.ErrNoUsableFile
+	}
 	openedRevision := core.SourceRevision(&core.PlaySession{Key: s.ident.key, Source: src})
-	g := &generation{sess: s, n: s.nextGen(), token: randomID(16), src: src, share: share, sharedClose: closeShared, finishSource: finish, res: res, indexReady: make(chan struct{})}
+	g := &generation{warmReads: new(core.WarmReadWindow), sess: s, n: s.nextGen(), token: randomID(16), src: src, share: share, sharedClose: closeShared, finishSource: finish, res: res, indexReady: make(chan struct{})}
+	if len(cached) > 0 && cached[0] != nil && cached[0].warmReads != nil &&
+		cached[0].releaseID == res.Release.ID && cached[0].info.Size == src.Size() &&
+		(cached[0].nzbHash == "" || (len(res.NZB) > 0 && cached[0].nzbHash == nzbHash(res.NZB))) {
+		g.prewarmReads = cached[0].warmReads
+	}
 	g.ctx, g.cancel = context.WithCancel(m.ctx)
 	if core.IsBackgroundAnalysis(ctx) {
 		g.ctx = core.WithBackgroundAnalysis(g.ctx)
@@ -531,7 +966,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	var facts *probeCache
 	prober := "cache"
 	if len(cached) > 0 && cached[0] != nil && cached[0].releaseID == res.Release.ID && cached[0].info.Size == src.Size() && !cached[0].info.Estimated &&
-		(s.caps.Protocol != "vela" || (cached[0].info.Duration > 0 && cached[0].info.Video() != nil)) &&
+		(s.caps.Protocol != "vela" || (cached[0].info.Duration > 0 && cached[0].info.HasPlayableMedia())) &&
 		(cached[0].nzbHash == "" || (len(res.NZB) > 0 && cached[0].nzbHash == nzbHash(res.NZB))) {
 		facts = cached[0]
 		copy := facts.info
@@ -563,7 +998,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 		m.markBad(res.Release.ID, "invalid source while probing")
 		return nil, perr
 	case perr != nil || info == nil:
-		m.log.Warn("probe failed; using estimated media info", "release", res.Release.Name, "err", perr)
+		m.log.Warn("probe failed; using estimated media info", "session", s.id, "release", res.Release.Name, "err", perr)
 		mi = core.CloneMediaInfo(fallback(src.Size()))
 		mi.Estimated = true
 		// An estimated catalogue runtime is not a container duration. A
@@ -575,24 +1010,62 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	// Vela publishes stable source track identities in its initial plan. A
 	// failed/incomplete probe cannot supply those identities. Let the bounded
 	// candidate loop try another release, without blacklisting this one.
-	if s.caps.Protocol == "vela" && (mi.Estimated || mi.Duration <= 0 || mi.Video() == nil || len(mi.Streams) == 0) {
-		m.log.Warn("source lacks verified playback facts", "release", res.Release.Name, "sourceSize", src.Size(), "releaseSize", res.Release.Size, "duration", mi.Duration, "estimated", mi.Estimated, "probeError", perr)
+	if s.caps.Protocol == "vela" && (mi.Estimated || mi.Duration <= 0 || !mi.HasPlayableMedia() || len(mi.Streams) == 0) {
+		m.log.Warn("source lacks verified playback facts", "session", s.id, "release", res.Release.Name, "sourceSize", src.Size(), "releaseSize", res.Release.Size, "duration", mi.Duration, "estimated", mi.Estimated, "probeError", perr)
 		m.dropGeneration(g)
 		return nil, fmt.Errorf("probe %s: %w", res.Release.Name, frontend.ErrTrackSourceUnavailable)
 	}
 	// Reused persisted probes pass through here too, including a remembered
 	// playback_resume release played from zero with no requested offset.
-	if !mi.Estimated && s.title != nil &&
-		(releaseRuntimeMismatch(s.title, res.Release, mi.Duration) ||
-			(m.namesakeRequest(ctx, s.title) && s.title.Type != core.TypeEpisode &&
-				namesakeDurationMismatch(s.title.Runtime, mi.Duration))) {
-		m.dropGeneration(g)
-		if err := m.RejectRelease(ctx, s.title.Key, res.Release); err != nil {
-			return nil, fmt.Errorf("remember runtime rejection: %w", err)
+	rt := runtimeTrackerFrom(ctx)
+	effTitle := m.titleWithEffectiveRuntime(s.title)
+	holdRuntimeFallback := false
+	if !mi.Estimated && effTitle != nil {
+		mismatch := releaseRuntimeMismatch(effTitle, res.Release, mi.Duration) ||
+			(m.namesakeRequest(ctx, effTitle) && effTitle.Type != core.TypeEpisode &&
+				namesakeDurationMismatch(effTitle.Runtime, mi.Duration))
+		if !mismatch {
+			if rt != nil && mi.Duration > 0 {
+				rt.observeMatch(res.Release, mi.Duration)
+			}
+		} else if rt != nil {
+			decision, consensusDur, disagree := rt.observeMismatch(res.Release, mi.Duration, runtimeConsensusEligible(effTitle, res.Release, mi.Duration))
+			switch decision {
+			case runtimeAcceptLive:
+				m.recordConsensusRuntime(ctx, s.title, consensusDur)
+				for _, r := range disagree {
+					if err := m.RejectRelease(ctx, s.title.Key, r); err != nil {
+						m.log.Debug("persist runtime rejection failed", "key", s.title.Key, "release", r.ID, "err", err)
+					}
+					m.rememberOpenFailure(s, r, core.ErrReleaseRejected)
+				}
+				m.log.Info("probed runtime consensus overrides catalogue runtime",
+					"session", s.id, "release", res.Release.Name, "consensus", consensusDur, "catalogue", effTitle.Runtime)
+			case runtimeHoldFallback:
+				holdRuntimeFallback = true
+			case runtimeDefer:
+				m.dropGeneration(g)
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+					"probed", mi.Duration, "catalogue", effTitle.Runtime)
+				return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, errRuntimeMismatchDeferred)
+			default:
+				m.dropGeneration(g)
+				if err := m.RejectRelease(ctx, s.title.Key, res.Release); err != nil {
+					return nil, fmt.Errorf("remember runtime rejection: %w", err)
+				}
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+					"probed", mi.Duration, "catalogue", effTitle.Runtime)
+				return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, core.ErrReleaseRejected)
+			}
+		} else {
+			m.dropGeneration(g)
+			if err := m.RejectRelease(ctx, s.title.Key, res.Release); err != nil {
+				return nil, fmt.Errorf("remember runtime rejection: %w", err)
+			}
+			m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+				"probed", mi.Duration, "catalogue", effTitle.Runtime)
+			return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, core.ErrReleaseRejected)
 		}
-		m.log.Info("trying next candidate", "release", res.Release.Name, "reason", "runtime doesn't match this title",
-			"probed", mi.Duration, "catalogue", s.title.Runtime)
-		return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, core.ErrReleaseRejected)
 	}
 	if mi.Size <= 0 {
 		mi.Size = src.Size()
@@ -645,6 +1118,35 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	if ps, ok := src.(core.PlaybackDurationSetter); ok && mi.Duration > 0 {
 		ps.SetPlaybackDuration(mi.Duration)
 	}
+	g.mu.Lock()
+	g.needIndex = needIndex
+	g.needTrailer = prober == "native" || (facts != nil && facts.needsAugment)
+	g.mu.Unlock()
+	if holdRuntimeFallback {
+		if !rt.tryStashFallback(g, res, mi.Duration) {
+			m.dropGeneration(g)
+		}
+		m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+			"probed", mi.Duration, "catalogue", effTitle.Runtime)
+		return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, errRuntimeMismatchDeferred)
+	}
+	if !generationFillsDeferred(ctx) {
+		m.startGenerationFills(g)
+	}
+	return g, nil
+}
+
+// startGenerationFills starts the deferred keyframe-index and trailer fills
+// once a probed generation has been chosen rather than set aside as a
+// candidate-selection fallback.
+func (m *Manager) startGenerationFills(g *generation) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	needIndex, needTrailer := g.needIndex, g.needTrailer
+	g.needIndex, g.needTrailer = false, false
+	g.mu.Unlock()
 	if needIndex {
 		// Play never waits for the container index: publish now and fill
 		// TimeMap.Points / MediaInfo.Keyframes in the background.
@@ -652,12 +1154,11 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	} else {
 		g.markIndexReady()
 	}
-	if prober == "native" || (facts != nil && facts.needsAugment) {
+	if needTrailer {
 		// Persisted facts predate any tail fill; it only fills facts
 		// that are still unknown, so a running decision never changes.
 		m.startTrailerFill(g)
 	}
-	return g, nil
 }
 
 // probeMedia reads stream parameters from the container headers when the
@@ -667,7 +1168,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 func (m *Manager) probeMedia(ctx context.Context, g *generation, src core.MediaSource) (*core.MediaInfo, string, error) {
 	if m.deps.NativeProbe != nil {
 		started := time.Now()
-		info, err := m.deps.NativeProbe(ctx, src)
+		info, err := m.deps.NativeProbe(core.WithReadOrigin(ctx, "playback.probe", "container facts"), src)
 		if err == nil && info != nil {
 			if m.opts.VerifyNativeProbe && g.res != nil {
 				m.startProbeVerify(g.sess.sources, g.res, *info)
@@ -716,7 +1217,7 @@ func (m *Manager) startTrailerFill(g *generation) {
 		ctx, cancel := context.WithTimeout(g.ctx, m.opts.IndexTimeout)
 		defer cancel()
 		info := g.infoSnapshot()
-		if !m.deps.NativeTrailer(ctx, g.src, &info) {
+		if !m.deps.NativeTrailer(core.WithReadOrigin(ctx, "playback.trailer", "container facts"), g.src, &info) {
 			return
 		}
 		g.mu.Lock()
@@ -730,7 +1231,14 @@ func (m *Manager) startTrailerFill(g *generation) {
 			}
 		}
 		g.info.Streams = streams
+		updated := core.CloneMediaInfo(g.info)
 		g.mu.Unlock()
+		if len(updated.Chapters) > 0 && g.res != nil {
+			m.persistReleaseProbe(ctx, g.res.Release, g.res.NZB, updated)
+			if g.res.Title.IsPluginKey() {
+				m.persistItemProbe(ctx, g.res.Title, updated)
+			}
+		}
 	}()
 }
 
@@ -849,7 +1357,7 @@ func (m *Manager) startIndexFill(g *generation) {
 		defer g.markIndexReady()
 		ctx, cancel := context.WithTimeout(g.ctx, m.opts.IndexTimeout)
 		defer cancel()
-		points := containerIndex(ctx, g.src, g.src.Size())
+		points := containerIndex(core.WithReadOrigin(ctx, "playback.index", "container keyframes"), g.src, g.src.Size())
 		if len(points) == 0 {
 			return
 		}
@@ -883,10 +1391,14 @@ func (m *Manager) dropGeneration(g *generation) {
 	m.mu.Lock()
 	delete(m.tokens, g.sess.id+"/"+g.token)
 	m.mu.Unlock()
+	g.markIndexReady()
 	g.retire()
 }
 
 func (m *Manager) markBad(releaseID, reason string) {
+	if m.deps.Resolver == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
 	defer cancel()
 	if err := m.deps.Resolver.MarkBad(ctx, releaseID, reason); err != nil {
@@ -981,7 +1493,11 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	if err := lock(ctx, s.failSem); err != nil {
 		return nil, err
 	}
-	defer unlock(s.failSem)
+	s.failingOver.Store(true)
+	defer func() {
+		s.failingOver.Store(false)
+		unlock(s.failSem)
+	}()
 	// lock's select is random when the semaphore frees as ctx is cancelled
 	// (a stopped Live TV session): a cancelled caller opens no provider.
 	if err := ctx.Err(); err != nil {
@@ -1010,14 +1526,18 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		}()
 	}
 	if s.exact || pinned {
+		if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
+			return cur, nil
+		}
 		return nil, fmt.Errorf("%w: selected release cannot be replaced", core.ErrNotAvailable)
 	}
 	if failovers >= m.opts.MaxFailovers {
+		if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
+			return cur, nil
+		}
 		return nil, fmt.Errorf("%w: session %s gave up after %d failovers", core.ErrNotAvailable, s.id, failovers)
 	}
 	if err := s.recentFailoverFailure(observed, m.now()); err != nil {
-		// The same source failed again moments after a failover found
-		// nothing: repeat the answer, not the search (retry_window.go).
 		return nil, err
 	}
 	defer func() {
@@ -1027,9 +1547,26 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	}()
 	log := m.log.With("session", s.id, "key", s.ident.key, "at", at)
 	log.Warn("failing over", "release", cur.res.Release.Name, "reason", fo.reason, "down", fo.down)
+	failMsg := "Failing over from " + releaseLabel(cur.res.Release)
+	if fo.down {
+		failMsg = "Adapting down from " + releaseLabel(cur.res.Release)
+	}
+	m.recordTimeline(s, TimelineEvent{
+		Kind:    "failover",
+		Level:   "warn",
+		Failing: true,
+		Message: failMsg,
+		Detail:  fo.reason,
+	})
 	// A provider outage is not evidence that the release itself is invalid.
-	if failure := cur.sourceFailure(); !fo.encoder && permanentSourceFailure(failure) {
+	if failure := cur.sourceFailure(); !fo.encoder && !s.isKind() && permanentSourceFailure(failure) {
 		m.markBad(cur.releaseID(), fo.reason)
+	}
+	if !fo.encoder && core.IsExplicitVersionSlotSelector(s.prefer) {
+		m.noteStaleRelease(s.ident.key, cur.releaseID(), s.title, "", fo.reason)
+	}
+	if cur.res != nil {
+		s.setAlternateMeta(cur.res.VersionSelector, cur.res.QualityFallback)
 	}
 
 	s.mu.Lock()
@@ -1093,7 +1630,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		}
 	}
 	raceFailed, debridDown, debridSkips := 0, false, 0
-	if g == nil && !direct && prepared == nil {
+	if g == nil && !direct && prepared == nil && !s.isKind() {
 		// Any healthy alternate continues an encoder session, so open
 		// several at once instead of stalling through each broken one.
 		var failed []string
@@ -1131,205 +1668,244 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			alternates = withoutDebrid(alternates)
 		}
 	}
-	var copySearchCtx context.Context
-	// Releases the race already tried count against the same cap.
-	for attempt := raceFailed; g == nil && attempt < m.failoverAttempts(); attempt++ {
-		attemptCtx := ctx
-		if copySearchCtx != nil {
-			attemptCtx = copySearchCtx
-		}
-		if ctx.Err() != nil {
-			// The copy-preference retry skips the post-failure check
-			// below; never start another candidate's search or open.
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+	const maxFailoverMorePasses = 8
+	const maxHLSSwapAttempts = 3
+	var newInfo core.MediaInfo
+	attempt := raceFailed
+	for hlsSwapAttempt := 0; ; hlsSwapAttempt++ {
+		var copySearchCtx context.Context
+		var copySearchCancel context.CancelFunc
+		morePasses := 0
+		for ; g == nil && m.attemptAllowed(attempt); attempt++ {
+			attemptCtx := ctx
+			if copySearchCtx != nil {
+				attemptCtx = copySearchCtx
 			}
-			return nil, ctx.Err()
-		}
-		res := prepared
-		prepared = nil
-		var err error
-		if res == nil {
-			res, err = m.nextResolution(attemptCtx, s, tried, alternates)
-		}
-		if err != nil {
-			lastErr = err
-			break
-		}
-		if debridDown && dependsOnDebrid(res.Release) {
-			// The account is out (quota, key): no provider call is made for
-			// this release or the other debrid ones, only what does not
-			// depend on the account is still tried (within the attempt cap).
-			tried = append(tried, res.Release.ID)
-			alternates = withoutDebrid(res.Alternates)
-			if debridSkips++; debridSkips <= maxDebridSkips {
-				attempt--
-			}
-			continue
-		}
-		g, err = m.openGeneration(attemptCtx, s, res, fallback)
-		if err == nil {
-			if perr := m.preflightSwap(attemptCtx, s, g); perr != nil {
-				m.dropGeneration(g)
-				g, err = nil, perr
-			}
-		}
-		if err == nil && (fo.encoder || (fo.down && !direct)) && !copyCandidate(g) {
-			m.dropGeneration(g)
-			g, err = nil, fmt.Errorf("replacement needs video encoding: %w", core.ErrNotAvailable)
-		}
-		// Byte-range clients retain the original container headers and
-		// offsets. Equal lengths do not prove equal bytes or Cues. A different
-		// release is kept as a remux-switch fallback rather than being served
-		// under the original representation's validators.
-		if err == nil && direct && (g.releaseID() != cur.releaseID() || g.src.Size() != cur.src.Size() || fo.strictDirect) {
-			keep := fallbackGen == nil
-			if !keep && fo.down {
-				// A down-failover's remux fallback only helps at a lower
-				// bitrate, so a lower mismatch supersedes an earlier
-				// non-lower one instead of being dropped behind it. The
-				// existing veto below still rejects a fallback that is
-				// not lower when no lower mismatch was found.
-				bps := replacementBps(g, oldInfo.Duration)
-				fallbackBps := replacementBps(fallbackGen, oldInfo.Duration)
-				if curBps > 0 && bps > 0 && bps < curBps && !(fallbackBps > 0 && fallbackBps < curBps) {
+			if ctx.Err() != nil {
+				if copySearchCancel != nil {
+					copySearchCancel()
+				}
+				// The copy-preference retry skips the post-failure check
+				// below; never start another candidate's search or open.
+				if fallbackGen != nil {
 					m.dropGeneration(fallbackGen)
-					fallbackGen, keep = nil, true
+				}
+				return nil, ctx.Err()
+			}
+			var (
+				res *core.Resolution
+				err error
+			)
+			if s.isKind() {
+				g, res, err = m.openKindCandidate(attemptCtx, s, tried, fallback)
+				if err != nil && res == nil {
+					lastErr = err
+					break
+				}
+			} else {
+				res = prepared
+				prepared = nil
+				if res == nil {
+					res, err = m.nextResolutionTracking(attemptCtx, s, &tried, nil, alternates)
+				}
+				if err != nil {
+					if errors.Is(err, core.ErrMoreCandidates) && attemptCtx.Err() == nil && morePasses < maxFailoverMorePasses {
+						morePasses++
+						alternates = nil
+						attempt--
+						continue
+					}
+					lastErr = err
+					break
+				}
+				if debridDown && dependsOnDebrid(res.Release) {
+					tried = append(tried, res.Release.ID)
+					alternates = withoutDebrid(res.Alternates)
+					if debridSkips++; debridSkips <= maxDebridSkips {
+						attempt--
+					}
+					continue
+				}
+				g, err = m.openGeneration(attemptCtx, s, res, fallback)
+			}
+			if err == nil {
+				if perr := m.preflightSwap(attemptCtx, s, g); perr != nil {
+					m.dropGeneration(g)
+					g, err = nil, perr
 				}
 			}
-			if keep {
-				fallbackGen = g
-			} else {
+			if err == nil && (fo.encoder || (fo.down && !direct)) && !copyCandidate(g) {
 				m.dropGeneration(g)
+				g, err = nil, fmt.Errorf("replacement needs video encoding: %w", core.ErrNotAvailable)
 			}
-			g = nil
-			err = fmt.Errorf("incompatible direct-play replacement: %w", core.ErrNotAvailable)
-		}
-		if err == nil && fo.down {
-			if bps := replacementBps(g, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
-				m.dropGeneration(g)
+			// Byte-range clients retain the original container headers and
+			// offsets. Equal lengths do not prove equal bytes or Cues. A different
+			// release is kept as a remux-switch fallback rather than being served
+			// under the original representation's validators.
+			if err == nil && direct && (g.releaseID() != cur.releaseID() || g.src.Size() != cur.src.Size() || fo.strictDirect) {
+				keep := fallbackGen == nil
+				if !keep && fo.down {
+					// A down-failover's remux fallback only helps at a lower
+					// bitrate, so a lower mismatch supersedes an earlier
+					// non-lower one instead of being dropped behind it. The
+					// existing veto below still rejects a fallback that is
+					// not lower when no lower mismatch was found.
+					bps := replacementBps(g, oldInfo.Duration)
+					fallbackBps := replacementBps(fallbackGen, oldInfo.Duration)
+					if curBps > 0 && bps > 0 && bps < curBps && !(fallbackBps > 0 && fallbackBps < curBps) {
+						m.dropGeneration(fallbackGen)
+						fallbackGen, keep = nil, true
+					}
+				}
+				if keep {
+					fallbackGen = g
+				} else {
+					m.dropGeneration(g)
+				}
 				g = nil
-				err = fmt.Errorf("down-failover candidate is not lower bitrate: %w", core.ErrNotAvailable)
+				err = fmt.Errorf("incompatible direct-play replacement: %w", core.ErrNotAvailable)
+				if s.isKind() && fallbackGen != nil && !fo.down {
+					lastErr = err
+					break
+				}
 			}
-		}
-		if err == nil && preferCopy != nil && !preferCopy(g) {
-			if fallbackGen == nil {
-				fallbackGen = g
-				var cancel context.CancelFunc
-				copySearchCtx, cancel = context.WithTimeout(ctx, 500*time.Millisecond)
-				defer cancel()
-			} else {
-				m.dropGeneration(g)
+			if err == nil && fo.down {
+				if bps := replacementBps(g, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
+					m.dropGeneration(g)
+					g = nil
+					err = fmt.Errorf("down-failover candidate is not lower bitrate: %w", core.ErrNotAvailable)
+				}
 			}
-			g = nil
+			if err == nil && preferCopy != nil && !preferCopy(g) {
+				if fallbackGen == nil {
+					fallbackGen = g
+					copySearchCtx, copySearchCancel = context.WithTimeout(ctx, 500*time.Millisecond)
+				} else {
+					m.dropGeneration(g)
+				}
+				g = nil
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				continue
+			}
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				if copySearchCancel != nil {
+					copySearchCancel()
+				}
+				if fallbackGen != nil {
+					m.dropGeneration(fallbackGen)
+				}
+				return nil, ctx.Err()
+			}
+			lastErr = err
+			log.Warn("failover candidate failed", "release", res.Release.Name, "err", err)
 			tried = append(tried, res.Release.ID)
 			if len(res.Alternates) > 0 {
 				alternates = res.Alternates
 			}
-			continue
-		}
-		if err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+			if accountError(err) {
+				debridDown = true
+				alternates = withoutDebrid(alternates)
 			}
-			return nil, ctx.Err()
-		}
-		lastErr = err
-		log.Warn("failover candidate failed", "release", res.Release.Name, "err", err)
-		tried = append(tried, res.Release.ID)
-		if len(res.Alternates) > 0 {
-			alternates = res.Alternates
-		}
-		if accountError(err) {
-			debridDown = true
-			alternates = withoutDebrid(alternates)
-		}
-		if direct {
-			alternates = orderExactSizeFirst(alternates, cur.res.Release)
-		} else if fo.down {
-			alternates = orderLowerBitrateFirst(alternates, cur.res.Release)
-		}
-	}
-	if g == nil && fo.stallRecovery && direct && !fo.encoder && !fo.down {
-		if fo.stillNeeded != nil && !fo.stillNeeded() {
-			// Progress during the candidate search already cleared the
-			// stall: leave recovery as it is without spending the grace,
-			// and close the opened fallback this call owns — like the
-			// cancellation paths, nothing downstream sees it.
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+			if direct {
+				alternates = orderExactSizeFirst(alternates, cur.res.Release)
+			} else if fo.down {
+				alternates = orderLowerBitrateFirst(alternates, cur.res.Release)
 			}
-			return cur, nil
 		}
-		if s.takeStallContinue(cur) {
-			// A CDN edge that stalls mid-file usually recovers in tens of
-			// seconds, and the alternates that just failed dial the same
-			// provider network. One continuation keeps a cached, previously
-			// healthy release under repair instead of handing the client a
-			// remux restart across the same failing hosts. The grace is one
-			// per playback session, not per outage.
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+		if copySearchCancel != nil {
+			copySearchCancel()
+		}
+		if g == nil && fo.stallRecovery && direct && !fo.encoder && !fo.down {
+			if fo.stillNeeded != nil && !fo.stillNeeded() {
+				// Progress during the candidate search already cleared the
+				// stall: leave recovery as it is without spending the grace,
+				// and close the opened fallback this call owns — like the
+				// cancellation paths, nothing downstream sees it.
+				if fallbackGen != nil {
+					m.dropGeneration(fallbackGen)
+				}
+				return cur, nil
 			}
-			log.Warn("media host stalled; continuing the original release", "release", cur.res.Release.Name, "lastErr", lastErr)
-			return cur, nil
+			if s.takeStallContinue(cur) {
+				// A CDN edge that stalls mid-file usually recovers in tens of
+				// seconds, and the alternates that just failed dial the same
+				// provider network. One continuation keeps a cached, previously
+				// healthy release under repair instead of handing the client a
+				// remux restart across the same failing hosts. The grace is one
+				// per playback session, not per outage.
+				if fallbackGen != nil {
+					m.dropGeneration(fallbackGen)
+				}
+				log.Warn("media host stalled; continuing the original release", "release", cur.res.Release.Name, "lastErr", lastErr)
+				return cur, nil
+			}
 		}
-	}
-	if g == nil && fallbackGen != nil && fo.down {
-		// A down-failover only helps with a lower-bitrate fallback.
-		if bps := replacementBps(fallbackGen, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
+		if g == nil && fallbackGen != nil && fo.down {
+			// A down-failover only helps with a lower-bitrate fallback.
+			if bps := replacementBps(fallbackGen, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
+				m.dropGeneration(fallbackGen)
+				fallbackGen = nil
+			}
+		}
+		if g == nil && fallbackGen != nil {
+			// No identical representation: do not splice. Swap anyway and restart
+			// the client as a zero-encode remux at the mapped time.
+			g, fallbackGen = fallbackGen, nil
+			if direct {
+				remuxSwitch = true
+				log.Warn("direct-play replacement changes representation; switching to remux", "release", g.res.Release.Name)
+			}
+		}
+		if fallbackGen != nil {
 			m.dropGeneration(fallbackGen)
 			fallbackGen = nil
 		}
-	}
-	if g == nil && fallbackGen != nil {
-		// No identical representation: do not splice. Swap anyway and restart
-		// the client as a zero-encode remux at the mapped time.
-		g, fallbackGen = fallbackGen, nil
-		if direct {
-			remuxSwitch = true
-			log.Warn("direct-play replacement changes representation; switching to remux", "release", g.res.Release.Name)
+		if g == nil {
+			if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
+				return cur, nil
+			}
+			if lastErr == nil {
+				lastErr = core.ErrNotAvailable
+			}
+			if fo.quietFailure {
+				log.Debug("failover found no working release", "err", lastErr)
+			} else {
+				log.Error("failover found no working release", "err", lastErr)
+				m.emitEvent("error", s, lastErr)
+			}
+			if fo.down {
+				m.noteFailedDownFailover(s, tried)
+			}
+			return nil, fmt.Errorf("playback: failover: %w", lastErr)
 		}
-	}
-	if fallbackGen != nil {
-		m.dropGeneration(fallbackGen)
-	}
-	if g == nil {
-		log.Error("failover found no working release", "err", lastErr)
-		if lastErr == nil {
-			lastErr = core.ErrNotAvailable
-		}
-		if !fo.quietFailure {
-			m.emitEvent("error", s, lastErr)
-		}
-		if fo.down {
-			m.noteFailedDownFailover(s, tried)
-		}
-		return nil, fmt.Errorf("playback: failover: %w", lastErr)
-	}
 
-	if fo.stillNeeded != nil && !fo.stillNeeded() {
-		m.dropGeneration(g)
-		return cur, nil
-	}
-	// An HLS session restarts ffmpeg on fresh headers; anything else that
-	// swaps to a different-size file must be remuxed. Mark that in the same
-	// critical section as the swap, so no request sees the new release
-	// without the remux requirement.
-	hls, hasHLS := m.deps.HLSLookup(s.id)
-	hasHLS = hasHLS && hls != nil
-	if hasHLS {
-		remuxSwitch = false
-	}
+		if fo.stillNeeded != nil && !fo.stillNeeded() {
+			m.dropGeneration(g)
+			return cur, nil
+		}
+		// An HLS session restarts ffmpeg on fresh headers; anything else that
+		// swaps to a different-size file must be remuxed. Mark that in the same
+		// critical section as the swap, so no request sees the new release
+		// without the remux requirement.
+		hls, hasHLS := m.deps.HLSLookup(s.id)
+		hasHLS = hasHLS && hls != nil
+		if hasHLS {
+			remuxSwitch = false
+		}
 
-	// Take the replacement pin before it is handed to the encoder. Stop can
-	// race the handoff; until publication this function owns the extra pin.
-	m.pinLive(g.releaseID())
-	newInfo := g.infoSnapshot()
-	if hasHLS {
+		// Take the replacement pin before it is handed to the encoder. Stop can
+		// race the handoff; until publication this function owns the extra pin.
+		m.pinLive(g.releaseID())
+		newInfo = g.infoSnapshot()
+		if !hasHLS {
+			break
+		}
 		var seekAt time.Time
 		if source, ok := hls.(core.RecoveryBufferSource); ok {
 			seekAt = source.RecoveryBuffer().SeekAt
@@ -1395,31 +1971,51 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 				}
 			}
 		}
-		if err != nil {
-			changed := false
-			if state, ok := hls.(core.InputSwapState); ok {
-				changed = state.CurrentSwapInput() == m.urlFor(g)
+		if err == nil {
+			break
+		}
+		changed := false
+		if state, ok := hls.(core.InputSwapState); ok {
+			changed = state.CurrentSwapInput() == m.urlFor(g)
+		}
+		// Never roll back to an input that already failed encoder input
+		// (fo.stopOnFailure): rolling back revives the broken source and
+		// ping-pongs forever with the failing replacement (#694).
+		rolledBack := changed && !fo.stopOnFailure && m.rollbackHLS(s, hls, cur, g, at, seekAt)
+		failedID := g.releaseID()
+		m.dropGeneration(g)
+		m.unpinLive(failedID)
+		tried = append(tried, failedID)
+		if fo.down {
+			m.noteFailedDownFailover(s, tried)
+		} else if fo.encoder {
+			m.noteTriedReleases(s, []string{failedID})
+		} else {
+			m.noteTriedReleases(s, tried)
+		}
+		if rolledBack {
+			s.resetSpeed(m.now(), m.opts.SpeedGrace)
+			return cur, nil
+		}
+		if fo.stopOnFailure {
+			lastErr = err
+			if ctx.Err() == nil && hlsSwapAttempt+1 < maxHLSSwapAttempts && !errors.Is(err, core.ErrEncoderExhausted) {
+				log.Warn("hls replacement failed; trying next release", "release", failedID, "err", err, "attempt", hlsSwapAttempt+1)
+				g = nil
+				remuxSwitch = false
+				continue
 			}
-			rolledBack := changed && m.rollbackHLS(s, hls, cur, g, at, seekAt)
-			m.dropGeneration(g)
-			m.unpinLive(g.releaseID())
-			if rolledBack {
-				s.resetSpeed(m.now(), m.opts.SpeedGrace)
-				if fo.down {
-					m.noteFailedDownFailover(s, tried)
-				}
+			if m.trySkipDamagedSegment(ctx, s, cur, at) {
 				return cur, nil
-			}
-			if changed {
-				m.Stop(s.id) // never leave an encoder pointed at a revoked input
-			} else if fo.down {
-				// Rejected handoffs are attempts too. Keep the original input,
-				// but do not retry an uncommittable replacement indefinitely.
-				m.noteFailedDownFailover(s, append(tried, g.releaseID()))
 			}
 			log.Error("hls input swap failed", "err", err)
 			return cur, fmt.Errorf("playback: swap hls input: %w", err)
 		}
+		if changed {
+			m.Stop(s.id) // never leave an encoder pointed at a revoked input
+		}
+		log.Error("hls input swap failed", "err", err)
+		return cur, fmt.Errorf("playback: swap hls input: %w", err)
 	}
 
 	// Pin before publishing g: a Stop right after the swap unpins s.cur,
@@ -1456,7 +2052,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	s.mu.Unlock()
 
 	if rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder); ok && g.src != nil {
-		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Cause: core.CacheCauseFailover})
+		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), RatingKey: g.res.Title, File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Indexer: g.res.Release.Indexer, Origin: sourceOrigin(g.src, g.res.Release.Protocol), Cause: core.CacheCauseFailover})
 	}
 
 	m.mu.Lock()
@@ -1468,8 +2064,31 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	s.resetSpeed(m.now(), m.opts.SpeedGrace)
 
 	if fo.down {
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "quality",
+			Level:   "warn",
+			Failing: true,
+			Message: "Switched to lower-bitrate release " + releaseLabel(g.res.Release),
+			Detail:  timelineOpenedDetail(newInfo, g.res.Release, g.src.Size()),
+		})
+		m.emitSourceFailover(s, cur, g, true, fo.reason)
 		m.emitEvent("downfailover", s, nil)
 	} else {
+		detail := timelineOpenedDetail(newInfo, g.res.Release, g.src.Size())
+		if remuxSwitch {
+			if detail != "" {
+				detail += " · switching to remux"
+			} else {
+				detail = "switching to remux"
+			}
+		}
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "failover",
+			Level:   "info",
+			Message: "Switched to " + releaseLabel(g.res.Release),
+			Detail:  detail,
+		})
+		m.emitSourceFailover(s, cur, g, false, fo.reason)
 		m.emitEvent("failover", s, nil)
 	}
 	log.Info("failed over", "release", g.res.Release.Name, "size", g.src.Size(), "duration", newInfo.Duration, "remuxSwitch", remuxSwitch)
@@ -1477,6 +2096,51 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		return g, errRequireRemux
 	}
 	return g, nil
+}
+
+// noteTriedReleases records release IDs that failed to open or swap so later
+// failovers never loop back to the same failing candidates (#694).
+func (m *Manager) noteTriedReleases(s *session, tried []string) {
+	if s == nil || len(tried) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	for _, id := range tried {
+		if id != "" && !slices.Contains(s.tried, id) {
+			s.tried = append(s.tried, id)
+		}
+	}
+}
+
+// trySkipDamagedSegment asks an HLS encoder session to advance past a bounded
+// corrupt mid-stream segment range on the current source when no alternate
+// release recovered the segment.
+func (m *Manager) trySkipDamagedSegment(ctx context.Context, s *session, cur *generation, at time.Duration) bool {
+	if at <= 0 || cur == nil || cur.sourceFailure() != nil || cur.articleMissing.Load() {
+		return false
+	}
+	hls, ok := m.deps.HLSLookup(s.id)
+	if !ok || hls == nil {
+		return false
+	}
+	skipper, ok := hls.(core.DamagedSegmentSkipper)
+	if !ok {
+		return false
+	}
+	skipCtx, cancelSkip := context.WithCancel(ctx)
+	stopCancel := context.AfterFunc(s.stopCtx, cancelSkip)
+	err := skipper.SkipDamagedSegment(skipCtx, m.urlFor(cur), cur.infoSnapshot(), at)
+	stopCancel()
+	cancelSkip()
+	if err != nil {
+		m.log.Warn("damaged segment skip failed", "session", s.id, "at", at, "err", err)
+		return false
+	}
+	return true
 }
 
 // rollbackHLS only returns to a source that is still open, compatible and
@@ -1630,16 +2294,30 @@ func withoutTried(rs []core.Release, tried []string) []core.Release {
 
 func containerFromName(name string) string {
 	switch ct := contentTypeFor("", name); ct {
-	case "video/x-matroska":
+	case "video/x-matroska", "audio/x-matroska":
 		return "mkv"
-	case "video/mp4":
+	case "video/mp4", "audio/mp4":
 		return "mp4"
 	case "video/mp2t":
 		return "mpegts"
 	case "video/x-msvideo":
 		return "avi"
-	case "video/webm":
+	case "video/webm", "audio/webm":
 		return "webm"
+	case "audio/flac":
+		return "flac"
+	case "audio/mpeg":
+		return "mp3"
+	case "audio/aac":
+		return "aac"
+	case "audio/ogg":
+		return "ogg"
+	case "audio/wav":
+		return "wav"
+	case "audio/aiff":
+		return "aiff"
+	case "audio/x-ms-wma":
+		return "wma"
 	}
 	return ""
 }
@@ -1685,21 +2363,62 @@ func (m *Manager) resumeResolution(ctx context.Context, userID int64, key core.R
 		return nil
 	}
 	m.log.Debug("reusing stored release", "key", key, "release", rec.release.Name)
-	return &core.Resolution{Title: key, Release: rec.release, NZB: nzb, ResolvedAt: rec.updatedAt}
+	return &core.Resolution{Title: key, Release: rec.release, NZB: nzb, ResolvedAt: rec.updatedAt, VersionSelector: rec.versionSelector}
 }
 
 // saveResume remembers the release now serving a session.
 func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
-	if m.resume == nil || g.res == nil || len(g.res.NZB) == 0 {
+	info := g.infoSnapshot()
+	if g.res != nil {
+		if _, _, ok := m.noteReleaseProbeMemory(g.res.Release, g.res.NZB, info); ok && m.deps.OnVersionProbed != nil {
+			m.deps.OnVersionProbed(s.ident.key, g.res.Release)
+		}
+	}
+	if s.ident.key.IsPluginKey() {
+		m.noteItemProbeMemory(s.ident.key, info)
+	}
+	steppedDownSlot := core.IsExplicitVersionSlotSelector(s.prefer) && g.res != nil && !g.res.MatchesVersion(s.prefer)
+	if m.resume == nil || g.res == nil || len(g.res.NZB) == 0 || steppedDownSlot {
+		if g.res != nil || s.ident.key.IsPluginKey() {
+			var rel core.Release
+			var nzb []byte
+			if g.res != nil {
+				rel = g.res.Release
+				if len(g.res.NZB) > 0 {
+					nzb = append([]byte(nil), g.res.NZB...)
+				}
+			}
+			key := s.ident.key
+			m.beginResumeSave()
+			go func() {
+				defer m.endResumeSave()
+				pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if rel.ID != "" || rel.InfoHash != "" || rel.ContentID != "" {
+					m.persistReleaseProbe(pctx, rel, nzb, info)
+				}
+				if key.IsPluginKey() {
+					m.persistItemProbe(pctx, key, info)
+				}
+			}()
+		}
 		return
 	}
-	info := g.infoSnapshot()
+	selector := ""
+	if s.prefer != "" && !isAutoVersionSelector(s.prefer) && g.res.MatchesVersion(s.prefer) {
+		if g.res.VersionSelector != "" && !isAutoVersionSelector(g.res.VersionSelector) {
+			selector = g.res.VersionSelector
+		} else {
+			selector = s.prefer
+		}
+	}
 	rec := resumeRecord{
 		userID:           s.ident.userID,
 		key:              s.ident.key,
 		release:          g.res.Release,
 		profile:          s.profileKey,
 		originalLanguage: s.originalLanguage,
+		versionSelector:  selector,
 		size:             g.src.Size(),
 		duration:         info.Duration,
 		updatedAt:        m.now(),
@@ -1726,6 +2445,10 @@ func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
 		defer cancel()
 		if err := m.resume.putWithProbe(ctx, rec, nzb, points, info); err != nil {
 			m.log.Warn("save resume record failed", "key", rec.key, "err", err)
+		}
+		m.persistReleaseProbe(ctx, rec.release, nzb, info)
+		if rec.key.IsPluginKey() {
+			m.persistItemProbe(ctx, rec.key, info)
 		}
 	}()
 }
@@ -1756,8 +2479,10 @@ func (m *Manager) resumePoint(ctx context.Context, userID int64, key core.Rating
 		if title != nil && (!releaseMatchesTitle(live.Release, title) || !payloadMatchesTitle(live.NZB, title)) {
 			return nil, nil
 		}
-		if pts, err := m.resume.loadIndex(ctx, userID, key, live.Release.ID); err == nil {
-			live.Keyframes = pts
+		if payload {
+			if pts, err := m.resume.loadIndex(ctx, userID, key, live.Release.ID); err == nil {
+				live.Keyframes = pts
+			}
 		}
 		return live, nil
 	}
@@ -1785,9 +2510,11 @@ func (m *Manager) resumePoint(ctx context.Context, userID int64, key core.Rating
 		m.resume.notePayloadChecked(rec.nzbHash, key)
 	}
 	point := rec.point(nzb)
-	point.Keyframes, err = m.resume.loadIndex(ctx, userID, key, rec.releaseID)
-	if err != nil {
-		return nil, err
+	if payload {
+		point.Keyframes, err = m.resume.loadIndex(ctx, userID, key, rec.releaseID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return point, nil
 }
@@ -1857,7 +2584,7 @@ func (m *Manager) resumeFor(ctx context.Context, user *core.User, key core.Ratin
 	if rp.profileKey != profileKey(prof) || !rememberedOriginalAudioCurrent(prof, rp.originalLanguage, current, rp.Release) || !rememberedCodecCurrent(rp.Release, caps) || !m.resumeSourceAllowed(rp.Release) || !sourceFitsBitrate(rp.Size, rp.Duration, 0, caps.MaxBitrateKbps) {
 		return nil, nil
 	}
-	if probe := m.persistedProbeHash(ctx, user.ID, key, rp.Release.ID, rp.payloadHash()); probe != nil && !rememberedInfoCodecCurrent(probe.info, caps) {
+	if probe := m.persistedProbeInfoHash(ctx, user.ID, key, rp.Release.ID, rp.payloadHash()); probe != nil && !rememberedInfoCodecCurrent(probe.info, caps) {
 		return nil, nil
 	}
 	rp.Profile = prof.Name // name from the profile object, not the stored column
@@ -1936,7 +2663,39 @@ func recoverableSourceFailure(err error) bool {
 	return errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// probedAudioAcceptable reports whether a probed foreign-title release carries
+func audioExcluded(excluded []core.Release, rel core.Release) bool {
+	for _, ex := range excluded {
+		if core.SameReleaseContent(ex, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) viewerAudioPreferences(ctx context.Context, u core.User) (audioLanguages []string, preferOriginal bool) {
+	audioLanguages = u.AudioLanguages
+	preferOriginal = u.PreferOriginal
+	if m.deps.ViewerAudioPreferences == nil || u.ID <= 0 {
+		return audioLanguages, preferOriginal
+	}
+	langs, prefOrig := m.deps.ViewerAudioPreferences(ctx, u.ID)
+	if len(langs) > 0 {
+		audioLanguages = langs
+	}
+	if prefOrig {
+		preferOriginal = true
+	}
+	return audioLanguages, preferOriginal
+}
+
+func (m *Manager) effectiveResolveUser(ctx context.Context, u core.User) core.User {
+	langs, prefOrig := m.viewerAudioPreferences(ctx, u)
+	u.AudioLanguages = langs
+	u.PreferOriginal = prefOrig
+	return u
+}
+
+// probedAudioAcceptable reports whether a probed release carries
 // at least one audio stream in the viewer's wanted language (or an untagged
 // audio stream). When every audio stream is explicitly tagged in a non-wanted
 // language (e.g. a Spanish/Portuguese ".DUAL" release on an English server),
@@ -1947,8 +2706,14 @@ func (m *Manager) probedAudioAcceptable(s *session, profile core.QualityProfile,
 		return true
 	}
 	orig := strings.TrimSpace(s.title.Language)
-	if orig == "" {
-		return true
+	if orig == "" && s.title.ShowKey != 0 && m.deps.Catalog != nil {
+		if cached, ok := m.deps.Catalog.(interface {
+			CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+		}); ok {
+			if show, err := cached.CachedGet(m.ctx, s.title.ShowKey); err == nil && show != nil {
+				orig = strings.TrimSpace(show.Language)
+			}
+		}
 	}
 	// The profile's Language (Radarr-style) decides first: Any accepts
 	// every probed track, a specific language is the wanted one.
@@ -1956,27 +2721,32 @@ func (m *Manager) probedAudioAcceptable(s *session, profile core.QualityProfile,
 	if profileLang == core.ProfileLanguageAny {
 		return true
 	}
+	userAudio, preferOriginal := m.viewerAudioPreferences(m.ctx, s.user)
+	specificProfileLang := profileLang != "" && profileLang != core.ProfileLanguageOriginal && releaseparse.KnownLanguage(profileLang)
 	var wanted []string
 	switch {
-	case profileLang != "" && profileLang != core.ProfileLanguageOriginal && releaseparse.KnownLanguage(profileLang):
+	case specificProfileLang:
 		wanted = append(wanted, profileLang)
+		if profile.EffectiveAudioLanguageMode() == core.AudioLanguageModePreferred && len(userAudio) > 0 {
+			wanted = append(wanted, userAudio...)
+		}
 	case len(profile.PreferredLanguages) > 0:
 		wanted = append(wanted, profile.PreferredLanguages...)
-	case len(s.user.AudioLanguages) > 0:
-		wanted = append(wanted, s.user.AudioLanguages...)
+	case len(userAudio) > 0:
+		wanted = append(wanted, userAudio...)
+	case profileLang == core.ProfileLanguageOriginal || preferOriginal:
+		// Preferring original language must not fall back to Catalog.Language.
 	default:
 		if serverLang := strings.TrimSpace(m.config().Catalog.Language); serverLang != "" {
 			base, _, _ := strings.Cut(serverLang, "-")
 			wanted = append(wanted, base)
 		}
 	}
+	if !specificProfileLang && (profileLang == core.ProfileLanguageOriginal || preferOriginal) && orig != "" {
+		wanted = append(wanted, orig)
+	}
 	if len(wanted) == 0 {
 		return true
-	}
-	for _, w := range wanted {
-		if releaseparse.LanguageMatch(orig, w) != releaseparse.LanguageNoMatch {
-			return true
-		}
 	}
 	audioCount := 0
 	for _, st := range info.Streams {

@@ -189,6 +189,29 @@ func (p *Pairing) register(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"client_id": id, "client_name": name, "redirect_uris": b.Redirects, "token_endpoint_auth_method": "none", "grant_types": []string{"authorization_code"}, "response_types": []string{"code"}})
 }
 func oauthError(w http.ResponseWriter, code string) { writeJSON(w, 400, map[string]any{"error": code}) }
+
+// canonicalScope parses an RFC 6749 §3.3 space-delimited scope list
+// (clients built from scopes_supported ask for "read full", #651).
+// "full" includes "read", so a valid list collapses to that one grant;
+// any unknown scope rejects the request rather than being dropped.
+// An absent scope keeps the historical default of "full".
+func canonicalScope(raw string) (string, bool) {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return "full", true
+	}
+	granted := "read"
+	for _, f := range fields {
+		switch f {
+		case "read":
+		case "full":
+			granted = "full"
+		default:
+			return "", false
+		}
+	}
+	return granted, true
+}
 func (p *Pairing) authorize(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(405)
@@ -200,10 +223,7 @@ func (p *Pairing) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	client, redirect, challenge := q.Get("client_id"), q.Get("redirect_uri"), q.Get("code_challenge")
-	scope := q.Get("scope")
-	if scope == "" {
-		scope = "full"
-	}
+	scope, scopeOK := canonicalScope(q.Get("scope"))
 	resource := q.Get("resource")
 	if resource == "" {
 		resource = absoluteURL(r, "/ether/mcp")
@@ -219,7 +239,7 @@ func (p *Pairing) authorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	decoded, e := base64.RawURLEncoding.DecodeString(challenge)
-	if err != nil || !found || q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" || e != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != challenge || (scope != "read" && scope != "full") || resource != absoluteURL(r, "/ether/mcp") || len(q.Get("state")) > 1024 {
+	if err != nil || !found || q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" || e != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != challenge || !scopeOK || resource != absoluteURL(r, "/ether/mcp") || len(q.Get("state")) > 1024 {
 		oauthError(w, "invalid_request")
 		return
 	}

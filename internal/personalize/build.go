@@ -830,13 +830,14 @@ func (e *Engine) clearOwnerRows() {
 			v.at = time.Time{}
 		}
 	}
+	e.layoutVer++
 	e.mu.Unlock()
 	e.memoMu.Lock()
 	e.memo = map[memoKey]*memoEntry{}
 	e.memoMu.Unlock()
 }
 
-func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, d core.HomeLayout) (prefix, scope string) {
+func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, hc core.HubContext, d core.HomeLayout) (prefix, scope string) {
 	raw, _ := json.Marshal(d)
 	hash := fnv.New64a()
 	_, _ = hash.Write(raw)
@@ -844,7 +845,8 @@ func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, d core.H
 	if e.opts.CatalogRulesRevision != nil {
 		ruleRevision = e.opts.CatalogRulesRevision(user)
 	}
-	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + string(section) + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedLibraries, user.IsOwner)
+	target := layoutTargetForContext(section, hc)
+	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + target + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedLibraries, user.IsOwner)
 	prefix = strconv.FormatInt(user.ID, 10) + "|"
 	return prefix, scope
 }
@@ -853,7 +855,7 @@ func (e *Engine) cachedOwnerCollection(user *core.User, hc core.HubContext, sect
 	if user == nil || collID == "" || e.opts.Collections == nil {
 		return core.CollectionRow{}, false
 	}
-	prefix, scope := e.ownerScopeKey(user, section, d)
+	prefix, scope := e.ownerScopeKey(user, section, hc, d)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
 	ent := e.owner[key]
@@ -888,7 +890,9 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 	if e.opts.Collections == nil {
 		return nil, 0
 	}
-	prefix, scope := e.ownerScopeKey(user, section, d)
+	target := layoutTargetForContext(section, hc)
+	homeTarget := target == surfHome
+	prefix, scope := e.ownerScopeKey(user, section, hc, d)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
 	ent := e.owner[key]
@@ -902,7 +906,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 		ent.loading = true
 		ent.done = make(chan struct{})
 		u := *user
-		go e.fetchOwnerRows(key, &u, hc, ent, placedCollections(d, user.ID, sectionName(section)))
+		go e.fetchOwnerRows(key, &u, hc, ent, placedCollections(d, user.ID, target))
 	}
 	done, have := ent.done, !ent.at.IsZero()
 	if !have {
@@ -928,10 +932,19 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 	e.mu.Lock()
 	rows, at, layoutOnly := ent.rows, ent.at, ent.layoutOnly
 	e.mu.Unlock()
+	needSelected := len(layoutOnly) > 0
+	if !needSelected {
+		for _, cr := range rows {
+			if homeTarget && !cr.HomeRow || !homeTarget && !cr.SectionRow {
+				needSelected = true
+				break
+			}
+		}
+	}
 	var selected map[string]bool
-	if len(layoutOnly) > 0 {
+	if needSelected {
 		selected = map[string]bool{}
-		for _, id := range selectedCollections(d, user.ID, sectionName(section), hc) {
+		for _, id := range selectedCollections(d, user.ID, target, hc) {
 			selected[id] = true
 		}
 	}
@@ -940,10 +953,29 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 		if layoutOnly[cr.CollectionID] && !selected[cr.CollectionID] {
 			continue
 		}
+		natural := cr.HomeRow
+		if !homeTarget {
+			natural = cr.SectionRow
+		}
+		if !natural {
+			if !selected[cr.CollectionID] {
+				continue
+			}
+			// A collection explicitly placed in this page's layout opts into
+			// this surface even when its Studio targets only enabled the other
+			// surface (HomeRowsFor already loaded it, skipping LayoutRow).
+			if homeTarget {
+				cr.HomeRow = true
+				cr.Hub.Promoted = true
+				cr.Hub.Context = "hub.home.collection"
+			} else {
+				cr.SectionRow = true
+			}
+		}
 		if !collectionScheduleAllows(d, user.ID, section, hc, cr) {
 			continue
 		}
-		if c := e.ownerCandidate(cr, section, user); c != nil {
+		if c := e.ownerCandidate(cr, section, homeTarget, user); c != nil {
 			out = append(out, c)
 		}
 	}
@@ -1014,9 +1046,17 @@ func (e *Engine) fetchOwnerRows(key string, user *core.User, hc core.HubContext,
 // viewer override for the row that sets its own When replaces it; the
 // layout pass applies that When.
 func collectionScheduleAllows(d core.HomeLayout, user int64, section core.MediaType, hc core.HubContext, cr core.CollectionRow) bool {
-	row := core.HomeRow{HubID: "collection." + cr.CollectionID, Kind: KindCollectionPrefix + cr.CollectionID}
-	if p, layer := effectiveHomePolicy(d, user, sectionName(section), row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
-		return true
+	target := layoutTargetForContext(section, hc)
+	if strings.HasPrefix(cr.CollectionID, "plugin:") {
+		row := core.HomeRow{HubID: cr.CollectionID, Kind: cr.CollectionID}
+		if p, layer := effectiveHomePolicy(d, user, target, row); layer == "override" && p != nil && p.When != nil && p.Row == cr.CollectionID {
+			return true
+		}
+	} else {
+		row := core.HomeRow{HubID: "collection." + cr.CollectionID, Kind: KindCollectionPrefix + cr.CollectionID}
+		if p, layer := effectiveHomePolicy(d, user, target, row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
+			return true
+		}
 	}
 	sc := cr.Schedule
 	if draft, ok := d.CollectionSchedules[cr.CollectionID]; ok {
@@ -1037,9 +1077,9 @@ func collectionRowID(row string) string {
 }
 
 // ownerCandidate adapts an owner collection row for this screen.
-func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, user *core.User) *candRow {
+func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, homeTarget bool, user *core.User) *candRow {
 	const collectionMinItems = 3
-	if section == "" && !cr.HomeRow || section != "" && !cr.SectionRow {
+	if homeTarget && !cr.HomeRow || !homeTarget && !cr.SectionRow {
 		return nil
 	}
 	if len(cr.Hub.Items) == 0 {
@@ -1060,7 +1100,13 @@ func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, u
 			return nil
 		}
 	}
-	if hub.ID == "" {
+	kind := KindCollectionPrefix + cr.CollectionID
+	if strings.HasPrefix(cr.CollectionID, "plugin:") {
+		kind = cr.CollectionID
+		if hub.ID == "" {
+			hub.ID = cr.CollectionID
+		}
+	} else if hub.ID == "" {
 		hub.ID = "collection." + cr.CollectionID
 	}
 	e.mu.Lock()
@@ -1078,7 +1124,7 @@ func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, u
 		items = append(items, candItem{t: t, base: rankScore(i, len(hub.Items)), fit: fit, qual: quality(&t), reason: why})
 	}
 	desc := hub.Title
-	c := &candRow{kind: KindCollectionPrefix + cr.CollectionID, id: hub.ID, title: hub.Title,
+	c := &candRow{kind: kind, id: hub.ID, title: hub.Title,
 		reason: "Owner collection “" + desc + "”, targeted at this viewer.", context: "collection",
 		source: core.RowSourceOwner, items: items, minItems: collectionMinItems, keepOrder: true, scale: 1, hub: &hub}
 	return c

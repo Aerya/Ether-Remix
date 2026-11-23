@@ -55,6 +55,10 @@ func main() {
 }
 ```
 
+## Flows: events and actions
+
+Declare `CapEvents` with `Contributes.Events.Publish` to emit schema-validated custom events to Ether Flows via `ctx.PublishEvent(key, payload, correlation)` (remote `POST /ether/plugin-host/events/publish`, rate-limited to 30/min). Declare `CapFlowActions` with `Contributes.FlowActions` and implement `Routes.FlowAction` to handle `POST /ether/v1/flow-actions/{key}` (or a custom declared `/ether/...` route); `FlowActionRequest.IdempotencyKey` carries `X-Ether-Idempotency-Key` for safe deduplication and `FlowActionRequest.DryRun` indicates a test/dry run.
+
 ## WS8b interoperability test
 
 Once `internal/plugins/remote` is present, run

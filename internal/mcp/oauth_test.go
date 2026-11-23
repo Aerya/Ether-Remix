@@ -131,6 +131,23 @@ func TestOAuthFlow(t *testing.T) {
 	if w := call(oauth, "POST", "/ether/oauth/token", form.Encode()); w.Code != 400 {
 		t.Fatalf("code reuse: %d", w.Code)
 	}
+	// RFC 6749 scopes are a space-delimited list: "read full" (what a
+	// client built from scopes_supported sends) grants "full", and an
+	// unknown scope in the list still rejects the request (#651).
+	qMulti := url.Values{"client_id": {client}, "redirect_uri": {redirect}, "response_type": {"code"}, "scope": {"read full"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"test"}, "resource": {resource}}
+	multi := call(oauth, "GET", "/ether/oauth/authorize?"+qMulti.Encode(), "")
+	if multi.Code != 303 {
+		t.Fatalf("multi-scope authorize: %d %s", multi.Code, multi.Body)
+	}
+	multiLoc, _ := url.Parse(multi.Header().Get("Location"))
+	multiDetails := call(console, "GET", "/authorization?request="+multiLoc.Query().Get("request"), "")
+	if multiDetails.Code != 200 || decode(multiDetails)["scope"] != "full" {
+		t.Fatalf("multi-scope details %d %s", multiDetails.Code, multiDetails.Body)
+	}
+	qMulti.Set("scope", "read bogus")
+	if w := call(oauth, "GET", "/ether/oauth/authorize?"+qMulti.Encode(), ""); w.Code != 400 {
+		t.Fatalf("unknown scope authorize: %d", w.Code)
+	}
 	// A denied request never produces a code, and retains the client's state.
 	another := call(oauth, "GET", "/ether/oauth/authorize?"+q.Encode(), "")
 	if another.Code != 303 {

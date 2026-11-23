@@ -68,7 +68,7 @@ func TestIPTVHEVCProviderDecision(t *testing.T) {
 type fragmentedLiveFixture struct{ fakeHLS }
 
 func (f *fragmentedLiveFixture) ServePlaylist(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2,\n00000.m4s\n")
+	fmt.Fprint(w, "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2,\n00000.m4s\n#EXTINF:2,\n00001.m4s\n")
 }
 func TestIPTVFragmentedRelayRoutes(t *testing.T) {
 	s := testService(t, Options{})

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,8 +39,11 @@ func TitleAllowed(policy AccessPolicy, viewer *core.User, title *core.Title) boo
 	if title == nil || title.Adult {
 		return false
 	}
-	if viewer != nil && contentrating.Exceeds(title.ContentRating, viewer.MaxContentRating) {
-		return false
+	if viewer != nil {
+		enf := contentrating.EffectiveEnforcement(title.EnforcementRating, title.ContentRating, title.Adult, title.Keywords)
+		if contentrating.EnforceExceeds(enf, viewer.MaxContentRating) {
+			return false
+		}
 	}
 	return policy == nil || policy.Allowed(viewer, title)
 }
@@ -108,10 +112,13 @@ func (v Visibility) TitleAllowed(viewer *core.User, title *core.Title) bool {
 		return true
 	}
 	id, ok := v.SectionFor(title.Type)
-	if !ok || SectionAllowed(viewer, id) {
-		return true
+	if !ok {
+		switch title.Type {
+		case core.TypeMovie, core.TypeShow, core.TypeSeason, core.TypeEpisode:
+			return v.ThemeGrant != nil && v.ThemeGrant(viewer, title)
+		}
 	}
-	return v.ThemeGrant != nil && v.ThemeGrant(viewer, title) // PSE-HOOK: bibliothèque Remix accordée — voir docs/pse/FORK.fr.md
+	return !ok || SectionAllowed(viewer, id) || (v.ThemeGrant != nil && v.ThemeGrant(viewer, title))
 }
 
 // Playable checks inherited show policy without requiring discovery evidence.
@@ -304,7 +311,17 @@ func MetadataOverlayRatingAllowed(viewer *core.User, catalogue, overlay string) 
 	if viewer == nil || viewer.MaxContentRating == "" || overlay == "" {
 		return true
 	}
-	return !contentrating.Exceeds(SaferMetadataRating(catalogue, overlay), viewer.MaxContentRating)
+	return !contentrating.EnforceExceeds(SaferMetadataRating(catalogue, overlay), viewer.MaxContentRating)
+}
+
+// MetadataOverlayTitleAllowed combines title's mapped enforcement rating with
+// a cached metadata overlay's rating under viewer's content-rating cap.
+func MetadataOverlayTitleAllowed(viewer *core.User, title *core.Title, overlay string) bool {
+	if title == nil {
+		return false
+	}
+	enf := contentrating.EffectiveEnforcement(title.EnforcementRating, title.ContentRating, title.Adult, title.Keywords)
+	return MetadataOverlayRatingAllowed(viewer, enf, overlay)
 }
 
 // DownloadsAllowed is shared capability admission; handlers still enforce it.
@@ -352,6 +369,10 @@ type Binding[R any] struct {
 	FailKey  core.RatingKey
 	FailErr  error
 	FailedAt time.Time
+	// ManifestIP/ManifestAt: the client address and time an authenticated
+	// request last received this binding's stream manifest.
+	ManifestIP netip.Addr
+	ManifestAt time.Time
 }
 
 type QueueItem struct {
@@ -367,6 +388,8 @@ type PlayQueue struct {
 	Items            []QueueItem
 	Original         []QueueItem // order before shuffle
 	Selected         int         // index into items
+	BaseOffset       int         // items preceding Items[0] when windowed to PlaylistExpandLimit
+	TailCount        int         // items following Items[len-1] when windowed to PlaylistExpandLimit
 	Shuffled         bool
 	SourceURI        string
 	PlaylistID       core.RatingKey
@@ -395,6 +418,8 @@ type storedQueue struct {
 	Items         []storedItem   `json:"items"`
 	Original      []storedItem   `json:"original,omitempty"`
 	Selected      int            `json:"selected"`
+	BaseOffset    int            `json:"baseOffset,omitempty"`
+	TailCount     int            `json:"tailCount,omitempty"`
 	Shuffled      bool           `json:"shuffled,omitempty"`
 	SourceURI     string         `json:"sourceURI,omitempty"`
 	PlaylistID    core.RatingKey `json:"playlistID,omitempty"`
@@ -425,7 +450,7 @@ func fromStored(items []storedItem) []QueueItem {
 
 func EncodeQueue(q *PlayQueue) (string, error) {
 	b, err := json.Marshal(storedQueue{ClientID: q.ClientID, Items: toStored(q.Items), Original: toStored(q.Original),
-		Selected: q.Selected, Shuffled: q.Shuffled, SourceURI: q.SourceURI, PlaylistID: q.PlaylistID,
+		Selected: q.Selected, BaseOffset: q.BaseOffset, TailCount: q.TailCount, Shuffled: q.Shuffled, SourceURI: q.SourceURI, PlaylistID: q.PlaylistID,
 		PlaylistTitle: q.PlaylistTitle, Version: q.Version, LastAdded: q.LastAdded, LiveSession: q.LiveSession})
 	return string(b), err
 }
@@ -436,7 +461,7 @@ func DecodeQueue(id, userID, rev, updated int64, data string) (*PlayQueue, error
 		return nil, err
 	}
 	return &PlayQueue{ID: id, UserID: userID, ClientID: sq.ClientID, Items: fromStored(sq.Items),
-		Original: fromStored(sq.Original), Selected: sq.Selected, Shuffled: sq.Shuffled, SourceURI: sq.SourceURI,
+		Original: fromStored(sq.Original), Selected: sq.Selected, BaseOffset: sq.BaseOffset, TailCount: sq.TailCount, Shuffled: sq.Shuffled, SourceURI: sq.SourceURI,
 		PlaylistID: sq.PlaylistID, PlaylistTitle: sq.PlaylistTitle, Version: sq.Version, LastAdded: sq.LastAdded, LiveSession: sq.LiveSession,
 		UpdatedAt: time.UnixMilli(updated), Rev: rev}, nil
 }
@@ -521,14 +546,15 @@ type DownloadItem struct {
 	// previous Run's.
 	Run int64
 
-	Path       string
-	Size       int64
-	ReadyAt    time.Time
-	VideoCodec string
-	AudioCodec string
-	Duration   time.Duration
-	Bandwidth  int // requested maxVideoBitrate, kbps
-	Burn       bool
+	Path          string
+	Size          int64
+	ReadyAt       time.Time
+	VideoCodec    string
+	AudioCodec    string
+	Duration      time.Duration
+	Bandwidth     int // requested maxVideoBitrate, kbps
+	Burn          bool
+	LimitReserved bool // AdmitDownload inserted a fresh usage row for this item
 }
 
 type DownloadQueue struct {
@@ -572,13 +598,15 @@ type StartHintKey struct {
 
 // StreamBinding is one Plex-visible stream id. WireID is zero on bind;
 // BindStream assigns it. SessionID is empty for library metadata and is
-// the broker session id after Open.
+// the broker session id after Open. Estimated is true when the id was issued
+// from pre-probe placeholder or estimated metadata rather than probed tracks.
 type StreamBinding struct {
 	WireID    int64
 	SessionID string
 	Key       core.RatingKey
 	Index     int
 	Info      core.StreamInfo
+	Estimated bool
 }
 
 // PlanAdmission is the source and the version and track selections for one
@@ -631,6 +659,7 @@ type PlaybackActivity struct {
 	Device, DeviceName, Model, Vendor, SessionID, RemoteIP string
 	ProfileName                                            string
 	Remote                                                 bool
+	Secure                                                 bool
 	Key                                                    core.RatingKey
 	State                                                  string
 	Offset, Duration                                       time.Duration
@@ -913,6 +942,7 @@ type PlayQueues interface {
 	Len() int
 	FollowingPlayable(userID int64, key core.RatingKey, playable func(core.RatingKey) bool) core.RatingKey
 	TimelineQueue(user int64, client string, key core.RatingKey, raw string, present bool) core.RatingKey
+	ActiveQueueRole(userID int64, clientID string, key core.RatingKey, maxAge time.Duration) int
 }
 
 // VersionFlows stores version-picker flow snapshots.
@@ -1069,6 +1099,16 @@ type TouchableSession interface {
 type EncoderStatusSession interface {
 	EncoderStatus() *core.EncoderStatus
 }
+
+// Optional live-delivery views of an HLS session: a frontend that reports
+// what a session is actually sending (Plex /status/sessions) reads them.
+type (
+	DecisionSession      interface{ Decision() Decision }
+	DeliveryInfoSession  interface{ Info() MediaInfo }
+	ProtocolSession      interface{ Protocol() string }
+	ContainerSession     interface{ Container() string }
+	HWAcceleratedSession interface{ HWAccelerated() bool }
+)
 
 // ProtocolStopper stops all active sessions for a frontend protocol.
 type ProtocolStopper interface {
@@ -1241,10 +1281,11 @@ type DiscoveryCandidate struct {
 // set; each frontend adds only its own visibility, so a query finds the same
 // titles in the same order on Plex, Jellyfin, Emby and the rest.
 type SearchSources struct {
-	Catalog  func(context.Context, string, []core.MediaType, int) ([]core.Title, error)
-	Natural  func(context.Context, *core.User, string, int) ([]core.Title, bool)
-	Familiar func(context.Context, *core.User, []core.RatingKey) map[core.RatingKey]int
-	Vibe     VibeSource
+	Catalog      func(context.Context, string, []core.MediaType, int) ([]core.Title, error)
+	PeopleTitles func(context.Context, *core.User, string, int) ([]core.Title, error)
+	Natural      func(context.Context, *core.User, string, int) ([]core.Title, bool)
+	Familiar     func(context.Context, *core.User, []core.RatingKey) map[core.RatingKey]int
+	Vibe         VibeSource
 	// Details reads in full the titles a candidate search returned partial
 	// (core.SearchCandidates). Nil leaves every search reading its results
 	// in full.
@@ -1257,6 +1298,8 @@ type SearchResults struct {
 	Collection       *core.Collection
 	Items            []core.Title
 	CollectionSearch bool
+	// AIItems is the leading prefix of Items produced by descriptive AI search.
+	AIItems int
 }
 
 // IssuedTrackIdentity is the selection resolvePlaySelection already holds
@@ -1771,35 +1814,48 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 // PickAudio selects an audio stream position, or -1 when none exists.
 func PickAudio(info core.MediaInfo, langs []string) int {
 	for _, lang := range langs {
-		// Within one wanted language the best tier wins (exact before
+		// Within one wanted language, non-commentary/non-AD always beats
+		// commentary/AD; then the best language tier wins (exact before
 		// generic-want×regional before regional-want×generic); preference
 		// order across languages still dominates.
-		best, bestTier := -1, 0
+		best, bestTier, bestPenalized := -1, 0, false
 		for i, st := range info.Streams {
 			if st.Type != "audio" {
 				continue
 			}
-			if tier := langtag.MatchTier(lang, st.Language); tier > bestTier {
-				best, bestTier = i, tier
+			tier := langtag.MatchTier(lang, st.Language)
+			if tier == 0 {
+				continue
+			}
+			penalized := langtag.TrackRole(st.Title, st.Commentary, st.VisualImpaired) != langtag.RoleMain
+			if best < 0 || (!penalized && bestPenalized) || (penalized == bestPenalized && tier > bestTier) {
+				best, bestTier, bestPenalized = i, tier, penalized
 			}
 		}
 		if best >= 0 {
 			return best
 		}
 	}
-	first := -1
+	first, firstPenalized := -1, -1
 	for i, st := range info.Streams {
 		if st.Type != "audio" {
 			continue
 		}
-		if st.Default {
+		penalized := langtag.TrackRole(st.Title, st.Commentary, st.VisualImpaired) != langtag.RoleMain
+		if st.Default && !penalized {
 			return i
 		}
-		if first < 0 {
+		if !penalized && first < 0 {
 			first = i
 		}
+		if firstPenalized < 0 {
+			firstPenalized = i
+		}
 	}
-	return first
+	if first >= 0 {
+		return first
+	}
+	return firstPenalized
 }
 
 // ResolveSubtitle maps a stored choice onto a stream position, or -1.

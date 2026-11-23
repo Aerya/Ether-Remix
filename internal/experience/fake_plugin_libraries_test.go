@@ -52,10 +52,7 @@ func (f *fakePluginLibraries) Search(context.Context, core.Library, string, fron
 // collection type and level->Jellyfin item-kind map.
 func mediaBrowserPresentation(collection string, itemTypes map[string]string) core.Presentations {
 	p := core.Presentations{}
-	p.MediaBrowser = &struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-	}{CollectionType: collection, ItemTypes: itemTypes}
+	p.MediaBrowser = &core.MediaBrowserPresentation{CollectionType: collection, ItemTypes: itemTypes}
 	return p
 }
 

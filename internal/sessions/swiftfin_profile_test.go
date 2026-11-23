@@ -129,3 +129,57 @@ func TestAndroidTVUnsupportedRangeTranscodes(t *testing.T) {
 		t.Fatalf("unsupported HDR10: %+v %v", d, err)
 	}
 }
+
+// Swiftfin's AVPlayer takes text tracks as HLS renditions. Selecting one moves
+// a direct-playable file onto HLS, which carries it, and keeps the track out
+// of the video decision. A selected bitmap track is still burned in, and the
+// VLC player's sidecar profile keeps direct play.
+func TestSwiftfinAVPlayerSubtitleSelection(t *testing.T) {
+	var body struct {
+		DeviceProfile caps.DeviceProfile `json:"DeviceProfile"`
+	}
+	if err := json.Unmarshal(swiftfinPlaybackInfo, &body); err != nil {
+		t.Fatal(err)
+	}
+	vlc := body.DeviceProfile
+	avplayer := body.DeviceProfile
+	avplayer.SubtitleProfiles = []caps.SubtitleProfile{{Format: "cc_dec", Method: "Embed"}, {Format: "ttml", Method: "Embed"}, {Format: "pgssub", Method: "Encode"}, {Format: "vtt", Method: "Hls"}}
+	build := func(profile caps.DeviceProfile) core.ClientCaps {
+		t.Helper()
+		client, err := (caps.Builder{}).Build(context.Background(), caps.DeviceInfo{Product: "Swiftfin", Platform: "tvOS", Device: "Apple TV"}, profile, nil, "Swiftfin/2.1.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+	no := false
+	info := core.MediaInfo{Container: "mp4", BitrateKbps: 2500, Streams: []core.StreamInfo{
+		{Index: 0, Type: "video", Codec: "h264", Profile: "High", Level: 41, BitDepth: 8, PixelFormat: "yuv420p", Width: 1280, Height: 544, FrameRate: 24, DolbyVisionConfigurationPresent: &no, HDR10Plus: &no},
+		{Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000},
+		{Index: 2, Type: "subtitle", Codec: "subrip", Language: "eng"},
+		{Index: 3, Type: "subtitle", Codec: "hdmv_pgs_subtitle", Language: "eng"},
+	}}
+	broker := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, Transcoder: profileTranscoder{}}}
+	decide := func(client core.ClientCaps, subtitle int) core.Decision {
+		t.Helper()
+		req := frontend.PlanRequest{Protocol: "jellyfin", Caps: client, Intent: frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 1, SubtitleStream: subtitle}}}
+		d, err := broker.decideProfile(&core.PlaySession{Info: info}, req)
+		if err != nil {
+			t.Fatalf("subtitle %d: %v", subtitle, err)
+		}
+		return d
+	}
+	client := build(avplayer)
+	if d := decide(client, -1); d.Kind != core.DecisionDirectPlay {
+		t.Fatalf("no subtitle: %+v", d)
+	}
+	if d := decide(client, 2); d.Kind == core.DecisionDirectPlay || !d.VideoCopy || d.SubtitleStream != -1 || d.BurnSubtitles {
+		t.Fatalf("SRT rendition: %+v", d)
+	}
+	if d := decide(client, 3); !d.BurnSubtitles || d.SubtitleStream != 3 {
+		t.Fatalf("PGS: %+v", d)
+	}
+	if d := decide(build(vlc), 2); d.Kind != core.DecisionDirectPlay {
+		t.Fatalf("VLC sidecar profile: %+v", d)
+	}
+}

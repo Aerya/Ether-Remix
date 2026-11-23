@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
 const browseCacheLimit = 128
@@ -93,7 +94,7 @@ func cacheableBrowse(r *http.Request) bool {
 		return false
 	}
 	p := r.URL.Path
-	if strings.Contains(p, "/Images/") || strings.Contains(p, "/Playback") || strings.Contains(p, "/Download") || strings.Contains(p, "/Subtitles/") || strings.Contains(p, "/Videos/") {
+	if strings.Contains(p, "/Images/") || strings.Contains(p, "/Playback") || strings.Contains(p, "/Download") || strings.Contains(p, "/File") || strings.Contains(p, "/Subtitles/") || strings.Contains(p, "/Videos/") {
 		return false
 	}
 	// Library lists fill personalized shelves after the first response. Caching
@@ -102,7 +103,13 @@ func cacheableBrowse(r *http.Request) bool {
 	if strings.HasSuffix(p, "/Views") || strings.HasSuffix(p, "/UserViews") {
 		return false
 	}
-	return strings.Contains(p, "/Items") || strings.HasSuffix(p, "/NextUp") || strings.HasSuffix(p, "/Search/Hints")
+	// Search responses can reflect superseded search-as-you-type waits or
+	// bounded AI partial/keyword fallbacks before the background AI job caches
+	// its finished set, so search requests must not be frozen in browseCache.
+	if strings.HasSuffix(p, "/Search/Hints") || len(route.Query(r.URL.Query(), "SearchTerm")) > 0 || len(route.Query(r.URL.Query(), "AnyProviderIdEquals")) > 0 || sortByRandom(r) {
+		return false
+	}
+	return strings.Contains(p, "/Items") || strings.HasSuffix(p, "/NextUp")
 }
 
 func browseCacheKey(f frontend.PageFreshness, r *http.Request) string {
@@ -113,8 +120,7 @@ func browseCacheKey(f frontend.PageFreshness, r *http.Request) string {
 		r.Header.Get("X-Emby-Device-Id"),
 		r.Header.Get("X-Emby-Authorization"),
 	}, "\n")))
-	// PSE-HOOK: invalider les réponses mises en cache après un changement de thème — voir docs/pse/FORK.fr.md
-	return fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s", f.Catalog, f.Config, f.Watch, f.Favorite, f.Hidden, f.Listed, f.Images, f.Grants, f.Accounts, f.Safety, f.ArtBucket, frontend.PSEThemesGeneration(), r.URL.RequestURI(), hex.EncodeToString(sum[:8]), r.Header.Get("Accept-Language"))
+	return fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s", f.Catalog, f.Config, f.Watch, f.Favorite, f.Hidden, f.Listed, f.Images, f.Grants, f.Accounts, f.Safety, f.Libraries, f.KindSync, f.Layout, frontend.PSEThemesGeneration(), r.URL.RequestURI(), hex.EncodeToString(sum[:8]), r.Header.Get("Accept-Language"))
 }
 
 type bodyCapture struct {
@@ -135,8 +141,9 @@ func (c *bodyCapture) WriteHeader(code int) {
 
 func (c *bodyCapture) Write(p []byte) (int, error) {
 	if !c.wrote {
-		c.WriteHeader(http.StatusOK)
+		c.code = http.StatusOK
+		c.wrote = true
 	}
-	c.buf.Write(p)
+	_, _ = c.buf.Write(p)
 	return c.ResponseWriter.Write(p)
 }

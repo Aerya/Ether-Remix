@@ -2,6 +2,8 @@ package playback
 
 import (
 	"context"
+	"math"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -451,4 +453,159 @@ func TestBuiltBufferDrainingDryRecoversInsideGrace(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("draining built buffer did not recover before running dry")
 	}
+}
+
+type observingResolver struct {
+	core.Resolver
+	mu         sync.Mutex
+	deliveries []float64
+	stalls     []float64
+}
+
+func (o *observingResolver) ObserveSourceDelivery(_ core.Release, bps float64) {
+	o.mu.Lock()
+	o.deliveries = append(o.deliveries, bps)
+	o.mu.Unlock()
+}
+
+func (o *observingResolver) ObserveSourceStall(_ core.Release, bps float64) {
+	o.mu.Lock()
+	o.stalls = append(o.stalls, bps)
+	o.mu.Unlock()
+}
+
+type controlledDeliverySource struct {
+	core.MediaSource
+	mu       sync.Mutex
+	delivery core.SourceDelivery
+}
+
+func (c *controlledDeliverySource) set(d core.SourceDelivery) {
+	c.mu.Lock()
+	c.delivery = d
+	c.mu.Unlock()
+}
+
+func (c *controlledDeliverySource) SourceDelivery() core.SourceDelivery {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.delivery
+}
+
+func TestSourceDeliveryObserverIgnoresConsumerPacingAndReportsBurstAndStall(t *testing.T) {
+	// Media rate is 800_000 B/s (6.4 Mbps).
+	h := newHarness(t, []*fakeRelease{mkv("A", 80_000_000, 100*time.Second), mkv("B", 10_000_000, 100*time.Second)}, []string{"A", "B"}, func(h *harness, o *Options) { o.SpeedCheckInterval = time.Hour })
+	obs := &observingResolver{Resolver: h.m.deps.Resolver}
+	h.m.deps.Resolver = obs
+
+	ps := h.prepare(owner, movieKey, "observer-pacing")
+	s := h.m.lookup(ps.ID)
+	g := s.current()
+	select {
+	case <-g.indexReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("index fill never finished")
+	}
+	src := &controlledDeliverySource{MediaSource: g.src}
+	g.src = src
+	f := &repairHLS{fakeHLS: h.tr.addHLS(ps.ID), buffer: core.RecoveryBuffer{Position: 0, ReadyUntil: 4 * time.Second}}
+	h.m.deps.HLSLookup = func(string) (core.HLSSession, bool) { return f, true }
+
+	// 1. Initial unthrottled fill burst: 20 MB fetched in 4s Busy across an 8s
+	// wall-clock span -> active burst rate is 5 MB/s, not 2.5 MB/s wall-clock.
+	src.set(core.SourceDelivery{Bytes: 0, Fetches: 0, Busy: 0, Parallel: 8, InFlight: 8})
+	s.recordDelivery(src.SourceDelivery(), h.clock.Now())
+	h.clock.Advance(8 * time.Second)
+	src.set(core.SourceDelivery{Bytes: 20_000_000, Fetches: 28, Busy: 4 * time.Second, Parallel: 8, InFlight: 8})
+	h.m.checkSpeeds()
+
+	obs.mu.Lock()
+	if len(obs.deliveries) != 1 || math.Abs(obs.deliveries[0]-5_000_000) > 1 {
+		t.Fatalf("burst ObserveSourceDelivery = %v, want [5_000_000]", obs.deliveries)
+	}
+	obs.deliveries = nil
+	obs.mu.Unlock()
+
+	// 2. Steady-state consumer-paced playback: past SpeedGrace, 30s HLS buffer
+	// built, single-article top-up trickle at 1x media rate (800_000 B/s).
+	f.buffer = core.RecoveryBuffer{Position: 10 * time.Second, ReadyUntil: 40 * time.Second}
+	h.clock.Advance(25 * time.Second)
+	src.set(core.SourceDelivery{Bytes: 40_000_000, Fetches: 56, Busy: 8 * time.Second, Parallel: 8, InFlight: 1})
+	s.recordDelivery(src.SourceDelivery(), h.clock.Now())
+	h.clock.Advance(10 * time.Second)
+	src.set(core.SourceDelivery{Bytes: 48_000_000, Fetches: 68, Busy: 10 * time.Second, Parallel: 8, InFlight: 1})
+	for range 3 {
+		h.m.checkSpeeds()
+	}
+
+	obs.mu.Lock()
+	if len(obs.deliveries) != 0 || len(obs.stalls) != 0 {
+		t.Fatalf("steady-state consumer pacing reported deliveries=%v stalls=%v, want none", obs.deliveries, obs.stalls)
+	}
+	obs.mu.Unlock()
+
+	// 3. Real starvation: buffer drains to 2s while saturated fetches deliver
+	// only 250_000 B/s (< 800_000 B/s media). Down-failover records ObserveSourceStall.
+	f.buffer = core.RecoveryBuffer{Position: 38 * time.Second, ReadyUntil: 40 * time.Second}
+	h.clock.Advance(25 * time.Second)
+	src.set(core.SourceDelivery{Bytes: 50_000_000, Fetches: 72, Busy: 12 * time.Second, Parallel: 8, InFlight: 8})
+	s.recordDelivery(src.SourceDelivery(), h.clock.Now())
+	feedFetches(s, 3, 64<<10, 400*time.Millisecond, h.clock.Now())
+	h.clock.Advance(10 * time.Second)
+	src.set(core.SourceDelivery{Bytes: 52_500_000, Fetches: 80, Busy: 22 * time.Second, Parallel: 8, InFlight: 8})
+	feedFetches(s, 4, 64<<10, 400*time.Millisecond, h.clock.Now())
+	h.m.checkSpeeds()
+	h.m.checkSpeeds()
+
+	obs.mu.Lock()
+	stalls := append([]float64(nil), obs.stalls...)
+	obs.mu.Unlock()
+	if len(stalls) == 0 || math.Abs(stalls[0]-250_000) > 1 {
+		t.Fatalf("starvation ObserveSourceStall = %v, want [250_000]", stalls)
+	}
+	h.m.Close()
+
+	// 4. Direct-play viewer timeline stall (no HLS): mid-play buffering >= 3s
+	// while source delivery is below media rate records ObserveSourceStall,
+	// whereas post-seek rebuffering does not.
+	h2 := newHarness(t, []*fakeRelease{mkv("A", 80_000_000, 100*time.Second)}, []string{"A"}, func(h *harness, o *Options) { o.SpeedCheckInterval = time.Hour })
+	obs2 := &observingResolver{Resolver: h2.m.deps.Resolver}
+	h2.m.deps.Resolver = obs2
+	ps2 := h2.prepare(owner, movieKey, "observer-timeline")
+	s2 := h2.m.lookup(ps2.ID)
+	g2 := s2.current()
+	select {
+	case <-g2.indexReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("index fill never finished")
+	}
+	src2 := &controlledDeliverySource{MediaSource: g2.src}
+	g2.src = src2
+	src2.set(core.SourceDelivery{Bytes: 0, Fetches: 0, Busy: 0, Parallel: 8, InFlight: 8})
+	s2.recordDelivery(src2.SourceDelivery(), h2.clock.Now())
+	h2.m.PlaybackProgress(owner.ID, "observer-timeline", movieKey, 2*time.Second, "playing")
+	h2.clock.Advance(6 * time.Second)
+	src2.set(core.SourceDelivery{Bytes: 1_800_000, Fetches: 8, Busy: 6 * time.Second, Parallel: 8, InFlight: 8}) // 300_000 B/s < 800_000 B/s
+	// Post-seek rebuffering (position jumps to 40s) is not a stall.
+	h2.m.PlaybackProgress(owner.ID, "observer-timeline", movieKey, 40*time.Second, "buffering")
+	h2.clock.Advance(4 * time.Second)
+	src2.set(core.SourceDelivery{Bytes: 3_000_000, Fetches: 12, Busy: 10 * time.Second, Parallel: 8, InFlight: 8})
+	h2.m.PlaybackProgress(owner.ID, "observer-timeline", movieKey, 40*time.Second, "playing")
+	obs2.mu.Lock()
+	if len(obs2.stalls) != 0 {
+		t.Fatalf("post-seek rebuffering recorded ObserveSourceStall: %v", obs2.stalls)
+	}
+	obs2.mu.Unlock()
+	// Mid-play buffering at the current playhead for 4s records ObserveSourceStall.
+	h2.m.PlaybackProgress(owner.ID, "observer-timeline", movieKey, 40*time.Second, "buffering")
+	h2.clock.Advance(4 * time.Second)
+	src2.set(core.SourceDelivery{Bytes: 4_200_000, Fetches: 16, Busy: 14 * time.Second, Parallel: 8, InFlight: 8})
+	h2.m.PlaybackProgress(owner.ID, "observer-timeline", movieKey, 40*time.Second, "playing")
+	obs2.mu.Lock()
+	stalls2 := append([]float64(nil), obs2.stalls...)
+	obs2.mu.Unlock()
+	if len(stalls2) != 1 || math.Abs(stalls2[0]-300_000) > 1 {
+		t.Fatalf("timeline ObserveSourceStall = %v, want [300_000]", stalls2)
+	}
+	h2.m.Close()
 }

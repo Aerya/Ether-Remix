@@ -116,7 +116,8 @@
       "sendTest": true,
       "selectable": true,
       "formats": [
-        "text"
+        "text",
+        "embed"
       ],
       "maxLength": 1900
     }
@@ -161,7 +162,8 @@
       "sendTest": true,
       "selectable": true,
       "formats": [
-        "text"
+        "text",
+        "embed"
       ],
       "maxLength": 3900
     }
@@ -388,6 +390,181 @@
       "selectable": true,
       "formats": [
         "text"
+      ]
+    }
+  },
+  {
+    "kind": "channelKind",
+    "id": "pushover",
+    "owner": "builtin",
+    "label": {
+      "source": "Pushover"
+    },
+    "hint": {
+      "source": "Create an application in Pushover and enter its API token along with your user or group key."
+    },
+    "icon": "smartphone",
+    "order": 80,
+    "meta": {
+      "fields": [
+        {
+          "key": "token",
+          "kind": "secret",
+          "label": {
+            "source": "Application token"
+          },
+          "hint": {},
+          "required": true,
+          "secret": true
+        },
+        {
+          "key": "user",
+          "kind": "secret",
+          "label": {
+            "source": "User or group key"
+          },
+          "hint": {},
+          "required": true,
+          "secret": true
+        },
+        {
+          "key": "device",
+          "kind": "text",
+          "label": {
+            "source": "Device name"
+          },
+          "hint": {}
+        },
+        {
+          "key": "sound",
+          "kind": "text",
+          "label": {
+            "source": "Notification sound"
+          },
+          "hint": {}
+        }
+      ],
+      "sendTest": true,
+      "selectable": true,
+      "formats": [
+        "text"
+      ],
+      "maxLength": 1024
+    }
+  },
+  {
+    "kind": "channelKind",
+    "id": "mqtt",
+    "owner": "builtin",
+    "label": {
+      "source": "MQTT broker"
+    },
+    "hint": {
+      "source": "Connect an MQTT 3.1.1 broker for notifications and Home Assistant or lighting automations in Flows."
+    },
+    "icon": "radio",
+    "order": 90,
+    "meta": {
+      "fields": [
+        {
+          "key": "endpoint",
+          "kind": "text",
+          "label": {
+            "source": "Broker host:port"
+          },
+          "hint": {},
+          "required": true,
+          "secret": true,
+          "wide": true
+        },
+        {
+          "key": "tlsMode",
+          "kind": "select",
+          "label": {
+            "source": "Connection security"
+          },
+          "hint": {},
+          "default": "none",
+          "options": [
+            {
+              "value": "none",
+              "label": {
+                "source": "Plain TCP (usually 1883)"
+              }
+            },
+            {
+              "value": "tls",
+              "label": {
+                "source": "TLS (usually 8883)"
+              }
+            }
+          ]
+        },
+        {
+          "key": "username",
+          "kind": "text",
+          "label": {
+            "source": "Username"
+          },
+          "hint": {},
+          "secret": true
+        },
+        {
+          "key": "password",
+          "kind": "secret",
+          "label": {
+            "source": "Password"
+          },
+          "hint": {},
+          "secret": true
+        },
+        {
+          "key": "topic",
+          "kind": "text",
+          "label": {
+            "source": "Default topic"
+          },
+          "hint": {},
+          "required": true,
+          "default": "ether/notifications"
+        },
+        {
+          "key": "clientId",
+          "kind": "text",
+          "label": {
+            "source": "Client ID"
+          },
+          "hint": {}
+        },
+        {
+          "key": "qos",
+          "kind": "select",
+          "label": {
+            "source": "QoS"
+          },
+          "hint": {},
+          "default": "0",
+          "options": [
+            {
+              "value": "0",
+              "label": {
+                "source": "At most once (0)"
+              }
+            },
+            {
+              "value": "1",
+              "label": {
+                "source": "At least once (1)"
+              }
+            }
+          ]
+        }
+      ],
+      "sendTest": true,
+      "selectable": true,
+      "formats": [
+        "text",
+        "json"
       ]
     }
   },

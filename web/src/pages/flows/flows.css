@@ -1,0 +1,46 @@
+/* Flows canvas: dotted workspace, smooth node motion, animated live wire. */
+.flow-canvas {
+  background-color: var(--color-bg-subtle);
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--color-fg-subtle) 28%, transparent) 1px,
+    transparent 1.1px
+  );
+  background-size: 22px 22px;
+}
+
+.flow-node {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.flow-wire {
+  transition: stroke-opacity 120ms ease;
+}
+
+.flow-wire-live {
+  animation: flow-wire-dash 700ms linear infinite;
+}
+
+@keyframes flow-wire-dash {
+  to {
+    stroke-dashoffset: -11;
+  }
+}
+
+.flow-port:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-wire-live {
+    animation: none;
+  }
+}
+
+/* Large flow editor drawer: near full width on desktop, full screen on narrow screens. */
+@media (min-width: 640px) {
+  .flow-editor-drawer:not(.sm\:max-w-\[100vw\]) {
+    max-width: min(94vw, 96rem);
+  }
+}

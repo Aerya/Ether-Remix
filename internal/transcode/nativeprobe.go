@@ -33,6 +33,9 @@ const (
 	nativeHeadBytes    = 256 << 10
 	nativeElementLimit = 4 << 20
 	nativeReadBudget   = 16 << 20
+	// DefaultHeaderProbeBudget bounds low-priority container header probes
+	// (MKV EBML/Info/Tracks or MP4 moov).
+	DefaultHeaderProbeBudget = 2 << 20
 )
 
 // Matroska element IDs (https://www.matroska.org/technical/elements.html).
@@ -263,6 +266,32 @@ func ProbeSource(ctx context.Context, src io.ReaderAt, size int64) (*core.MediaI
 		applyMKVTagBitrates(ctx, src, size, m)
 		applyMKVHeaderBitrates(ctx, src, size, m)
 		return m, nil
+	case isISOBMFF(head):
+		return s.mp4()
+	}
+	return nil, incomplete("container not supported natively")
+}
+
+// ProbeHeader probes only container headers (Matroska EBML/Info/Tracks or MP4
+// moov) within a strict byte budget, skipping tail tag/cluster bitrate reads
+// and never invoking ffprobe.
+func ProbeHeader(ctx context.Context, src io.ReaderAt, size int64, budget int) (*core.MediaInfo, error) {
+	if size <= 0 {
+		return nil, incomplete("empty source")
+	}
+	if budget <= 0 {
+		budget = DefaultHeaderProbeBudget
+	}
+	headSize := min(size, int64(nativeHeadBytes), int64(budget))
+	s := &nativeSource{ctx: ctx, src: src, size: size, left: budget}
+	head, err := s.read(0, int(headSize))
+	if err != nil {
+		return nil, err
+	}
+	s.head = head
+	switch {
+	case len(head) >= 4 && binary.BigEndian.Uint32(head) == mkvEBML:
+		return s.matroska()
 	case isISOBMFF(head):
 		return s.mp4()
 	}
@@ -1124,13 +1153,20 @@ func (t mkvTrack) stream(index int) (core.StreamInfo, bool, error) {
 		return core.StreamInfo{}, true, nil
 	}
 	si := core.StreamInfo{Index: index, Title: t.name, Default: t.flagDefault, Forced: t.forced}
+	if t.number > 0 && t.number <= math.MaxInt32 {
+		si.ContainerTrackID = int(t.number)
+	}
 	// libavformat reports the legacy ISO 639-2 Language element, which
-	// mkvmerge writes next to LanguageBCP47. A BCP 47 tag alone is mapped
-	// to the same three-letter form.
+	// mkvmerge writes next to LanguageBCP47. Keep a regional BCP 47 tag
+	// (pt-br, pt-pt, zh-tw, zh-cn) when it refines the legacy language so
+	// regional audio/subtitle preferences match; non-regional tags still
+	// follow legacy Language to match libavformat.
 	si.Language = normalizeLanguage(t.language)
-	if !t.hasLanguage && t.bcp47 != "" {
+	if t.bcp47 != "" {
 		if norm := normalizeBCP47Language(t.bcp47); norm != "" {
-			si.Language = norm
+			if !t.hasLanguage || (strings.Contains(norm, "-") && (si.Language == "" || sameLanguagePrimary(si.Language, norm))) {
+				si.Language = norm
+			}
 		}
 	}
 	var err error

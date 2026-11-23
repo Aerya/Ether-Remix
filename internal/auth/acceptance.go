@@ -21,8 +21,10 @@ const (
 
 // validation is the singleflight result shared by every waiter of one token.
 type validation struct {
-	user *core.User
-	acc  Acceptance
+	user      *core.User
+	acc       Acceptance
+	plexID    int64
+	notShared bool
 }
 
 type receipt struct {

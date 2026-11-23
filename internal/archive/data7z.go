@@ -19,7 +19,6 @@ type Data7zLimits struct {
 }
 
 type data7zPlan struct {
-	ctx                         context.Context
 	coder                       sz7Coder
 	start, packed, skip, memory int64
 	unpacked                    uint64
@@ -49,7 +48,7 @@ func List7zData(ctx context.Context, r io.ReaderAt, size int64, limits Data7zLim
 
 // Open7zData decodes from the member's solid block boundary. The caller must
 // bound the requested offset plus length and propagate cancellation on r.
-func Open7zData(r io.ReaderAt, m Member) (io.Reader, error) {
+func Open7zData(ctx context.Context, r io.ReaderAt, m Member) (io.Reader, error) {
 	if m.Dir {
 		return nil, ErrUnsupported
 	}
@@ -64,7 +63,7 @@ func Open7zData(r io.ReaderAt, m Member) (io.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	dec = data7zContextReader{ctx: p.ctx, r: dec}
+	dec = data7zContextReader{ctx: ctx, r: dec}
 	if _, err = io.CopyN(io.Discard, dec, p.skip); err != nil {
 		return nil, err
 	}

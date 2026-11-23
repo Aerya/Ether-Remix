@@ -1,6 +1,6 @@
 # Samsung DASH playback: issue 483
 
-## Evidence and limits
+## v0.3.10 evidence and limits
 
 The supplied v0.3.10 captures identify Plex for Samsung 5.94.1 on
 UN55TU7000FXZA (`21_KANTSU2E_UHD_BASIC1`) and UN65NU7100
@@ -17,6 +17,70 @@ Consequently we cannot prove the exact MPD or the cause of either TV's rejection
 from these bundles. No Samsung-specific PMS capture is present under
 `testdata/conform/plex`; the available captured PMS MPD is
 `internal/transcode/testdata/dash/pms-start.mpd`.
+
+## v0.3.11/v0.3.12 evidence and v0.3.13 change
+
+The newer bundles retain sanitized MPD facts. v0.3.11 on the 2021
+UN55TU7000FXZA advertises three AVC video representations (0, 2, 3),
+including `avc1.64081f`. v0.3.12 on the 2018 UN65NU7100 advertises
+`hvc1.1.6.L120.90` (1914×1080) alongside AVC rungs 2 and 3 **in the same
+AdaptationSet**. Both use a two-second template, PT4S maximum segment
+duration, PT2S minimum buffer, and video `contentType`. The newer evidence
+supersedes the earlier assumption that manifests already had the PMS shape.
+
+Both bundles finish `start.mpd` with 200 and contain no init/media requests.
+v0.3.11 timelines follow the MPDs within roughly 0.4–1.4 seconds; the
+v0.3.12 captured timeline is roughly 11.8 seconds after the MPD (a warning
+appears at +2 seconds). This supports rejection before media fetching,
+but HTTP captures cannot identify the player's exact rejection reason.
+
+For universal title and extra DASH requests, v0.3.13 selects a trusted `HLSRequest.PMSDASH`
+mode for every product other than `Plex Web`. This covers TV app identities
+without relying on a model allowlist. The mode is retained across remote encoder
+admission and transport. It disables the ladder, fixes the actual
+session grid to five seconds, and renders the existing PMS attribute order:
+video 0 and audio 1 in separate AdaptationSets, no `contentType`,
+`SegmentTemplate timescale="1" duration="5" startNumber="0"`, and
+`maxSegmentDuration="PT10S"` / `minBufferTime="PT10S"`. Relative URL
+placeholders and XML-escaped stream/read grants are preserved. Codec,
+dimensions, bandwidth and audio descriptors continue to describe actual output.
+Sources with unknown duration retain the existing growing/live manifest fallback;
+they cannot claim a full-title static duration.
+
+The repository's DASH-capable TV/console profiles are `HTML TV App` (also
+`Opera TV App`), `PlayStation 4 App` (aliases include `PlayStation 3 App`
+and Mystery 3/4), and `Xbox One`. Samsung's actual profile-extra declares
+DASH despite its built-in Tizen profile having only HLS. LG webOS and
+VIDAA are HTML TV products covered whenever they request DASH; existing
+LG/VIDAA playback fixtures request HLS, so these bundles do **not** establish
+that they currently choose DASH. No Xbox/PlayStation request capture is supplied.
+Browser profiles Web, Firefox and Microsoft Edge also declare DASH.
+
+For every DASH client, the session planner drops a ladder if an encoded rung
+has a different codec family from the primary (notably copied SDR HEVC with
+AVC rungs). The renderer also separates sets if init-derived codec families
+differ. Plex Web retains its single-codec ladder and short-grid startup behavior.
+
+AVC codec derivation already copies the three profile/compatibility/level bytes
+from the actual init's `avcC` without interpreting or changing constraint bits.
+`avc1.64081f` therefore represents avcC bytes `64 08 1f`; it is not a decimal
+conversion bug. The captured source init/SPS is absent, so we cannot verify
+those original bytes. The extended real-mux Samsung test compares the served
+MPD against both avcC and the embedded SPS, including all constraint bits,
+and checks the single-video shape with ABR enabled, AAC/EAC3 target handling,
+authenticated init/media retrieval, and successful decoding. Planner coverage
+checks copied/encoded AVC, copied SDR HEVC, TV shape, and Web ladder retention.
+
+### Separate cold-decision cancellation
+
+v0.3.12's first Clayface decision ends at 02:04:21.022 UTC with status 499,
+`cancelled=true`, duration 30,495 ms, 62 DB queries totaling only 24 ms.
+The request log reports 30.507 s. The playback session starts at 02:04:28.382,
+about 7.35 seconds after cancellation; no Clayface MPD follows. The waiting
+source acquisition outlives the TV's decision request. Sanitized logs omit
+resolver/indexer/probe phase timings, so the remaining ~30.47 seconds cannot
+be assigned to a specific search provider or phase. Resolver latency is outside
+this change and needs separate tracing.
 
 ## Profile handling
 
@@ -42,7 +106,7 @@ The new `client.capabilities` event with `stage=output` records the resolved
 player profile, output protocol and final target codecs, closing this gap.
 No model-name override or new unconditional EAC3 conversion was added.
 
-## Manifest comparison
+## v0.3.10 manifest comparison
 
 | Field | Captured PMS | Reproduced Ether |
 | --- | --- | --- |

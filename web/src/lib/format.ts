@@ -47,6 +47,16 @@ export function formatNumber(n: number, maxFractionDigits = 2): string {
   return new Intl.NumberFormat(getLocale(), { maximumFractionDigits: maxFractionDigits }).format(n);
 }
 
+/** Compact axis numbers ("1M", "500K") so wide counts fit chart gutters. */
+export function formatCompactNumber(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  if (Math.abs(n) < 1000) return formatNumber(n, 0);
+  return new Intl.NumberFormat(getLocale(), {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(n);
+}
+
 export function formatPercent(fraction: number, digits = 0): string {
   if (!Number.isFinite(fraction)) return "—";
   return new Intl.NumberFormat(getLocale(), {

@@ -84,6 +84,33 @@ func IndexerSkipped(ctx context.Context, id string) bool {
 	return ids[id]
 }
 
+type indexerStatusObserverKey struct{}
+
+// WithIndexerStatusObserver attaches a callback notified as each enabled
+// indexer finishes (or is skipped) during a streaming fan-out (SearchWith).
+// Callbacks may run concurrently from multiple indexer goroutines.
+func WithIndexerStatusObserver(ctx context.Context, fn func(IndexerSearchStatus)) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, indexerStatusObserverKey{}, fn)
+}
+
+// HasIndexerStatusObserver reports whether ctx carries an indexer status
+// observer attached by WithIndexerStatusObserver.
+func HasIndexerStatusObserver(ctx context.Context) bool {
+	fn, _ := ctx.Value(indexerStatusObserverKey{}).(func(IndexerSearchStatus))
+	return fn != nil
+}
+
+// ObserveIndexerStatus reports a single indexer's search status to any
+// observer attached to ctx.
+func ObserveIndexerStatus(ctx context.Context, st IndexerSearchStatus) {
+	if fn, ok := ctx.Value(indexerStatusObserverKey{}).(func(IndexerSearchStatus)); ok && fn != nil {
+		fn(st)
+	}
+}
+
 type torrentOnlySearchKey struct{}
 
 // WithTorrentOnlySearch confines a fleet search to indexers that return

@@ -1,5 +1,7 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { StackedColumns } from "../components/charts";
+import { formatCompactNumber, formatNumber } from "../lib/format";
 import { destinationsFrom } from "../lib/sitemap";
 import { descriptors as consoleDescriptors } from "../mock/extend/descriptors/console";
 import type { PageMeta } from "../lib/console-descriptors";
@@ -8,7 +10,7 @@ import type { Descriptor } from "../lib/extend";
 const destinations = () =>
   destinationsFrom(consoleDescriptors.filter((d) => d.kind === "page") as Descriptor<PageMeta>[]);
 import { engineSummary, latencySummary } from "../pages/sources/Debrid";
-import { debridFix, sourceMonogram } from "../pages/sources/cards";
+import { SourceCard, debridFix, sourceMonogram } from "../pages/sources/cards";
 import { debridMark } from "../pages/sources/marks";
 import type { DebridConfig, Indexer } from "../lib/types";
 import { calls, renderApp } from "./harness";
@@ -94,6 +96,10 @@ describe("Sources › Debrid", () => {
     const { fake } = renderApp("/sources/debrid");
     fireEvent.click(await screen.findByRole("button", { name: "Add a debrid service" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "New debrid provider" });
+    // New-provider drawers hide the saved-source hero summary and empty KPI strip.
+    expect(within(drawer).queryByText("Requests")).not.toBeInTheDocument();
+    expect(within(drawer).queryByText("Response time")).not.toBeInTheDocument();
+    expect(within(drawer).queryByText("Throughput")).not.toBeInTheDocument();
     const test = within(drawer).getByRole("button", { name: /Test/ });
     expect(test).toBeDisabled();
     await choose("Service", "AllDebrid");
@@ -120,16 +126,32 @@ describe("Sources › Debrid", () => {
     expect(await screen.findByRole("button", { name: "Edit AD" }, WAIT)).toBeInTheDocument();
   });
 
-  it("tests a saved provider with its redacted key", async () => {
+  it("tests a saved provider with its redacted key and shows its KPI strip", async () => {
     const { fake } = renderApp("/sources/debrid");
     fireEvent.click(await screen.findByRole("button", { name: "Edit Real-Debrid" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "Real-Debrid" });
+    expect(within(drawer).getByText("Requests")).toBeInTheDocument();
+    expect(within(drawer).getByText("Cached")).toBeInTheDocument();
     fireEvent.click(within(drawer).getByRole("button", { name: /Test/ }));
     await waitFor(() => expect(calls(fake, "POST", "/test/debrid")).toHaveLength(1));
     expect(calls(fake, "POST", "/test/debrid")[0]!.body).toMatchObject({
       id: "rd-1",
       apiKey: "••••",
     });
+  });
+
+  it("omits the KPI strip when creating a new Usenet provider and shows it when editing", async () => {
+    renderApp("/sources/usenet");
+    fireEvent.click(await screen.findByRole("button", { name: "Add a Usenet provider" }, WAIT));
+    const createDrawer = await screen.findByRole("dialog", { name: "New provider" });
+    expect(within(createDrawer).queryByText("Health")).not.toBeInTheDocument();
+    expect(within(createDrawer).queryByText("Speed")).not.toBeInTheDocument();
+    fireEvent.click(within(createDrawer).getByRole("button", { name: "Close" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Edit Primary/i }, WAIT));
+    const editDrawer = await screen.findByRole("dialog", { name: /Primary/i });
+    expect(within(editDrawer).getByText("Health")).toBeInTheDocument();
+    expect(within(editDrawer).getByText("Speed")).toBeInTheDocument();
   });
 
   it("edits cached-only handling in place and keeps the providers", async () => {
@@ -204,7 +226,7 @@ describe("Sources › Indexers protocol", () => {
   });
 });
 
-describe("source cards", () => {
+describe("source cards and statistics charts", () => {
   it("uses a monogram unless Simple Icons publishes the mark", () => {
     expect(sourceMonogram("Real-Debrid")).toBe("RD");
     expect(sourceMonogram("TorBox")).toBe("T");
@@ -214,6 +236,53 @@ describe("source cards", () => {
     expect(debridFix(true, "auth_failed")).toMatch(/API key was rejected/);
     expect(debridFix(true, "ok")).toBeNull();
     expect(debridFix(false, "ok")).toMatch(/off/);
+  });
+
+  it("stacks SourceCard details full-width below the header row on phone viewports", () => {
+    render(
+      <SourceCard
+        name="Real-Debrid"
+        position={1}
+        description="Tried first · 17 cached · 6 not cached"
+        problem="Rate limited by the service."
+        editLabel="Edit Real-Debrid"
+        onEdit={() => {}}
+      />,
+    );
+    const desc = screen.getByText("Tried first · 17 cached · 6 not cached");
+    expect(desc.parentElement).toHaveClass("col-span-full", "row-start-2", "sm:col-span-1");
+    const editBtn = screen.getByRole("button", { name: "Edit Real-Debrid" });
+    expect(within(editBtn).getByText("Edit")).toHaveClass("hidden", "sm:inline");
+  });
+
+  it("formats million-scale chart axis ticks compactly and widens gutters for long labels", () => {
+    const { container, rerender } = render(
+      <StackedColumns
+        ariaLabel="Debrid stream cache each day"
+        aLabel="Cache hits"
+        bLabel="Fetched from debrid"
+        valueFormat={(n) => formatNumber(n, 0)}
+        tickFormat={formatCompactNumber}
+        data={[{ key: "2026-11-09", label: "Nov 9", a: 750_000, b: 250_000 }]}
+      />,
+    );
+    const compactTicks = [...container.querySelectorAll('svg text[text-anchor="end"]')].map(
+      (el) => el.textContent,
+    );
+    expect(compactTicks).toEqual(["0", "500K", "1M"]);
+
+    rerender(
+      <StackedColumns
+        ariaLabel="Debrid stream cache each day"
+        aLabel="Cache hits"
+        bLabel="Fetched from debrid"
+        valueFormat={(n) => formatNumber(n, 0)}
+        data={[{ key: "2026-11-09", label: "Nov 9", a: 750_000, b: 250_000 }]}
+      />,
+    );
+    const fullTicks = [...container.querySelectorAll('svg text[text-anchor="end"]')];
+    expect(fullTicks[2]?.textContent).toBe("1,000,000");
+    expect(Number(fullTicks[2]?.getAttribute("x"))).toBeGreaterThanOrEqual(55);
   });
 });
 

@@ -10,6 +10,22 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+func waitSearchIndex(t *testing.T, c *Catalog, ctx context.Context) {
+	t.Helper()
+	if c.searchIndex(ctx, true) != nil {
+		return
+	}
+	c.searchIx.mu.Lock()
+	building := c.searchIx.building
+	c.searchIx.mu.Unlock()
+	if building != nil {
+		<-building
+	}
+	if c.searchIx.ix.Load() == nil {
+		t.Fatal("search index unavailable")
+	}
+}
+
 func TestLexiconWordsJoinAndFold(t *testing.T) {
 	got := map[string]string{}
 	for _, w := range lexiconWords("Spider-Man: Far From Home — Amélie's S.W.A.T. (2019)") {
@@ -101,6 +117,7 @@ func spellTestCatalog(t *testing.T) (*Catalog, context.Context) {
 	if err := c.upsertMany(ctx, titles, upsertOpts{browsable: true}); err != nil {
 		t.Fatal(err)
 	}
+	waitSearchIndex(t, c, ctx)
 	return c, ctx
 }
 
@@ -186,6 +203,7 @@ func TestSearchSpellingRanksLiteralBeforeCorrected(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.searchIx.ix.Store(nil) // rebuild with the new title
+	waitSearchIndex(t, c, ctx)
 	got := searchTitles(t, c, ctx, "guilded")
 	if len(got) == 0 || got[0] != "Guilded Lily" {
 		t.Fatalf("Search(guilded) = %v, want the literal match first", got)

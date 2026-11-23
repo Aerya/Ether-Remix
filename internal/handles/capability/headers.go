@@ -3,7 +3,10 @@ package capability
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/braedonsaunders/ether/internal/store"
 	"strings"
 )
 
@@ -128,4 +131,32 @@ func PruneScopedHeadersInTx(ctx context.Context, tx *sql.Tx, namespace string, v
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// insertPageHeadersInTx uses a JSON relation to avoid SQL parameter and compound
+// SELECT limits while keeping the whole page in the caller's transaction.
+func insertPageHeadersInTx(ctx context.Context, db *sql.DB, tx *sql.Tx, headers []Header) error {
+	rows := make([][]any, 0, len(headers))
+	for _, h := range headers {
+		rows = append(rows, []any{h.Namespace, h.Digest, h.ViewerID % HeaderShardCount, h.ViewerID, h.Surface, h.DeviceID, h.ExpiresMillis})
+	}
+	b, err := json.Marshal(rows)
+	if err != nil {
+		return err
+	}
+	fields := []string{"TEXT", "TEXT", "BIGINT", "BIGINT", "TEXT", "TEXT", "BIGINT"}
+	cols := make([]string, len(fields))
+	for i, typ := range fields {
+		if store.DialectOf(db) == store.Postgres {
+			cols[i] = fmt.Sprintf("CAST(value->>%d AS %s)", i, typ)
+		} else {
+			cols[i] = fmt.Sprintf("CAST(json_extract(value,'$[%d]') AS %s)", i, typ)
+		}
+	}
+	source := "json_each(?)"
+	if store.DialectOf(db) == store.Postgres {
+		source = "json_array_elements(CAST(? AS JSON))"
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO capability_headers(namespace,digest,shard,viewer_id,surface,device_id,expires) SELECT `+strings.Join(cols, ",")+` FROM `+source, string(b))
+	return err
 }

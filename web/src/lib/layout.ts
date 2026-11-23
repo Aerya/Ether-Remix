@@ -3,11 +3,15 @@ import type {
   Device,
   HomeLayout,
   HomeRow,
+  LayoutDefaultsMaxRows,
   LayoutPage,
   LayoutSection,
   LayoutTuning,
   LayoutWhen,
+  LibraryLayoutSection,
+  LibraryMediaSurface,
   RowPolicy,
+  RowSectionTag,
   RowStatus,
   TargetSchedule,
   TuningDial,
@@ -25,11 +29,86 @@ export type LayerKey = "global" | number;
 
 export const EMPTY_LAYOUT: HomeLayout = { global: [], viewers: [] };
 
-export const SECTIONS = localized<{ value: LayoutSection; label: string }[]>(() => [
-  { value: "home", label: t("Home") },
-  { value: "movies", label: t("Movies") },
-  { value: "shows", label: t("TV") },
-]);
+/** Whether a layout section targets a specific library (`library:<id>`). */
+export function isLibrarySection(section: string): section is LibraryLayoutSection {
+  return /^library:[1-9]\d*$/.test(section);
+}
+
+/** Parse a `library:<id>` section into its numeric library id, or null. */
+export function libraryIdOfSection(section: string): number | null {
+  if (!isLibrarySection(section)) return null;
+  const n = Number(section.slice("library:".length));
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Parse a query or wire string into a valid LayoutSection (`"home"` or `library:<id>`), defaulting to `"home"`. */
+export function parseLayoutSection(raw: string | null | undefined): LayoutSection {
+  if (raw === "home") return "home";
+  if (raw && isLibrarySection(raw)) return raw;
+  return "home";
+}
+
+export interface LayoutLibrarySummary {
+  id: number;
+  name: string;
+  source?: string;
+  mediaType?: string;
+  hidden?: boolean;
+  present?: {
+    vela?: { type?: string };
+    plex?: { base?: string };
+    mediaBrowser?: { collectionType?: string };
+  };
+  kind?: {
+    levels?: unknown[];
+    present?: {
+      vela?: { type?: string };
+      plex?: { base?: string };
+      mediaBrowser?: { collectionType?: string };
+    };
+  };
+}
+
+/** Shared media-type page (`movies` or `shows`) a library inherits when uncustomised. */
+export function mediaSectionForLibrary(lib?: LayoutLibrarySummary | null): "movies" | "shows" {
+  if (!lib) return "movies";
+  if (lib.mediaType === "show") return "shows";
+  const vela = lib.present?.vela?.type ?? lib.kind?.present?.vela?.type;
+  if (vela === "shows") return "shows";
+  const plex = lib.present?.plex?.base ?? lib.kind?.present?.plex?.base;
+  if (plex === "show") return "shows";
+  const mb =
+    lib.present?.mediaBrowser?.collectionType ?? lib.kind?.present?.mediaBrowser?.collectionType;
+  if (mb === "tvshows") return "shows";
+  if (lib.source === "plugin" && (lib.kind?.levels?.length ?? 1) >= 3) return "shows";
+  return "movies";
+}
+
+/** Human-readable page label for Home and `library:<id>` pages. */
+export function sectionLabelOf(
+  section: LayoutSection,
+  libraries?: readonly LayoutLibrarySummary[],
+): string {
+  if (section === "home") return t("Home");
+  const id = libraryIdOfSection(section);
+  if (id !== null) {
+    const lib = libraries?.find((l) => l.id === id);
+    if (lib) return lib.name;
+  }
+  return section;
+}
+
+/** Default maxRows for Home or a `library:<id>` page. */
+export function defaultRowsForSection(
+  defaults: LayoutDefaultsMaxRows,
+  section: LayoutSection,
+): number {
+  const direct = defaults[section];
+  if (typeof direct === "number" && direct > 0) return direct;
+  if (isLibrarySection(section)) return defaults.library ?? 16;
+  return defaults.home ?? 14;
+}
+
 export const DEVICES = localized<{ value: Device; label: string }[]>(() => [
   { value: "tv", label: t("TV") },
   { value: "mobile", label: t("Phone") },
@@ -185,6 +264,24 @@ export function pageOf(
   return pagesOf(doc, layer).find((p) => (p.section ?? "home") === section);
 }
 
+/** Whether a `library:<id>` section has saved Recommended row customisations. */
+export function hasLibraryLayout(doc: HomeLayout, section: LayoutSection): boolean {
+  if (!isLibrarySection(section)) return false;
+  return Boolean(pageOf(doc, "global", section));
+}
+
+/** Reset a `library:<id>` page (and any viewer overrides on it) back to default rows. */
+export function clearLibraryLayout(doc: HomeLayout, section: LibraryLayoutSection): HomeLayout {
+  return prune({
+    ...doc,
+    global: (doc.global ?? []).filter((p) => p.section !== section),
+    viewers: (doc.viewers ?? []).map((v) => ({
+      ...v,
+      pages: v.pages.filter((p) => p.section !== section),
+    })),
+  });
+}
+
 /** The policy a layer sets for exactly this row key. */
 export function policyIn(
   doc: HomeLayout,
@@ -253,7 +350,7 @@ export interface Effective {
   layer: "global" | "override";
 }
 
-/** A row's effective policy for a viewer (null = typical viewer): override, else Global. */
+/** A row's effective policy for a viewer (null = typical viewer): override, else Global, with zero cross-page fallback. */
 export function effectivePolicy(
   doc: HomeLayout,
   viewerId: number | null,
@@ -340,6 +437,12 @@ function emptyPage(p: LayoutPage): boolean {
   );
 }
 
+function sectionSortOrder(section: LayoutSection): number {
+  if (section === "home") return 0;
+  const libId = libraryIdOfSection(section);
+  return libId !== null ? 1000 + libId : 9999;
+}
+
 function tuningCount(t: LayoutTuning | undefined): number {
   return t ? TUNING_DIALS.filter((d) => t[d] !== undefined).length : 0;
 }
@@ -414,8 +517,17 @@ export function setDedupe(
 }
 
 /** Rows that can appear on a page. */
-export function rowFits(row: { sections?: LayoutSection[] }, section: LayoutSection): boolean {
-  return !row.sections || row.sections.length === 0 || row.sections.includes(section);
+export function rowFits(
+  row: { sections?: readonly RowSectionTag[] },
+  section: LayoutSection,
+  mediaSection?: LibraryMediaSurface | null,
+): boolean {
+  if (!row.sections || row.sections.length === 0) return true;
+  if (row.sections.includes(section)) return true;
+  if (isLibrarySection(section) && mediaSection) {
+    return row.sections.includes(mediaSection);
+  }
+  return false;
 }
 
 /** Drop empty pages and viewer layers; order pages and viewers canonically. */
@@ -423,11 +535,7 @@ export function prune(doc: HomeLayout): HomeLayout {
   const order = (ps: LayoutPage[]) =>
     ps
       .filter((p) => !emptyPage(p))
-      .sort(
-        (a, b) =>
-          SECTIONS.findIndex((s) => s.value === a.section) -
-          SECTIONS.findIndex((s) => s.value === b.section),
-      );
+      .sort((a, b) => sectionSortOrder(a.section) - sectionSortOrder(b.section));
   return {
     ...doc,
     global: order(doc.global ?? []),
@@ -539,6 +647,7 @@ function tidyPolicy(p: RowPolicy): RowPolicy {
   const out: RowPolicy = { row: p.row, status: p.status };
   if (p.previewOnFocus !== undefined) out.previewOnFocus = p.previewOnFocus;
   if (p.rankedTop10 !== undefined) out.rankedTop10 = p.rankedTop10;
+  if (p.showRepeats) out.showRepeats = true;
   if (p.slot) {
     out.slot = p.slot;
     if (out.status !== "off") out.status = "always";
@@ -762,6 +871,8 @@ export function describeHiddenRow(
       return t("Hidden for {who}: collection is not shared with this viewer", { who });
     case "collection_empty":
       return t("Hidden for {who}: collection has no titles", { who });
+    case "collection_building":
+      return t("Hidden for {who}: collection is still building", { who });
     case "filtered_by_restrictions":
       return t("Hidden for {who}: no titles after restrictions", { who });
     case "filtered_by_availability":

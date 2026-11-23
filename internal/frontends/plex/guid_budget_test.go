@@ -2,12 +2,16 @@ package plex
 
 import (
 	"context"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/extras"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plexguid"
 	"github.com/braedonsaunders/ether/internal/store"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -217,4 +221,120 @@ func TestShowPageWarmsItsOnDeckEpisode(t *testing.T) {
 		}
 	}
 	t.Fatalf("no episode warmed: %v", warmer.keys)
+}
+
+type testExtrasServiceAdapter struct{ s *extras.Service }
+
+func (a testExtrasServiceAdapter) Enabled() bool { return a.s.Enabled() }
+func (a testExtrasServiceAdapter) List(ctx context.Context, parent *core.Title, lang string) ([]frontend.ExtraClip, error) {
+	list, err := a.s.List(ctx, parent, lang)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]frontend.ExtraClip, 0, len(list))
+	for _, e := range list {
+		out = append(out, frontend.ExtraClip{
+			Key: e.Key, ParentKey: e.ParentKey, ParentTitle: e.ParentTitle,
+			Title: e.Title, Subtype: e.Subtype, ExtraType: e.ExtraType,
+			Site: e.Site, SiteKey: e.SiteKey, DiscoverKey: e.DiscoverKey,
+			Language: e.Language, Official: e.Official, PublishedAt: e.PublishedAt,
+			Size: e.Size, Duration: e.Duration, Source: e.Source,
+		})
+	}
+	return out, nil
+}
+func (a testExtrasServiceAdapter) PrewarmBytes() int64 { return a.s.PrewarmBytes() }
+
+// A cold detail page open (?includeExtras=1) must return both the verified
+// plex:// GUID (needed by Plex TV/mobile for Watchlist and Discover Cast) and
+// the Discover trailer + primaryExtraKey on the first open, and persist the
+// extras list durably across restarts.
+func TestFirstOpenDetailReturnsPlexGUIDAndExtras(t *testing.T) {
+	const (
+		hexID  = "5d7768265af944001f1f6976"
+		fcGUID = "plex://movie/" + hexID
+	)
+	db := store.OpenTest(t)
+	if _, err := db.Exec(`INSERT OR IGNORE INTO catalog_titles(key,type,tmdb_id,title,year) VALUES(?,?,?,?,?)`, int64(fightClub.Key), "movie", 550, "Fjord Harbor", 1999); err != nil {
+		t.Fatal(err)
+	}
+	var extrasCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/matches", "/library/metadata/" + hexID:
+			io.WriteString(w, `{"MediaContainer":{"Metadata":[{"guid":"`+fcGUID+`","type":"movie","title":"Fjord Harbor","year":1999,"Guid":[{"id":"tmdb://550"}]}]}}`)
+		case "/library/metadata/" + hexID + "/extras":
+			extrasCalls.Add(1)
+			io.WriteString(w, `{"MediaContainer":{"Metadata":[{"ratingKey":"ex1","title":"Official Trailer","subtype":"trailer","extraType":1,"Media":[{"container":"mp4","videoCodec":"h264","audioCodec":"aac","height":1080,"url":"https://cdn.example/trailer.mp4"}]}]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	pg := plexguid.New(db, plexguid.Options{BaseURL: upstream.URL, Token: func() string { return "fixture" }})
+	defer pg.Close()
+
+	newExtras := func() *extras.Service {
+		discover := extras.NewPlexDiscover(extras.PlexDiscoverOptions{
+			BaseURL: upstream.URL,
+			HTTP:    upstream.Client(),
+			Token:   func() string { return "fixture" },
+			ResolveGUID: func(ctx context.Context, key core.RatingKey) (string, error) {
+				if g := pg.Cached(ctx, key); g != "" {
+					return g, nil
+				}
+				return pg.Resolve(ctx, key)
+			},
+		})
+		return extras.New(extras.Options{
+			DB:       db,
+			Discover: discover,
+			Config:   func() config.Extras { return config.Extras{Enabled: true} },
+			LookPath: func(string) (string, error) { return "", io.EOF },
+		})
+	}
+
+	ex1 := newExtras()
+	defer ex1.Close()
+	f := newFixture(func(d *testServerDeps) {
+		d.HomeCache = &testHomeCache{NoProviderWait: func(ctx context.Context) context.Context {
+			return core.WithLocalResponse(ctx)
+		}}
+	})
+	defer f.srv.Close()
+	f.srv.setExtras(testExtrasServiceAdapter{ex1})
+	f.srv.setPlexGUID(pg)
+
+	rec := f.get(t, "/library/metadata/"+fightClub.Key.String()+"?includeExtras=1")
+	body := rec.Body.String()
+	if rec.Code != 200 {
+		t.Fatalf("first open HTTP %d: %s", rec.Code, body)
+	}
+	if !strings.Contains(body, `guid="`+fcGUID+`"`) {
+		t.Fatalf("first open missing verified plex:// GUID: %s", body)
+	}
+	if !strings.Contains(body, `primaryExtraKey="/library/metadata/`) || !strings.Contains(body, `subtype="trailer"`) {
+		t.Fatalf("first open missing trailer/primaryExtraKey: %s", body)
+	}
+	if extrasCalls.Load() != 1 {
+		t.Fatalf("extras upstream calls = %d, want 1", extrasCalls.Load())
+	}
+
+	// Simulate restart with a fresh extras.Service on the same DB: no second upstream extras call.
+	ex2 := newExtras()
+	defer ex2.Close()
+	f2 := newFixture(func(d *testServerDeps) {
+		d.HomeCache = &testHomeCache{NoProviderWait: func(ctx context.Context) context.Context {
+			return core.WithLocalResponse(ctx)
+		}}
+	})
+	defer f2.srv.Close()
+	f2.srv.setExtras(testExtrasServiceAdapter{ex2})
+	f2.srv.setPlexGUID(pg)
+
+	rec2 := f2.get(t, "/library/metadata/"+fightClub.Key.String()+"?includeExtras=1")
+	if rec2.Code != 200 || !strings.Contains(rec2.Body.String(), `subtype="trailer"`) || extrasCalls.Load() != 1 {
+		t.Fatalf("post-restart open HTTP %d calls=%d body=%s", rec2.Code, extrasCalls.Load(), rec2.Body.String())
+	}
 }

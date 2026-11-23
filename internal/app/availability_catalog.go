@@ -97,3 +97,18 @@ func (c *availabilityCatalog) Search(ctx context.Context, q string, types []core
 	}
 	return vis, nil
 }
+func (c *availabilityCatalog) PeopleTitles(ctx context.Context, viewer *core.User, q string, n int) ([]core.Title, error) {
+	gf, err := c.availability.PagingFilter(ctx, core.Filter{})
+	if err != nil {
+		return nil, err
+	}
+	ts, e := c.Catalog.PeopleTitles(catalog.WithGateFilter(ctx, gf), viewer, q, n)
+	if e != nil {
+		return nil, e
+	}
+	vis := c.Catalog.FilterVisibility(ctx, ts)
+	if c.Catalog.TMDBConfigured() {
+		return c.availability.FilterDiscovery(ctx, vis), nil
+	}
+	return vis, nil
+}

@@ -331,3 +331,50 @@ func TestCorFaceOrderIsTwoPrefersThenResidual(t *testing.T) {
 		t.Fatalf("filename context confirmed original audio: %+v", withoutTitle)
 	}
 }
+
+func TestExternalLanguageInOperator(t *testing.T) {
+	fieldID := "plugin:org.ether.examples.dub-language/dub_language"
+	lookup := func(field string) (FieldSpec, bool) {
+		if field == fieldID {
+			return FieldSpec{
+				External:   true,
+				ValueClass: "language",
+				Operators:  []string{"equals", "in"},
+			}, true
+		}
+		return lookupOrBuiltin(nil)(field)
+	}
+	rules := []core.ReleaseRule{{
+		ID: "dub-in", Name: "Require French or Spanish dub", Action: "require",
+		Conditions: []core.ReleaseCondition{{Field: fieldID, Operator: "in", Value: "fr,es"}},
+	}}
+	policy, err := CompileWith(rules, lookup)
+	if err != nil {
+		t.Fatalf("CompileWith external 'in' condition failed: %v", err)
+	}
+	// Also compiles without descriptor (config save / uninstalled plugin shape).
+	if _, err := Compile(rules); err != nil {
+		t.Fatalf("Compile external shape 'in' condition failed: %v", err)
+	}
+	// Built-in language field still rejects 'in'.
+	if _, err := CompileWith([]core.ReleaseRule{{
+		ID: "builtin-in", Name: "Builtin in", Action: "require",
+		Conditions: []core.ReleaseCondition{{Field: "language", Operator: "in", Value: "fr,es"}},
+	}}, lookup); err == nil {
+		t.Fatal("expected built-in language field to reject 'in' operator")
+	}
+
+	ctx := Context{
+		ExternalMatch: func(r core.Release, c core.ReleaseCondition) (bool, bool) {
+			return c.Operator == "in" && c.Value == "fr,es" && len(r.Info.Languages) > 0 && r.Info.Languages[0] == "french", true
+		},
+	}
+	matched := policy.Evaluate(core.Release{Name: "Amelie.FRENCH", Info: core.ReleaseInfo{Languages: []string{"french"}}}, ctx)
+	if matched.Rejected || matched.Explanations[0].State != Match {
+		t.Fatalf("expected match, got %+v", matched)
+	}
+	missed := policy.Evaluate(core.Release{Name: "Amelie.GERMAN", Info: core.ReleaseInfo{Languages: []string{"german"}}}, ctx)
+	if !missed.Rejected || missed.Explanations[0].State != Miss {
+		t.Fatalf("expected miss rejection, got %+v", missed)
+	}
+}

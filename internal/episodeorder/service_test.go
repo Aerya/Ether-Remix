@@ -217,6 +217,64 @@ func TestGroupedResolvesViewerOverOwnerDefault(t *testing.T) {
 	}
 }
 
+// TMDB subgroup order is the season number when orders start at 1 or when
+// order 0 is Specials (#613, One Piece TMDB 37854: episode 583 sits in
+// subgroup order 16 at position 5 in "TVDB Order", i.e. S16E05 — not S17E05).
+func TestSearchNumberingGroupSeasonSemantics(t *testing.T) {
+	ep := func(s, n, order int) tmdb.OrderedEpisode {
+		return tmdb.OrderedEpisode{Episode: tmdb.Episode{SeasonNumber: s, EpisodeNumber: n}, Order: order}
+	}
+	target := ep(15, 583, 4) // TMDB S15E583, fifth in its subgroup
+	absoluteTarget := ep(15, 583, 582)
+	for _, tc := range []struct {
+		name       string
+		group      tmdb.EpisodeGroup
+		wantSeason int
+		wantEp     int
+	}{
+		{"tvdb order with specials at zero", tmdb.EpisodeGroup{
+			EpisodeGroupSummary: tmdb.EpisodeGroupSummary{ID: "62f98314175051007c594bdf", Name: "TVDB Order"},
+			Groups: []tmdb.EpisodeSubgroup{
+				{ID: "sp", Name: "Specials", Order: 0, Episodes: []tmdb.OrderedEpisode{ep(0, 1, 0)}},
+				{ID: "s16", Name: "Season 16", Order: 16, Episodes: []tmdb.OrderedEpisode{target}},
+			}}, 16, 5},
+		{"absolute no specials starts at one", tmdb.EpisodeGroup{
+			EpisodeGroupSummary: tmdb.EpisodeGroupSummary{ID: "5ad0f096c3a36825a300e78b", Name: "Absolute (No Specials)"},
+			Groups: []tmdb.EpisodeSubgroup{
+				{ID: "all", Name: "One Piece", Order: 1, Episodes: []tmdb.OrderedEpisode{absoluteTarget}},
+			}}, 1, 583},
+		{"absolute with specials", tmdb.EpisodeGroup{
+			EpisodeGroupSummary: tmdb.EpisodeGroupSummary{ID: "5f1573a33852020036d50619", Name: "Absolute (With Specials)"},
+			Groups: []tmdb.EpisodeSubgroup{
+				{ID: "sp", Name: "Specials", Order: 0, Episodes: []tmdb.OrderedEpisode{ep(0, 1, 0)}},
+				{ID: "all", Name: "One Piece", Order: 1, Episodes: []tmdb.OrderedEpisode{absoluteTarget}},
+			}}, 1, 583},
+		{"regular seasons starting at zero", tmdb.EpisodeGroup{
+			EpisodeGroupSummary: tmdb.EpisodeGroupSummary{ID: "zero-based", Name: "Zero Based"},
+			Groups: []tmdb.EpisodeSubgroup{
+				{ID: "s1", Name: "Season 1", Order: 0, Episodes: []tmdb.OrderedEpisode{ep(1, 1, 0)}},
+				{ID: "s2", Name: "Season 2", Order: 1, Episodes: []tmdb.OrderedEpisode{target}},
+			}}, 2, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := store.OpenMemory(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			s := New(db, fakeSource{group: tc.group}, fakeCatalog{})
+			show := core.ShowKey(37854)
+			if err := s.SaveReleasePreference(context.Background(), show, ReleasePreference{Mode: "group", GroupID: tc.group.ID}); err != nil {
+				t.Fatal(err)
+			}
+			sn, en, err := s.SearchNumbering(context.Background(), show, 15, 583, false)
+			if err != nil || sn != tc.wantSeason || en != tc.wantEp {
+				t.Fatalf("SearchNumbering = (%d,%d,%v), want (%d,%d)", sn, en, err, tc.wantSeason, tc.wantEp)
+			}
+		})
+	}
+}
+
 func TestVirtualSeasonAddedDateUsesLatestAiredChild(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -18,15 +18,26 @@ it("sets up RPDB and Custom from a fresh config before choosing either in Artwor
   });
   const view = render(
     <MemoryRouter>
-      <PosterAccounts locked={false}>{(cards) => <>{cards}</>}</PosterAccounts>
+      <PosterAccounts locked={false}>
+        {(cards, savedNote) => (
+          <>
+            {cards}
+            {savedNote}
+          </>
+        )}
+      </PosterAccounts>
     </MemoryRouter>,
   );
+  const reloadNote =
+    "Apps reload posters the next time they open a library; some may need to be restarted.";
   const rpdb = await screen.findByRole("switch", { name: "RPDB enabled" });
   await waitFor(() => expect(rpdb).toBeEnabled());
+  expect(screen.queryByText(reloadNote)).not.toBeInTheDocument();
   fireEvent.click(rpdb);
   fireEvent.change(screen.getByLabelText("API key"), { target: { value: "rpdb-key" } });
   fireEvent.click(screen.getByRole("button", { name: "Save and enable" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(screen.getByText(reloadNote)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("switch", { name: "Custom posters enabled" }));
   fireEvent.change(screen.getByLabelText("Poster URL template"), {
     target: { value: "https://example.com/{type}/{tmdb_id}" },
@@ -41,6 +52,7 @@ it("sets up RPDB and Custom from a fresh config before choosing either in Artwor
   );
   const picker = await screen.findByRole("button", { name: "Poster source" });
   await waitFor(() => expect(picker).toBeEnabled());
+  expect(screen.queryByText(reloadNote)).not.toBeInTheDocument();
   fireEvent.click(picker);
   expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
     "TMDB",
@@ -50,6 +62,7 @@ it("sets up RPDB and Custom from a fresh config before choosing either in Artwor
   ]);
   fireEvent.click(screen.getByRole("option", { name: "RPDB" }));
   await waitFor(() => expect(picker).toBeEnabled());
+  expect(screen.getByText(reloadNote)).toBeInTheDocument();
   for (const source of ["RPDB", "Custom posters"]) {
     fireEvent.click(picker);
     fireEvent.click(screen.getByRole("option", { name: source }));

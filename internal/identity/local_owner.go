@@ -37,6 +37,7 @@ func (l *Local) CreateOwner(ctx context.Context, username, password string) (int
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
+	l.emitViewerCreated(id, username, "owner", "local")
 	return id, nil
 }
 

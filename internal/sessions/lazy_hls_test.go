@@ -95,8 +95,11 @@ func TestLazyHLSAuthorizesEveryResourceAndDefersOpen(t *testing.T) {
 func TestHLSEligibilityUsesDeclaredDeliveryAndPermissions(t *testing.T) {
 	b := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, Transcoder: fakeBrokerTranscoder{}}}
 	ps := &core.PlaySession{Info: core.MediaInfo{Streams: []core.StreamInfo{{Type: "video", Codec: "hevc"}, {Type: "audio", Index: 1, Codec: "aac"}}}}
-	if !knownHLSVideo(ps.Info) || knownHLSVideo(core.MediaInfo{Estimated: true, Streams: ps.Info.Streams}) || knownHLSVideo(core.MediaInfo{Streams: []core.StreamInfo{{Type: "video"}}}) {
+	if !knownHLSStream(ps.Info) || knownHLSStream(core.MediaInfo{Estimated: true, Streams: ps.Info.Streams}) || knownHLSStream(core.MediaInfo{Streams: []core.StreamInfo{{Type: "video"}}}) {
 		t.Fatal("HLS eligibility did not distinguish known from estimated or missing codec facts")
+	}
+	if !knownHLSStream(core.MediaInfo{Container: "flac", Streams: []core.StreamInfo{{Type: "audio", Index: 0, Codec: "flac"}}}) {
+		t.Fatal("HLS eligibility rejected probed audio-only source")
 	}
 	profiles := &core.ClientCapabilityProfiles{Transcoding: []core.ClientTranscodeProfile{{MediaType: "video", Delivery: "dash", Containers: []string{"mp4"}, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}}}}
 	caps := core.ClientCaps{Profiles: profiles}

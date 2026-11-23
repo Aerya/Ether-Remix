@@ -94,3 +94,47 @@ func TestStremioDirectoryTypesUseTheirOwnDeclarations(t *testing.T) {
 		t.Fatal("undeclared catalogue accepted")
 	}
 }
+
+func TestStremioEventAddonDerivesLiveTVCapability(t *testing.T) {
+	raw := `{
+		"id": "community.sports.streamed.premium",
+		"version": "1.3.0",
+		"name": "Sports Streams",
+		"types": ["sport"],
+		"resources": [
+			{"name": "catalog", "types": ["sport"]},
+			{"name": "meta", "types": ["sport"], "idPrefixes": ["streamed", "sf"]},
+			{"name": "stream", "types": ["sport"], "idPrefixes": ["streamed", "sf"]}
+		],
+		"catalogs": [
+			{"type": "sport", "id": "sports_live", "name": "Live Now", "extra": [{"name": "search", "isRequired": false}, {"name": "skip", "isRequired": false}]},
+			{"type": "sport", "id": "sports_football", "name": "Football"}
+		]
+	}`
+	var m Manifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	if !m.ServesLiveEvents() || !m.ServesTV() {
+		t.Fatal("sport event add-on did not report ServesLiveEvents / ServesTV")
+	}
+	if !m.HasCapability(CapLiveTV) || m.EffectiveEther().Contributes.Channels == nil {
+		t.Fatalf("missing CapLiveTV or Channels contribution: %+v", m.EffectiveEther())
+	}
+	if m.HasCapability(CapStreamSource) || m.HasCapability(CapListSource) {
+		t.Fatalf("unexpected VOD capabilities on sport-only add-on: %+v", m.EffectiveEther().Capabilities)
+	}
+
+	// A custom-type catalog add-on without a matching stream resource is not Live TV.
+	noStream := Manifest{
+		ID:        "org.example.events.nostream",
+		Version:   "1.0.0",
+		Name:      "Schedule Only",
+		Types:     []string{"sport"},
+		Resources: stremio.ParseResources(`["catalog","meta"]`),
+		Catalogs:  []StremioCat{{Type: "sport", ID: "today", Name: "Today"}},
+	}
+	if noStream.ServesLiveEvents() || noStream.ServesTV() || noStream.HasCapability(CapLiveTV) {
+		t.Fatal("catalog-only custom-type add-on wrongly derived CapLiveTV")
+	}
+}

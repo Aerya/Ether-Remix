@@ -184,6 +184,9 @@ func TestSeriesRowUsesShowIdentityWithoutAnItemRead(t *testing.T) {
 	episode := frontend.Title{Key: 99, Type: "episode", Title: "Pilot", ShowKey: 42, ShowTitle: "Visible", ShowYear: 2020}
 	episode.ShowIDs.TMDB = 42
 	experience := frontendtest.Experience{
+		ViewsFunc: func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
+			return []frontend.View{{ID: "shows", Type: "show"}}, nil
+		},
 		RowsFunc: func(_ context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 			if req.Purpose != frontend.RowContinue {
 				t.Fatalf("purpose %q", req.Purpose)
@@ -259,6 +262,8 @@ func TestRowCatalogSkipsUnsupportedEntries(t *testing.T) {
 			{Kind: frontend.RowEntryDirectory, Directory: &frontend.RowDirectory{Title: "Unsupported"}},
 			{Kind: frontend.RowEntryTitle, Title: &title},
 		}}}, nil
+	}, ViewsFunc: func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
+		return []frontend.View{{ID: "movies", Type: "movie"}}, nil
 	}}
 	inst, err := (Frontend{}).Mount(context.Background(), frontend.Host{Identity: identity, Experience: experience, Sessions: frontendtest.Sessions{}})
 	if err != nil {

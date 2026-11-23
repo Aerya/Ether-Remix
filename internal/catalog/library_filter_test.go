@@ -448,3 +448,184 @@ func TestExclusionSQLMatchesFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestSpecificTitlesRulePolicyAndSQLAgree(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	c, err := New(db, nil, config.Catalog{}, nil, WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	titles := []core.Title{
+		{Key: core.MovieKey(101), Type: core.TypeMovie, Title: "Alien", Genres: []string{"Horror"}},
+		{Key: core.MovieKey(102), Type: core.TypeMovie, Title: "Saw", Genres: []string{"Horror"}},
+		{Key: core.MovieKey(103), Type: core.TypeMovie, Title: "Monsters, Inc.", Genres: []string{"Family"}},
+		{Key: core.MovieKey(104), Type: core.TypeMovie, Title: "Cats", Genres: []string{"Drama"}},
+		{Key: core.ShowKey(201), Type: core.TypeShow, Title: "Hannibal", Genres: []string{"Horror"}},
+		{Key: core.ShowKey(202), Type: core.TypeShow, Title: "Severance", Genres: []string{"Drama"}},
+	}
+	var allKeys []core.RatingKey
+	for i := range titles {
+		titles[i].IDs = core.IDs{TMDB: titles[i].Key.TMDB()}
+		titles[i].Year = 2020
+		titles[i].Released = now.AddDate(-2, 0, 0)
+		allKeys = append(allKeys, titles[i].Key)
+		if err := c.UpsertTitle(ctx, titles[i], true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Show Alien + Hannibal at the top, Hide Horror below it (hides Saw), and
+	// Hide Cats explicitly by title.
+	specs := []core.LibraryExclusion{
+		{
+			Action: "show", MediaType: "mixed", Match: "all",
+			Rules: []core.CollectionRule{{
+				Field:  "title",
+				Op:     "in",
+				Value:  json.RawMessage(`["` + core.MovieKey(101).String() + `","` + core.ShowKey(201).String() + `"]`),
+				Labels: []string{"Alien", "Hannibal"},
+			}},
+		},
+		{
+			Action: "hide", MediaType: "mixed", Match: "all",
+			Rules: []core.CollectionRule{{Field: "genre", Op: "in", Value: json.RawMessage(`["Horror"]`)}},
+		},
+		{
+			Action: "hide", MediaType: "movie", Match: "all",
+			Rules: []core.CollectionRule{{
+				Field:  "title",
+				Op:     "in",
+				Value:  json.RawMessage(`["` + core.MovieKey(104).String() + `"]`),
+				Labels: []string{"Cats"},
+			}},
+		},
+	}
+
+	f, err := libraryfilter.CompilePolicy(specs, "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHidden := map[core.RatingKey]bool{
+		core.MovieKey(101): false, // re-added by top Show title rule
+		core.MovieKey(102): true,  // hidden by genre=Horror
+		core.MovieKey(103): false,
+		core.MovieKey(104): true,  // hidden by Hide title rule
+		core.ShowKey(201):  false, // re-added by top Show title rule
+		core.ShowKey(202):  false,
+	}
+	for i := range titles {
+		got := f.Hidden(&titles[i])
+		if got != wantHidden[titles[i].Key] {
+			t.Fatalf("%s: f.Hidden=%v, want %v", titles[i].Title, got, wantHidden[titles[i].Key])
+		}
+	}
+
+	// Global library policies -> Browse + PreviewVisibilityPolicy agree.
+	setTestPolicies(t, c, specs, "show")
+	page, err := c.Browse(ctx, core.BrowseQuery{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 4 || len(page.Items) != 4 {
+		t.Fatalf("Browse total=%d len=%d, want 4", page.Total, len(page.Items))
+	}
+	for _, item := range page.Items {
+		if wantHidden[item.Key] {
+			t.Fatalf("Browse returned hidden title %s (%s)", item.Title, item.Key)
+		}
+	}
+
+	// TitlesInFilter (membership SQL compile via ExtraRules) agrees.
+	members, err := c.TitlesInFilter(ctx, core.Filter{ExtraRules: specs, ExtraFallback: "show"}, allKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range allKeys {
+		if members[k] != !wantHidden[k] {
+			t.Fatalf("TitlesInFilter[%s]=%v, want %v", k, members[k], !wantHidden[k])
+		}
+	}
+
+	// PreviewVisibilityPolicy and per-rule catch counts agree.
+	rawPreview, err := c.PreviewVisibilityPolicy(ctx, specs, "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := rawPreview.(VisibilityPreview)
+	if preview.Visible != 4 || preview.Hidden != 2 {
+		t.Fatalf("PreviewVisibilityPolicy: visible=%d hidden=%d, want 4/2", preview.Visible, preview.Hidden)
+	}
+
+	// Custom viewer rules ("notIn" + "show" default) use the same compiler.
+	setTestPolicies(t, c, nil, "show")
+	viewer := &core.User{ID: 42}
+	err = c.PutViewerRules(ctx, viewer.ID, ViewerRules{
+		Mode:              "custom",
+		VisibilityDefault: "show",
+		Exclusions: []core.LibraryExclusion{{
+			Action: "hide", MediaType: "movie", Match: "all",
+			Rules: []core.CollectionRule{{
+				Field: "title",
+				Op:    "notIn",
+				Value: json.RawMessage(`["` + core.MovieKey(101).String() + `","` + core.MovieKey(103).String() + `"]`),
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vPage, err := c.Browse(core.WithCatalogViewer(ctx, viewer), core.BrowseQuery{Filter: core.Filter{Type: core.TypeMovie}, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vPage.Total != 2 {
+		t.Fatalf("viewer Browse total=%d, want 2 (Alien & Monsters, Inc.)", vPage.Total)
+	}
+	if !c.VisibleForViewer(viewer, &core.Title{Key: core.MovieKey(103), Type: core.TypeMovie}) {
+		t.Fatal("strict viewer should judge title rule from bare ratingKey without failing closed")
+	}
+	if c.VisibleForViewer(viewer, &core.Title{Key: core.MovieKey(102), Type: core.TypeMovie}) {
+		t.Fatal("strict viewer failed to hide excluded movie")
+	}
+
+	// Normalisation canonicalises op/object keys and preserves comma-containing labels.
+	norm := core.NormalizeLibraryRules([]core.LibraryExclusion{{
+		Action: "show", MediaType: "movie", Match: "all",
+		Rules: []core.CollectionRule{{
+			Field: "title",
+			Op:    "is",
+			Value: json.RawMessage(`[{"key":"` + core.MovieKey(103).String() + `","title":"Monsters, Inc."},{"key":"` + core.MovieKey(103).String() + `"}]`),
+		}},
+	}})
+	if norm[0].Rules[0].Op != "in" || len(norm[0].Rules[0].Labels) != 1 || norm[0].Rules[0].Labels[0] != "Monsters, Inc." {
+		t.Fatalf("unexpected normalised rule: %+v", norm[0].Rules[0])
+	}
+
+	// Validation gracefully rejects unknown/non-title keys, >500 keys, and plugin policies.
+	tooMany := make([]string, core.MaxTitleRuleKeys+1)
+	for i := range tooMany {
+		tooMany[i] = `"` + core.MovieKey(int64(i+1)).String() + `"`
+	}
+	for _, bad := range []string{
+		`[]`,
+		`["not-a-key"]`,
+		`["550"]`,
+		`["` + core.EpisodeKey(201, 1, 1).String() + `"]`,
+		`["` + core.PluginKey(1).String() + `"]`,
+		`[` + strings.Join(tooMany, ",") + `]`,
+	} {
+		badSpec := []core.LibraryExclusion{{
+			Action: "hide", MediaType: "mixed", Match: "all",
+			Rules: []core.CollectionRule{{Field: "title", Op: "in", Value: json.RawMessage(bad)}},
+		}}
+		if _, err := libraryfilter.CompilePolicy(badSpec, "show"); err == nil {
+			t.Fatalf("expected CompilePolicy to reject %s", bad)
+		}
+	}
+	if _, err := libraryfilter.CompilePluginPolicy(specs[:1], "show", nil); err == nil {
+		t.Fatal("expected CompilePluginPolicy to reject catalogue-only title condition")
+	}
+}

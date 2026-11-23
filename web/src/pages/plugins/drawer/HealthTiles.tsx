@@ -2,15 +2,21 @@ import { Tooltip } from "@braedonsaunders/appkit-ui";
 import { Activity as ActivityIcon, CheckCircle2, Gauge, Globe, Info } from "lucide-react";
 import { t, tn } from "../../../i18n";
 import { formatBytes, formatNumber } from "../../../lib/format";
-import type { PluginDetail } from "../types";
+import type { PluginDetail, PluginFeedOverview } from "../types";
 import { healthSummary } from "./health";
 import { Kpi } from "../../../components/Kpi";
 
 /* --------------------------------------------------------------- health tiles */
 
 /** How the plugin is answering: responding, speed, and the sites it reaches. */
-export function HealthTiles({ detail }: { detail: PluginDetail }) {
-  const health = healthSummary(detail);
+export function HealthTiles({
+  detail,
+  liveFeeds,
+}: {
+  detail: PluginDetail;
+  liveFeeds?: PluginFeedOverview[];
+}) {
+  const health = healthSummary(detail, liveFeeds);
   const level = health.level;
   const im = detail.impact;
   const undeclared = detail.privacy.undeclared ?? [];

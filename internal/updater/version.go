@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 // Build metadata, set by goreleaser via -ldflags -X. Version is a semver
@@ -18,6 +20,10 @@ var (
 	// empty in dev builds, in which case Check requires an explicit key.
 	PublicKeyB64 = ""
 )
+
+func init() {
+	httpclient.SetVersionProvider(func() string { return Version })
+}
 
 // IsDev reports whether this is an unversioned development build.
 func IsDev() bool { return Version == "" || Version == "dev" }

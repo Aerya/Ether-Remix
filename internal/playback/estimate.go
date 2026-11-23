@@ -9,9 +9,22 @@ import (
 
 // Default runtimes when TMDB has none.
 const (
-	defaultMovieRuntime   = 110 * time.Minute
-	defaultEpisodeRuntime = 45 * time.Minute
+	defaultMovieRuntime     = 110 * time.Minute
+	defaultEpisodeRuntime   = 45 * time.Minute
+	defaultAudioRuntime     = 4 * time.Minute
+	defaultAudiobookRuntime = 60 * time.Minute
 )
+
+func isAudioOnlyTitle(t *core.Title) bool {
+	if t == nil {
+		return false
+	}
+	switch t.MediaClass {
+	case core.MediaClassMusic, core.MediaClassAudiobook, core.MediaClassPodcast:
+		return true
+	}
+	return t.MBItemType == "Audio" || t.MBItemType == "AudioBook"
+}
 
 // Estimate is the virtual media info for a title before it is resolved,
 // derived from the quality profile chosen for the client and the title's
@@ -30,6 +43,44 @@ func (m *Manager) Estimate(_ context.Context, t *core.Title, caps core.ClientCap
 // the profile height, a typical bitrate for that height kept inside the
 // profile's size bounds, and E-AC-3 5.1 or AAC stereo audio.
 func EstimateInfo(t *core.Title, caps core.ClientCaps, p core.QualityProfile) core.MediaInfo {
+	if isAudioOnlyTitle(t) {
+		codec, container, kbps := "aac", "mp4", 192
+		if len(caps.AudioCodecs) > 0 && !caps.SupportsAudio("aac") {
+			switch {
+			case caps.SupportsAudio("mp3"):
+				codec, container = "mp3", "mp3"
+			case caps.SupportsAudio("flac"):
+				codec, container, kbps = "flac", "flac", 900
+			case caps.SupportsAudio("opus"):
+				codec, container, kbps = "opus", "ogg", 160
+			}
+		}
+		dur := t.Runtime
+		if dur <= 0 {
+			dur = defaultAudioRuntime
+			if t.MediaClass == core.MediaClassAudiobook || t.MediaClass == core.MediaClassPodcast || t.MBItemType == "AudioBook" {
+				dur = defaultAudiobookRuntime
+			}
+		}
+		size := int64(float64(kbps) * 1000 / 8 * dur.Seconds())
+		return core.MediaInfo{
+			Container:   container,
+			Duration:    dur,
+			Size:        size,
+			BitrateKbps: kbps,
+			Streams: []core.StreamInfo{{
+				Index:         0,
+				Type:          "audio",
+				Codec:         codec,
+				Channels:      2,
+				ChannelLayout: "stereo",
+				SampleRate:    48000,
+				BitrateKbps:   kbps,
+				Default:       true,
+			}},
+			Estimated: true,
+		}
+	}
 	height := p.MaxHeight
 	if height <= 0 {
 		height = 1080
@@ -91,7 +142,6 @@ func EstimateInfo(t *core.Title, caps core.ClientCaps, p core.QualityProfile) co
 	var dur time.Duration
 	if t != nil {
 		dur = t.Runtime
-		audio.Language = t.Language
 	}
 	if dur <= 0 {
 		dur = defaultMovieRuntime

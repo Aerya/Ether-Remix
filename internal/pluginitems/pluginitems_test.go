@@ -401,22 +401,64 @@ func testBrowseFacetsAndChildren(t *testing.T) {
 		t.Fatalf("range filtered browse = %+v, err=%v", rangeFiltered, err)
 	}
 
-	// Facets aggregation.
+	// Facets aggregation: per-level and whole-library (#608).
 	tagFacets, err := s.Facets(ctx, 10, "book", "tags", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tagFacets) != 2 || tagFacets[0].Value != "scifi" || tagFacets[0].Count != 2 {
+	// Label facets read alphabetically (#555); counts are unchanged.
+	tags := tagFacets.Values
+	if len(tags) != 2 || tagFacets.Truncated || strings.ToLower(tags[0].Value) > strings.ToLower(tags[1].Value) {
 		t.Fatalf("tagFacets = %+v", tagFacets)
 	}
+	for _, v := range tags {
+		if v.Value == "scifi" && v.Count != 2 {
+			t.Fatalf("scifi count = %d", v.Count)
+		}
+	}
+	if one, err := s.Facets(ctx, 10, "book", "tags", 1); err != nil || len(one.Values) != 1 || one.Values[0].Value != "scifi" || !one.Truncated {
+		t.Fatalf("truncated tagFacets = %+v, err=%v", one, err)
+	}
+	allTags, err := s.Facets(ctx, 10, "", "tags", 10)
+	if err != nil || !slices.Equal(allTags.Values, []FacetCount{{Value: "fantasy", Count: 1}, {Value: "scifi", Count: 3}, {Value: "space", Count: 2}}) {
+		t.Fatalf("whole-library tagFacets = %+v, err=%v", allTags, err)
+	}
 
-	// Deleting parent s1 cascades to children b1 and b2 and updates tallies.
+	// Updating b2's tags maintains both per-level and whole-library facet tallies.
+	b2Updated := items[3]
+	b2Updated.Fields = map[string]json.RawMessage{
+		"author": rawJSON(t, []string{"James S. A. Corey"}),
+		"format": rawJSON(t, "pdf"),
+		"pages":  rawJSON(t, 605),
+		"tags":   rawJSON(t, []string{"noir"}),
+	}
+	if _, err := s.UpsertItems(ctx, "community.books", "book", []core.KindItem{b2Updated}); err != nil {
+		t.Fatal(err)
+	}
+	bookTagsAfterUpdate, err := s.Facets(ctx, 10, "book", "tags", 10)
+	if err != nil || !slices.Equal(bookTagsAfterUpdate.Values, []FacetCount{{Value: "noir", Count: 1}, {Value: "scifi", Count: 1}, {Value: "space", Count: 1}}) {
+		t.Fatalf("book tagFacets after update = %+v, err=%v", bookTagsAfterUpdate, err)
+	}
+	allTagsAfterUpdate, err := s.Facets(ctx, 10, "", "tags", 10)
+	if err != nil || !slices.Equal(allTagsAfterUpdate.Values, []FacetCount{{Value: "fantasy", Count: 1}, {Value: "noir", Count: 1}, {Value: "scifi", Count: 2}, {Value: "space", Count: 2}}) {
+		t.Fatalf("whole-library tagFacets after update = %+v, err=%v", allTagsAfterUpdate, err)
+	}
+
+	// Deleting parent s1 cascades to children b1 and b2 and updates both item and facet tallies.
 	if err := s.DeleteItems(ctx, "community.books", "book", []string{"s1"}); err != nil {
 		t.Fatal(err)
 	}
 	tally, err := s.LibraryTally(ctx, 10)
 	if err != nil || tally["series"] != 1 || tally["book"] != 0 {
 		t.Fatalf("tally after cascade delete = %v, err=%v", tally, err)
+	}
+	bookTagsAfterDelete, err := s.Facets(ctx, 10, "book", "tags", 10)
+	if err != nil || len(bookTagsAfterDelete.Values) != 0 {
+		t.Fatalf("book tagFacets after cascade delete = %+v, err=%v", bookTagsAfterDelete, err)
+	}
+	allTagsAfterDelete, err := s.Facets(ctx, 10, "", "tags", 10)
+	if err != nil || !slices.Equal(allTagsAfterDelete.Values, []FacetCount{{Value: "fantasy", Count: 1}}) {
+		t.Fatalf("whole-library tagFacets after cascade delete = %+v, err=%v", allTagsAfterDelete, err)
 	}
 }
 
@@ -683,8 +725,14 @@ func testProjectorMatchesAndResolutions(t *testing.T) {
 	if title.SortTitle != "winds of winter" || title.Runtime != time.Hour {
 		t.Fatalf("Project sortTitle/runtime = %q / %v", title.SortTitle, title.Runtime)
 	}
-	if !strings.Contains(title.Summary, "Sixth novel.") || !strings.Contains(title.Summary, "Author: George R. R. Martin") {
-		t.Fatalf("Project summary = %q", title.Summary)
+	if title.Summary != "Sixth novel." {
+		t.Fatalf("Project summary = %q, want clean summary", title.Summary)
+	}
+	if len(title.MediaCredits) != 1 || title.MediaCredits[0].Name != "George R. R. Martin" || title.MediaCredits[0].Role != "author" {
+		t.Fatalf("Project MediaCredits = %+v", title.MediaCredits)
+	}
+	if title.MediaReading == nil || title.MediaReading.Format != "epub" {
+		t.Fatalf("Project MediaReading = %+v", title.MediaReading)
 	}
 	if title.PosterPath != "https://example.com/p.jpg" || title.StillPath != "https://example.com/t.jpg" {
 		t.Fatalf("Project art = poster:%q still:%q", title.PosterPath, title.StillPath)
@@ -767,7 +815,15 @@ func testKindBackendsAndPurge(t *testing.T) {
 	gen0 := s.Generation()
 	accepted, err := kb.KindUpsert(ctx, "community.books", "book", []core.KindItem{
 		{ID: "s1", Level: "series", Title: "Series 1"},
-		{ID: "b1", Level: "book", ParentID: "s1", Title: "Book 1", Playable: true},
+		{
+			ID:       "b1",
+			Level:    "book",
+			ParentID: "s1",
+			Title:    "Book 1",
+			Playable: true,
+			Fields:   map[string]json.RawMessage{"format": rawJSON(t, "epub")},
+			Art:      []core.KindArtRef{{Role: "poster", URL: "https://example.com/b1.jpg"}},
+		},
 	})
 	if err != nil || accepted != 2 {
 		t.Fatalf("KindUpsert: accepted=%d err=%v", accepted, err)
@@ -785,8 +841,28 @@ func testKindBackendsAndPurge(t *testing.T) {
 		t.Fatalf("KindItems page 2 = %+v, err=%v", page2, err)
 	}
 
+	// KindItemsByID returns matching items with art and fields hydrated (#607).
+	byID, err := kb.KindItemsByID(ctx, "community.books", "book", []string{"b1", "missing", "s1", "b1"})
+	if err != nil || len(byID) != 2 || byID[0].ID != "b1" || byID[1].ID != "s1" || len(byID[0].Art) != 1 || byID[0].Fields["format"] == nil {
+		t.Fatalf("KindItemsByID = %+v, err=%v", byID, err)
+	}
+
+	// Migration 7 backfills per-level and whole-library facet tallies on upgrade (#608).
+	if _, err := db.ExecContext(ctx, `DROP TABLE plugin_item_field_tally; DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version = 7`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatalf("store.Migrate backfill: %v", err)
+	}
+	for _, lv := range []string{"book", ""} {
+		fp, err := s.Facets(ctx, 10, lv, "format", 10)
+		if err != nil || !slices.Equal(fp.Values, []FacetCount{{Value: "epub", Count: 1}}) {
+			t.Fatalf("backfilled Facets(level=%q) = %+v, err=%v", lv, fp, err)
+		}
+	}
+
 	// Verify state_watch cleanup during PurgePlugin (§2.5).
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (user_id INTEGER NOT NULL, rating_key INTEGER NOT NULL, PRIMARY KEY (user_id, rating_key))`); err != nil {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (user_id BIGINT NOT NULL, rating_key BIGINT NOT NULL, PRIMARY KEY (user_id, rating_key))`); err != nil {
 		t.Fatal(err)
 	}
 	b1Item, _, err := s.GetByExternal(ctx, "community.books", "book", "b1")
@@ -807,6 +883,10 @@ func testKindBackendsAndPurge(t *testing.T) {
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM state_watch WHERE rating_key = ?`, int64(movieKey)).Scan(&watchRemaining); err != nil || watchRemaining != 1 {
 		t.Fatalf("movie watch state was touched: remaining=%d err=%v", watchRemaining, err)
+	}
+	var fieldTallyRemaining int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_item_field_tally WHERE library_id = 10`).Scan(&fieldTallyRemaining); err != nil || fieldTallyRemaining != 0 {
+		t.Fatalf("plugin_item_field_tally not purged: remaining=%d err=%v", fieldTallyRemaining, err)
 	}
 }
 

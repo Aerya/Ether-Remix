@@ -36,6 +36,13 @@ func (s *Server) startPlexHLS(ctx context.Context, viewer *frontend.User, playID
 			req.TextSubtitleSource = keyer.SourceKey(playID)
 		}
 	}
+	// The owner turned video re-encoding off for this viewer's account: offer
+	// the primary rung only, as the session broker does for other frontends.
+	// Plex starts its streams here and never passed that on, so a copied
+	// stream could still list re-encoded lower-quality rungs.
+	if p, ok := s.policy().(frontend.VideoTranscodingPolicy); ok && viewer != nil && !req.LiveInput && req.LadderVideoCodecs == nil && p.VideoTranscodingDisabled(viewer) {
+		req.LadderVideoCodecs = []string{}
+	}
 	if encoder := s.currentPlexEncoder(); encoder != nil {
 		return encoder.StartSegmentedHLS(ctx, viewer, playID, id, req)
 	}

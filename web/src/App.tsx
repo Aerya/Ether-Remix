@@ -43,8 +43,8 @@ import {
   MonitorPlay,
   Network,
   Tags,
-  Languages, // PSE-HOOK: icône du menu Ether-Remix — voir docs/pse/FORK.fr.md
-  House, // PSE-HOOK: icônes du groupe Remix — voir docs/pse/FORK.fr.md
+  Languages,
+  House,
   Film,
   Stethoscope,
   Search,
@@ -53,6 +53,7 @@ import {
   SlidersHorizontal,
   Tv,
   Users,
+  Workflow,
 } from "lucide-react";
 import {
   forwardRef,
@@ -79,6 +80,7 @@ import {
 } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
 import { hasExemptDiagnostic } from "./lib/health";
+import { useMediaQuery } from "./lib/hooks";
 import { t, tn } from "./i18n";
 import { I18nProvider, LanguagePicker } from "./i18n/react";
 import { Brand, BrandSplash, EtherMark } from "./components/brand";
@@ -100,6 +102,13 @@ import {
   type NavItemMeta,
   type PageMeta,
 } from "./lib/console-descriptors";
+import {
+  DocumentTitleProvider,
+  resolveRouteTitle,
+  useDocumentBrand,
+  useRouteDocumentTitle,
+  type RouteDocumentTitle,
+} from "./lib/document-title";
 import type { Bootstrap } from "./lib/types";
 import { theme } from "./theme";
 import Home from "./pages/Home";
@@ -123,6 +132,7 @@ const ClusterPage = settingsPage("ClusterPage");
 const Setup = lazy(() => import("./pages/Setup"));
 const Activity = lazy(() => import("./pages/activity/Activity"));
 const Notifications = lazy(() => import("./pages/notifications/Notifications"));
+const Flows = lazy(() => import("./pages/flows/Flows"));
 const LiveTV = lazy(() => import("./pages/livetv/LiveTV"));
 const Calendar = lazy(() => import("./pages/calendar/Calendar"));
 const Libraries = lazy(() => import("./pages/libraries/Libraries"));
@@ -188,6 +198,7 @@ const NAV_ICONS = {
   Bell,
   Boxes,
   LifeBuoy,
+  Workflow,
 } as const;
 
 function navIcon(icon: string | undefined): ReactNode {
@@ -202,7 +213,7 @@ function navIcon(icon: string | undefined): ReactNode {
 /** Sidebar groups in display order; the top group has no heading. */
 const NAV_GROUPS: { key: string; label: () => string }[] = [
   { key: "", label: () => "" },
-  { key: "remix", label: () => "Remix" }, // PSE-HOOK: groupe Remix — voir docs/pse/FORK.fr.md
+  { key: "remix", label: () => "Remix" },
   { key: "library", label: () => t("Library") },
   { key: "streaming", label: () => t("Streaming") },
   { key: "server", label: () => t("Server") },
@@ -280,9 +291,15 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
   return groups.filter((g) => g.items.length > 0);
 }
 
-function HealthIndicator() {
+/** AppShell owns the mobile menu state internally; its header close button dismisses it. */
+function closeMobileDrawer(el: HTMLElement | null) {
+  el?.closest('[role="dialog"]')?.querySelector<HTMLButtonElement>("header button")?.click();
+}
+
+function HealthIndicator({ mobile = false }: { mobile?: boolean } = {}) {
   const { health, overall, dashboard, dashboardError, boot } = useApp();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   // Before setup finishes, unconfigured sources and an unclaimed server are
   // expected, not problems: show progress instead of a red verdict.
   const settingUp = !boot.setupComplete;
@@ -307,22 +324,29 @@ function HealthIndicator() {
     <Popover
       open={open}
       onOpenChange={setOpen}
+      side={mobile ? "top" : "bottom"}
+      align={mobile ? "start" : "end"}
       trigger={
         <button
+          ref={triggerRef}
           type="button"
           onClick={() => setOpen((o) => !o)}
           aria-label={t("Server health: {status}", { status: label })}
-          className="inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className={
+            mobile
+              ? "inline-flex h-9 min-w-0 items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              : "inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          }
         >
           <StatusDot
             level={settingUp || gettingStarted ? "unknown" : overall === "off" ? "ok" : overall}
             pulse
           />
-          <span className="hidden md:inline">{label}</span>
+          <span className={mobile ? "truncate" : "hidden md:inline"}>{label}</span>
         </button>
       }
     >
-      <div className="w-80 p-1">
+      <div className="w-80 max-w-[calc(100vw-2rem)] p-1">
         <p className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
           {t("Server health")}
         </p>
@@ -343,7 +367,10 @@ function HealthIndicator() {
             <li key={h.id}>
               <Link
                 to={h.href}
-                onClick={() => setOpen(false)}
+                onClick={() => {
+                  setOpen(false);
+                  if (mobile) closeMobileDrawer(triggerRef.current);
+                }}
                 className="flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-hover"
               >
                 <StatusDot level={h.level} className="mt-1.5" />
@@ -399,6 +426,7 @@ function CollectionsLayout() {
 /** Collection Studio opens over the persistent library as a record drawer. */
 function CollectionDrawer({ fresh = false }: { fresh?: boolean }) {
   const { close } = useOutletContext<{ close: () => void }>();
+  const { id } = useParams();
   const [search] = useSearchParams();
   return (
     <Drawer
@@ -408,7 +436,7 @@ function CollectionDrawer({ fresh = false }: { fresh?: boolean }) {
       size="2xl"
       bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
     >
-      {fresh ? <CollectionEditor key={search.get("draft") ?? "new"} /> : <CollectionEditor />}
+      <CollectionEditor key={fresh ? (search.get("draft") ?? "new") : `edit:${id ?? ""}`} />
     </Drawer>
   );
 }
@@ -453,13 +481,16 @@ const BUILTIN_PAGES: Record<
   cache: { element: <Cache />, suffix: "/:tab?" },
   playback: { element: <Playback />, suffix: "/:tab?/:section?" },
   notifications: { element: <Notifications />, suffix: "/:tab?" },
+  flows: { element: <Flows />, suffix: "/*" },
   general: { element: <GeneralPage /> },
   apps: { element: <Apps />, suffix: "/:tab?/:section?" },
   integrations: { element: <ServicesPage />, suffix: "/:tab?" },
   cluster: { element: <ClusterPage /> },
+  pse: { element: <PsePage />, suffix: "/:tab?" },
   maintenance: { element: <MaintenancePage />, suffix: "/:tab?/:backupTab?" },
-  pse: { element: <PsePage />, suffix: "/:tab?" }, // PSE-HOOK: page Ether-Remix — voir docs/pse/FORK.fr.md
 };
+
+const BUILTIN_PAGE_IDS = new Set(Object.keys(BUILTIN_PAGES));
 
 /** Old catalogue bookmarks land in the matching library, query intact (one release). */
 function CatalogRedirect() {
@@ -473,6 +504,15 @@ function Shell() {
   const { boot } = useApp();
   const ownerPath = useOwnerViewerPath();
   const location = useLocation();
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const wideSearch = useMediaQuery("(min-width: 640px)");
+  const firstRunSetupRef = useRef(false);
+  if (location.pathname !== "/setup") {
+    firstRunSetupRef.current = false;
+  } else if (!boot.setupComplete) {
+    firstRunSetupRef.current = true;
+  }
+  const hideSetupNav = location.pathname === "/setup" && firstRunSetupRef.current;
   const {
     descriptors: navDescriptors,
     loading: registryLoading,
@@ -482,19 +522,29 @@ function Shell() {
   const remoteSession = boot.authRequired && Boolean(getToken());
   const version = versionLabel(boot.version);
   const serverName = boot.serverName?.trim() || "Ether-Remix";
-  const remixExpert = useRemixExpertView(); // PSE-HOOK: groupe Remix
+  const remixExpert = useRemixExpertView();
+  useDocumentBrand(serverName);
+  useRouteDocumentTitle(
+    resolveRouteTitle(location.pathname, location.search, navDescriptors, {
+      registryLoading,
+      mountedPageIds: BUILTIN_PAGE_IDS,
+    }),
+  );
+  const signOut = () => {
+    // End the session on the server too, so a copy cannot outlive
+    // sign-out; leave the browser either way.
+    void api
+      .signOut()
+      .catch(() => undefined)
+      .finally(() => {
+        setToken("");
+        window.location.reload();
+      });
+  };
   return (
-    <div
-      className={
-        location.pathname === "/setup" ? "ether-shell ether-setup contents" : "ether-shell contents"
-      }
-    >
+    <div className={hideSetupNav ? "ether-shell ether-setup contents" : "ether-shell contents"}>
       <AppShell
-        groups={
-          location.pathname === "/setup"
-            ? []
-            : filterRemixNav(buildNavigation(navDescriptors), remixExpert)
-        }
+        groups={hideSetupNav ? [] : filterRemixNav(buildNavigation(navDescriptors), remixExpert)}
         pathname={location.pathname}
         navigationMode="sidebar"
         linkRender={linkRender}
@@ -507,61 +557,120 @@ function Shell() {
             <Brand />
           </Link>
         }
-        headerMiddle={<CommandSearch />}
-        header={
-          <>
-            <RemixUpdates version={boot.version} />
+        headerMiddle={
+          wideSearch ? (
+            <CommandSearch />
+          ) : hideSetupNav ? (
             <span
-              className="inline-flex h-9 min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted sm:max-w-[14rem]"
+              className="inline-flex min-w-0 max-w-full items-center gap-2 py-1 text-sm font-medium text-fg"
               title={serverName}
             >
-              <Server size={15} className="shrink-0" aria-hidden />
-              <span className="hidden truncate sm:inline">{serverName}</span>
+              <EtherMark size={22} />
+              <span className="truncate">{serverName}</span>
             </span>
-            <HealthIndicator />
-            <WatchButton />
-            <AskEther />
-            <RemixAppearance />
+          ) : (
             <Link
-              to={ownerPath}
-              aria-label={t("Your account")}
-              className="inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              to="/"
+              className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-md py-1 text-sm font-medium text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              title={serverName}
             >
-              <UserRound size={15} />
-              <span className="hidden sm:inline">{t("Your account")}</span>
+              <EtherMark size={22} />
+              <span className="truncate">{serverName}</span>
             </Link>
-            {remoteSession ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  // End the session on the server too, so a copy cannot outlive
-                  // sign-out; leave the browser either way.
-                  void api
-                    .signOut()
-                    .catch(() => undefined)
-                    .finally(() => {
-                      setToken("");
-                      window.location.reload();
-                    });
-                }}
+          )
+        }
+        header={
+          isDesktop ? (
+            <>
+              <span
+                className="inline-flex h-9 min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted sm:max-w-[14rem]"
+                title={serverName}
               >
-                <LogOut size={15} /> <span className="hidden sm:inline">{t("Sign out")}</span>
-              </Button>
-            ) : null}
-          </>
+                <Server size={15} className="shrink-0" aria-hidden />
+                <span className="hidden truncate sm:inline">{serverName}</span>
+              </span>
+              <RemixUpdates version={boot.version} />
+              <HealthIndicator />
+              <WatchButton />
+              <AskEther />
+              <RemixAppearance />
+              <Link
+                to={ownerPath}
+                aria-label={t("Your account")}
+                className="inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <UserRound size={15} />
+                <span className="hidden sm:inline">{t("Your account")}</span>
+              </Link>
+              {remoteSession ? (
+                <Button variant="ghost" size="sm" onClick={signOut}>
+                  <LogOut size={15} /> <span className="hidden sm:inline">{t("Sign out")}</span>
+                </Button>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {wideSearch ? (
+                <span
+                  className="inline-flex h-9 min-w-0 max-w-[14rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted"
+                  title={serverName}
+                >
+                  <Server size={15} className="shrink-0" aria-hidden />
+                  <span className="truncate">{serverName}</span>
+                </span>
+              ) : (
+                <CommandSearch compact />
+              )}
+              <AskEther />
+            </>
+          )
+        }
+        mobileFooter={
+          isDesktop ? undefined : (
+            <div className="flex w-full flex-col gap-2 pb-[env(safe-area-inset-bottom)]">
+              <div className="-mx-2 flex flex-wrap items-center justify-between gap-1">
+                <RemixUpdates version={boot.version} />
+                <HealthIndicator mobile />
+                <WatchButton popoverSide="top" />
+              </div>
+              <div className="-mx-2 flex flex-wrap items-center justify-between gap-1 border-t border-border-subtle pt-2">
+                <Link
+                  to={ownerPath}
+                  aria-label={t("Your account")}
+                  onClick={(e) => closeMobileDrawer(e.currentTarget)}
+                  className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  <UserRound size={15} />
+                  <span>{t("Your account")}</span>
+                </Link>
+                {remoteSession ? (
+                  <Button variant="ghost" size="sm" onClick={signOut}>
+                    <LogOut size={15} /> <span>{t("Sign out")}</span>
+                  </Button>
+                ) : null}
+              </div>
+              <RemixRepositoryLinks />
+              <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2">
+                <PseVersionLink
+                  version={version}
+                  className="min-w-0 truncate text-xs text-fg-subtle"
+                />
+                <div className="-mr-1 flex shrink-0 items-center gap-1">
+                  <LanguagePicker className="h-8 shrink-0 px-2 text-xs" />
+                  <RemixAppearance />
+                </div>
+              </div>
+            </div>
+          )
         }
         sidebarFooter={
-          <div className="space-y-2">
-            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              {/* PSE-HOOK: version cliquable vers GitHub — voir docs/pse/FORK.fr.md */}
-              <PseVersionLink
-                version={version}
-                className="block min-w-0 break-all px-1 text-xs text-fg-subtle"
-              />
-              <LanguagePicker className="h-7 shrink-0 px-1.5 text-xs" />
-            </div>
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <RemixRepositoryLinks />
+            <PseVersionLink
+              version={version}
+              className="min-w-0 truncate px-1 text-xs text-fg-subtle"
+            />
+            <LanguagePicker className="h-7 shrink-0 px-1.5 text-xs" />
           </div>
         }
         sidebarCollapsedFooter={
@@ -569,10 +678,9 @@ function Shell() {
             <LanguagePicker iconOnly className="h-7 px-1.5" />
             <EtherMark size={20} />
             <RemixRepositoryLinks />
-            {/* PSE-HOOK: version cliquable vers GitHub — voir docs/pse/FORK.fr.md */}
             <PseVersionLink
               version={version}
-              className="block max-w-full truncate text-center text-[10px] leading-tight text-fg-subtle"
+              className="max-w-full truncate text-center text-[10px] leading-tight text-fg-subtle"
             />
           </div>
         }
@@ -679,6 +787,17 @@ function Gate({ onReady }: { onReady: (animation?: boolean, version?: string) =>
     if (error) onReady();
   }, [boot, error, onReady]);
 
+  const gateTitle: RouteDocumentTitle | null =
+    !boot && isStarting(error)
+      ? { matched: true, parts: [t("Starting")] }
+      : !boot
+        ? { matched: true, parts: [] }
+        : boot.authRequired && !boot.authenticated && !unlocked
+          ? { matched: true, parts: [t("Sign in")] }
+          : null;
+  useDocumentBrand(boot?.serverName);
+  useRouteDocumentTitle(gateTitle);
+
   if (!boot && isStarting(error)) return <Startup onReady={() => void loadBoot()} />;
   if (!boot) {
     return (
@@ -740,6 +859,15 @@ function Chrome({ children }: { children: ReactNode }) {
 
 const Me = lazy(() => import("./pages/me/Me"));
 
+function MeScreen() {
+  useRouteDocumentTitle({ matched: true, parts: [t("Approve a TV")] });
+  return (
+    <Suspense fallback={<PageFallback />}>
+      <Me />
+    </Suspense>
+  );
+}
+
 export default function App() {
   const location = useLocation();
   const [ready, setReady] = useState(false);
@@ -774,22 +902,18 @@ export default function App() {
   return (
     <I18nProvider>
       {() => (
-        <ThemeProvider {...theme}>
-          <UiLinkProvider link={RouterAnchor}>
-            <Chrome>
-              {location.pathname === "/me" ? (
-                <Suspense fallback={<PageFallback />}>
-                  <Me />
-                </Suspense>
-              ) : (
-                <Gate onReady={onReady} />
-              )}
-            </Chrome>
-            {location.pathname !== "/me" && animation ? <BrandSplash ready={ready} /> : null}
-            <UpdateReady bootVersion={bootVersion} />
-            <Toaster richColors closeButton position="bottom-right" />
-          </UiLinkProvider>
-        </ThemeProvider>
+        <DocumentTitleProvider>
+          <ThemeProvider {...theme}>
+            <UiLinkProvider link={RouterAnchor}>
+              <Chrome>
+                {location.pathname === "/me" ? <MeScreen /> : <Gate onReady={onReady} />}
+              </Chrome>
+              {location.pathname !== "/me" && animation ? <BrandSplash ready={ready} /> : null}
+              <UpdateReady bootVersion={bootVersion} />
+              <Toaster richColors closeButton position="bottom-right" />
+            </UiLinkProvider>
+          </ThemeProvider>
+        </DocumentTitleProvider>
       )}
     </I18nProvider>
   );

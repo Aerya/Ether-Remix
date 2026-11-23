@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router-dom";
 import { localized, t } from "../../i18n";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { DomainPage, useRouteTab } from "../../components/layout";
@@ -18,6 +19,7 @@ const TABS = localized(
 );
 
 export default function Notifications() {
+  const navigate = useNavigate();
   const tab = useRouteTab(TABS);
   const notices = useAsync(async () => {
     const n = await apiFetch<NotificationsData>("/notifications/");
@@ -38,7 +40,11 @@ export default function Notifications() {
     ) : !data ? (
       <LoadingRows rows={3} />
     ) : tab === "channels" ? (
-      <Channels data={data} onChanged={notices.reload} />
+      <Channels
+        data={data}
+        onChanged={notices.reload}
+        onFlowCreated={(id) => navigate(`/flows/list/${encodeURIComponent(id)}`)}
+      />
     ) : (
       <Deliveries data={data} />
     );

@@ -45,6 +45,9 @@ func (a *App) favoriteChanged(ctx context.Context, id int64, subject favorites.S
 	if a.personalize != nil {
 		a.personalize.FavoritesChanged(id)
 	}
+	if subject.Kind == favorites.KindEntity && a.liveAlertScheduler != nil {
+		a.liveAlertScheduler.NotifyFavoritesChanged()
+	}
 	if a.sessionEvents != nil {
 		event := frontend.Event{Type: "UserDataChanged", ViewerID: id, SubjectKind: string(subject.Kind), SubjectID: subject.ID}
 		if subject.Kind == favorites.KindTitle {

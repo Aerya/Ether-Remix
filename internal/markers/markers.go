@@ -14,11 +14,14 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/flight"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -64,8 +67,37 @@ type Options struct {
 	// played release (cached sidecars), used for stinger detection.
 	Dialogue func(ctx context.Context, key core.RatingKey, info core.MediaInfo) ([]DialogueCue, bool)
 }
+
+const (
+	maxConcurrentWarms = 4
+	defaultWarmTimeout = 15 * time.Second
+	maxLoggedEntries   = 2048
+)
+
+type markerCacheKey struct {
+	key       core.RatingKey
+	runtimeMS int64
+}
+
+type markerLogKey struct {
+	key    core.RatingKey
+	reason string
+}
+
 type Service struct {
 	o Options
+
+	fetchFlight flight.Group[markerCacheKey, []Marker]
+
+	warmMu     sync.Mutex
+	warming    map[markerCacheKey]chan struct{}
+	warmWG     sync.WaitGroup
+	warmCtx    context.Context
+	warmCancel context.CancelFunc
+	warmClosed bool
+
+	logMu  sync.Mutex
+	logged map[markerLogKey]struct{}
 }
 
 func New(o Options) *Service {
@@ -84,7 +116,113 @@ func New(o Options) *Service {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Service{o: o}
+	warmCtx, warmCancel := context.WithCancel(context.Background())
+	return &Service{
+		o:          o,
+		warming:    map[markerCacheKey]chan struct{}{},
+		warmCtx:    warmCtx,
+		warmCancel: warmCancel,
+		logged:     map[markerLogKey]struct{}{},
+	}
+}
+
+func (s *Service) logOnce(level slog.Level, key core.RatingKey, reason, msg string, args ...any) {
+	if s == nil {
+		return
+	}
+	log := s.o.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	lk := markerLogKey{key: key, reason: reason}
+	s.logMu.Lock()
+	if s.logged == nil {
+		s.logged = map[markerLogKey]struct{}{}
+	}
+	if _, seen := s.logged[lk]; seen {
+		s.logMu.Unlock()
+		return
+	}
+	if len(s.logged) >= maxLoggedEntries {
+		clear(s.logged)
+	}
+	s.logged[lk] = struct{}{}
+	s.logMu.Unlock()
+	log.Log(context.Background(), level, msg, args...)
+}
+
+// Warm fetches and caches remote markers for a single playing release off the
+// caller's request path. Concurrent requests for the same (key, duration) share
+// one fetch, and total in-flight background warms are bounded.
+func (s *Service) Warm(key core.RatingKey, info core.MediaInfo) <-chan struct{} {
+	closed := make(chan struct{})
+	close(closed)
+	if s == nil || info.Estimated || info.Duration <= 0 || (key.Kind() != core.KindEpisode && key.Kind() != core.KindMovie) {
+		return closed
+	}
+	enabled, _, _, _ := s.lookup()
+	if !enabled {
+		return closed
+	}
+	ck := markerCacheKey{key: key, runtimeMS: info.Duration.Milliseconds()}
+	s.warmMu.Lock()
+	if s.warmClosed {
+		s.warmMu.Unlock()
+		return closed
+	}
+	if s.warming == nil {
+		s.warming = map[markerCacheKey]chan struct{}{}
+	}
+	if ch, ok := s.warming[ck]; ok {
+		s.warmMu.Unlock()
+		return ch
+	}
+	if len(s.warming) >= maxConcurrentWarms {
+		s.warmMu.Unlock()
+		s.logOnce(slog.LevelDebug, key, "warm-busy", "marker warm skipped: concurrency limit reached", "key", key, "duration_ms", ck.runtimeMS)
+		return closed
+	}
+	baseCtx := s.warmCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	done := make(chan struct{})
+	s.warming[ck] = done
+	s.warmWG.Add(1)
+	s.warmMu.Unlock()
+
+	timeout := defaultWarmTimeout
+	if s.o.AlignTimeout > 0 && s.o.AlignTimeout+5*time.Second > timeout {
+		timeout = s.o.AlignTimeout + 5*time.Second
+	}
+	go func() {
+		defer func() {
+			s.warmMu.Lock()
+			delete(s.warming, ck)
+			s.warmMu.Unlock()
+			close(done)
+			s.warmWG.Done()
+		}()
+		wctx, cancel := context.WithTimeout(baseCtx, timeout)
+		defer cancel()
+		_, _ = s.Markers(wctx, key, info)
+	}()
+	return done
+}
+
+// Close cancels any in-flight background marker warms and waits for them to exit.
+func (s *Service) Close() {
+	if s == nil {
+		return
+	}
+	s.warmMu.Lock()
+	s.warmClosed = true
+	cancel := s.warmCancel
+	s.warmMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.warmWG.Wait()
 }
 
 func (s *Service) lookup() (enabled bool, apiKey string, intro, credits bool) {
@@ -287,15 +425,37 @@ func (s *Service) rawMarkers(ctx context.Context, key core.RatingKey, info core.
 	if !enabled || info.Duration <= 0 || (key.Kind() != core.KindEpisode && key.Kind() != core.KindMovie) {
 		return s.mergeSources(ctx, key, info.Duration, out, nil), nil
 	}
-	remote, refDuration, err := s.fetch(ctx, key, info.Duration, apiKey)
+	ck := markerCacheKey{key: key, runtimeMS: info.Duration.Milliseconds()}
+	remote, err := s.fetchFlight.Do(ctx, ck, func(fctx context.Context) ([]Marker, error) {
+		if cached, ok, cerr := s.cached(fctx, key, info.Duration); cerr != nil {
+			return nil, cerr
+		} else if ok {
+			return cached, nil
+		}
+		fetched, refDuration, ferr := s.fetch(fctx, key, info.Duration, apiKey)
+		if ferr != nil {
+			s.logOnce(slog.LevelInfo, key, "theintrodb-err", "theintrodb marker fetch failed", "key", key, "tmdb_id", key.TMDB(), "duration_ms", ck.runtimeMS, "err", ferr)
+			return nil, ferr
+		}
+		fetched = s.shiftToPlayed(fctx, key, fetched, refDuration, info.Duration)
+		if len(fetched) == 0 {
+			s.logOnce(slog.LevelDebug, key, "theintrodb-empty", "theintrodb returned no markers", "key", key, "tmdb_id", key.TMDB(), "duration_ms", ck.runtimeMS)
+		} else if s.o.Logger != nil {
+			s.o.Logger.Debug("theintrodb markers fetched", "key", key, "tmdb_id", key.TMDB(), "duration_ms", ck.runtimeMS, "count", len(fetched))
+		}
+		if s.o.DB != nil {
+			if perr := s.Put(fctx, key, info.Duration, fetched); perr != nil {
+				s.logOnce(slog.LevelWarn, key, "cache-put-err", "marker cache write failed", "key", key, "duration_ms", ck.runtimeMS, "err", perr)
+				return fetched, perr
+			}
+		}
+		return fetched, nil
+	})
 	if err != nil {
-		return s.mergeSources(ctx, key, info.Duration, out, nil), err
-	}
-	remote = s.shiftToPlayed(ctx, key, remote, refDuration, info.Duration)
-	if s.o.DB != nil {
-		if err = s.Put(ctx, key, info.Duration, remote); err != nil {
+		if len(remote) > 0 {
 			return merge(out, remote), err
 		}
+		return s.mergeSources(ctx, key, info.Duration, out, nil), err
 	}
 	return s.mergeSources(ctx, key, info.Duration, out, remote), nil
 }
@@ -329,7 +489,7 @@ func (s *Service) fetch(ctx context.Context, key core.RatingKey, d time.Duration
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Ether/1")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

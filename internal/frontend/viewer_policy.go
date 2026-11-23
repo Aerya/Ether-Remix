@@ -43,6 +43,19 @@ type UserListSource interface {
 	Users(context.Context) ([]User, error)
 }
 
+// UserLookupSource is the optional per-viewer lookup an identity surface may
+// expose so historical endpoints resolve deactivated viewers by local ID.
+type UserLookupSource interface {
+	User(context.Context, int64) (*User, error)
+}
+
+// KnownUsersSource is the optional full household account list (active and
+// deactivated) an identity surface may expose so owner-scoped endpoints can
+// resolve historical account references.
+type KnownUsersSource interface {
+	KnownUsers(context.Context) ([]User, error)
+}
+
 // BrowseBlocksPolicy is the optional genre and keyword block list an access
 // policy may expose for browse queries.
 type BrowseBlocksPolicy interface {

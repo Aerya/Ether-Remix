@@ -11,13 +11,13 @@ func (s *Server) plexStreamAccess(u *frontend.Viewer) frontend.SessionAccess {
 	return frontend.SessionAccess{Viewer: u, Protocol: "plex"}
 }
 
-func (s *Server) assignStream(ctx context.Context, u *frontend.Viewer, key frontend.RatingKey, index int, info frontend.StreamInfo, sessionID string) int64 {
+func (s *Server) assignStream(ctx context.Context, u *frontend.Viewer, key frontend.RatingKey, index int, info frontend.StreamInfo, sessionID string, estimated bool) int64 {
 	rt := s.streams()
 	if s == nil || rt == nil {
 		return 0
 	}
 	id, err := rt.BindStream(ctx, s.plexStreamAccess(u), frontend.StreamBinding{
-		Key: key, Index: index, Info: info, SessionID: sessionID,
+		Key: key, Index: index, Info: info, SessionID: sessionID, Estimated: estimated,
 	})
 	if err != nil {
 		return 0
@@ -42,8 +42,10 @@ func (s *Server) resolveIssuedStream(ctx context.Context, u *frontend.Viewer, cl
 	if err != nil || u == nil || s.playIDs == nil {
 		return binding, err
 	}
-	if t, ok := s.playIDs.resolve(playIdentityKey{userID: u.ID, clientID: clientID, key: binding.Key}, id); ok {
-		binding.Index, binding.Info = t.index, t.info
+	if t, remapped, known, issuedEst := s.playIDs.resolve(playIdentityKey{userID: u.ID, clientID: clientID, key: binding.Key}, id); remapped {
+		binding.Index, binding.Info, binding.Estimated = t.index, t.info, t.estimated
+	} else if known {
+		binding.Estimated = issuedEst
 	}
 	return binding, nil
 }

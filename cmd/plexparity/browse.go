@@ -27,7 +27,7 @@ func browsingPaths() []string {
 		"/hubs/home/recentlyAdded?type=1&contentDirectoryID=2", "/hubs/home/recentlyAdded?type=2&pinnedContentDirectoryID=1",
 		"/hubs/home/recentlyAdded?type=1&contentDirectoryID=1", "/hubs/home/recentlyAdded?type=2&contentDirectoryID=2",
 		"/hubs?count=2", "/hubs/promoted?count=2", "/hubs/sections/{{section}}?count=2",
-		"/hubs?count=5", "/hubs/promoted?count=5", "/hubs/sections/{{section}}?count=5",
+		"/hubs?count=5", "/hubs/promoted?count=5", "/hubs/sections/{{section}}?count=5", "/hubs/sections/{{section}}/promoted?count=5", "/hubs/promoted?contentDirectoryID=1,2&pinnedContentDirectoryID=1,2&count=5",
 		"/hubs/items?identifier=home.continue", "/hubs/items/home.continue",
 		"/butler", "/butler/OptimizeDatabase", "/updater/check", "/updater/apply", "/library/sections/{{section}}/refresh", "/security/token",
 		"/hubs/metadata/{{movieKey}}", "/hubs/metadata/{{movieKey}}/related", "/hubs/metadata/{{movieKey}}/postplay", "/hubs/search/voice?query=fixture", "/search?query=fixture",

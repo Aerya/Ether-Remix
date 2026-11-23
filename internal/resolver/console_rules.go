@@ -85,7 +85,7 @@ func (h *consoleAPI) previewRules(w http.ResponseWriter, r *http.Request) {
 		var trace Trace
 		// Console preview is device-neutral, just like normal release search.
 		caps := core.ClientCaps{}
-		candidates, _, err := h.s.rankCandidates(ctx, core.ResolveRequest{Title: title, Client: caps}, searchRequestFor(title), in.Profile, results, &trace, "")
+		candidates, _, err := h.s.rankCandidatesLocal(ctx, core.ResolveRequest{Title: title, Client: caps}, searchRequestFor(title), in.Profile, results, &trace, "", false)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -104,8 +104,18 @@ func (h *consoleAPI) previewRules(w http.ResponseWriter, r *http.Request) {
 			return out[i].Rank < out[j].Rank
 		})
 	} else {
+		hot := h.s.rankingSession(ctx, core.ClientCaps{})
+		if hot != nil {
+			defer hot.Close()
+		}
 		for _, rel := range results {
-			v := policy.Evaluate(rel, releasepolicy.Context{})
+			pctx := releasepolicy.Context{}
+			if hot != nil {
+				pctx.ExternalMatch = func(r core.Release, c core.ReleaseCondition) (bool, bool) {
+					return hot.Match(r, c, false)
+				}
+			}
+			v := policy.Evaluate(rel, pctx)
 			out = append(out, ConsoleRelease{Release: browserRelease(rel), Preferences: &v, Rejected: v.Rejected})
 		}
 		// Filenames alone have no quality order or formats to compare; the

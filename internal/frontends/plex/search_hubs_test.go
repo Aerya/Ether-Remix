@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -104,7 +105,7 @@ func TestHubSearchPeopleHubsAndReasonedTitles(t *testing.T) {
 	}
 	actorDirs := actorHub["Directory"].([]any)
 	actorDir := actorDirs[0].(map[string]any)
-	if actorDir["tag"] != "Theo Varga" || int(actorDir["id"].(float64)) != 287 || int(actorDir["tagType"].(float64)) != 6 || actorDir["tagKey"] != "tmdb-person-287" {
+	if actorDir["tag"] != "Theo Varga" || int(actorDir["id"].(float64)) != 287 || int(actorDir["tagType"].(float64)) != 6 || actorDir["tagKey"] != nil {
 		t.Fatalf("unexpected actor Directory: %#v", actorDir)
 	}
 	if actorDir["key"] != "/library/sections/1/all?actor=287" || actorDir["filter"] != "actor=287" || actorDir["reason"] != "section" || actorDir["reasonTitle"] != "Movies" || int(actorDir["count"].(float64)) != 1 {
@@ -242,4 +243,150 @@ func TestHubSearchPeopleHonorsViewerSafetyAndVisibility(t *testing.T) {
 
 	// Policy-blocked title is hidden from non-owner friends.
 	assertNoPeopleOrReasonedHits(friendToken, "Blocked Star")
+}
+
+func TestLibrarySearchTypesRepeatedMixedAndNarrowed(t *testing.T) {
+	f := newFixture()
+	defer f.srv.Close()
+
+	// Add movies, a show, an episode, and an owner collection sharing a query
+	// term so candidate windowing, repeated/mixed-case searchTypes, episodes,
+	// and collections are all exercised.
+	m1 := fightClub
+	m1.Key = core.MovieKey(9201)
+	m1.Title = "Eclipse Alpha"
+	m2 := fightClub
+	m2.Key = core.MovieKey(9202)
+	m2.Title = "Eclipse Beta"
+	sh := breakingBad
+	sh.Key = core.ShowKey(9203)
+	sh.Title = "Eclipse Series"
+	ep := bbE1
+	ep.Key = core.EpisodeKey(9203, 1, 1)
+	ep.ShowKey = sh.Key
+	ep.Title = "Eclipse Pilot"
+	f.catalog.titles[m1.Key] = m1
+	f.catalog.titles[m2.Key] = m2
+	f.catalog.titles[sh.Key] = sh
+	f.catalog.titles[ep.Key] = ep
+	col := core.Collection{Key: core.CollectionKey(9204), Type: core.TypeMovie, Title: "Eclipse Collection", ChildCount: 1}
+	f.cols.cols[col.Key] = col
+	f.cols.items[col.Key] = []core.Title{m1}
+
+	// Repeated searchTypes with a leading unmapped token ("otherVideos") must
+	// still union subsequent values instead of discarding everything after the first.
+	rec := f.get(t, "/library/search?query=Eclipse&searchTypes=otherVideos&searchTypes=movies&searchTypes=tv&includeCollections=1", jsonAccept...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("repeated searchTypes status %d: %s", rec.Code, rec.Body.String())
+	}
+	mc := decodeJSON(t, rec)
+	results, _ := mc["SearchResult"].([]any)
+	var gotMovie, gotShow, gotCollection bool
+	for _, raw := range results {
+		row := raw.(map[string]any)
+		if md, ok := row["Metadata"].(map[string]any); ok {
+			switch md["type"] {
+			case "movie":
+				gotMovie = true
+			case "show":
+				gotShow = true
+			}
+		}
+		if dir, ok := row["Directory"].(map[string]any); ok && dir["type"] == "collection" && dir["title"] == "Eclipse Collection" {
+			gotCollection = true
+		}
+	}
+	if !gotMovie || !gotShow || !gotCollection {
+		t.Fatalf("repeated searchTypes missing movie/show/collection: gotMovie=%v gotShow=%v gotCollection=%v body=%s", gotMovie, gotShow, gotCollection, rec.Body.String())
+	}
+
+	// Mixed-case searchTypes must not drop all results.
+	rec = f.get(t, "/library/search?query=Eclipse&searchTypes=Movies,TV", jsonAccept...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mixed-case searchTypes status %d: %s", rec.Code, rec.Body.String())
+	}
+	if int(decodeJSON(t, rec)["size"].(float64)) == 0 {
+		t.Fatalf("mixed-case searchTypes returned empty container: %s", rec.Body.String())
+	}
+
+	// Narrowing searchTypes=tv with limit=1 must push type filtering into the
+	// search query so movies (lower keys) do not crowd out the show result.
+	rec = f.get(t, "/library/search?query=Eclipse&limit=1&searchTypes=tv", jsonAccept...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("narrowed tv search status %d: %s", rec.Code, rec.Body.String())
+	}
+	mc = decodeJSON(t, rec)
+	results, _ = mc["SearchResult"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["Metadata"].(map[string]any)["title"] != "Eclipse Series" {
+		t.Fatalf("narrowed tv search = %s, want Eclipse Series", rec.Body.String())
+	}
+
+	// Explicit searchTypes=episodes queries episodes rather than dropping them.
+	rec = f.get(t, "/library/search?query=Eclipse+Pilot&searchTypes=episodes", jsonAccept...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("episodes search status %d: %s", rec.Code, rec.Body.String())
+	}
+	mc = decodeJSON(t, rec)
+	results, _ = mc["SearchResult"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["Metadata"].(map[string]any)["title"] != "Eclipse Pilot" {
+		t.Fatalf("episodes search = %s, want Eclipse Pilot", rec.Body.String())
+	}
+}
+
+type discoveryHiddenPolicy struct {
+	hideKey core.RatingKey
+}
+
+func (discoveryHiddenPolicy) SetMaxRating(context.Context, *core.User, string) error {
+	return core.ErrUnauthorized
+}
+
+func (p discoveryHiddenPolicy) Allowed(_ *core.User, t *core.Title) bool {
+	return t != nil && !t.Adult
+}
+
+func (p discoveryHiddenPolicy) DiscoveryAllowed(_ *core.User, t *core.Title) bool {
+	return t != nil && !t.Adult && t.Key != p.hideKey
+}
+
+func TestPlexSearchPreservesExplicitSearchPastDiscoveryRules(t *testing.T) {
+	f := newFixture(func(d *testServerDeps) {
+		setDepsPolicy(d, discoveryHiddenPolicy{hideKey: fightClub.Key})
+	})
+	defer f.srv.Close()
+
+	// All four Plex explicit search endpoints must return a title hidden only
+	// from discovery/browsing (scope: "discovery").
+	rec := f.get(t, "/library/search?query=Fjord+Harbor&searchTypes=movies,tv", jsonAccept...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/library/search status %d: %s", rec.Code, rec.Body.String())
+	}
+	if int(decodeJSON(t, rec)["size"].(float64)) == 0 {
+		t.Fatalf("/library/search dropped browsing-only hidden title: %s", rec.Body.String())
+	}
+
+	rec = f.get(t, "/hubs/search?query=Fjord+Harbor", jsonAccept...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/hubs/search status %d: %s", rec.Code, rec.Body.String())
+	}
+	var movieHubSize int
+	for _, raw := range decodeJSON(t, rec)["Hub"].([]any) {
+		h := raw.(map[string]any)
+		if h["hubIdentifier"] == "movie" {
+			movieHubSize = int(h["size"].(float64))
+		}
+	}
+	if movieHubSize == 0 {
+		t.Fatalf("/hubs/search dropped browsing-only hidden title: %s", rec.Body.String())
+	}
+
+	for _, path := range []string{"/search?query=Fjord+Harbor", "/library/sections/1/search?query=Fjord+Harbor"} {
+		rec = f.get(t, path, jsonAccept...)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status %d: %s", path, rec.Code, rec.Body.String())
+		}
+		if int(decodeJSON(t, rec)["size"].(float64)) == 0 {
+			t.Fatalf("%s dropped browsing-only hidden title: %s", path, rec.Body.String())
+		}
+	}
 }

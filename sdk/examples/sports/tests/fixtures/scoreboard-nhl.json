@@ -1,0 +1,2005 @@
+{
+  "leagues": [
+    {
+      "id": "90",
+      "uid": "s:70~l:90",
+      "name": "National Hockey League",
+      "abbreviation": "NHL",
+      "slug": "nhl",
+      "logos": [
+        {
+          "href": "https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+            "full",
+            "default"
+          ],
+          "lastUpdated": "2018-06-05T12:07Z"
+        },
+        {
+          "href": "https://a.espncdn.com/i/teamlogos/leagues/500-dark/nhl.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+            "full",
+            "dark"
+          ],
+          "lastUpdated": "2021-08-10T20:37Z"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "401892754",
+      "uid": "s:70~l:90~e:401892754",
+      "date": "2026-11-21T18:00Z",
+      "name": "Edmonton Oilers at Carolina Hurricanes",
+      "shortName": "EDM @ CAR",
+      "season": {
+        "year": 2027,
+        "type": 2,
+        "slug": "regular-season"
+      },
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 3,
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final",
+          "shortDetail": "Final"
+        }
+      },
+      "links": [
+        {
+          "language": "en-US",
+          "rel": [
+            "summary",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/nhl/game/_/gameId/401892754/oilers-hurricanes",
+          "text": "Gamecast",
+          "shortText": "Gamecast",
+          "isExternal": false,
+          "isPremium": false
+        },
+        {
+          "language": "en-US",
+          "rel": [
+            "boxscore",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/nhl/boxscore/_/gameId/401892754",
+          "text": "Box Score",
+          "shortText": "Box Score",
+          "isExternal": false,
+          "isPremium": false
+        }
+      ],
+      "competitions": [
+        {
+          "id": "401892754",
+          "uid": "s:70~l:90~e:401892754~c:401892754",
+          "date": "2026-11-21T18:00Z",
+          "startDate": "2026-11-21T18:00Z",
+          "type": {
+            "id": "1",
+            "abbreviation": "STD"
+          },
+          "venue": {
+            "id": "999",
+            "fullName": "Lenovo Center",
+            "address": {
+              "city": "Raleigh",
+              "state": "NC",
+              "country": "USA"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 0.0,
+            "displayClock": "0:00",
+            "period": 3,
+            "type": {
+              "id": "3",
+              "name": "STATUS_FINAL",
+              "state": "post",
+              "completed": true,
+              "description": "Final",
+              "detail": "Final",
+              "shortDetail": "Final"
+            },
+            "featuredAthletes": [
+              {
+                "name": "winningGoalie",
+                "displayName": "Winning Goalie",
+                "shortDisplayName": "Winning Goalie",
+                "abbreviation": "W",
+                "playerId": 4565259,
+                "athlete": {
+                  "id": "4565259",
+                  "fullName": "Pyotr Kochetkov",
+                  "displayName": "Pyotr Kochetkov",
+                  "shortName": "P. Kochetkov",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/4565259"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/4565259.png",
+                  "jersey": "52",
+                  "position": "G",
+                  "team": {
+                    "id": "7"
+                  }
+                },
+                "team": {
+                  "id": "7"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "11"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".733"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "0"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892754/competitions/401892754/competitors/7/roster/4565259/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "losingGoalie",
+                "displayName": "Losing Goalie",
+                "shortDisplayName": "Losing Goalie",
+                "abbreviation": "L",
+                "playerId": 4894487,
+                "athlete": {
+                  "id": "4894487",
+                  "fullName": "Devon Levi",
+                  "displayName": "Devon Levi",
+                  "shortName": "D. Levi",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/4894487"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/4894487.png",
+                  "jersey": "27",
+                  "position": "G",
+                  "team": {
+                    "id": "6"
+                  }
+                },
+                "team": {
+                  "id": "6"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "29"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".806"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "1"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892754/competitions/401892754/competitors/6/roster/4894487/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "firstStar",
+                "displayName": "First Star",
+                "shortDisplayName": "First Star",
+                "abbreviation": "FS",
+                "playerId": 4352683,
+                "athlete": {
+                  "id": "4352683",
+                  "fullName": "Andrei Svechnikov",
+                  "displayName": "Andrei Svechnikov",
+                  "shortName": "A. Svechnikov",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/4352683"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/4352683.png",
+                  "jersey": "37",
+                  "position": "LW",
+                  "team": {
+                    "id": "7"
+                  }
+                },
+                "team": {
+                  "id": "7"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".000"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "2"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "13"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "2"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892754/competitions/401892754/competitors/7/roster/4352683/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "secondStar",
+                "displayName": "Second Star",
+                "shortDisplayName": "Second Star",
+                "abbreviation": "SS",
+                "playerId": 3904173,
+                "athlete": {
+                  "id": "3904173",
+                  "fullName": "Sebastian Aho",
+                  "displayName": "Sebastian Aho",
+                  "shortName": "S. Aho",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/3904173"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/3904173.png",
+                  "jersey": "20",
+                  "position": "C",
+                  "team": {
+                    "id": "7"
+                  }
+                },
+                "team": {
+                  "id": "7"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".000"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "13"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "2"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "3"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892754/competitions/401892754/competitors/7/roster/3904173/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "thirdStar",
+                "displayName": "Third Star",
+                "shortDisplayName": "Third Star",
+                "abbreviation": "TS",
+                "playerId": 5428,
+                "athlete": {
+                  "id": "5428",
+                  "fullName": "Taylor Hall",
+                  "displayName": "Taylor Hall",
+                  "shortName": "T. Hall",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/5428"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/5428.png",
+                  "jersey": "71",
+                  "position": "LW",
+                  "team": {
+                    "id": "7"
+                  }
+                },
+                "team": {
+                  "id": "7"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".000"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "4"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "2"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892754/competitions/401892754/competitors/7/roster/5428/projections?lang=en&region=us"
+                }
+              }
+            ]
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "NHL Net"
+              ]
+            },
+            {
+              "market": "home",
+              "names": [
+                "CARNHL"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "NHL Net"
+              },
+              "lang": "en",
+              "region": "us"
+            },
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "2",
+                "type": "Home"
+              },
+              "media": {
+                "shortName": "CARNHL"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "7",
+              "uid": "s:70~l:90~t:7",
+              "type": "team",
+              "order": 0,
+              "homeAway": "home",
+              "winner": true,
+              "score": "7",
+              "linescores": [
+                {
+                  "value": 0.0,
+                  "displayValue": "0",
+                  "period": 1
+                },
+                {
+                  "value": 5.0,
+                  "displayValue": "5",
+                  "period": 2
+                },
+                {
+                  "value": 2.0,
+                  "displayValue": "2",
+                  "period": 3
+                }
+              ],
+              "records": [
+                {
+                  "name": "YTD",
+                  "abbreviation": "Game",
+                  "type": "ytd",
+                  "summary": "17-3-3"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "8-1-2"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "11"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".733"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "7"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "176"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "13"
+                },
+                {
+                  "name": "points",
+                  "abbreviation": "PTS",
+                  "displayValue": "20"
+                }
+              ],
+              "team": {
+                "id": "7",
+                "uid": "s:70~l:90~t:7",
+                "location": "Carolina",
+                "name": "Hurricanes",
+                "abbreviation": "CAR",
+                "displayName": "Carolina Hurricanes",
+                "shortDisplayName": "Hurricanes",
+                "color": "e30426",
+                "alternateColor": "000000",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/car.png",
+                "isActive": true
+              }
+            },
+            {
+              "id": "6",
+              "uid": "s:70~l:90~t:6",
+              "type": "team",
+              "order": 1,
+              "homeAway": "away",
+              "winner": false,
+              "score": "4",
+              "linescores": [
+                {
+                  "value": 2.0,
+                  "displayValue": "2",
+                  "period": 1
+                },
+                {
+                  "value": 2.0,
+                  "displayValue": "2",
+                  "period": 2
+                },
+                {
+                  "value": 0.0,
+                  "displayValue": "0",
+                  "period": 3
+                }
+              ],
+              "records": [
+                {
+                  "name": "YTD",
+                  "abbreviation": "Game",
+                  "type": "ytd",
+                  "summary": "17-5-3"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "7-3-2"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "29"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".806"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "4"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "185"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "6"
+                },
+                {
+                  "name": "points",
+                  "abbreviation": "PTS",
+                  "displayValue": "10"
+                }
+              ],
+              "team": {
+                "id": "6",
+                "uid": "s:70~l:90~t:6",
+                "location": "Edmonton",
+                "name": "Oilers",
+                "abbreviation": "EDM",
+                "displayName": "Edmonton Oilers",
+                "shortDisplayName": "Oilers",
+                "color": "00205b",
+                "alternateColor": "ff4c00",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/edm.png",
+                "isActive": true
+              }
+            }
+          ],
+          "notes": [],
+          "format": {
+            "regulation": {
+              "periods": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "401892755",
+      "uid": "s:70~l:90~e:401892755",
+      "date": "2026-11-21T20:30Z",
+      "name": "Chicago Blackhawks at Calgary Flames",
+      "shortName": "CHI @ CGY",
+      "season": {
+        "year": 2027,
+        "type": 2,
+        "slug": "regular-season"
+      },
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 4,
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final/OT",
+          "shortDetail": "Final/OT",
+          "altDetail": "OT"
+        }
+      },
+      "links": [
+        {
+          "language": "en-US",
+          "rel": [
+            "summary",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/nhl/game/_/gameId/401892755/blackhawks-flames",
+          "text": "Gamecast",
+          "shortText": "Gamecast",
+          "isExternal": false,
+          "isPremium": false
+        },
+        {
+          "language": "en-US",
+          "rel": [
+            "boxscore",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/nhl/boxscore/_/gameId/401892755",
+          "text": "Box Score",
+          "shortText": "Box Score",
+          "isExternal": false,
+          "isPremium": false
+        }
+      ],
+      "competitions": [
+        {
+          "id": "401892755",
+          "uid": "s:70~l:90~e:401892755~c:401892755",
+          "date": "2026-11-21T20:30Z",
+          "startDate": "2026-11-21T20:30Z",
+          "type": {
+            "id": "1",
+            "abbreviation": "STD"
+          },
+          "venue": {
+            "id": "1843",
+            "fullName": "Scotiabank Saddledome",
+            "address": {
+              "city": "Calgary",
+              "state": "AB",
+              "country": "Canada"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 0.0,
+            "displayClock": "0:00",
+            "period": 4,
+            "type": {
+              "id": "3",
+              "name": "STATUS_FINAL",
+              "state": "post",
+              "completed": true,
+              "description": "Final",
+              "detail": "Final/OT",
+              "shortDetail": "Final/OT",
+              "altDetail": "OT"
+            },
+            "featuredAthletes": [
+              {
+                "name": "winningGoalie",
+                "displayName": "Winning Goalie",
+                "shortDisplayName": "Winning Goalie",
+                "abbreviation": "W",
+                "playerId": 4565234,
+                "athlete": {
+                  "id": "4565234",
+                  "fullName": "Spencer Knight",
+                  "displayName": "Spencer Knight",
+                  "shortName": "S. Knight",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/4565234"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/4565234.png",
+                  "jersey": "30",
+                  "position": "G",
+                  "team": {
+                    "id": "4"
+                  }
+                },
+                "team": {
+                  "id": "4"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "33"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".917"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "0"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892755/competitions/401892755/competitors/4/roster/4565234/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "losingGoalie",
+                "displayName": "Losing Goalie",
+                "shortDisplayName": "Losing Goalie",
+                "abbreviation": "L",
+                "playerId": 4587952,
+                "athlete": {
+                  "id": "4587952",
+                  "fullName": "Dustin Wolf",
+                  "displayName": "Dustin Wolf",
+                  "shortName": "D. Wolf",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/4587952"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/4587952.png",
+                  "jersey": "32",
+                  "position": "G",
+                  "team": {
+                    "id": "3"
+                  }
+                },
+                "team": {
+                  "id": "3"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "29"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".879"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "0"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892755/competitions/401892755/competitors/3/roster/4587952/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "firstStar",
+                "displayName": "First Star",
+                "shortDisplayName": "First Star",
+                "abbreviation": "FS",
+                "playerId": 2562636,
+                "athlete": {
+                  "id": "2562636",
+                  "fullName": "Ryan Strome",
+                  "displayName": "Ryan Strome",
+                  "shortName": "R. Strome",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/2562636"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/2562636.png",
+                  "jersey": "22",
+                  "position": "C",
+                  "team": {
+                    "id": "3"
+                  }
+                },
+                "team": {
+                  "id": "3"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".000"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "4"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "2"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892755/competitions/401892755/competitors/3/roster/2562636/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "secondStar",
+                "displayName": "Second Star",
+                "shortDisplayName": "Second Star",
+                "abbreviation": "SS",
+                "playerId": 3735,
+                "athlete": {
+                  "id": "3735",
+                  "fullName": "Patrick Kane",
+                  "displayName": "Patrick Kane",
+                  "shortName": "P. Kane",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/3735"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/3735.png",
+                  "jersey": "88",
+                  "position": "RW",
+                  "team": {
+                    "id": "4"
+                  }
+                },
+                "team": {
+                  "id": "4"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".000"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "2"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "2"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "2"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "3"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892755/competitions/401892755/competitors/4/roster/3735/projections?lang=en&region=us"
+                }
+              },
+              {
+                "name": "thirdStar",
+                "displayName": "Third Star",
+                "shortDisplayName": "Third Star",
+                "abbreviation": "TS",
+                "playerId": 4587843,
+                "athlete": {
+                  "id": "4587843",
+                  "fullName": "Yegor Sharangovich",
+                  "displayName": "Yegor Sharangovich",
+                  "shortName": "Y. Sharangovich",
+                  "links": [
+                    {
+                      "rel": [
+                        "playercard",
+                        "desktop",
+                        "athlete"
+                      ],
+                      "href": "https://www.espn.com/nhl/player/_/id/4587843"
+                    }
+                  ],
+                  "headshot": "https://a.espncdn.com/i/headshots/nhl/players/full/4587843.png",
+                  "jersey": "17",
+                  "position": "C",
+                  "team": {
+                    "id": "3"
+                  }
+                },
+                "team": {
+                  "id": "3"
+                },
+                "statistics": [
+                  {
+                    "name": "saves",
+                    "abbreviation": "SV",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "savePct",
+                    "abbreviation": "SV%",
+                    "displayValue": ".000"
+                  },
+                  {
+                    "name": "plusMinus",
+                    "abbreviation": "+/-",
+                    "displayValue": "-2"
+                  },
+                  {
+                    "name": "goals",
+                    "abbreviation": "G",
+                    "displayValue": "1"
+                  },
+                  {
+                    "name": "ytdGoals",
+                    "abbreviation": "YTDG",
+                    "displayValue": "5"
+                  },
+                  {
+                    "name": "assists",
+                    "abbreviation": "A",
+                    "displayValue": "0"
+                  },
+                  {
+                    "name": "points",
+                    "abbreviation": "PTS",
+                    "displayValue": "1"
+                  }
+                ],
+                "projections": {
+                  "$ref": "http://sports.core.api.espn.pvt/v2/sports/hockey/leagues/nhl/events/401892755/competitions/401892755/competitors/3/roster/4587843/projections?lang=en&region=us"
+                }
+              }
+            ]
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "ESPN+"
+              ]
+            },
+            {
+              "market": "away",
+              "names": [
+                "CHSN"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "4",
+                "shortName": "Streaming"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "ESPN+",
+                "logo": "https://a.espncdn.com/guid/322a7e47-3cdb-3b5c-ab1b-678e1f2c27e5/logos/default.png",
+                "darkLogo": "https://a.espncdn.com/guid/322a7e47-3cdb-3b5c-ab1b-678e1f2c27e5/logos/default-dark.png"
+              },
+              "lang": "en",
+              "region": "us"
+            },
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "3",
+                "type": "Away"
+              },
+              "media": {
+                "shortName": "CHSN"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "3",
+              "uid": "s:70~l:90~t:3",
+              "type": "team",
+              "order": 0,
+              "homeAway": "home",
+              "winner": false,
+              "score": "3",
+              "linescores": [
+                {
+                  "value": 1.0,
+                  "displayValue": "1",
+                  "period": 1
+                },
+                {
+                  "value": 1.0,
+                  "displayValue": "1",
+                  "period": 2
+                },
+                {
+                  "value": 1.0,
+                  "displayValue": "1",
+                  "period": 3
+                },
+                {
+                  "value": 0.0,
+                  "displayValue": "0",
+                  "period": 4
+                }
+              ],
+              "records": [
+                {
+                  "name": "YTD",
+                  "abbreviation": "Game",
+                  "type": "ytd",
+                  "summary": "10-12-2"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "6-6-1"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "29"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".879"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "3"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "114"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "6"
+                },
+                {
+                  "name": "points",
+                  "abbreviation": "PTS",
+                  "displayValue": "9"
+                }
+              ],
+              "team": {
+                "id": "3",
+                "uid": "s:70~l:90~t:3",
+                "location": "Calgary",
+                "name": "Flames",
+                "abbreviation": "CGY",
+                "displayName": "Calgary Flames",
+                "shortDisplayName": "Flames",
+                "color": "dd1a32",
+                "alternateColor": "000000",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/cgy.png",
+                "isActive": true
+              }
+            },
+            {
+              "id": "4",
+              "uid": "s:70~l:90~t:4",
+              "type": "team",
+              "order": 1,
+              "homeAway": "away",
+              "winner": true,
+              "score": "4",
+              "linescores": [
+                {
+                  "value": 0.0,
+                  "displayValue": "0",
+                  "period": 1
+                },
+                {
+                  "value": 3.0,
+                  "displayValue": "3",
+                  "period": 2
+                },
+                {
+                  "value": 0.0,
+                  "displayValue": "0",
+                  "period": 3
+                },
+                {
+                  "value": 1.0,
+                  "displayValue": "1",
+                  "period": 4
+                }
+              ],
+              "records": [
+                {
+                  "name": "YTD",
+                  "abbreviation": "Game",
+                  "type": "ytd",
+                  "summary": "7-14-2"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "6-6-1"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "33"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".917"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "4"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "108"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "7"
+                },
+                {
+                  "name": "points",
+                  "abbreviation": "PTS",
+                  "displayValue": "11"
+                }
+              ],
+              "team": {
+                "id": "4",
+                "uid": "s:70~l:90~t:4",
+                "location": "Chicago",
+                "name": "Blackhawks",
+                "abbreviation": "CHI",
+                "displayName": "Chicago Blackhawks",
+                "shortDisplayName": "Blackhawks",
+                "color": "e31937",
+                "alternateColor": "000000",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/chi.png",
+                "isActive": true
+              }
+            }
+          ],
+          "notes": [],
+          "format": {
+            "regulation": {
+              "periods": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "401892768",
+      "uid": "s:70~l:90~e:401892768",
+      "date": "2026-11-22T17:30Z",
+      "name": "Carolina Hurricanes at New York Rangers",
+      "shortName": "CAR @ NYR",
+      "season": {
+        "year": 2027,
+        "type": 2,
+        "slug": "regular-season"
+      },
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 0,
+        "type": {
+          "id": "1",
+          "name": "STATUS_SCHEDULED",
+          "state": "pre",
+          "completed": false,
+          "description": "Scheduled",
+          "detail": "Sun, November 22nd at 12:30 PM EST",
+          "shortDetail": "11/22 - 12:30 PM EST"
+        }
+      },
+      "links": [
+        {
+          "language": "en-US",
+          "rel": [
+            "summary",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/nhl/game/_/gameId/401892768/hurricanes-rangers",
+          "text": "Gamecast",
+          "shortText": "Gamecast",
+          "isExternal": false,
+          "isPremium": false
+        }
+      ],
+      "competitions": [
+        {
+          "id": "401892768",
+          "uid": "s:70~l:90~e:401892768~c:401892768",
+          "date": "2026-11-22T17:30Z",
+          "startDate": "2026-11-22T17:30Z",
+          "type": {
+            "id": "1",
+            "abbreviation": "STD"
+          },
+          "venue": {
+            "id": "1830",
+            "fullName": "Madison Square Garden",
+            "address": {
+              "city": "New York",
+              "state": "NY",
+              "country": "USA"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 0.0,
+            "displayClock": "0:00",
+            "period": 0,
+            "type": {
+              "id": "1",
+              "name": "STATUS_SCHEDULED",
+              "state": "pre",
+              "completed": false,
+              "description": "Scheduled",
+              "detail": "Sun, November 22nd at 12:30 PM EST",
+              "shortDetail": "11/22 - 12:30 PM EST"
+            }
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "NHL Net"
+              ]
+            },
+            {
+              "market": "home",
+              "names": [
+                "MSG",
+                "CARNHL"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "NHL Net"
+              },
+              "lang": "en",
+              "region": "us"
+            },
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "2",
+                "type": "Home"
+              },
+              "media": {
+                "shortName": "MSG"
+              },
+              "lang": "en",
+              "region": "us"
+            },
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "2",
+                "type": "Home"
+              },
+              "media": {
+                "shortName": "CARNHL"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "13",
+              "uid": "s:70~l:90~t:13",
+              "type": "team",
+              "order": 0,
+              "homeAway": "home",
+              "score": "0",
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOTAL",
+                  "type": "total",
+                  "summary": "13-8-1"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "9-2-0"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "523",
+                  "rankDisplayValue": "Tied-26th"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".911",
+                  "rankDisplayValue": "2nd"
+                },
+                {
+                  "name": "plusMinus",
+                  "abbreviation": "+/-",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "67",
+                  "rankDisplayValue": "Tied-21st"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "116",
+                  "rankDisplayValue": "Tied-22nd"
+                }
+              ],
+              "team": {
+                "id": "13",
+                "uid": "s:70~l:90~t:13",
+                "location": "New York",
+                "name": "Rangers",
+                "abbreviation": "NYR",
+                "displayName": "New York Rangers",
+                "shortDisplayName": "Rangers",
+                "color": "0056ae",
+                "alternateColor": "e51937",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/nyr.png",
+                "isActive": true
+              }
+            },
+            {
+              "id": "7",
+              "uid": "s:70~l:90~t:7",
+              "type": "team",
+              "order": 1,
+              "homeAway": "away",
+              "score": "0",
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOTAL",
+                  "type": "total",
+                  "summary": "17-3-3"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "8-1-2"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "439",
+                  "rankDisplayValue": "32nd"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".896",
+                  "rankDisplayValue": "Tied-11th"
+                },
+                {
+                  "name": "plusMinus",
+                  "abbreviation": "+/-",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "95",
+                  "rankDisplayValue": "2nd"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "166",
+                  "rankDisplayValue": "1st"
+                }
+              ],
+              "team": {
+                "id": "7",
+                "uid": "s:70~l:90~t:7",
+                "location": "Carolina",
+                "name": "Hurricanes",
+                "abbreviation": "CAR",
+                "displayName": "Carolina Hurricanes",
+                "shortDisplayName": "Hurricanes",
+                "color": "e30426",
+                "alternateColor": "000000",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/car.png",
+                "isActive": true
+              }
+            }
+          ],
+          "notes": [],
+          "format": {
+            "regulation": {
+              "periods": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "401892769",
+      "uid": "s:70~l:90~e:401892769",
+      "date": "2026-11-22T22:00Z",
+      "name": "Buffalo Sabres at Tampa Bay Lightning",
+      "shortName": "BUF @ TB",
+      "season": {
+        "year": 2027,
+        "type": 2,
+        "slug": "regular-season"
+      },
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 0,
+        "type": {
+          "id": "1",
+          "name": "STATUS_SCHEDULED",
+          "state": "pre",
+          "completed": false,
+          "description": "Scheduled",
+          "detail": "Sun, November 22nd at 5:00 PM EST",
+          "shortDetail": "11/22 - 5:00 PM EST"
+        }
+      },
+      "links": [
+        {
+          "language": "en-US",
+          "rel": [
+            "summary",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/nhl/game/_/gameId/401892769/sabres-lightning",
+          "text": "Gamecast",
+          "shortText": "Gamecast",
+          "isExternal": false,
+          "isPremium": false
+        }
+      ],
+      "competitions": [
+        {
+          "id": "401892769",
+          "uid": "s:70~l:90~e:401892769~c:401892769",
+          "date": "2026-11-22T22:00Z",
+          "startDate": "2026-11-22T22:00Z",
+          "type": {
+            "id": "1",
+            "abbreviation": "STD"
+          },
+          "venue": {
+            "id": "1396",
+            "fullName": "Benchmark International Arena",
+            "address": {
+              "city": "Tampa",
+              "state": "FL",
+              "country": "USA"
+            },
+            "indoor": true
+          },
+          "status": {
+            "clock": 0.0,
+            "displayClock": "0:00",
+            "period": 0,
+            "type": {
+              "id": "1",
+              "name": "STATUS_SCHEDULED",
+              "state": "pre",
+              "completed": false,
+              "description": "Scheduled",
+              "detail": "Sun, November 22nd at 5:00 PM EST",
+              "shortDetail": "11/22 - 5:00 PM EST"
+            }
+          },
+          "broadcasts": [
+            {
+              "market": "national",
+              "names": [
+                "NHL Net"
+              ]
+            },
+            {
+              "market": "home",
+              "names": [
+                "MSGB",
+                "The Spot - MTN"
+              ]
+            }
+          ],
+          "geoBroadcasts": [
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "1",
+                "type": "National"
+              },
+              "media": {
+                "shortName": "NHL Net"
+              },
+              "lang": "en",
+              "region": "us"
+            },
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "2",
+                "type": "Home"
+              },
+              "media": {
+                "shortName": "MSGB"
+              },
+              "lang": "en",
+              "region": "us"
+            },
+            {
+              "type": {
+                "id": "1",
+                "shortName": "TV"
+              },
+              "market": {
+                "id": "2",
+                "type": "Home"
+              },
+              "media": {
+                "shortName": "The Spot - MTN"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "20",
+              "uid": "s:70~l:90~t:20",
+              "type": "team",
+              "order": 0,
+              "homeAway": "home",
+              "score": "0",
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOTAL",
+                  "type": "total",
+                  "summary": "15-5-2"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "10-1-0"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "490",
+                  "rankDisplayValue": "29th"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".896",
+                  "rankDisplayValue": "Tied-11th"
+                },
+                {
+                  "name": "plusMinus",
+                  "abbreviation": "+/-",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "82",
+                  "rankDisplayValue": "Tied-8th"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "133",
+                  "rankDisplayValue": "11th"
+                }
+              ],
+              "team": {
+                "id": "20",
+                "uid": "s:70~l:90~t:20",
+                "location": "Tampa Bay",
+                "name": "Lightning",
+                "abbreviation": "TB",
+                "displayName": "Tampa Bay Lightning",
+                "shortDisplayName": "Lightning",
+                "color": "003e7e",
+                "alternateColor": "ffffff",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/tb.png",
+                "isActive": true
+              }
+            },
+            {
+              "id": "2",
+              "uid": "s:70~l:90~t:2",
+              "type": "team",
+              "order": 1,
+              "homeAway": "away",
+              "score": "0",
+              "records": [
+                {
+                  "name": "overall",
+                  "abbreviation": "TOTAL",
+                  "type": "total",
+                  "summary": "9-10-4"
+                },
+                {
+                  "name": "Home",
+                  "abbreviation": "HOME",
+                  "type": "home",
+                  "summary": "4-6-0"
+                }
+              ],
+              "curatedRank": {
+                "current": 99
+              },
+              "statistics": [
+                {
+                  "name": "saves",
+                  "abbreviation": "SV",
+                  "displayValue": "558",
+                  "rankDisplayValue": "17th"
+                },
+                {
+                  "name": "savePct",
+                  "abbreviation": "SV%",
+                  "displayValue": ".876",
+                  "rankDisplayValue": "Tied-28th"
+                },
+                {
+                  "name": "plusMinus",
+                  "abbreviation": "+/-",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "goals",
+                  "abbreviation": "G",
+                  "displayValue": "67",
+                  "rankDisplayValue": "Tied-21st"
+                },
+                {
+                  "name": "ytdGoals",
+                  "abbreviation": "YTDG",
+                  "displayValue": "0"
+                },
+                {
+                  "name": "assists",
+                  "abbreviation": "A",
+                  "displayValue": "119",
+                  "rankDisplayValue": "19th"
+                }
+              ],
+              "team": {
+                "id": "2",
+                "uid": "s:70~l:90~t:2",
+                "location": "Buffalo",
+                "name": "Sabres",
+                "abbreviation": "BUF",
+                "displayName": "Buffalo Sabres",
+                "shortDisplayName": "Sabres",
+                "color": "00468b",
+                "alternateColor": "fdb71a",
+                "logo": "https://a.espncdn.com/i/teamlogos/nhl/500/scoreboard/buf.png",
+                "isActive": true
+              }
+            }
+          ],
+          "notes": [],
+          "format": {
+            "regulation": {
+              "periods": 3
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

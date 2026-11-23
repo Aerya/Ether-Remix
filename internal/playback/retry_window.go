@@ -48,7 +48,7 @@ func retryableByWindow(err error) bool {
 
 // notePrepareFailureLocked remembers a failed preparation. The caller holds m.mu.
 func (m *Manager) notePrepareFailureLocked(fk flightKey, err error) {
-	if !retryableByWindow(err) {
+	if core.IsExplicitVersionSlotSelector(fk.prefer) || !retryableByWindow(err) {
 		return
 	}
 	now := m.now()
@@ -71,6 +71,9 @@ func (m *Manager) notePrepareFailureLocked(fk flightKey, err error) {
 // recentPrepareFailureLocked returns the failure of an identical preparation
 // that ended moments ago. The caller holds m.mu.
 func (m *Manager) recentPrepareFailureLocked(fk flightKey) error {
+	if core.IsExplicitVersionSlotSelector(fk.prefer) {
+		return nil
+	}
 	k := prepareFailKey{fk.id, fk.prefer, fk.exact}
 	f, ok := m.prepareFailures[k]
 	if !ok {

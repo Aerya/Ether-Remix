@@ -186,7 +186,7 @@ class KindsConformanceTest(unittest.TestCase):
         self.assertEqual(feed["entries"][0]["audio"], "https://x/e.mp3")
 
     def test_stream_url_host_service(self):
-        from ether_plugin import PluginContext, stream_url
+        from ether_plugin import PluginContext, RemoteHostClient, stream_url
 
         host = create_mock_host_client()
         ctx = PluginContext(
@@ -203,11 +203,314 @@ class KindsConformanceTest(unittest.TestCase):
         url = ctx.stream_url("pk:recordings:a")
         self.assertTrue(url.startswith("/ether/v1/kind-media/"))
         self.assertEqual(host.last_stream_url, (7, "pk:recordings:a"))
+        self.assertIsNone(host.last_stream_url_part)
         self.assertEqual(stream_url(ctx, "pk:recordings:a"), url)
+
+        part_url = ctx.stream_url("pk:recordings:a", 2)
+        self.assertTrue(part_url.endswith("?part=2"))
+        self.assertEqual(host.last_stream_url_part, 2)
+        self.assertIsNone(host.last_stream_url_source)
+        self.assertEqual(stream_url(ctx, "pk:recordings:a", 2), part_url)
+        with self.assertRaises(ValueError):
+            ctx.stream_url("pk:recordings:a", -1)
+
+        src_url = ctx.stream_url("pk:recordings:a", 1, source="pdf")
+        self.assertTrue(src_url.endswith("?part=1"))
+        self.assertEqual(host.last_stream_url_part, 1)
+        self.assertEqual(host.last_stream_url_source, "pdf")
+        self.assertEqual(stream_url(ctx, "pk:recordings:a", source="epub"), "/ether/v1/kind-media/mock-7")
+        self.assertEqual(host.last_stream_url_source, "epub")
+        with self.assertRaises(ValueError):
+            ctx.stream_url("pk:recordings:a", source="   ")
+
+        seen = []
+        remote = RemoteHostClient(base_url="http://ether.local", credential="cred")
+        remote.frontend._call = lambda method, path, body=None, allow_404=False: (  # type: ignore[method-assign]
+            seen.append((method, path, body)) or {"url": "/ether/v1/kind-media/remote-part"}
+        )
+        rctx = PluginContext(
+            manifest={},
+            settings={},
+            locale="en",
+            pick_token=None,
+            request_id=None,
+            headers={"X-Ether-Viewer": "7"},
+            query={},
+            ether=remote,
+            i18n=None,
+        )
+        self.assertEqual(rctx.stream_url("pk:recordings:a", 3), "/ether/v1/kind-media/remote-part")
+        self.assertEqual(rctx.stream_url("pk:recordings:a", 1, source="epub"), "/ether/v1/kind-media/remote-part")
+        self.assertEqual(
+            seen,
+            [
+                ("POST", "/ether/plugin-host/frontend/stream-url", {"viewerId": 7, "itemRef": "pk:recordings:a", "partIndex": 3}),
+                ("POST", "/ether/plugin-host/frontend/stream-url", {"viewerId": 7, "itemRef": "pk:recordings:a", "partIndex": 1, "source": "epub"}),
+            ],
+        )
+
         # No viewer header: refused.
         ctx.headers = {}
         with self.assertRaises(RuntimeError):
             ctx.stream_url("pk:recordings:a")
+
+
+
+
+class ArchiveExtractSdkTest(unittest.TestCase):
+    def test_mock_and_remote_archive_extract(self):
+        import hashlib
+        import io
+        import zipfile
+        import zlib
+        from ether_plugin import RemoteHostClient
+
+        buf = io.BytesIO()
+        payload = b"panasonic-3do-track-data"
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("disc/track01.iso", payload)
+            zf.writestr("../unsafe.iso", b"bad")
+
+        mock = create_mock_host_client()
+        archive_ref = mock.cache.put("pk-test-games", "disc.zip", buf.getvalue())
+        members = mock.archive.list(archive_ref)
+        self.assertEqual(len(members), 2)
+        self.assertTrue(members[1].get("unsafe"))
+
+        extracted = mock.archive.extract(archive_ref, 0)
+        self.assertEqual(extracted["ref"], "blob:" + hashlib.sha256(payload).hexdigest())
+        self.assertEqual(extracted["size"], len(payload))
+        self.assertEqual(extracted["sha1"], hashlib.sha1(payload).hexdigest())
+        self.assertEqual(extracted["md5"], hashlib.md5(payload).hexdigest())
+        self.assertEqual(extracted["crc32"], f"{zlib.crc32(payload) & 0xFFFFFFFF:08x}")
+        self.assertEqual(mock.cache.open(extracted["ref"]), payload)
+
+        unsafe_extracted = mock.archive.extract(archive_ref, 1)
+        self.assertEqual(mock.cache.open(unsafe_extracted["ref"]), b"bad")
+
+        seen = []
+        client = RemoteHostClient(base_url="http://ether.local", credential="cred")
+        client.archive._call = lambda method, path, body=None, allow_404=False: (  # type: ignore[method-assign]
+            seen.append((method, path, body)) or extracted
+        )
+        out = client.archive.extract(archive_ref, 0)
+        self.assertEqual(out, extracted)
+        self.assertEqual(seen, [("POST", "/ether/plugin-host/data/archive.extract", [archive_ref, 0])])
+
+    def test_mock_and_remote_archive_read_and_runtime_limits(self):
+        import base64
+        import io
+        import zipfile
+        from ether_plugin import RemoteHostClient
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("sets/a.xml", b"alpha-xml")
+            zf.writestr("sets/b.xml", b"bravo-xml")
+            zf.writestr("../bad.xml", b"unsafe")
+
+        mock = create_mock_host_client()
+        self.assertEqual(mock.runtime.limits()["readBytes"], 8 * 1024 * 1024)
+        archive_ref = mock.cache.put("pk-test-games", "sets.zip", buf.getvalue())
+        batch = mock.archive.read(
+            archive_ref,
+            [
+                {"member": 1, "offset": 0, "length": 5},
+                {"member": 0, "offset": 6, "length": 3},
+            ],
+        )
+        self.assertEqual(
+            batch,
+            [
+                {"index": 0, "member": 1, "size": 5, "body": b"bravo"},
+                {"index": 1, "member": 0, "size": 3, "body": b"xml"},
+            ],
+        )
+        with self.assertRaises(ValueError):
+            mock.archive.read(archive_ref, [])
+        with self.assertRaises(ValueError):
+            mock.archive.read(
+                archive_ref,
+                [
+                    {"member": 0, "offset": 0, "length": 5 * 1024 * 1024},
+                    {"member": 1, "offset": 0, "length": 4 * 1024 * 1024},
+                ],
+            )
+        flagged = mock.archive.read(archive_ref, [{"member": 2, "offset": 0, "length": 6}])
+        self.assertEqual(flagged, [{"index": 0, "member": 2, "size": 6, "body": b"unsafe"}])
+
+        seen = []
+        client = RemoteHostClient(base_url="http://ether.local", credential="cred")
+
+        def fake_call(method, path, body=None, allow_404=False):
+            seen.append((method, path, body))
+            if path == "/ether/plugin-host/limits":
+                return {"memoryBytes": 1 << 30, "readBytes": 256 << 20}
+            return [
+                {
+                    "index": 0,
+                    "member": 1,
+                    "size": 5,
+                    "bodyBase64": base64.b64encode(b"bravo").decode("ascii"),
+                }
+            ]
+
+        client.runtime._call = fake_call  # type: ignore[method-assign]
+        client.archive._call = fake_call  # type: ignore[method-assign]
+        self.assertEqual(client.runtime.limits()["readBytes"], 256 << 20)
+        remote_out = client.archive.read(archive_ref, [{"member": 1, "offset": 0, "length": 5}])
+        self.assertEqual(remote_out, [{"index": 0, "member": 1, "size": 5, "body": b"bravo"}])
+        self.assertEqual(seen[0], ("GET", "/ether/plugin-host/limits", None))
+        self.assertEqual(seen[1][1], "/ether/plugin-host/data/archive.read")
+
+    def test_kinds_visible_and_browse(self):
+        from ether_plugin import (
+            HEADER_VIEWER_TOKEN,
+            MAX_KIND_VISIBLE_IDS,
+            RemoteHostClient,
+            kinds_browse,
+            kinds_visible,
+        )
+
+        mock = create_mock_host_client()
+        mock.kinds.upsert(
+            "comic",
+            [
+                {"id": "a", "level": "series", "title": "Alpha"},
+                {"id": "b", "level": "series", "title": "Beta"},
+                {"id": "c", "level": "series", "title": "Gamma"},
+            ],
+        )
+        mock.kind_hidden_ids["comic"] = {"b"}
+
+        with self.assertRaises(RuntimeError):
+            mock.kinds.visible("comic", ["a", "b"])
+        with self.assertRaises(RuntimeError):
+            mock.kinds.browse("comic", {})
+        with self.assertRaises(ValueError):
+            mock.kinds.visible("comic", [f"id-{i}" for i in range(MAX_KIND_VISIBLE_IDS + 1)], viewer_token="tok-1")
+
+        self.assertEqual(mock.kinds.visible("comic", ["c", "b", "missing", "a", "c"], viewer_token="tok-1"), ["c", "a"])
+        page = mock.kinds.browse("comic", {"query": "a", "limit": 10}, viewer_token="tok-1")
+        self.assertEqual([it["id"] for it in page["items"]], ["a", "c"])
+
+        # FrontendAdapter 5-arg handle receives ctx with X-Ether-Viewer-Token.
+        app = plugin(
+            manifest={
+                "id": "org.example.comics",
+                "name": "Comics",
+                "version": "1.0.0",
+                "ether": {"protocol": 1, "kind": "content"},
+            },
+            routes={},
+            host=mock,
+        )
+
+        class Adapter:
+            def handle(self, method, path, headers, body, ctx):
+                ids = kinds_visible(ctx, "comic", ["a", "b", "c"])
+                bpage = kinds_browse(ctx, "comic", {"desc": True, "limit": 10})
+                return (
+                    200,
+                    {"Content-Type": "application/json"},
+                    json.dumps({"ids": ids, "browse": [it["id"] for it in bpage["items"]]}),
+                )
+
+        app.on_frontend("opds", Adapter())
+        res = app.dispatch(
+            {
+                "method": "GET",
+                "path": "/ether/v1/frontend/opds/feed",
+                "headers": {HEADER_VIEWER_TOKEN: "tok-live"},
+            }
+        )
+        self.assertEqual(res["status"], 200)
+        self.assertEqual(json.loads(res["body"]), {"ids": ["a", "c"], "browse": ["c", "a"]})
+
+        no_tok = app.dispatch(
+            {
+                "method": "GET",
+                "path": "/ether/v1/frontend/opds/feed",
+                "headers": {"X-Ether-Viewer": "42"},
+            }
+        )
+        self.assertEqual(no_tok["status"], 500)
+
+        # RemoteHostClient sends X-Ether-Viewer-Token header and never viewerId in body.
+        seen = []
+        client = RemoteHostClient(base_url="http://ether.local", credential="cred")
+
+        def fake_call(method, path, body=None, allow_404=False, extra_headers=None):
+            seen.append((method, path, body, extra_headers))
+            if path.endswith("/visible"):
+                return {"ids": ["a"]}
+            return {"items": [{"id": "a", "level": "series", "title": "Alpha"}]}
+
+        client.kinds._call = fake_call  # type: ignore[method-assign]
+        with self.assertRaises(RuntimeError):
+            client.kinds.visible("comic", ["a"])
+        with self.assertRaises(RuntimeError):
+            client.kinds.browse("comic", {})
+        self.assertEqual(client.kinds.visible("comic", ["a", "b"], viewer_token="tok-r"), ["a"])
+        r_page = client.kinds.browse("comic", {"query": "alp", "desc": True}, viewer_token="tok-r")
+        self.assertEqual(len(r_page["items"]), 1)
+        self.assertEqual(seen[0], ("POST", "/ether/plugin-host/kinds/comic/visible", {"ids": ["a", "b"]}, {HEADER_VIEWER_TOKEN: "tok-r"}))
+        self.assertNotIn("viewerId", seen[0][2])
+        self.assertEqual(seen[1], ("POST", "/ether/plugin-host/kinds/comic/browse", {"query": "alp", "desc": True}, {HEADER_VIEWER_TOKEN: "tok-r"}))
+        self.assertNotIn("viewerId", seen[1][2])
+
+    def test_kind_live_dispatch(self):
+        app = plugin(
+            manifest={
+                "id": "org.example.games",
+                "name": "Games",
+                "version": "1.0.0",
+                "ether": {"protocol": 1, "kind": "content"},
+            },
+            routes={},
+        )
+        seen = {}
+
+        class LiveProv:
+            def live(self, ctx, req):
+                seen["live"] = req
+                return {
+                    "items": [{"id": "ch-1", "title": "Finals", "badge": "LIVE", "viewers": 420}],
+                    "filters": [{"key": "featured", "label": "Featured"}],
+                    "nextCursor": "cur-2",
+                }
+
+            def resolve_live(self, ctx, req):
+                seen["resolve"] = req
+                return {
+                    "url": "https://stream.example/live/ch-1/master.m3u8?token=once",
+                    "mime": "application/vnd.apple.mpegurl",
+                    "title": "Finals",
+                }
+
+        app.on_live("esports", LiveProv())
+        res = app.dispatch(
+            {
+                "method": "POST",
+                "path": "/ether/v1/kinds/esports/live",
+                "body": json.dumps({"tab": "live", "q": "finals", "filter": "featured", "limit": 10}),
+            }
+        )
+        self.assertEqual(res["status"], 200)
+        self.assertEqual(seen["live"]["kind"], "esports")
+        self.assertEqual(seen["live"]["q"], "finals")
+        self.assertEqual(res["body"]["nextCursor"], "cur-2")
+
+        res2 = app.dispatch(
+            {
+                "method": "POST",
+                "path": "/ether/v1/kinds/esports/live/resolve",
+                "body": json.dumps({"id": "ch-1"}),
+            }
+        )
+        self.assertEqual(res2["status"], 200)
+        self.assertEqual(seen["resolve"], {"kind": "esports", "id": "ch-1"})
+        self.assertEqual(res2["body"]["url"], "https://stream.example/live/ch-1/master.m3u8?token=once")
 
 
 if __name__ == "__main__":

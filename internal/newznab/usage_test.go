@@ -25,7 +25,7 @@ func TestUsageMatchesIndexerCounterByPurpose(t *testing.T) {
 	f := newFakeIndexer(t, "")
 	cfg := testConfig(f.server.URL)
 	cfg.DailyLimit = 50
-	m := NewManager(db, []config.Indexer{cfg}, Options{NZBDir: t.TempDir()})
+	m := NewManager(db, []config.Indexer{cfg}, Options{Vault: &testVault{}})
 
 	play := core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	req := core.SearchRequest{Type: core.TypeMovie, Title: "The Signal", Year: 1999, IDs: core.IDs{IMDB: "tt0000001"}}
@@ -177,7 +177,7 @@ func TestUsageCountsEveryHTTPRequestSent(t *testing.T) {
 	}
 	defer db.Close()
 	f := newFakeIndexer(t, "emptyimdb") // the id query misses: Play fans out
-	m := NewManager(db, []config.Indexer{testConfig(f.server.URL)}, Options{NZBDir: t.TempDir()})
+	m := NewManager(db, []config.Indexer{testConfig(f.server.URL)}, Options{Vault: &testVault{}})
 	play := core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	req := core.SearchRequest{Type: core.TypeMovie, Title: "The Signal", OriginalTitle: "La Señal", Year: 1999, IDs: core.IDs{IMDB: "tt0000001", TMDB: 7}}
 	results, err := m.Search(play, req)

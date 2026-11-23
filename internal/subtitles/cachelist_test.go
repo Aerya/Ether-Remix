@@ -109,3 +109,55 @@ func TestDownloadedSubtitleMetadataCarriesTitleKey(t *testing.T) {
 		t.Fatalf("unexpected index: %v", err)
 	}
 }
+
+func TestSubtitleIndexTracksWritesDeletesAndExternalChanges(t *testing.T) {
+	s := New(Options{CacheDir: t.TempDir()})
+	t1 := &core.Title{Key: core.MovieKey(550)}
+	t2 := &core.Title{Key: core.MovieKey(603)}
+	if s.HasTitleSelections(t1.Key) {
+		t.Fatal("empty cache must report no selections")
+	}
+
+	// Upload populates the write-through index immediately.
+	body := []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	up, err := s.StoreUpload(t1, "movie.en.srt", "srt", "en", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasTitleSelections(t1.Key) || s.HasTitleSelections(t2.Key) {
+		t.Fatalf("after upload: t1=%v t2=%v, want true/false", s.HasTitleSelections(t1.Key), s.HasTitleSelections(t2.Key))
+	}
+	if got := s.ManualSidecars(t1, nil); len(got) != 1 || got[0].ExternalURL != up.ExternalURL {
+		t.Fatalf("ManualSidecars after upload = %+v", got)
+	}
+
+	// DeleteUpload clears the write-through index immediately.
+	if err := s.DeleteUpload(t1.Key, up); err != nil {
+		t.Fatal(err)
+	}
+	if s.HasTitleSelections(t1.Key) {
+		t.Fatal("after DeleteUpload: t1 still reported as having selections")
+	}
+
+	// External index write after load invalidates via directory stat.
+	extPath := s.manualPath(t2.Key, "fr")
+	extSel, _ := json.Marshal(selection{ID: "ext1", FileID: 42, Language: "fr", Release: "Ext", At: s.now().UTC()})
+	if err := os.WriteFile(filepath.Join(s.dir, "ext1.srt"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, "ext1.vtt"), []byte("WEBVTT\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extPath, extSel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Ensure directory mtime advances even on coarse-timestamp filesystems.
+	future := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(filepath.Dir(extPath), future, future)
+	if !s.HasTitleSelections(t2.Key) {
+		t.Fatal("external index file was not detected")
+	}
+	if got := s.ManualSidecars(t2, nil); len(got) != 1 || got[0].Language != "fr" {
+		t.Fatalf("ManualSidecars after external write = %+v", got)
+	}
+}

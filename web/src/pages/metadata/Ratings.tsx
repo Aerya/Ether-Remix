@@ -1,10 +1,18 @@
-import { Badge, Button, SettingsSection, Spinner, Switch, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Badge,
+  Button,
+  SearchSelect,
+  SettingsSection,
+  Spinner,
+  Switch,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import { RefreshCw, X } from "lucide-react";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { secretConfigured } from "../../components/IntegrationAccount";
-import { ErrorPanel } from "../../components/feedback";
+import { ErrorPanel, MutationError } from "../../components/feedback";
 import { NumberInput, PasswordInput } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { TitleSearch } from "../../components/pickers";
@@ -12,10 +20,10 @@ import { titleSubtitle } from "../../components/Poster";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t, tn, tx } from "../../i18n";
+import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { apiFetch, errorMessage } from "../../lib/api";
 import type { TitleCard } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
-import { nativeSelect } from "./shared";
 import { MetadataWorkspace } from "./MetadataWorkspace";
 
 export type RatingSettings = {
@@ -135,12 +143,13 @@ export function RatingSources({
     const write = async () => {
       const body = draftRef.current;
       if (!body) return;
+      const payload = setup ? { ...body, enabled: true } : body;
       setSaving(true);
       setError(null);
       try {
         const next = await apiFetch<RatingSettings>("/discovery/ratings/settings", {
           method: "PUT",
-          body: JSON.stringify(body),
+          body: JSON.stringify(payload),
         });
         providerDraftKeys.current = {};
         if (controlled) {
@@ -190,35 +199,37 @@ export function RatingSources({
   };
   const providerRow = (
     <SettingsRow
-      stacked
       title={<label htmlFor="ratings-provider">{t("Provider")}</label>}
       description={t(
         "OMDb has IMDb, Rotten Tomatoes critics and Metacritic. MDBList adds audience and Letterboxd scores.",
       )}
       control={
-        <select
-          id="ratings-provider"
-          className={`${nativeSelect} sm:w-48`}
-          value={draft.provider}
-          onChange={(e) => {
-            const provider = e.currentTarget.value;
-            if (provider === draft.provider) return;
-            rememberKeys();
-            if (provider === draft.backupProvider) {
-              set({
-                provider,
-                apiKey: draft.backupApiKey,
-                backupProvider: draft.provider,
-                backupApiKey: draft.apiKey,
-              });
-            } else {
-              set({ provider, apiKey: draftKeyFor(provider) });
-            }
-          }}
-        >
-          <option value="omdb">OMDb</option>
-          <option value="mdblist">MDBList</option>
-        </select>
+        <div className="sm:w-72">
+          <SearchSelect
+            {...searchSelectLabels()}
+            id="ratings-provider"
+            ariaLabel={t("Provider")}
+            value={draft.provider}
+            options={[
+              { value: "omdb", label: "OMDb" },
+              { value: "mdblist", label: "MDBList" },
+            ]}
+            onChange={(provider) => {
+              if (provider === draft.provider) return;
+              rememberKeys();
+              if (provider === draft.backupProvider) {
+                set({
+                  provider,
+                  apiKey: draft.backupApiKey,
+                  backupProvider: draft.provider,
+                  backupApiKey: draft.apiKey,
+                });
+              } else {
+                set({ provider, apiKey: draftKeyFor(provider) });
+              }
+            }}
+          />
+        </div>
       }
     />
   );
@@ -249,6 +260,7 @@ export function RatingSources({
   if (keysOnly)
     return (
       <>
+        {setup && error ? <MutationError error={error} /> : null}
         <SettingsSection
           title={undefined}
           footer={
@@ -260,25 +272,29 @@ export function RatingSources({
           {providerRow}
           {keyRow}
           <SettingsRow
-            stacked
             title={<label htmlFor="ratings-backup">{t("Backup ratings provider")}</label>}
             control={
-              <select
-                id="ratings-backup"
-                className={`${nativeSelect} sm:w-48`}
-                value={draft.backupProvider || ""}
-                onChange={(e) => {
-                  const backupProvider = e.currentTarget.value;
-                  if (backupProvider !== draft.backupProvider) {
-                    rememberKeys();
-                    set({ backupProvider, backupApiKey: draftKeyFor(backupProvider) });
-                  }
-                }}
-              >
-                <option value="">{t("None")}</option>
-                {draft.provider !== "omdb" && <option value="omdb">OMDb</option>}
-                {draft.provider !== "mdblist" && <option value="mdblist">MDBList</option>}
-              </select>
+              <div className="sm:w-72">
+                <SearchSelect
+                  {...searchSelectLabels()}
+                  id="ratings-backup"
+                  ariaLabel={t("Backup ratings provider")}
+                  value={draft.backupProvider || ""}
+                  options={[
+                    { value: "", label: t("None") },
+                    ...(draft.provider !== "omdb" ? [{ value: "omdb", label: "OMDb" }] : []),
+                    ...(draft.provider !== "mdblist"
+                      ? [{ value: "mdblist", label: "MDBList" }]
+                      : []),
+                  ]}
+                  onChange={(backupProvider) => {
+                    if (backupProvider !== draft.backupProvider) {
+                      rememberKeys();
+                      set({ backupProvider, backupApiKey: draftKeyFor(backupProvider) });
+                    }
+                  }}
+                />
+              </div>
             }
           />
           {draft.backupProvider && (
@@ -324,7 +340,11 @@ export function RatingSources({
               <SettingsRow
                 stacked
                 title={<label htmlFor="ratings-enabled">{t("External ratings")}</label>}
-                description={t("Off: apps show the catalogue rating.")}
+                description={
+                  draft.enabled
+                    ? t("On: apps show the scores chosen below.")
+                    : t("Off: apps show the catalogue rating.")
+                }
                 control={
                   <Switch
                     id="ratings-enabled"
@@ -372,19 +392,17 @@ export function RatingSources({
                   title={<label htmlFor={`ratings-${key}`}>{label}</label>}
                   description={hint}
                   control={
-                    <select
+                    <SearchSelect
                       id={`ratings-${key}`}
-                      className={`${nativeSelect} sm:w-64`}
+                      ariaLabel={label}
                       value={draft[key]}
-                      onChange={(e) => set({ [key]: e.currentTarget.value })}
-                    >
-                      {key === "audience" && <option value="none">{t("None")}</option>}
-                      {SCORE_CHOICES.map((c) => (
-                        <option key={c.value} value={c.value}>
-                          {c.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        ...(key === "audience" ? [{ value: "none", label: t("None") }] : []),
+                        ...SCORE_CHOICES,
+                      ]}
+                      onChange={(value) => set({ [key]: value })}
+                      {...searchSelectLabels()}
+                    />
                   }
                 />
               ))}
@@ -392,15 +410,17 @@ export function RatingSources({
                 stacked
                 title={<label htmlFor="ratings-missing">{t("When a rating is missing")}</label>}
                 control={
-                  <select
+                  <SearchSelect
                     id="ratings-missing"
-                    className={`${nativeSelect} sm:w-64`}
+                    ariaLabel={t("When a rating is missing")}
                     value={draft.missing || "tmdb"}
-                    onChange={(e) => set({ missing: e.currentTarget.value })}
-                  >
-                    <option value="tmdb">{t("Use catalogue rating")}</option>
-                    <option value="none">{t("Show no rating")}</option>
-                  </select>
+                    options={[
+                      { value: "tmdb", label: t("Use catalogue rating") },
+                      { value: "none", label: t("Show no rating") },
+                    ]}
+                    onChange={(missing) => set({ missing })}
+                    {...searchSelectLabels()}
+                  />
                 }
               />
               <SettingsRow
@@ -432,37 +452,6 @@ export function RatingSources({
               enabled={Boolean((controlled ? saved : doc.data)?.enabled)}
               dirty={dirty}
             />
-            <Section
-              title={t("Plex rating fields")}
-              description={
-                dirty
-                  ? t("Draft selection. Save to apply to Plex.")
-                  : t("Current score mapping for title pages.")
-              }
-            >
-              <dl className="metadata-detail-list">
-                {[
-                  [t("External ratings"), draft.enabled ? t("Enabled") : t("Disabled")],
-                  [t("Provider"), draft.provider === "mdblist" ? "MDBList" : "OMDb"],
-                  [
-                    t("Plex rating"),
-                    SCORE_CHOICES.find((c) => c.value === draft.critic)?.label ||
-                      t("Catalogue default"),
-                  ],
-                  [
-                    t("Audience rating"),
-                    SCORE_CHOICES.find((c) => c.value === draft.audience)?.label ||
-                      t("Catalogue default"),
-                  ],
-                  [t("Cache lifetime"), tn(draft.cacheHours, "{count} hour", "{count} hours")],
-                ].map(([name, value]) => (
-                  <div key={name}>
-                    <dt>{name}</dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </Section>
             <Section
               title={t("Available scores")}
               description={t(

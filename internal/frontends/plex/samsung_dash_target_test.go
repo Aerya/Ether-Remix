@@ -1,7 +1,9 @@
 package plex
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -123,7 +125,7 @@ func testSamsungDASHMediaEndToEnd(t *testing.T, directPlay string, copyAudio boo
 	}
 	source := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	defer source.Close()
-	mgr, err := transcode.New(config.Transcode{FFmpegPath: ff, FFprobePath: fp, HWAccel: "none", TempDir: filepath.Join(dir, "mux")}, slog.New(slog.NewTextHandler(io.Discard, nil)), transcode.WithSegmentTimeout(15*time.Second))
+	mgr, err := transcode.New(config.Transcode{FFmpegPath: ff, FFprobePath: fp, HWAccel: "none", ABRLadder: true, ABRLadderUnderCopy: true, TempDir: filepath.Join(dir, "mux")}, slog.New(slog.NewTextHandler(io.Discard, nil)), transcode.WithSegmentTimeout(15*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +166,14 @@ func testSamsungDASHMediaEndToEnd(t *testing.T, directPlay string, copyAudio boo
 	if manifest.Code != 200 || !strings.Contains(manifest.Body.String(), wantCodecs) {
 		t.Fatalf("bad MPD HTTP%d: %s", manifest.Code, manifest.Body.String())
 	}
+	body := manifest.Body.String()
+	if strings.Count(body, "<AdaptationSet ") != 2 || strings.Count(body, "<Representation ") != 2 ||
+		!strings.Contains(body, `<Representation id="0" mimeType="video/mp4"`) ||
+		!strings.Contains(body, `<Representation id="1" mimeType="audio/mp4"`) ||
+		strings.Contains(body, "contentType=") || strings.Count(body, `timescale="1" duration="5"`) != 2 ||
+		!strings.Contains(body, `maxSegmentDuration="PT10S"`) || !strings.Contains(body, `minBufferTime="PT10S"`) {
+		t.Fatalf("want PMS-shaped single-video DASH despite ABR enabled: %s", body)
+	}
 	facts := summarizeDASHResponse(manifest.Body.Bytes())
 	if facts == nil {
 		t.Fatal("missing manifest projection")
@@ -190,6 +200,22 @@ func testSamsungDASHMediaEndToEnd(t *testing.T, directPlay string, copyAudio boo
 		seg := f.get(t, base+"0.m4s", hdr...)
 		if init.Code != 200 || seg.Code != 200 || init.Body.Len() == 0 || seg.Body.Len() == 0 {
 			t.Fatalf("rep%d init=%d/%d bytes segment=%d/%d bytes", rep, init.Code, init.Body.Len(), seg.Code, seg.Body.Len())
+		}
+		if rep == 0 {
+			// Compare both avcC and the embedded SPS, including constraint flags.
+			idx := bytes.Index(init.Body.Bytes(), []byte("avcC"))
+			if idx < 0 || idx+16 > init.Body.Len() {
+				t.Fatal("missing AVC decoder configuration")
+			}
+			c := init.Body.Bytes()[idx+4:]
+			spsLen := int(binary.BigEndian.Uint16(c[6:8]))
+			if c[5]&31 == 0 || spsLen < 4 || 8+spsLen > len(c) || !bytes.Equal(c[1:4], c[9:12]) {
+				t.Fatal("avcC profile/constraints/level differ from SPS")
+			}
+			codec := fmt.Sprintf("avc1.%02x%02x%02x", c[9], c[10], c[11])
+			if !strings.Contains(body, `codecs="`+codec+`"`) {
+				t.Fatalf("MPD must advertise actual SPS codec %s: %s", codec, body)
+			}
 		}
 		name := filepath.Join(dir, fmt.Sprintf("rep%d.mp4", rep))
 		if err := os.WriteFile(name, append(init.Body.Bytes(), seg.Body.Bytes()...), 0600); err != nil {
@@ -235,3 +261,13 @@ type samsungSourcePlayback struct {
 }
 
 func (p *samsungSourcePlayback) InputURL(string) string { return p.url }
+
+func TestSessionWithInfoPreservesLateKeyframes(t *testing.T) {
+	kfs := []core.KeyframePoint{{Offset: 0, Time: 0}, {Offset: 1000, Time: 2002 * time.Millisecond}}
+	ps := &core.PlaySession{ID: "p1", Info: core.MediaInfo{Container: "mkv", Duration: 60 * time.Second, Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc"}}, Keyframes: kfs}}
+	entryInfo := core.MediaInfo{Container: "mkv", Duration: 60 * time.Second, Streams: []core.StreamInfo{{Index: 0, Type: "video", Codec: "hevc"}}}
+	got := sessionWithInfo(ps, entryInfo)
+	if len(got.Info.Keyframes) != len(kfs) || got.Info.Keyframes[1].Time != 2002*time.Millisecond {
+		t.Fatalf("sessionWithInfo dropped late keyframes: %+v", got.Info.Keyframes)
+	}
+}

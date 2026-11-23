@@ -800,7 +800,13 @@ func (ts *Taste) Profile(imageURL func(path string, width int) string) *core.Tas
 	for _, kv := range sortedByWeight(ts.Genre, 25) {
 		p.Genres = append(p.Genres, core.TasteWeight{Name: kv.k, Weight: round3(kv.w)})
 	}
-	for _, kv := range sortedByWeight(ts.Keyword, 30) {
+	filteredKeywords := make(map[string]float64, len(ts.Keyword))
+	for k, w := range ts.Keyword {
+		if isDisplayThemeKeyword(k) {
+			filteredKeywords[k] = w
+		}
+	}
+	for _, kv := range sortedByWeight(filteredKeywords, 30) {
 		p.Keywords = append(p.Keywords, core.TasteWeight{Name: kv.k, Weight: round3(kv.w)})
 	}
 	for _, kv := range sortedByWeight(ts.Person, 30) {

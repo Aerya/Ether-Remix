@@ -214,7 +214,7 @@ func (e *Engine) probeLink(ctx context.Context, raw string, off, size int64) pro
 		return probeRejected
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, end))
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	resp, err := e.hcReplay.Do(req) // the probe, like the read, answers no redirects
 	if err != nil {
 		return probeRejected
@@ -398,7 +398,8 @@ func (f *remoteFile) rerouteWave(ctx context.Context, failed string, usable func
 			f.mu.Unlock()
 			pctx, cancel := context.WithTimeout(ctx, edgeProbeBudget)
 			pctx = egress.WithStreamSource(pctx, p.Provider, "")
-			verdict := f.e.probeLink(pctx, u, off, f.size)
+			wireOff, _, wireSize := p.wireRange(off, off)
+			verdict := f.e.probeLink(pctx, u, wireOff, wireSize)
 			timedOut := pctx.Err() != nil && ctx.Err() == nil
 			cancel()
 			f.mu.Lock()

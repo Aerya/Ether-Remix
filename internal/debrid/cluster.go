@@ -127,10 +127,12 @@ func (s *Service) slotsFor(configured int) int {
 
 // limiter is a counting semaphore whose size can change while in use.
 type limiter struct {
-	mu    sync.Mutex
-	limit int
-	used  int
-	wake  chan struct{} // closed and replaced whenever a slot may be free
+	mu          sync.Mutex
+	limit       int
+	used        int
+	waiting     int
+	wake        chan struct{} // closed and replaced whenever a slot may be free
+	onSaturated func(active, maxConns, waiting int)
 }
 
 func newLimiter(n int) *limiter { return &limiter{limit: max(n, 1), wake: make(chan struct{})} }
@@ -143,11 +145,23 @@ func (l *limiter) acquire(ctx context.Context) error {
 			l.mu.Unlock()
 			return nil
 		}
+		l.waiting++
 		w := l.wake
+		onSat := l.onSaturated
+		active, maxConns, waiting := l.used, l.limit, l.waiting
 		l.mu.Unlock()
+		if onSat != nil {
+			onSat(active, maxConns, waiting)
+		}
 		select {
 		case <-w:
+			l.mu.Lock()
+			l.waiting--
+			l.mu.Unlock()
 		case <-ctx.Done():
+			l.mu.Lock()
+			l.waiting--
+			l.mu.Unlock()
 			return ctx.Err()
 		}
 	}
@@ -215,10 +229,11 @@ func shortError(msg string) string {
 // observe updates e's breaker after a call and broadcasts a pause or its
 // end to the other nodes.
 func (s *Service) observe(e *entry, err error) {
-	ev := e.observe(s.now(), err)
+	ev, prevState, outageDur := e.observeTransition(s.now(), err)
 	if ev == nil {
 		return
 	}
+	s.emitBreakerEvent(e, prevState, ev, outageDur)
 	s.notifyChange()
 	node := s.clusterNode()
 	if node == nil {
@@ -354,7 +369,7 @@ func (s *Service) reloadKnown(ctx context.Context, providerID, hash string) {
 		delete(s.known, key)
 		return
 	}
-	s.known[key] = knownState{cached: cached == 1, until: until}
+	s.known[key] = knownState{cached: cached == 1, checkUncertain: cached == 2, until: until}
 }
 
 // ---------------------------------------------------------------------------

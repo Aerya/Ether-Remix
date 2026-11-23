@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/favorites"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/plextimeline"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/mdblist"
 	"github.com/braedonsaunders/ether/internal/notinterested"
@@ -31,7 +32,14 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	// Watch state and recommendations. Default the account-sync journal gate
 	// closed until buildPlexWatch installs per-viewer consent checks, so a
 	// server without Plex never accumulates undeliverable journal rows.
-	a.state = state.New(a.db, state.Options{Now: parityClock(), Logger: log.With("component", "state"), Availability: a.dbAvail, PendingSQLite: store.DialectOf(a.db) == store.SQLite})
+	a.state = state.New(a.db, state.Options{
+		Now:                parityClock(),
+		Logger:             log.With("component", "state"),
+		Availability:       a.dbAvail,
+		PendingSQLite:      store.DialectOf(a.db) == store.SQLite,
+		ResumeAfterSeconds: cfg.Server.ResumeAfterSeconds,
+	})
+	timeline.SetResumeAfter(cfg.Server.ResumeAfterSeconds)
 	a.state.SetJournalGate(func(context.Context, *sql.Tx, int64) (int64, bool, error) { return 0, false, nil })
 	basePlaylists := a.state.Playlists()
 	marked, ok := basePlaylists.(core.TransactionalMarkedPlaylists)
@@ -40,10 +48,11 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	}
 	libs := []experience.Library{{ID: 1, Name: "Movies", Type: core.TypeMovie}, {ID: 2, Name: "TV Shows", Type: core.TypeShow}}
 	visibility := experienceVisibility(a.safety, a.catalog.Get, func(ctx context.Context, titles []core.Title) []core.Title {
-		if a.availability == nil {
+		avail := a.availabilityLive.Load()
+		if avail == nil {
 			return titles
 		}
-		return a.availability.FilterDiscovery(ctx, titles)
+		return avail.FilterDiscovery(ctx, titles)
 	}, func() []*core.PlaySession {
 		if a.playback == nil {
 			return nil
@@ -83,7 +92,17 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 			a.log.Warn("state: watch progress lost at shutdown", "err", err)
 		}
 	})
-	a.trakt = trakt.New(trakt.Options{Config: cfg.Trakt, DB: a.db, Sealer: a.cfg, Catalog: a.catalog, NodeID: a.clusterNodeID(), Logger: log.With("component", "trakt")})
+	a.trakt = trakt.New(trakt.Options{
+		Config:  cfg.Trakt,
+		DB:      a.db,
+		Sealer:  a.cfg,
+		Catalog: a.catalog,
+		NodeID:  a.clusterNodeID(),
+		Logger:  log.With("component", "trakt"),
+		OnTokenExpired: func(userID int64, username, errMsg string) {
+			a.emitTokenExpired("trakt", "watch_sync", username, userID, errMsg)
+		},
+	})
 	a.trakt.SubscribeTo(a.state)
 	a.simklDevice = &simkl.DeviceManager{AuthConfig: a.simklAuth, Tokens: simkl.TokenStore{DB: a.db, Sealer: a.cfg}}
 	unsubSimkl := a.state.Subscribe(func(ev state.Event) {
@@ -116,6 +135,22 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		Logger:  log.With("component", "llm"),
 	})
 	// Per-viewer Homes, built in the background and served to Plex.
+	librarySections := func(ctx context.Context) map[int]core.MediaType {
+		if a.libraries == nil {
+			return nil
+		}
+		listed, err := a.libraries.List(ctx)
+		if err != nil {
+			return nil
+		}
+		out := make(map[int]core.MediaType, len(listed))
+		for _, l := range listed {
+			if l.Source != core.LibraryPlugin && (l.MediaType == core.TypeMovie || l.MediaType == core.TypeShow) {
+				out[int(l.ID)] = l.MediaType
+			}
+		}
+		return out
+	}
 	if a.personalize, err = personalize.New(personalize.Options{
 		PersonalWatchlist: func(ctx context.Context, u *core.User) ([]core.Title, error) {
 			if a.watchlist == nil {
@@ -148,12 +183,16 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 			return a.availability.FilterDiscovery(ctx, ts)
 		},
 		CatalogRulesRevision: a.catalog.ViewerRulesRevision,
-		UserPolicy:           a.safety.UserPolicy, Allowed: a.safety.Allowed,
+		// A custom library's Recommended rows are scoped to that library's
+		// membership — the same filter its All browse runs (#549).
+		LibraryMembers:  a.libraryRecommendationMembers,
+		LibrarySections: librarySections,
+		UserPolicy:      a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows:   a.extraHomeRows,
 		PreviewContinue: a.previewContinue,
 		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {
-			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer))
+			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))
 			var err error
 			a.collections, err = collections.New(a.db, a.catalog, log.With("component", "collections"), opts...)
 			if err != nil {
@@ -200,6 +239,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	a.subtitles = subtitles.New(subtitles.Options{
 		Config:    cfg.OpenSubtitles,
 		SubDL:     cfg.SubDL,
+		SubSource: cfg.SubSource,
 		Providers: cfg.Subtitles.Providers,
 		CacheDir:  filepath.Join(dataDir, "subtitles"),
 		Logger:    log.With("component", "subtitles"),

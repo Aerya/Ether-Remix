@@ -340,6 +340,10 @@ func (p *fakeProvider) totalCalls() int {
 
 func (p *fakeProvider) Kind() string { return p.kind }
 
+func (p *fakeProvider) supportsAtomicHashCache(infoHash string) bool {
+	return len(infoHash) == 40
+}
+
 func (p *fakeProvider) CheckCached(_ context.Context, hashes []string) (map[string]bool, error) {
 	p.count("check")
 	if !p.bulk {
@@ -361,7 +365,14 @@ func (p *fakeProvider) Find(_ context.Context, hash string) (string, error) {
 	return p.torrents[hash], nil
 }
 
-func (p *fakeProvider) Acquire(_ context.Context, req AcquireRequest) (*Acquired, error) {
+func (p *fakeProvider) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, error) {
+	if req.Private && !req.privateChecked {
+		var perr error
+		req, perr = prepareAcquire(ctx, p, req, false)
+		if perr != nil {
+			return nil, perr
+		}
+	}
 	p.count("acquire")
 	p.wait(p.acqDelay)
 	p.mu.Lock()

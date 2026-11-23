@@ -33,7 +33,96 @@ var (
 	blankLineRe = regexp.MustCompile(`(?m)^[ \t\x{00a0}\x{feff}]+$`)
 	htmlTagRe   = regexp.MustCompile(`</?([a-zA-Z]+)[^>]*>`)
 	entityRe    = regexp.MustCompile(`^&(#\d+|#x[0-9a-fA-F]+|[a-zA-Z]+);`)
+	// cueTimestampRe matches a WebVTT timestamp tag inside cue text
+	// (<00:00:01.000>), used for karaoke-style progressive reveal.
+	cueTimestampRe = regexp.MustCompile(`<(?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{1,3}>`)
+	// rubyNoteRe matches a ruby annotation (<rt>…</rt>) or its parenthesis
+	// fallback (<rp>…</rp>), contents included: the annotation is a reading
+	// aid for the base text, not dialogue.
+	rubyNoteRe  = regexp.MustCompile(`(?is)<r[tp]\b[^>]*>.*?</r[tp]\s*>`)
+	fontColorRe = regexp.MustCompile(`(?i)\bcolor\s*=\s*["']?([^"'\s>]+)`)
+	fontColorOK = regexp.MustCompile(`^(?:#[0-9a-fA-F]{3,8}|[a-zA-Z]+)$`)
 )
+
+// CleanCueText folds cue text to the markup the cue model carries: <i>,
+// <b>, <u> and <font color="…">. WebVTT class (<c.white>), voice (<v …>)
+// and language (<lang …>) spans, ruby markup, in-cue timestamp tags, ASS
+// override blocks and every other tag are dropped, keeping the text they
+// wrapped (a ruby annotation's own text goes with its tags). Without
+// this, an SRT converted from WebVTT captions — Netflix-derived
+// OpenSubtitles files are the common case — serves its <c.…> tags
+// literally to SRT players that know nothing of WebVTT classes (#616).
+func CleanCueText(s string) string {
+	if !strings.ContainsAny(s, "<{") {
+		return s
+	}
+	s = tagRe.ReplaceAllString(s, "")
+	s = rubyNoteRe.ReplaceAllString(s, "")
+	s = cueTimestampRe.ReplaceAllString(s, "")
+	fontDepth := 0
+	return htmlTagRe.ReplaceAllStringFunc(s, func(tag string) string {
+		m := htmlTagRe.FindStringSubmatch(tag)
+		name := strings.ToLower(m[1])
+		closing := strings.HasPrefix(tag, "</")
+		switch name {
+		case "i", "b", "u":
+			if closing {
+				return "</" + name + ">"
+			}
+			return "<" + name + ">"
+		case "font":
+			if closing {
+				// Only close a font span that was actually kept open;
+				// a dropped <font> (no usable colour) must not leave a
+				// stray </font> behind.
+				if fontDepth > 0 {
+					fontDepth--
+					return "</font>"
+				}
+				return ""
+			}
+			if cm := fontColorRe.FindStringSubmatch(tag); cm != nil && fontColorOK.MatchString(cm[1]) {
+				fontDepth++
+				return `<font color="` + cm[1] + `">`
+			}
+		case "br":
+			if !closing {
+				return "\n"
+			}
+		}
+		return ""
+	})
+}
+
+// HasForeignTags reports whether stored subtitle text carries markup the
+// named format ("srt" or "vtt") must not be served with: any tag outside
+// that format's set, or an in-cue WebVTT timestamp tag. Cached files
+// written before cue text was cleaned at parse time are caught by this
+// on read and re-rendered, so no migration pass is needed (#616).
+func HasForeignTags(text, format string) bool {
+	if cueTimestampRe.MatchString(text) {
+		return true
+	}
+	for _, tag := range htmlTagRe.FindAllString(text, -1) {
+		m := htmlTagRe.FindStringSubmatch(tag)
+		switch strings.ToLower(m[1]) {
+		case "i", "b", "u":
+		case "font":
+			if format != "srt" {
+				return true
+			}
+			if !strings.HasPrefix(tag, "</") {
+				cm := fontColorRe.FindStringSubmatch(tag)
+				if cm == nil || !fontColorOK.MatchString(cm[1]) {
+					return true
+				}
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
 
 func ts(h, m, s, ms string) time.Duration {
 	hi, _ := strconv.Atoi(h)
@@ -73,8 +162,14 @@ func ParseCues(text string) ([]Cue, error) {
 		if timeIdx < 0 || timeIdx+1 >= len(lines) {
 			continue
 		}
-		body := strings.TrimSpace(tagRe.ReplaceAllString(strings.Join(lines[timeIdx+1:], "\n"), ""))
+		body := strings.TrimSpace(CleanCueText(strings.Join(lines[timeIdx+1:], "\n")))
 		if body == "" || end <= start {
+			continue
+		}
+		// A cue left holding only markup (e.g. an empty <c.…> span) has
+		// nothing to show; dropping it keeps players from flashing a
+		// blank caption.
+		if strings.TrimSpace(htmlTagRe.ReplaceAllString(body, "")) == "" {
 			continue
 		}
 		cues = append(cues, Cue{Start: start, End: end, Text: body})
@@ -96,11 +191,13 @@ func formatTS(d time.Duration, sep byte) string {
 	return fmt.Sprintf("%02d:%02d:%02d%c%03d", h, m, s, sep, ms)
 }
 
-// RenderSRT renders cues as SubRip.
+// RenderSRT renders cues as SubRip. Cue text is cleaned here as well as
+// at parse time, so cues built by other paths (extracted embedded
+// tracks, cached cue windows) cannot leak WebVTT spans into SRT either.
 func RenderSRT(cues []Cue) string {
 	var sb strings.Builder
 	for i, c := range cues {
-		fmt.Fprintf(&sb, "%d\n%s --> %s\n%s\n\n", i+1, formatTS(c.Start, ','), formatTS(c.End, ','), c.Text)
+		fmt.Fprintf(&sb, "%d\n%s --> %s\n%s\n\n", i+1, formatTS(c.Start, ','), formatTS(c.End, ','), CleanCueText(c.Text))
 	}
 	return sb.String()
 }
@@ -109,6 +206,7 @@ func RenderSRT(cues []Cue) string {
 // (SRT's <font color> is not VTT), bare "&" and "<" are escaped, and "-->"
 // (forbidden in VTT cue text) is replaced.
 func vttText(s string) string {
+	s = CleanCueText(s)
 	s = htmlTagRe.ReplaceAllStringFunc(s, func(tag string) string {
 		m := htmlTagRe.FindStringSubmatch(tag)
 		switch strings.ToLower(m[1]) {
@@ -181,6 +279,7 @@ func FormatASSTimestamp(d time.Duration) string {
 }
 
 func assText(s string) string {
+	s = CleanCueText(s)
 	s = htmlTagRe.ReplaceAllStringFunc(s, func(tag string) string {
 		m := htmlTagRe.FindStringSubmatch(tag)
 		switch name := strings.ToLower(m[1]); name {

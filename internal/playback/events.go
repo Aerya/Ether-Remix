@@ -1,9 +1,10 @@
 package playback
 
 import (
-	"github.com/braedonsaunders/ether/internal/core"
 	"sync"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // Event contains a playback snapshot; subscribers must not retain live Sources.
@@ -40,7 +41,25 @@ func (m *Manager) emitEvent(kind string, s *session, err error) {
 		ev.Session.Resolution = nil
 	}
 	if err != nil {
-		ev.Error = "Playback failed; see server logs"
+		ev.Error = OwnerError(err)
+	}
+	if kind == "error" && s != nil && ev.Error != "" {
+		m.recordTimeline(s, TimelineEvent{
+			At:      ev.At,
+			Kind:    "error",
+			Level:   "error",
+			Failing: true,
+			Message: "Playback failed",
+			Detail:  ev.Error,
+		})
+	}
+	switch kind {
+	case "start":
+		m.emitSessionStarted(s, ev.Session)
+	case "stop":
+		m.emitSessionStopped(s, ev.Session)
+	case "error":
+		m.emitSessionFailed(s, ev.Session, "playback", err)
 	}
 	m.events.mu.RLock()
 	fns := make([]func(Event), 0, len(m.events.subs))

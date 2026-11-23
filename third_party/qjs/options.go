@@ -56,10 +56,11 @@ type EvalOption struct {
 	bytecodeLen int
 	flags       uint64
 
-	// QuickJS value handles for memory management
+	// C heap handles allocated for the eval call and freed in Free.
 	fileValue     *Value
 	codeValue     *Value
 	byteCodeValue *Value
+	optionValue   *Value
 }
 
 // EvalOptionFunc configures evaluation behavior using functional option pattern.
@@ -184,7 +185,7 @@ func (o *EvalOption) Handle() (handle uint64) {
 	}
 
 	// Create QuickJS option struct via WASM call
-	option := o.c.Call(
+	o.optionValue = o.c.Call(
 		"QJS_CreateEvalOption",
 		codeHandle,
 		byteCodeHandle,
@@ -193,22 +194,26 @@ func (o *EvalOption) Handle() (handle uint64) {
 		o.flags,
 	)
 
-	return option.Raw()
+	return o.optionValue.Raw()
 }
 
-// Free releases QuickJS value handles to prevent memory leaks.
+// Free releases C heap handles allocated for the eval call to prevent memory leaks.
 // Must be called after Handle() to clean up WASM memory.
 func (o *EvalOption) Free() {
-	if o.fileValue.Raw() != 0 {
-		o.c.Call("JS_FreeValue", o.c.Raw(), o.fileValue.Raw())
+	if o.optionValue != nil {
+		o.optionValue.handle.Free()
 	}
 
-	if o.codeValue != nil && o.codeValue.Raw() != 0 {
-		o.c.Call("JS_FreeValue", o.c.Raw(), o.codeValue.Raw())
+	if o.fileValue != nil {
+		o.fileValue.handle.Free()
 	}
 
-	if o.byteCodeValue != nil && o.byteCodeValue.Raw() != 0 {
-		o.c.Call("JS_FreeValue", o.c.Raw(), o.byteCodeValue.Raw())
+	if o.codeValue != nil {
+		o.codeValue.handle.Free()
+	}
+
+	if o.byteCodeValue != nil {
+		o.byteCodeValue.handle.Free()
 	}
 }
 

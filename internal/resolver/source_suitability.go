@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
+	"github.com/braedonsaunders/ether/internal/releasepolicy"
 )
 
 // DiscoveryCandidate is local, name-based negative evidence only. It does not
@@ -16,8 +17,18 @@ func (s *Service) DiscoveryCandidate(t *core.Title, r core.Release) string {
 }
 
 func sourceSuitability(r core.Release, t *core.Title, p core.QualityProfile, explicit bool) string {
+	return sourceSuitabilityWithLanguages(r, t, p, explicit, nil, nil)
+}
+
+func sourceSuitabilityWithLanguages(r core.Release, t *core.Title, p core.QualityProfile, explicit bool, probedLangs []string, viewerLangs []string) string {
+	if nonVideoRelease(r, t, core.SearchRequest{}) {
+		return ReasonNotAVideoFile
+	}
 	// Reparse the name: saved feed payloads can contain older parser results.
 	info := releaseparse.Parse(r.Name)
+	if len(probedLangs) > 0 {
+		info.Languages = probedLangs
+	}
 	if !p.AllowCam {
 		// AllowCam is the one pre-release switch: cinema recordings,
 		// screeners, R5s and workprints all play only where it is on.
@@ -28,9 +39,9 @@ func sourceSuitability(r core.Release, t *core.Title, p core.QualityProfile, exp
 			return "screener not allowed"
 		}
 	}
-	// A profile's specific Language is a hard gate, as in Radarr; an
-	// explicitly chosen release (a pin) bypasses it, as it does the
-	// minimum custom format score.
+	// A profile's specific Language in Required mode is a hard gate, as in
+	// Radarr (Preferred mode ranks rather than filters); an explicitly chosen
+	// release (a pin) bypasses it, as it does the minimum custom format score.
 	if !explicit {
 		if reason := profileLanguageRejection(info, p, t); reason != "" {
 			return reason
@@ -40,11 +51,13 @@ func sourceSuitability(r core.Release, t *core.Title, p core.QualityProfile, exp
 		return ""
 	}
 	want := append([]string(nil), p.PreferredLanguages...)
-	// A dub into the profile's own language is what that language asks
-	// for, not a mismatch.
+	// A dub into the viewer's own preferred audio languages, the profile's
+	// language, or required/preferred release rules is wanted, not a mismatch.
+	want = append(want, viewerLangs...)
 	if lang, _ := profileLanguageMode(p); lang != "" {
 		want = append(want, lang)
 	}
+	want = append(want, releasepolicy.PositiveLanguageTargets(p.ReleaseRules)...)
 	if t != nil && t.Language != "" {
 		want = append(want, assumedLanguage(t))
 	}

@@ -176,7 +176,11 @@ func (a *App) nodeAddrs(ctx context.Context) []string {
 }
 
 func (a *App) nodeCaps() cluster.Caps {
-	caps := cluster.Caps{Diagnostics: a.nodeDiagnostics(), Weight: a.cfg.Get().Server.ClusterWeight, EgressIP: a.egress.get()}
+	cfg := a.cfg.Get()
+	caps := cluster.Caps{Diagnostics: a.nodeDiagnostics(), Weight: cfg.Server.ClusterWeight, EgressIP: a.egress.get()}
+	if cfg.Transcode.VideoTranscodingOff() {
+		caps.VideoTranscoding = "off"
+	}
 	if a.transcoder != nil {
 		caps.Transcode, caps.HWAccel = true, a.transcoder.HWAccel().Name
 	}

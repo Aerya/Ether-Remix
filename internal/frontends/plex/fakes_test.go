@@ -1578,7 +1578,7 @@ func (f *fixture) setDB(db *sql.DB) {
 }
 
 func (f *fixture) bindStream(key core.RatingKey, index int, info core.StreamInfo) int64 {
-	return f.srv.assignStream(context.Background(), &ownerUser, key, index, info, "")
+	return f.srv.assignStream(context.Background(), &ownerUser, key, index, info, "", false)
 }
 
 // mountTestBroker is the same broker the app mounts. A server that renders

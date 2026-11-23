@@ -238,6 +238,9 @@ describe("served settings schemas", () => {
     fireEvent.click(screen.getByRole("button", { name: "Duration field unit" }));
     fireEvent.click(await screen.findByRole("option", { name: "Hours" }));
     expect(latest.durationField).toBe("2h");
+    fireEvent.click(screen.getByRole("button", { name: "Duration field unit" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Seconds" }));
+    expect(latest.durationField).toBe("2s");
 
     fireEvent.change(screen.getByLabelText("Folder field"), { target: { value: "/srv/video" } });
     expect(latest.folderField).toBe("/srv/video");

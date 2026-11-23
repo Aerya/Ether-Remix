@@ -272,7 +272,7 @@ func (e *Exports) fetchOnce(ctx context.Context, url, final string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return err

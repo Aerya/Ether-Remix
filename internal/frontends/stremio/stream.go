@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"errors"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
 	"net/http"
 	"strings"
@@ -98,7 +99,16 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	plan := frontend.PlanRequest{Viewer: viewer, Device: device, Protocol: "stremio", Item: key, Caps: profile.Client, Intent: frontend.PlayIntent{Options: frontend.DecideOptions{DirectPlay: true}}}
 	lazy, err := i.host.LazyStreams.Issue(ctx, credential, plan)
-	if err != nil || !strings.HasPrefix(lazy, "/sessions/lazy/") {
+	if err != nil {
+		var reqLang *frontend.RequiredAudioLanguageError
+		if errors.As(err, &reqLang) {
+			http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !strings.HasPrefix(lazy, "/sessions/lazy/") {
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 		return
 	}

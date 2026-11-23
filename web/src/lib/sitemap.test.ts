@@ -32,6 +32,16 @@ describe("sitemap", () => {
     expect(pagesFrom(pages).map((p) => p.title)).toContain("Overview");
   });
 
+  it("homes IPTV and guide sources under Streaming › Sources rather than Live TV", () => {
+    const staticHrefs = destinations().map((d) => d.href);
+    expect(staticHrefs).toContain("/sources/iptv");
+    expect(staticHrefs).not.toContain("/livetv/sources");
+
+    const descriptorHrefs = destinationsFrom(pages).map((d) => d.href);
+    expect(descriptorHrefs).toContain("/sources/iptv");
+    expect(descriptorHrefs).not.toContain("/livetv/sources");
+  });
+
   it("points Plex sections at the Plex tab, never at dead Apps tabs", () => {
     const hrefs = destinations().map((d) => d.href);
     expect(hrefs).not.toContain("/apps/remote");

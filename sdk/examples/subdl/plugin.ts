@@ -5,6 +5,14 @@ import schema from './settings.schema.json';
 
 const MAX = 2 * 1024 * 1024;
 const fail = (message: string): never => { throw new PluginRouteError(502, 'subdl_error', message); };
+function readApiKey(ctx: { ether: { secret: { get(name: string): unknown } } }): string {
+  try {
+    return ((ctx.ether.secret.get('apiKey') as string) || '').trim();
+  } catch (err) {
+    if (err instanceof Error && /is not saved/i.test(err.message)) return '';
+    throw err;
+  }
+}
 function bytes64(s: string): Uint8Array {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s) || s.length > 4 * Math.ceil(MAX / 3)) return fail('Invalid subtitle archive.');
@@ -37,7 +45,7 @@ const settingsManifest = {...manifest, ether:{...manifest.ether, settings:schema
 export const subdl = plugin<{apiKey:string}>({manifest:settingsManifest, routes:{
   subtitles(req, ctx) {
     const id = req.id.split(':');
-    const apiKey = ctx.ether.secret.get('apiKey') as string;
+    const apiKey = readApiKey(ctx);
     if (!/^tt\d+$/.test(id[0]) || !apiKey) return {subtitles:[]};
     let url='https://api.subdl.com/api/v1/subtitles?api_key='+encodeURIComponent(apiKey)+'&imdb_id='+encodeURIComponent(id[0])+'&subs_per_page=30&client=custom_integration';
     if (req.type==='series' && /^\d+$/.test(id[1] || '') && /^\d+$/.test(id[2] || '')) url+='&type=tv&season_number='+id[1]+'&episode_number='+id[2];
@@ -48,10 +56,12 @@ export const subdl = plugin<{apiKey:string}>({manifest:settingsManifest, routes:
   },
   subtitlesDownload(req,ctx) {
     if (!/^\/subtitle\/[0-9]+-[0-9]+\.zip$/.test(req.id) || req.format !== 'srt') return fail('Invalid subtitle selection.');
-    const response=ctx.ether.http.fetch({url:'https://dl.subdl.com'+req.id,headers:{'x-api-key':ctx.ether.secret.get('apiKey') as string}}) as any;
+    const apiKey = readApiKey(ctx);
+    if (!apiKey) return fail('Enter an API key.');
+    const response=ctx.ether.http.fetch({url:'https://dl.subdl.com'+req.id,headers:{'x-api-key':apiKey}}) as any;
     if (response.status!==200 || !response.bodyBase64) return fail('Subtitle download failed.');
     return {format:'srt',encoding:'utf8',data:archive(response.bodyBase64)};
   },
-  test(ctx) { const key = ctx.ether.secret.get('apiKey') as string; return {ok:!!key, message:key ? 'API key saved.' : 'Enter an API key.'}; }
+  test(ctx) { const key = readApiKey(ctx); return {ok:!!key, message:key ? 'API key saved.' : 'Enter an API key.'}; }
 }});
 export const handle = subdl.handle;

@@ -1,0 +1,28 @@
+{
+  "fields": [
+    {
+      "key": "releaseTypes",
+      "kind": "select",
+      "label": "$t:release_types",
+      "hint": "$t:release_types_hint",
+      "default": "both",
+      "options": [
+        { "value": "both", "label": "$t:release_types_both" },
+        { "value": "torrents", "label": "$t:release_types_torrents" },
+        { "value": "nzbs", "label": "$t:release_types_nzbs" }
+      ]
+    },
+    {
+      "key": "category",
+      "kind": "select",
+      "label": "$t:category",
+      "hint": "$t:category_hint",
+      "default": "",
+      "options": [
+        { "value": "", "label": "$t:category_all" },
+        { "value": "5070", "label": "$t:category_anime" },
+        { "value": "2020", "label": "$t:category_movies" }
+      ]
+    }
+  ]
+}

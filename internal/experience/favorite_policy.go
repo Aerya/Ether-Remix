@@ -24,6 +24,7 @@ const (
 	FavoriteKindPerson     FavoriteKind = "person"
 	FavoriteKindCollection FavoriteKind = "collection"
 	FavoriteKindChannel    FavoriteKind = "channel"
+	FavoriteKindEntity     FavoriteKind = "entity"
 )
 
 // FavoriteSubject is a favorite identity with no protocol or storage attached.
@@ -42,7 +43,9 @@ type FavoriteSources struct {
 	ChannelAllowed func(context.Context, *core.User, string) (bool, error)
 	// ChannelIDs lists every allowed channel. ChannelAllowed replaces it.
 	ChannelIDs func(context.Context, *core.User) ([]string, error)
-	PersonPage func(context.Context, int64, int, int) ([]core.Title, error)
+	// EntityAllowed checks one plugin entity key (pluginID:feed:entityKind:id).
+	EntityAllowed func(context.Context, *core.User, string) (bool, error)
+	PersonPage    func(context.Context, int64, int, int) ([]core.Title, error)
 }
 
 // CanonicalTMDBPerson accepts only a "tmdb:" prefix plus the canonical base-10
@@ -106,6 +109,12 @@ func FavoriteAllowed(ctx context.Context, viewer *core.User, subject FavoriteSub
 			}
 		}
 		return false
+	case FavoriteKindEntity:
+		if sources.EntityAllowed == nil {
+			return false
+		}
+		ok, err := sources.EntityAllowed(ctx, viewer, subject.ID)
+		return err == nil && ok
 	case FavoriteKindPerson:
 		if sources.PersonPage == nil {
 			return false

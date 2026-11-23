@@ -1,6 +1,15 @@
-import { Badge, Button, Input, Spinner, Switch, cn, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  SearchSelect,
+  Spinner,
+  Switch,
+  cn,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import { Check, ImageIcon, Pin, RefreshCw, RotateCcw, SlidersHorizontal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel, MutationError } from "../../components/feedback";
@@ -10,11 +19,14 @@ import { TitleSearch } from "../../components/pickers";
 import { titleSubtitle } from "../../components/Poster";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { localized, t } from "../../i18n";
+import { searchSelectLabels } from "../../i18n/appkit-labels";
+import { useLocale } from "../../i18n/react";
 import { api, apiFetch } from "../../lib/api";
 import type { TitleCard } from "../../lib/contract";
+import { isPluginDescriptor, textOf, useRegistry } from "../../lib/extend";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
 import { blankSpec } from "../../lib/rules";
-import { nativeSelect } from "./shared";
+import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
 import { MetadataWorkspace } from "./MetadataWorkspace";
 import {
   normalizeOverlays,
@@ -25,6 +37,39 @@ import {
 } from "./model";
 import { PosterProviders } from "./PosterProviders";
 import { PosterCanvas } from "./PosterCanvas";
+
+function displayLanguage(locale: string, code: string) {
+  try {
+    return new Intl.DisplayNames([locale], { type: "language" }).of(code) || code;
+  } catch {
+    return code;
+  }
+}
+
+type PosterBadgeMeta = {
+  key?: string;
+  layerKey?: string;
+  pluginName?: string;
+};
+
+function badgeSetAliases(pluginId: string, setKey: string): string[] {
+  return [
+    `${pluginId}:${setKey}`,
+    `plugin:${pluginId}:${setKey}`,
+    `${pluginId}/${setKey}`,
+    `plugin:${pluginId}/${setKey}`,
+  ];
+}
+
+function isBadgeSetDisabled(
+  disabled: readonly string[] | undefined,
+  pluginId: string,
+  setKey: string,
+): boolean {
+  if (!disabled?.length) return false;
+  const aliases = badgeSetAliases(pluginId, setKey);
+  return disabled.some((entry) => aliases.includes(entry));
+}
 
 type Variant = { path: string; language?: string; tags?: string[] };
 type Art = {
@@ -75,11 +120,13 @@ const OPTIONS = localized(
 );
 
 export function ArtworkSettings() {
+  const { locale } = useLocale();
   const doc = useAsync(
     async () => normalizeOverlays(await apiFetch<Overlays>("/discovery/overlays/settings")),
     [],
   );
   const users = useAsync(() => api.users(), []);
+  const posterBadgesRegistry = useRegistry<PosterBadgeMeta>("posterBadge");
   const { draft, setDraft, dirty, reset } = useDraft(doc.data);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -111,6 +158,15 @@ export function ArtworkSettings() {
       setTitle(alternatives[Math.floor(Math.random() * alternatives.length)]!);
   };
   const [lang, setLang] = useState("en");
+  const languages = useMemo(() => {
+    const options = [...new Set(LANGUAGE_TAGS.map((tag) => tag.split("-")[0]!))]
+      .map((value) => ({ value, label: displayLanguage(locale, value) }))
+      .sort((a, b) => a.label.localeCompare(b.label, locale));
+    if (lang && !options.some((o) => o.value === lang)) {
+      options.unshift({ value: lang, label: displayLanguage(locale, lang) });
+    }
+    return options;
+  }, [locale, lang]);
   const [viewer, setViewer] = useState<number | null>(null);
   const [nonce, setNonce] = useState(0);
   const [pinning, setPinning] = useState<TitleCard | null>(null);
@@ -150,6 +206,30 @@ export function ArtworkSettings() {
       />
     );
   const set = (patch: Partial<Overlays>) => setDraft({ ...draft, ...patch });
+  const pluginBadgeSets = posterBadgesRegistry.descriptors.filter(isPluginDescriptor).map((d) => {
+    const pluginId = d.owner;
+    const setKey = d.meta?.key || (d.id.includes("/") ? d.id.slice(d.id.indexOf("/") + 1) : d.id);
+    const entryKey = `${pluginId}:${setKey}`;
+    const layerKey = d.meta?.layerKey || `plugin:${pluginId}:${setKey}`;
+    const setLabel = textOf(d.label) || setKey;
+    const pluginName = d.meta?.pluginName || d.group || pluginId;
+    return {
+      pluginId,
+      setKey,
+      entryKey,
+      layerKey,
+      fullLabel: `${setLabel} · ${pluginName}`,
+      hint: textOf(d.hint),
+      enabled: !isBadgeSetDisabled(draft.disabledBadgeSets, pluginId, setKey),
+    };
+  });
+  const toggleBadgeSet = (pluginId: string, setKey: string, checked: boolean) => {
+    const aliases = new Set(badgeSetAliases(pluginId, setKey));
+    const kept = (draft.disabledBadgeSets ?? []).filter((entry) => !aliases.has(entry));
+    const nextDisabled = checked ? kept : [...kept, `${pluginId}:${setKey}`];
+    set({ disabledBadgeSets: nextDisabled });
+  };
+  const appearanceDisabled = !draft.enabled || saving;
   const save = async () => {
     setSaving(true);
     setError(null);
@@ -224,61 +304,71 @@ export function ArtworkSettings() {
                 })}
               </div>
             </section>
-            <fieldset disabled={!draft.enabled || saving} className="metadata-control-section">
+            <fieldset disabled={appearanceDisabled} className="metadata-control-section">
               <div className="metadata-section-title">
                 <h3>{t("Badge appearance")}</h3>
               </div>
-              <label className="metadata-field">
-                {t("Badge finish")}
-                <select
-                  className={nativeSelect}
+              <div className="metadata-field">
+                <label htmlFor="overlay-style">{t("Badge finish")}</label>
+                <SearchSelect
+                  id="overlay-style"
+                  ariaLabel={t("Badge finish")}
+                  disabled={appearanceDisabled}
                   value={draft.style}
-                  onChange={(e) => set({ style: e.currentTarget.value as Overlays["style"] })}
-                >
-                  <option value="glass">{t("Glass")}</option>
-                  <option value="solid">{t("Solid")}</option>
-                  <option value="minimal">{t("Minimal")}</option>
-                </select>
-              </label>
-              <div className="metadata-field-row">
-                <label className="metadata-field">
-                  {t("Placement")}
-                  <select
-                    className={nativeSelect}
-                    value={draft.position}
-                    onChange={(e) =>
-                      set({ position: e.currentTarget.value as Overlays["position"] })
-                    }
-                  >
-                    <option value="bottom">{t("Bottom")}</option>
-                    <option value="top">{t("Top")}</option>
-                  </select>
-                </label>
-                <label className="metadata-field">
-                  {t("Badge size")}
-                  <select
-                    className={nativeSelect}
-                    value={draft.size}
-                    onChange={(e) => set({ size: e.currentTarget.value as Overlays["size"] })}
-                  >
-                    <option value="small">{t("Small")}</option>
-                    <option value="medium">{t("Medium")}</option>
-                    <option value="large">{t("Large")}</option>
-                    <option value="extra-large">{t("Extra large")}</option>
-                  </select>
-                </label>
+                  options={[
+                    { value: "glass", label: t("Glass") },
+                    { value: "solid", label: t("Solid") },
+                    { value: "minimal", label: t("Minimal") },
+                  ]}
+                  onChange={(style) => set({ style: style as Overlays["style"] })}
+                  {...searchSelectLabels()}
+                />
               </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
+              <div className="metadata-field-row">
+                <div className="metadata-field">
+                  <label htmlFor="overlay-position">{t("Placement")}</label>
+                  <SearchSelect
+                    id="overlay-position"
+                    ariaLabel={t("Placement")}
+                    disabled={appearanceDisabled}
+                    value={draft.position}
+                    options={[
+                      { value: "bottom", label: t("Bottom") },
+                      { value: "top", label: t("Top") },
+                    ]}
+                    onChange={(position) => set({ position: position as Overlays["position"] })}
+                    {...searchSelectLabels()}
+                  />
+                </div>
+                <div className="metadata-field">
+                  <label htmlFor="overlay-size">{t("Badge size")}</label>
+                  <SearchSelect
+                    id="overlay-size"
+                    ariaLabel={t("Badge size")}
+                    disabled={appearanceDisabled}
+                    value={draft.size}
+                    options={[
+                      { value: "small", label: t("Small") },
+                      { value: "medium", label: t("Medium") },
+                      { value: "large", label: t("Large") },
+                      { value: "extra-large", label: t("Extra large") },
+                    ]}
+                    onChange={(size) => set({ size: size as Overlays["size"] })}
+                    {...searchSelectLabels()}
+                  />
+                </div>
+              </div>
+              <label className="mt-2.5 flex items-center gap-2 text-sm">
+                <Checkbox
+                  disabled={appearanceDisabled}
                   checked={!draft.hideDenominator}
                   onChange={(e) => set({ hideDenominator: !e.currentTarget.checked })}
                 />
                 {t("Show rating denominator")}
               </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
+              <label className="mt-2 flex items-center gap-2 text-sm">
+                <Checkbox
+                  disabled={appearanceDisabled}
                   checked={!draft.hideDot}
                   onChange={(e) => set({ hideDot: !e.currentTarget.checked })}
                 />
@@ -336,32 +426,95 @@ export function ArtworkSettings() {
                 </p>
               ) : null}
               {OPTIONS.map((o) => (
-                <div className="metadata-toggle" key={o.key}>
-                  <div>
-                    <label htmlFor={`overlay-${o.key}`}>{o.label}</label>
-                    <p>{o.hint}</p>
-                    {explanationData?.layers.find((l) => l.key === o.key && l.state !== "off") &&
-                      (() => {
-                        const layer = explanationData!.layers.find((l) => l.key === o.key)!;
-                        return (
-                          <p
-                            className={`metadata-layer-state is-${layer.state}`}
-                            title={layer.reason}
-                          >
-                            {layer.state === "ready" ? layer.labels.join(" · ") : layer.reason}
-                          </p>
-                        );
-                      })()}
+                <Fragment key={o.key}>
+                  <div className="metadata-toggle">
+                    <div>
+                      <label htmlFor={`overlay-${o.key}`}>{o.label}</label>
+                      <p>{o.hint}</p>
+                      {explanationData?.layers.find((l) => l.key === o.key && l.state !== "off") &&
+                        (() => {
+                          const layer = explanationData!.layers.find((l) => l.key === o.key)!;
+                          return (
+                            <p
+                              className={`metadata-layer-state is-${layer.state}`}
+                              title={layer.reason}
+                            >
+                              {layer.state === "ready" ? layer.labels.join(" · ") : layer.reason}
+                            </p>
+                          );
+                        })()}
+                    </div>
+                    <Switch
+                      id={`overlay-${o.key}`}
+                      aria-label={o.label}
+                      checked={draft[o.key]}
+                      disabled={appearanceDisabled}
+                      onChange={(e) => set({ [o.key]: e.currentTarget.checked })}
+                    />
                   </div>
-                  <Switch
-                    id={`overlay-${o.key}`}
-                    aria-label={o.label}
-                    checked={draft[o.key]}
-                    disabled={!draft.enabled || saving}
-                    onChange={(e) => set({ [o.key]: e.currentTarget.checked })}
-                  />
-                </div>
+                  {o.key === "ratings" && draft.ratings ? (
+                    <div className="metadata-field mt-1 mb-2">
+                      <label htmlFor="overlay-rating-style">{t("Rating style")}</label>
+                      <SearchSelect
+                        id="overlay-rating-style"
+                        ariaLabel={t("Rating style")}
+                        disabled={appearanceDisabled}
+                        value={draft.ratingStyle}
+                        options={[
+                          { value: "sources", label: t("Each source") },
+                          { value: "combined", label: t("One combined score") },
+                        ]}
+                        onChange={(ratingStyle) =>
+                          set({ ratingStyle: ratingStyle as Overlays["ratingStyle"] })
+                        }
+                        {...searchSelectLabels()}
+                      />
+                    </div>
+                  ) : null}
+                </Fragment>
               ))}
+              {pluginBadgeSets.length > 0 ? (
+                <div
+                  role="group"
+                  aria-label={t("From plugins")}
+                  className="mt-2.5 border-t border-border/60 pt-2.5"
+                >
+                  <div className="metadata-section-title">
+                    <h4 className="text-[11px] font-semibold text-fg-muted">{t("From plugins")}</h4>
+                  </div>
+                  {pluginBadgeSets.map((b) => {
+                    const layer = explanationData?.layers.find(
+                      (l) => l.key === b.layerKey && l.state !== "off",
+                    );
+                    const inputId = `overlay-plugin-${b.pluginId}-${b.setKey}`;
+                    return (
+                      <div className="metadata-toggle" key={b.entryKey}>
+                        <div>
+                          <label htmlFor={inputId}>{b.fullLabel}</label>
+                          {b.hint ? <p>{b.hint}</p> : null}
+                          {layer ? (
+                            <p
+                              className={`metadata-layer-state is-${layer.state}`}
+                              title={layer.reason}
+                            >
+                              {layer.state === "ready" ? layer.labels.join(" · ") : layer.reason}
+                            </p>
+                          ) : null}
+                        </div>
+                        <Switch
+                          id={inputId}
+                          aria-label={b.fullLabel}
+                          checked={b.enabled}
+                          disabled={appearanceDisabled}
+                          onChange={(e) =>
+                            toggleBadgeSet(b.pluginId, b.setKey, e.currentTarget.checked)
+                          }
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
             </section>
             <Section
               title={t("Preview title")}
@@ -374,31 +527,33 @@ export function ArtworkSettings() {
                 </Button>
               )}
               <div className="metadata-field-row">
-                <label className="metadata-field">
-                  {t("Preview as")}
-                  <select
-                    className={nativeSelect}
-                    value={previewUser ?? ""}
-                    onChange={(e) => setViewer(Number(e.currentTarget.value))}
-                  >
-                    <option value="" disabled>
-                      {t("Select a viewer")}
-                    </option>
-                    {users.data?.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.title || u.username}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="metadata-field">
-                  {t("Preview language")}
-                  <Input
-                    value={lang}
-                    onChange={(e) => setLang(e.currentTarget.value)}
-                    placeholder="en, fr-CA, es"
+                <div className="metadata-field">
+                  <label htmlFor="overlay-preview-viewer">{t("Preview as")}</label>
+                  <SearchSelect
+                    id="overlay-preview-viewer"
+                    ariaLabel={t("Preview as")}
+                    value={previewUser != null ? String(previewUser) : ""}
+                    options={(users.data ?? []).map((u) => ({
+                      value: String(u.id),
+                      label: u.title || u.username,
+                    }))}
+                    onChange={(v) => setViewer(Number(v))}
+                    {...searchSelectLabels()}
+                    placeholder={t("Select a viewer")}
                   />
-                </label>
+                </div>
+                <div className="metadata-field">
+                  <label htmlFor="overlay-preview-language">{t("Preview language")}</label>
+                  <SearchSelect
+                    id="overlay-preview-language"
+                    ariaLabel={t("Preview language")}
+                    value={lang}
+                    options={languages}
+                    onChange={setLang}
+                    searchable
+                    {...searchSelectLabels()}
+                  />
+                </div>
               </div>
               {users.error ? (
                 <ErrorPanel error={users.error} onRetry={() => void users.reload()} />
@@ -531,6 +686,7 @@ function TitleArtworkDrawer({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { locale } = useLocale();
   const [art, setArt] = useState<Art>({ posters: [], backdrops: [] });
   const [choices, setChoices] = useState<Art | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -725,22 +881,25 @@ function TitleArtworkDrawer({
                 </button>
               ))}
             </div>
-            <select
+            <SearchSelect
               id="pinned-backdrop"
-              className={nativeSelect}
+              ariaLabel={t("Backdrop")}
               value={art.pinnedBackdrop || ""}
-              onChange={(e) => setArt({ ...art, pinnedBackdrop: e.currentTarget.value })}
-            >
-              <option value="">{t("Automatic textless backdrop")}</option>
-              {choices.backdrops?.map((v) => (
-                <option key={v.path} value={v.path}>
-                  {t("{language} · {path}", {
-                    language: v.language || t("Textless"),
-                    path: v.path,
-                  })}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: "", label: t("Automatic textless backdrop") },
+                ...(art.pinnedBackdrop &&
+                !(choices.backdrops ?? []).some((v) => v.path === art.pinnedBackdrop)
+                  ? [{ value: art.pinnedBackdrop, label: t("Pinned") }]
+                  : []),
+                ...(choices.backdrops ?? []).map((v, index) => ({
+                  value: v.path,
+                  label: t("Backdrop {number}", { number: index + 1 }),
+                  hint: v.language ? displayLanguage(locale, v.language) : t("Textless"),
+                })),
+              ]}
+              onChange={(pinnedBackdrop) => setArt({ ...art, pinnedBackdrop })}
+              {...searchSelectLabels()}
+            />
           </section>
         </div>
       )}

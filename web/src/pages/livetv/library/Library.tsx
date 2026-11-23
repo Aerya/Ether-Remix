@@ -1,16 +1,74 @@
-import { useMediaURL } from "../onair/useMediaURL";
 import { useEffect, useId, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Button, Checkbox, Input, Select, cn, confirmDialog } from "@braedonsaunders/appkit-ui";
-import { AudioLines, Film, Image, LayoutGrid, Type, Play, Pause, Volume2 } from "lucide-react";
+import { Button, Checkbox, Input, cn, confirmDialog } from "@braedonsaunders/appkit-ui";
+import {
+  AudioLines,
+  Film,
+  Image,
+  LayoutGrid,
+  Type,
+  Play,
+  Pause,
+  RotateCcw,
+  Trash2,
+  Volume2,
+} from "lucide-react";
 import { SubtabNav } from "../../../components/layout";
 import { Drawer } from "../../../components/Drawer";
+import { ToolbarPicker } from "../../../components/ToolbarPicker";
+import { Segmented } from "../../../components/fields";
 import { t, tn } from "../../../i18n";
-import { apiFetch, sessionXhrSetup, errorMessage } from "../../../lib/api";
+import { apiBlob, apiFetch, sessionXhrSetup, errorMessage } from "../../../lib/api";
 import { formatBytes } from "../../../lib/format";
 import { studio, type LibraryAsset, type AssetKind } from "../onair/studio-model";
 import { onair } from "../onair/model";
 import { LinkImport } from "../onair/LinkImport";
+import { friendlyMediaError } from "../onair/mediaErrors";
+import { useMediaURL } from "../onair/useMediaURL";
+
+const LIBRARY_CHANGED_EVENT = "ether:library-changed";
+
+type GridAsset = LibraryAsset & {
+  readOnly?: boolean;
+  url?: string;
+  thumbnail?: string;
+  reelId?: string;
+  clipId?: string;
+  link?: boolean;
+  cached?: boolean;
+};
+
+function usePosterURL(url: string | undefined, enabled: boolean) {
+  const [state, setState] = useState<{ src: string; failed: boolean }>({ src: "", failed: false });
+  useEffect(() => {
+    setState({ src: "", failed: false });
+    if (!enabled || !url) return;
+    if (!url.startsWith("/ether/api/")) {
+      setState({ src: url, failed: false });
+      return;
+    }
+    const abort = new AbortController();
+    let objectURL = "";
+    void apiBlob(url, abort.signal)
+      .then((blob) => {
+        if (abort.signal.aborted) return;
+        if (!blob.size) {
+          setState({ src: "", failed: true });
+          return;
+        }
+        objectURL = URL.createObjectURL(blob);
+        setState({ src: objectURL, failed: false });
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setState({ src: "", failed: true });
+      });
+    return () => {
+      abort.abort();
+      if (objectURL) URL.revokeObjectURL(objectURL);
+    };
+  }, [url, enabled]);
+  return state;
+}
 
 export function Waveform({ asset, progress = 0 }: { asset: LibraryAsset; progress?: number }) {
   const clip = useId().replace(/:/g, "");
@@ -216,18 +274,29 @@ function AudioPreview({
     </div>
   );
 }
-function Preview({ asset: a, full = false }: { asset: LibraryAsset; full?: boolean }) {
+function Preview({ asset: a, full = false }: { asset: GridAsset; full?: boolean }) {
   const [sample, setSample] = useState(t("Aa"));
   const [hovered, setHovered] = useState(false);
+  const [posterBroken, setPosterBroken] = useState(false);
   const ready = !a.status || a.status === "ready";
-  const preview = useMediaURL(
-    (a as LibraryAsset & { url?: string }).url ?? studio.media(a.digest),
-    ready && (a.kind === "image" ? full : a.kind !== "video" || full || hovered),
-  );
-  const thumbnail = useMediaURL(
-    (a as LibraryAsset & { thumbnail?: string }).thumbnail ?? studio.thumb(a.digest),
+  const localPlayable = !a.link || Boolean(a.cached);
+  const mediaHref = a.url ?? studio.media(a.digest);
+  const thumbHref = a.thumbnail ?? studio.thumb(a.digest);
+  const { src: thumbnail, failed: thumbFailed } = usePosterURL(
+    thumbHref,
     ready && (a.kind === "image" || a.kind === "video"),
   );
+  useEffect(() => {
+    setPosterBroken(false);
+  }, [thumbnail]);
+  const wantVideoSource =
+    ready &&
+    (a.kind === "image"
+      ? full
+      : a.kind !== "video"
+        ? true
+        : localPlayable && (full || hovered || thumbFailed || posterBroken));
+  const preview = useMediaURL(mediaHref, wantVideoSource);
   useEffect(() => {
     if (a.kind !== "font" || !preview) return;
     const face = new FontFace(`library-${a.digest}`, `url(${preview})`);
@@ -256,39 +325,85 @@ function Preview({ asset: a, full = false }: { asset: LibraryAsset; full?: boole
       </div>
     );
   }
-  if (a.kind === "video")
+  if (a.kind === "video") {
+    const hasPoster = Boolean(thumbnail && !posterBroken);
+    if (full) {
+      if (!localPlayable) {
+        return (
+          <div className="relative aspect-video overflow-hidden rounded-lg bg-bg-subtle">
+            {hasPoster ? (
+              <img
+                src={thumbnail}
+                alt=""
+                onError={() => setPosterBroken(true)}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-fg-muted">
+                <Film size={24} aria-hidden />
+                <span className="text-xs">{t("Resolves when aired")}</span>
+              </div>
+            )}
+          </div>
+        );
+      }
+      return (
+        <video
+          className="aspect-video w-full rounded-lg bg-bg-subtle object-cover"
+          src={preview || undefined}
+          poster={hasPoster ? thumbnail : undefined}
+          controls
+          playsInline
+          preload="metadata"
+        />
+      );
+    }
     return (
-      <video
-        className="h-full w-full object-cover"
-        src={preview || undefined}
-        poster={thumbnail || undefined}
-        controls={full}
-        muted={!full}
-        loop={!full}
-        playsInline
+      <div
+        className="relative h-full w-full overflow-hidden bg-bg-subtle"
         tabIndex={0}
-        preload="metadata"
-        onLoadedData={(e) => {
-          if (!full && hovered) void e.currentTarget.play().catch(() => {});
+        onMouseEnter={() => {
+          if (localPlayable) setHovered(true);
         }}
-        onMouseEnter={(e) => {
-          setHovered(true);
-          if (!full) void e.currentTarget.play().catch(() => {});
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => {
+          if (localPlayable) setHovered(true);
         }}
-        onMouseLeave={(e) => {
-          setHovered(false);
-          if (!full) e.currentTarget.pause();
-        }}
-        onFocus={(e) => {
-          setHovered(true);
-          if (!full) void e.currentTarget.play().catch(() => {});
-        }}
-        onBlur={(e) => {
-          setHovered(false);
-          if (!full) e.currentTarget.pause();
-        }}
-      />
+        onBlur={() => setHovered(false)}
+      >
+        <div
+          aria-hidden
+          className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-3 text-center text-fg-subtle"
+        >
+          <Film size={20} />
+          <span className="line-clamp-2 max-w-[14rem] text-[11px] font-medium text-fg-muted">
+            {a.name}
+          </span>
+        </div>
+        {hasPoster ? (
+          <img
+            src={thumbnail}
+            alt=""
+            loading="lazy"
+            onError={() => setPosterBroken(true)}
+            className="relative h-full w-full object-cover"
+          />
+        ) : null}
+        {localPlayable && preview && (hovered || !hasPoster) ? (
+          <video
+            className="absolute inset-0 h-full w-full object-cover"
+            src={hovered ? preview : `${preview}#t=0.5`}
+            poster={hasPoster ? thumbnail : undefined}
+            muted
+            loop
+            autoPlay={hovered}
+            playsInline
+            preload="metadata"
+          />
+        ) : null}
+      </div>
     );
+  }
   if (a.kind === "audio") return <AudioPreview asset={a} source={preview} full={full} />;
   if (a.kind === "font")
     return (
@@ -331,7 +446,7 @@ export function LibraryGrid({
 }: {
   allowed?: AssetKind[];
   onPick?: (a: LibraryAsset) => void;
-  /** The Live TV page shows kind, search and sort in its lineup panel instead. */
+  /** The Live TV page shows kind and search in its lineup panel instead. */
   filters?: boolean;
 }) {
   const [params, setParams] = useSearchParams();
@@ -355,24 +470,27 @@ export function LibraryGrid({
     );
   }, [params, setParams]);
   const [loading, setLoading] = useState(true);
-  const [assets, setAssets] = useState<(LibraryAsset & { readOnly?: boolean })[]>([]),
+  const [assets, setAssets] = useState<GridAsset[]>([]),
     [error, setError] = useState("");
   const [selected, setSelected] = useState<string[]>([]),
     [pending, setPending] = useState<File[]>([]),
-    [license, setLicense] = useState("");
-  const [uploads, setUploads] = useState<{ name: string; progress: number; status: string }[]>([]);
+    [license, setLicense] = useState("OFL");
+  const [uploads, setUploads] = useState<
+    { id: string; name: string; progress: number; status: string }[]
+  >([]);
   const kind = params.get("kind") ?? "",
     query = params.get("q") ?? "",
     sort = params.get("sort") ?? "newest";
   const change = (key: string, value: string) =>
     setParams((p) => {
-      if (value) p.set(key, value);
-      else p.delete(key);
-      return p;
+      const next = new URLSearchParams(p);
+      if (value) next.set(key, value);
+      else next.delete(key);
+      return next;
     });
   const reload = async () => {
     try {
-      const library = await studio.library();
+      const library: GridAsset[] = await studio.library();
       if (!onPick) {
         const reels = await onair.reels();
         for (const reel of reels)
@@ -380,21 +498,25 @@ export function LibraryGrid({
             library.push({
               ...clip,
               digest: `reel-${reel.id}-${clip.id}`,
+              reelId: reel.id,
+              clipId: clip.id,
               kind: "video",
               mime: "video/mp4",
-              size: 0,
+              size: clip.size ?? 0,
               createdAt: 0,
               usedBy: [{ kind: "reel", id: reel.id, name: reel.name }],
               url: clip.preview,
-              // Reel clips have no stored still; use a frame from their source upload.
               thumbnail:
                 clip.thumbnail ?? (clip.sourceDigest ? studio.thumb(clip.sourceDigest) : undefined),
               readOnly: true,
-            } as LibraryAsset);
+            });
           }
       }
       setAssets(library);
       setError("");
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event(LIBRARY_CHANGED_EVENT));
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -425,7 +547,12 @@ export function LibraryGrid({
       setError(t("This file type is not available here."));
       return;
     }
-    setUploads((p) => [...p, { name: file.name, progress: 0, status: t("Uploading…") }]);
+    // Rows are keyed per attempt: a retried file must not share its progress.
+    const uploadId = `${file.name}:${Date.now()}:${Math.random()}`;
+    setUploads((p) => [
+      ...p,
+      { id: uploadId, name: file.name, progress: 0, status: t("Uploading…") },
+    ]);
     try {
       if (import.meta.env.MODE === "mock") {
         const data = new FormData();
@@ -437,12 +564,14 @@ export function LibraryGrid({
         await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("POST", "/ether/api/onair/assets");
+          // XHR bypasses apiFetch, so it sets the CSRF header itself.
+          xhr.setRequestHeader("X-Ether-Request", "1");
           sessionXhrSetup(xhr, "/ether/api/onair/assets");
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable)
               setUploads((p) =>
                 p.map((x) =>
-                  x.name === file.name
+                  x.id === uploadId
                     ? { ...x, progress: Math.round((e.loaded / e.total) * 100) }
                     : x,
                 ),
@@ -450,12 +579,26 @@ export function LibraryGrid({
           };
           xhr.upload.onload = () =>
             setUploads((p) =>
-              p.map((x) => (x.name === file.name ? { ...x, status: t("Processing media…") } : x)),
+              p.map((x) => (x.id === uploadId ? { ...x, status: t("Processing media…") } : x)),
             );
-          xhr.onload = () =>
-            xhr.status >= 200 && xhr.status < 300
-              ? resolve()
-              : reject(new Error(t("Upload failed")));
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) return resolve();
+            let reason = "";
+            try {
+              reason =
+                (JSON.parse(xhr.responseText) as { error?: { message?: string } }).error?.message ??
+                "";
+            } catch {
+              /* not JSON: keep the generic message */
+            }
+            reject(
+              new Error(
+                reason
+                  ? `${t("Upload failed")}: ${friendlyMediaError(reason)}`
+                  : t("Upload failed"),
+              ),
+            );
+          };
           xhr.onerror = () => reject(new Error(t("Upload failed")));
           const data = new FormData();
           data.append("file", file);
@@ -463,12 +606,12 @@ export function LibraryGrid({
           data.append("license", lic);
           xhr.send(data);
         });
-      setUploads((p) => p.filter((x) => x.name !== file.name));
+      setUploads((p) => p.filter((x) => x.id !== uploadId));
       await reload();
     } catch (e) {
       setError(errorMessage(e));
       setUploads((p) =>
-        p.map((x) => (x.name === file.name ? { ...x, status: t("Upload failed") } : x)),
+        p.map((x) => (x.id === uploadId ? { ...x, status: t("Upload failed") } : x)),
       );
     }
   };
@@ -482,13 +625,15 @@ export function LibraryGrid({
         tone: "danger",
       }))
     )
-      return;
+      return false;
     try {
       for (const a of list) await onair.deleteAsset(a.digest);
       setSelected([]);
       await reload();
+      return true;
     } catch (e) {
       setError(errorMessage(e));
+      return false;
     }
   };
   const cancelOrDismissImport = async (digest: string) => {
@@ -512,10 +657,24 @@ export function LibraryGrid({
         : sort === "size"
           ? b.size - a.size
           : sort === "used"
-            ? b.usedBy.length - a.usedBy.length
-            : b.createdAt - a.createdAt,
+            ? (b.usedBy?.length ?? 0) - (a.usedBy?.length ?? 0)
+            : (b.createdAt ?? 0) - (a.createdAt ?? 0),
     );
   const active = assets.find((a) => a.digest === params.get("asset"));
+  const sortPicker = (
+    <ToolbarPicker
+      ariaLabel={t("Sort assets")}
+      value={sort}
+      onChange={(value) => change("sort", value === "newest" ? "" : value)}
+      options={[
+        { value: "newest", label: t("Newest") },
+        { value: "name", label: t("Name") },
+        { value: "size", label: t("Size") },
+        { value: "used", label: t("Most used") },
+      ]}
+      menuClassName="w-48"
+    />
+  );
   return (
     <section
       className="space-y-5"
@@ -525,14 +684,15 @@ export function LibraryGrid({
         for (const file of e.dataTransfer.files) void upload(file);
       }}
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="min-w-0 flex-1">
           <h2 className="text-xl font-semibold">{t("Your station’s creative library")}</h2>
           <p className="text-sm text-fg-muted">
             {t("Bumpers, stings, logos and type. Make every moment yours.")}
           </p>
         </div>
-        <label className="cursor-pointer rounded-lg border border-border px-4 py-2 text-sm focus-within:ring-2 focus-within:ring-primary">
+        {!filters ? sortPicker : null}
+        <label className="inline-flex h-8 cursor-pointer items-center rounded-md border border-border bg-surface px-3 text-xs font-medium text-fg transition-colors hover:bg-surface-hover focus-within:ring-2 focus-within:ring-primary">
           {t("Upload files")}
           <input
             className="sr-only"
@@ -550,7 +710,7 @@ export function LibraryGrid({
         <LinkImport onImported={reload} />
       </div>
       {filters ? (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {[
             ["", t("All")],
             ["video", t("Video")],
@@ -577,18 +737,7 @@ export function LibraryGrid({
             onChange={(e) => change("q", e.target.value)}
             className="min-w-40 flex-1"
           />
-          <div className="w-44 shrink-0">
-            <Select
-              aria-label={t("Sort assets")}
-              value={sort}
-              onChange={(e) => change("sort", e.target.value)}
-            >
-              <option value="newest">{t("Newest")}</option>
-              <option value="name">{t("Name")}</option>
-              <option value="size">{t("Size")}</option>
-              <option value="used">{t("Most used")}</option>
-            </Select>
-          </div>
+          {sortPicker}
         </div>
       ) : null}
       {error && (
@@ -596,8 +745,8 @@ export function LibraryGrid({
           {error}
         </p>
       )}
-      {uploads.map((u, i) => (
-        <div key={i} role="status">
+      {uploads.map((u) => (
+        <div key={u.id} role="status">
           <p>
             {t("{name}: {status} ({progress}%)", {
               name: u.name,
@@ -611,38 +760,34 @@ export function LibraryGrid({
       {pending.length > 0 && (
         <div className="space-y-3 rounded-xl border border-border p-4">
           <p>{t("Choose a licence before uploading fonts.")}</p>
-          <Select
-            aria-label={t("Font licence")}
+          <Segmented
+            ariaLabel={t("Font licence")}
             value={license}
-            onChange={(e) => setLicense(e.target.value)}
-          >
-            <option value="">{t("Choose a licence")}</option>
-            {[
-              ["OFL", t("OFL")],
-              ["Apache", t("Apache")],
-              ["Owned by me", t("Owned by me")],
-              ["Other", t("Other")],
-            ].map(([v, l]) => (
-              <option key={v} value={v}>
-                {l}
-              </option>
-            ))}
-          </Select>
+            onChange={setLicense}
+            options={[
+              { value: "OFL", label: t("OFL") },
+              { value: "Apache", label: t("Apache") },
+              { value: "Owned by me", label: t("Owned by me") },
+              { value: "Other", label: t("Other") },
+            ]}
+          />
           {pending.map((f) => (
             <p key={f.name}>{f.name}</p>
           ))}
-          <Button
-            disabled={!license}
-            onClick={() => {
-              for (const f of pending) void upload(f, license);
-              setPending([]);
-            }}
-          >
-            {t("Upload fonts")}
-          </Button>
-          <Button variant="ghost" onClick={() => setPending([])}>
-            {t("Cancel")}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              disabled={!license}
+              onClick={() => {
+                for (const f of pending) void upload(f, license);
+                setPending([]);
+              }}
+            >
+              {t("Upload fonts")}
+            </Button>
+            <Button variant="ghost" onClick={() => setPending([])}>
+              {t("Cancel")}
+            </Button>
+          </div>
         </div>
       )}
       {!onPick && selected.length > 0 && (
@@ -729,7 +874,7 @@ export function LibraryGrid({
                         : formatBytes(a.size)}
                   </span>
                   <span className="rounded-full bg-bg-subtle px-2">
-                    {tn(a.usedBy.length, "Used by {count}", "Used by {count}")}
+                    {tn(a.usedBy?.length ?? 0, "Used by {count}", "Used by {count}")}
                   </span>
                 </div>
                 {a.status && a.status !== "ready" && (
@@ -742,7 +887,7 @@ export function LibraryGrid({
                       )}
                     >
                       {a.status === "error"
-                        ? a.error
+                        ? friendlyMediaError(a.error)
                         : t("Preparing media… {progress}%", {
                             progress: Math.round(a.progress ?? 0),
                           })}
@@ -765,18 +910,13 @@ export function LibraryGrid({
         })}
       </div>
       {active && !onPick && active.readOnly && (
-        <Drawer open title={active.name} onClose={() => change("asset", "")} size="lg">
-          <Preview asset={active} full />
-          {active.usedBy.map((u) => (
-            <Link
-              key={u.id}
-              className="mt-4 block text-primary"
-              to={`/livetv/looks?reel=${encodeURIComponent(u.id)}`}
-            >
-              {t("Used in reel {name}", { name: u.name })}
-            </Link>
-          ))}
-        </Drawer>
+        <ReelClipLibraryDrawer
+          key={active.digest}
+          asset={active}
+          onClose={() => change("asset", "")}
+          onReload={reload}
+          onSelectAsset={(digest) => change("asset", digest)}
+        />
       )}
       {active && !onPick && !active.readOnly && (
         <AssetDrawer
@@ -787,21 +927,167 @@ export function LibraryGrid({
             await reload();
             if (a) change("asset", a.digest);
           }}
-          onDelete={() => remove([active])}
+          onSelectAsset={(digest) => change("asset", digest)}
+          onDelete={async () => {
+            const deleted = await remove([active]);
+            if (deleted) change("asset", "");
+          }}
         />
       )}
     </section>
   );
 }
+
+function ReelClipLibraryDrawer({
+  asset: a,
+  onClose,
+  onReload,
+  onSelectAsset,
+}: {
+  asset: GridAsset;
+  onClose: () => void;
+  onReload: () => Promise<void>;
+  onSelectAsset: (digest: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const isError = a.status === "error";
+
+  const handleRetry = async () => {
+    if (!a.reelId || !a.clipId) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (a.link) {
+        await onair.resolveClip(a.reelId, a.clipId);
+        await onReload();
+      } else if (a.source) {
+        const created = await apiFetch<{ id: string }[]>(
+          `/onair/reels/${encodeURIComponent(a.reelId)}/clips/import`,
+          {
+            method: "POST",
+            body: JSON.stringify({ urls: [a.source], kind: "video" }),
+          },
+        );
+        await onair.deleteClip(a.reelId, a.clipId);
+        await onReload();
+        onSelectAsset(created[0]?.id ? `reel-${a.reelId}-${created[0].id}` : "");
+      }
+    } catch (e) {
+      setError(friendlyMediaError(errorMessage(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!a.reelId || !a.clipId) return;
+    if (
+      !(await confirmDialog({
+        title: t("Delete clip?"),
+        message: t("This clip will be removed from its reel."),
+        confirmLabel: t("Delete"),
+        tone: "danger",
+      }))
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await onair.deleteClip(a.reelId, a.clipId);
+      onClose();
+      await onReload();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer
+      open
+      title={a.name}
+      onClose={onClose}
+      size="lg"
+      footer={
+        isError && a.reelId && a.clipId ? (
+          <div className="flex w-full flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              className="text-danger"
+              disabled={busy}
+              onClick={() => void handleDelete()}
+            >
+              <Trash2 size={14} />
+              {t("Delete")}
+            </Button>
+            {a.link || a.source ? (
+              <Button disabled={busy} onClick={() => void handleRetry()}>
+                <RotateCcw size={14} />
+                {busy ? t("Retrying…") : t("Retry")}
+              </Button>
+            ) : null}
+          </div>
+        ) : undefined
+      }
+    >
+      <div className="space-y-4">
+        <Preview asset={a} full />
+        {isError ? (
+          <div
+            role="alert"
+            className="space-y-2 rounded-xl border border-danger/30 bg-danger-subtle p-4"
+          >
+            <p className="text-sm font-medium text-danger">{t("Couldn’t import this media")}</p>
+            <p className="text-sm text-fg">{friendlyMediaError(a.error)}</p>
+            {a.source ? (
+              <a
+                className="inline-block break-all text-xs text-primary underline"
+                href={a.source}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {a.source}
+              </a>
+            ) : null}
+          </div>
+        ) : a.link && !a.cached && a.reelId && a.clipId ? (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void handleRetry()}>
+            <Play size={14} />
+            {busy ? t("Preparing preview…") : t("Prepare video preview")}
+          </Button>
+        ) : null}
+        {error ? (
+          <p role="alert" className="text-sm text-danger">
+            {error}
+          </p>
+        ) : null}
+        {a.usedBy.map((u) => (
+          <Link
+            key={u.id}
+            className="block text-sm text-primary"
+            to={`/livetv/looks?reel=${encodeURIComponent(u.id)}`}
+          >
+            {t("Used in reel {name}", { name: u.name })}
+          </Link>
+        ))}
+      </div>
+    </Drawer>
+  );
+}
+
 function AssetDrawer({
   asset: a,
   onClose,
   onChanged,
+  onSelectAsset,
   onDelete,
 }: {
   asset: LibraryAsset;
   onClose: () => void;
   onChanged: (a?: LibraryAsset) => Promise<void>;
+  onSelectAsset: (digest: string) => void;
   onDelete: () => Promise<void>;
 }) {
   const [params, setParams] = useSearchParams();
@@ -825,16 +1111,105 @@ function AssetDrawer({
       setBusy(false);
     }
   };
+  if (a.status === "error") {
+    const retryImport = async () => {
+      if (!a.source) return;
+      setBusy(true);
+      setError("");
+      try {
+        const created = await apiFetch<{ id?: string; digest?: string }[]>("/onair/assets/import", {
+          method: "POST",
+          body: JSON.stringify({ urls: [a.source], kind: a.kind }),
+        });
+        await onair.deleteAsset(a.digest);
+        await onChanged();
+        const nextId = created[0]?.digest ?? created[0]?.id ?? "";
+        onSelectAsset(nextId);
+      } catch (e) {
+        setError(friendlyMediaError(errorMessage(e)));
+      } finally {
+        setBusy(false);
+      }
+    };
+    const deleteFailed = async () => {
+      setBusy(true);
+      setError("");
+      try {
+        await onair.deleteAsset(a.digest);
+        await onChanged();
+        onClose();
+      } catch (e) {
+        setError(errorMessage(e));
+      } finally {
+        setBusy(false);
+      }
+    };
+    return (
+      <Drawer
+        open
+        onClose={onClose}
+        title={a.name}
+        documentTitle={a.name}
+        size="lg"
+        footer={
+          <div className="flex w-full flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              className="text-danger"
+              disabled={busy}
+              onClick={() => void deleteFailed()}
+            >
+              <Trash2 size={14} />
+              {t("Delete")}
+            </Button>
+            {a.source ? (
+              <Button disabled={busy} onClick={() => void retryImport()}>
+                <RotateCcw size={14} />
+                {busy ? t("Retrying…") : t("Retry")}
+              </Button>
+            ) : null}
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <Preview asset={a} full />
+          <div
+            role="alert"
+            className="space-y-2 rounded-xl border border-danger/30 bg-danger-subtle p-4"
+          >
+            <p className="text-sm font-medium text-danger">{t("Couldn’t import this media")}</p>
+            <p className="text-sm text-fg">{friendlyMediaError(a.error)}</p>
+            {a.source ? (
+              <a
+                className="inline-block break-all text-xs text-primary underline"
+                href={a.source}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {a.source}
+              </a>
+            ) : null}
+          </div>
+          {error ? (
+            <p role="alert" className="text-sm text-danger">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      </Drawer>
+    );
+  }
   return (
-    <Drawer open onClose={onClose} title={a.name} size="lg">
+    <Drawer open onClose={onClose} title={a.name} documentTitle={a.name} size="lg">
       <div className="space-y-6">
         <SubtabNav
           ariaLabel={t("Asset sections")}
           active={tab}
           onSelect={(v) =>
             setParams((p) => {
-              p.set("assetTab", v);
-              return p;
+              const next = new URLSearchParams(p);
+              next.set("assetTab", v);
+              return next;
             })
           }
           tabs={[
@@ -896,46 +1271,52 @@ function AssetDrawer({
             </label>
           </>
         )}
-        {tab === "preview" && (a.kind === "audio" || a.kind === "video") && (
-          <fieldset className="space-y-3 rounded-lg border border-border p-4">
-            <legend>{t("Save a clip")}</legend>
-            <label className="block">
-              {t("Start (seconds)")}
-              <Input
-                type="number"
-                min={0}
-                max={end}
-                step={0.1}
-                value={start}
-                onChange={(e) => setStart(Number(e.target.value))}
-              />
-            </label>
-            <label className="block">
-              {t("End (seconds)")}
-              <Input
-                type="number"
-                min={start}
-                max={(a.durationMs ?? 0) / 1000}
-                step={0.1}
-                value={end}
-                onChange={(e) => setEnd(Number(e.target.value))}
-              />
-            </label>
-            <Button
-              disabled={busy || start < 0 || end <= start || end > (a.durationMs ?? 0) / 1000}
-              onClick={() =>
-                void run(() =>
-                  apiFetch<LibraryAsset>(`/onair/assets/${a.digest}/trim`, {
-                    method: "POST",
-                    body: JSON.stringify({ start, end, name: t("{name} clip", { name }) }),
-                  }),
-                )
-              }
+        {tab === "preview" &&
+          (!a.status || a.status === "ready") &&
+          (a.kind === "audio" || a.kind === "video") && (
+            <div
+              role="group"
+              aria-label={t("Save a clip")}
+              className="space-y-3 rounded-lg border border-border p-4"
             >
-              {t("Save as new clip")}
-            </Button>
-          </fieldset>
-        )}
+              <h3 className="text-sm font-medium text-fg">{t("Save a clip")}</h3>
+              <label className="block">
+                {t("Start (seconds)")}
+                <Input
+                  type="number"
+                  min={0}
+                  max={end}
+                  step={0.1}
+                  value={start}
+                  onChange={(e) => setStart(Number(e.target.value))}
+                />
+              </label>
+              <label className="block">
+                {t("End (seconds)")}
+                <Input
+                  type="number"
+                  min={start}
+                  max={(a.durationMs ?? 0) / 1000}
+                  step={0.1}
+                  value={end}
+                  onChange={(e) => setEnd(Number(e.target.value))}
+                />
+              </label>
+              <Button
+                disabled={busy || start < 0 || end <= start || end > (a.durationMs ?? 0) / 1000}
+                onClick={() =>
+                  void run(() =>
+                    apiFetch<LibraryAsset>(`/onair/assets/${a.digest}/trim`, {
+                      method: "POST",
+                      body: JSON.stringify({ start, end, name: t("{name} clip", { name }) }),
+                    }),
+                  )
+                }
+              >
+                {t("Save as new clip")}
+              </Button>
+            </div>
+          )}
         {tab === "usage" && (
           <>
             <section className="space-y-2">
@@ -985,20 +1366,33 @@ export function LibraryAside() {
   const [params, setParams] = useSearchParams();
   const [counts, setCounts] = useState<Record<string, number> | null>(null);
   useEffect(() => {
-    void Promise.all([studio.library(), onair.reels()])
-      .then(([library, reels]) => {
-        const next: Record<string, number> = { "": 0, video: 0, audio: 0, image: 0, font: 0 };
-        for (const a of library) {
-          next[""]! += 1;
-          next[a.kind] = (next[a.kind] ?? 0) + 1;
-        }
-        for (const reel of reels) {
-          next[""]! += reel.clips.length;
-          next.video! += reel.clips.length;
-        }
-        setCounts(next);
-      })
-      .catch(() => setCounts(null));
+    let active = true;
+    const loadCounts = () => {
+      void Promise.all([studio.library(), onair.reels()])
+        .then(([library, reels]) => {
+          if (!active) return;
+          const next: Record<string, number> = { "": 0, video: 0, audio: 0, image: 0, font: 0 };
+          for (const a of library) {
+            if (!kinds.includes(a.kind)) continue;
+            next[""]! += 1;
+            next[a.kind] = (next[a.kind] ?? 0) + 1;
+          }
+          for (const reel of reels) {
+            next[""]! += reel.clips.length;
+            next.video! += reel.clips.length;
+          }
+          setCounts(next);
+        })
+        .catch(() => {
+          if (active) setCounts(null);
+        });
+    };
+    loadCounts();
+    window.addEventListener(LIBRARY_CHANGED_EVENT, loadCounts);
+    return () => {
+      active = false;
+      window.removeEventListener(LIBRARY_CHANGED_EVENT, loadCounts);
+    };
   }, []);
   const kind = params.get("kind") ?? "";
   const rows: [string, string, typeof Film][] = [
@@ -1017,9 +1411,10 @@ export function LibraryAside() {
           aria-current={kind === key ? "page" : undefined}
           onClick={() =>
             setParams((p) => {
-              if (key) p.set("kind", key);
-              else p.delete("kind");
-              return p;
+              const next = new URLSearchParams(p);
+              if (key) next.set("kind", key);
+              else next.delete("kind");
+              return next;
             })
           }
           className={cn(

@@ -29,10 +29,10 @@ import (
 //     (chunks.go). Without a keyframe index the boundaries are nominal and
 //     a copy segment may really start at the next keyframe, exactly as
 //     before this abstraction existed.
-//   - The spike governor may re-plan segments the player has not requested
-//     yet (copy -> clamped transcode). That is only visible to clients that
-//     reload the media playlist, so governed sessions serve an EVENT
-//     playlist instead of VOD; see Session.maybeGovernLocked.
+//   - The spike governor may re-plan MPEG-TS copy segments the player has
+//     not requested yet (copy -> clamped transcode) while keeping the
+//     known-duration media playlist VOD with EXT-X-ENDLIST; see
+//     Session.maybeGovernLocked.
 
 // SegMode is how one segment is produced.
 type SegMode uint8

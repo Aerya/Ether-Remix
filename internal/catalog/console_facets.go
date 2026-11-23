@@ -74,6 +74,9 @@ func (c *Catalog) ConsoleCount(ctx context.Context, f core.Filter) (int, bool, e
 		_ = c.hydrate(ctx, key, 0, func(ctx context.Context) error {
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
+			if err := c.ensureCatalogueSources(ctx, f); err != nil {
+				return err
+			}
 			var total int
 			if err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM catalog_titles t WHERE "+where, args...).Scan(&total); err != nil {
 				return err

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -148,7 +147,7 @@ func (s *Service) Handler() http.Handler {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+strings.TrimSuffix(name, ".tar.gz")+EncryptedExtension+`"`)
 		ew, e := NewEncryptWriter(w, q.Password)
 		if e == nil {
-			if _, e = io.Copy(ew, f); e == nil {
+			if e = exportSnapshot(f, ew); e == nil {
 				e = ew.Close()
 			}
 		}
@@ -198,7 +197,7 @@ func (s *Service) Handler() http.Handler {
 			return
 		}
 		defer s.restoring.Unlock()
-		body := bufio.NewReaderSize(http.MaxBytesReader(w, r.Body, maxBundleFile+32<<20), 64<<10)
+		body := bufio.NewReaderSize(http.MaxBytesReader(w, r.Body, MaxUploadBytes), 64<<10)
 		head, _ := body.Peek(len(encMagic))
 		password := ""
 		if IsEncrypted(head) {

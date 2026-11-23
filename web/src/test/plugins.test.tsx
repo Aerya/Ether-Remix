@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { invalidateRegistry } from "../lib/extend";
 import { createFakeServer } from "../mock/server";
+import { SetupWizard } from "../pages/libraries/SetupWizard";
 import Plugins from "../pages/plugins/Plugins";
 
 let fakeServer = createFakeServer({ latencyMs: 0 });
@@ -138,8 +139,27 @@ describe("Server › Plugins (WS10a)", () => {
     expect(
       screen.getByText("Saved. Leave as is to keep it, or type a new value to replace it."),
     ).toBeTruthy();
+    customIntercept = (url, init) => {
+      if (
+        url.pathname === "/ether/api/plugins/community.plutotv.ether/test" &&
+        init?.method === "POST"
+      ) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            message: "No account configured: anonymous downloads are rate-limited.",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return null;
+    };
     fireEvent.click(screen.getByRole("button", { name: /Test/i }));
     expect(await screen.findByText(/OK · \d+ ms/)).toBeTruthy();
+    expect(
+      screen.getByText("No account configured: anonymous downloads are rate-limited."),
+    ).toBeTruthy();
+    customIntercept = null;
 
     customIntercept = (url, init) => {
       if (
@@ -223,11 +243,137 @@ describe("Server › Plugins (WS10a)", () => {
     expect(screen.getAllByText("Preview plugin").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("browses, filters, and installs from the Marketplace tab, and shows 'The catalogue is not available yet' when empty", async () => {
+  it("shows blocked local network hosts with an Allow button and lets the owner list, add, and remove local hosts in Settings", async () => {
+    let blocked = ["tuliprox:8901"];
+    const savedBodies: { localHosts?: string[] }[] = [];
+    customIntercept = async (url, init) => {
+      const base = "/ether/api/plugins/community.plutotv.ether";
+      if (url.pathname === base && (!init?.method || init.method === "GET")) {
+        const response = await fakeServer.fetch(url.toString(), init);
+        const detail = await response.json();
+        detail.blockedLocalHosts = blocked;
+        return Response.json(detail);
+      }
+      if (url.pathname === `${base}/grants` && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { localHosts?: string[] };
+        savedBodies.push(body);
+        if (body.localHosts) {
+          const allowed = new Set(body.localHosts.map((h) => h.toLowerCase()));
+          blocked = blocked.filter(
+            (h) => !allowed.has(h.toLowerCase()) && !allowed.has(h.toLowerCase().split(":")[0]!),
+          );
+        }
+      }
+      if (url.pathname === "/ether/api/plugins/install/preview" && init?.method === "POST") {
+        const response = await fakeServer.fetch(url.toString(), init);
+        const preview = await response.json();
+        preview.permissions = [...preview.permissions, "May reach on your network: tuliprox:8901"];
+        return Response.json(preview);
+      }
+      return null;
+    };
+
+    renderPlugins("/plugins");
+    fireEvent.click(await screen.findByText("Pluto TV"));
+
+    // Blocked private host surfaces right in the drawer with a one-click Allow button.
+    expect(await screen.findByText("Blocked tuliprox:8901 (on your network)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Blocked tuliprox:8901 (on your network)")).toBeNull();
+    });
+    expect(savedBodies.at(-1)?.localHosts).toEqual(["tuliprox:8901"]);
+
+    // Settings -> "On your network": list, add, remove.
+    const tabs = screen.getByRole("tablist", { name: "Plugin sections" });
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+
+    expect(await screen.findByText("On your network")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Lets this plugin reach these addresses on your network, such as tuliprox or 192.168.1.20.",
+      ),
+    ).toBeTruthy();
+
+    const allowedList = screen.getByRole("list", { name: "Allowed network addresses" });
+    expect(within(allowedList).getByText("tuliprox:8901")).toBeTruthy();
+
+    const hostInput = screen.getByLabelText("Network address");
+    fireEvent.change(hostInput, { target: { value: "192.168.1.20" } });
+    fireEvent.keyDown(hostInput, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(within(allowedList).getByText("192.168.1.20")).toBeTruthy();
+    });
+    expect(savedBodies.at(-1)?.localHosts).toEqual(["tuliprox:8901", "192.168.1.20"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove tuliprox:8901" }));
+    await waitFor(() => {
+      expect(within(allowedList).queryByText("tuliprox:8901")).toBeNull();
+    });
+    expect(savedBodies.at(-1)?.localHosts).toEqual(["192.168.1.20"]);
+
+    // Also verify the install permission sheet renders "May reach on your network: …".
+    cleanup();
+    renderPlugins("/plugins");
+    await screen.findByText("Pluto TV");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /From a link/i }));
+    fireEvent.change(await screen.findByLabelText("Plugin address"), {
+      target: { value: "https://plugins.example.test/iptv/manifest.json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Review permissions/i }));
+    const sheet = await screen.findByTestId("permission-sheet");
+    expect(within(sheet).getByText("May reach on your network: tuliprox:8901")).toBeTruthy();
+  });
+
+  it("browses, filters, refreshes, and installs from the Marketplace tab using the real catalogue contract", async () => {
+    let refreshed = false;
+    let installBody: Record<string, unknown> | null = null;
+    customIntercept = async (url, init) => {
+      if (url.pathname === "/ether/api/plugins/catalogue/refresh" && init?.method === "POST") {
+        refreshed = true;
+      }
+      if (url.pathname === "/ether/api/plugins/install" && init?.method === "POST") {
+        installBody = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+      }
+      return null;
+    };
+
     renderPlugins("/plugins/marketplace");
 
     expect(await screen.findByText("SubDL Subtitles")).toBeTruthy();
     expect(screen.getByText("Local folders")).toBeTruthy();
+    expect(screen.getByText("Pluto TV")).toBeTruthy();
+
+    // Every catalogue entry has a Reviewed badge, and Pluto TV shows Installed + Update available.
+    expect(screen.getAllByText("Reviewed").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByText("Update available")).toBeTruthy();
+
+    // Submit link and Refresh action live in the section header.
+    const submitLink = screen.getByRole("link", { name: /Submit a plugin/i });
+    expect(submitLink.getAttribute("href")).toBe(
+      "https://github.com/braedonsaunders/ether-plugins#submit-a-plugin",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(refreshed).toBe(true));
+
+    // Real kind filters (no fake webhook/folder/composite filters).
+    const kindGroup = screen.getByRole("group", { name: "Filter by kind" });
+    expect(
+      within(kindGroup)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual([
+      "All kinds",
+      "Source",
+      "Integration",
+      "Notification",
+      "Live TV",
+      "Extension",
+      "Content",
+    ]);
 
     // Search filter
     const searchInput = screen.getByLabelText("Search catalogue");
@@ -235,7 +381,7 @@ describe("Server › Plugins (WS10a)", () => {
     expect(screen.getByText("SubDL Subtitles")).toBeTruthy();
     expect(screen.queryByText("Local folders")).toBeNull();
 
-    // Open SubDL Subtitles card drawer and install
+    // Open SubDL Subtitles card drawer and install via {kind:"catalogue", id}
     fireEvent.click(screen.getByText("SubDL Subtitles"));
     const sheet = await screen.findByTestId("permission-sheet");
     expect(within(sheet).getByText("Connects to api.subdl.com")).toBeTruthy();
@@ -244,6 +390,10 @@ describe("Server › Plugins (WS10a)", () => {
 
     // Navigates to Installed tab and opens the new plugin's drawer
     expect(await screen.findByRole("tablist", { name: "Plugin sections" })).toBeTruthy();
+    expect(installBody).toMatchObject({
+      kind: "catalogue",
+      id: "community.subdl.subtitles",
+    });
   });
 
   it("pairs and revokes a remote sidecar", async () => {
@@ -277,11 +427,18 @@ describe("Server › Plugins (WS10a)", () => {
     expect(await screen.findByText("No sidecars connected.")).toBeTruthy();
   });
 
-  it("shows 'The catalogue is not available yet' when GET /api/plugins/catalogue is empty or 404", async () => {
+  it("shows 'No plugins in the marketplace yet' with a submit link when configured with zero entries, and unavailable only when unconfigured or unreachable", async () => {
+    let mode: "empty" | "unconfigured" | "unreachable" = "empty";
     customIntercept = (url) => {
-      if (url.pathname.startsWith("/ether/api/plugins/catalogue")) {
-        return new Response(JSON.stringify({ entries: [] }), {
-          status: 200,
+      if (url.pathname === "/ether/api/plugins/catalogue") {
+        if (mode === "empty") {
+          return Response.json({ entries: [], configured: true, fetchedAt: 1700000000 });
+        }
+        if (mode === "unconfigured") {
+          return Response.json({ entries: [], configured: false, fetchedAt: 0 });
+        }
+        return new Response(JSON.stringify({ error: { message: "bad gateway" } }), {
+          status: 502,
           headers: { "Content-Type": "application/json" },
         });
       }
@@ -289,7 +446,216 @@ describe("Server › Plugins (WS10a)", () => {
     };
 
     renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("No plugins in the marketplace yet")).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: /Submit a plugin/i }).length).toBeGreaterThanOrEqual(
+      1,
+    );
+    expect(screen.queryByText(/not available/i)).toBeNull();
+    cleanup();
 
-    expect(await screen.findByText("The catalogue is not available yet")).toBeTruthy();
+    mode = "unconfigured";
+    renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("No marketplace configured")).toBeTruthy();
+    cleanup();
+
+    mode = "unreachable";
+    renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("Could not reach the marketplace")).toBeTruthy();
+  });
+
+  it("replaces card Open in Studio with Configure, keeps Open in Studio in ⋯, moves Limits behind More options, and avoids sliced initials on missing icons", async () => {
+    customIntercept = async (url, init) => {
+      if (url.pathname === "/ether/api/plugins" && (!init?.method || init.method === "GET")) {
+        const res = await fakeServer.fetch(url.toString(), init);
+        const data = (await res.json()) as { plugins: Record<string, unknown>[] };
+        data.plugins = data.plugins.map((p) =>
+          p.id === "community.plutotv.ether"
+            ? { ...p, icon: "https://broken.example.invalid/404.png" }
+            : p,
+        );
+        return Response.json(data);
+      }
+      return null;
+    };
+
+    renderPlugins("/plugins");
+    const plutoCard = await screen.findByRole("article", { name: "Pluto TV" });
+    const dubCard = screen.getByRole("article", { name: "Dub language" });
+
+    // Card faces show Configure, never Open in Studio.
+    expect(screen.queryByRole("button", { name: /Open in Studio/i })).toBeNull();
+    expect(within(plutoCard).getByRole("button", { name: "Configure" })).toBeTruthy();
+    const dubConfigure = within(dubCard).getByRole("button", { name: "Configure" });
+
+    // A 404 icon falls back to the centred glyph without two-letter initials ("PT"), and cards without icons show no initials ("DL").
+    const brokenImg = plutoCard.querySelector("img");
+    expect(brokenImg).not.toBeNull();
+    fireEvent.error(brokenImg!);
+    expect(within(plutoCard).queryByText("PT")).toBeNull();
+    expect(within(dubCard).queryByText("DL")).toBeNull();
+
+    // Clicking Configure on a hosted plugin opens its drawer; Overview has no Limits table; Open in Studio lives in ⋯.
+    fireEvent.click(dubConfigure);
+    const tabs = await screen.findByRole("tablist", { name: "Plugin sections" });
+    expect(screen.queryByRole("button", { name: "Open in Studio" })).toBeNull();
+    expect(screen.queryByText("Memory (MiB)")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Open in Studio" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+
+    // Limits appear in Settings only after opening More options.
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+    expect(await screen.findByRole("button", { name: "More options" })).toBeTruthy();
+    expect(screen.queryByText("Memory (MiB)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More options" }));
+    expect(await screen.findByText("Memory (MiB)")).toBeTruthy();
+
+    // Marketplace cards without icons show no two-letter initials.
+    cleanup();
+    customIntercept = null;
+    renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("Local folders")).toBeTruthy();
+    expect(screen.queryByText("LF")).toBeNull();
+  });
+
+  it("preserves passing setup step details per step in SetupWizard", async () => {
+    let stepStatus: "pending" | "ok" = "pending";
+    let stepDetail = "";
+    customIntercept = (url, init) => {
+      if (url.pathname === "/ether/api/plugins-setup/community.archive.ether") {
+        return new Response(
+          JSON.stringify({
+            pluginId: "community.archive.ether",
+            pluginName: "Archive",
+            schema: { fields: [{ key: "email", label: "Email" }] },
+            settings: {},
+            blockers: stepStatus === "ok" ? [] : ["account"],
+            steps: [
+              {
+                key: "account",
+                label: "Account",
+                required: true,
+                fields: ["email"],
+                test: "/ether/v1/setup/account/test",
+                status: stepStatus,
+                detail: stepDetail,
+              },
+              {
+                key: "catalogue",
+                label: "Catalogue",
+                required: false,
+                fields: [],
+                status: "pending",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (
+        url.pathname === "/ether/api/plugins/community.archive.ether/settings" &&
+        init?.method === "PUT"
+      ) {
+        return new Response(JSON.stringify({ settings: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (
+        url.pathname === "/ether/api/plugins-setup/community.archive.ether/account/test" &&
+        init?.method === "POST"
+      ) {
+        stepStatus = "ok";
+        stepDetail = "Anonymous access works and is rate-limited.";
+        return new Response(JSON.stringify({ ok: true, detail: stepDetail }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return null;
+    };
+
+    render(
+      <MemoryRouter>
+        <SetupWizard pluginId="community.archive.ether" onClose={() => {}} />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save and test" }));
+    // Advances to step 2 without leaking step 1's detail onto step 2.
+    expect(await screen.findByRole("heading", { name: "Catalogue" })).toBeTruthy();
+    expect(screen.queryByText("Anonymous access works and is rate-limited.")).toBeNull();
+
+    // Selecting step 1 shows its passing test detail.
+    fireEvent.click(screen.getByRole("button", { name: /Account/ }));
+    expect(await screen.findByText("Anonymous access works and is rate-limited.")).toBeTruthy();
+  });
+
+  it("reviews, approves, and revokes operator-configured server addresses at install and in plugin settings", async () => {
+    renderPlugins("/plugins");
+    await screen.findByText("Pluto TV");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /From a link/i }));
+    fireEvent.change(await screen.findByLabelText("Plugin address"), {
+      target: { value: "https://plugins.example.test/operator-default/manifest.json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Review permissions/i }));
+
+    const sheet = await screen.findByTestId("permission-sheet");
+    expect(within(sheet).getByText("Connects to addresses you approve")).toBeTruthy();
+    expect(
+      within(sheet).getByText("Needs approval to connect to library.example.com"),
+    ).toBeTruthy();
+
+    // Wildcard input is ignored in the address picker.
+    const addrInput = within(sheet).getByLabelText("Server address");
+    fireEvent.change(addrInput, { target: { value: "*" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Approve address" }));
+    expect(within(sheet).queryByLabelText("Approved addresses")).toBeNull();
+
+    // Approve the pending default address during install review.
+    fireEvent.click(within(sheet).getByRole("button", { name: "Approve" }));
+    const approvedAtInstall = within(sheet).getByRole("list", { name: "Approved addresses" });
+    expect(within(approvedAtInstall).getByText("library.example.com")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Install$/i }));
+
+    // Installed drawer opens for Self-hosted connector.
+    const tabs = await screen.findByRole("tablist", { name: "Plugin sections" });
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+
+    // Save a new server URL in settings -> prompts for approval immediately.
+    const serverUrlInput = await screen.findByLabelText("Server URL");
+    fireEvent.change(serverUrlInput, {
+      target: { value: "https://books.example.com:8443/api" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(
+      await screen.findByText("Needs approval to connect to books.example.com:8443"),
+    ).toBeTruthy();
+
+    // Overview tab also shows the approval banner until approved.
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Overview" }));
+    expect(
+      await screen.findByText("Needs approval to connect to books.example.com:8443"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      expect(screen.queryByText("Needs approval to connect to books.example.com:8443")).toBeNull();
+    });
+
+    // Back in Settings: both addresses are listed and revocable.
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+    const approvedList = await screen.findByRole("list", { name: "Approved addresses" });
+    expect(within(approvedList).getByText("library.example.com")).toBeTruthy();
+    expect(within(approvedList).getByText("books.example.com:8443")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Revoke library.example.com" }));
+    await waitFor(() => {
+      expect(within(approvedList).queryByText("library.example.com")).toBeNull();
+    });
   });
 });

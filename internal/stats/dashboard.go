@@ -3,6 +3,7 @@ package stats
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -19,16 +20,39 @@ type Dashboard struct {
 	now func() time.Time
 	loc *time.Location
 
-	devMu    sync.Mutex
-	registry *deviceRegistry
-	nextDev  int64
-	byClient map[string]*Device
-	byID     map[int64]*Device
-	accounts map[int64]string
+	devMu              sync.Mutex
+	registry           *deviceRegistry
+	nextDev            int64
+	byClient           map[string]*Device
+	byID               map[int64]*Device
+	accounts           map[int64]string
+	onDeviceRegistered atomic.Pointer[func(Device)]
 
 	mu        sync.Mutex
 	bandwidth map[int]*bwTier
 	media     map[int]*mediaTier
+}
+
+// SetOnDeviceRegistered installs an optional non-blocking observer notified
+// when a previously unseen client identifier is registered.
+func (d *Dashboard) SetOnDeviceRegistered(fn func(Device)) {
+	if d == nil {
+		return
+	}
+	if fn == nil {
+		d.onDeviceRegistered.Store(nil)
+		return
+	}
+	d.onDeviceRegistered.Store(&fn)
+}
+
+func (d *Dashboard) notifyDeviceRegistered(dev Device) {
+	if d == nil || dev.ClientIdentifier == "" {
+		return
+	}
+	if fn := d.onDeviceRegistered.Load(); fn != nil && *fn != nil {
+		(*fn)(dev)
+	}
 }
 
 type Device = frontend.StatisticsDevice
@@ -121,11 +145,15 @@ func NewDashboard(opts DashboardOptions) *Dashboard {
 // SeeDevice records or updates a client. An empty client identifier is device 1.
 func (d *Dashboard) SeeDevice(clientID, name, platform string) Device {
 	d.devMu.Lock()
-	defer d.devMu.Unlock()
-	return d.seeLocked(clientID, name, platform)
+	dev, created := d.seeLocked(clientID, name, platform)
+	d.devMu.Unlock()
+	if created {
+		d.notifyDeviceRegistered(dev)
+	}
+	return dev
 }
 
-func (d *Dashboard) seeLocked(clientID, name, platform string) Device {
+func (d *Dashboard) seeLocked(clientID, name, platform string) (Device, bool) {
 	if dev, ok := d.byClient[clientID]; ok {
 		changed := name != "" && name != dev.Name || platform != "" && platform != dev.Platform
 		if name != "" {
@@ -137,25 +165,25 @@ func (d *Dashboard) seeLocked(clientID, name, platform string) Device {
 		if changed && d.registry != nil {
 			d.registry.update(*dev)
 		}
-		return *dev
+		return *dev, false
 	}
 	if d.registry != nil {
 		dev, err := d.registry.allocate(Device{ClientIdentifier: clientID, Name: name, Platform: platform, CreatedAt: d.now().Unix()})
 		if err != nil {
-			return Device{ClientIdentifier: clientID, Name: name, Platform: platform}
+			return Device{ClientIdentifier: clientID, Name: name, Platform: platform}, false
 		}
 		d.byClient[clientID] = &dev
 		d.byID[dev.ID] = &dev
-		return dev
+		return dev, true
 	}
 	if len(d.byID) >= 512 {
-		return *d.byID[1]
+		return *d.byID[1], false
 	}
 	dev := &Device{ID: d.nextDev, ClientIdentifier: clientID, Name: name, Platform: platform, CreatedAt: d.now().Unix()}
 	d.nextDev++
 	d.byClient[clientID] = dev
 	d.byID[dev.ID] = dev
-	return *dev
+	return *dev, true
 }
 
 // Devices lists every device this process has seen, id order.
@@ -190,8 +218,11 @@ func (d *Dashboard) RecordBytes(accountID int64, accountName, clientID, deviceNa
 	if accountName != "" {
 		d.accounts[accountID] = accountName
 	}
-	dev := d.seeLocked(clientID, deviceName, platform)
+	dev, created := d.seeLocked(clientID, deviceName, platform)
 	d.devMu.Unlock()
+	if created {
+		d.notifyDeviceRegistered(dev)
+	}
 	lanN := 0
 	if lan {
 		lanN = 1
@@ -218,8 +249,11 @@ func (d *Dashboard) RecordPlay(accountID int64, accountName, clientID string, me
 	if accountName != "" {
 		d.accounts[accountID] = accountName
 	}
-	dev := d.seeLocked(clientID, "", "")
+	dev, created := d.seeLocked(clientID, "", "")
 	d.devMu.Unlock()
+	if created {
+		d.notifyDeviceRegistered(dev)
+	}
 	now := d.now()
 	key := mediaSeriesKey{account: accountID, device: dev.ID, metadataType: metadataType}
 	d.mu.Lock()

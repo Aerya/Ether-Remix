@@ -12,13 +12,32 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
 const (
 	probeHeadBytes     = 512
 	defaultHTTPTimeout = 30 * time.Second
 	maxRangeRetries    = 2
+
+	seqBufMinWindow = 32 << 10 // 32 KiB initial read-ahead window
+	seqBufMaxWindow = 4 << 20  // 4 MiB max sequential read-ahead window
 )
+
+// defaultStreamingHTTPClient bounds connection setup and response headers to
+// defaultHTTPTimeout without imposing a fixed deadline on response body reads,
+// so streaming range reads and whole-volume downloads honour the request
+// context rather than failing after 30 seconds.
+func defaultStreamingHTTPClient() *http.Client {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok && dt != nil {
+		tr := dt.Clone()
+		tr.ResponseHeaderTimeout = defaultHTTPTimeout
+		return &http.Client{Transport: tr}
+	}
+	return &http.Client{}
+}
 
 // errNoRangeSupport is returned by probe when an upstream server ignores Range
 // and responds with 200 OK for the whole resource. When body is non-nil, the
@@ -57,6 +76,22 @@ func NewHostBackoff() *HostBackoff {
 }
 
 var defaultBackoff = NewHostBackoff()
+
+// IsBackingOff reports whether rawURL's host currently has an active rate-limit
+// or service-unavailable backoff window.
+func (b *HostBackoff) IsBackingOff(rawURL string) bool {
+	if b == nil {
+		return false
+	}
+	host := extractHost(rawURL)
+	if host == "" {
+		return false
+	}
+	b.mu.Lock()
+	entry, ok := b.hosts[host]
+	b.mu.Unlock()
+	return ok && time.Until(entry.until) > 0
+}
 
 func (b *HostBackoff) wait(ctx context.Context, rawURL string) error {
 	if b == nil {
@@ -144,29 +179,33 @@ func extractHost(rawURL string) string {
 }
 
 type httpReaderConfig struct {
-	Template  *URLTemplate
-	Headers   map[string]string
-	ItemIndex int
-	KnownSize int64
-	Name      string
-	MIME      string
-	Client    *http.Client
-	AllowHost func(host string) bool
-	Backoff   *HostBackoff
+	Template              *URLTemplate
+	Headers               map[string]string
+	SecretHeaderKeys      []string
+	KeepHeadersOnRedirect []safefetch.RedirectHeaderPattern
+	ItemIndex             int
+	KnownSize             int64
+	Name                  string
+	MIME                  string
+	Client                *http.Client
+	AllowHost             func(host string) bool
+	Backoff               *HostBackoff
 }
 
 // HTTPReaderAt implements ByteSource (and io.ReaderAt) over an HTTP Range or
 // range-templated URL source.
 type HTTPReaderAt struct {
-	tmpl      *URLTemplate
-	headers   map[string]string
-	itemIndex int
-	size      int64
-	name      string
-	mime      string
-	client    *http.Client
-	allowHost func(host string) bool
-	backoff   *HostBackoff
+	tmpl                  *URLTemplate
+	headers               map[string]string
+	secretHeaderKeys      []string
+	keepHeadersOnRedirect []safefetch.RedirectHeaderPattern
+	itemIndex             int
+	size                  int64
+	name                  string
+	mime                  string
+	client                *http.Client
+	allowHost             func(host string) bool
+	backoff               *HostBackoff
 
 	head []byte // first <=512 bytes captured during initial probe
 }
@@ -174,22 +213,24 @@ type HTTPReaderAt struct {
 func newHTTPReaderAt(ctx context.Context, cfg httpReaderConfig) (*HTTPReaderAt, error) {
 	client := cfg.Client
 	if client == nil {
-		client = &http.Client{Timeout: defaultHTTPTimeout}
+		client = defaultStreamingHTTPClient()
 	}
 	backoff := cfg.Backoff
 	if backoff == nil {
 		backoff = defaultBackoff
 	}
 	r := &HTTPReaderAt{
-		tmpl:      cfg.Template,
-		headers:   cfg.Headers,
-		itemIndex: cfg.ItemIndex,
-		size:      cfg.KnownSize,
-		name:      cfg.Name,
-		mime:      cfg.MIME,
-		client:    client,
-		allowHost: cfg.AllowHost,
-		backoff:   backoff,
+		tmpl:                  cfg.Template,
+		headers:               cfg.Headers,
+		secretHeaderKeys:      cfg.SecretHeaderKeys,
+		keepHeadersOnRedirect: cfg.KeepHeadersOnRedirect,
+		itemIndex:             cfg.ItemIndex,
+		size:                  cfg.KnownSize,
+		name:                  cfg.Name,
+		mime:                  cfg.MIME,
+		client:                client,
+		allowHost:             cfg.AllowHost,
+		backoff:               backoff,
 	}
 	if err := r.probe(ctx); err != nil {
 		return nil, err
@@ -311,11 +352,25 @@ func (r *HTTPReaderAt) doRangeRequest(ctx context.Context, start, end int64) (*h
 		for k, v := range r.headers {
 			req.Header.Set(k, v)
 		}
+		stripKeys := r.secretHeaderKeys
 		if !r.tmpl.HasByteStartOnly() && !r.tmpl.HasByteRange() {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+			if len(stripKeys) > 0 {
+				filtered := make([]string, 0, len(stripKeys))
+				for _, k := range stripKeys {
+					if k != "Range" {
+						filtered = append(filtered, k)
+					}
+				}
+				stripKeys = filtered
+			}
 		}
-		resp, err := r.client.Do(req)
+		client := wrapRedirectClient(r.client, req.URL, req.Header, stripKeys, r.keepHeadersOnRedirect, r.allowHost)
+		resp, err := client.Do(req)
 		if err != nil {
+			if errors.Is(err, ErrHostNotAllowed) || errors.Is(err, ErrInvalidTemplate) {
+				return nil, targetURL, err
+			}
 			lastErr = err
 			continue
 		}
@@ -334,6 +389,25 @@ func (r *HTTPReaderAt) doRangeRequest(ctx context.Context, start, end int64) (*h
 
 // ReadAt reads len(p) bytes starting at byte offset off.
 func (r *HTTPReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	return r.readAtCtx(context.Background(), p, off)
+}
+
+// ReadAtContext reads len(p) bytes starting at byte offset off using ctx.
+func (r *HTTPReaderAt) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	return r.readAtCtx(ctx, p, off)
+}
+
+// ReadAtConcurrentContext implements core.ConcurrentRangeReaderAt. HTTPReaderAt
+// issues independent ranged GET requests with no shared seek epoch, so parallel
+// direct-play range requests never cancel one another.
+func (r *HTTPReaderAt) ReadAtConcurrentContext(ctx context.Context, p []byte, off int64) (int, error) {
+	return r.readAtCtx(ctx, p, off)
+}
+
+func (r *HTTPReaderAt) readAtCtx(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if off < 0 {
 		return 0, fmt.Errorf("kindstream: negative read offset %d", off)
 	}
@@ -365,7 +439,7 @@ func (r *HTTPReaderAt) ReadAt(p []byte, off int64) (int, error) {
 
 	start := off
 	end := off + want - 1
-	resp, _, err := r.doRangeRequest(context.Background(), start, end)
+	resp, _, err := r.doRangeRequest(ctx, start, end)
 	if err != nil {
 		return 0, err
 	}
@@ -407,6 +481,143 @@ func (r *HTTPReaderAt) MIME() string { return r.mime }
 
 // Close is a no-op for stateless HTTP range readers.
 func (r *HTTPReaderAt) Close() error { return nil }
+
+// seqBufferedReaderAt coalesces small sequential ReadAt calls (as issued by
+// archive header walkers and deflate/LZMA/RAR decoders) into adaptive range
+// reads while keeping random seeks cheap.
+type seqBufferedReaderAt struct {
+	ctx    context.Context
+	r      io.ReaderAt
+	hr     *HTTPReaderAt
+	size   int64
+	mu     sync.Mutex
+	buf    []byte
+	bufOff int64
+	window int
+}
+
+// ReadAhead wraps r for one sequential consumer (one HTTP response): small
+// sequential reads such as http.ServeContent's 32 KiB copies are coalesced
+// into ranged reads that grow to 4 MiB, while a seek drops back to a small
+// window. Create one per request; it is not meant to be shared.
+func ReadAhead(ctx context.Context, r io.ReaderAt, size int64) io.ReaderAt {
+	if _, ok := r.(*seqBufferedReaderAt); ok || size <= 0 {
+		return r
+	}
+	return newSeqBufferedReaderAt(ctx, r, size)
+}
+
+func newSeqBufferedReaderAt(ctx context.Context, r io.ReaderAt, size int64) io.ReaderAt {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hr, _ := r.(*HTTPReaderAt)
+	return &seqBufferedReaderAt{
+		ctx:    ctx,
+		r:      r,
+		hr:     hr,
+		size:   size,
+		bufOff: -1,
+		window: seqBufMinWindow,
+	}
+}
+
+func (b *seqBufferedReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if off < 0 {
+		return 0, fmt.Errorf("kindstream: negative read offset %d", off)
+	}
+	if off >= b.size {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		return 0, io.EOF
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if len(p) >= seqBufMaxWindow {
+		return b.rawReadAt(p, off)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	total := 0
+	for total < len(p) && off < b.size {
+		if err := b.ctx.Err(); err != nil {
+			return total, err
+		}
+		if b.bufOff >= 0 && off >= b.bufOff && off < b.bufOff+int64(len(b.buf)) {
+			start := int(off - b.bufOff)
+			n := copy(p[total:], b.buf[start:])
+			total += n
+			off += int64(n)
+			continue
+		}
+
+		sequential := b.bufOff >= 0 && off == b.bufOff+int64(len(b.buf))
+		if sequential {
+			b.window = min(b.window*4, seqBufMaxWindow)
+		} else {
+			b.window = seqBufMinWindow
+		}
+
+		fetchLen := max(b.window, len(p)-total)
+		fetchLen = min(fetchLen, seqBufMaxWindow)
+		if rem := b.size - off; int64(fetchLen) > rem {
+			fetchLen = int(rem)
+		}
+		if cap(b.buf) < fetchLen {
+			b.buf = make([]byte, fetchLen)
+		} else {
+			b.buf = b.buf[:fetchLen]
+		}
+		n, err := b.rawReadAt(b.buf, off)
+		if n > 0 {
+			b.buf = b.buf[:n]
+			b.bufOff = off
+			copied := copy(p[total:], b.buf)
+			total += copied
+			off += int64(copied)
+		} else {
+			b.buf = b.buf[:0]
+			b.bufOff = -1
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) && off < b.size {
+				return total, io.ErrUnexpectedEOF
+			}
+			return total, err
+		}
+	}
+	if off >= b.size && total < len(p) {
+		return total, io.EOF
+	}
+	return total, nil
+}
+
+func (b *seqBufferedReaderAt) rawReadAt(p []byte, off int64) (int, error) {
+	if b.hr != nil {
+		return b.hr.readAtCtx(b.ctx, p, off)
+	}
+	if cr, ok := b.r.(core.ConcurrentRangeReaderAt); ok {
+		return cr.ReadAtConcurrentContext(b.ctx, p, off)
+	}
+	if bs, ok := b.r.(ByteSource); ok {
+		if ms := UnwrapMediaSource(bs); ms != nil {
+			if cr, ok := ms.(core.ConcurrentRangeReaderAt); ok {
+				return cr.ReadAtConcurrentContext(b.ctx, p, off)
+			}
+		}
+	}
+	if cr, ok := b.r.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(b.ctx, p, off)
+	}
+	return b.r.ReadAt(p, off)
+}
 
 func parseContentRangeTotal(hdr string) (int64, error) {
 	hdr = strings.TrimSpace(hdr)

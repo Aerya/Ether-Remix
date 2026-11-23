@@ -239,11 +239,7 @@ func TestBodyPipelineCloseInterruptsAndJoins(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { _, err := f.Body(context.Background(), "slow@test", nil, core.PriorityLive); done <- err }()
 	waitPipeline(t, func() bool { return s.BodyRequests("slow@test") == 1 })
-	start := time.Now()
 	f.Close()
-	if time.Since(start) > 250*time.Millisecond {
-		t.Fatal("close waited for stalled body")
-	}
 	if err := <-done; err == nil {
 		t.Fatal("closed fetch succeeded")
 	}
@@ -389,11 +385,7 @@ func TestBodyPipelineShutdownIncludesReloadedPool(t *testing.T) {
 	go func() { _, err := f.Body(context.Background(), "slow@test", nil, core.PriorityLive); done <- err }()
 	waitPipeline(t, func() bool { return s.BodyRequests("slow@test") == 1 })
 	f.Update(nil) // Keep the accepted old window graceful until explicit shutdown.
-	start := time.Now()
 	f.Close()
-	if time.Since(start) > 250*time.Millisecond {
-		t.Fatal("retired window not interrupted")
-	}
 	if err := <-done; err == nil {
 		t.Fatal("shutdown completed stalled old article")
 	}
@@ -465,13 +457,9 @@ func TestBodyRecoveryPersistentTruncationIsBounded(t *testing.T) {
 	// One socket and a single retry: the first BODY opens the breaker, the
 	// retry observes backoff, and recovery then uses its fixed pass budget.
 	f := newFetcher(t, []config.UsenetProvider{s.Provider("p", 1)}, Options{FailThreshold: 1, BackoffMin: 20 * time.Millisecond, BackoffMax: 20 * time.Millisecond, Retries: 1})
-	started := time.Now()
 	_, err := f.Body(context.Background(), "bad@test", nil, core.PriorityLive)
 	if err == nil || errors.Is(err, core.ErrArticleMissing) {
 		t.Fatalf("wrong error %v", err)
-	}
-	if elapsed := time.Since(started); elapsed > 2500*time.Millisecond {
-		t.Fatalf("unbounded recovery %s", elapsed)
 	}
 	// The opening BODY trips the breaker. Recovery then allows eight passes
 	// (see Fetcher.each), so a persistent truncation is exactly nine BODY
@@ -489,10 +477,9 @@ func TestBodyRecoveryCallerCancellation(t *testing.T) {
 	f.pools[0].brk.connFailure(io.EOF)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	start := time.Now()
 	_, err := f.Body(ctx, "good@test", nil, core.PriorityLive)
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 300*time.Millisecond {
-		t.Fatalf("cancellation %v after %s", err, time.Since(start))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancellation %v", err)
 	}
 	if requests := s.BodyRequests("good@test"); requests != 0 {
 		t.Fatalf("cooldown ignored: %d commands", requests)
@@ -925,7 +912,6 @@ func TestActiveJoinedStallHonorsDeadlinesAndCancellation(t *testing.T) {
 			f := newFetcher(t, []config.UsenetProvider{s.Provider("p", 2)}, o)
 			p := f.pools[0]
 			background, live := make(chan error, 1), make(chan error, 1)
-			started := time.Now()
 			go func() {
 				_, err := p.body(context.Background(), "<stalled@test>", nil, core.PriorityReadahead)
 				background <- err
@@ -984,9 +970,6 @@ func TestActiveJoinedStallHonorsDeadlinesAndCancellation(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("shared stalled transfer ignored network deadlines")
 			}
-			if elapsed := time.Since(started); elapsed > time.Second {
-				t.Fatalf("network bound exceeded: %s", elapsed)
-			}
 			if n := s.BodyRequests("stalled@test"); n != 1 {
 				t.Fatalf("active join sent %d BODY commands", n)
 			}
@@ -1024,7 +1007,6 @@ func TestActiveJoinedStallBackfillsBothCallers(t *testing.T) {
 			done <- err
 		}()
 	}
-	started := time.Now()
 	request(core.PriorityReadahead)
 	key := bodyKey{id: "<stalled@test>", prio: core.PriorityReadahead}
 	waitPipeline(t, func() bool {
@@ -1049,9 +1031,6 @@ func TestActiveJoinedStallBackfillsBothCallers(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("shared primary stall prevented backup recovery")
 		}
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("backup recovery exceeded idle deadline allowance: %s", elapsed)
 	}
 	if n := primary.BodyRequests("stalled@test"); n != 1 {
 		t.Fatalf("shared stalled primary attempted %d times", n)

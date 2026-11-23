@@ -11,7 +11,7 @@ func TestConsoleConfigSections(t *testing.T) {
 		"availability", "cache", "catalog", "clientIdentity", "clients",
 		"debrid", "indexerSites", "indexers", "livetv", "llm", "markers",
 		"mdblist", "opensubtitles", "outbound", "plex", "plexservers",
-		"quality", "resolver", "server", "simkl", "spike", "subdl",
+		"quality", "resolver", "server", "simkl", "spike", "subdl", "subsource",
 		"trakt", "transcode", "updates", "usenet",
 	}
 	for _, section := range sections {

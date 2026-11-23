@@ -27,7 +27,11 @@ type RankingCandidate struct {
 func SortRankingCandidates(candidates []RankingCandidate, profile core.QualityProfile, title *core.Title) {
 	rc := rankContext{profile: profile, title: title, now: time.Now(), preferRevision: profile.CustomFormatScores[core.FormatRepackProper] == 0}
 	convert := func(c RankingCandidate) candidate {
-		return candidate{rel: c.Release, policy: c.Policy, verified: c.Verified, langOK: c.LanguageOK, langWanted: c.LanguageWanted, starved: c.Starved, bandwidth: c.Bandwidth, pluginKeys: c.PluginKeys, cf: c.CustomFormatScore, keys: keysFor(c.Release, c.Starved, rc)}
+		langRank := 0
+		if c.LanguageWanted {
+			langRank = 1
+		}
+		return candidate{rel: c.Release, policy: c.Policy, verified: c.Verified, langOK: c.LanguageOK, langRank: langRank, starved: c.Starved, bandwidth: c.Bandwidth, pluginKeys: c.PluginKeys, cf: c.CustomFormatScore, keys: keysFor(c.Release, c.Starved, rc)}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return compareCandidates(convert(candidates[i]), convert(candidates[j]))

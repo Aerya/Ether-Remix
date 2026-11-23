@@ -263,7 +263,7 @@ func TestBlobCacheEndToEnd(t *testing.T) {
 		}
 		defer c.Close()
 
-		putFn, openFn := c.HostBackends(func(pluginID, libraryKey string) Quota {
+		putFn, openFn, _ := c.HostBackends(func(pluginID, libraryKey string) Quota {
 			return Quota{MaxBytes: 1 << 20}
 		})
 

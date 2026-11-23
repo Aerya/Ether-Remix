@@ -24,6 +24,10 @@ it("creates and revokes a viewer-scoped login inline", async () => {
   await screen.findByRole("option", { name: "Alex" });
   fireEvent.change(screen.getByRole("combobox", { name: "Viewer" }), { target: { value: "1" } });
   fireEvent.click(screen.getByRole("button", { name: "Create connection" }));
+  // The new password is masked until the owner chooses to show it.
+  const [show] = await screen.findAllByRole("button", { name: "Show password" });
+  if (!show) throw Error("missing Show password");
+  fireEvent.click(show);
   await screen.findByText("mock-secret");
   expect(screen.getByText("http://ether.test/xtream")).toBeVisible();
   fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));

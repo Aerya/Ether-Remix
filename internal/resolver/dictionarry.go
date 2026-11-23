@@ -24,6 +24,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/flight"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	_ "modernc.org/sqlite"
 )
 
@@ -85,7 +86,7 @@ func NewDictionarry(o DictionarryOptions) *Dictionarry {
 	if o.Client == nil {
 		o.Client = &http.Client{Timeout: 30 * time.Second}
 	}
-	o.UserAgent = cmpOr(o.UserAgent, "Ether (+https://github.com/braedonsaunders/ether)")
+	o.UserAgent = cmpOr(o.UserAgent, httpclient.UserAgent())
 	if o.TTL <= 0 {
 		o.TTL = time.Hour
 	}

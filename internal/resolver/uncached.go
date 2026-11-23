@@ -73,23 +73,36 @@ func (s *Service) uncachedOutcome(ctx context.Context, ranked []candidate, resul
 		}
 	}
 	var errs []error
+	var queueable []int
+	allPrivate := true
 	for _, i := range uncached {
-		errs = append(errs, tr.Candidates[ranked[i].trace].err)
+		ct := &tr.Candidates[ranked[i].trace]
+		errs = append(errs, ct.err)
+		if ranked[i].rel.Private || errors.Is(ct.err, core.ErrPrivateUncached) {
+			continue
+		}
+		allPrivate = false
+		queueable = append(queueable, i)
 	}
 	out := &core.UncachedError{Err: errors.Join(errs...), CachedOnly: s.cachedOnly(), Usenet: usenet}
 
+	if allPrivate {
+		tr.Err = uncachedSummary(out, nil, true)
+		return -1, nil, out, true
+	}
+
 	q, canQueue := s.indexer.(downloadQueuer)
 	if out.CachedOnly || core.IsBackgroundCheck(ctx) || core.IsSpeculative(ctx) || core.IndexerPurpose(ctx) == core.IndexerPurposeWarmup {
-		tr.Err = uncachedSummary(out, nil)
+		tr.Err = uncachedSummary(out, nil, false)
 		return -1, nil, out, true
 	}
 	if !canQueue {
 		out.Err = fmt.Errorf("%w: download queuing is unavailable", core.ErrDownloadRefused)
-		tr.Err = uncachedSummary(out, out.Err)
+		tr.Err = uncachedSummary(out, out.Err, false)
 		return -1, nil, out, true
 	}
 	var refused []error
-	for n, i := range uncached {
+	for n, i := range queueable {
 		if n == maxQueueAttempts {
 			break
 		}
@@ -107,7 +120,7 @@ func (s *Service) uncachedOutcome(ctx context.Context, ranked []candidate, resul
 		ct.Reason = qerr.Error()
 		if errors.Is(qerr, core.ErrDownloadQueued) {
 			out.Err = qerr
-			tr.Err = uncachedSummary(out, qerr)
+			tr.Err = uncachedSummary(out, qerr, false)
 			return -1, nil, out, true
 		}
 		refused = append(refused, qerr)
@@ -123,14 +136,23 @@ func (s *Service) uncachedOutcome(ctx context.Context, ranked []candidate, resul
 		// still a refusal from the viewer's point of view.
 		out.Err = fmt.Errorf("%w: %w", core.ErrDownloadRefused, out.Err)
 	}
-	tr.Err = uncachedSummary(out, out.Err)
+	tr.Err = uncachedSummary(out, out.Err, false)
 	return -1, nil, out, true
 }
 
+func candidateErrorReason(err error) string {
+	if errors.Is(err, core.ErrPrivateUncached) {
+		return core.PrivateTorrentReason
+	}
+	return err.Error()
+}
+
 // uncachedSummary is the history line for an uncached outcome.
-func uncachedSummary(e *core.UncachedError, queued error) string {
+func uncachedSummary(e *core.UncachedError, queued error, privateOnly bool) string {
 	var msg string
 	switch {
+	case privateOnly:
+		msg = core.PrivateTorrentReason
 	case queued != nil && errors.Is(queued, core.ErrDownloadQueued):
 		msg = "not cached on the debrid service: " + queued.Error()
 	case queued != nil && errors.Is(queued, core.ErrDownloadLimit):

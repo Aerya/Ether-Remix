@@ -97,7 +97,7 @@ func (s *Service) StoreUpload(title *core.Title, filename, format, language stri
 		return core.StreamInfo{}, err
 	}
 	s.pickMu.Lock()
-	err = writeFileAtomic(p, b)
+	err = s.writeIndexFile(p, b)
 	s.pickMu.Unlock()
 	if err != nil {
 		return core.StreamInfo{}, err

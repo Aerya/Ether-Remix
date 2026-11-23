@@ -27,11 +27,16 @@ async function expectAttentionAnswer(dialog: HTMLElement) {
 }
 
 describe("Ask Ether", () => {
-  it("opens from the top bar and closes with Escape", async () => {
+  it("opens from the top bar with a single visible header and closes with Escape", async () => {
     renderApp("/");
     const dialog = await openAskEther();
-    expect(within(dialog).getAllByText("Ask Ether").length).toBeGreaterThan(0);
     expect(await within(dialog).findByPlaceholderText("Ask Ether…")).toBeInTheDocument();
+    // AgentPanel's own <header> must sit directly under the [&>div>header]:hidden wrapper
+    // so only the Drawer header remains visible.
+    const hiddenInternalHeader = dialog.querySelector(
+      ".\\[\\&\\>div\\>header\\]\\:hidden > div > header",
+    );
+    expect(hiddenInternalHeader).not.toBeNull();
     fireEvent.keyDown(document, { key: "Escape" });
     await expectDrawerClosed();
   });

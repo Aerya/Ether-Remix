@@ -40,13 +40,8 @@ func pluginFixtureDecl() plugins.MediaKindMeta {
 		Browse: plugins.KindBrowseDecl{Sorts: []string{"title", "year"}, Facets: []string{"genre"}, Search: true},
 		Sync:   plugins.KindSyncDecl{Mode: plugins.KindSyncPull},
 	}
-	decl.Present.MediaBrowser = &struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-	}{CollectionType: "movies"}
-	decl.Present.Stremio = &struct {
-		Type string `json:"type"`
-	}{Type: "movie"}
+	decl.Present.MediaBrowser = &core.MediaBrowserPresentation{CollectionType: "movies"}
+	decl.Present.Stremio = &core.StremioPresentation{Type: "movie"}
 	return decl
 }
 

@@ -158,8 +158,13 @@ func (e *feedEvaluation) Transient(id string) string {
 	if e.s.isBad(id) {
 		return "marked bad"
 	}
-	if e.s.recentlyFailedHealth(id) {
+	if e.s.recentlyFailedHealth(id) || e.s.recentlyFailedGrabKey(id) {
 		return "source recently failed health check; retrying later"
+	}
+	for _, k := range e.s.idContentKeys(id) {
+		if e.s.recentlyFailedHealth(k) || e.s.recentlyFailedGrabKey(k) {
+			return "source recently failed health check; retrying later"
+		}
 	}
 	return ""
 }
@@ -219,7 +224,8 @@ func packEvidenceReason(r core.Release, sreq core.SearchRequest) string {
 	if sreq.Type != core.TypeEpisode || !r.Info.FullSeason || r.Protocol != core.ProtocolUsenet {
 		return ""
 	}
-	if !slices.Contains(r.Info.Episodes, sreq.Episode) {
+	_, episode := releaseNumbers(r.Info, sreq)
+	if !slices.Contains(r.Info.Episodes, episode) {
 		return "season pack does not list the episode"
 	}
 	return ""
@@ -238,18 +244,59 @@ func (s *Service) VerifyFeedCandidate(ctx context.Context, t *core.Title, r core
 	if s.health == nil {
 		return core.ErrSourceUnavailable
 	}
+	if protocolOf(r) == core.ProtocolUsenet && s.usenetVerdicts != nil {
+		if urlKey := s.usenetVerdictURLKey(r); urlKey != "" {
+			if verdict, ok := s.usenetVerdicts.Lookup(s.now(), urlKey, "", ""); ok && !verdict.Available {
+				return core.ErrSourceUnavailable
+			}
+		}
+	}
 	payload, err := s.indexer.FetchNZB(ctx, r)
 	if err != nil {
+		if permanentGrabFailure(err) {
+			keys := append(s.releaseContentKeys(r), r.ID)
+			s.noteFailedGrab(ctx, keys, err.Error())
+		}
 		return err
 	}
-	ok, err := core.CheckReleaseHealth(ctx, s.health, r.ID, payload)
-	if err != nil {
-		return err
+	var extraKeys []string
+	r, extraKeys = s.learnReleaseContent(ctx, r, payload)
+	var ok bool
+	reusedVerdict := false
+	if protocolOf(r) == core.ProtocolUsenet && s.usenetVerdicts != nil {
+		urlKey, nzbHash, contentID := s.usenetVerdictKeys(r, payload)
+		if verdict, found := s.usenetVerdicts.Lookup(s.now(), urlKey, nzbHash, contentID); found {
+			if !verdict.Available {
+				if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+					s.noteFailedGrab(ctx, ckeys, "health: unhealthy")
+				}
+				return core.ErrSourceUnavailable
+			}
+			ok = true
+			reusedVerdict = true
+		}
 	}
-	if !ok {
-		return core.ErrSourceUnavailable
+	if !reusedVerdict {
+		ok, err = core.CheckReleaseHealth(ctx, s.health, r.ID, payload)
+		if err != nil {
+			if permanentFailure(err) {
+				s.recordUsenetVerdict(r, payload, false, err.Error())
+				if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+					s.noteFailedGrab(ctx, ckeys, err.Error())
+				}
+			}
+			return err
+		}
+		if !ok {
+			s.recordUsenetVerdict(r, payload, false, "health_unhealthy")
+			if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+				s.noteFailedGrab(ctx, ckeys, "health: unhealthy")
+			}
+			return core.ErrSourceUnavailable
+		}
+		s.recordUsenetVerdict(r, payload, true, "")
 	}
-	s.markVerified(ctx, r.ID)
+	s.markVerifiedKeys(ctx, s.allVerificationKeys(r, extraKeys...))
 	s.rememberReleases(t, []core.Release{r})
 	s.setAvailability(ctx, int64(t.Key), true, s.searchTTL())
 	return nil

@@ -163,3 +163,174 @@ func TestLatestUngroupedTVFiltersBeforeLimit(t *testing.T) {
 		t.Fatalf("ungrouped latest %+v %v", got, err)
 	}
 }
+
+type fakeLatestPluginLibraries struct {
+	libs        []core.Library
+	pluginItems map[core.LibraryID][]core.Title
+}
+
+func (f fakeLatestPluginLibraries) Libraries(context.Context) ([]core.Library, error) {
+	return f.libs, nil
+}
+func (f fakeLatestPluginLibraries) Library(_ context.Context, id core.LibraryID) (core.Library, error) {
+	for _, lib := range f.libs {
+		if lib.ID == id {
+			return lib, nil
+		}
+	}
+	return core.Library{}, core.ErrNotFound
+}
+func (f fakeLatestPluginLibraries) IsPluginLibraryActive(_ context.Context, lib core.Library) bool {
+	return lib.Source == core.LibraryPlugin
+}
+func (f fakeLatestPluginLibraries) RootMediaType(_ context.Context, lib core.Library) core.MediaType {
+	if lib.MediaType != "" {
+		return lib.MediaType
+	}
+	return core.TypeMovie
+}
+func (f fakeLatestPluginLibraries) Count(context.Context, core.Library) (int, error) { return 0, nil }
+func (f fakeLatestPluginLibraries) Browse(_ context.Context, lib core.Library, _ frontend.ItemQuery, _ string, limit int) (PluginBrowsePage, error) {
+	items := f.pluginItems[lib.ID]
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return PluginBrowsePage{Items: items, Total: len(items), TotalExact: true}, nil
+}
+func (f fakeLatestPluginLibraries) Item(context.Context, core.RatingKey) (PluginItemView, error) {
+	return PluginItemView{}, core.ErrNotFound
+}
+func (f fakeLatestPluginLibraries) ItemsMany(context.Context, []core.RatingKey) (map[core.RatingKey]PluginItemView, error) {
+	return nil, nil
+}
+func (f fakeLatestPluginLibraries) Children(context.Context, core.RatingKey, bool, string, int) (PluginBrowsePage, error) {
+	return PluginBrowsePage{}, core.ErrNotFound
+}
+func (f fakeLatestPluginLibraries) Ancestors(context.Context, core.RatingKey) ([]core.Title, core.Library, error) {
+	return nil, core.Library{}, core.ErrNotFound
+}
+func (f fakeLatestPluginLibraries) Facets(context.Context, core.Library, string) ([]core.FacetValue, error) {
+	return nil, nil
+}
+func (f fakeLatestPluginLibraries) Search(context.Context, core.Library, string, frontend.ItemQuery, int) ([]core.Title, error) {
+	return nil, nil
+}
+func (f fakeLatestPluginLibraries) MemberOf(context.Context, core.Library, core.RatingKey) (bool, error) {
+	return false, nil
+}
+
+func TestLatestAddedHonorsEveryLibrarySource(t *testing.T) {
+	ctx := context.Background()
+	published := core.Presentations{MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "movies"}}
+	publishedTV := core.Presentations{MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "tvshows"}}
+	// Viewer is restricted to the custom libraries (built-in Movies=1 and Shows=2 disallowed).
+	viewer := &core.User{ID: 7, AllowedLibraries: []core.LibraryID{9, 10, 11, 12, 13, 14}}
+
+	collMovie := core.Title{Key: core.MovieKey(10), Type: core.TypeMovie, Title: "Collection Movie", AddedAt: time.Unix(200, 0).UTC()}
+	catMovie := core.Title{Key: core.MovieKey(11), Type: core.TypeMovie, Title: "Catalogue Whole Movie", AddedAt: time.Unix(900, 0).UTC()}
+	sourceMovie := core.Title{Key: core.MovieKey(12), Type: core.TypeMovie, Title: "Stremio Movie", AddedAt: time.Unix(300, 0).UTC()}
+	ruleMovie := core.Title{Key: core.MovieKey(13), Type: core.TypeMovie, Title: "Rule Movie", AddedAt: time.Unix(250, 0).UTC()}
+	collShow := core.Title{Key: core.ShowKey(20), Type: core.TypeShow, Title: "Collection Show", AddedAt: time.Unix(400, 0).UTC()}
+	collEp := core.Title{Key: core.EpisodeKey(20, 1, 1), ShowKey: collShow.Key, Type: core.TypeEpisode, Title: "Collection Ep", AddedAt: time.Unix(400, 0).UTC()}
+	pluginItem := core.Title{Key: core.PluginKey(1), Type: core.TypeMovie, Title: "Plugin Item", PluginAddedAt: 500}
+
+	libs := fakeLatestPluginLibraries{
+		libs: []core.Library{
+			{ID: core.LibraryMovies, Name: "Movies", Source: core.LibraryCatalog, MediaType: core.TypeMovie, Present: published},
+			{ID: core.LibraryShows, Name: "TV Shows", Source: core.LibraryCatalog, MediaType: core.TypeShow, Present: publishedTV},
+			{ID: 9, Name: "Collection Movies", Source: core.LibraryCollection, MediaType: core.TypeMovie, CollectionID: 42, Present: published},
+			{ID: 10, Name: "Collection Shows", Source: core.LibraryCollection, MediaType: core.TypeShow, CollectionID: 43, Present: publishedTV},
+			{ID: 11, Name: "Source Movies", Source: core.LibraryCatalog, MediaType: core.TypeMovie, Sources: []string{"stremio-pick"}, Present: published},
+			{ID: 12, Name: "Rule Movies", Source: core.LibraryCatalog, MediaType: core.TypeMovie, Rules: []core.LibraryExclusion{{Name: "Allow", Action: "allow"}}, VisibilityDefault: "hide", Present: published},
+			{ID: 13, Name: "Plugin Lib", Source: core.LibraryPlugin, MediaType: core.TypeMovie, PluginID: "plug", Present: published},
+			{ID: 14, Name: "Unbound Collection", Source: core.LibraryCollection, MediaType: core.TypeMovie, CollectionID: 0, Present: published},
+		},
+		pluginItems: map[core.LibraryID][]core.Title{13: {pluginItem}},
+	}
+
+	s := &Service{d: ServiceDeps{
+		Protocol:        core.Protocol("jellyfin"),
+		Active:          func(context.Context, int64) (*core.User, error) { return viewer, nil },
+		PluginLibraries: libs,
+		LibraryPresentation: func(p core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+			if p.MediaBrowser == nil {
+				return "", "", false
+			}
+			return mt, p.MediaBrowser.CollectionType, true
+		},
+		State: activityState{},
+		ParentTitles: func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error) {
+			return map[core.RatingKey]core.Title{collShow.Key: collShow}, nil
+		},
+		Visibility: Visibility{
+			SectionFor: func(typ core.MediaType) (int, bool) {
+				if typ == core.TypeMovie {
+					return 1, true
+				}
+				return 2, true
+			},
+			FilterAvailable: func(_ context.Context, titles []core.Title) []core.Title { return titles },
+		},
+		PageExclusions: func(context.Context, *core.User, core.MediaType) LibraryPageExclusions {
+			return LibraryPageExclusions{AvailabilityInSQL: true}
+		},
+		RecentAir: func(context.Context, core.MediaType, int, int) ([]core.Title, bool, error) {
+			t.Fatal("RecentAir must not serve scoped or disallowed libraries")
+			return nil, true, nil
+		},
+		AiredEpisodes: func(context.Context, core.RatingKey, int, int) (core.Page, error) {
+			t.Fatal("unscoped AiredEpisodes must not serve collection show libraries")
+			return core.Page{}, nil
+		},
+		Browse: func(_ context.Context, q core.BrowseQuery) (core.Page, error) {
+			switch {
+			case q.Filter.CollectionMembers == 42 && q.Filter.Type == core.TypeMovie:
+				return core.Page{Items: []core.Title{collMovie}, Total: 1}, nil
+			case q.Filter.CollectionMembers == 43 && q.Filter.Type == core.TypeShow:
+				return core.Page{Items: []core.Title{collShow}, Total: 1}, nil
+			case q.Filter.CollectionMembers == 43 && q.Filter.Type == core.TypeEpisode:
+				return core.Page{Items: []core.Title{collEp}, Total: 1}, nil
+			case len(q.Filter.CatalogueSources) == 1 && q.Filter.CatalogueSources[0] == "stremio-pick":
+				return core.Page{Items: []core.Title{sourceMovie}, Total: 1}, nil
+			case len(q.Filter.ExtraRules) == 1 && q.Filter.ExtraFallback == "hide":
+				return core.Page{Items: []core.Title{ruleMovie}, Total: 1}, nil
+			default:
+				return core.Page{Items: []core.Title{catMovie}, Total: 1}, nil
+			}
+		},
+	}}
+
+	for _, tc := range []struct {
+		name   string
+		viewID string
+		group  bool
+		want   []core.RatingKey
+	}{
+		{"collection movies", "9", true, []core.RatingKey{collMovie.Key}},
+		{"collection shows grouped", "10", true, []core.RatingKey{collShow.Key}},
+		{"collection shows ungrouped", "10", false, []core.RatingKey{collEp.Key}},
+		{"custom catalogue source", "11", true, []core.RatingKey{sourceMovie.Key}},
+		{"rule-filtered catalogue", "12", true, []core.RatingKey{ruleMovie.Key}},
+		{"plugin library", "13", true, []core.RatingKey{pluginItem.Key}},
+		{"unbound collection returns empty", "14", true, nil},
+		{"global skips disallowed builtins", "", true, []core.RatingKey{pluginItem.Key, collShow.Key, sourceMovie.Key, ruleMovie.Key, collMovie.Key}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.LatestAddedGrouped(ctx, viewer, core.Device{}, tc.viewID, 10, tc.group)
+			if err != nil {
+				t.Fatalf("LatestAddedGrouped(%q, group=%v): %v", tc.viewID, tc.group, err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d items (%+v), want %d (%v)", len(got), got, len(tc.want), tc.want)
+			}
+			for i, wantKey := range tc.want {
+				if got[i].Title.Key != wantKey {
+					t.Fatalf("item[%d] = %v, want %v", i, got[i].Title.Key, wantKey)
+				}
+			}
+		})
+	}
+	if _, err := s.LatestAddedGrouped(ctx, viewer, core.Device{}, "1", 10, true); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("disallowed built-in library error = %v, want ErrNotFound", err)
+	}
+}

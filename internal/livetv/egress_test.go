@@ -44,7 +44,8 @@ func TestLiveTVEgress(t *testing.T) {
 		policy egress.Policy
 		want   string
 	}{
-		{"on", egress.Policy{Enabled: true, Proxy: proxyURL, Stremio: true}, "proxy"},
+		{"on", egress.Policy{Enabled: true, Proxy: proxyURL, LiveTV: true}, "proxy"},
+		{"add-ons only", egress.Policy{Enabled: true, Proxy: proxyURL, Stremio: true}, "direct"},
 		{"off", egress.Policy{}, "direct"},
 		{"source route off", egress.Policy{Enabled: true, Proxy: proxyURL}, "direct"},
 	} {

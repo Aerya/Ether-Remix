@@ -33,6 +33,7 @@ func (w *runWatchdog) check(s *Session, r *run) {
 		r.stalled = true
 		err := fmt.Errorf("transcode: hardware DASH startup exceeded %s", budget)
 		s.log.Warn("hardware encoder failed; falling back to CPU", "run", r.seq, "segment", r.startSeg)
+		s.emitTranscodeFallback(r.spec.Accel.Name, "libx264", err.Error())
 		r.proc = failedProc{Process: r.proc, err: err}
 		r.proc.Stop()
 		return

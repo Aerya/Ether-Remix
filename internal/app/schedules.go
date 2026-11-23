@@ -25,5 +25,10 @@ func (a *App) catalogOptions() []catalog.Option {
 			a.publishDashboard()
 		}
 	}))
+	opts = append(opts,
+		catalog.WithOnSyncEvent(a.onCatalogSyncEvent),
+		catalog.WithOnTitlesAdded(a.onCatalogTitlesAdded),
+		catalog.WithOnMetadataError(a.onCatalogMetadataError),
+	)
 	return opts
 }

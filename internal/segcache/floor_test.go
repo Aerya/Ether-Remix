@@ -89,8 +89,9 @@ func TestFreeSpaceFloorEvictsOldestUnprotected(t *testing.T) {
 	if used, _ := c.Usage(); used != 170 {
 		t.Fatalf("double eviction: %d", used)
 	}
-	// Writes between measurements count against the floor at once.
+	// Writes between measurements count against the floor via background eviction.
 	mustPut(t, c, "new", 5, payload("new", 5, 1, 10))
+	c.waitEvict()
 	if used, _ := c.Usage(); used != 170 || c.Has("old", 3) {
 		t.Fatalf("write between measurements not offset: used %d", used)
 	}
@@ -316,5 +317,55 @@ func TestUsageLimitIsBudgetOrFloorCap(t *testing.T) {
 	c.SetPolicy(Policy{Mode: "off"})
 	if got := c.UsageLimit(); got != 0 {
 		t.Fatalf("mode off limit = %d, want 0", got)
+	}
+}
+
+func TestLocalFreeSpaceFloorCountsPendingUnlinks(t *testing.T) {
+	c := openT(t, t.TempDir(), 200)
+	for i := 0; i < 18; i++ {
+		mustPut(t, c, "r", i, payload("r", i, 1, 10))
+	}
+	c.waitEvict()
+
+	evictBlocked := make(chan struct{})
+	releaseUnlink := make(chan struct{})
+	var once sync.Once
+	c.mu.Lock()
+	c.beforeUnlink = func() {
+		once.Do(func() {
+			close(evictBlocked)
+			<-releaseUnlink
+		})
+	}
+	c.mu.Unlock()
+
+	// Cross 95% (190B) so the background worker blocks in beforeUnlink.
+	mustPut(t, c, "r", 18, payload("r", 18, 1, 10))
+	<-evictBlocked
+
+	// Push past 110% (220B) so Put queues pendingUnlinks on disk without unlinking yet.
+	for i := 19; i < 25; i++ {
+		mustPut(t, c, "r", i, payload("r", i, 1, 10))
+	}
+	onDiskBytes, _ := diskUsage(t, c)
+	u, err := c.localUsed()
+	if err != nil {
+		close(releaseUnlink)
+		t.Fatal(err)
+	}
+	// localUsed + the 10B victim held by the paused worker pass equals on-disk bytes.
+	if u+10 != onDiskBytes {
+		close(releaseUnlink)
+		t.Fatalf("localUsed=%d + 10 != onDisk=%d", u, onDiskBytes)
+	}
+
+	c.mu.Lock()
+	c.beforeUnlink = nil
+	c.mu.Unlock()
+	close(releaseUnlink)
+	c.waitEvict()
+
+	if du, _ := diskUsage(t, c); du != mustUsed(c) {
+		t.Fatalf("disk=%d != used=%d after drain", du, mustUsed(c))
 	}
 }

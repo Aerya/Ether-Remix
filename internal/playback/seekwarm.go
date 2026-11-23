@@ -22,7 +22,7 @@ const (
 	warmMaxBytes   = 48 << 20
 	warmPartBytes  = 6 << 20
 	warmParallel   = 4
-	warmUnindexed  = 12 * time.Second // GOP slack when no keyframe index is known yet
+	warmUnindexed  = 1 * time.Second // bounded fallback slack; not a guessed GOP
 	warmReadBudget = 20 * time.Second
 )
 
@@ -45,7 +45,7 @@ func (m *Manager) WarmInput(inputURL string, from, to time.Duration) {
 		return
 	}
 	s := g.sess
-	ctx, cancel := context.WithTimeout(g.ctx, warmReadBudget)
+	ctx, cancel := context.WithTimeout(core.WithWarmReadWindow(core.WithReadOrigin(g.ctx, "playback.seekwarm", "encoder GOP"), g.warmReads), warmReadBudget)
 	s.warm.mu.Lock()
 	if s.warm.cancel != nil {
 		s.warm.cancel()
@@ -107,7 +107,7 @@ func warmSpanFor(tm TimeMap, from, to time.Duration) (int64, int64) {
 	}
 	var lo, hi int64
 	if len(tm.Points) > 0 {
-		lo = tm.KeyframeOffsetAt(from)
+		lo = tm.WarmOffsetAt(from)
 		hi = tm.Size
 		for _, p := range tm.Points {
 			if p.Time > to {
@@ -116,7 +116,7 @@ func warmSpanFor(tm TimeMap, from, to time.Duration) (int64, int64) {
 			}
 		}
 	} else {
-		lo = tm.OffsetAt(max(0, from-warmUnindexed))
+		lo = tm.WarmOffsetAt(from)
 		hi = tm.OffsetAt(to + warmUnindexed/2)
 	}
 	if hi-lo < warmMinBytes {
@@ -156,4 +156,25 @@ func readMetadata(ctx context.Context, g *generation, p []byte, off int64) (int,
 		return cr.ReadAtContext(ctx, p, off)
 	}
 	return g.src.ReadAt(p, off)
+}
+
+// WarmOffsetAt is a hint, not the decoder's seek position. A sparse or
+// partial index can name a keyframe tens of seconds earlier: do not warm that
+// entire gap. Interpolate within the same source timeline instead. Actual
+// decoder seeks still use KeyframeOffsetAt and fetch their required GOP.
+func (tm TimeMap) WarmOffsetAt(at time.Duration) int64 {
+	if len(tm.Points) > 0 {
+		for i := len(tm.Points) - 1; i >= 0; i-- {
+			p := tm.Points[i]
+			if p.Time <= at {
+				if at-p.Time <= 6*time.Second {
+					return p.Offset
+				}
+				break
+			}
+		}
+	}
+	estimate := tm.OffsetAt(at)
+	slack := min(int64(4<<20), max(int64(0), estimate-tm.OffsetAt(max(0, at-warmUnindexed))))
+	return max(0, estimate-slack)
 }

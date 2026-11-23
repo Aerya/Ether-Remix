@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 func metadataClient() *http.Client { return egress.Client(egress.CapMetadata, 30*time.Second) }
@@ -65,7 +66,7 @@ func (c Client) request(ctx context.Context, method, path, apiKey string, query 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "Ether/1.0")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

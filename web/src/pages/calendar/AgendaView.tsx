@@ -1,5 +1,6 @@
 import { cn } from "@braedonsaunders/appkit-ui";
 import { Check, Moon, Star } from "lucide-react";
+import { formatRating } from "../../lib/contentRatings";
 import { fixed } from "../../lib/format";
 import { t } from "../../i18n";
 import { Badges, EntryArt, KindIcon, StateChip, ViewerStack, entryLabel } from "./parts";
@@ -154,7 +155,7 @@ function Row({
           ) : null}
           {entry.contentRating ? (
             <span className="hidden shrink-0 rounded border border-border px-1 text-[10px] sm:inline">
-              {entry.contentRating}
+              {formatRating(entry.contentRating)}
             </span>
           ) : null}
           {entry.rating ? (

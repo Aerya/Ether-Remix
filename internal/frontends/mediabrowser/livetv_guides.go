@@ -31,7 +31,7 @@ func (i *instance) filterLiveChannels(r *http.Request, v *frontend.Viewer, cs []
 		ok := len(tags) == 0 || i.protocol != "emby"
 		for _, raw := range tags {
 			for _, tag := range strings.Split(raw, "|") {
-				for _, g := range c.Guides {
+				for _, g := range c.Groups {
 					if strings.EqualFold(g.Name, tag) {
 						ok = true
 					}
@@ -86,17 +86,28 @@ func (i *instance) channelTags(w http.ResponseWriter, r *http.Request) {
 	}
 	tags := []any{}
 	if i.host.LiveTV != nil {
-		cs, err := i.host.LiveTV.Channels(r.Context(), viewer)
-		if err != nil {
-			http.Error(w, "Unavailable", 503)
-			return
-		}
-		seen := map[string]bool{}
-		for _, c := range cs {
-			for _, g := range c.Guides {
-				if !seen[g.Name] {
-					tags = append(tags, map[string]any{"Name": g.Name, "Id": g.ID})
-					seen[g.Name] = true
+		if lg, ok := i.host.LiveTV.(frontend.LiveTVGroups); ok {
+			gs, err := lg.Groups(r.Context(), viewer)
+			if err != nil {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			for _, g := range gs {
+				tags = append(tags, map[string]any{"Name": g.Name, "Id": g.ID})
+			}
+		} else {
+			cs, err := i.host.LiveTV.Channels(r.Context(), viewer)
+			if err != nil {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			seen := map[string]bool{}
+			for _, c := range cs {
+				for _, g := range c.Groups {
+					if !seen[g.Name] {
+						tags = append(tags, map[string]any{"Name": g.Name, "Id": g.ID})
+						seen[g.Name] = true
+					}
 				}
 			}
 		}

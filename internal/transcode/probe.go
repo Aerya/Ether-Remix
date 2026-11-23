@@ -542,6 +542,31 @@ func normalizeBCP47Language(tag string) string {
 	return n
 }
 
+func sameLanguagePrimary(a, b string) bool {
+	pa, okA := langtag.ParseBCP47(a)
+	pb, okB := langtag.ParseBCP47(b)
+	return okA && okB && pa.Primary == pb.Primary
+}
+
+// mp4Language maps a probed stream language (which may be a regional BCP 47
+// tag such as "pt-br" or "zh-tw") to the 3-letter ISO 639-2 code expected by
+// MP4 mdhd boxes. Already 3-letter tags pass through unchanged.
+func mp4Language(l string) string {
+	l = strings.TrimSpace(l)
+	if l == "" {
+		return ""
+	}
+	if len(l) == 3 && !strings.Contains(l, "-") {
+		return l
+	}
+	if tag, ok := langtag.ParseBCP47(l); ok {
+		if three, ok := iso6391to2[tag.Primary]; ok {
+			return three
+		}
+	}
+	return l
+}
+
 func isImageCodec(c string) bool {
 	switch c {
 	case "mjpeg", "png", "bmp", "gif", "webp":

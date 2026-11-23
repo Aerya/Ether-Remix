@@ -71,6 +71,7 @@ func continuousFrameTime(f RawFormat, frames int64) time.Duration {
 	return time.Duration(frames*int64(f.FPSDen)) * time.Second / time.Duration(f.FPSNum)
 }
 func (s *continuousSegmentIndex) segment(seq int64) Segment {
+	baseStart, _ := continuousSegmentFrames(s.enc.req.Source, s.enc.req.SegmentDuration, s.enc.req.LiveSource, s.startSeq)
 	start, frames := continuousSegmentFrames(s.enc.req.Source, s.enc.req.SegmentDuration, s.enc.req.LiveSource, seq)
-	return Segment{Seq: seq, Start: s.start.Add(continuousFrameTime(s.enc.req.Source, start)), Duration: continuousFrameTime(s.enc.req.Source, frames)}
+	return Segment{Seq: seq, Start: s.start.Add(continuousFrameTime(s.enc.req.Source, start-baseStart)), Duration: continuousFrameTime(s.enc.req.Source, frames)}
 }

@@ -50,11 +50,15 @@ JPEG derivatives, keyed by content digest and bounded width. One detached flight
 per original coalesces concurrent widths and survives individual cancellation.
 Failed requests fall back to TMDB without poisoning the provider cache.
 
-URL/profile/key edits immediately select a different original. Provider-side
-rating/style changes are discovered on expiry; viewer ratings do not change a
-provider's generated poster. Existing six-hour presentation versions still
-refresh client URLs, but no longer force an unconditional upstream render.
-Eviction can require a new fetch; this is a bounded cache, not permanent storage.
+URL/profile/key edits immediately select a different original. Saving the
+Posters section increments a persisted `posters.generation` counter mixed into
+client-facing artwork versions and hashes across frontends, so apps see new
+poster URLs on their next load instead of waiting for the six-hour presentation
+cycle. Provider-side rating/style changes are discovered on expiry; viewer
+ratings do not change a provider's generated poster. Existing six-hour
+presentation versions still refresh client URLs, but no longer force an
+unconditional upstream render. Eviction can require a new fetch; this is a
+bounded cache, not permanent storage.
 
 Ether overlays composite the resulting image, so disable overlapping badges
 in either service. The saved-source artwork preview uses the same pipeline.

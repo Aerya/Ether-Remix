@@ -31,24 +31,27 @@ import (
 )
 
 func init() {
+	store.Register("overlays", 2, `CREATE TABLE IF NOT EXISTS plugin_poster_badges(plugin_id TEXT NOT NULL,set_key TEXT NOT NULL,title_key TEXT NOT NULL,labels_json TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(plugin_id,set_key,title_key));CREATE INDEX IF NOT EXISTS plugin_poster_badges_title_key ON plugin_poster_badges(title_key);`)
 	store.Register("overlays", 1, `CREATE TABLE overlays_settings(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);CREATE TABLE overlays_artwork(item_key INTEGER PRIMARY KEY,value TEXT NOT NULL);`)
 }
 
 type Settings struct {
-	Enabled         bool   `json:"enabled"`
-	EpisodeBadges   *bool  `json:"episodeBadges"`
-	Status          bool   `json:"status"`
-	Quality         bool   `json:"quality"`
-	Ratings         bool   `json:"ratings"`
-	Details         bool   `json:"details"`
-	Personalize     bool   `json:"personalize"`
-	Localize        bool   `json:"localize"`
-	Style           string `json:"style"`
-	Position        string `json:"position"`
-	Accent          string `json:"accent"`
-	Size            string `json:"size"`
-	HideDenominator bool   `json:"hideDenominator"`
-	HideDot         bool   `json:"hideDot"`
+	Enabled           bool     `json:"enabled"`
+	EpisodeBadges     *bool    `json:"episodeBadges"`
+	Status            bool     `json:"status"`
+	Quality           bool     `json:"quality"`
+	Ratings           bool     `json:"ratings"`
+	RatingStyle       string   `json:"ratingStyle"`
+	Details           bool     `json:"details"`
+	Personalize       bool     `json:"personalize"`
+	Localize          bool     `json:"localize"`
+	Style             string   `json:"style"`
+	Position          string   `json:"position"`
+	Accent            string   `json:"accent"`
+	Size              string   `json:"size"`
+	HideDenominator   bool     `json:"hideDenominator"`
+	HideDot           bool     `json:"hideDot"`
+	DisabledBadgeSets []string `json:"disabledBadgeSets,omitempty"`
 }
 
 func (v Settings) BadgesOnEpisodes() bool { return v.EpisodeBadges == nil || *v.EpisodeBadges }
@@ -90,6 +93,12 @@ func (s *Service) posterVersion() string {
 	}
 	return ""
 }
+func (s *Service) PosterGeneration() uint64 {
+	if p, ok := s.o.Images.(interface{ PosterGeneration() uint64 }); ok {
+		return p.PosterGeneration()
+	}
+	return 0
+}
 
 type Options struct {
 	// CacheDir contains disposable generated variants only. Empty disables disk caching.
@@ -103,10 +112,12 @@ type Options struct {
 	Allowed           func(*core.User, *core.Title) bool
 	Facts             func(context.Context, *core.User, *core.Title) Facts
 	FactsFor          func(context.Context, *core.User, *core.Title, bool, bool) Facts
+	PreparePage       func(context.Context, *core.User, []core.Title, bool, bool) context.Context
 	Ratings           *ratings.Service
 	Taste             func(context.Context, *core.User) []string
 	Now               func() time.Time
 	Variants          func(context.Context, *core.Title, string) (Artwork, error)
+	PluginBadges      func(context.Context) []PluginBadgeSet
 }
 type Service struct {
 	db         *sql.DB
@@ -172,21 +183,89 @@ func (s *Service) SaveSettings(ctx context.Context, v Settings) error {
 
 type artworkPageKey struct{}
 
-// WithArtworkPage reads saved variants for a grid once and keeps settings on
-// the context so each tile does not query them again.
-func (s *Service) WithArtworkPage(ctx context.Context, keys []core.RatingKey) (context.Context, error) {
+func (s *Service) withArtworkOnly(ctx context.Context, keys []core.RatingKey) (context.Context, error) {
 	if s == nil {
 		return ctx, nil
 	}
 	ctx = s.WithSettingsSnapshot(ctx)
-	if _, ok := ctx.Value(artworkPageKey{}).(map[core.RatingKey]Artwork); ok {
-		return ctx, nil
+	if prev, ok := ctx.Value(artworkPageKey{}).(map[core.RatingKey]Artwork); ok {
+		var missing []core.RatingKey
+		seen := make(map[core.RatingKey]bool, len(keys))
+		for _, k := range keys {
+			if k == 0 || seen[k] {
+				continue
+			}
+			seen[k] = true
+			if _, have := prev[k]; !have {
+				missing = append(missing, k)
+			}
+		}
+		if len(missing) == 0 {
+			return ctx, nil
+		}
+		batch, err := s.ArtworkMany(ctx, missing)
+		if err != nil {
+			return ctx, err
+		}
+		merged := make(map[core.RatingKey]Artwork, len(prev)+len(batch))
+		for k, v := range prev {
+			merged[k] = v
+		}
+		for k, v := range batch {
+			merged[k] = v
+		}
+		return context.WithValue(ctx, artworkPageKey{}, merged), nil
 	}
 	batch, err := s.ArtworkMany(ctx, keys)
 	if err != nil {
 		return ctx, err
 	}
 	return context.WithValue(ctx, artworkPageKey{}, batch), nil
+}
+
+// WithArtworkPage reads saved variants and active plugin badges for a grid once
+// and keeps settings on the context so each tile does not query them again.
+func (s *Service) WithArtworkPage(ctx context.Context, keys []core.RatingKey) (context.Context, error) {
+	if s == nil {
+		return ctx, nil
+	}
+	var err error
+	ctx, err = s.withArtworkOnly(ctx, keys)
+	if err != nil {
+		return ctx, err
+	}
+	ctx = s.withPluginBadgesForKeys(ctx, keys)
+	return ctx, nil
+}
+
+// WithTitlePage prepares settings, saved variants, cached ratings, viewer
+// overlay facts, and active plugin badges once for a page of titles so per-tile
+// versioning and selection perform no per-item database queries.
+func (s *Service) WithTitlePage(ctx context.Context, viewer *core.User, titles []core.Title) (context.Context, error) {
+	if s == nil {
+		return ctx, nil
+	}
+	keys := make([]core.RatingKey, len(titles))
+	for i := range titles {
+		keys[i] = titles[i].Key
+	}
+	var err error
+	ctx, err = s.withArtworkOnly(ctx, keys)
+	if err != nil {
+		return ctx, err
+	}
+	cfg, err := s.Settings(ctx)
+	if err != nil || !cfg.Enabled || len(titles) == 0 {
+		return ctx, nil
+	}
+	ctx = s.withPluginBadgesForTitles(ctx, cfg, titles)
+	if cfg.Ratings && s.o.Ratings != nil {
+		ctx = s.o.Ratings.WithPage(ctx, titles)
+	}
+	if (cfg.Status || cfg.Quality) && s.o.PreparePage != nil {
+		ctx = s.o.PreparePage(ctx, viewer, titles, cfg.Status, cfg.Quality)
+	}
+	return ctx, nil
 }
 
 func (s *Service) ArtworkMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]Artwork, error) {
@@ -197,15 +276,20 @@ func (s *Service) ArtworkMany(ctx context.Context, keys []core.RatingKey) (map[c
 	if s == nil || s.db == nil || len(keys) == 0 {
 		return out, nil
 	}
-	for start := 0; start < len(keys); start += 200 {
-		part := keys[start:min(start+200, len(keys))]
-		args := make([]any, len(part))
-		marks := make([]string, len(part))
-		for i, key := range part {
-			args[i] = int64(key)
-			marks[i] = "?"
+	{
+		numeric := make([]int64, len(keys))
+		for n, k := range keys {
+			numeric[n] = int64(k)
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT item_key, value FROM overlays_artwork WHERE item_key IN (`+strings.Join(marks, ",")+`)`, args...)
+		data, err := json.Marshal(numeric)
+		if err != nil {
+			return nil, err
+		}
+		source := "SELECT value FROM json_each(?)"
+		if store.DialectOf(s.db) == store.Postgres {
+			source = "SELECT CAST(value AS BIGINT) FROM json_array_elements_text(CAST(? AS JSON))"
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT item_key, value FROM overlays_artwork WHERE item_key IN (`+source+`)`, string(data))
 		if err != nil {
 			return nil, err
 		}
@@ -339,7 +423,11 @@ func (s *Service) Version(ctx context.Context, u *core.User, t *core.Title, lang
 	}
 	labels := visibleLabels(s.presentation(ctx, u, t, cfg).Labels)
 	// Viewer identity and unrelated catalogue updates do not change pixels.
-	raw, _ := json.Marshal([]any{s.posterVersion(), p, b, t.LogoPath, labels, pixelStyle(cfg, len(labels) > 0), "compositor-v5"})
+	parts := []any{s.posterVersion(), p, b, t.LogoPath, labels, pixelStyle(cfg, len(labels) > 0), "compositor-v5"}
+	if gen := s.PosterGeneration(); gen > 0 {
+		parts = append(parts, gen)
+	}
+	raw, _ := json.Marshal(parts)
 	hash := sha256.Sum256(raw)
 	return hex.EncodeToString(hash[:8])
 }

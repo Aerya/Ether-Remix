@@ -106,8 +106,14 @@ func (r *Renderer) Poster(ctx context.Context, req PosterRequest) ([]byte, strin
 			return data, "image/jpeg", nil
 		}
 	}
-	data, err := r.flights.DoDetached(ctx, key, func(ctx context.Context) ([]byte, error) {
+	// The leading request/worker owns the render through its final cache
+	// write. Cancellation must not leave detached writes after app shutdown;
+	// live waiters retry with their own context if the leader is cancelled.
+	data, err := r.flights.Do(ctx, key, func(ctx context.Context) ([]byte, error) {
 		data, transient, err := r.render(ctx, req)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		// A poster drawn while member art was temporarily unreachable is
 		// served but not persisted, so the next request retries the real
 		// artwork.

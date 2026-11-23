@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plextv"
@@ -65,6 +67,30 @@ func (s *Service) syncCommunityViewer(ctx context.Context, u *core.User) (int, e
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT item_key) FROM watchlist_items WHERE user_id=? AND source LIKE 'plex-community:%'`, u.ID).Scan(&count)
 	return count, err
 }
+func (s *Service) StartFriendsSync(ctx context.Context) bool {
+	if !s.friendsSyncRunning.CompareAndSwap(false, true) {
+		return false
+	}
+	var us []core.User
+	if s.o.Users != nil {
+		var err error
+		us, err = s.o.Users(ctx)
+		if err != nil {
+			s.friendsSyncRunning.Store(false)
+			return false
+		}
+	}
+	go func() {
+		defer s.friendsSyncRunning.Store(false)
+		jobCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		if err := s.syncCommunityFriends(jobCtx, us, nil); err != nil {
+			s.o.Logger.Warn("watchlist friends sync failed", "err", err)
+		}
+	}()
+	return true
+}
+
 func (s *Service) syncCommunityFriends(ctx context.Context, us []core.User, only *core.User) error {
 	s.communityMu.Lock()
 	defer s.communityMu.Unlock()
@@ -87,7 +113,12 @@ func (s *Service) syncCommunityFriends(ctx context.Context, us []core.User, only
 	}
 	friends, err := s.o.Community.Friends(ctx, token)
 	if err != nil {
-		s.recordFriend(ctx, FriendFeedStatus{ID: "friends", RSSFeedStatus: RSSFeedStatus{Configured: true, Problem: "upstream", Error: err.Error()}})
+		st := FriendFeedStatus{ID: "friends", RSSFeedStatus: RSSFeedStatus{Configured: true, Problem: "upstream", Error: err.Error()}}
+		if errors.Is(err, plextv.ErrRateLimited) {
+			st.Problem = rssProblemRateLimited
+			st.Error = ""
+		}
+		s.recordFriend(ctx, st)
 		return err
 	}
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM watchlist_meta WHERE k='community:friends'`)
@@ -108,6 +139,19 @@ func (s *Service) syncCommunityFriends(ctx context.Context, us []core.User, only
 				}
 			}
 		}
+	}
+	if only == nil {
+		sort.SliceStable(friends, func(i, j int) bool {
+			si, sj := previous[friends[i].ID], previous[friends[j].ID]
+			// Permanently failing/private friends (non-rate-limit error) go last so
+			// they don't starve healthy friends when rate limits hit.
+			failI := si.Problem != "" && si.Problem != rssProblemRateLimited
+			failJ := sj.Problem != "" && sj.Problem != rssProblemRateLimited
+			if failI != failJ {
+				return !failI
+			}
+			return si.LastRead < sj.LastRead
+		})
 	}
 	found := false
 	for _, f := range friends {
@@ -152,6 +196,13 @@ func (s *Service) syncCommunityFriends(ctx context.Context, us []core.User, only
 
 		st.UnmatchedTitles = unmatched
 		if e != nil {
+			if errors.Is(e, plextv.ErrRateLimited) {
+				st.Problem = rssProblemRateLimited
+				st.Error = ""
+				errs = append(errs, fmt.Errorf("friend %s: %w", f.Username, e))
+				s.recordFriend(ctx, st)
+				break
+			}
 			st.Problem = "upstream"
 			st.Error = e.Error()
 			errs = append(errs, fmt.Errorf("friend %s: %w", f.Username, e))
@@ -232,9 +283,6 @@ func (s *Service) communityTitles(ctx context.Context, token, id string) ([]core
 				}
 				if s.o.PlexLookup == nil {
 					return nil, 0, errors.New("Plex identity lookup unavailable")
-				}
-				if e := s.o.Community.Wait(ctx); e != nil {
-					return nil, 0, e
 				}
 				key, e := s.o.PlexLookup(ctx, guid)
 				if e != nil && !errors.Is(e, core.ErrNotFound) {

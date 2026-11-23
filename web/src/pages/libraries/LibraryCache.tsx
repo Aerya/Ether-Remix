@@ -1,18 +1,24 @@
-import { Button, SettingsSection, toast } from "@braedonsaunders/appkit-ui";
-import { useState, useEffect } from "react";
-import { useAsync } from "../../lib/hooks";
+import { Button, SettingsSection, Spinner, toast } from "@braedonsaunders/appkit-ui";
+import { useId, useMemo, useState } from "react";
+import { ErrorPanel } from "../../components/feedback";
+import { NumberInput } from "../../components/fields";
+import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { t, tn } from "../../i18n";
 import { errorMessage } from "../../lib/api";
 import { formatBytes } from "../../lib/format";
+import { useAsync } from "../../lib/hooks";
 import { librariesApi, type Library, type LibraryCache } from "./api";
+
 const GIB = 1024 ** 3;
+
 /** Quota and TTL are keyed by library ID, so these stay with the library. */
 export function LibraryCacheCard({
   library,
   data,
   maxBytes,
   ttlSeconds,
+  title,
   onChange,
   onReload,
 }: {
@@ -20,10 +26,13 @@ export function LibraryCacheCard({
   data: LibraryCache;
   maxBytes: number;
   ttlSeconds: number;
+  title?: string;
   onChange: (bytes: number, seconds: number) => void;
   onReload: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const keepId = useId();
+  const forgetId = useId();
   const run = async (purge: boolean) => {
     if (
       purge &&
@@ -42,7 +51,7 @@ export function LibraryCacheCard({
     }
   };
   return (
-    <SettingsSection title={t("Downloaded files")}>
+    <SettingsSection title={title ?? t("Downloaded files")}>
       <SettingsRow
         title={t("Space used")}
         description={tn(
@@ -50,49 +59,50 @@ export function LibraryCacheCard({
           "{count} file kept for quick opening",
           "{count} files kept for quick opening",
         )}
-        control={<span>{formatBytes(data.used)}</span>}
+        control={
+          <span className="text-sm font-medium tabular-nums text-fg">{formatBytes(data.used)}</span>
+        }
       />
       <SettingsRow
-        title={t("Keep at most")}
+        title={<label htmlFor={keepId}>{t("Keep at most")}</label>}
         description={t("Oldest files go first when the library passes this size.")}
         control={
-          <label className="flex items-center gap-2">
-            <input
-              className="w-24"
-              type="number"
-              min={0}
-              step="0.5"
-              value={maxBytes / GIB}
+          <span className="flex items-center gap-2">
+            <NumberInput
+              id={keepId}
               aria-label={t("Keep at most")}
-              onChange={(e) =>
-                onChange(Math.round(Math.max(0, Number(e.target.value)) * GIB), ttlSeconds)
-              }
-            />
-            <span>GiB</span>
-          </label>
-        }
-      />
-      <SettingsRow
-        title={t("Forget files after")}
-        description={t("Leave empty to keep files until space is needed.")}
-        control={
-          <label className="flex items-center gap-2">
-            <input
-              className="w-24"
-              type="number"
+              className="w-28"
               min={0}
-              value={ttlSeconds ? ttlSeconds / 86400 : ""}
-              aria-label={t("Forget files after")}
-              onChange={(e) =>
-                onChange(maxBytes, Math.round(Math.max(0, Number(e.target.value)) * 86400))
-              }
+              step={0.5}
+              value={Math.round((maxBytes / GIB) * 100) / 100}
+              onChange={(n) => onChange(Math.round(Math.max(0, n) * GIB), ttlSeconds)}
             />
-            <span>{t("days")}</span>
-          </label>
+            <span className="text-sm text-fg-muted">GiB</span>
+          </span>
         }
       />
       <SettingsRow
-        title={t("Downloaded files")}
+        title={<label htmlFor={forgetId}>{t("Forget files after")}</label>}
+        description={t(
+          "Days before unused files are removed. Zero keeps files until space is needed.",
+        )}
+        control={
+          <span className="flex items-center gap-2">
+            <NumberInput
+              id={forgetId}
+              aria-label={t("Forget files after")}
+              className="w-28"
+              min={0}
+              step={1}
+              value={Math.round((ttlSeconds / 86400) * 100) / 100}
+              onChange={(n) => onChange(maxBytes, Math.round(Math.max(0, n) * 86400))}
+            />
+            <span className="text-sm text-fg-muted">{t("days")}</span>
+          </span>
+        }
+      />
+      <SettingsRow
+        title={t("Cached files")}
         control={
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(false)}>
@@ -110,53 +120,74 @@ export function LibraryCacheCard({
 
 export function LibraryCaches() {
   const list = useAsync((signal) => librariesApi.list(signal), []);
+  if (list.error) return <ErrorPanel error={list.error} onRetry={() => void list.reload()} />;
+  if (!list.data)
+    return (
+      <div className="py-10 text-center">
+        <Spinner size={20} label={t("Loading library caches")} />
+      </div>
+    );
   return (
     <div className="space-y-5">
       {list.data
-        ?.filter((lib) => lib.source === "plugin")
+        .filter((lib) => lib.source === "plugin")
         .map((library) => (
           <StandaloneCache key={library.id} library={library} />
         ))}
     </div>
   );
 }
+
 function StandaloneCache({ library }: { library: Library }) {
   const cache = useAsync((signal) => librariesApi.cache(library.id, signal), [library.id]);
-  const [bytes, setBytes] = useState(0);
-  const [ttl, setTTL] = useState(0);
-  useEffect(() => {
-    if (cache.data) {
-      setBytes(cache.data.maxBytes);
-      setTTL(cache.data.ttlSeconds);
+  const saved = useMemo(
+    () =>
+      cache.data ? { maxBytes: cache.data.maxBytes, ttlSeconds: cache.data.ttlSeconds } : null,
+    [cache.data],
+  );
+  const { draft, setDraft, dirty, reset } = useDraft(saved);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  if (cache.error) return <ErrorPanel error={cache.error} onRetry={() => void cache.reload()} />;
+  if (!cache.data || !draft) return null;
+
+  async function save() {
+    if (!draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await librariesApi.setCache(library.id, draft.maxBytes, draft.ttlSeconds);
+      await cache.reload();
+      toast.success(t("Settings saved"), { description: library.name });
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSaving(false);
     }
-  }, [cache.data]);
-  if (!cache.data) return null;
+  }
+
   return (
-    <div className="space-y-3">
-      <h3 className="font-semibold">{library.name}</h3>
+    <>
       <LibraryCacheCard
         library={library}
+        title={library.name}
         data={cache.data}
-        maxBytes={bytes}
-        ttlSeconds={ttl}
-        onChange={(nextBytes, nextTTL) => {
-          setBytes(nextBytes);
-          setTTL(nextTTL);
-        }}
+        maxBytes={draft.maxBytes}
+        ttlSeconds={draft.ttlSeconds}
+        onChange={(maxBytes, ttlSeconds) => setDraft({ maxBytes, ttlSeconds })}
         onReload={() => void cache.reload()}
       />
-      <Button
-        size="sm"
-        disabled={bytes === cache.data.maxBytes && ttl === cache.data.ttlSeconds}
-        onClick={() =>
-          void librariesApi
-            .setCache(library.id, bytes, ttl)
-            .then(() => cache.reload())
-            .catch((e) => toast.error(errorMessage(e)))
-        }
-      >
-        {t("Save limits")}
-      </Button>
-    </div>
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        error={error}
+        onSave={save}
+        onDiscard={() => {
+          reset();
+          setError(null);
+        }}
+      />
+    </>
   );
 }

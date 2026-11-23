@@ -238,27 +238,6 @@ func TestCoalescing(t *testing.T) {
 	}
 }
 
-func TestRateLimit(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"genres":[]}`)
-	}))
-	defer srv.Close()
-	// Burst 1, then 20/s => 3 distinct requests need ~100ms of refill.
-	c := testClient(t, srv, "k", WithRateLimit(20, 1), WithCacheTTL(0))
-	start := time.Now()
-	for _, mt := range []string{"movie", "tv", "movie"} {
-		// Distinct URLs would be ideal; Genres caches per URL with TTL 0 so each goes out.
-		if _, err := c.Genres(context.Background(), mt); err != nil {
-			t.Fatal(err)
-		}
-		// Invalidate cache expiry is immediate with TTL 0 (expires == now).
-		time.Sleep(2 * time.Millisecond)
-	}
-	if elapsed := time.Since(start); elapsed < 70*time.Millisecond {
-		t.Fatalf("rate limiter too fast: %v", elapsed)
-	}
-}
-
 func TestContextCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)

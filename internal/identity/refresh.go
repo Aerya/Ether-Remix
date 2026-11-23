@@ -20,8 +20,8 @@ func init() {
 }
 
 const refreshPrefix = "er1_"
-const refreshIdle = 30 * 24 * time.Hour
-const refreshAbsolute = 90 * 24 * time.Hour
+const refreshIdle = 90 * 24 * time.Hour
+const refreshAbsolute = 365 * 24 * time.Hour
 
 func refreshHash(token string) (string, bool) {
 	if len(token) <= len(refreshPrefix) || token[:len(refreshPrefix)] != refreshPrefix {

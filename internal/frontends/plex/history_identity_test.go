@@ -105,7 +105,7 @@ func TestHistoryTopRoutesAndLifetime(t *testing.T) {
 		if tc.present && !strings.Contains(rec.Body.String(), `"globalViewCount":1`) {
 			t.Fatalf("%s missing count: %s", tc.path, rec.Body.String())
 		}
-		if tc.path == "/library/all/top?type=1" && !strings.Contains(rec.Body.String(), `"User":[{"id":1001}]`) {
+		if tc.path == "/library/all/top?type=1" && !strings.Contains(rec.Body.String(), `"User":[{"id":1}]`) {
 			t.Fatalf("missing users array: %s", rec.Body.String())
 		}
 	}

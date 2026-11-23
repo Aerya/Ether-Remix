@@ -106,6 +106,137 @@ func (p *Playlists) ListHeaders(ctx context.Context, uid int64) ([]core.Playlist
 	}
 	return items, nil
 }
+
+// GetHeader returns one playlist header without loading its items, with the
+// favorites playlist's UpdatedAt projected as in ListHeaders.
+func (p *Playlists) GetHeader(ctx context.Context, uid int64, key core.RatingKey) (*core.Playlist, error) {
+	base, ok := p.Base.(interface {
+		GetHeader(context.Context, int64, core.RatingKey) (*core.Playlist, error)
+	})
+	if !ok {
+		pl, err := p.Get(ctx, uid, key)
+		if err != nil || pl == nil {
+			return pl, err
+		}
+		cp := *pl
+		cp.Items = nil
+		return &cp, nil
+	}
+	pl, err := base.GetHeader(ctx, uid, key)
+	if err != nil {
+		return nil, err
+	}
+	fav, e := p.favorite(ctx, uid)
+	if e != nil && !errors.Is(e, core.ErrNotFound) {
+		return nil, e
+	}
+	if e == nil && fav.Key == key {
+		updated, err := p.Favorites.UpdatedAt(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		if updated.After(pl.UpdatedAt) {
+			pl.UpdatedAt = updated
+		}
+	}
+	return pl, nil
+}
+
+// GetHeaders returns headers for the requested playlists in a batch without
+// loading playlist items, projecting the favorites playlist's UpdatedAt once.
+func (p *Playlists) GetHeaders(ctx context.Context, uid int64, keys []core.RatingKey) (map[core.RatingKey]core.Playlist, error) {
+	base, ok := p.Base.(interface {
+		GetHeaders(context.Context, int64, []core.RatingKey) (map[core.RatingKey]core.Playlist, error)
+	})
+	if !ok {
+		out := make(map[core.RatingKey]core.Playlist, len(keys))
+		for _, k := range keys {
+			pl, err := p.GetHeader(ctx, uid, k)
+			if errors.Is(err, core.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if pl != nil {
+				out[pl.Key] = *pl
+			}
+		}
+		return out, nil
+	}
+	out, err := base.GetHeaders(ctx, uid, keys)
+	if err != nil || len(out) == 0 {
+		return out, err
+	}
+	fav, e := p.favorite(ctx, uid)
+	if e != nil && !errors.Is(e, core.ErrNotFound) {
+		return nil, e
+	}
+	if e == nil {
+		if pl, exists := out[fav.Key]; exists {
+			updated, err := p.Favorites.UpdatedAt(ctx, uid)
+			if err != nil {
+				return nil, err
+			}
+			if updated.After(pl.UpdatedAt) {
+				pl.UpdatedAt = updated
+				out[fav.Key] = pl
+			}
+		}
+	}
+	return out, nil
+}
+
+// Exists reports whether the viewer owns a playlist with key without reading
+// its items or the favorites marker.
+func (p *Playlists) Exists(ctx context.Context, uid int64, key core.RatingKey) (bool, error) {
+	if base, ok := p.Base.(interface {
+		GetHeader(context.Context, int64, core.RatingKey) (*core.Playlist, error)
+	}); ok {
+		pl, err := base.GetHeader(ctx, uid, key)
+		if errors.Is(err, core.ErrNotFound) {
+			return false, nil
+		}
+		return pl != nil, err
+	}
+	pl, err := p.Base.Get(ctx, uid, key)
+	if errors.Is(err, core.ErrNotFound) {
+		return false, nil
+	}
+	return pl != nil, err
+}
+
+// ExistsBatch checks ownership of multiple playlists in one base header query
+// without loading items or the favorites marker.
+func (p *Playlists) ExistsBatch(ctx context.Context, uid int64, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+	out := make(map[core.RatingKey]bool, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	if base, ok := p.Base.(interface {
+		GetHeaders(context.Context, int64, []core.RatingKey) (map[core.RatingKey]core.Playlist, error)
+	}); ok {
+		hdrs, err := base.GetHeaders(ctx, uid, keys)
+		if err != nil {
+			return nil, err
+		}
+		for k := range hdrs {
+			out[k] = true
+		}
+		return out, nil
+	}
+	for _, k := range keys {
+		ok, err := p.Exists(ctx, uid, k)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out[k] = true
+		}
+	}
+	return out, nil
+}
+
 func (p *Playlists) Get(ctx context.Context, uid int64, key core.RatingKey) (*core.Playlist, error) {
 	pl, err := p.Base.Get(ctx, uid, key)
 	if err != nil {
@@ -187,5 +318,24 @@ func (p *Playlists) Delete(ctx context.Context, uid int64, key core.RatingKey) e
 	}
 	return p.Favorites.setMirror(ctx, &core.User{ID: uid}, false, key)
 }
+func (p *Playlists) EditPlaylist(ctx context.Context, uid int64, key core.RatingKey, edit core.PlaylistEdit) (*core.Playlist, error) {
+	editor, ok := p.Base.(core.PlaylistEditor)
+	if !ok {
+		return nil, core.ErrNotAvailable
+	}
+	pl, err := editor.EditPlaylist(ctx, uid, key, edit)
+	if err != nil {
+		return nil, err
+	}
+	fav, e := p.favorite(ctx, uid)
+	if e != nil && !errors.Is(e, core.ErrNotFound) {
+		return nil, e
+	}
+	if e == nil && fav.Key == key {
+		return p.project(ctx, uid, pl)
+	}
+	return pl, nil
+}
 
 var _ core.Playlists = (*Playlists)(nil)
+var _ core.PlaylistEditor = (*Playlists)(nil)

@@ -9,24 +9,27 @@ const WAIT = { timeout: 4000 };
 type Route = (method: string, path: string, body: unknown) => unknown;
 
 /**
- * Serve endpoints the shared fake doesn't model (safety policies).
- * The fake still records every call; only its 404s are replaced.
+ * Override specific endpoints in tests (including endpoints the shared fake models).
+ * Matched calls are still recorded on `fake.state.calls`.
  */
 function extraRoutes(route: Route) {
   return (fake: FakeServer) => {
     const base = fake.fetch;
     fake.fetch = async (input, init) => {
-      const res = await base(input, init);
-      if (res.status !== 404) return res;
       const url = new URL(String(input), "http://localhost");
       const path = url.pathname.replace(/^\/ether\/api/, "") + url.search;
+      const method = (init?.method ?? "GET").toUpperCase();
       const raw = typeof init?.body === "string" && init.body ? init.body : "";
-      const out = route((init?.method ?? "GET").toUpperCase(), path, raw ? JSON.parse(raw) : null);
-      if (out === undefined) return res;
-      return new Response(JSON.stringify(out), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      const body = raw ? JSON.parse(raw) : null;
+      const out = route(method, path, body);
+      if (out !== undefined) {
+        fake.state.calls.push({ method, path, body });
+        return new Response(JSON.stringify(out), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return base(input, init);
     };
   };
 }
@@ -98,6 +101,57 @@ describe("Viewers", () => {
     );
   });
 
+  it("shows plain-language affinity labels, filters sensitive/generic themes, and explains corrections", async () => {
+    renderApp("/viewers/2/taste", {}, (server) => {
+      const base = server.fetch;
+      server.fetch = async (input, init) => {
+        const res = await base(input, init);
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname !== "/ether/api/viewers/2/taste") return res;
+        const body = await res.json();
+        body.genres = [
+          { name: "Science Fiction", weight: 0.82 },
+          { name: "Horror", weight: -0.35 },
+        ];
+        body.keywords = [
+          { name: "time travel", weight: 0.72 },
+          { name: "rape", weight: 0.85 },
+          { name: "suicide", weight: 0.65 },
+          { name: "based on novel or book", weight: 0.9 },
+        ];
+        body.languages = [{ code: "ja", weight: 0.45 }];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      };
+    });
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Genres" }, WAIT));
+    const genres = await screen.findByRole("list", { name: /Genre affinity/ }, WAIT);
+    expect(within(genres).getByText("Loves")).toBeInTheDocument();
+    expect(within(genres).getByText("Dislikes")).toBeInTheDocument();
+    expect(within(genres).queryByText("+0.82")).toBeNull();
+    expect(within(genres).queryByText("-0.35")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Themes & languages" }));
+    expect(await screen.findByText("time travel", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByText("rape")).toBeNull();
+    expect(screen.queryByText("suicide")).toBeNull();
+    expect(screen.queryByText("based on novel or book")).toBeNull();
+    expect(screen.getByText("Likes")).toBeInTheDocument();
+    expect(screen.queryByText("+0.45")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Corrections" }));
+    expect(
+      await screen.findByText(
+        "“Not into it” hides it from recommendations. “Loves it” pushes it higher.",
+        {},
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("adds a person correction through search", async () => {
     const { fake } = renderApp("/viewers/1/taste");
     fireEvent.click(await screen.findByRole("tab", { name: "Corrections" }));
@@ -142,6 +196,16 @@ describe("Viewers", () => {
     expect(calls(fake, "PUT", "/safety/policies/4")).toHaveLength(0);
   });
 
+  it("hides parental controls on the owner's Limits tab", async () => {
+    renderApp("/viewers/1/limits");
+    expect(await screen.findByLabelText("Streams at once", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByText("Parental controls")).toBeNull();
+    expect(screen.queryByText("Start from a preset")).toBeNull();
+    expect(screen.queryByLabelText("Content rating limit")).toBeNull();
+    expect(screen.queryByLabelText("Blocked genres")).toBeNull();
+    expect(screen.queryByLabelText("Blocked keywords")).toBeNull();
+  });
+
   it("picks the allowed-times timezone from a searchable list", async () => {
     const { fake } = renderApp("/viewers/4/limits");
     fireEvent.click(await screen.findByLabelText("Playback timezone", {}, WAIT));
@@ -155,13 +219,27 @@ describe("Viewers", () => {
     });
   });
 
-  it("keeps the Live TV rating behind More options and links Simkl setup", async () => {
+  it("keeps Live TV rating behind More options on Limits and moves connected accounts to Sign-in & devices without Invite", async () => {
     renderApp("/viewers/4/limits");
     const more = await screen.findByRole("button", { name: "More options: Live TV" }, WAIT);
     expect(screen.queryByLabelText("Different limit for Live TV")).toBeNull();
     fireEvent.click(more);
     expect(await screen.findByLabelText("Different limit for Live TV")).toBeInTheDocument();
-    // Simkl is off in the fake, so the viewer page links to its setup.
+    // Connected-account sync sections no longer live under Limits.
+    expect(screen.queryByRole("heading", { name: "Simkl" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Trakt" })).toBeNull();
+
+    // Sign-in & devices omits the new-viewer Invite card and houses Connected accounts.
+    fireEvent.click(screen.getByRole("tab", { name: "Sign-in & devices" }));
+    const signInTabs = await screen.findByRole(
+      "tablist",
+      { name: "Sign-in and devices sections" },
+      WAIT,
+    );
+    expect(screen.queryByRole("heading", { name: "Invite" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create invite link" })).toBeNull();
+
+    fireEvent.click(within(signInTabs).getByRole("tab", { name: "Connected accounts" }));
     const simklSection = (await screen.findByText("Simkl", { selector: "h2" }, WAIT)).closest(
       "section",
     )!;
@@ -238,7 +316,7 @@ describe("Viewers", () => {
       })(fake);
     });
     expect(await screen.findByText("From Plex", {}, WAIT)).toBeInTheDocument();
-    expect(await screen.findByText("ja", {}, WAIT)).toBeInTheDocument();
+    expect(await screen.findByText("Japanese", {}, WAIT)).toBeInTheDocument();
     // The Playback page also offers "Always on" as a subtitle-mode option;
     // the From Plex row renders it as plain text.
     expect(screen.getAllByText("Always on").some((el) => el.tagName === "SPAN")).toBe(true);
@@ -332,7 +410,7 @@ it("puts the owner first as You and filters by lifecycle", async () => {
         paused: false,
         plexShared: false,
         managedBy: "plex",
-        canPause: false,
+        canPause: true,
         canRemove: false,
         canMerge: false,
       },
@@ -353,9 +431,9 @@ it("puts the owner first as You and filters by lifecycle", async () => {
   // Status and source badges from the lifecycle.
   expect(screen.getByText("Paused", { selector: "span" })).toBeInTheDocument();
   expect(screen.getByText("Local", { selector: "span" })).toBeInTheDocument();
-  expect(screen.getByText("No longer shared", { selector: "span" })).toBeInTheDocument();
+  expect(screen.getByText("Not shared on plex.tv", { selector: "span" })).toBeInTheDocument();
   expect(screen.getAllByText("Managed on plex.tv", { selector: "span" }).length).toBeGreaterThan(0);
-  // Paused chip keeps only the paused local viewer.
+  // Paused chip keeps only the paused viewer, not the unshared Plex viewer.
   fireEvent.click(screen.getByRole("button", { name: /^Paused \(/ }));
   expect(screen.getByText("Sam Rivera")).toBeInTheDocument();
   expect(screen.queryByText("Jordan Lee")).not.toBeInTheDocument();
@@ -365,6 +443,54 @@ it("puts the owner first as You and filters by lifecycle", async () => {
   expect(screen.getByText("Jordan Lee")).toBeInTheDocument();
   expect(screen.getByText("The Kids")).toBeInTheDocument();
   expect(screen.queryByText("Sam Rivera")).not.toBeInTheDocument();
+});
+
+it("shows Paused by owner distinctly from Not shared on plex.tv for Plex viewers", async () => {
+  renderApp(
+    "/viewers",
+    {},
+    withLifecycles({
+      3: {
+        source: "plexHome",
+        paused: true,
+        plexShared: true,
+        managedBy: "plex",
+        canPause: true,
+        canRemove: false,
+        canMerge: false,
+      },
+      4: {
+        source: "plex",
+        paused: false,
+        plexShared: false,
+        managedBy: "plex",
+        canPause: true,
+        canRemove: false,
+        canMerge: false,
+      },
+    }),
+  );
+  // Both paused and unshared Plex viewers are excluded from Active.
+  await screen.findByText("You", {}, WAIT);
+  expect(screen.queryByText("The Kids")).not.toBeInTheDocument();
+  expect(screen.queryByText("Jordan Lee")).not.toBeInTheDocument();
+
+  // Under All, their badges distinguish owner pause from plex.tv share state.
+  fireEvent.click(screen.getByRole("button", { name: /^All \(/ }));
+  const kidsRow = (await screen.findByText("The Kids", {}, WAIT)).closest("tr")!;
+  const jordanRow = screen.getByText("Jordan Lee").closest("tr")!;
+  expect(within(kidsRow).getByText("Paused by owner", { selector: "span" })).toBeInTheDocument();
+  expect(within(kidsRow).getByText("Managed on plex.tv", { selector: "span" })).toBeInTheDocument();
+  expect(within(kidsRow).queryByText("Not shared on plex.tv")).toBeNull();
+  expect(
+    within(jordanRow).getByText("Not shared on plex.tv", { selector: "span" }),
+  ).toBeInTheDocument();
+  expect(within(jordanRow).queryByText("Paused by owner")).toBeNull();
+
+  // Paused chip includes the paused Plex viewer, not the unshared-only Plex viewer.
+  fireEvent.click(screen.getByRole("button", { name: /^Paused \(/ }));
+  expect(screen.getByText("The Kids")).toBeInTheDocument();
+  expect(screen.queryByText("Jordan Lee")).not.toBeInTheDocument();
 });
 
 it("shows nothing Plex-related when Plex is off", async () => {
@@ -461,7 +587,7 @@ it("hides server-only sections for a viewer kept for imported history", async ()
   expect(screen.queryByText("New episodes from favourite shows")).toBeNull();
 });
 
-it("shows a bounded dashboard and ordered viewer sections", async () => {
+it("shows an unbounded responsive dashboard and ordered viewer sections", async () => {
   renderApp("/viewers/2/overview");
   const tabs = await screen.findByRole("tablist", { name: "Viewer sections" }, WAIT);
   expect(
@@ -479,7 +605,9 @@ it("shows a bounded dashboard and ordered viewer sections", async () => {
     "Lists & alerts",
     "Fixture viewer.tab",
   ]);
-  expect(screen.getByLabelText("Viewer dashboard")).toHaveClass("overflow-hidden");
+  const dashboard = screen.getByLabelText("Viewer dashboard");
+  expect(dashboard).not.toHaveClass("overflow-hidden");
+  expect(dashboard.firstElementChild).toHaveClass("grid-cols-1", "sm:grid-cols-3");
   expect(screen.getByText("Plays in 30 days")).toBeInTheDocument();
   expect(screen.queryByText("How they sign in")).toBeNull();
   fireEvent.click(within(tabs).getByRole("tab", { name: "Recent activity" }));
@@ -602,4 +730,387 @@ it("imports viewers from connected Plex servers via drawer", async () => {
 
   fireEvent.change(searchInput, { target: { value: "PlexFriend" } });
   expect(within(drawer).getByText("PlexFriend")).toBeInTheDocument();
+});
+
+it("keeps suggested match selectable from Match existing dropdown", async () => {
+  const candidateServers = [
+    {
+      serverId: 1,
+      serverName: "Old Plex Server",
+      accounts: [
+        {
+          serverId: 1,
+          serverName: "Old Plex Server",
+          accountId: 42,
+          accountName: "Sam Rivera",
+          isOwner: false,
+          matchedViewerId: 0,
+          suggestedViewerId: 2,
+          suggestedViewerName: "Sam Rivera",
+        },
+      ],
+    },
+  ];
+
+  const { fake } = renderApp(
+    "/viewers",
+    {},
+    extraRoutes((method, path) => {
+      if (path === "/viewers/plex-candidates" && method === "GET") {
+        return candidateServers;
+      }
+      if (path === "/viewers/match-plex" && method === "POST") {
+        candidateServers[0]!.accounts[0]!.matchedViewerId = 2;
+        return { ok: true, viewerId: 2, serverId: 1, accountId: 42, sharedPlex: true };
+      }
+      return undefined;
+    }),
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /Import from Plex/i }, WAIT));
+  const drawer = await screen.findByRole(
+    "dialog",
+    { name: /Import users from connected Plex servers/i },
+    WAIT,
+  );
+  expect(
+    await within(drawer).findByText("Suggested match: Sam Rivera", {}, WAIT),
+  ).toBeInTheDocument();
+
+  const trigger = within(drawer).getByRole("button", {
+    name: "Match account to existing viewer",
+  });
+  expect(trigger).toHaveTextContent("Match existing…");
+  const select = drawer.querySelector("select") as HTMLSelectElement;
+  expect(select.value).toBe("0");
+
+  fireEvent.click(trigger);
+  fireEvent.click(await screen.findByRole("option", { name: /Sam Rivera/ }, WAIT));
+  await waitFor(() => {
+    expect(calls(fake, "POST", "/viewers/match-plex")).toHaveLength(1);
+  }, WAIT);
+  expect(calls(fake, "POST", "/viewers/match-plex")[0]!.body).toEqual({
+    serverId: 1,
+    accountId: 42,
+    viewerId: 2,
+  });
+});
+
+it("splits Plex import drawer by Plex.tv relationship and history", async () => {
+  const candidateServers = [
+    {
+      serverId: 1,
+      serverName: "One.Plex",
+      plexDirectoryTotal: 65,
+      filteredOutCount: 47,
+      accounts: [
+        {
+          serverId: 1,
+          serverName: "One.Plex",
+          accountId: 1,
+          accountName: "One.Night",
+          isOwner: true,
+          matchedViewerId: 1,
+          matchedViewerName: "One.Night",
+          plexRelation: "owner",
+          plexSources: ["owner"],
+        },
+        {
+          serverId: 1,
+          serverName: "One.Plex",
+          accountId: 1001,
+          accountName: "Kids Home",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "kidshome",
+          plexRelation: "home",
+          plexSources: ["home", "ether_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "One.Plex",
+          accountId: 1002,
+          accountName: "Alice Shared",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "alice99",
+          plexRelation: "shared",
+          plexSources: ["ether_share", "pms_share"],
+        },
+        {
+          serverId: 1,
+          serverName: "One.Plex",
+          accountId: 1003,
+          accountName: "dsabelag",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "dsabelag",
+          plexRelation: "pending",
+          plexSources: ["pending_invite"],
+        },
+        {
+          serverId: 1,
+          serverName: "One.Plex",
+          accountId: 1004,
+          accountName: "Community Pal",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexUsername: "compal",
+          plexRelation: "friend",
+          plexSources: ["community_friend", "friend"],
+        },
+        {
+          serverId: 1,
+          serverName: "One.Plex",
+          accountId: 143639010,
+          accountName: "Patricson Poliard",
+          isOwner: false,
+          matchedViewerId: 0,
+          plexRelation: "historical",
+          plexSources: ["pms_history"],
+        },
+      ],
+    },
+  ];
+
+  renderApp(
+    "/viewers",
+    {},
+    extraRoutes((method, path) => {
+      if (path === "/viewers/plex-candidates" && method === "GET") {
+        return candidateServers;
+      }
+      return undefined;
+    }),
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /Import from Plex/i }, WAIT));
+  const drawer = await screen.findByRole(
+    "dialog",
+    { name: /Import users from connected Plex servers/i },
+    WAIT,
+  );
+
+  expect(
+    await within(drawer).findByText("Plex.tv matched: 5 (65 in directory)", {}, WAIT),
+  ).toBeInTheDocument();
+  expect(
+    within(drawer).getByText(
+      "Showing active Plex accounts with an email (47 inactive or without email hidden)",
+    ),
+  ).toBeInTheDocument();
+  expect(within(drawer).getByText("PMS history only: 1")).toBeInTheDocument();
+
+  const filterGroup = within(drawer).getByRole("group", { name: "Account category" });
+  expect(within(filterGroup).getByRole("button", { name: "All (6)" })).toBeInTheDocument();
+  expect(within(filterGroup).getByRole("button", { name: "Unmapped (5)" })).toBeInTheDocument();
+  expect(
+    within(filterGroup).getByRole("button", { name: "Accepted shares (2)" }),
+  ).toBeInTheDocument();
+  expect(within(filterGroup).getByRole("button", { name: "Home users (1)" })).toBeInTheDocument();
+  expect(
+    within(filterGroup).getByRole("button", { name: "Pending invites (1)" }),
+  ).toBeInTheDocument();
+  expect(within(filterGroup).getByRole("button", { name: "Friends (1)" })).toBeInTheDocument();
+  expect(
+    within(filterGroup).getByRole("button", { name: "Community friends (1)" }),
+  ).toBeInTheDocument();
+  expect(
+    within(filterGroup).getByRole("button", { name: "PMS history only (1)" }),
+  ).toBeInTheDocument();
+
+  // Grouped section headers in All view.
+  expect(within(drawer).getByText("Server owner & Home users")).toBeInTheDocument();
+  expect(within(drawer).getByText("Accepted shares")).toBeInTheDocument();
+  expect(within(drawer).getByText("Pending invites")).toBeInTheDocument();
+  expect(within(drawer).getByText("Friends")).toBeInTheDocument();
+  expect(
+    within(drawer).getByText(
+      "Historical accounts from this Plex server no longer in your Plex.tv friends or shares",
+    ),
+  ).toBeInTheDocument();
+
+  // Provenance badges and Plex username display.
+  expect(within(drawer).getByText("(@alice99)")).toBeInTheDocument();
+  expect(within(drawer).getAllByText("Shared on Ether").length).toBeGreaterThan(0);
+  expect(within(drawer).getByText("Shared on One.Plex")).toBeInTheDocument();
+  expect(within(drawer).getByText("Pending invite")).toBeInTheDocument();
+  expect(within(drawer).getByText("Community friend")).toBeInTheDocument();
+  expect(within(drawer).getAllByText("PMS history only").length).toBeGreaterThan(0);
+
+  // Filter by PMS history only.
+  fireEvent.click(within(filterGroup).getByRole("button", { name: "PMS history only (1)" }));
+  expect(within(drawer).getByText("Patricson Poliard")).toBeInTheDocument();
+  expect(within(drawer).queryByText("Alice Shared")).toBeNull();
+  expect(within(drawer).queryByText("dsabelag")).toBeNull();
+
+  // Filter by Pending invites.
+  fireEvent.click(within(filterGroup).getByRole("button", { name: "Pending invites (1)" }));
+  expect(within(drawer).getByText("dsabelag")).toBeInTheDocument();
+  expect(within(drawer).queryByText("Patricson Poliard")).toBeNull();
+
+  // Switch back to All and search by plexUsername.
+  fireEvent.click(within(filterGroup).getByRole("button", { name: "All (6)" }));
+  const searchInput = within(drawer).getByPlaceholderText(
+    /Search by account name or Plex username/i,
+  );
+  fireEvent.change(searchInput, { target: { value: "alice99" } });
+  expect(within(drawer).getByText("Alice Shared")).toBeInTheDocument();
+  expect(within(drawer).queryByText("Patricson Poliard")).toBeNull();
+});
+
+it("keeps filtered-out notice visible when all accounts on a connected Plex server are hidden", async () => {
+  renderApp(
+    "/viewers",
+    {},
+    extraRoutes((method, path) => {
+      if (path === "/viewers/plex-candidates" && method === "GET") {
+        return [
+          {
+            serverId: 1,
+            serverName: "Quiet PMS",
+            plexDirectoryTotal: 12,
+            filteredOutCount: 12,
+            accounts: [],
+          },
+        ];
+      }
+      return undefined;
+    }),
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /Import from Plex/i }, WAIT));
+  const drawer = await screen.findByRole(
+    "dialog",
+    { name: /Import users from connected Plex servers/i },
+    WAIT,
+  );
+  expect(
+    await within(drawer).findByText(
+      "Showing active Plex accounts with an email (12 inactive or without email hidden)",
+      {},
+      WAIT,
+    ),
+  ).toBeInTheDocument();
+  expect(within(drawer).queryByText(/No connected Plex Media Servers found/i)).toBeNull();
+});
+
+it("explains Live TV and Always convert video conflicts for per-viewer No video transcoding", async () => {
+  const { fake } = renderApp("/viewers/2/limits", {
+    capabilityOverrides: [{ product: "Plex Web", platform: "Chrome", alwaysEncodeVideo: true }],
+  });
+  const toggle = await screen.findByLabelText("No video transcoding", {}, WAIT);
+  expect(screen.getByText(/Live TV is unaffected\./)).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull(), WAIT);
+
+  fireEvent.click(toggle);
+  const alert = await screen.findByRole("status", {}, WAIT);
+  expect(alert).toHaveTextContent(/Always convert video/);
+  expect(alert).toHaveTextContent(/Plex Web · Chrome/);
+  expect(alert).toHaveTextContent(/No video transcoding.*wins/i);
+  expect(within(alert).getByRole("link", { name: "Review App compatibility" })).toHaveAttribute(
+    "href",
+    "/playback/devices",
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
+  await waitFor(() => expect(calls(fake, "PUT", "/safety/policies/2")).toHaveLength(1), WAIT);
+  expect(calls(fake, "PUT", "/safety/policies/2")[0]!.body).toMatchObject({
+    videoTranscodingDisabled: true,
+  });
+});
+
+it("controls per-viewer downloads with effective status, moot server-off state, and hides it on the owner", async () => {
+  const { fake } = renderApp("/viewers/2/limits");
+  const downloads = await screen.findByRole("radiogroup", { name: "Downloads" }, WAIT);
+  expect(screen.getByText("Effective: Blocked")).toBeInTheDocument();
+  expect(
+    screen.getByText("Following the server setting: friends cannot download."),
+  ).toBeInTheDocument();
+
+  fireEvent.click(within(downloads).getByRole("radio", { name: "Allow" }));
+  expect(screen.getByText("Effective: Allowed")).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
+  await waitFor(() => expect(calls(fake, "PUT", "/safety/policies/2")).toHaveLength(1), WAIT);
+  expect(calls(fake, "PUT", "/safety/policies/2")[0]!.body).toMatchObject({
+    allowDownloads: true,
+  });
+
+  fireEvent.click(within(downloads).getByRole("radio", { name: "Server default" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Save changes/ }));
+  await waitFor(() => expect(calls(fake, "PUT", "/safety/policies/2")).toHaveLength(2), WAIT);
+  expect(calls(fake, "PUT", "/safety/policies/2")[1]!.body).not.toHaveProperty("allowDownloads");
+});
+
+it("explains when server-wide downloads make the per-viewer Downloads choice moot and omits it for the owner", async () => {
+  renderApp("/viewers/2/limits", {}, (fake) => {
+    fake.state.config.downloads = {
+      ...fake.state.config.downloads!,
+      enabled: false,
+      allowFriends: true,
+    };
+  });
+  const downloads = await screen.findByRole("radiogroup", { name: "Downloads" }, WAIT);
+  fireEvent.click(within(downloads).getByRole("radio", { name: "Allow" }));
+  expect(screen.getByText("Effective: Blocked")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /Offline downloads are turned off for the whole server, so this setting has no effect right now\./,
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Open Plex downloads" })).toHaveAttribute(
+    "href",
+    "/apps/plex/downloads",
+  );
+});
+
+it("omits the per-viewer Downloads control on the owner's Limits tab", async () => {
+  renderApp("/viewers/1/limits");
+  await screen.findByLabelText("No video transcoding", {}, WAIT);
+  expect(screen.queryByRole("radiogroup", { name: "Downloads" })).toBeNull();
+});
+
+it("lists active sign-in lockouts and supports Clear and Clear all", async () => {
+  const { fake } = renderApp("/viewers");
+  const heading = await screen.findByText("Sign-in lockouts", {}, WAIT);
+  const section = heading.closest("section")!;
+  expect(await within(section).findByText("jordan", {}, WAIT)).toBeInTheDocument();
+  expect(within(section).getByText("203.0.113.19")).toBeInTheDocument();
+  expect(within(section).getByText("Polling")).toBeInTheDocument();
+
+  const clearButtons = within(section).getAllByRole("button", { name: "Clear" });
+  expect(clearButtons).toHaveLength(3);
+  fireEvent.click(clearButtons[0]!);
+  await waitFor(() => {
+    expect(within(section).queryByText("jordan")).toBeNull();
+  }, WAIT);
+  expect(calls(fake, "DELETE", "/auth/lockouts/lock-firetv-jordan")).toHaveLength(1);
+
+  fireEvent.click(within(section).getByRole("button", { name: "Clear all" }));
+  expect(
+    await within(section).findByText("No active sign-in lockouts.", {}, WAIT),
+  ).toBeInTheDocument();
+  expect(
+    calls(fake, "DELETE", "/auth/lockouts").filter((c) => c.path === "/auth/lockouts"),
+  ).toHaveLength(1);
+});
+
+it("hides Sign-in lockouts when the server rejects non-owner access", async () => {
+  renderApp("/viewers", {}, (fake) => {
+    const base = fake.fetch;
+    fake.fetch = async (input, init) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/ether/api/auth/lockouts") {
+        return new Response(
+          JSON.stringify({ error: { code: "forbidden", message: "owner required" } }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return base(input, init);
+    };
+  });
+  await screen.findByText("Sam Rivera", {}, WAIT);
+  await waitFor(() => {
+    expect(screen.queryByText("Sign-in lockouts")).toBeNull();
+  }, WAIT);
 });

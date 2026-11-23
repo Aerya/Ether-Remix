@@ -89,6 +89,7 @@ ON CONFLICT(indexer_id) DO UPDATE SET retry_at=CASE WHEN excluded.retry_at > new
 			c.log.Warn("could not persist indexer pause", "indexer", c.Name(), "err", err)
 		}
 	}
+	c.emitRateLimited(until, cause)
 	// PSE-HOOK: pause qui s'allonge, pause d'indexeur — voir docs/pse/FORK.fr.md
 	c.pseLogPause(cause, until)
 	return c.pseThrottledCause(until, cause)

@@ -1,8 +1,5 @@
-// Package libraries owns the one Library model (spec §1): the two
-// built-in libraries (1 = Movies, 2 = TV Shows), plugin-kind libraries
-// and owner filter-libraries, in one component-owned table. Frontends,
-// the console and app wiring consume it through Service; nothing in a
-// request path special-cases a library beyond a dispatch on its Source.
+// Package libraries owns the library declarations. Movies (1) and TV Shows
+// (2) are seeded once as ordinary, editable and deletable catalogue libraries.
 package libraries
 
 import (
@@ -12,14 +9,30 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func init() {
+	const mig13 = `
+ALTER TABLE libraries ADD COLUMN present_overrides TEXT NOT NULL DEFAULT '{}';
+UPDATE libraries SET present_overrides = '{"adapterOnly":true}' WHERE source = 'plugin' AND present LIKE '%"adapterOnly":true%';
+`
+	store.Register("libraries", 13, mig13)
+	store.RegisterDialect("libraries", 13, store.Postgres, mig13)
+	store.Register("libraries", 12, `ALTER TABLE libraries ADD COLUMN card_shape TEXT NOT NULL DEFAULT '';`)
+	store.RegisterDialect("libraries", 12, store.Postgres, `ALTER TABLE libraries ADD COLUMN card_shape TEXT NOT NULL DEFAULT '';`)
+	store.Register("libraries", 10, "SELECT 1;")
+	store.RegisterApply("libraries", 10, migrateVelaPresentation)
+	store.Register("libraries", 9, "ALTER TABLE libraries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
+	store.RegisterDialect("libraries", 9, store.Postgres, "ALTER TABLE libraries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
+	store.RegisterAfter("libraries", "catalog_viewer_rules")
+	libraryfilter.RegisterMediaTypeMigration("libraries", 8, "libraries", "rules", "id")
 	store.Register("libraries", 1, `
 CREATE TABLE libraries (
 	id         INTEGER PRIMARY KEY,
@@ -84,9 +97,87 @@ ALTER TABLE libraries ADD COLUMN collection_id BIGINT NOT NULL DEFAULT 0;
 `)
 }
 
+// migrateVelaPresentation populates present.vela once on existing stored
+// libraries from MediaBrowser (movies/tvshows), else Plex (movie/show), so
+// every library Vela showed before upgrade stays published to Vela.
+func migrateVelaPresentation(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, present FROM libraries`)
+	if err != nil {
+		return err
+	}
+	type edit struct {
+		id      int64
+		present string
+	}
+	var edits []edit
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		var p core.Presentations
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			rows.Close()
+			return err
+		}
+		velaType := inferVelaType(p)
+		if velaType == "" {
+			continue
+		}
+		p.Vela = &core.VelaPresentation{Type: velaType}
+		b, err := json.Marshal(p)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		edits = append(edits, edit{id: id, present: string(b)})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, e := range edits {
+		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET present=? WHERE id=?`, e.present, e.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inferVelaType(p core.Presentations) string {
+	if p.AdapterOnly || p.Vela != nil {
+		return ""
+	}
+	if p.MediaBrowser != nil {
+		switch p.MediaBrowser.CollectionType {
+		case "movies":
+			return "movies"
+		case "tvshows":
+			return "shows"
+		}
+	}
+	if p.Plex != nil {
+		switch p.Plex.Base {
+		case "movie":
+			return "movies"
+		case "show":
+			return "shows"
+		}
+	}
+	return ""
+}
+
 var (
-	// ErrBuiltinLibrary refuses a mutation the two built-ins never take
-	// (deletion). Renaming, sorting and hiding them is fine.
+	// ErrDeleted means the owner must explicitly restore this plugin/kind.
+	ErrDeleted = errors.New("libraries: library deleted by owner")
+	// ErrBuiltinLibrary is retained for compatibility with older callers.
+	// Delete no longer returns it.
 	ErrBuiltinLibrary = errors.New("libraries: built-in library cannot be deleted")
 	// ErrInvalid is a rejected declaration: empty name, an unslugifiable
 	// name, or a plugin library without both ids.
@@ -104,25 +195,28 @@ type PluginLibraryDecl struct {
 
 // Options configures the Service.
 type Options struct {
-	Logger *slog.Logger
-	Now    func() time.Time
-	// OnChange runs after a committed mutation and snapshot invalidation.
-	OnChange func()
+	CompileCataloguePolicy func([]core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	CompilePluginPolicy    func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	Logger                 *slog.Logger
+	Now                    func() time.Time
+	OnChange               func()
 }
 
 // Service is the libraries store. List/Get are plain indexed reads of
 // a table that holds one row per library, never per item, so no call
 // scales with library size.
 type Service struct {
-	db       *sql.DB
-	log      *slog.Logger
-	now      func() time.Time
-	gen      atomic.Uint64
-	snap     atomic.Pointer[snapshot]
-	onChange func()
+	compileCataloguePolicy func([]core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	compilePluginPolicy    func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	db                     *sql.DB
+	log                    *slog.Logger
+	now                    func() time.Time
+	gen                    atomic.Uint64
+	snap                   atomic.Pointer[snapshot]
+	onChange               func()
 }
 
-// New seeds the two built-in libraries idempotently (§1.3) and returns
+// New seeds the initial catalogue libraries once per database and returns
 // the service. db must already be migrated (store.Migrate), which is
 // how every component table is opened.
 func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
@@ -135,7 +229,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	s := &Service{db: db, log: o.Logger.With("component", "libraries"), now: o.Now}
+	s := &Service{compileCataloguePolicy: o.CompileCataloguePolicy, compilePluginPolicy: o.CompilePluginPolicy, db: db, log: o.Logger.With("component", "libraries"), now: o.Now}
 	if err := s.seedBuiltins(ctx); err != nil {
 		return nil, fmt.Errorf("libraries: seed builtins: %w", err)
 	}
@@ -147,6 +241,9 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		return nil, err
 	}
 	for _, lib := range libs {
+		if lib.RulesBroken {
+			s.log.Warn("broken library rules", "library_id", lib.ID, "name", lib.Name)
+		}
 		data, _ := json.Marshal(lib.Sources)
 		if _, err = s.db.ExecContext(ctx, `UPDATE libraries SET sources=? WHERE id=? AND sources='[]'`, string(data), int64(lib.ID)); err != nil {
 			return nil, err
@@ -172,6 +269,19 @@ func (s *Service) seedBuiltins(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	// Claim initialization in the same transaction as the rows. An empty table
+	// after this marker exists is an intentional owner choice.
+	claimed, err := tx.ExecContext(ctx, `INSERT INTO libraries_state(k,v) VALUES('defaults_seeded','1') ON CONFLICT(k) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	n, err := claimed.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return tx.Commit()
+	}
 	for _, b := range []struct {
 		id        core.LibraryID
 		key, name string
@@ -193,6 +303,44 @@ VALUES(?, ?, ?, 'builtin', ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
 	if _, err := tx.ExecContext(ctx, `INSERT INTO libraries_seq(id, next)
 SELECT 1, COALESCE(MAX(id), 2) + 1 FROM libraries WHERE 1=1 ON CONFLICT(id) DO NOTHING`); err != nil {
 		return err
+	}
+	// Preserve explicit owner presentations; materialize only the legacy
+	// implicit all-apps default before removing the builtin source distinction.
+	rows, err := tx.QueryContext(ctx, `SELECT id, media_type, present FROM libraries WHERE source='builtin'`)
+	if err != nil {
+		return err
+	}
+	type upgrade struct {
+		id      int64
+		present string
+	}
+	var upgrades []upgrade
+	for rows.Next() {
+		var id int64
+		var mt, raw string
+		if err := rows.Scan(&id, &mt, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var p core.Presentations
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			rows.Close()
+			return err
+		}
+		if !p.AdapterOnly && p.Vela == nil && p.Plex == nil && p.MediaBrowser == nil && p.Stremio == nil && p.Xtream == nil && p.Silo == nil {
+			raw = defaultPresentation(core.MediaType(mt))
+		}
+		upgrades = append(upgrades, upgrade{id, raw})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, u := range upgrades {
+		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET source='catalogue', present=? WHERE id=?`, u.present, u.id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -216,4 +364,20 @@ func (s *Service) changed() {
 	if s.onChange != nil {
 		s.onChange()
 	}
+}
+
+// compileCatalogueRules uses the exact bound serving compiler when wired by
+// the app. Standalone stores can still validate the portable rule language.
+func (s *Service) compileCatalogueRules(rules []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+	if s.compileCataloguePolicy != nil {
+		return s.compileCataloguePolicy(rules, fallback)
+	}
+	return libraryfilter.CompilePolicy(rules, fallback)
+}
+
+func defaultPresentation(mt core.MediaType) string {
+	if mt == core.TypeShow {
+		return `{"vela":{"type":"shows"},"plex":{"base":"show"},"mediaBrowser":{"collectionType":"tvshows"},"stremio":{"type":"series"},"xtream":{"category":"series"},"silo":{"type":"tvshows"}}`
+	}
+	return `{"vela":{"type":"movies"},"plex":{"base":"movie"},"mediaBrowser":{"collectionType":"movies"},"stremio":{"type":"movie"},"xtream":{"category":"movie"},"silo":{"type":"movies"}}`
 }

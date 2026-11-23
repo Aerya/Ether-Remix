@@ -128,8 +128,10 @@ func RewriteLineupHeading(d *Document, heading string) {
 			if ls[i].Type == "text" {
 				if s, ok := ls[i].Text.(string); ok {
 					trimmed := strings.TrimSpace(s)
-					if strings.EqualFold(trimmed, "TONIGHT") || trimmed == "{words.tonight}" {
+					if strings.EqualFold(trimmed, "TONIGHT") {
 						ls[i].Text = heading
+					} else if strings.Contains(s, "{words.tonight}") {
+						ls[i].Text = strings.ReplaceAll(s, "{words.tonight}", heading)
 					}
 				}
 			}
@@ -192,7 +194,7 @@ func layerHasLiveSlot(l Layer, moment string) bool {
 	if moment == "tonight" && l.Type == "text" {
 		if s, ok := l.Text.(string); ok {
 			trimmed := strings.TrimSpace(s)
-			if strings.EqualFold(trimmed, "TONIGHT") || trimmed == "{words.tonight}" {
+			if strings.EqualFold(trimmed, "TONIGHT") || strings.Contains(s, "{words.tonight}") {
 				return true
 			}
 		}

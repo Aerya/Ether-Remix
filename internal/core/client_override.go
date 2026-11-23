@@ -2,8 +2,9 @@ package core
 
 // ClientCapabilityOverride is an owner edit of one registry client.
 // Nil slices and zero numbers leave the registry value in place.
-// A client that declares the same fact at runtime still wins.
+// Runtime declarations win unless Force is set for the edited facts.
 type ClientCapabilityOverride struct {
+	Force   bool   `json:"force,omitempty"`
 	ID      string `json:"id,omitempty"`
 	Product string `json:"product,omitempty"`
 	// ProductExact marks a product-only override already scoped by the app editor
@@ -26,5 +27,10 @@ type ClientCapabilityOverride struct {
 	MaxBitrateKbps      int      `json:"maxBitrateKbps,omitempty"`
 	HDR10               *bool    `json:"hdr10,omitempty"`
 	DolbyVision         *bool    `json:"dolbyVision,omitempty"`
-	Notes               string   `json:"notes,omitempty"`
+	// AlwaysEncodeVideo forces every transcoded or remuxed video stream for
+	// matching clients onto the encoded path (keyframes on segment boundaries)
+	// instead of stream-copying video. Direct play of the original file is
+	// unaffected. Applies even when Force is false.
+	AlwaysEncodeVideo bool   `json:"alwaysEncodeVideo,omitempty"`
+	Notes             string `json:"notes,omitempty"`
 }

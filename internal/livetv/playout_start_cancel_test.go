@@ -49,7 +49,7 @@ func TestStopCancelsBlockedHLSStart(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("tune: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second): // liveness bound only; generous for loaded -race runners
 		t.Fatal("StartHLS did not observe Stop")
 	}
 

@@ -10,6 +10,11 @@ import (
 	"github.com/braedonsaunders/ether/internal/mediaproc"
 )
 
+const (
+	speechMinConfidence = 0.22
+	speechMinInliers    = 2
+)
+
 // SpeechWindow is one decoded audio slice used as a timing reference.
 type SpeechWindow struct {
 	Start time.Duration
@@ -25,6 +30,13 @@ func FitSpeechEnergy(cues []Cue, windows []SpeechWindow) (TimingFit, bool) {
 
 // FitSpeechEnergyOptions is FitSpeechEnergy with explicit thresholds.
 func FitSpeechEnergyOptions(cues []Cue, windows []SpeechWindow, opt FitOptions) (TimingFit, bool) {
+	minInliers := speechMinInliers
+	if opt.MinInliers > 0 {
+		minInliers = max(2, opt.MinInliers)
+	}
+	if opt.MinConfidence <= 0 {
+		opt.MinConfidence = speechMinConfidence
+	}
 	opt = opt.withDefaults()
 	if len(cues) < 3 || len(windows) == 0 {
 		return TimingFit{}, false
@@ -45,19 +57,19 @@ func FitSpeechEnergyOptions(cues []Cue, windows []SpeechWindow, opt FitOptions) 
 		if len(votes) == 0 {
 			continue
 		}
-		offset, conf := consensusOffset(votes, confs, opt.FrameSlack)
-		fit := TimingFit{Offset: offset, Rate: rate, Confidence: conf, Inliers: len(votes)}
+		offset, conf, agreed := consensusOffset(votes, confs, opt.FrameSlack)
+		fit := TimingFit{Offset: offset, Rate: rate, Confidence: conf, Inliers: agreed}
 		if !found || fit.Confidence > best.Confidence {
 			best, found = fit, true
 		}
 	}
-	if !found || best.Inliers < 2 || best.Confidence < opt.MinConfidence {
+	if !found || best.Inliers < minInliers || best.Confidence < opt.MinConfidence {
 		return TimingFit{}, false
 	}
 	return best, true
 }
 
-func consensusOffset(votes []time.Duration, confs []float64, slack time.Duration) (time.Duration, float64) {
+func consensusOffset(votes []time.Duration, confs []float64, slack time.Duration) (time.Duration, float64, int) {
 	bestI := 0
 	bestN := 0
 	var bestAbs time.Duration = 1 << 62
@@ -76,12 +88,19 @@ func consensusOffset(votes []time.Duration, confs []float64, slack time.Duration
 		}
 	}
 	var sum float64
+	var sumDur time.Duration
+	agreed := 0
 	for i := range votes {
 		if absDuration(votes[i]-votes[bestI]) <= slack*4 {
 			sum += confs[i]
+			sumDur += votes[i]
+			agreed++
 		}
 	}
-	return votes[bestI], sum / float64(len(votes))
+	if agreed == 0 {
+		return votes[bestI], 0, 0
+	}
+	return sumDur / time.Duration(agreed), sum / float64(len(votes)), agreed
 }
 
 func correlateWindow(cues []Cue, w SpeechWindow, rate float64, opt FitOptions) (time.Duration, float64, bool) {
@@ -102,6 +121,13 @@ func correlateWindow(cues []Cue, w SpeechWindow, rate float64, opt FitOptions) (
 	for i, v := range speech {
 		prefix[i+1] = prefix[i] + int64(v)
 	}
+	cuePrefix := make([]int64, len(cue)+1)
+	for i, v := range cue {
+		cuePrefix[i+1] = cuePrefix[i] + int64(v)
+	}
+	if cuePrefix[len(cue)] == 0 || prefix[len(speech)] == 0 {
+		return 0, 0, false
+	}
 	maxLag := int(opt.MaxOffset / (time.Second / time.Duration(50)))
 	if maxLag > len(speech)-4 {
 		maxLag = len(speech) - 4
@@ -109,38 +135,45 @@ func correlateWindow(cues []Cue, w SpeechWindow, rate float64, opt FitOptions) (
 	if maxLag < 1 {
 		return 0, 0, false
 	}
+	minOverlap := min(len(speech), max(25, len(speech)/4))
 	var bestLag int
-	var bestScore int64
+	bestConf := 0.0
 	have := false
 	for lag := -maxLag; lag <= maxLag; lag++ {
+		lo := max(0, -lag)
+		hi := min(len(speech), len(cue)-lag)
+		overlap := hi - lo
+		if overlap < minOverlap {
+			continue
+		}
+		speechOn := prefix[hi] - prefix[lo]
+		cueOn := cuePrefix[hi+lag] - cuePrefix[lo+lag]
+		if speechOn <= 0 || cueOn <= 0 {
+			continue
+		}
 		score := maskScore(prefix, cue, lag)
-		if !have || score > bestScore {
-			bestLag, bestScore, have = lag, score, true
+		if score <= 0 {
+			continue
+		}
+		expected := float64(cueOn) * float64(speechOn) / float64(overlap)
+		if float64(score) <= expected*1.20 {
+			continue
+		}
+		conf := 2 * float64(score) / float64(cueOn+speechOn)
+		if !have || conf > bestConf || (conf == bestConf && abs64(int64(lag)) < abs64(int64(bestLag))) {
+			bestLag, bestConf, have = lag, conf, true
 		}
 	}
-	if !have || bestScore <= 0 {
+	if !have || bestConf <= 0 {
 		return 0, 0, false
 	}
-	on := 0
-	for _, v := range cue {
-		on += int(v)
-	}
-	if on == 0 {
-		return 0, 0, false
-	}
-	speechOn := prefix[len(speech)]
-	den := float64(int64(on) + speechOn)
-	conf := 0.0
-	if den > 0 {
-		conf = 2 * float64(bestScore) / den
-	}
-	if conf > 1 {
-		conf = 1
+	if bestConf > 1 {
+		bestConf = 1
 	}
 	// lag > 0: cue frame i matched speech at i-lag (earlier), so the
 	// sidecar is late and the correction offset is negative.
 	offset := -time.Duration(bestLag) * (time.Second / 50)
-	return offset, conf, conf >= opt.MinConfidence/2
+	return offset, bestConf, bestConf >= opt.MinConfidence/2
 }
 
 func speechMask(pcm []int16, frame int) []uint8 {
@@ -270,10 +303,10 @@ func decodeAudioWindows(ctx context.Context, ffmpegPath, input string, r io.Read
 		windows = 6
 	}
 	if span <= 0 {
-		span = 8 * time.Second
-	}
-	if span > 12*time.Second {
 		span = 12 * time.Second
+	}
+	if span > 16*time.Second {
+		span = 16 * time.Second
 	}
 	if duration <= 0 {
 		duration = 30 * time.Minute

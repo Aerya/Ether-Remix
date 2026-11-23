@@ -1,5 +1,6 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { CatalogueResults } from "../pages/libraries/browser/CatalogueResults";
 import { calls, renderApp, settleUi } from "./harness";
 import { renderAppWith } from "./routes";
 
@@ -11,8 +12,113 @@ describe("Libraries workspace", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("Books")).toBeInTheDocument();
     expect(screen.getAllByText("Movies").length).toBeGreaterThan(0);
+    const moviesCard = screen.getByRole("region", { name: "Movies" });
+    expect(within(moviesCard).getByText(/In apps: Vela, Plex/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Library settings/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /From a plugin/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Titles from:/)).not.toBeInTheDocument();
+  });
+
+  it("explains disabled plugin libraries with a link to Plugins and keeps card actions in the menu", async () => {
+    const { fake } = renderApp("/libraries", {}, (server) => {
+      const base = server.fetch;
+      server.fetch = async (input, init) => {
+        const res = await base(input, init);
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname !== "/ether/api/libraries" || (init?.method && init.method !== "GET")) {
+          return res;
+        }
+        const body = await res.json();
+        body.libraries = body.libraries.map((lib: { id: number; source: string }) =>
+          lib.source === "plugin"
+            ? { ...lib, sync: { lastError: "plugins: plugin is disabled" } }
+            : lib,
+        );
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      };
+    });
+
+    const booksCard = await screen.findByRole("region", { name: "Books" }, { timeout: 15000 });
+    expect(within(booksCard).getByText("Plugin off")).toBeInTheDocument();
+    const alert = within(booksCard).getByRole("alert");
+    expect(alert).toHaveTextContent("Its plugin is turned off. Turn it on in Plugins.");
+    expect(within(alert).getByRole("link", { name: "Plugins" })).toHaveAttribute(
+      "href",
+      "/plugins/installed",
+    );
+
+    const moviesCard = screen.getByRole("region", { name: "Movies" });
+    fireEvent.click(within(moviesCard).getByRole("button", { name: "More actions for Movies" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Move right" }));
+    await settleUi(() => {
+      expect(calls(fake, "PATCH", "/libraries/").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("renders aligned list-view headers and placeholders and reveals grid selection on demand", () => {
+    const sampleItems = [
+      {
+        key: "1",
+        title: "Sparse Entry",
+        type: "movie" as const,
+        year: 2021,
+      },
+      {
+        key: "2",
+        title: "Full Entry",
+        type: "movie" as const,
+        year: 2024,
+        rating: 8.2,
+        runtimeMinutes: 118,
+        genres: ["Drama", "Mystery"],
+      },
+    ];
+
+    const { rerender } = render(
+      <CatalogueResults
+        items={sampleItems}
+        list={true}
+        queryKey="q1"
+        page={1}
+        hasMore={false}
+        loading={false}
+        onLoadMore={() => {}}
+        onInspect={() => {}}
+        onBulkWatchlist={async () => {}}
+      />,
+    );
+
+    expect(screen.getByRole("columnheader", { name: "Title" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Year" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Rating" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Runtime" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Genres" })).toBeInTheDocument();
+    // Missing rating, runtime, and genres on Sparse Entry render fixed "—" placeholders.
+    expect(screen.getAllByText("—")).toHaveLength(3);
+    expect(screen.getByText("118 min")).toBeInTheDocument();
+
+    rerender(
+      <CatalogueResults
+        items={sampleItems}
+        list={false}
+        queryKey="q1"
+        page={1}
+        hasMore={false}
+        loading={false}
+        onLoadMore={() => {}}
+        onInspect={() => {}}
+        onBulkWatchlist={async () => {}}
+      />,
+    );
+
+    const viewport = screen.getByLabelText("Catalog titles");
+    expect(viewport).toHaveClass("is-grid");
+    expect(viewport).not.toHaveClass("has-selection");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Sparse Entry" }));
+    expect(viewport).toHaveClass("has-selection");
   });
 
   it("shows Browse, Rules, and Settings tabs on a TMDB library without Collections", async () => {
@@ -103,12 +209,161 @@ describe("Libraries workspace", () => {
     });
   });
 
-  it("shows plugin-only sections in a plugin library's settings", async () => {
-    renderApp("/libraries/3/settings");
+  it("shows plugin-only sections and declared kind in a plugin library's settings", async () => {
+    const { fake } = renderApp("/libraries/3/settings", {}, (server) => {
+      const base = server.fetch;
+      server.fetch = async (input, init) => {
+        const res = await base(input, init);
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname !== "/ether/api/libraries/3" || (init?.method && init.method !== "GET")) {
+          return res;
+        }
+        const lib = await res.json();
+        return new Response(
+          JSON.stringify({
+            ...lib,
+            present: {},
+            kind: {
+              ...lib.kind,
+              present: {
+                mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+                silo: { type: "Book" },
+              },
+            },
+            presentations: {
+              ...lib.presentations,
+              effective: {},
+              available: {
+                ...lib.presentations.available,
+                mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+                silo: { type: "Book" },
+              },
+              apps: [
+                {
+                  app: "vela",
+                  available: true,
+                  enabled: false,
+                  defaultOn: true,
+                  source: "inferred",
+                  hintValue: "movies",
+                },
+                {
+                  app: "plex",
+                  available: false,
+                  enabled: false,
+                  defaultOn: false,
+                  source: "unavailable",
+                  reason: "Plex does not have a book library type.",
+                },
+                {
+                  app: "mediaBrowser",
+                  available: true,
+                  enabled: false,
+                  defaultOn: true,
+                  source: "plugin",
+                  hintValue: "books",
+                },
+                {
+                  app: "stremio",
+                  available: false,
+                  enabled: false,
+                  defaultOn: false,
+                  source: "unavailable",
+                  reason: "Stremio only supports movies, shows, and channels.",
+                },
+                {
+                  app: "xtream",
+                  available: false,
+                  enabled: false,
+                  defaultOn: false,
+                  source: "unavailable",
+                  reason: "Xtream only supports movies, series, and live TV.",
+                },
+                {
+                  app: "silo",
+                  available: true,
+                  enabled: false,
+                  defaultOn: true,
+                  source: "plugin",
+                  hintValue: "Book",
+                },
+              ],
+            },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      };
+    });
     expect(await screen.findByText("Basics", {}, { timeout: 15000 })).toBeInTheDocument();
     expect(screen.queryByText("Keeping it up to date")).not.toBeInTheDocument();
     expect(screen.queryByText("New releases")).not.toBeInTheDocument();
     expect(screen.queryByText("Source: TMDB")).not.toBeInTheDocument();
+
+    expect(
+      screen.getByText("Each app shows Books as its own library. Pick which apps show it."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Kind")).toBeInTheDocument();
+    expect(screen.getByText("Books from Demo books")).toBeInTheDocument();
+    expect(screen.getAllByText("Shown as a book library (from plugin)")).toHaveLength(2);
+    expect(screen.getByText("Shown as a movie library (inferred)")).toBeInTheDocument();
+    expect(screen.getByText("Plex does not have a book library type.")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Show in Plex" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Only in its own app" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Jellyfin & Emby" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Vela" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      const patch = calls(fake, "PATCH", "/libraries/3").at(-1);
+      expect(patch?.body).toMatchObject({
+        presentApps: {
+          vela: true,
+          mediaBrowser: true,
+        },
+      });
+    });
+  });
+
+  it("derives Show in apps hints from the library kind without per-app pickers", async () => {
+    const { fake } = renderApp("/libraries/7/settings");
+    await screen.findByText("Show in apps", {}, { timeout: 15000 });
+    expect(
+      screen.getByText("Each app shows Anime Shows as its own library. Pick which apps show it."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Kind")).toBeInTheDocument();
+    expect(screen.getByText("TV shows")).toBeInTheDocument();
+
+    const switches = screen
+      .getAllByRole("switch")
+      .map((el) => el.getAttribute("aria-label"))
+      .filter((label): label is string => Boolean(label?.startsWith("Show in ")));
+    expect(switches).toEqual([
+      "Show in Vela",
+      "Show in Plex",
+      "Show in Jellyfin & Emby",
+      "Show in Stremio",
+      "Show in Xtream",
+      "Show in Silo",
+    ]);
+    expect(screen.getAllByText("Shown as a show library with seasons")).toHaveLength(6);
+    expect(screen.queryByRole("button", { name: /How .* shows it/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Only in its own app" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Vela" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Plex" }));
+    expect(screen.queryByRole("button", { name: /How .* shows it/ })).not.toBeInTheDocument();
+    expect(screen.getByText("In apps: Vela, Plex")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      const patch = calls(fake, "PATCH", "/libraries/7").at(-1);
+      expect(patch?.body).toMatchObject({
+        presentApps: { vela: true, plex: true },
+      });
+    });
   });
 
   it("sets the quality profile on a library from its settings", async () => {

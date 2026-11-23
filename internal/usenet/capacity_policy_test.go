@@ -3,6 +3,7 @@ package usenet
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ func TestProviderCapacityPolicy(t *testing.T) {
 			limit         bool
 		}{
 			{"Giganews", "(remote) gn;gn1296806: max number of simultaneous connections", true},
+			{"Giganews IP", "(remote) gn;gn1296806: max number of simultaneous IP addresses reached", true},
 			{"Newshosting", "Too many connections", true},
 			{"Eweka", "Maximum number of connections exceeded", true},
 			{"UsenetServer", "Connection limit reached", true},
@@ -42,6 +44,52 @@ func TestProviderCapacityPolicy(t *testing.T) {
 					t.Errorf("%s %v: wrong credential classification", tc.provider, err)
 				}
 			}
+		}
+	})
+	t.Run("simultaneous IP refusal enters backoff without credential lockout", func(t *testing.T) {
+		s := nntptest.Start(t, nntptest.Options{Username: "user", Password: "pass"})
+		s.SetFault(func(cmd, arg string) nntptest.Fault {
+			if cmd == "AUTHINFO" && arg == "PASS pass" {
+				return nntptest.Fault{Code: 481, Text: "(remote) gn;gn1296806: max number of simultaneous IP addresses reached"}
+			}
+			return nntptest.Fault{}
+		})
+		cfg := s.Provider("p", 4)
+		f := newFetcher(t, []config.UsenetProvider{cfg}, Options{
+			MinIdle: -1,
+			limits:  limitTiming{refusalPause: time.Millisecond, backoffMin: time.Millisecond},
+		})
+		p := poolFor(t, f, "p")
+		_, err := p.get(context.Background(), core.PriorityLive)
+		if !errors.Is(err, ErrConnectionLimit) || errors.Is(err, ErrAuthFailed) {
+			t.Fatalf("unexpected error classification: %v", err)
+		}
+		st := p.stats()
+		if st.State != StateBackoff || !strings.Contains(st.LastError, "simultaneous IP addresses") {
+			t.Fatalf("expected backoff state with IP error, got %+v", st)
+		}
+	})
+	t.Run("connection limit with zero established connections enters backoff", func(t *testing.T) {
+		s := nntptest.Start(t, nntptest.Options{Username: "user", Password: "pass"})
+		s.SetFault(func(cmd, arg string) nntptest.Fault {
+			if cmd == "AUTHINFO" && arg == "PASS pass" {
+				return nntptest.Fault{Code: 481, Text: "(remote) gn;gn1296806: max number of simultaneous connections"}
+			}
+			return nntptest.Fault{}
+		})
+		cfg := s.Provider("p", 4)
+		f := newFetcher(t, []config.UsenetProvider{cfg}, Options{
+			MinIdle: -1,
+			limits:  limitTiming{refusalPause: time.Millisecond, backoffMin: time.Millisecond},
+		})
+		p := poolFor(t, f, "p")
+		_, err := p.get(context.Background(), core.PriorityLive)
+		if !errors.Is(err, errAtLimit) || errors.Is(err, ErrAuthFailed) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		st := p.stats()
+		if st.State != StateBackoff || st.LiveConnections != 0 {
+			t.Fatalf("expected backoff state when 0 connections can be established, got %+v", st)
 		}
 	})
 	t.Run("shrink and recovery", func(t *testing.T) {

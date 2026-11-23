@@ -161,3 +161,43 @@ func TestSubtitleSearchRangesRespectCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSourceSelectionAndActivityDoNotBlockDuringFailover(t *testing.T) {
+	h := newHarness(t, []*fakeRelease{mkv("A", 100_000, time.Minute)}, []string{"A"})
+	ps := h.prepare(owner, movieKey, "viewer")
+	revision := core.SourceRevision(ps)
+	s := h.m.lookup(ps.ID)
+	if s == nil {
+		t.Fatal("session missing")
+	}
+
+	// Simulate failoverWith holding failSem across slow candidate opens.
+	if err := lock(t.Context(), s.failSem); err != nil {
+		t.Fatal(err)
+	}
+	s.failingOver.Store(true)
+
+	called := false
+	if err := h.m.WithSourceSelection(t.Context(), ps.ID, revision, func(core.MediaInfo) error {
+		called = true
+		return nil
+	}); !errors.Is(err, core.ErrSourceChanged) || called {
+		t.Fatalf("WithSourceSelection during failover = %v (called=%v), want ErrSourceChanged", err, called)
+	}
+	if err := h.m.SourcePlaybackProgress(t.Context(), ps.ID, revision, ps.UserID, ps.ClientID, ps.Key, 5*time.Second, "playing"); !errors.Is(err, core.ErrSourceChanged) {
+		t.Fatalf("SourcePlaybackProgress during failover = %v, want ErrSourceChanged", err)
+	}
+
+	s.failingOver.Store(false)
+	unlock(s.failSem)
+
+	if err := h.m.WithSourceSelection(t.Context(), ps.ID, revision, func(core.MediaInfo) error {
+		called = true
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("WithSourceSelection after failover = %v (called=%v), want nil", err, called)
+	}
+	if err := h.m.SourcePlaybackProgress(t.Context(), ps.ID, revision, ps.UserID, ps.ClientID, ps.Key, 5*time.Second, "playing"); err != nil {
+		t.Fatalf("SourcePlaybackProgress after failover = %v, want nil", err)
+	}
+}

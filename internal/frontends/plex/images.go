@@ -135,6 +135,12 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.handleUnknown(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/library/metadata/") && !r.URL.Query().Has("ranked") {
+		if _, kind, lang, ok := decodeDiscoveryArtworkToken(chi.URLParam(r, "ts")); ok && discoveryElementMatchesKind(element, kind) {
+			s.serveDiscoveryPoster(w, r, key, kind, lang)
+			return
+		}
+	}
 	width, _ := strconv.Atoi(r.URL.Query().Get("width"))
 	s.serveItemImage(w, r, key, element, width)
 }
@@ -167,6 +173,10 @@ func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key fron
 	}
 	if element == "composite" || element == "squareArt" {
 		element = "thumb"
+	}
+	height, _ := strconv.Atoi(r.URL.Query().Get("height"))
+	if key.IsPluginKey() && s.servePluginItemImage(w, r, key, element, width, height) {
+		return
 	}
 	raw := r.URL.Query().Get("collection")
 	if raw == "" && s.serveCollectionArtwork(w, r, key, element, width) {
@@ -203,19 +213,30 @@ func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key fron
 			return
 		}
 		if width <= 0 {
-			if element == "art" || element == "background" {
-				width = 0
-			} else {
-				width = 500
-			}
+			width = unsizedImageWidth(element, 500)
 		}
 		s.serveRemoteImage(w, r, s.svc().imageURL(path, psePosterSize(element, width))) // PSE-HOOK: taille des affiches TMDB — voir docs/pse/FORK.fr.md
 		return
 	}
-	if width <= 0 && element != "art" && element != "background" {
-		width = defWidth
+	if width <= 0 {
+		width = unsizedImageWidth(element, defWidth)
 	}
 	s.serveRemoteImage(w, r, s.svc().imageURL(path, psePosterSize(element, width))) // PSE-HOOK: taille des affiches TMDB
+}
+
+// unsizedImageWidth is the source width for an image request that names no
+// size. Clients such as Plezy load /thumb and /art without transcode
+// parameters; the TMDB original is a 2-8 MB 4K file that took up to 8 s per
+// image. Serve what a 1080p TV can show instead: w1280 art, w780 for posters
+// and stills, or the artwork source's own smaller default.
+func unsizedImageWidth(element string, def int) int {
+	if element == "art" || element == "background" {
+		return 1280
+	}
+	if def > 0 && def <= 780 {
+		return def
+	}
+	return 780
 }
 
 // servePlexOverlayImage is the last-resort artwork path: only when the owner
@@ -255,7 +276,7 @@ func (s *Server) writeRemoteImage(w http.ResponseWriter, r *http.Request, u stri
 	if err != nil {
 		return err
 	}
-	data, ct, err := s.androidPhotoFormat(r, img.Data, img.ContentType)
+	data, ct, err := s.androidPhotoFormat(r, fitPhoto(r.Context(), u, img.Data, img.ContentType), img.ContentType)
 	if err != nil {
 		return err
 	}
@@ -276,11 +297,24 @@ func (s *Server) writeRemoteImage(w http.ResponseWriter, r *http.Request, u stri
 
 // Person artwork is scoped to one title so authorization requires one catalog lookup.
 func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, kind, identity string) {
+	s.servePersonImageSized(w, r, key, kind, identity, 0, 0)
+}
+
+func (s *Server) servePersonImageSized(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, kind, identity string, width, height int) {
 	if r.Context().Err() != nil {
 		return
 	}
 	t, err := s.artworkTitle(r.Context(), key)
-	if r.Context().Err() != nil || err != nil || t == nil || !t.IsReleased(s.now()) || !s.visibleTitle(r.Context(), FromContext(r.Context()).User, t) {
+	if r.Context().Err() != nil || err != nil || t == nil {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	if key.IsPluginKey() {
+		if !s.canSeePluginTitle(FromContext(r.Context()).User, t) {
+			writeHTTPError(w, http.StatusNotFound)
+			return
+		}
+	} else if !t.IsReleased(s.now()) || !s.visibleTitle(r.Context(), FromContext(r.Context()).User, t) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
@@ -292,6 +326,8 @@ func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key fr
 		people = t.Directors
 	case "writer":
 		people = t.Writers
+	case "producer":
+		people = t.Crew
 	default:
 		writeHTTPError(w, http.StatusNotFound)
 		return
@@ -301,10 +337,14 @@ func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key fr
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	var imagePath string
+	var (
+		imagePath     string
+		matchedPerson frontend.Person
+	)
 	for _, person := range people {
 		if person.ThumbPath == string(raw) {
 			imagePath = person.ThumbPath
+			matchedPerson = person
 			break
 		}
 	}
@@ -319,7 +359,16 @@ func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key fr
 		}
 	}
 	if imagePath == "" {
+		if credits, ok := s.plexCreditsCached(r.Context(), key); ok && credits.HasThumb(string(raw)) {
+			imagePath = string(raw)
+		}
+	}
+	if imagePath == "" {
 		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	if key.IsPluginKey() && (strings.HasPrefix(imagePath, "https://") || strings.HasPrefix(imagePath, "http://")) {
+		s.servePluginPersonImage(w, r, key, matchedPerson.TMDB, imagePath, width, height)
 		return
 	}
 	if plexImageURL(imagePath) {
@@ -329,20 +378,24 @@ func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key fr
 	// Keep the same w185 profile URL emitted by metadata before proxying; poster widths are not profile configuration. Width and height are intentionally ignored.
 	s.serveRemoteImage(w, r, s.svc().imageURL(imagePath, "w185"))
 }
+
 func (s *Server) handlePersonImage(w http.ResponseWriter, r *http.Request) {
 	key, err := frontend.ParseRatingKey(chi.URLParam(r, "key"))
 	if err != nil {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	s.servePersonImage(w, r, key, chi.URLParam(r, "kind"), chi.URLParam(r, "identity"))
+	width, _ := strconv.Atoi(r.URL.Query().Get("width"))
+	height, _ := strconv.Atoi(r.URL.Query().Get("height"))
+	s.servePersonImageSized(w, r, key, chi.URLParam(r, "kind"), chi.URLParam(r, "identity"), width, height)
 }
 
-var personImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/person/(actor|director|writer)/([A-Za-z0-9_-]+)$`)
+var personImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/person/(actor|director|writer|producer)/([A-Za-z0-9_-]+)$`)
 
-var metadataImageRe = regexp.MustCompile(`^/library/(?:metadata|collections)/(\d+)/(thumb|art|poster|banner|clearLogo|composite|squareArt)(?:/\d+)?$`)
+var metadataImageRe = regexp.MustCompile(`^/library/(?:metadata|collections)/(\d+)/(thumb|art|poster|banner|clearLogo|logo|background|composite|squareArt)(?:/([A-Za-z0-9_-]+))?$`)
 var playlistImageRe = regexp.MustCompile(`^/playlists/(\d+)/(composite|thumb|art)(?:/\d+)?$`)
 var discoveryImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/discoveryPoster/[^/]+$`)
+var partIndexFrameRe = regexp.MustCompile(`^/library/parts/(\d+)/indexes/([^/]+)/(\d+)$`)
 
 // handlePhotoTranscode serves /photo/:/transcode. The url parameter may be
 // one of our own artwork paths (relative, or absolute on this server) or an
@@ -382,13 +435,15 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	width, _ := strconv.Atoi(photoQueryValue(q, "width"))
+	rawWidth, _ := strconv.Atoi(photoQueryValue(q, "width"))
 	height, _ := strconv.Atoi(photoQueryValue(q, "height"))
+	width := rawWidth
 	if width <= 0 && height > 0 {
 		width = height * 2 / 3 // poster aspect
 	} else if strings.HasSuffix(photoQueryValue(q, "minSize"), "1") && height > 0 && height*2/3 > width {
 		width = height * 2 / 3
 	}
+	r = r.WithContext(withPhotoFitWidth(r.Context(), width))
 	u, err := url.Parse(raw)
 	if err != nil {
 		writeHTTPError(w, http.StatusBadRequest)
@@ -407,6 +462,13 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 	// viewer; never dial that hostname or use credentials from the nested URL.
 	androidLocal := plexAndroidClient(FromContext(r.Context())) && (u.Scheme == "http" || u.Scheme == "https") &&
 		(metadataImageRe.MatchString(u.Path) || discoveryImageRe.MatchString(u.Path) || personImageRe.MatchString(u.Path) || playlistImageRe.MatchString(u.Path) || liveChannelLogoRe.MatchString(u.Path))
+	// A signed guide logo needs no host check: the signature names the
+	// channel and nothing is dialled. A client may wrap the public address
+	// Plex's cloud was given.
+	if m := signedLogoRe.FindStringSubmatch(u.Path); m != nil && (u.Scheme == "" || u.Scheme == "http" || u.Scheme == "https") {
+		s.serveSignedLiveLogo(w, r, m[1], m[2])
+		return
+	}
 	if !u.IsAbs() || s.isSelfHost(r, u.Host) || androidLocal {
 		path := u.Path
 		if m := liveChannelLogoRe.FindStringSubmatch(path); m != nil {
@@ -420,11 +482,7 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			params := u.Query()
-			r = r.Clone(r.Context())
-			effective := r.URL.Query()
-			effective.Set("width", strconv.Itoa(width))
-			r.URL.RawQuery = effective.Encode()
-			s.serveDiscoveryPoster(w, r, key, params.Get("kind"), params.Get("lang"))
+			s.serveTranscodedDiscoveryPoster(w, r, key, params.Get("kind"), params.Get("lang"), width)
 			return
 		}
 		if m := personImageRe.FindStringSubmatch(path); m != nil {
@@ -433,7 +491,7 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				writeHTTPError(w, http.StatusNotFound)
 				return
 			}
-			s.servePersonImage(w, r, key, m[2], m[3])
+			s.servePersonImageSized(w, r, key, m[2], m[3], rawWidth, height)
 			return
 		}
 		if m := metadataImageRe.FindStringSubmatch(path); m != nil {
@@ -442,10 +500,16 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				writeHTTPError(w, http.StatusNotFound)
 				return
 			}
+			inner := u.Query()
+			if strings.HasPrefix(path, "/library/metadata/") && !inner.Has("ranked") {
+				if _, kind, lang, ok := decodeDiscoveryArtworkToken(m[3]); ok && discoveryElementMatchesKind(m[2], kind) {
+					s.serveTranscodedDiscoveryPoster(w, r, key, kind, lang, width)
+					return
+				}
+			}
 			// The inner URL carries the variant (collection scope, Top 10 rank
 			// and shape). Clients such as Plex for Apple TV fetch every poster
 			// through this transcoder, so the variant must survive the hop.
-			inner := u.Query()
 			if inner.Has("collection") || inner.Has("ranked") {
 				r = r.Clone(r.Context())
 				q := r.URL.Query()
@@ -468,6 +532,16 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 			s.serveItemImage(w, r, key, m[2], width)
 			return
 		}
+		if m := partIndexFrameRe.FindStringSubmatch(path); m != nil {
+			partID, err1 := strconv.ParseInt(m[1], 10, 64)
+			offsetMS, err2 := strconv.ParseInt(m[3], 10, 64)
+			if err1 != nil || err2 != nil {
+				writeHTTPError(w, http.StatusNotFound)
+				return
+			}
+			s.serveIndexFrame(w, r, partID, m[2], offsetMS)
+			return
+		}
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
@@ -478,7 +552,17 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 	s.serveRemoteImage(w, r, resizeTMDBURL(u.String(), width))
 }
 
+func (s *Server) serveTranscodedDiscoveryPoster(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, kind, lang string, width int) {
+	r = r.Clone(r.Context())
+	effective := r.URL.Query()
+	effective.Set("width", strconv.Itoa(width))
+	r.URL.RawQuery = effective.Encode()
+	s.serveDiscoveryPoster(w, r, key, kind, lang)
+}
+
 var liveChannelLogoRe = regexp.MustCompile(`^/livetv/channels/([^/]+)/logo\.(?:svg|png)$`)
+
+var signedLogoRe = regexp.MustCompile(`^/livetv/logos/([^/]+)/([A-Za-z0-9_-]+)\.png$`)
 
 // isSelfHost reports whether host refers to this server.
 func (s *Server) isSelfHost(r *http.Request, host string) bool {

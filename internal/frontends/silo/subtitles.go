@@ -157,7 +157,8 @@ func (i *instance) authorizedFile(w http.ResponseWriter, r *http.Request, viewer
 	}
 	var client frontend.ClientCaps
 	if i.host.Capabilities != nil {
-		built, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: viewer, Device: caps.DeviceInfo{Protocol: "silo", ClientID: device(r).ID, Product: device(r).Client, Version: device(r).Version, DeviceName: device(r).DeviceName}, UserAgent: r.UserAgent()})
+		dev := device(r)
+		built, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: viewer, Device: caps.DeviceInfo{Protocol: "silo", ClientID: dev.ID, Product: dev.Client, Platform: dev.Platform, Version: dev.Version, DeviceName: dev.DeviceName}, UserAgent: r.UserAgent()})
 		if err != nil {
 			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 			return 0, false

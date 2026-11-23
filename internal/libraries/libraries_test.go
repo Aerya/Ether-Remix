@@ -35,11 +35,17 @@ func TestSeededBuiltins(t *testing.T) {
 		t.Fatalf("List = %+v, want the two builtins", libs)
 	}
 	movies, shows := libs[0], libs[1]
-	if movies.ID != 1 || movies.Key != "movies" || movies.Name != "Movies" || movies.Source != core.LibraryBuiltin || movies.MediaType != core.TypeMovie {
+	if movies.ID != 1 || movies.Key != "movies" || movies.Name != "Movies" || movies.Source != core.LibraryCatalog || movies.MediaType != core.TypeMovie {
 		t.Fatalf("movies = %+v", movies)
 	}
-	if shows.ID != 2 || shows.Key != "shows" || shows.Name != "TV Shows" || shows.Source != core.LibraryBuiltin || shows.MediaType != core.TypeShow {
+	if movies.Present.Vela == nil || movies.Present.Vela.Type != "movies" {
+		t.Fatalf("movies.Present.Vela = %+v, want movies", movies.Present.Vela)
+	}
+	if shows.ID != 2 || shows.Key != "shows" || shows.Name != "TV Shows" || shows.Source != core.LibraryCatalog || shows.MediaType != core.TypeShow {
 		t.Fatalf("shows = %+v", shows)
+	}
+	if shows.Present.Vela == nil || shows.Present.Vela.Type != "shows" {
+		t.Fatalf("shows.Present.Vela = %+v, want shows", shows.Present.Vela)
 	}
 	if got, err := s.ByKey(ctx, "movies"); err != nil || got.ID != 1 {
 		t.Fatalf("ByKey(movies) = %+v, %v", got, err)
@@ -134,11 +140,37 @@ func TestCreateCollectionLibrary(t *testing.T) {
 		t.Fatalf("unslugifiable name = %v, want ErrInvalid", err)
 	}
 	// Collection libraries are console-only like filter ones and may be deleted.
-	if lib.Present.Plex != nil || lib.Present.MediaBrowser != nil || lib.Present.Stremio != nil || lib.Present.AdapterOnly {
+	if lib.Present.Vela != nil || lib.Present.Plex != nil || lib.Present.MediaBrowser != nil || lib.Present.Stremio != nil || lib.Present.AdapterOnly {
 		t.Fatalf("new library must be console-only: %+v", lib.Present)
 	}
 	if err := s.Delete(ctx, lib.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPresentationsValidation(t *testing.T) {
+	s, _ := openService(t)
+	ctx := context.Background()
+
+	validVela := core.Presentations{
+		Vela: &core.VelaPresentation{Type: "shows"},
+	}
+	if err := s.SetPresent(ctx, 2, validVela); err != nil {
+		t.Fatalf("valid vela present: %v", err)
+	}
+	got, err := s.Get(ctx, 2)
+	if err != nil || got.Present.Vela == nil || got.Present.Vela.Type != "shows" {
+		t.Fatalf("round-trip vela present = %+v, %v", got.Present, err)
+	}
+
+	badVela := core.Presentations{
+		Vela: &core.VelaPresentation{Type: "anime"},
+	}
+	if err := s.SetPresent(ctx, 2, badVela); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("SetPresent(bad vela) = %v, want ErrInvalid", err)
+	}
+	if _, err := s.Create(ctx, "Bad Vela", core.TypeMovie, nil, "show", badVela); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Create(bad vela) = %v, want ErrInvalid", err)
 	}
 }
 
@@ -168,8 +200,8 @@ func TestOwnerEditsAndDelete(t *testing.T) {
 	if err := s.Rename(ctx, 99, "Nope"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("rename missing = %v, want ErrNotFound", err)
 	}
-	if err := s.Delete(ctx, 1); !errors.Is(err, ErrBuiltinLibrary) {
-		t.Fatalf("delete builtin = %v, want ErrBuiltinLibrary", err)
+	if err := s.Delete(ctx, 1); err != nil {
+		t.Fatalf("delete default = %v", err)
 	}
 	filter, err := s.Create(ctx, "Short Lived", core.TypeShow, nil, "show", core.Presentations{})
 	if err != nil {

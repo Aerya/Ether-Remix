@@ -1,6 +1,6 @@
 import { copyText } from "./CopyButton";
 import { Button, Tooltip } from "@braedonsaunders/appkit-ui";
-import { AlertTriangle, CheckCircle2, XCircle, Copy, CircleHelp } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleDashed, XCircle, Copy, CircleHelp } from "lucide-react";
 import type { ComponentProps } from "react";
 import { SettingsRow } from "./SettingsRow";
 import { t } from "../i18n";
@@ -11,13 +11,21 @@ export function StatusRow({
   ...props
 }: ComponentProps<typeof SettingsRow> & { state?: string }) {
   const Icon =
-    state === "reachable" ? CheckCircle2 : state === "unreachable" ? XCircle : AlertTriangle;
+    state === "reachable"
+      ? CheckCircle2
+      : state === "unreachable"
+        ? XCircle
+        : state === "warning"
+          ? AlertTriangle
+          : CircleDashed;
   const color =
     state === "reachable"
       ? "text-success"
       : state === "unreachable"
         ? "text-danger"
-        : "text-warning";
+        : state === "warning"
+          ? "text-warning"
+          : "text-fg-muted";
   return (
     <SettingsRow
       {...props}

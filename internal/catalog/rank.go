@@ -170,6 +170,50 @@ CREATE TRIGGER catalog_rank_insert AFTER INSERT ON catalog_titles FOR EACH ROW W
 CREATE TRIGGER catalog_rank_update AFTER UPDATE OF `+rankWatched+` ON catalog_titles FOR EACH ROW WHEN (NEW.type IN ('movie','show') OR OLD.type IN ('movie','show')) EXECUTE FUNCTION catalog_rank_fn();
 CREATE TRIGGER catalog_rank_delete AFTER DELETE ON catalog_titles FOR EACH ROW WHEN (OLD.type IN ('movie','show')) EXECUTE FUNCTION catalog_rank_fn();
 INSERT INTO catalog_meta(k,v) VALUES('rank_side','a'),('rank_building','') ON CONFLICT(k) DO UPDATE SET v=excluded.v;`)
+	// A logical restore (a backup, or ether cluster init copying SQLite into
+	// PostgreSQL) writes tables, not views: the target keeps the view its
+	// migrations created, on catalog_rank_a, while the restored rank_side
+	// may name catalog_rank_b. Point the view at the restored live copy.
+	store.RegisterRestore("catalog_rank_view", func(context.Context, *sql.Tx) (func(context.Context, *sql.Tx) error, error) {
+		return func(ctx context.Context, tx *sql.Tx) error {
+			for _, s := range rankViewSQL(liveRankSide(ctx, tx)) {
+				if _, err := tx.ExecContext(ctx, s); err != nil {
+					return fmt.Errorf("catalog: point rank view at the restored copy: %w", err)
+				}
+			}
+			return nil
+		}, nil
+	})
+}
+
+// liveRankSide is the copy rank_side names, the one the triggers maintain.
+func liveRankSide(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) string {
+	var v string
+	if err := q.QueryRowContext(ctx, `SELECT v FROM catalog_meta WHERE k='rank_side'`).Scan(&v); err == nil && v == "b" {
+		return "b"
+	}
+	return "a"
+}
+
+// rankViewSQL points the catalog_rank view at copy side. Drop and create
+// work on both dialects; SQLite has no CREATE OR REPLACE VIEW.
+func rankViewSQL(side string) []string {
+	return []string{`DROP VIEW IF EXISTS catalog_rank`, `CREATE VIEW catalog_rank AS SELECT ` + rankColumns + ` FROM catalog_rank_` + side}
+}
+
+// rankViewNames reports whether the catalog_rank view reads copy side.
+func (c *Catalog) rankViewNames(ctx context.Context, pg bool, side string) (bool, error) {
+	q := `SELECT sql FROM sqlite_master WHERE type='view' AND name='catalog_rank'`
+	if pg {
+		q = `SELECT pg_get_viewdef('catalog_rank'::regclass)`
+	}
+	var def string
+	if err := c.db.QueryRowContext(ctx, q).Scan(&def); err != nil {
+		return false, err
+	}
+	return strings.Contains(def, "catalog_rank_"+side), nil
 }
 
 // rankRebuildEvery spaces the rank rebuilds: TMDB publishes popularity
@@ -254,6 +298,23 @@ func (c *Catalog) rebuildRank(ctx context.Context) (RankRebuild, error) {
 			return out, fmt.Errorf("catalog: rank rebuild already running")
 		}
 		defer conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('ether:catalog-rank-rebuild'))`)
+	}
+	// A database restored before the restore hook pointed the view at the
+	// live copy may still read the idle one: popularity pages read that
+	// emptied copy, and PostgreSQL refuses to drop a table a view depends
+	// on, so every rebuild failed. Point the view back first.
+	if stale, err := c.rankViewNames(ctx, pg, idle); err != nil {
+		return out, fmt.Errorf("catalog: rank rebuild: read view: %w", err)
+	} else if stale {
+		if pg {
+			err = c.swapRankViewPG(ctx, "catalog_rank_"+live, nil)
+		} else {
+			err = exec(rankViewSQL(live)...)
+		}
+		if err != nil {
+			return out, err
+		}
+		c.log.Warn("catalog: popularity rank view read the idle copy; pointed it at the live copy", "live", "catalog_rank_"+live)
 	}
 	// From here the triggers leave the idle copy alone.
 	if err := exec(`DELETE FROM catalog_rank_pending`, `UPDATE catalog_meta SET v='`+idle+`' WHERE k='rank_building'`); err != nil {

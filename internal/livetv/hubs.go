@@ -37,6 +37,7 @@ func (s *Service) HomeHub(ctx context.Context, u *core.User, limit int) (core.Hu
 			t.Title = p.Item.Title
 			t.Summary = c.Name + " · " + p.Item.Summary
 			t.ContentRating = p.Item.Rating
+			t.EnforcementRating = p.Item.EnforcementRating
 			t.Runtime = p.End.Sub(p.Start)
 		}
 		hub.Items = append(hub.Items, t)

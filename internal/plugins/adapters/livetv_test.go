@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/adapters"
+	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -332,5 +334,207 @@ func TestLiveTVHealthFailureOnOpenAndFetch(t *testing.T) {
 	}
 	if len(health.Failures) != 2 {
 		t.Fatalf("expected 2 recorded health failures, got %+v", health)
+	}
+}
+
+func TestLiveTVHostedRefreshGetsGrantedLimitsWhileViewerAndHealthKeepRouteCaps(t *testing.T) {
+	db := store.OpenTest(t)
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+
+	tv, err := livetv.New(livetv.Options{
+		DB:  db,
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tv.Close() })
+
+	eng := wasm.NewEngine(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { _ = eng.Close() })
+
+	mgr, err := plugins.New(plugins.Deps{
+		DB:       db,
+		Registry: extend.New(),
+		Tools:    tools.NewCatalogue(),
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		IsLeader: func() bool { return true },
+		Now:      func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.RegisterRuntime("hosted", plugins.HostedRuntimeFactory(eng))
+	adapters.Attach(mgr, nil, nil, tv)
+
+	var (
+		mu       sync.Mutex
+		observed = map[string]struct {
+			Deadline       string `json:"deadline"`
+			UnitBudget     int64  `json:"unitBudget"`
+			HeaderDeadline string `json:"headerDeadline"`
+		}{}
+	)
+	recordFromLogs := func(ctx context.Context, pluginID string) {
+		for _, key := range []string{"channels", "guide", "stream", "open", "health"} {
+			raw, ok, err := mgr.HostFor(pluginID).KVGet(ctx, "lim:"+key)
+			if err != nil || !ok {
+				continue
+			}
+			var v struct {
+				Deadline       string `json:"deadline"`
+				UnitBudget     int64  `json:"unitBudget"`
+				HeaderDeadline string `json:"headerDeadline"`
+			}
+			if json.Unmarshal(raw, &v) == nil {
+				mu.Lock()
+				observed[key] = v
+				mu.Unlock()
+			}
+		}
+	}
+
+	progStart := now.Add(-30 * time.Minute).Format(time.RFC3339)
+	progEnd := now.Add(30 * time.Minute).Format(time.RFC3339)
+
+	man := map[string]any{
+		"id":      "community.livetv.sports",
+		"version": "1.0.0",
+		"name":    "Sports Live TV",
+		"ether": map[string]any{
+			"protocol": 1,
+			"kind":     "livetv_source",
+			"summary":  "Live sports channels and event guide",
+			"runtime": map[string]any{
+				"kind":  "hosted",
+				"entry": "dist/plugin.js",
+				"limits": map[string]any{
+					"deadline":   "2h",
+					"unitBudget": int64(5000000),
+				},
+			},
+			"capabilities": []string{"livetv_channels"},
+			"contributes": map[string]any{
+				"channels": map[string]any{
+					"refresh": "2h",
+					"test":    true,
+				},
+			},
+		},
+	}
+	rawMan, err := json.Marshal(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := `
+globalThis.handle = function(req) {
+  const lim = ether.runtime.limits();
+  const snap = JSON.stringify({
+    deadline: lim.deadline,
+    unitBudget: lim.unitBudget,
+    headerDeadline: (req.headers && req.headers["X-Ether-Deadline"]) || "",
+  });
+  const p = req.path || "";
+  if (p === "/ether/channels.json") {
+    ether.kv.put("lim:channels", snap);
+    return {
+      status: 200,
+      body: {
+        channels: [{
+          id: "sports-main",
+          name: "Sports Main",
+          number: 101,
+          streams: [
+            { id: "sports-stream", name: "Main Feed" },
+            { openId: "sports-open", name: "Backup Feed" }
+          ]
+        }]
+      }
+    };
+  }
+  if (p.indexOf("/ether/guide/sports-main.json") === 0) {
+    ether.kv.put("lim:guide", snap);
+    return {
+      status: 200,
+      body: {
+        programmes: [{
+          title: "Championship Live",
+          start: "` + progStart + `",
+          end: "` + progEnd + `"
+        }]
+      }
+    };
+  }
+  if (p === "/stream/tv/sports-stream.json") {
+    ether.kv.put("lim:stream", snap);
+    return { status: 200, body: { streams: [{ url: "https://cdn.example/live.m3u8" }] } };
+  }
+  if (p === "/ether/open/sports-open") {
+    ether.kv.put("lim:open", snap);
+    return { status: 200, body: { url: "https://cdn.example/backup.m3u8" } };
+  }
+  if (p === "/ether/health") {
+    ether.kv.put("lim:health", snap);
+    return { status: 200, body: { status: "ok" } };
+  }
+  return { status: 404, body: {} };
+};
+`
+	ctx := context.Background()
+	prev, err := mgr.PreviewInstall(ctx, plugins.Source{
+		Kind:     "studio",
+		Manifest: rawMan,
+		Files:    map[string][]byte{"dist/plugin.js": []byte(js)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := mgr.Install(ctx, prev, plugins.InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kindID := extend.PluginID(rec.ID, "channels")
+	if _, err := tv.ImportSource(ctx, livetv.Source{Name: "Sports", PlaylistURL: kindID}); err != nil {
+		t.Fatalf("ImportSource: %v", err)
+	}
+	channels, err := tv.Channels(ctx)
+	if err != nil || len(channels) != 1 {
+		t.Fatalf("Channels: %v (%d)", err, len(channels))
+	}
+	ch := channels[0]
+	for i, ss := range ch.StreamSources {
+		if _, _, err := tv.ResolveStreamSource(ctx, ch, ss); err != nil {
+			t.Fatalf("ResolveStreamSource[%d]: %v", i, err)
+		}
+	}
+	if _, err := mgr.CheckHealth(ctx, rec.ID); err != nil {
+		t.Fatalf("CheckHealth: %v", err)
+	}
+
+	recordFromLogs(ctx, rec.ID)
+
+	for _, tc := range []struct {
+		key      string
+		deadline string
+		units    int64
+		wantHdr  time.Time
+	}{
+		{"channels", "2h0m0s", 5000000, now.Add(2 * time.Hour)},
+		{"guide", "2h0m0s", 5000000, now.Add(2 * time.Hour)},
+		{"stream", "3s", 30000, now.Add(3 * time.Second)},
+		{"open", "3s", 30000, now.Add(3 * time.Second)},
+		{"health", "5s", 5000000, now.Add(5 * time.Second)},
+	} {
+		got, ok := observed[tc.key]
+		if !ok {
+			t.Fatalf("missing observed limits for %s", tc.key)
+		}
+		if got.Deadline != tc.deadline || got.UnitBudget != tc.units {
+			t.Fatalf("%s: got deadline=%q unitBudget=%d, want %q / %d", tc.key, got.Deadline, got.UnitBudget, tc.deadline, tc.units)
+		}
+		if got.HeaderDeadline != tc.wantHdr.UTC().Format(time.RFC3339) {
+			t.Fatalf("%s: got X-Ether-Deadline=%q, want %q", tc.key, got.HeaderDeadline, tc.wantHdr.UTC().Format(time.RFC3339))
+		}
 	}
 }

@@ -89,7 +89,7 @@ func (i *instance) similar(w http.ResponseWriter, r *http.Request) {
 	for _, title := range page.Page.Items {
 		item := titleDTO(title, state[title.Key])
 		if granted, ok := cards[title.Key]; ok {
-			paintCatalogArtwork(r, granted, item)
+			i.paintCatalogArtwork(r, granted, item)
 			// The card keeps the backdrop list a detail-read card carried.
 			if backdrop, ok := item["backdrop_url"].(string); ok {
 				item["backdrop_urls"] = []string{backdrop}

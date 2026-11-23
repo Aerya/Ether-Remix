@@ -25,6 +25,9 @@ func (s *Service) referenceHeight(cands []candidate, exclude []string) int {
 // drasticDowngrade reports a candidate far below the reference: SD or an
 // unknown resolution when 1080p or better was on offer.
 func drasticDowngrade(c candidate, reference int) bool {
+	if c.keys.addonOrder > 0 {
+		return false
+	}
 	return reference >= 1080 && c.keys.height < 720
 }
 

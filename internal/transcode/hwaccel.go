@@ -29,12 +29,16 @@ const DefaultVAAPIDevice = "/dev/dri/renderD128"
 
 // features is what the ffmpeg build offers: encoders, hwaccels, filters.
 type features struct {
+	decode     decodeCapabilities
+	qsvToneMap qsvToneMapper
 	// A one-frame device probe confirms the installed CUDA filter accepts
 	// P010 output. A filter name or version alone does not establish this.
 	cudaP010ToneMap bool
 	// scaleVTFormat is a build capability, not an FFmpeg version guess:
 	// upstream builds can expose scale_vt without its format option.
 	scaleVTFormat bool
+	// vppQSVTonemap is true when -h filter=vpp_qsv advertises the tonemap option.
+	vppQSVTonemap bool
 	// Jellyfin patches the segment muxer's origin and first-entry duration.
 	jellyfinSegmentClock bool
 	// Optional startup-only inventory. Unknown lists deny distributed admission
@@ -161,6 +165,11 @@ func probeFeatures(ctx context.Context, r Runner, ffmpeg string) (features, erro
 		// Optional probing cannot make a formerly usable build fail startup.
 		if help, helpErr := run("-h", "filter=scale_vt"); helpErr == nil {
 			f.scaleVTFormat = filterHasOption(help, "format")
+		}
+	}
+	if f.hasFilter("vpp_qsv") {
+		if help, helpErr := run("-h", "filter=vpp_qsv"); helpErr == nil {
+			f.vppQSVTonemap = filterHasOption(help, "tonemap")
 		}
 	}
 	probeDistributedFeatures(ctx, r, ffmpeg, &f)

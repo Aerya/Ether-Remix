@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/langtag"
+	"github.com/braedonsaunders/ether/internal/newznab"
 )
 
 // LoginLock serialises logins for one key across every Ether node sharing
@@ -34,6 +36,7 @@ type Runner struct {
 	// the definition's `language`, canonicalised to a BCP 47 tag. Empty
 	// when neither names one.
 	language string
+	clientID func() config.ClientIdentity
 
 	mu       sync.Mutex
 	loggedIn bool
@@ -42,18 +45,20 @@ type Runner struct {
 
 // runnerOptions carries a Runner's dependencies.
 type runnerOptions struct {
-	IndexerID  string
-	SiteLink   string
-	Settings   map[string]string
-	HTTPClient *http.Client
-	FlareURL   func() string
-	Sessions   *sessionStore
-	Lock       LoginLock
-	Logger     *slog.Logger
-	Now        func() time.Time
+	IndexerID   string
+	SiteLink    string
+	Settings    map[string]string
+	HTTPClient  *http.Client
+	FlareURL    func() string
+	Sessions    *sessionStore
+	Lock        LoginLock
+	Logger      *slog.Logger
+	Now         func() time.Time
+	HostLimiter *newznab.HostLimiter
 	// Language is the owner's per-indexer Release language override; empty
 	// leaves the definition's own `language` in force (see Runner.language).
-	Language string
+	Language       string
+	ClientIdentity func() config.ClientIdentity
 }
 
 func newRunner(def *Definition, o runnerOptions) (*Runner, error) {
@@ -75,7 +80,7 @@ func newRunner(def *Definition, o runnerOptions) (*Runner, error) {
 		km := &keyedMutex{}
 		o.Lock = km.lock
 	}
-	r := &Runner{def: def, id: o.IndexerID, settings: o.Settings, site: site, sessions: o.Sessions, lock: o.Lock, log: o.Logger, now: o.Now}
+	r := &Runner{def: def, id: o.IndexerID, settings: o.Settings, site: site, sessions: o.Sessions, lock: o.Lock, log: o.Logger, now: o.Now, clientID: o.ClientIdentity}
 	r.language = canonicalLanguage(o.Language)
 	if r.language == "" {
 		r.language = canonicalLanguage(def.Language)
@@ -84,6 +89,7 @@ func newRunner(def *Definition, o runnerOptions) (*Runner, error) {
 		r.id = def.ID
 	}
 	r.http = newHTTPSession(def, o.HTTPClient, o.FlareURL, o.Logger)
+	r.http.hosts = o.HostLimiter
 	return r, nil
 }
 

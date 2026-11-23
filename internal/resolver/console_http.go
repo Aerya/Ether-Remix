@@ -308,6 +308,9 @@ func (h *consoleAPI) season(w http.ResponseWriter, r *http.Request) {
 			if ep.ShowOriginalTitle == "" {
 				ep.ShowOriginalTitle = showTitle.OriginalTitle
 			}
+			if ep.ShowEnglishTitle == "" {
+				ep.ShowEnglishTitle = showTitle.EnglishTitle
+			}
 			if len(ep.ShowAlternativeTitles) == 0 && len(showTitle.AlternativeTitles) > 0 {
 				ep.ShowAlternativeTitles = showTitle.AlternativeTitles
 			}

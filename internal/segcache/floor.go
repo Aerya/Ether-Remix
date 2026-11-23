@@ -14,12 +14,13 @@ import "time"
 // usage it sees under the index lock. Bytes another pass already freed are
 // therefore never freed twice, and the cache's own writes count against the
 // cap at once. On one node, passes that measure, evict and unlink are
-// serialised (evictMu), so a measurement never sees space that an earlier
-// pass dropped from the index but has not unlinked yet. Across the nodes of
-// a shared cache, each eviction records its bytes in segcache_reclaim until
-// they are unlinked, and measurements count them as free. What remains is
-// segment writes in flight while the volume is measured: they can lower one
-// cap by at most their size until the next measurement.
+// serialised (evictMu), and localUsed includes any entries dropped by Put
+// whose files are still queued for unlink, so a measurement never sees space
+// that an earlier drop removed from the index but has not unlinked yet. Across
+// the nodes of a shared cache, each eviction records its bytes in
+// segcache_reclaim until they are unlinked, and measurements count them as
+// free. What remains is segment writes in flight while the volume is measured:
+// they can lower one cap by at most their size until the next measurement.
 const (
 	floorMaxBytes  = 10 << 30
 	floorFraction  = 20 // 5%
@@ -48,6 +49,12 @@ func (c *Cache) SetDiskUsage(fn DiskUsageFunc) {
 	c.floorMu.Lock()
 	c.diskFn = fn
 	c.floor = floorStat{}
+	c.mu.Lock()
+	c.floorEnabled = fn != nil
+	c.floorOKSnap = false
+	c.floorCapSnap = 0
+	c.floorAtNs = 0
+	c.mu.Unlock()
 	c.floorMu.Unlock()
 	c.evict()
 }
@@ -72,6 +79,12 @@ func (c *Cache) floorCap(used func() (int64, error)) (int64, bool) {
 	c.floorMu.Lock()
 	defer c.floorMu.Unlock()
 	if c.diskFn == nil {
+		c.mu.Lock()
+		c.floorEnabled = false
+		c.floorOKSnap = false
+		c.floorCapSnap = 0
+		c.floorAtNs = 0
+		c.mu.Unlock()
 		return 0, false
 	}
 	now := c.now()
@@ -88,18 +101,32 @@ func (c *Cache) floorCap(used func() (int64, error)) (int64, bool) {
 			c.logger.Warn("segment cache: cannot read free space; the free-space floor is paused", "err", err)
 		}
 		c.floor = floorStat{failing: true}
+		c.mu.Lock()
+		c.floorEnabled = true
+		c.floorOKSnap = false
+		c.floorCapSnap = 0
+		c.floorAtNs = now.UnixNano()
+		c.mu.Unlock()
 		return 0, false
 	}
 	floor := MinFreeBytes(total)
-	c.floor = floorStat{ok: true, at: now, cap: max(u+free-floor, 0), floor: floor, free: free}
+	capBytes := max(u+free-floor, 0)
+	c.floor = floorStat{ok: true, at: now, cap: capBytes, floor: floor, free: free}
+	c.mu.Lock()
+	c.floorEnabled = true
+	c.floorOKSnap = true
+	c.floorCapSnap = capBytes
+	c.floorAtNs = now.UnixNano()
+	c.mu.Unlock()
 	return c.floor.cap, true
 }
 
-// localUsed is the local index's usage, for floorCap.
+// localUsed is the local index's usage plus any dropped bytes still awaiting
+// unlink on disk, for floorCap.
 func (c *Cache) localUsed() (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.used, nil
+	return c.used + c.pendingUnlinkBytes, nil
 }
 
 // sharedUsed is the shared pool's usage plus the bytes any node has evicted

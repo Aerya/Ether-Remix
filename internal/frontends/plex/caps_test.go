@@ -121,6 +121,10 @@ func TestClientCapsByProduct(t *testing.T) {
 		{"Plex Desktop", "Linux", "standalone", true, true, false, 2160, true},
 		{"Plezy", "Linux", "Linux", true, true, false, 2160, true},
 		{"Plezy", "Generic", "Linux", true, true, false, 2160, true},
+		{"Plezy", "macOS", "MacBook Pro", true, true, false, 2160, true},
+		{"Plezy", "Darwin", "MacBook Pro", true, true, false, 2160, true},
+		{"Plezy", "MacOSX", "MacBook Pro", true, true, false, 2160, true},
+		{"Plezy", "Windows", "Windows", true, true, false, 2160, true},
 		{"Plezy", "tvOS", "Apple TV", true, true, true, 2160, true},
 		{"Plezy", "iOS", "iPhone", true, true, true, 2160, true},
 		{"Plezy", "Android", "Pixel 8", true, false, false, 1080, true},
@@ -230,14 +234,25 @@ func TestRemoteBitrateCap(t *testing.T) {
 	if c.MaxBitrateKbps != 8000 || !c.Remote {
 		t.Fatalf("remote cap: %+v", c)
 	}
+	// A public client claiming location=lan stays remote.
+	applyDecisionQuery(&c, url.Values{"location": {"lan"}})
+	if !c.Remote {
+		t.Fatalf("remote client flipped to local by location=lan: %+v", c)
+	}
 	c = (&Request{Product: "Plex for iOS", Platform: "iOS"}).ClientCaps(8000)
 	if c.MaxBitrateKbps != 0 {
 		t.Fatalf("local capped: %+v", c)
 	}
+	// Explicit bitrate/resolution limits apply, but location=cellular/wan must
+	// never flip a local client to remote.
 	q := url.Values{"maxVideoBitrate": {"3000"}, "videoResolution": {"1280x720"}, "location": {"cellular"}}
 	applyDecisionQuery(&c, q)
-	if c.MaxBitrateKbps != 3000 || c.MaxHeight != 720 || !c.Remote {
+	if c.MaxBitrateKbps != 3000 || c.MaxHeight != 720 || c.Remote {
 		t.Fatalf("decision query: %+v", c)
+	}
+	applyDecisionQuery(&c, url.Values{"location": {"wan"}})
+	if c.Remote {
+		t.Fatalf("local client flipped to remote by location=wan: %+v", c)
 	}
 	for in, want := range map[string]int{"1920x1080": 1080, "1080x1920": 1080, "720": 720, "1080p": 1080, "bad": 0, "": 0} {
 		if got := parseResolutionHeight(in); got != want {
@@ -363,5 +378,56 @@ func TestCapabilityOverrideChangesRegistryAndYieldsToProfile(t *testing.T) {
 	runtime := pr.ClientCapsWith(0, []core.ClientCapabilityOverride{{ID: "apple-tv", VideoCodecs: []string{"h264"}}})
 	if !runtime.SupportsVideo("h264") || !runtime.SupportsVideo("hevc") {
 		t.Fatalf("profile extra should add hevc on top of the override: %+v", runtime)
+	}
+	forced := pr.ClientCapsWith(0, []core.ClientCapabilityOverride{{ID: "apple-tv", Force: true, VideoCodecs: []string{"h264"}}})
+	if forced.SupportsVideo("hevc") || !forced.SupportsVideo("h264") || !forced.ForcedOverrideApplied {
+		t.Fatalf("forced codec declaration: %+v", forced)
+	}
+	if !slices.Equal(forced.AudioCodecs, runtime.AudioCodecs) {
+		t.Fatal("force replaced an unedited audio declaration")
+	}
+	always := pr.ClientCapsWith(0, []core.ClientCapabilityOverride{{Product: "Plex for Apple TV", ProductExact: true, AlwaysEncodeVideo: true}})
+	if !always.AlwaysEncodeVideo {
+		t.Fatalf("AlwaysEncodeVideo should apply without Force even with ProfileExtra: %+v", always)
+	}
+	if other := (&Request{Product: "Plex for Roku", Platform: "Roku"}).ClientCapsWith(0, []core.ClientCapabilityOverride{{Product: "Plex for Apple TV", ProductExact: true, AlwaysEncodeVideo: true}}); other.AlwaysEncodeVideo {
+		t.Fatalf("AlwaysEncodeVideo leaked to non-matching Plex app: %+v", other)
+	}
+}
+
+func TestCapabilityOverrideMatchesDeviceName(t *testing.T) {
+	on := true
+	pr := &Request{
+		Product:    "PlxNative",
+		Platform:   "webOS",
+		Device:     "LG webOS TV",
+		DeviceName: "PlxNative (LG TV)",
+	}
+	byName := []core.ClientCapabilityOverride{{
+		Product:             "PlxNative",
+		Device:              "PlxNative (LG TV)",
+		VideoCodecs:         []string{"h264", "hevc", "av1", "vp9"},
+		AudioCodecs:         []string{"aac", "ac3", "eac3"},
+		Containers:          []string{"mp4", "mkv"},
+		SubtitleCodecs:      []string{"srt", "ass", "webvtt"},
+		DolbyVisionProfiles: []int{5, 7, 8},
+		MaxHeight:           2160,
+		HDR10:               &on,
+		DolbyVision:         &on,
+	}}
+	got := pr.ClientCapsWith(0, byName)
+	if got.MaxHeight != 2160 || !got.HDR10 || !got.DolbyVision || !got.SupportsVideo("av1") || !slices.Equal(got.DVProfiles, []int{5, 7, 8}) || !slices.Equal(got.SubtitleCodecs, []string{"srt", "ass", "webvtt"}) {
+		t.Fatalf("DeviceName override did not apply: %+v", got)
+	}
+	byDevice := []core.ClientCapabilityOverride{{Product: "PlxNative", Device: "LG webOS TV", MaxHeight: 1080, HDR10: &on}}
+	if got2 := pr.ClientCapsWith(0, byDevice); got2.MaxHeight != 1080 || !got2.HDR10 {
+		t.Fatalf("Device override did not apply: %+v", got2)
+	}
+	// Forced override must also match X-Plex-Device-Name over ProfileExtra.
+	pr.ProfileExtra = "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=720)"
+	byName[0].Force = true
+	forced := pr.ClientCapsWith(0, byName)
+	if forced.MaxHeight != 2160 || !forced.ForcedOverrideApplied || !slices.Equal(forced.DVProfiles, []int{5, 7, 8}) {
+		t.Fatalf("forced DeviceName override did not apply: %+v", forced)
 	}
 }

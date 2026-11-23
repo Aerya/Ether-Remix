@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/livetv"
@@ -47,21 +49,127 @@ func TestPlexWebGuideLogoUsesServerOriginAndViewer(t *testing.T) {
 	}
 }
 
-func TestAndroidGuideLogoUsesServerOriginAndViewer(t *testing.T) {
-	f, _, channel := liveFixture(t)
-	for _, client := range [][]string{
-		{"X-Plex-Product", "Plex for Android (TV)", "X-Plex-Platform", "Android"},
-		{"X-Plex-Product", "Plex for Android (Mobile)", "X-Plex-Platform", "Android"},
-	} {
-		args := append([]string{liveProviderPath + "/lineups/dvr/channels", "Accept", "application/json"}, client...)
-		response := f.get(t, args[0], args[1:]...)
-		channels := decodeJSON(t, response)["Channel"].([]any)
-		logo, err := url.Parse(channels[0].(map[string]any)["thumb"].(string))
-		if err != nil || logo.Scheme != "http" || logo.Host != "example.com" || logo.Path != liveLogo(livetv.ToFrontendChannel(channel)) || logo.Query().Get("X-Plex-Token") != ownerToken {
-			t.Fatalf("client %v logo does not point to authenticated server: %v", client, channels[0].(map[string]any)["thumb"])
+// Plex for Android (Mobile and TV) shares the Bedrock Live TV guide and
+// fetches channel logos through Plex's cloud image service. Even when the
+// client connects directly over a LAN address at home, both the lineup thumb
+// and airing channelThumb must publish a public, token-free logo URL (either
+// the channel's own public HTTPS icon or this server's signed /livetv/logos/
+// URL on PublicOrigin), while remaining locally servable via /photo/:/transcode.
+func TestAndroidGuideLogoIsCloudFetchableOnLAN(t *testing.T) {
+	f, service, channel := liveFixture(t)
+	const publicBase = "https://159-117-165-230.abc123.plex.direct:32451"
+	f.srv.setTestPublicURL(func() string { return publicBase })
+
+	const iptvPublicLogo = "https://cdn.example.org/iptv/sport1.png"
+	src := livetv.Source{
+		Name:     "Public IPTV",
+		Playlist: "#EXTM3U\n#EXTINF:-1 tvg-id=\"sport1\" tvg-chno=\"8\" tvg-logo=\"" + iptvPublicLogo + "\",Sport 1\nhttps://stream.example.test/live\n",
+		Guide:    `<tv><channel id="sport1"><display-name>Sport 1</display-name></channel><programme channel="sport1" start="20261018110000 +0000" stop="20261018130000 +0000"><title>Match Live</title></programme></tv>`,
+	}
+	if _, err := service.ImportSource(context.Background(), src); err != nil {
+		t.Fatal(err)
+	}
+
+	liveSearch := service.Frontend().(frontend.LiveTVSearch)
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		hits, err := liveSearch.SearchLiveTV(context.Background(), &ownerUser, "Owner programme", 10)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if rec := f.get(t, logo.RequestURI()); rec.Code != http.StatusOK {
-			t.Fatalf("client %v logo request failed: %d", client, rec.Code)
+		if !hits.Partial {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("search index did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	getReady := func(target string, hdr map[string]string) map[string]any {
+		t.Helper()
+		rec := f.request(t, http.MethodGet, target, hdr)
+		for deadline := time.Now().Add(2 * time.Second); rec.Code == http.StatusServiceUnavailable && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+			rec = f.request(t, http.MethodGet, target, hdr)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", target, rec.Code, rec.Body.String())
+		}
+		return decodeJSON(t, rec)
+	}
+
+	for _, lanOrigin := range []string{
+		"https://192-168-2-10.abc123.plex.direct:32450",
+		"http://192.168.2.10:32450",
+	} {
+		for _, product := range []string{"Plex for Android (Mobile)", "Plex for Android (TV)"} {
+			hdr := map[string]string{
+				"Accept":          "application/json",
+				"X-Plex-Product":  product,
+				"X-Plex-Platform": "Android",
+				"X-Plex-Version":  "2026.23.0",
+			}
+			lineup := decodeJSON(t, f.request(t, http.MethodGet, lanOrigin+liveProviderPath+"/lineups/dvr/channels", hdr))
+			thumbsByID := map[string]string{}
+			for _, raw := range lineup["Channel"].([]any) {
+				ch := raw.(map[string]any)
+				thumb := ch["thumb"].(string)
+				if strings.Contains(thumb, "192.168.2.10") || strings.Contains(thumb, "192-168-2-10") || strings.Contains(thumb, "X-Plex-Token") || strings.Contains(thumb, ownerToken) {
+					t.Fatalf("%s on %s leaked LAN host or token in lineup thumb: %q", product, lanOrigin, thumb)
+				}
+				thumbsByID[ch["id"].(string)] = thumb
+			}
+
+			signed := thumbsByID[channel.ID]
+			logo, err := url.Parse(signed)
+			if err != nil || !strings.HasPrefix(signed, publicBase+signedLogoPrefix+channel.ID+"/") {
+				t.Fatalf("%s on %s did not publish signed public logo URL: %q", product, lanOrigin, signed)
+			}
+			for id, thumb := range thumbsByID {
+				if id != channel.ID && thumb != iptvPublicLogo {
+					t.Fatalf("%s on %s rewrote public IPTV logo to %q, want %q", product, lanOrigin, thumb, iptvPublicLogo)
+				}
+			}
+
+			for _, guidePath := range []string{"/grid?date=2026-10-18", "/watchnow/all"} {
+				guide := getReady(lanOrigin+liveProviderPath+guidePath, hdr)
+				for _, raw := range guide["Metadata"].([]any) {
+					media := raw.(map[string]any)["Media"].([]any)[0].(map[string]any)
+					chID := media["channelIdentifier"].(string)
+					if got := media["channelThumb"].(string); got != thumbsByID[chID] {
+						t.Fatalf("%s on %s %s channelThumb for %s = %q, want %q", product, lanOrigin, guidePath, chID, got, thumbsByID[chID])
+					}
+				}
+			}
+
+			search := getReady(lanOrigin+liveProviderPath+"/library/search?query="+url.QueryEscape("Owner programme"), hdr)
+			results, _ := search["SearchResult"].([]any)
+			var checkedSearch bool
+			for _, raw := range results {
+				md, ok := raw.(map[string]any)["Metadata"].(map[string]any)
+				if !ok {
+					continue
+				}
+				checkedSearch = true
+				got := md["Media"].([]any)[0].(map[string]any)["channelThumb"].(string)
+				if got != signed {
+					t.Fatalf("%s on %s search channelThumb = %q, want %q", product, lanOrigin, got, signed)
+				}
+			}
+			if !checkedSearch {
+				t.Fatalf("%s on %s returned no programme search results: %#v", product, lanOrigin, search)
+			}
+
+			// Plex's cloud fetches the signed URL without credentials.
+			cloudRec := f.request(t, http.MethodGet, logo.RequestURI(), map[string]string{"X-Plex-Token": "", "X-Plex-Client-Identifier": ""})
+			if _, err := png.Decode(bytes.NewReader(cloudRec.Body.Bytes())); cloudRec.Code != http.StatusOK || err != nil {
+				t.Fatalf("cloud fetch %s: %d %v", logo.RequestURI(), cloudRec.Code, err)
+			}
+			// A client wrapping the signed public URL in /photo/:/transcode on LAN also succeeds locally.
+			transcode := f.get(t, "/photo/:/transcode?width=120&height=80&format=jpeg&url="+url.QueryEscape(signed), "X-Plex-Product", product, "X-Plex-Platform", "Android")
+			if _, kind, err := image.DecodeConfig(bytes.NewReader(transcode.Body.Bytes())); transcode.Code != http.StatusOK || err != nil || kind != "jpeg" {
+				t.Fatalf("LAN /photo/:/transcode on signed logo: %d %s %v", transcode.Code, kind, err)
+			}
 		}
 	}
 }
@@ -268,10 +376,21 @@ func TestAppleTVGuideLogoIsCloudFetchable(t *testing.T) {
 	if got := lineupThumb(); !strings.HasPrefix(got, "https://203-0-113-7.abc123.plex.direct:32400"+signedLogoPrefix) {
 		t.Fatalf("logo ignores the public address: %q", got)
 	}
-	// Other standalone clients keep the authenticated server URL.
-	web := decodeJSON(t, f.get(t, liveProviderPath+"/lineups/dvr/channels", "Accept", "application/json", "X-Plex-Product", "Plex Web"))
-	if thumb := web["Channel"].([]any)[0].(map[string]any)["thumb"].(string); !strings.Contains(thumb, "X-Plex-Token=") {
-		t.Fatalf("Plex Web logo changed: %q", thumb)
+	// Plezy on Apple and Android platforms loads logos through
+	// /photo/:/transcode, not Plex's cloud: it keeps this server's own logo path.
+	wantPlezy := liveLogo(livetv.ToFrontendChannel(channel))
+	for _, plat := range []string{"tvOS", "iOS", "Android"} {
+		plezy := decodeJSON(t, f.get(t, liveProviderPath+"/lineups/dvr/channels", "Accept", "application/json", "X-Plex-Product", "Plezy", "X-Plex-Platform", plat))
+		if thumb := plezy["Channel"].([]any)[0].(map[string]any)["thumb"].(string); thumb != wantPlezy {
+			t.Fatalf("Plezy/%s got %q, want %q", plat, thumb, wantPlezy)
+		}
+	}
+	// Plex Web keeps the authenticated server URL even on mobile OS platforms.
+	for _, plat := range []string{"Chrome", "Android", "iOS"} {
+		web := decodeJSON(t, f.get(t, liveProviderPath+"/lineups/dvr/channels", "Accept", "application/json", "X-Plex-Product", "Plex Web", "X-Plex-Platform", plat))
+		if thumb := web["Channel"].([]any)[0].(map[string]any)["thumb"].(string); !strings.Contains(thumb, "X-Plex-Token=") {
+			t.Fatalf("Plex Web (%s) logo changed: %q", plat, thumb)
+		}
 	}
 
 	ctx := context.Background()

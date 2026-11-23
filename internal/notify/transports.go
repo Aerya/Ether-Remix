@@ -14,9 +14,14 @@ import (
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// pushoverEndpoint is the Pushover Messages API URL; overridable in tests.
+var pushoverEndpoint = "https://api.pushover.net/1/messages.json"
 
 // post sends one notification over HTTP. Errors never echo the endpoint,
 // token or response body: any of them may hold a credential.
@@ -60,21 +65,177 @@ func deliverWebhook(ctx context.Context, s *Service, c Channel, e Event) error {
 	return postJSON(ctx, s, c.Secret("endpoint"), e, bearerHeaders(c))
 }
 
+func hasRichEmbed(e Event) bool {
+	return strings.TrimSpace(e.PosterURL) != "" ||
+		strings.TrimSpace(e.Color) != "" ||
+		len(e.Fields) > 0 ||
+		strings.TrimSpace(e.LinkURL) != "" ||
+		strings.TrimSpace(e.Footer) != ""
+}
+
+func safeHTTPURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, "\r\n\x00") {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return raw
+}
+
+func parseEmbedColor(raw string) (int, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		s = strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(s, "#"), "0x"), "0X")
+		if len(s) != 6 {
+			return 0, false
+		}
+		v, err := strconv.ParseInt(s, 16, 32)
+		if err != nil || v < 0 || v > 0xFFFFFF {
+			return 0, false
+		}
+		return int(v), true
+	}
+	if v, err := strconv.Atoi(s); err == nil && v >= 0 && v <= 0xFFFFFF {
+		return v, true
+	}
+	// Try 6-digit bare hex as fallback.
+	if len(s) == 6 {
+		if v, err := strconv.ParseInt(s, 16, 32); err == nil && v >= 0 && v <= 0xFFFFFF {
+			return int(v), true
+		}
+	}
+	return 0, false
+}
+
+func cleanHeaderValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == 0 {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func deliverDiscord(ctx context.Context, s *Service, c Channel, e Event) error {
+	if !hasRichEmbed(e) {
+		return postJSON(ctx, s, c.Secret("endpoint"),
+			map[string]any{"content": clip(e.Title+"\n"+e.Message, 1900), "allowed_mentions": map[string]any{"parse": []string{}}},
+			bearerHeaders(c))
+	}
+	embed := map[string]any{
+		"title":       clip(e.Title, 256),
+		"description": clip(e.Message, 4096),
+	}
+	if col, ok := parseEmbedColor(e.Color); ok {
+		embed["color"] = col
+	}
+	if u := safeHTTPURL(e.LinkURL); u != "" {
+		embed["url"] = u
+	}
+	if thumb := safeHTTPURL(e.PosterURL); thumb != "" {
+		embed["thumbnail"] = map[string]string{"url": thumb}
+	}
+	if len(e.Fields) > 0 {
+		fields := make([]map[string]any, 0, min(len(e.Fields), 25))
+		for _, f := range e.Fields {
+			if len(fields) >= 25 {
+				break
+			}
+			name := strings.TrimSpace(f.Name)
+			val := strings.TrimSpace(f.Value)
+			if name == "" || val == "" {
+				continue
+			}
+			fields = append(fields, map[string]any{
+				"name":   clip(name, 256),
+				"value":  clip(val, 1024),
+				"inline": f.Inline,
+			})
+		}
+		if len(fields) > 0 {
+			embed["fields"] = fields
+		}
+	}
+	if footer := strings.TrimSpace(e.Footer); footer != "" {
+		embed["footer"] = map[string]string{"text": clip(footer, 2048)}
+	}
+	if !e.At.IsZero() {
+		embed["timestamp"] = e.At.UTC().Format(time.RFC3339)
+	}
 	return postJSON(ctx, s, c.Secret("endpoint"),
-		map[string]any{"content": clip(e.Title+"\n"+e.Message, 1900), "allowed_mentions": map[string]any{"parse": []string{}}},
+		map[string]any{
+			"embeds":           []map[string]any{embed},
+			"allowed_mentions": map[string]any{"parse": []string{}},
+		},
 		bearerHeaders(c))
 }
 
 func deliverSlack(ctx context.Context, s *Service, c Channel, e Event) error {
+	if !hasRichEmbed(e) {
+		return postJSON(ctx, s, c.Secret("endpoint"),
+			map[string]string{"text": clip(e.Title+"\n"+e.Message, 3900)}, bearerHeaders(c))
+	}
+	att := map[string]any{
+		"title": clip(e.Title, 256),
+		"text":  clip(e.Message, 3500),
+	}
+	if col, ok := parseEmbedColor(e.Color); ok {
+		att["color"] = fmt.Sprintf("#%06x", col)
+	}
+	if u := safeHTTPURL(e.LinkURL); u != "" {
+		att["title_link"] = u
+	}
+	if thumb := safeHTTPURL(e.PosterURL); thumb != "" {
+		att["thumb_url"] = thumb
+	}
+	if len(e.Fields) > 0 {
+		fields := make([]map[string]any, 0, min(len(e.Fields), 25))
+		for _, f := range e.Fields {
+			if len(fields) >= 25 {
+				break
+			}
+			name := strings.TrimSpace(f.Name)
+			val := strings.TrimSpace(f.Value)
+			if name == "" || val == "" {
+				continue
+			}
+			fields = append(fields, map[string]any{
+				"title": clip(name, 256),
+				"value": clip(val, 1024),
+				"short": f.Inline,
+			})
+		}
+		if len(fields) > 0 {
+			att["fields"] = fields
+		}
+	}
+	if footer := strings.TrimSpace(e.Footer); footer != "" {
+		att["footer"] = clip(footer, 512)
+	}
+	if !e.At.IsZero() {
+		att["ts"] = e.At.Unix()
+	}
 	return postJSON(ctx, s, c.Secret("endpoint"),
-		map[string]string{"text": clip(e.Title+"\n"+e.Message, 3900)}, bearerHeaders(c))
+		map[string]any{
+			"text":        clip(e.Title+"\n"+e.Message, 3900),
+			"attachments": []map[string]any{att},
+		}, bearerHeaders(c))
 }
 
 func deliverTelegram(ctx context.Context, s *Service, c Channel, e Event) error {
 	endpoint := "https://api.telegram.org/bot" + c.Secret("token") + "/sendMessage"
+	text := e.Title + "\n" + e.Message
+	if u := safeHTTPURL(e.LinkURL); u != "" {
+		text += "\n" + u
+	}
 	return postJSON(ctx, s, endpoint,
-		map[string]string{"chat_id": c.Setting("target"), "text": clip(e.Title+"\n"+e.Message, 4000)}, nil)
+		map[string]string{"chat_id": c.Setting("target"), "text": clip(text, 4000)}, nil)
 }
 
 func deliverGotify(ctx context.Context, s *Service, c Channel, e Event) error {
@@ -82,8 +243,25 @@ func deliverGotify(ctx context.Context, s *Service, c Channel, e Event) error {
 	if tok := c.Secret("token"); tok != "" {
 		headers = map[string]string{"X-Gotify-Key": tok}
 	}
-	return postJSON(ctx, s, c.Secret("endpoint"),
-		map[string]any{"title": e.Title, "message": e.Message, "priority": 5}, headers)
+	prio := 5
+	if e.Priority != 0 {
+		prio = e.Priority
+		if prio < 0 {
+			prio = 0
+		}
+		if prio > 10 {
+			prio = 10
+		}
+	}
+	payload := map[string]any{"title": e.Title, "message": e.Message, "priority": prio}
+	if u := safeHTTPURL(e.LinkURL); u != "" {
+		payload["extras"] = map[string]any{
+			"client::notification": map[string]any{
+				"click": map[string]string{"url": u},
+			},
+		}
+	}
+	return postJSON(ctx, s, c.Secret("endpoint"), payload, headers)
 }
 
 func deliverNtfy(ctx context.Context, s *Service, c Channel, e Event) error {
@@ -91,13 +269,60 @@ func deliverNtfy(ctx context.Context, s *Service, c Channel, e Event) error {
 	if headers == nil {
 		headers = map[string]string{}
 	}
-	headers["Title"] = strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' {
-			return -1
+	headers["Title"] = cleanHeaderValue(e.Title)
+	if e.Priority != 0 {
+		prio := e.Priority
+		if prio < 1 {
+			prio = 1
 		}
-		return r
-	}, e.Title)
+		if prio > 5 {
+			prio = 5
+		}
+		headers["Priority"] = strconv.Itoa(prio)
+	}
+	if u := safeHTTPURL(e.LinkURL); u != "" {
+		headers["Click"] = u
+	}
+	if thumb := safeHTTPURL(e.PosterURL); thumb != "" {
+		headers["Attach"] = thumb
+	}
 	return post(ctx, s, c.Secret("endpoint"), []byte(e.Message), "text/plain; charset=utf-8", headers)
+}
+
+func deliverPushover(ctx context.Context, s *Service, c Channel, e Event) error {
+	payload := map[string]any{
+		"token":   c.Secret("token"),
+		"user":    c.Secret("user"),
+		"title":   clip(e.Title, 250),
+		"message": clip(e.Message, 1024),
+	}
+	if dev := strings.TrimSpace(c.Setting("device")); dev != "" {
+		payload["device"] = dev
+	}
+	if snd := strings.TrimSpace(c.Setting("sound")); snd != "" {
+		payload["sound"] = snd
+	}
+	if e.Priority != 0 {
+		prio := e.Priority
+		if prio < -2 {
+			prio = -2
+		}
+		if prio > 2 {
+			prio = 2
+		}
+		payload["priority"] = prio
+		if prio == 2 {
+			payload["retry"] = 60
+			payload["expire"] = 3600
+		}
+	}
+	if u := safeHTTPURL(e.LinkURL); u != "" {
+		payload["url"] = u
+	}
+	if !e.At.IsZero() {
+		payload["timestamp"] = e.At.Unix()
+	}
+	return postJSON(ctx, s, pushoverEndpoint, payload, nil)
 }
 
 func clip(s string, n int) string {

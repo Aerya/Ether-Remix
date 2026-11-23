@@ -10,6 +10,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
 	"github.com/braedonsaunders/ether/internal/remote"
 )
@@ -84,6 +85,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	ids := map[string]bool{}
 	openSubtitles := false
 	subdl := false
+	subsource := false
 	for i, provider := range cfg.Subtitles.Providers {
 		field := fmt.Sprintf("subtitles.providers[%d]", i)
 		if strings.TrimSpace(provider.ID) == "" || ids[provider.ID] {
@@ -101,6 +103,11 @@ func ValidateConfig(cfg config.Config) []FieldError {
 				v.add(field+".kind", "SubDL can only appear once")
 			}
 			subdl = true
+		case config.SubtitleProviderSubSource:
+			if subsource {
+				v.add(field+".kind", "SubSource can only appear once")
+			}
+			subsource = true
 		default:
 			if !strings.HasPrefix(provider.Kind, "plugin:") || !strings.HasSuffix(provider.Kind, "/subtitles") || provider.ID != provider.Kind {
 				v.add(field+".kind", "unknown subtitle provider")
@@ -133,7 +140,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if a.MaxPages < 1 || a.MaxPages > 20 {
 		v.add("availability.maxPages", "must be between 1 and 20")
 	}
-	for key, n := range map[string]int{"feedRequests": a.FeedRequests, "checkRequests": a.CheckRequests, "grabs": a.Grabs, "checks": a.Checks} {
+	for key, n := range map[string]int{"feedRequests": a.FeedRequests, "checkRequests": a.CheckRequests, "grabs": a.Grabs, "checks": a.Checks, "pluginUsenetChecks": a.PluginUsenetChecks} {
 		if n < 0 || n > 100000 {
 			v.add("availability."+key, "must be between 0 and 100000 (0 disables this work)")
 		}
@@ -180,8 +187,24 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	}
 
 	v.port("server.port", cfg.Server.Port, false)
+	v.port("server.consolePort", cfg.Server.ConsolePort, true)
+	if cfg.Server.ConsolePort > 0 && cfg.Server.ConsolePort == cfg.Server.Port {
+		v.add("server.consolePort", "must be different from the main server port")
+	}
+	if cfg.Server.DisableConsoleOnMainPort && cfg.Server.ConsolePort == 0 {
+		v.add("server.disableConsoleOnMainPort", "requires a dedicated console port")
+	}
 	if _, err := frameOrigins(cfg.Server.WebFrameOrigins); err != nil {
 		v.add("server.webFrameOrigins", "%s", err)
+	}
+	for _, raw := range cfg.Server.TrustedProxyCIDRs {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if _, err := identity.ParseProxyEntry(raw); err != nil {
+			v.add("server.trustedProxyCIDRs", "%s", err)
+			break
+		}
 	}
 	if strings.TrimSpace(cfg.Server.FriendlyName) == "" {
 		v.add("server.friendlyName", "is required")
@@ -216,11 +239,24 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		}
 	}
 	for _, id := range sortedFrontendIDs(cfg) {
-		raw := cfg.Frontends[id].PublicURL
+		fe := cfg.Frontends[id]
+		if len(fe.PublishedAddresses) > 16 {
+			v.add("frontends."+id+".publishedAddresses", "Enter at most 16 published addresses.")
+		}
+		for _, raw := range fe.PublishedAddresses {
+			if strings.TrimSpace(raw) == "" {
+				continue
+			}
+			if _, err := remote.ParsePublishedURL(raw); err != nil {
+				v.add("frontends."+id+".publishedAddresses", "Enter full http:// or https:// addresses, with an optional path.")
+				break
+			}
+		}
+		raw := fe.PublicURL
 		if strings.TrimSpace(raw) == "" {
 			continue
 		}
-		if _, err := remote.ParseCustomURL(raw); err != nil {
+		if _, err := remote.ParsePublishedURL(raw); err != nil {
 			v.add("frontends."+id+".publicUrl", "Enter a full http:// or https:// address, or leave it blank.")
 		}
 	}
@@ -262,14 +298,14 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			}
 		}
 		v.httpURL(f+".url", ix.URL, true)
-		if ix.ClientIdentity != "" && !config.ValidSearchIdentity(ix.ClientIdentity) {
-			v.add(f+".clientIdentity", "must be a client that searches or empty to inherit")
-		}
 		if ix.Kind != "" {
 			v.oneOf(f+".kind", ix.Kind, config.IndexerKindNewznab, config.IndexerKindCardigann, config.IndexerKindStremio, config.IndexerKindZilean)
 		}
 		if ix.IsStremio() && ix.Protocol != "" && ix.Protocol != "torrent" {
 			v.add(f+".protocol", "must be torrent for a Stremio addon")
+		}
+		if ix.UseAddonOrder && !ix.IsStremio() {
+			v.add(f+".useAddonOrder", "is only supported for a Stremio addon")
 		}
 		if ix.IsZilean() && ix.Protocol != "" && ix.Protocol != "torrent" {
 			v.add(f+".protocol", "must be torrent for a Zilean instance")
@@ -511,6 +547,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			(p.MaxSizeMBPerMin > 0 && p.MinSizeMBPerMin > p.MaxSizeMBPerMin) {
 			v.add(f+".minSizeMbPerMin", "must be <= maxSizeMbPerMin")
 		}
+		if p.AudioLanguageMode != "" {
+			v.oneOf(f+".audioLanguageMode", p.AudioLanguageMode, core.AudioLanguageModeRequired, core.AudioLanguageModePreferred)
+		}
 		if p.EpisodeMinSizeMBPerMin < 0 || p.EpisodeMaxSizeMBPerMin < 0 ||
 			(p.EpisodeMaxSizeMBPerMin > 0 && p.EpisodeMinSizeMBPerMin > p.EpisodeMaxSizeMBPerMin) {
 			v.add(f+".episodeMinSizeMbPerMin", "must be <= episodeMaxSizeMbPerMin")
@@ -566,14 +605,38 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		v.add("quality.sync.interval", "must be positive when sync is enabled")
 	}
 
+	if cfg.Transcode.VideoTranscoding != "" {
+		v.oneOf("transcode.videoTranscoding", cfg.Transcode.VideoTranscoding, "on", "off")
+	}
 	if cfg.Transcode.HWAccel != "" {
 		v.oneOf("transcode.hwAccel", cfg.Transcode.HWAccel, "auto", "none", "videotoolbox", "nvenc", "qsv", "vaapi")
 	}
 	if cfg.Transcode.MaxTranscodes < 0 {
 		v.add("transcode.maxTranscodes", "must be >= 0")
 	}
+	if cfg.Downloads.LimitUnit != "" {
+		v.oneOf("downloads.limitUnit", cfg.Downloads.LimitUnit, "titles", "gb")
+	}
+	if cfg.Downloads.LimitPeriod != "" {
+		v.oneOf("downloads.limitPeriod", cfg.Downloads.LimitPeriod, "day", "month")
+	}
+	if cfg.Downloads.LimitAmount < 0 || cfg.Downloads.LimitAmount > 100000 {
+		v.add("downloads.limitAmount", "must be between 0 and 100000")
+	}
+	if n := cfg.Server.PausedStreamMinutes; n != 0 && (n < 2 || n > 1440) {
+		v.add("server.pausedStreamMinutes", "must be 0 (default) or between 2 and 1440")
+	}
+	if n := cfg.Server.ResumeAfterSeconds; n < 0 || n > 3600 {
+		v.add("server.resumeAfterSeconds", "must be between 0 and 3600")
+	}
 	if cfg.Transcode.RemoteMaxBitrateKbps < 0 {
 		v.add("transcode.remoteMaxBitrateKbps", "must be >= 0")
+	}
+	if n := cfg.Transcode.ThrottleSeconds; n != 0 && (n < 16 || n > 600) {
+		v.add("transcode.throttleSeconds", "must be 0 (built-in) or between 16 and 600")
+	}
+	if cfg.Transcode.RemoteUploadBudgetKbps < 0 {
+		v.add("transcode.remoteUploadBudgetKbps", "must be >= 0")
 	}
 	rtx := cfg.Transcode.RTXVideo
 	if rtx.Mode != "" {

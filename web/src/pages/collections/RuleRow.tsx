@@ -2,7 +2,13 @@ import { Button, Input, SearchSelect, Slider, cn } from "@braedonsaunders/appkit
 import { AlertCircle, Trash2 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Segmented, NumberInput } from "../../components/fields";
-import { FacetPicker, FacetSelect, LookupPicker, type Picked } from "../../components/pickers";
+import {
+  FacetPicker,
+  FacetSelect,
+  LookupPicker,
+  TitleListPicker,
+  type Picked,
+} from "../../components/pickers";
 import { localized, t } from "../../i18n";
 import { NOT_RATED } from "../../lib/contentRatings";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
@@ -15,6 +21,7 @@ import {
   isRuleComplete,
   opLabel,
   parseWithin,
+  pickedTitlesOf,
   valueFor,
   withField,
   withOp,
@@ -67,6 +74,19 @@ export function RuleRow({
   const complete = isRuleComplete(rule);
   const n = index + 1;
   const label = kind === "exclude" ? t("Exclusion {n}", { n }) : t("Rule {n}", { n });
+  const stackValue = !inline || meta?.kind === "title";
+  const selectedOp: RuleOp =
+    meta?.kind === "title"
+      ? rule.op === "notIn" || rule.op === "isNot"
+        ? "notIn"
+        : "in"
+      : rule.op;
+  const fieldOptions = allowedFields
+    ? allowedFields.flatMap((f) => {
+        const m = metaFor?.(f) ?? fieldMeta(f);
+        return m ? [{ value: m.field, label: m.label, hint: m.hint, group: m.group }] : [];
+      })
+    : FIELD_OPTIONS;
   return (
     <div
       className={cn(
@@ -92,11 +112,7 @@ export function RuleRow({
                   value: valueFor(custom, custom.defaultOp),
                 });
             }}
-            options={
-              allowedFields
-                ? FIELD_OPTIONS.filter((f) => allowedFields.includes(f.value))
-                : FIELD_OPTIONS
-            }
+            options={fieldOptions}
             ariaLabel={t("{label} field", { label })}
             searchable
             {...searchSelectLabels()}
@@ -105,7 +121,7 @@ export function RuleRow({
         {meta ? (
           <div className={inline ? "w-32 shrink-0" : "w-full sm:w-40"}>
             <SearchSelect
-              value={rule.op}
+              value={selectedOp}
               onChange={(v) => v && onChange(withOp(rule, v as RuleOp))}
               options={meta.ops.map((op) => ({ value: op, label: opLabel(op, meta.kind) }))}
               ariaLabel={t("{label} condition", { label })}
@@ -114,7 +130,7 @@ export function RuleRow({
             />
           </div>
         ) : null}
-        {inline && meta ? (
+        {!stackValue && meta ? (
           <OpenOnMount active={openValue} className="min-w-40 flex-1">
             <ValueEditor
               facetLibraryId={facetLibraryId}
@@ -141,8 +157,8 @@ export function RuleRow({
           <Trash2 size={15} />
         </Button>
       </div>
-      {inline ? null : (
-        <div className="mt-2">
+      {stackValue ? (
+        <OpenOnMount active={openValue} className="mt-2">
           {meta ? (
             <ValueEditor
               facetLibraryId={facetLibraryId}
@@ -157,8 +173,8 @@ export function RuleRow({
           ) : (
             <RawValue rule={rule} onChange={onChange} label={label} />
           )}
-        </div>
-      )}
+        </OpenOnMount>
+      ) : null}
       {inline && complete ? null : (
         <p
           className={cn(
@@ -244,6 +260,22 @@ function ValueEditor({
   const multi = rule.op === "in" || rule.op === "notIn";
   const facetType = mediaType === "show" ? "show" : mediaType === "movie" ? "movie" : "";
   switch (meta.kind) {
+    case "title":
+      return (
+        <TitleListPicker
+          type={facetType}
+          value={pickedTitlesOf(rule)}
+          ariaLabel={t("{label} search", { label })}
+          onChange={(picked) =>
+            onChange({
+              ...rule,
+              op: rule.op === "notIn" || rule.op === "isNot" ? "notIn" : "in",
+              value: picked.map((p) => p.key),
+              labels: picked.length ? picked.map((p) => p.title) : undefined,
+            })
+          }
+        />
+      );
     case "facet":
       return multi ? (
         <FacetPicker

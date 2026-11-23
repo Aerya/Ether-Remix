@@ -9,6 +9,7 @@ export function PosterProviders({ onSaved }: { onSaved: () => void }) {
   const config = useAsync(async () => normalizePosters((await api.getConfig()).posters), []);
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   return (
     <section className="metadata-control-section">
       <div className="metadata-section-title">
@@ -37,7 +38,8 @@ export function PosterProviders({ onSaved }: { onSaved: () => void }) {
                 body: JSON.stringify(posterPayload({ ...config.data!, source })),
               },
             );
-            config.setData(result.value);
+            config.setData(normalizePosters(result.value));
+            setSaved(true);
             onSaved();
             toast.success(t("Poster provider saved"));
           } catch (e) {
@@ -47,6 +49,13 @@ export function PosterProviders({ onSaved }: { onSaved: () => void }) {
           }
         }}
       />
+      {saved ? (
+        <p className="mt-2 text-xs text-fg-muted" role="status">
+          {t(
+            "Apps reload posters the next time they open a library; some may need to be restarted.",
+          )}
+        </p>
+      ) : null}
       {error || config.error ? (
         <>
           <MutationError error={error || config.error} />

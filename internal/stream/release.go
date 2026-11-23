@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 var errEOF = io.EOF
@@ -20,6 +21,12 @@ var errEOF = io.EOF
 // release is the engine's state for one NZB: its posted files with their
 // indexes, and the plan (layout of the main video), built once.
 type release struct {
+	feedbackID   string
+	liveArticles atomic.Uint64
+	missingEpoch atomic.Uint64
+	feedbackMu   sync.Mutex // orders health writes from concurrent reads
+
+	saved  *vault.Layout
 	e      *Engine
 	digest string
 	doc    *nzb.NZB
@@ -66,6 +73,23 @@ func (r *release) notePartSize(pf *postedFile) {
 	}
 }
 
+func (r *release) stableFileName(pf *postedFile) string {
+	r.infoMu.RLock()
+	defer r.infoMu.RUnlock()
+	return pf.file.StableName()
+}
+
+// hasRenamedFilesLocked reports whether any file in r.doc has a Name different
+// from its original SubjectName (requires r.infoMu held).
+func (r *release) hasRenamedFilesLocked() bool {
+	for _, f := range r.doc.Files {
+		if orig := f.OriginalName(); orig != "" && f.Name != orig {
+			return true
+		}
+	}
+	return false
+}
+
 // ensurePlan builds the plan once. Rejections (compressed, encrypted, no
 // playable file ...) are cached; transient errors are retried by the next
 // caller.
@@ -96,6 +120,17 @@ func (r *release) ensurePlanWithCandidate(ctx context.Context, prio core.Priorit
 		return nil, r.planErr
 	}
 	b := &builder{e: r.e, rel: r, prio: prio, fo: fetchOpts{cacheID: cacheID}, candidateReady: ready}
+	if r.saved != nil {
+		p, err := b.restore(ctx, r.saved)
+		if err != nil {
+			return nil, err
+		}
+		if p != nil {
+			r.plan = p
+			return p, nil
+		}
+		r.saved = nil
+	}
 	p, err := b.build(ctx)
 	if err != nil {
 		if IsRejection(err) && ctx.Err() == nil {
@@ -119,17 +154,20 @@ type builder struct {
 	memberISOs []*plan
 }
 
-// candidate is something that may hold the main video.
+// candidate is something that may hold the main video (or non-video target).
 type candidate struct {
-	kind  nzb.Kind // KindVideo, KindRAR, KindSevenZip, KindZIP, KindSplit
-	files []*postedFile
-	set   *nzb.Set
-	bytes int64
+	kind        nzb.Kind // KindVideo, KindRAR, KindSevenZip, KindZIP, KindSplit, or KindOther for rawNonVideo
+	files       []*postedFile
+	set         *nzb.Set
+	bytes       int64
+	rawNonVideo bool
+	matchRank   int
 }
 
 func (b *builder) build(ctx context.Context) (*plan, error) {
+	hint, nonVideo := b.rel.doc.NonVideoHint()
 	cands := b.candidates(b.rel.files)
-	if b.shouldProbe(cands) {
+	if !hint.ExplicitFile && b.shouldProbe(cands) {
 		if err := b.identifyObfuscated(ctx); err != nil {
 			return nil, err
 		}
@@ -143,9 +181,9 @@ func (b *builder) build(ctx context.Context) (*plan, error) {
 	// nothing about the wanted episode's set, so every set is tried.
 	_, hinted := b.rel.doc.EpisodeHint()
 	_, movieHinted := b.rel.doc.MovieHint()
-	hinted = hinted || movieHinted
+	hinted = hinted || movieHinted || (nonVideo && !hint.ExplicitFile)
 	hinted = hinted && len(cands) > 1
-	if !hinted {
+	if !hinted && !nonVideo {
 		if err := b.checkCachedRAR(ctx, cands[0]); err != nil {
 			return nil, err
 		}
@@ -154,10 +192,12 @@ func (b *builder) build(ctx context.Context) (*plan, error) {
 		b.candidateReady(cands[0].files)
 	}
 	var firstErr error
-	for i, c := range cands {
+	regrouped := false
+	for i := 0; i < len(cands); i++ {
+		c := cands[i]
 		b.memberISOs = nil
 		p, err := b.planFor(ctx, c)
-		if err == nil && isISOName(p.name) {
+		if err == nil && !nonVideo && isISOName(p.name) {
 			// A disc image, plain, split or inside an archive: play its
 			// main feature, not the image. Further discs of the release join it.
 			p, err = b.expandISO(ctx, p, b.isoSiblings(cands, i))
@@ -174,6 +214,17 @@ func (b *builder) build(ctx context.Context) (*plan, error) {
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if !regrouped && c.kind == nzb.KindRAR && len(c.files) == 1 && errors.Is(err, archive.ErrMissingVolume) {
+			if ok, rerr := b.regroupSingleRARs(ctx, cands); rerr != nil {
+				return nil, rerr
+			} else if ok {
+				regrouped = true
+				cands = b.candidates(b.rel.files)
+				firstErr = nil
+				i = -1
+				continue
+			}
 		}
 		// Only fall through to smaller candidates when this one simply had
 		// no video; a broken or protected main archive rejects the release.
@@ -197,6 +248,9 @@ func (b *builder) build(ctx context.Context) (*plan, error) {
 
 // candidates lists playable-looking files and archive sets, largest first.
 func (b *builder) candidates(files []*postedFile) []candidate {
+	if hint, ok := b.rel.doc.NonVideoHint(); ok {
+		return b.nonVideoCandidates(files, hint)
+	}
 	b.rel.infoMu.RLock()
 	defer b.rel.infoMu.RUnlock()
 	var out []candidate
@@ -215,7 +269,7 @@ func (b *builder) candidates(files []*postedFile) []candidate {
 	for _, s := range nzb.GroupSets(vols) {
 		if s.Kind == nzb.KindSplit && len(s.Volumes) > 0 {
 			switch nzb.Classify("x." + s.Volumes[0].Info.Ext).Kind {
-			case nzb.KindVideo, nzb.KindISO, nzb.KindUnknown, nzb.KindSplit:
+			case nzb.KindVideo, nzb.KindISO, nzb.KindUnknown, nzb.KindSplit, nzb.KindRAR:
 			default:
 				continue // e.g. a split .iso; "name.2024.001" stays (sniffed)
 			}
@@ -230,7 +284,161 @@ func (b *builder) candidates(files []*postedFile) []candidate {
 		out = append(out, c)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].bytes > out[j].bytes })
+	if movie, ok := b.rel.doc.MovieHint(); ok && len(movie.WantedLanguages) > 0 && len(out) > 1 {
+		mc := make([]releaseparse.MovieCandidate, len(out))
+		for i, c := range out {
+			name := ""
+			switch {
+			case c.set != nil:
+				name = c.set.Name + ".mkv"
+			case len(c.files) > 0:
+				name = c.files[0].Name()
+			}
+			mc[i] = releaseparse.MovieCandidate{Path: name, Size: c.bytes}
+		}
+		order := releaseparse.OrderMovieCandidates(mc, movie.Titles, movie.OriginalLanguage, movie.WantedLanguages)
+		reordered := make([]candidate, len(out))
+		for i, idx := range order {
+			reordered[i] = out[idx]
+		}
+		out = reordered
+	}
 	return out
+}
+
+// nonVideoCandidates lists candidate loose files and archive sets for an NZB
+// carrying nzb.MetaNonVideo, skipping video-only sample/extra filtering.
+func (b *builder) nonVideoCandidates(files []*postedFile, hint nzb.NonVideoHint) []candidate {
+	b.rel.infoMu.RLock()
+	defer b.rel.infoMu.RUnlock()
+
+	byFile := make(map[*nzb.File]*postedFile, len(files))
+	for _, pf := range files {
+		byFile[pf.file] = pf
+	}
+
+	if hint.ExplicitFile && hint.RawFile {
+		if hint.ExactFile != "" {
+			names := make([]string, len(files))
+			for i, pf := range files {
+				names[i] = pf.file.Name
+			}
+			if idx, ok, _ := nzb.MatchPathIndex(names, hint.ExactFile); ok {
+				pf := files[idx]
+				return []candidate{{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3}}
+			}
+			origNames := make([]string, len(files))
+			for i, pf := range files {
+				origNames[i] = pf.file.OriginalName()
+			}
+			if idx, ok, _ := nzb.MatchPathIndex(origNames, hint.ExactFile); ok {
+				pf := files[idx]
+				return []candidate{{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3}}
+			}
+		}
+		for _, pf := range files {
+			if pf.file.Info.Kind == nzb.KindPar2 {
+				continue
+			}
+			return []candidate{{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3}}
+		}
+		return nil
+	}
+
+	var out []candidate
+	var vols []*nzb.File
+	var loose []*postedFile
+	for _, pf := range files {
+		f := pf.file
+		if f.Info.Kind == nzb.KindPar2 {
+			continue
+		}
+		if f.Info.Kind.IsArchive() {
+			vols = append(vols, f)
+			continue
+		}
+		if !hint.ExplicitFile {
+			loose = append(loose, pf)
+		}
+	}
+
+	if !hint.ExplicitFile {
+		if hint.Member != "" {
+			names := make([]string, len(loose))
+			for i, pf := range loose {
+				names[i] = pf.file.Name
+			}
+			if idx, ok, _ := nzb.MatchPathIndex(names, hint.Member); ok {
+				pf := loose[idx]
+				out = append(out, candidate{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3})
+			}
+		} else if hint.Track.NonEmpty() {
+			names := make([]string, len(loose))
+			for i, pf := range loose {
+				names[i] = pf.file.Name
+			}
+			if idx, ok, _ := nzb.MatchTrackIndex(names, *hint.Track, hint.MIME); ok {
+				pf := loose[idx]
+				out = append(out, candidate{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: 3})
+			}
+		} else if hint.MemberIndex == nil && nzb.IsNonVideoMIME(hint.MIME) {
+			for _, pf := range loose {
+				if rank := nzb.NonVideoMatchRank(pf.file.Name, hint.MIME); rank > 0 {
+					out = append(out, candidate{kind: pf.file.Info.Kind, files: []*postedFile{pf}, bytes: pf.file.Bytes(), rawNonVideo: true, matchRank: rank})
+				}
+			}
+		}
+	}
+
+	for _, s := range nzb.GroupSets(vols) {
+		if s.Kind == nzb.KindSplit && len(s.Volumes) > 0 {
+			inner := "x." + s.Volumes[0].Info.Ext
+			k := nzb.Classify(inner).Kind
+			if k != nzb.KindUnknown && k != nzb.KindSplit && k != nzb.KindRAR && k != nzb.KindSevenZip && k != nzb.KindZIP &&
+				nzb.NonVideoMatchRank(inner, hint.MIME) == 0 && hint.Member == "" && !hint.ExplicitFile {
+				continue
+			}
+		}
+		c := candidate{kind: s.Kind, set: s, bytes: s.Bytes()}
+		for _, v := range s.Volumes {
+			c.files = append(c.files, byFile[v])
+		}
+		out = append(out, c)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].matchRank != out[j].matchRank {
+			return out[i].matchRank > out[j].matchRank
+		}
+		return out[i].bytes > out[j].bytes
+	})
+	return out
+}
+
+func (b *builder) hasMultipleMovieCandidates(cands []candidate) bool {
+	if len(cands) <= 1 {
+		return false
+	}
+	var maxBytes int64
+	plainVideos := 0
+	for _, c := range cands {
+		if c.bytes > maxBytes {
+			maxBytes = c.bytes
+		}
+		if c.kind == nzb.KindVideo || c.kind == nzb.KindISO {
+			plainVideos++
+		}
+	}
+	if plainVideos > 1 {
+		return true
+	}
+	features := 0
+	for _, c := range cands {
+		if maxBytes <= 0 || c.bytes*100 >= 35*maxBytes {
+			features++
+		}
+	}
+	return features > 1
 }
 
 func (b *builder) planFor(ctx context.Context, c candidate) (*plan, error) {
@@ -245,9 +453,15 @@ func (b *builder) planFor(ctx context.Context, c candidate) (*plan, error) {
 			return nil, incompleteError("%s lacks %d of %d parts (first: %d)", pf.Name(), len(m), pf.file.SegmentCount(), m[0])
 		}
 	}
+	if c.rawNonVideo {
+		return b.planPlainRaw(ctx, c.files[0])
+	}
 	switch c.kind {
 	case nzb.KindVideo, nzb.KindISO:
-		if movie, ok := b.rel.doc.MovieHint(); ok && len(b.candidates(b.rel.files)) > 1 && !releaseparse.MovieFileMatches(c.files[0].Name(), movie.Titles, movie.Year) {
+		if movie, ok := b.rel.doc.MovieHint(); ok && len(movie.Titles) > 0 && b.hasMultipleMovieCandidates(b.candidates(b.rel.files)) && !releaseparse.MovieFileMatches(c.files[0].Name(), movie.Titles, movie.Year) {
+			return nil, ErrNoPlayableFile
+		}
+		if h, ok := b.rel.doc.EpisodeHint(); ok && !memberMatchesHint(h, c.files[0].Name()) && len(b.candidates(b.rel.files)) > 1 {
 			return nil, ErrNoPlayableFile
 		}
 		return b.planPlain(ctx, c.files[0])
@@ -328,13 +542,15 @@ func (r *fileReader) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, fmt.Errorf("stream: negative offset")
 	}
-	size := r.pf.Size()
-	if off >= size {
-		return 0, io.EOF
-	}
 	want := p
-	if rem := size - off; int64(len(want)) > rem {
-		want = want[:rem]
+	if r.pf.SizeKnown() {
+		size := r.pf.Size()
+		if off >= size {
+			return 0, io.EOF
+		}
+		if rem := size - off; int64(len(want)) > rem {
+			want = want[:rem]
+		}
 	}
 	n, err := r.b.e.readFile(r.ctx, r.b.rel, r.pf, want, off, r.prio, r.b.fo)
 	if err == nil && n < len(p) {

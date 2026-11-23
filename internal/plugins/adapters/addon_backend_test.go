@@ -55,13 +55,15 @@ const (
 // streamAddon is a fake Stremio add-on behind a plugin runtime: streams by
 // route path, an optional forced status, and the paths it was asked.
 type streamAddon struct {
-	mu      sync.Mutex
-	paths   []string
-	queries int
-	streams map[string]string
-	status  int
-	retry   string
-	failure error
+	mu        sync.Mutex
+	paths     []string
+	queries   int
+	streams   map[string]string
+	status    int
+	retry     string
+	statusFor map[string]int
+	retryFor  map[string]string
+	failure   error
 }
 
 func (a *streamAddon) handle(_ context.Context, req plugins.Request) (plugins.Response, error) {
@@ -72,12 +74,17 @@ func (a *streamAddon) handle(_ context.Context, req plugins.Request) (plugins.Re
 	if a.failure != nil {
 		return plugins.Response{}, a.failure
 	}
-	if a.status != 0 {
+	st, retry := a.status, a.retry
+	if s := a.statusFor[req.Path]; s != 0 {
+		st = s
+		retry = a.retryFor[req.Path]
+	}
+	if st != 0 {
 		h := map[string]string{}
-		if a.retry != "" {
-			h["Retry-After"] = a.retry
+		if retry != "" {
+			h["Retry-After"] = retry
 		}
-		return plugins.Response{Status: a.status, Headers: h, Body: json.RawMessage(`{"err":"` + req.Path + `"}`)}, nil
+		return plugins.Response{Status: st, Headers: h, Body: json.RawMessage(`{"err":"` + req.Path + `"}`)}, nil
 	}
 	if body, ok := a.streams[req.Path]; ok {
 		return plugins.Response{Status: 200, Body: json.RawMessage(body)}, nil
@@ -566,5 +573,131 @@ func TestAddonBackendFetchNZBFromAddonOriginOnly(t *testing.T) {
 	rel.NZBURL = addon.URL + "/" + abSecret + "/get.nzb"
 	if _, err := b.FetchNZB(t.Context(), rel, func(context.Context, string) error { return budget }); !errors.Is(err, budget) {
 		t.Fatalf("grab budget ignored: %v", err)
+	}
+}
+
+func TestAddonBackendQueriesCanonicalAndAliasRoutes(t *testing.T) {
+	env := newStreamTestEnv(t)
+	fake := &streamAddon{streams: map[string]string{
+		"/stream/series/tt0388629:1:750.json": `{"streams":[{"name":"Addon","title":"One.Piece.-.750.-.ENG.UNCUT.1080p.WEB.H.264.-NanDesuKa.(FUNi)","infoHash":"` + abHashA + `"}]}`,
+		"/stream/series/tt0388629:18:4.json":  `{"streams":[{"name":"Addon","title":"[Judas] One Piece - S18E04 [1080p]","infoHash":"` + abHashB + `"}]}`,
+	}}
+	rec := env.installAddon("https://addon.example/manifest.json", abManifest, fake)
+	b := env.addonBackend(rec, "ix-alias")
+
+	req := core.SearchRequest{
+		Type:            core.TypeEpisode,
+		IDs:             core.IDs{IMDB: "tt0388629", TMDB: 37854, TVDB: 81797},
+		Title:           "One Piece",
+		Season:          1,
+		Episode:         750,
+		AbsoluteEpisode: 750,
+		Anime:           true,
+		ReleaseAliases:  []core.EpisodeNumber{{Season: 18, Episode: 4}},
+	}
+	rels, err := b.Search(t.Context(), req, abNoReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := fake.asked()
+	if len(asked) != 2 || asked[0] != "/stream/series/tt0388629:1:750.json" || asked[1] != "/stream/series/tt0388629:18:4.json" {
+		t.Fatalf("asked paths = %v, want canonical then alias", asked)
+	}
+	if len(rels) != 2 || rels[0].InfoHash != abHashA || rels[1].InfoHash != abHashB {
+		t.Fatalf("merged releases = %+v", rels)
+	}
+
+	fake.set(func() { fake.paths = nil })
+	aliasOnly := req
+	aliasOnly.ReleaseAliasesOnly = true
+	relsOnly, err := b.Search(t.Context(), aliasOnly, abNoReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.asked(); len(got) != 1 || got[0] != "/stream/series/tt0388629:18:4.json" || len(relsOnly) != 1 || relsOnly[0].InfoHash != abHashB {
+		t.Fatalf("alias-only paths=%v rels=%+v", got, relsOnly)
+	}
+}
+
+func TestAddonBackendPartialLookupFailureIsIncompleteAndNotCached(t *testing.T) {
+	env := newStreamTestEnv(t)
+	req := core.SearchRequest{
+		Type:            core.TypeEpisode,
+		IDs:             core.IDs{IMDB: "tt0388629", TMDB: 37854, TVDB: 81797},
+		Title:           "One Piece",
+		Season:          1,
+		Episode:         750,
+		AbsoluteEpisode: 750,
+		Anime:           true,
+		ReleaseAliases:  []core.EpisodeNumber{{Season: 18, Episode: 4}},
+	}
+	firstPath := "/stream/series/tt0388629:1:750.json"
+	secondPath := "/stream/series/tt0388629:18:4.json"
+	firstBody := `{"streams":[{"name":"Addon","title":"One.Piece.-.750.-.1080p","infoHash":"` + abHashA + `"}]}`
+	secondBody := `{"streams":[{"name":"Addon","title":"[Judas] One Piece - S18E04 [1080p]","infoHash":"` + abHashB + `"}]}`
+
+	fake := &streamAddon{
+		streams:   map[string]string{firstPath: firstBody, secondPath: secondBody},
+		statusFor: map[string]int{secondPath: http.StatusInternalServerError},
+	}
+	rec := env.installAddon("https://addon.example/realdebrid="+abSecret+"/manifest.json", abManifest, fake)
+	var c *newznab.Client
+	for _, cl := range env.nzb.Clients() {
+		if cl.Name() == rec.Name {
+			c = cl
+		}
+	}
+	if c == nil {
+		t.Fatal("no indexer client for installed add-on")
+	}
+
+	// Partial 500: returns first lookup's stream, marks coverage incomplete,
+	// does NOT cache the partial answer.
+	ctx1, cov1 := core.WithSearchCoverage(t.Context())
+	rels, err := c.Search(ctx1, req)
+	if err != nil || len(rels) != 1 || rels[0].InfoHash != abHashA {
+		t.Fatalf("partial 500: rels=%+v err=%v", rels, err)
+	}
+	if !cov1.Incomplete() {
+		t.Fatal("partial 500 did not mark coverage incomplete")
+	}
+
+	// Recovery: retries the add-on instead of serving stale partial cache.
+	fake.set(func() { fake.statusFor = nil })
+	ctx2, cov2 := core.WithSearchCoverage(t.Context())
+	rels, err = c.Search(ctx2, req)
+	if err != nil || len(rels) != 2 {
+		t.Fatalf("retry after partial failure: rels=%+v err=%v", rels, err)
+	}
+	if cov2.Incomplete() {
+		t.Fatal("complete search marked incomplete")
+	}
+
+	// Partial 429 on a distinct episode: returns partial results, marks
+	// coverage incomplete, does not cache, and pauses the add-on.
+	reqRL := req
+	reqRL.Episode, reqRL.AbsoluteEpisode = 751, 751
+	reqRL.ReleaseAliases = []core.EpisodeNumber{{Season: 18, Episode: 5}}
+	rlFirst := "/stream/series/tt0388629:1:751.json"
+	rlSecond := "/stream/series/tt0388629:18:5.json"
+	fake.set(func() {
+		fake.paths = nil
+		fake.streams[rlFirst] = firstBody
+		fake.statusFor = map[string]int{rlSecond: http.StatusTooManyRequests}
+		fake.retryFor = map[string]string{rlSecond: "120"}
+	})
+	ctx3, cov3 := core.WithSearchCoverage(t.Context())
+	rels, err = c.Search(ctx3, reqRL)
+	if err != nil || len(rels) != 1 || rels[0].InfoHash != abHashA {
+		t.Fatalf("partial 429: rels=%+v err=%v", rels, err)
+	}
+	if !cov3.Incomplete() {
+		t.Fatal("partial 429 did not mark coverage incomplete")
+	}
+	if _, err := c.Search(t.Context(), reqRL); !errors.Is(err, core.ErrBudgetExhausted) {
+		t.Fatalf("add-on not paused after partial 429: err=%v", err)
+	}
+	if got := fake.asked(); len(got) != 2 {
+		t.Fatalf("expected 2 add-on calls (1 ok + 1 429), got %v", got)
 	}
 }

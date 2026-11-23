@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
 	"github.com/braedonsaunders/ether/internal/httpjson"
+	"github.com/braedonsaunders/ether/internal/plugins"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,15 +20,24 @@ import (
 // Host is the set of Ether services a remote plugin may call back
 // into (SPEC §5.1.5). It mirrors plugins.Host method for method for
 // the services remote plugins may use; secret.get is hosted-only and
-// deliberately absent (remote plugins receive secrets in
-// /ether/configure). Every method is expected to re-check the
-// plugin's live grants and return ErrPermissionDenied when a grant
-// is missing or revoked.
+// deliberately absent (remote plugins receive owner secrets in
+// /ether/configure, and may write derived secrets via SecretSet /
+// SecretDelete for {secret:<name>} expansion without reading them back).
+// Every method is expected to re-check the plugin's live grants and return
+// ErrPermissionDenied when a grant is missing or revoked.
 type Host interface {
 	KVGet(ctx context.Context, pluginID, key string) ([]byte, bool, error)
 	KVPut(ctx context.Context, pluginID, key string, value []byte) error
 	KVDelete(ctx context.Context, pluginID, key string) error
 	KVList(ctx context.Context, pluginID, prefix string) ([]string, error)
+	KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error)
+
+	SecretSet(ctx context.Context, pluginID, name, value string, ttlSec int64) error
+	SecretDelete(ctx context.Context, pluginID, name string) error
+
+	BadgesSet(ctx context.Context, pluginID, setKey string, entries []plugins.BadgeEntry) error
+	BadgesClear(ctx context.Context, pluginID, setKey string) error
+	BadgesUsage(ctx context.Context, pluginID string) (plugins.BadgeUsage, error)
 
 	CatalogSearch(ctx context.Context, pluginID, query string, limit, offset int) (json.RawMessage, error)
 	CatalogGet(ctx context.Context, pluginID, id string) (json.RawMessage, error)
@@ -40,15 +51,34 @@ type Host interface {
 	KindUpsert(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error)
 	KindDelete(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
+	// access policy for the requesting frontend-adapter viewer (#615). The
+	// viewer is resolved solely from the host-minted X-Ether-Viewer-Token.
+	KindVisible(ctx context.Context, pluginID, viewerToken, kindKey string, ids []string) ([]string, error)
+	KindBrowse(ctx context.Context, pluginID, viewerToken, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error)
 	CacheOpen(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete(ctx context.Context, pluginID, blobRef string) error
 
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for viewerID and returns the Ether stream URL (spec §6.5).
 	StreamURL(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
 
 	Settings(ctx context.Context, pluginID string) (map[string]any, error)
+
+	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
+
+	// AIComplete runs a bounded completion against the owner's configured
+	// language model (requires permissions.ai: "complete", or "complete+search"
+	// when viewerToken identifies an active frontend-adapter search call; #702).
+	AIComplete(ctx context.Context, pluginID, viewerToken string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+
+	// MediaProbe reads container metadata ({durationSec, container, width,
+	// height, sizeBytes}) for a PlayableSource in the same shape /resolve
+	// returns, reusing release_probes (requires permissions.media: "probe";
+	// refused when viewerToken is set; #712).
+	MediaProbe(ctx context.Context, pluginID, viewerToken string, src core.PlayableSource) (core.MediaProbeResult, error)
 
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
@@ -58,7 +88,8 @@ type Host interface {
 // host's per-plugin quota still applies on top.
 const (
 	maxKVValueBytes    = 5 << 20
-	maxHostBodyBytes   = 1 << 20
+	maxHostBodyBytes   = 2 << 20
+	maxAIBodyBytes     = 128 << 10
 	maxCollectionBytes = 2 << 20
 	maxKindUpsertBytes = 8 << 20
 	maxCacheBlobBytes  = 256 << 20
@@ -94,9 +125,19 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ether/plugin-host/data/{service}", h.dataCall)
 	mux.HandleFunc("GET /ether/plugin-host/kv", h.kvList)
+	mux.HandleFunc("GET /ether/plugin-host/kv-usage", h.kvUsage)
 	mux.HandleFunc("GET /ether/plugin-host/kv/{key...}", h.kvGet)
 	mux.HandleFunc("PUT /ether/plugin-host/kv/{key...}", h.kvPut)
 	mux.HandleFunc("DELETE /ether/plugin-host/kv/{key...}", h.kvDelete)
+	mux.HandleFunc("PUT /ether/plugin-host/secrets/{name}", h.secretSet)
+	mux.HandleFunc("DELETE /ether/plugin-host/secrets/{name}", h.secretDelete)
+	mux.HandleFunc("GET /ether/plugin-host/badges/usage", h.badgesUsage)
+	mux.HandleFunc("GET /ether/plugin-host/badges-usage", h.badgesUsage)
+	mux.HandleFunc("PUT /ether/plugin-host/badges/{setKey}", h.badgesSet)
+	mux.HandleFunc("POST /ether/plugin-host/badges/{setKey}", h.badgesPost)
+	mux.HandleFunc("POST /ether/plugin-host/badges/{setKey}/set", h.badgesSet)
+	mux.HandleFunc("DELETE /ether/plugin-host/badges/{setKey}", h.badgesClear)
+	mux.HandleFunc("POST /ether/plugin-host/badges/{setKey}/clear", h.badgesClear)
 	mux.HandleFunc("GET /ether/plugin-host/catalog/search", h.catalogSearch)
 	mux.HandleFunc("GET /ether/plugin-host/catalog/{id...}", h.catalogGet)
 	mux.HandleFunc("GET /ether/plugin-host/viewers/{viewerId}/history", h.viewerHistory)
@@ -106,12 +147,19 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/kinds/{kind}/items", h.kindItems)
 	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/upsert", h.kindUpsert)
 	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/delete", h.kindDelete)
+	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/visible", h.kindVisible)
+	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/browse", h.kindBrowse)
 	mux.HandleFunc("POST /ether/plugin-host/sources/resolve", h.resolveSources)
 	mux.HandleFunc("PUT /ether/plugin-host/cache/{libraryKey}/{name...}", h.cachePut)
 	mux.HandleFunc("POST /ether/plugin-host/cache/{libraryKey}", h.cachePut)
 	mux.HandleFunc("GET /ether/plugin-host/cache/{blobRef...}", h.cacheOpen)
+	mux.HandleFunc("DELETE /ether/plugin-host/cache/{blobRef...}", h.cacheDelete)
 	mux.HandleFunc("POST /ether/plugin-host/frontend/stream-url", h.frontendStreamURL)
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
+	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
+	mux.HandleFunc("POST /ether/plugin-host/events/publish", h.eventsPublish)
+	mux.HandleFunc("POST /ether/plugin-host/ai/complete", h.aiComplete)
+	mux.HandleFunc("POST /ether/plugin-host/media/probe", h.mediaProbe)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -201,6 +249,128 @@ func (h *HostHandler) kvList(w http.ResponseWriter, r *http.Request) {
 		keys = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (h *HostHandler) kvUsage(w http.ResponseWriter, r *http.Request) {
+	usage, err := h.host.KVUsage(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
+}
+
+// --- Derived secrets (#660) ---
+
+func (h *HostHandler) secretSet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "Secret name is required")
+		return
+	}
+	var body struct {
+		Value  string `json:"value"`
+		TTLSec int64  `json:"ttlSec"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	if !h.finishErr(w, h.host.SecretSet(r.Context(), pluginIDOf(r), name, body.Value, body.TTLSec)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HostHandler) secretDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "Secret name is required")
+		return
+	}
+	if !h.finishErr(w, h.host.SecretDelete(r.Context(), pluginIDOf(r), name)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Poster badges (#594) ---
+
+func decodeBadgeEntries(raw []byte) ([]plugins.BadgeEntry, string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(trimmed, "[") {
+		var entries []plugins.BadgeEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, "", false
+		}
+		return entries, "", true
+	}
+	var body struct {
+		SetKey  string               `json:"setKey"`
+		Entries []plugins.BadgeEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, "", false
+	}
+	return body.Entries, body.SetKey, true
+}
+
+func (h *HostHandler) badgesSet(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	entries, _, ok := decodeBadgeEntries(raw)
+	if !ok {
+		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"entries": [...]}`)
+		return
+	}
+	if !h.finishErr(w, h.host.BadgesSet(r.Context(), pluginIDOf(r), r.PathValue("setKey"), entries)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) badgesPost(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	pathKey := r.PathValue("setKey")
+	entries, bodySetKey, ok := decodeBadgeEntries(raw)
+	if !ok {
+		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"entries": [...]}`)
+		return
+	}
+	if pathKey == "clear" && bodySetKey != "" {
+		if !h.finishErr(w, h.host.BadgesClear(r.Context(), pluginIDOf(r), bodySetKey)) {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if pathKey == "set" && bodySetKey != "" {
+		pathKey = bodySetKey
+	}
+	if !h.finishErr(w, h.host.BadgesSet(r.Context(), pluginIDOf(r), pathKey, entries)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) badgesClear(w http.ResponseWriter, r *http.Request) {
+	if !h.finishErr(w, h.host.BadgesClear(r.Context(), pluginIDOf(r), r.PathValue("setKey"))) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) badgesUsage(w http.ResponseWriter, r *http.Request) {
+	usage, err := h.host.BadgesUsage(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
 }
 
 // --- Catalog ---
@@ -306,11 +476,23 @@ func (h *HostHandler) kindUpsert(w http.ResponseWriter, r *http.Request) {
 		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"items": [...]} or a JSON array of KindItem`)
 		return
 	}
-	accepted, err := h.host.KindUpsert(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+	result := plugins.KindUpsertResult{}
+	if wh, ok := h.host.(interface {
+		KindUpsertWithResult(context.Context, string, string, []core.KindItem) (plugins.KindUpsertResult, error)
+	}); ok {
+		result, err = wh.KindUpsertWithResult(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+	} else {
+		var accepted int
+		accepted, err = h.host.KindUpsert(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+		result.Accepted = accepted
+	}
 	if !h.finishErr(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": accepted})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "accepted": result.Accepted, "added": result.Added,
+		"updated": result.Updated, "unchanged": result.Unchanged,
+	})
 }
 
 func (h *HostHandler) kindDelete(w http.ResponseWriter, r *http.Request) {
@@ -339,19 +521,89 @@ func (h *HostHandler) kindDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// kindVisible returns the subset of external IDs in {kind} allowed by the
+// library's Rules and viewer access policy (#615). The viewer identity comes
+// exclusively from the host-minted X-Ether-Viewer-Token header on active
+// frontend adapter requests, never from guest-supplied viewer IDs.
+func (h *HostHandler) kindVisible(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	var ids []string
+	var envelope struct {
+		IDs []string `json:"ids"`
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		ids = nil
+	} else if err := json.Unmarshal(raw, &envelope); err == nil && envelope.IDs != nil {
+		ids = envelope.IDs
+	} else if err := json.Unmarshal(raw, &ids); err != nil {
+		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"ids": [...]} or a JSON array of item ids`)
+		return
+	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	visible, err := h.host.KindVisible(r.Context(), pluginIDOf(r), viewerToken, r.PathValue("kind"), ids)
+	if !h.finishErr(w, err) {
+		return
+	}
+	if visible == nil {
+		visible = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ids": visible})
+}
+
+// kindBrowse browses or searches {kind} using the same LibraryPolicy path as
+// Ether's console and protocol projectors for the requesting frontend-adapter
+// viewer (#615). The viewer identity comes exclusively from X-Ether-Viewer-Token.
+func (h *HostHandler) kindBrowse(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	var q core.KindBrowseRequest
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := json.Unmarshal(raw, &q); err != nil {
+			writeHostError(w, http.StatusBadRequest, "invalid", "Body must be a JSON browse query object")
+			return
+		}
+	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	page, err := h.host.KindBrowse(r.Context(), pluginIDOf(r), viewerToken, r.PathValue("kind"), q)
+	if !h.finishErr(w, err) {
+		return
+	}
+	if page.Items == nil {
+		page.Items = []core.KindItem{}
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
 func (h *HostHandler) resolveSources(w http.ResponseWriter, r *http.Request) {
 	var q core.SourceQuery
 	if !h.decode(w, r, maxHostBodyBytes, &q) {
 		return
 	}
-	cands, err := h.host.ResolveSources(r.Context(), pluginIDOf(r), q)
+	var (
+		res core.SourceResolveResult
+		err error
+	)
+	if rh, ok := h.host.(interface {
+		ResolveSourcesWithResult(context.Context, string, core.SourceQuery) (core.SourceResolveResult, error)
+	}); ok {
+		res, err = rh.ResolveSourcesWithResult(r.Context(), pluginIDOf(r), q)
+	} else {
+		res.Candidates, err = h.host.ResolveSources(r.Context(), pluginIDOf(r), q)
+	}
 	if !h.finishErr(w, err) {
 		return
 	}
-	if cands == nil {
-		cands = []core.SourceCandidate{}
+	if res.Candidates == nil {
+		res.Candidates = []core.SourceCandidate{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"candidates": cands})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (h *HostHandler) cachePut(w http.ResponseWriter, r *http.Request) {
@@ -378,18 +630,72 @@ func (h *HostHandler) cacheOpen(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "", time.Time{}, rc)
 }
 
+func (h *HostHandler) cacheDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.finishErr(w, h.host.CacheDelete(r.Context(), pluginIDOf(r), r.PathValue("blobRef"))) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // frontendStreamURL mints a scoped stream ticket for one of the plugin's
 // own kind items and returns the Ether stream URL (spec §6.5). The viewer
 // id is the one the adapter proxied the request for.
 func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ViewerID int64  `json:"viewerId"`
-		ItemRef  string `json:"itemRef"`
+		ViewerID  int64  `json:"viewerId"`
+		ItemRef   string `json:"itemRef"`
+		PartIndex *int   `json:"partIndex,omitempty"`
+		Source    string `json:"source,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
 	}
-	u, err := h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+	if body.PartIndex != nil && *body.PartIndex < 0 {
+		writeHostError(w, http.StatusBadRequest, "bad_arguments", "partIndex must be non-negative")
+		return
+	}
+	if body.Source != "" && strings.TrimSpace(body.Source) == "" {
+		writeHostError(w, http.StatusBadRequest, "bad_arguments", "source must not be blank")
+		return
+	}
+	var (
+		u   string
+		err error
+	)
+	if body.Source != "" {
+		oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		})
+		if !ok {
+			writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service does not support source-scoped stream URLs")
+			return
+		}
+		u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{
+			PartIndex: body.PartIndex,
+			Source:    body.Source,
+		})
+	} else if body.PartIndex != nil {
+		if oh, ok := h.host.(interface {
+			StreamURLWithOptions(ctx context.Context, pluginID string, viewerID int64, itemRef string, opts plugins.StreamURLOptions) (string, error)
+		}); ok {
+			u, err = oh.StreamURLWithOptions(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, plugins.StreamURLOptions{PartIndex: body.PartIndex})
+		} else if ph, ok := h.host.(interface {
+			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+		}); ok {
+			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
+		} else {
+			u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+			if err == nil {
+				sep := "?"
+				if strings.Contains(u, "?") {
+					sep = "&"
+				}
+				u = u + sep + "part=" + strconv.Itoa(*body.PartIndex)
+			}
+		}
+	} else {
+		u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+	}
 	if !h.finishErr(w, err) {
 		return
 	}
@@ -402,6 +708,66 @@ func (h *HostHandler) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": v})
+}
+
+func (h *HostHandler) runtimeLimits(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.host.(interface {
+		CallDataHost(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	})
+	if !ok {
+		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "Data services unavailable")
+		return
+	}
+	out, err := service.CallDataHost(r.Context(), pluginIDOf(r), "runtime.limits", json.RawMessage("[]"))
+	h.writeRaw(w, out, err)
+}
+
+func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key         string             `json:"key"`
+		Payload     json.RawMessage    `json:"payload"`
+		Correlation events.Correlation `json:"correlation"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Key) == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "key is required")
+		return
+	}
+	if len(body.Payload) == 0 || string(body.Payload) == "null" {
+		body.Payload = json.RawMessage(`{}`)
+	}
+	if !h.finishErr(w, h.host.PublishEvent(r.Context(), pluginIDOf(r), body.Key, body.Payload, body.Correlation)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	var req plugins.AICompleteRequest
+	if !h.decode(w, r, maxAIBodyBytes, &req) {
+		return
+	}
+	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), viewerToken, req)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *HostHandler) mediaProbe(w http.ResponseWriter, r *http.Request) {
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	var src core.PlayableSource
+	if !h.decode(w, r, maxHostBodyBytes, &src) {
+		return
+	}
+	resp, err := h.host.MediaProbe(r.Context(), pluginIDOf(r), viewerToken, src)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *HostHandler) notify(w http.ResponseWriter, r *http.Request) {
@@ -475,15 +841,53 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return true
 	}
+	var blockedLocal *plugins.BlockedLocalHostError
+	if errors.As(err, &blockedLocal) {
+		writeHostError(w, http.StatusForbidden, "permission_denied", blockedLocal.PluginMessage())
+		return false
+	}
+	var blockedOp *plugins.BlockedOperatorHostError
+	if errors.As(err, &blockedOp) {
+		writeHostError(w, http.StatusForbidden, "permission_denied", blockedOp.PluginMessage())
+		return false
+	}
 	switch {
 	case errors.Is(err, ErrPermissionDenied):
 		writeHostError(w, http.StatusForbidden, "permission_denied", "This plugin does not have the grant this call needs")
 	case errors.Is(err, ErrNotFound):
 		writeHostError(w, http.StatusNotFound, "not_found", "Not found")
+	case errors.Is(err, plugins.ErrQuotaExceeded):
+		msg := strings.TrimPrefix(err.Error(), "remote: response body too large: ")
+		writeHostError(w, http.StatusRequestEntityTooLarge, "quota_exceeded", msg)
 	case errors.Is(err, ErrTooLarge):
 		writeHostError(w, http.StatusRequestEntityTooLarge, "too_large", "Request body is too large")
 	case errors.Is(err, ErrInvalid):
 		writeHostError(w, http.StatusBadRequest, "invalid", cleanMessage(err))
+	case errors.Is(err, ErrRateLimited):
+		var rl *plugins.RateLimitError
+		if errors.As(err, &rl) {
+			sec := rl.RetryAfterSeconds(time.Now())
+			if sec > 0 {
+				w.Header().Set("Retry-After", strconv.FormatInt(sec, 10))
+			}
+			errObj := map[string]any{
+				"code":    "rate_limited",
+				"message": rl.Error(),
+			}
+			if sec > 0 {
+				errObj["retryAfterSec"] = sec
+			}
+			if !rl.RetryAt.IsZero() {
+				errObj["retryAt"] = rl.RetryAt.UTC().Format(time.RFC3339)
+			}
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": errObj})
+			return false
+		}
+		writeHostError(w, http.StatusTooManyRequests, "rate_limited", strings.TrimPrefix(err.Error(), "remote: rate limit exceeded: "))
+	case errors.Is(err, ErrNotConfigured):
+		writeHostError(w, http.StatusNotImplemented, "not_configured", "Language model is not configured")
+	case errors.Is(err, ErrInvalidOutput):
+		writeHostError(w, http.StatusBadGateway, "invalid_output", "Language model returned invalid or oversized output")
 	case errors.Is(err, ErrUnavailable):
 		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service is not available")
 	case errors.Is(err, ErrUnauthorized):

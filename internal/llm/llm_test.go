@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,5 +195,91 @@ func TestThemedRowsContrastiveSyncExcludesDislikes(t *testing.T) {
 	}
 	if len(hubs) != 1 || len(hubs[0].Items) != 1 || hubs[0].Items[0].Title != "Arrival" {
 		t.Fatalf("expected disliked title excluded from resolved items, got %+v", hubs)
+	}
+}
+
+func TestClientComplete(t *testing.T) {
+	// Unconfigured / disabled returns ErrNotConfigured.
+	disabled := NewClient(ClientOptions{Config: config.LLM{Enabled: false}})
+	if _, err := disabled.Complete(context.Background(), CompleteOptions{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("disabled client: got %v, want ErrNotConfigured", err)
+	}
+
+	// OpenAI-compatible server: verifies max_tokens, temperature, json_object + 400 fallback.
+	var gotTokens int
+	var gotTemp *float64
+	var calls atomic.Int32
+	oaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["response_format"] != nil {
+			http.Error(w, `{"error":"json_object unsupported"}`, http.StatusBadRequest)
+			return
+		}
+		if v, ok := body["max_tokens"].(float64); ok {
+			gotTokens = int(v)
+		}
+		if v, ok := body["temperature"].(float64); ok {
+			gotTemp = &v
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{
+				"role":    "assistant",
+				"content": `{"ok":true}`,
+			}}},
+		})
+	}))
+	t.Cleanup(oaSrv.Close)
+
+	temp := 0.3
+	oaClient := NewClient(ClientOptions{Config: config.LLM{
+		Enabled: true,
+		BaseURL: oaSrv.URL + "/v1",
+		Model:   "test-model",
+	}})
+	out, err := oaClient.Complete(context.Background(), CompleteOptions{
+		Messages:    []Message{{Role: "user", Content: "classify"}},
+		JSONMode:    true,
+		MaxTokens:   321,
+		Temperature: &temp,
+	})
+	if err != nil {
+		t.Fatalf("openai Complete: %v", err)
+	}
+	if out != `{"ok":true}` || gotTokens != 321 || gotTemp == nil || *gotTemp != 0.3 || calls.Load() != 2 {
+		t.Fatalf("unexpected openai result: out=%q tokens=%d temp=%v calls=%d", out, gotTokens, gotTemp, calls.Load())
+	}
+
+	// Anthropic provider: respects max_tokens and does not send unsupported temperature.
+	var antMax int
+	var antHasTemp bool
+	antSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if v, ok := body["max_tokens"].(float64); ok {
+			antMax = int(v)
+		}
+		_, antHasTemp = body["temperature"]
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": `{"tag":"sci-fi"}`}},
+		})
+	}))
+	t.Cleanup(antSrv.Close)
+
+	antClient := NewClient(ClientOptions{})
+	out, err = antClient.anthropicChatBudget(context.Background(), antSrv.URL, config.LLM{
+		Enabled:  true,
+		Provider: "anthropic",
+		APIKey:   "sk-ant-test",
+		Model:    "claude-test",
+	}, []Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}, 512)
+	if err != nil {
+		t.Fatalf("anthropic Complete: %v", err)
+	}
+	if out != `{"tag":"sci-fi"}` || antMax != 512 || antHasTemp {
+		t.Fatalf("unexpected anthropic result: out=%q max=%d hasTemp=%v", out, antMax, antHasTemp)
 	}
 }

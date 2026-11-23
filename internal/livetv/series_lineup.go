@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -171,6 +172,9 @@ func episodeItem(ep, show core.Title) Item {
 	}
 	if it.Rating == "" {
 		it.Rating = show.ContentRating
+	}
+	if it.EnforcementRating == "" {
+		it.EnforcementRating = contentrating.EffectiveEnforcement(show.EnforcementRating, show.ContentRating, show.Adult, show.Keywords)
 	}
 	return it
 }

@@ -147,8 +147,8 @@ func TestPrismUpgradeFromDelivered9503(t *testing.T) {
 	if got := maxMigration(t, snap, "auth"); got != 3 {
 		t.Fatalf("snapshot auth version %d, want the 9503 schema (3)", got)
 	}
-	if got := maxMigration(t, db, "auth"); got != 9 {
-		t.Fatalf("upgraded auth version %d, want 9", got)
+	if got := maxMigration(t, db, "auth"); got != 10 {
+		t.Fatalf("upgraded auth version %d, want 10", got)
 	}
 	// afdcb3f7 rejected capability_headers because that slice's base had not
 	// landed it. b7049abd is the reviewed inventory: capability_headers v3 is
@@ -358,7 +358,7 @@ func TestPrismUpgradePostgresPreservesDeliveredRows(t *testing.T) {
 		}
 		assertUpgradeTables(t, db, before)
 		assertPrismCandidateArtifacts(t, db)
-		if got := maxMigration(t, db, "auth"); got != 9 {
+		if got := maxMigration(t, db, "auth"); got != 10 {
 			t.Fatalf("postgres auth %d", got)
 		}
 		var sessions int
@@ -430,7 +430,7 @@ func assertUpgradeBoundary(t *testing.T) {
 	if known["plexwatch"] != 7 || known["state_plexwatch"] != 6 || known["watchsend"] != 2 {
 		t.Fatalf("account sync inventory plexwatch=%d state_plexwatch=%d watchsend=%d", known["plexwatch"], known["state_plexwatch"], known["watchsend"])
 	}
-	if known["auth"] != 9 || known["auth_sessions"] != 1 {
+	if known["auth"] != 10 || known["auth_sessions"] != 1 {
 		t.Fatalf("landed auth inventory auth=%d auth_sessions=%d", known["auth"], known["auth_sessions"])
 	}
 }

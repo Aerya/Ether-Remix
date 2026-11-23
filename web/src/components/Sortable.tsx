@@ -10,6 +10,7 @@ import {
 import {
   SortableContext,
   arrayMove,
+  rectSortingStrategy,
   sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
@@ -26,8 +27,8 @@ export interface DragHandleProps {
 }
 
 /**
- * Drag-to-reorder list (pointer, touch and keyboard: focus a handle, press
- * Space, move with the arrow keys, Space again to drop).
+ * Drag-to-reorder list or grid (pointer, touch and keyboard: focus a handle,
+ * press Space, move with the arrow keys, Space again to drop).
  */
 export function SortableList<T>({
   items,
@@ -35,12 +36,14 @@ export function SortableList<T>({
   onReorder,
   renderItem,
   className,
+  strategy = "vertical",
 }: {
   items: T[];
   getId: (item: T) => string;
   onReorder: (next: T[], moved: { from: number; to: number }) => void;
   renderItem: (item: T, handle: DragHandleProps, index: number) => ReactNode;
   className?: string;
+  strategy?: "vertical" | "grid";
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -56,7 +59,10 @@ export function SortableList<T>({
   };
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+      <SortableContext
+        items={ids}
+        strategy={strategy === "grid" ? rectSortingStrategy : verticalListSortingStrategy}
+      >
         <div className={className}>
           {items.map((item, i) => (
             <SortableItem key={ids[i]} id={ids[i] as string}>
@@ -86,7 +92,7 @@ function SortableItem({
     position: "relative",
   };
   return (
-    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-80")}>
+    <div ref={setNodeRef} style={style} className={cn("h-full", isDragging && "opacity-80")}>
       {children({
         attributes: attributes as unknown as HTMLAttributes<HTMLElement>,
         listeners,

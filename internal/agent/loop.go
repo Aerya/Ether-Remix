@@ -22,12 +22,12 @@ const DescribeCollectionRoute = "/collections/describe"
 // stay bound to the requesting browser rather than leaving a saved collection.
 const CatalogSearchRoute = "/catalog/search"
 
-const collectionDraftGuidance = "This is Describe a collection: the owner says in plain words which collection they want, and you build it as a smart collection over Ether's catalogue while they watch. Work in short visible steps. Before each tool call say in one short sentence what you are about to try. Call collection_draft with a complete spec, read the titles it returns, and if they do not fit the request (too few, wrong years, off-genre, odd ranking) call collection_draft again with a changed spec. Use catalog_search or title_details only to check that a specific title exists. Prefer rules (year, rating, votes, genre, runtime) over keywords, and add a votes floor when ranking by rating so obscure titles do not crowd the top. Stop after at most four drafts. When the owner asks for a change, start from your last draft and change only what they asked. Finish with two or three plain sentences: what the collection holds, how it is ranked, and one change the owner could ask for. Never say it is saved: the owner saves it with the Save button. Never mention tool names, specs or JSON."
+const collectionDraftGuidance = "This is Describe a collection: the owner says in plain words which collection they want, and you build it as a smart collection over Ether's catalogue while they watch. Work in short visible steps. Before each tool call say in one short sentence what you are about to try. Call collection_draft with a complete spec, read the titles it returns, and if they do not fit the request (too few, wrong years, off-genre, odd ranking) call collection_draft again with a changed spec. Use catalog_search or title_details only to check that a specific title exists. Prefer rules (year, rating, votes, genre, runtime) over keywords. Rank by popularity, most popular first, so the well-known titles lead, unless the request asks for an order (newest, oldest, best rated, longest); a year range or decade is a filter, not an order. When ranking by rating, add a votes floor so obscure titles do not crowd the top. Stop after at most four drafts. When the owner asks for a change, start from your last draft and change only what they asked. Finish with two or three plain sentences: what the collection holds, how it is ranked, and one change the owner could ask for. Never say it is saved: the owner saves it with the Save button. Never mention tool names, specs or JSON."
 
 // routeGuidance tunes the agent for console pages built around it.
 var routeGuidance = map[string]string{
-	"/livetv/channel-builder": "You are the channel builder. Interview briefly: ask only missing decisions about theme, commercials, branding and programming style. Ask one or two short questions at a time. Search actual catalogue and collections; never invent titles or keys. Propose dayparts, eras, marathons or shuffle using bounded sources. Branding is optional: when the owner asks for no theme or no branding, skip look_draft and omit style and channel.look. Otherwise use look_draft to compose branding, show its preview and ask whether the owner likes it. Include the full validated style in livetv_channel_apply only when requested. Commercials are optional: ask for links or search terms and use web_search to find real YouTube/Vimeo links, at most 30 clips of at most two minutes. Never download before Apply. Read the context channel and preserve unrelated settings when refining. In the channel editor, Apply only updates the unsaved editor draft; the owner saves it separately. Never call it saved or published. Use livetv_channel_apply for one combined reviewable proposal. Call livetv_channel_apply to issue the approval card before saying the proposal is ready. Never tell the owner to watch or wait for a card. The owner presses Apply; never say a proposal is saved. Use plain words, no tool names or JSON.",
-	"/livetv/look":            "This is Create, the live style builder. Use look_draft WITHOUT prompt to submit your own cumulative look: first brand kit with empty scenes, then one additional complete scene per call. Preserve the context draft look IDs, channelIds, and unrelated content. For a selected sceneId preserve every other scene and the brand. Narrate each step in one short sentence before calling. Each call validates the full draft with scene.Decode and cost limits; repair errors before proceeding. Build considered motion and legible typography using the renderer grammar in the tool description. Never invent assets. Finish with a complete style, never save: the owner chooses Keep this then Save. Never mention tools or JSON.",
+	"/livetv/channel-builder": "You are the channel builder. Interview briefly: ask only missing decisions about theme, commercials, branding and programming style. Ask one or two short questions at a time. Search actual catalogue and collections; never invent titles or keys. Propose dayparts, eras, marathons or shuffle using bounded sources. Branding is optional: when the owner asks for no theme or no branding, skip look_draft and omit style and channel.look. Otherwise use look_draft WITHOUT prompt to compose a complete 9-role On Air style (ident, upnext, tonight, break, back, offair, welcome, lowerthird, bug) in cumulative stages: first brand kit with all 9 roles and scenes: [], then add 1–3 rich designed scenes per call until missingRoles is empty. Never stop or call livetv_channel_apply while missingRoles is non-empty, and keep lowerthird and bug as transparent overlays (no full-screen background rect, post: []). Show its preview and ask whether the owner likes it, or include the complete 9-role validated style in livetv_channel_apply when requested. Commercials are optional: ask for links or search terms and use web_search to find real YouTube/Vimeo links, at most 30 clips of at most two minutes. Never download before Apply. Read the context channel and preserve unrelated settings when refining. In the channel editor, Apply only updates the unsaved editor draft; the owner saves it separately. Never call it saved or published. Use livetv_channel_apply for one combined reviewable proposal. Call livetv_channel_apply to issue the approval card before saying the proposal is ready. Never tell the owner to watch or wait for a card. The owner presses Apply; never say a proposal is saved. Use plain words, no tool names or JSON.",
+	"/livetv/look":            "This is Create, the live style builder. Use look_draft WITHOUT prompt to submit your own cumulative look: first submit the brand kit, roles for all 9 roles (ident, upnext, tonight, break, back, offair, welcome, lowerthird, bug), meaningful controls, and scenes: [], then submit the cumulative look adding 1–2 complete, richly layered scenes per call until missingRoles is empty. Never stop or say the style is finished while missingRoles is non-empty. When context draft.sceneId is set, pass sceneId to look_draft and revise only that scene while preserving every other scene and the brand. Preserve the context draft look IDs, channelIds, and unrelated content. Narrate each step in one short sentence before calling. Each call validates the full draft with scene.Decode and cost limits; repair any errors before proceeding. Keep lowerthird and bug as transparent overlays over live video (no full-screen background rect, post: []). Build three-plane depth, considered keyframe motion, safe-area layout and high-contrast typography using the renderer grammar in the tool description. Never invent assets. Finish with a complete 9-role style, never save: the owner chooses Keep this then Save. Never mention tools or JSON.",
 	"/plugins/studio":         "This is Studio, where the owner builds plugins that extend Ether by describing them. Showcase plugins feed Ether's own surfaces with real data: the channels template adds free live channels to the Live TV guide, the video_source template adds playable sources to catalogue titles, the list template builds Home rows and collections from an external list, and subtitle or metadata providers work the same way. Choose one of those whenever the request fits; build a console page only when the owner explicitly asks for one. These templates already work against real services (channels loads Pluto TV's free lineup and guide; video_source searches the Internet Archive's public-domain films), so start with studio_project_create on the closest one and change only what the owner asked for. When the template already does what was asked, do not research, test or rewrite it: create it and summarise. Use web_search and web_fetch only when the owner wants a source the templates do not cover. Build a working draft straight away from the closest template instead of asking clarifying questions, keep real data sources (never typed-in sample titles or channels), check that it saves without diagnostics, preview problems or install-check errors, then summarise in two or three plain sentences what it adds and where it will appear, and offer one or two refinements. Talk to the owner in plain words: never mention plugin ids, runtimes, shadow mode, routes or tool names. Installing is the owner's choice through the install approval. Native hosted code reads non-secret settings with ether.settings.get() (a synchronous object); use defaults for missing values. Settings controls require both ether.settings: {\"$ref\": \"settings.schema.json\"} in manifest.json and that file with {\"fields\": [{\"key\": \"maxItems\", \"kind\": \"number\", \"label\": \"$t:max_items\"}]}. Define label text in i18n/en.json, read the value in the actual handler, and validate POST /ether/configure body fields with {status:200,body:{errors:{field:message}}}. Do not claim settings exist unless the referenced schema and consuming code are saved and validated. ether.kv.get(key) returns string or null; put(key,string), delete(key), and list(prefix) are synchronous. JSON-stringify objects before put and parse get results. Never probe guessed globals or private host calls; use the public APIs, and explain any remaining limitation instead of repeating checks. When the open draft was made from a Stremio add-on (template addon), it is the owner's real add-on as native code: read it with studio_project_read, then change it in place. Ether offers exactly the catalogues listed in manifest.json catalogs, so to drop catalogues save one edit to manifest.json with a JSON patch that removes their entries, using the paths in manifestOutline (highest index first); never resend the manifest whole. Reshape results in editCatalog, editMeta, editStreams or editSubtitles; it reaches the add-on only through ether.addon.get, whose link Ether keeps sealed. Never rewrite it from a template or add network permissions for the add-on.",
 	DescribeCollectionRoute:   collectionDraftGuidance,
 	CatalogSearchRoute:        collectionDraftGuidance + " This is a temporary catalogue search, not the collection editor. Return matching titles through the same drafts and previews. Do not offer to save or edit a collection, and do not ask the owner to choose filters. Explain how the results fit their request. Keep the final explanation about the titles and their tone, without discussing drafts, rules or internal steps.",
@@ -98,6 +98,16 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 	}
 	messages := append(historyToModel(stored), extra...)
 
+	draftSceneID := ""
+	if len(tc.Draft) > 0 && len(tc.Draft) <= 64<<10 {
+		var dc struct {
+			SceneID string `json:"sceneId"`
+		}
+		if json.Unmarshal(tc.Draft, &dc) == nil {
+			draftSceneID = strings.TrimSpace(dc.SceneID)
+		}
+	}
+
 	system := systemPrompt
 	if tc.Route != "" {
 		system += "\n\nThe owner is currently on console route " + tc.Route + "."
@@ -151,10 +161,16 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 		// Building a plugin reads, writes and re-checks source: give Studio
 		// turns room to finish instead of stopping mid-draft.
 		maxSteps, budget = max(maxSteps, 32), max(budget, 600_000)
+	} else if tc.Route == "/livetv/look" || tc.Route == "/livetv/channel-builder" {
+		// Building all 9 On Air playout roles in cumulative stages plus
+		// catalogue lookups and channel proposals exceeds the 12-step default.
+		maxSteps, budget = max(maxSteps, 28), max(budget, 500_000)
 	}
 	missingCalls := 0
 	toolChoice := ""
 	pendingRepair := ""
+	var incompleteLookRoles []string
+	incompleteLookTool := ""
 	issuedApproval := false
 	for step := 0; step < maxSteps; step++ {
 		if err := emit(chunkStartStep()); err != nil {
@@ -196,7 +212,7 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 			case llm.EventToolCallDelta:
 				_ = emit(chunkToolInputDelta(ev.ToolCallID, ev.InputDelta))
 			case llm.EventToolCall:
-				calls = append(calls, llm.ToolCall{ID: ev.ToolCallID, Name: ev.ToolName, Input: ev.Input})
+				calls = append(calls, llm.ToolCall{ID: ev.ToolCallID, Name: ev.ToolName, Input: ev.Input, Signature: ev.Signature})
 				var in any
 				_ = json.Unmarshal(ev.Input, &in)
 				if in == nil {
@@ -237,21 +253,25 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 		if len(calls) == 0 {
 			persist()
 			_ = emit(chunkFinishStep())
-			if len(defs) > 0 && (toolChoice != "" || pendingRepair != "" || (!issuedApproval && announcesAction(text.String()))) {
+			if len(defs) > 0 && (toolChoice != "" || pendingRepair != "" || len(incompleteLookRoles) > 0 || (!issuedApproval && announcesAction(text.String()))) {
 				if missingCalls >= 2 || step+1 >= maxSteps || tokensUsed > budget {
 					stopNote(missingToolNote)
 					return "error", errMissingToolCall
 				}
 				missingCalls++
 				toolChoice = "required"
+				nudge := "You announced an action but did not call a tool, or left a tool validation error unresolved. Call the appropriate tool now with valid arguments. Correct the exact field named in any error. Do not announce an approval card before the tool returns pending_approval. Do not respond with another promise."
 				if pendingRepair != "" {
 					toolChoice = pendingRepair
+				} else if len(incompleteLookRoles) > 0 && incompleteLookTool != "" && byName[incompleteLookTool].Name != "" {
+					toolChoice = incompleteLookTool
+					nudge = fmt.Sprintf("The style draft is still missing required roles (%s). Do not say the style is finished while roles are missing. Call %s now with the cumulative look and add enabled, non-empty scenes for the remaining roles.", strings.Join(incompleteLookRoles, ", "), incompleteLookTool)
 				} else if tc.Route == "/livetv/look" && byName["look_draft"].Name != "" {
 					toolChoice = "look_draft"
 				} else if tc.Route == "/livetv/channel-builder" && strings.Contains(strings.ToLower(text.String()), "approval") && byName["livetv_channel_apply"].Name != "" {
 					toolChoice = "livetv_channel_apply"
 				}
-				messages = append(messages, llm.StreamMessage{Role: "assistant", Content: text.String()}, llm.StreamMessage{Role: "user", Content: "You announced an action but did not call a tool, or left a tool validation error unresolved. Call the appropriate tool now with valid arguments. Correct the exact field named in any error. Do not announce an approval card before the tool returns pending_approval. Do not respond with another promise."})
+				messages = append(messages, llm.StreamMessage{Role: "assistant", Content: text.String()}, llm.StreamMessage{Role: "user", Content: nudge})
 				continue
 			}
 			return "stop", nil
@@ -333,8 +353,28 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 				if _, available := byName[call.Name]; available {
 					pendingRepair = call.Name
 				}
-			} else if pendingRepair == call.Name {
-				pendingRepair = ""
+			} else {
+				if pendingRepair == call.Name {
+					pendingRepair = ""
+				}
+				if draftSceneID == "" && (call.Name == "look_draft" || call.Name == "livetv_look_draft") {
+					if outMap, ok := outPart["output"].(map[string]any); ok {
+						if complete, hasComplete := outMap["complete"].(bool); hasComplete {
+							if complete {
+								incompleteLookRoles = nil
+								incompleteLookTool = ""
+								missingCalls = 0
+							} else {
+								nextMissing := stringSliceFromAny(outMap["missingRoles"])
+								if len(incompleteLookRoles) == 0 || len(nextMissing) < len(incompleteLookRoles) {
+									missingCalls = 0
+								}
+								incompleteLookRoles = nextMissing
+								incompleteLookTool = call.Name
+							}
+						}
+					}
+				}
 			}
 			results = append(results, res)
 			persist()
@@ -348,7 +388,7 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 			if s.headlessDescribe {
 				return "tool-calls", nil
 			}
-			if pendingRepair != "" {
+			if pendingRepair != "" || len(incompleteLookRoles) > 0 {
 				stopNote(missingToolNote)
 				return "error", errMissingToolCall
 			}
@@ -359,12 +399,28 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 	if s.headlessDescribe {
 		return "tool-calls", nil
 	}
-	if pendingRepair != "" {
+	if pendingRepair != "" || len(incompleteLookRoles) > 0 {
 		stopNote(missingToolNote)
 		return "error", errMissingToolCall
 	}
 	stopNote(fmt.Sprintf("I stopped after %d steps without finishing. Ask me to continue and I will pick up from here.", maxSteps))
 	return "tool-calls", nil
+}
+
+func stringSliceFromAny(v any) []string {
+	switch xs := v.(type) {
+	case []string:
+		return append([]string(nil), xs...)
+	case []any:
+		out := make([]string, 0, len(xs))
+		for _, item := range xs {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // executeTool validates, runs, audits and renders one tool call. It returns
@@ -377,6 +433,10 @@ func (s *Service) executeTool(ctx context.Context, p tools.Principal, threadID, 
 	}()
 	toolPart := part{
 		"type": "tool-" + call.Name, "toolCallId": call.ID, "state": "input-available",
+	}
+	if call.Signature != "" {
+		// Replayed history must return the provider's signature with the call.
+		toolPart["callSignature"] = call.Signature
 	}
 	var input map[string]any
 	if json.Unmarshal(call.Input, &input) != nil || input == nil {
@@ -496,7 +556,7 @@ func (s *Service) executeTool(ctx context.Context, p tools.Principal, threadID, 
 	toolPart["state"] = "output-available"
 	toolPart["output"] = output
 	_ = emit(chunkToolOutputAvailable(call.ID, output))
-	return llm.ToolResult{ToolCallID: call.ID, Name: call.Name, Content: truncateOutput([]byte(mustJSON(output)))}, toolPart
+	return llm.ToolResult{ToolCallID: call.ID, Name: call.Name, Content: truncateToolOutput(call.Name, []byte(mustJSON(output)))}, toolPart
 }
 
 func (s *Service) toolError(ctx context.Context, p tools.Principal, threadID string, call llm.ToolCall, toolPart part, emit func(Chunk) error, err error) (llm.ToolResult, part) {

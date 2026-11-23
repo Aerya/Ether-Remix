@@ -438,11 +438,11 @@ export function UsenetProviders({
 
       <RecordDrawer
         summary={
-          draft ? (
+          draft && !isNew ? (
             <div className="space-y-5">
               <SourceEditorHeader
                 icon={<Network size={22} />}
-                title={isNew ? t("New provider") : name}
+                title={name}
                 description={draft.host ? `${draft.host}:${draft.port}` : t("No host")}
               />
               <SourceEditorMetrics

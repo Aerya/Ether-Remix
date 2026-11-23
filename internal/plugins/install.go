@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
@@ -44,20 +48,25 @@ type Preview struct {
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
 	// Summary is the manifest summary with any "$t:" reference resolved
 	// from the package's own strings.
-	Summary          string   `json:"summary,omitempty"`
-	PermissionLines  []string `json:"permissions"`
-	NeedsViewers     bool     `json:"needsViewers"`
-	NeedsFolders     bool     `json:"needsFolders"`
-	Verified         bool     `json:"verified"`
-	StremioOnly      bool     `json:"stremioOnly"`
-	AlreadyInstalled bool     `json:"alreadyInstalled,omitempty"`
-	InstalledVersion string   `json:"installedVersion,omitempty"`
-	AddedPermissions []string `json:"addedPermissions,omitempty"`
-	source           Source
-	files            map[string][]byte
-	manifestRaw      json.RawMessage
-	resolvedSettings json.RawMessage
-	resolvedStrings  map[string]map[string]string
+	Summary string `json:"summary,omitempty"`
+	// Icon is a browser-loadable URL or rasterized PNG data URI for preview.
+	Icon                 string   `json:"icon,omitempty"`
+	PermissionLines      []string `json:"permissions"`
+	NeedsViewers         bool     `json:"needsViewers"`
+	NeedsFolders         bool     `json:"needsFolders"`
+	NeedsOperatorHosts   bool     `json:"needsOperatorHosts,omitempty"`
+	LocalHosts           []string `json:"localHosts,omitempty"`
+	PendingOperatorHosts []string `json:"pendingOperatorHosts,omitempty"`
+	Verified             bool     `json:"verified"`
+	StremioOnly          bool     `json:"stremioOnly"`
+	AlreadyInstalled     bool     `json:"alreadyInstalled,omitempty"`
+	InstalledVersion     string   `json:"installedVersion,omitempty"`
+	AddedPermissions     []string `json:"addedPermissions,omitempty"`
+	source               Source
+	files                map[string][]byte
+	manifestRaw          json.RawMessage
+	resolvedSettings     json.RawMessage
+	resolvedStrings      map[string]map[string]string
 }
 
 // IsGitHubURL classifies a github.com repo URL.
@@ -419,6 +428,112 @@ func (p *Preview) resolve() error {
 	return nil
 }
 
+// cachedSourceEntry holds a recently fetched remote package/manifest so a
+// PreviewInstall immediately followed by Install avoids downloading twice.
+type cachedSourceEntry struct {
+	raw     []byte
+	files   map[string][]byte
+	expires time.Time
+}
+
+const (
+	previewSourceCacheTTL = 2 * time.Minute
+	previewCheckCacheTTL  = 5 * time.Minute
+	previewSourceCacheMax = 8
+	previewCheckCacheMax  = 16
+)
+
+func previewSourceCacheKey(src Source) string {
+	if src.Kind != "url" && src.Kind != "catalogue" {
+		return ""
+	}
+	if strings.TrimSpace(src.URL) == "" {
+		return ""
+	}
+	return src.Kind + "\x00" + strings.TrimSpace(src.URL) + "\x00" + strings.ToLower(strings.TrimSpace(src.SHA256))
+}
+
+func (m *Manager) loadSourceCached(ctx context.Context, src Source) ([]byte, map[string][]byte, error) {
+	key := previewSourceCacheKey(src)
+	now := m.now()
+	if key != "" {
+		m.previewMu.Lock()
+		if entry, ok := m.sourceCache[key]; ok && now.Before(entry.expires) {
+			raw := append([]byte(nil), entry.raw...)
+			files := make(map[string][]byte, len(entry.files))
+			for k, v := range entry.files {
+				files[k] = append([]byte(nil), v...)
+			}
+			m.previewMu.Unlock()
+			return raw, files, nil
+		}
+		m.previewMu.Unlock()
+	}
+	raw, files, err := m.loadSource(ctx, src)
+	if err != nil {
+		return nil, nil, err
+	}
+	if key != "" {
+		rawCopy := append([]byte(nil), raw...)
+		filesCopy := make(map[string][]byte, len(files))
+		for k, v := range files {
+			filesCopy[k] = append([]byte(nil), v...)
+		}
+		m.previewMu.Lock()
+		if m.sourceCache == nil {
+			m.sourceCache = map[string]cachedSourceEntry{}
+		}
+		if len(m.sourceCache) >= previewSourceCacheMax {
+			for k, e := range m.sourceCache {
+				if !now.Before(e.expires) || len(m.sourceCache) >= previewSourceCacheMax {
+					delete(m.sourceCache, k)
+				}
+			}
+		}
+		m.sourceCache[key] = cachedSourceEntry{raw: rawCopy, files: filesCopy, expires: now.Add(previewSourceCacheTTL)}
+		m.previewMu.Unlock()
+	}
+	return raw, files, nil
+}
+
+func (m *Manager) checkPackageCached(ctx context.Context, raw []byte, files map[string][]byte) error {
+	if m.deps.CheckPackage == nil {
+		return nil
+	}
+	digest := pkgDigest(files)
+	if digest == "" {
+		digest = digestOf(raw)
+	}
+	now := m.now()
+	if digest != "" {
+		m.previewMu.Lock()
+		if exp, ok := m.checkedDigests[digest]; ok && now.Before(exp) {
+			m.previewMu.Unlock()
+			return nil
+		}
+		m.previewMu.Unlock()
+	}
+	if err := m.deps.CheckPackage(ctx, raw, files); err != nil {
+		return err
+	}
+	if digest != "" {
+		m.previewMu.Lock()
+		if m.checkedDigests == nil {
+			m.checkedDigests = map[string]time.Time{}
+		}
+		if len(m.checkedDigests) >= previewCheckCacheMax {
+			for k, exp := range m.checkedDigests {
+				if !now.Before(exp) || len(m.checkedDigests) >= previewCheckCacheMax {
+					delete(m.checkedDigests, k)
+				}
+			}
+		}
+		m.checkedDigests[digest] = now.Add(previewCheckCacheTTL)
+		m.previewMu.Unlock()
+	}
+	return nil
+}
+
 // PreviewInstall fetches and validates a source without installing it.
 func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, error) {
 	resolved, err := m.resolveCatalogueSource(ctx, src)
@@ -426,7 +541,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		return nil, err
 	}
 	src = resolved
-	raw, files, err := m.loadSource(ctx, src)
+	raw, files, err := m.loadSourceCached(ctx, src)
 	if err != nil {
 		return nil, err
 	}
@@ -454,8 +569,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		if man.Ether == nil || man.Ether.Kind != reviewed.Kind {
 			return nil, fmt.Errorf("plugins: manifest kind does not match the catalogue review")
 		}
-		approved := Manifest{Ether: &EtherBlock{Permissions: reviewed.Permissions, Capabilities: reviewed.Capabilities}}
-		if added := PermissionDiff(approved, man); len(added) != 0 {
+		if added := catalogueReviewDiff(*reviewed, man); len(added) != 0 {
 			return nil, fmt.Errorf("plugins: manifest requests permissions beyond the catalogue review: %s", strings.Join(added, "; "))
 		}
 	}
@@ -467,13 +581,27 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 	}
 	p := &Preview{Manifest: man, RuntimeLimits: m.grantedRuntimeLimits(man), source: src, files: files, manifestRaw: raw, Verified: src.Verified, StremioOnly: man.IsStremioOnly()}
 	p.PermissionLines, p.NeedsViewers, p.NeedsFolders = PermissionSheet(man)
+	p.LocalHosts = DeclaredLocalHosts(man)
 	if err := p.resolve(); err != nil {
 		return nil, err
 	}
+	p.NeedsOperatorHosts = DeclaresOperatorHosts(man)
+	if p.NeedsOperatorHosts {
+		var existingGrants Grants
+		var existingSettings map[string]any
+		if cur, err := m.store.record(ctx, man.ID); err == nil {
+			existingGrants, _ = m.store.grants(ctx, cur.ID)
+			if row, sErr := m.store.settings(ctx, cur.ID); sErr == nil {
+				existingSettings = row.Settings
+			}
+		}
+		p.PendingOperatorHosts = PendingOperatorHosts(man, existingGrants, existingSettings, p.resolvedSettings, m.BlockedOperatorHosts(man.ID), true)
+	}
+	p.Icon = m.previewIcon(ctx, man, files, src)
 	// The conformance kit checks packages Ether runs; a plain Stremio add-on
 	// is a remote service whose manifest was validated above.
 	if m.deps.CheckPackage != nil && !man.IsStremioOnly() {
-		if err := m.deps.CheckPackage(ctx, raw, files); err != nil {
+		if err := m.checkPackageCached(ctx, raw, files); err != nil {
 			return nil, err
 		}
 	}
@@ -483,6 +611,33 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		p.AddedPermissions = PermissionDiff(cur.Manifest, man)
 	}
 	return p, nil
+}
+
+func (m *Manager) previewIcon(ctx context.Context, man Manifest, files map[string][]byte, src Source) string {
+	if man.Ether != nil {
+		icon := strings.TrimSpace(man.Ether.Icon)
+		if isHTTPURL(icon) {
+			return icon
+		}
+		if icon != "" && !unsafePath(icon) && m.iconRaster != nil {
+			if raw, ok := files[icon]; ok && len(raw) > 0 {
+				if data, ct, err := m.iconRaster.Rasterize(
+					ctx,
+					"preview-icon:"+man.ID+":"+digestOf(raw),
+					raw,
+					artwork.RasterOptions{Width: 128, Height: 128, Format: "png"},
+				); err == nil && len(data) > 0 {
+					return "data:" + ct + ";base64," + base64.StdEncoding.EncodeToString(data)
+				}
+			}
+		}
+	} else if logo := strings.TrimSpace(man.Logo); isHTTPURL(logo) {
+		return logo
+	}
+	if src.reviewed != nil && isHTTPURL(strings.TrimSpace(src.reviewed.Icon)) {
+		return strings.TrimSpace(src.reviewed.Icon)
+	}
+	return ""
 }
 
 // InstallOptions carries the owner's install-time picks.
@@ -507,6 +662,11 @@ func mediaKindsOf(m Manifest) []MediaKindMeta {
 
 // Install installs (or updates to) a previewed source.
 func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) (Record, error) {
+	if key := previewSourceCacheKey(p.source); key != "" {
+		m.previewMu.Lock()
+		delete(m.sourceCache, key)
+		m.previewMu.Unlock()
+	}
 	man := p.Manifest
 	if cat := m.getCatalogue(); cat != nil {
 		if p.source.Kind == "catalogue" {
@@ -584,12 +744,29 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			m.log.Warn("plugin install: dropping old artifacts failed", "plugin", man.ID, "err", err)
 		}
 	}
-	// Grants: keep existing picks on update unless new ones were given.
+	// Grants: keep existing picks on update unless new ones were given;
+	// on fresh install, pre-grant any local-network hosts declared in the manifest.
 	g := opts.Grants
-	if existing && g.Viewers == nil && g.Folders == nil && g.Revoked == nil {
+	if existing && g.Viewers == nil && g.Folders == nil && g.LocalHosts == nil && g.OperatorHosts == nil && g.Revoked == nil {
 		if old, err := m.store.grants(ctx, man.ID); err == nil {
 			g = old
 		}
+	} else if !existing && g.LocalHosts == nil {
+		g.LocalHosts = DeclaredLocalHosts(man)
+	}
+	if g.LocalHosts != nil {
+		normalized, err := normalizeLocalHosts(g.LocalHosts)
+		if err != nil {
+			return Record{}, &ValidationError{Fields: []FieldError{{Field: "localHosts", Message: err.Error()}}}
+		}
+		g.LocalHosts = normalized
+	}
+	if g.OperatorHosts != nil {
+		normalized, err := normalizeOperatorHosts(g.OperatorHosts)
+		if err != nil {
+			return Record{}, &ValidationError{Fields: []FieldError{{Field: "operatorHosts", Message: err.Error()}}}
+		}
+		g.OperatorHosts = normalized
 	}
 	if p.source.LAN {
 		g.LAN = true
@@ -597,9 +774,20 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 	if err := m.store.putGrants(ctx, man.ID, g); err != nil {
 		return Record{}, err
 	}
+	m.pruneBlockedOperatorHosts(man.ID, g.OperatorHosts)
 	row, _ := m.store.settings(ctx, man.ID)
 	if opts.Settings != nil {
 		row.Settings = opts.Settings
+	}
+	if !existing && len(g.Folders) > 0 {
+		if fields := folderFieldNames(p.resolvedSettings); len(fields) == 1 {
+			if row.Settings == nil {
+				row.Settings = map[string]any{}
+			}
+			if cur, _ := row.Settings[fields[0]].(string); strings.TrimSpace(cur) == "" {
+				row.Settings[fields[0]] = g.Folders[0]
+			}
+		}
 	}
 	row.Strings = p.resolvedStrings
 	row.Schema = p.resolvedSettings
@@ -616,6 +804,32 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 	}
 	m.syncDescriptors(ctx, saved)
 	m.broadcast(ctx)
+	if !existing && saved.Enabled {
+		m.mu.Lock()
+		hooks := append([]func(context.Context, Record){}, m.installHooks...)
+		m.mu.Unlock()
+		for _, fn := range hooks {
+			fn(ctx, saved)
+		}
+	}
+	if !existing {
+		m.emitBusEvent(events.EventPluginPackageInstalled, saved.ID, events.PluginPackageInstalledPayload{
+			PluginID:    saved.ID,
+			Name:        saved.Name,
+			Version:     saved.Version,
+			Kind:        saved.Kind,
+			RuntimeKind: saved.Manifest.RuntimeKind(),
+			Verified:    saved.Verified,
+		}, false)
+	} else if cur.Version != saved.Version {
+		m.emitBusEvent(events.EventPluginPackageUpdated, saved.ID, events.PluginPackageUpdatedPayload{
+			PluginID:    saved.ID,
+			Name:        saved.Name,
+			FromVersion: cur.Version,
+			ToVersion:   saved.Version,
+			Auto:        saved.AutoUpdate,
+		}, false)
+	}
 	return saved, nil
 }
 
@@ -830,6 +1044,36 @@ func (m *Manager) SettingsSchema(ctx context.Context, id string) (json.RawMessag
 	return row.Schema, nil
 }
 
+// folderFieldNames walks a settings schema for folder-kind field names.
+func folderFieldNames(schema json.RawMessage) []string {
+	var out []string
+	seen := map[string]bool{}
+	var walk func(any)
+	walk = func(n any) {
+		switch t := n.(type) {
+		case map[string]any:
+			if t["kind"] == "folder" {
+				if name, ok := firstString(t, "key", "name", "id", "field"); ok && !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
+			for _, v := range t {
+				walk(v)
+			}
+		case []any:
+			for _, v := range t {
+				walk(v)
+			}
+		}
+	}
+	var doc any
+	if json.Unmarshal(schema, &doc) == nil {
+		walk(doc)
+	}
+	return out
+}
+
 // secretFieldNames walks a settings schema for secret-kind field names.
 func secretFieldNames(schema json.RawMessage) map[string]bool {
 	out := map[string]bool{}
@@ -964,6 +1208,9 @@ func (m *Manager) Configure(ctx context.Context, id string, incoming map[string]
 	row.Settings, row.Secrets = settings, secrets
 	if err := m.store.putSettings(ctx, id, row); err != nil {
 		return nil, err
+	}
+	for k := range secrets {
+		_ = m.store.deleteDerivedSecret(ctx, id, k)
 	}
 	// Deliver to the plugin. No runtime yet (WS8) is not an error: the
 	// settings are stored and will be delivered on first start.
@@ -1118,6 +1365,13 @@ func (m *Manager) CheckHealth(ctx context.Context, id string) (Health, error) {
 		}
 		return m.store.health(ctx, id)
 	}
+	if rec, err := m.store.record(ctx, id); err == nil && m.sidecarWaiting(rec) {
+		h, herr := m.store.health(ctx, id)
+		if herr != nil {
+			return Health{}, herr
+		}
+		return m.liveHealth(rec, h), nil
+	}
 	resp, err := m.Call(ctx, id, Request{Method: "GET", Path: "/ether/health"})
 	if err != nil {
 		h, herr := m.store.health(ctx, id)
@@ -1163,4 +1417,16 @@ func StremioInstallID(link string) (id, base string, err error) {
 		return "", "", err
 	}
 	return "addon." + stremio.Fingerprint(u)[:16], u.String(), nil
+}
+
+// catalogueReviewDiff lists what man asks for beyond its catalogue entry. The
+// package bytes are pinned by the entry's SHA-256, so what it contributes
+// (libraries, screens, flow actions, badges) is exactly what was reviewed;
+// only the permissions and capabilities declared on the entry are compared.
+func catalogueReviewDiff(reviewed CatalogueArtifact, man Manifest) []string {
+	approved := Manifest{Ether: &EtherBlock{Permissions: reviewed.Permissions, Capabilities: reviewed.Capabilities}}
+	if man.Ether != nil {
+		approved.Ether.Contributes = man.Ether.Contributes
+	}
+	return PermissionDiff(approved, man)
 }

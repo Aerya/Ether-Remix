@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Source is the release source parsed from a release name.
@@ -60,20 +63,27 @@ type ReleaseInfo struct {
 	SubtitleLanguages []string `json:"subtitleLanguages,omitempty"`
 	// AbsoluteEpisodes are episode numbers counted from the series start,
 	// as anime releases number them ("Show - 1071") (additive).
-	AbsoluteEpisodes []int  `json:"absoluteEpisodes,omitempty"`
-	Revision         int    `json:"revision,omitempty"`
-	Cour             int    `json:"cour,omitempty"`
-	Subbed           bool   `json:"subbed,omitempty"`
-	Dubbed           bool   `json:"dubbed,omitempty"`
-	Uncensored       bool   `json:"uncensored,omitempty"`
-	Proper           bool   `json:"proper,omitempty"`
-	Repack           bool   `json:"repack,omitempty"`
-	Container        string `json:"container,omitempty"`
+	AbsoluteEpisodes []int `json:"absoluteEpisodes,omitempty"`
+	// AirDate is the episode broadcast date parsed from YYMMDD, YYYYMMDD, or
+	// YYYY.MM.DD / YYYY-MM-DD tokens, normalized to "YYYY-MM-DD" (additive).
+	AirDate    string `json:"airDate,omitempty"`
+	Revision   int    `json:"revision,omitempty"`
+	Cour       int    `json:"cour,omitempty"`
+	Subbed     bool   `json:"subbed,omitempty"`
+	Dubbed     bool   `json:"dubbed,omitempty"`
+	Uncensored bool   `json:"uncensored,omitempty"`
+	Proper     bool   `json:"proper,omitempty"`
+	Repack     bool   `json:"repack,omitempty"`
+	Container  string `json:"container,omitempty"`
 }
 
 // Release is an indexer search result for a title.
 type Release struct {
 	SourceHash string      `json:"sourceHash,omitempty"` // SHA-256 of the fetched source descriptor, when known
+	ContentID  string      `json:"contentId,omitempty"`  // cross-indexer content identity ("nzb:<sha256>" once NZB is known)
+	Poster     string      `json:"poster,omitempty"`     // Usenet poster reported by indexer or NZB
+	UsenetDate time.Time   `json:"usenetDate,omitempty"` // Usenet upload timestamp when reported separately from PubDate
+	Fallbacks  []Release   `json:"-"`                    // alternate indexer copies merged during multi-indexer search
 	ID         string      `json:"id"`                   // stable: sha1(indexer + guid)
 	GUID       string      `json:"guid"`                 // indexer guid
 	Indexer    string      `json:"indexer"`              // indexer name
@@ -89,6 +99,10 @@ type Release struct {
 
 	// IndexerID binds a result to its configured origin; Indexer is a display label.
 	IndexerID string `json:"indexerId,omitempty"`
+	// SourceOrder is the 1-based position of this result in the source's own
+	// response (set for Stremio add-on results so later cache sorting or
+	// batching cannot lose it). Zero means unset.
+	SourceOrder int `json:"sourceOrder,omitempty"`
 	// TitleIDs are movie/series identifiers reported by the indexer. They
 	// must never be inferred from the search request's identifiers.
 	TitleIDs IDs `json:"titleIds,omitempty"`
@@ -103,8 +117,20 @@ type Release struct {
 	Protocol  string `json:"protocol,omitempty"`
 	InfoHash  string `json:"infoHash,omitempty"` // lower-case hex BitTorrent v1 info hash
 	MagnetURL string `json:"magnetUrl,omitempty"`
-	Seeders   int    `json:"seeders,omitempty"`
-	Peers     int    `json:"peers,omitempty"`
+	// TorrentFiles holds the file list parsed from a .torrent metainfo
+	// document during ResolveTorrent, when available. In-memory only.
+	TorrentFiles []ReleaseFile `json:"-"`
+	// FileCount hints how many files a torrent contains when TorrentFiles has
+	// not been parsed (from indexer metadata or a plugin release hint). Debrid
+	// providers that zip high-file-count torrents use it to avoid trusting a
+	// cache-check miss on zip-only torrents.
+	FileCount int `json:"fileCount,omitempty"`
+	// Private marks a private-tracker torrent (info.private == 1 or a
+	// Cardigann definition with type: private). Debrid providers may only
+	// check or play an existing cache by bare info hash.
+	Private bool `json:"private,omitempty"`
+	Seeders int  `json:"seeders,omitempty"`
+	Peers   int  `json:"peers,omitempty"`
 	// Target narrows a multi-file release (a season pack) to the wanted
 	// episode; set by the resolver on candidates before fetching.
 	Target *ReleaseTarget `json:"target,omitempty"`
@@ -137,6 +163,250 @@ type Release struct {
 	// importing it on request), so every open costs the source real work
 	// (additive). See OpensOnDemand.
 	StreamOnDemand bool `json:"streamOnDemand,omitempty"`
+	// IndexerSubtitles are the subtitle languages the indexer lists for the
+	// release (the Newznab "subs" attribute), as release language names.
+	// Empty means the indexer said nothing, not that there are none (additive).
+	IndexerSubtitles []string `json:"indexerSubtitles,omitempty"`
+}
+
+// KnownFileCount returns the torrent's known file count from FileCount or
+// parsed TorrentFiles, or 0 when unknown.
+func (r Release) KnownFileCount() int {
+	return max(r.FileCount, len(r.TorrentFiles))
+}
+
+// PreFetchContentIDPrefix namespaces Usenet pre-fetch content identities
+// ("pre:<sizeBucket>|<poster>|<uploadDay>").
+const PreFetchContentIDPrefix = "pre:"
+
+// NormalizeReleasePoster normalizes a Usenet poster string for content identity matching.
+func NormalizeReleasePoster(poster string) string {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(poster)))
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Join(fields, " ")
+}
+
+// ReleaseSizeBucket maps a positive byte size to a logarithmic ~10% bucket so
+// small yEnc/NFO accounting differences across indexers land in the same bucket.
+func ReleaseSizeBucket(size int64) int64 {
+	if size <= 0 {
+		return 0
+	}
+	b := int64(math.Round(math.Log(float64(size)) / math.Log(1.10)))
+	if b < 1 {
+		return 1
+	}
+	return b
+}
+
+// PreFetchContentIDFor builds a pre-fetch Usenet content identity from a byte
+// size, poster, and upload date. Missing fields return "".
+func PreFetchContentIDFor(size int64, poster string, uploadDate time.Time) string {
+	bucket := ReleaseSizeBucket(size)
+	normPoster := NormalizeReleasePoster(poster)
+	if bucket <= 0 || normPoster == "" || uploadDate.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%s%d|%s|%s", PreFetchContentIDPrefix, bucket, normPoster, uploadDate.UTC().Format("2006-01-02"))
+}
+
+// parseBTIHGUIDSuffix parses a Stremio-style torrent GUID suffix from
+// "btih:<hash>/s<season>e<episode>" or "btih:<hash>/<fileIndex>".
+func parseBTIHGUIDSuffix(guid string) (season, episode int, hasEpisode bool, fileIndex int, hasFileIndex bool) {
+	guid = strings.TrimSpace(guid)
+	if len(guid) <= len("btih:") || !strings.EqualFold(guid[:len("btih:")], "btih:") {
+		return 0, 0, false, 0, false
+	}
+	rest := guid[len("btih:"):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 || slash+1 >= len(rest) {
+		return 0, 0, false, 0, false
+	}
+	suffix := rest[slash+1:]
+	if len(suffix) >= 4 && (suffix[0] == 's' || suffix[0] == 'S') {
+		ePos := strings.IndexAny(suffix[1:], "eE")
+		if ePos > 0 {
+			s, sOK := parseNonNegDigits(suffix[1 : 1+ePos])
+			e, eOK := parseNonNegDigits(suffix[1+ePos+1:])
+			if sOK && eOK && e > 0 {
+				return s, e, true, 0, false
+			}
+		}
+	}
+	if idx, ok := parseNonNegDigits(suffix); ok {
+		return 0, 0, false, idx, true
+	}
+	return 0, 0, false, 0, false
+}
+
+func parseNonNegDigits(s string) (int, bool) {
+	if s == "" || len(s) > 9 {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n, true
+}
+
+func (r Release) explicitFileSelectionKey() string {
+	if r.Target == nil {
+		return ""
+	}
+	return r.Target.fileSelectionKey()
+}
+
+func (r Release) guidFileSelectionKey() string {
+	_, _, _, idx, ok := parseBTIHGUIDSuffix(r.GUID)
+	if !ok {
+		return ""
+	}
+	return (ReleaseTarget{FileIndex: &idx}).fileSelectionKey()
+}
+
+// EpisodeScope returns the single season and episode targeted by r when r
+// addresses one episode (via Target, a Stremio-style btih:<hash>/sNeM GUID,
+// or a single-episode torrent parse). Target takes precedence over parsed
+// fields so retargeted or vaulted packs use the requested episode. Untargeted
+// Usenet releases return ok=false so single-episode NZBs preserve unscoped
+// cross-indexer identities.
+func (r Release) EpisodeScope() (season, episode int, ok bool) {
+	if r.Target != nil && r.Target.Season >= 0 && r.Target.Episode > 0 {
+		return r.Target.Season, r.Target.Episode, true
+	}
+	if s, e, hasEp, _, _ := parseBTIHGUIDSuffix(r.GUID); hasEp {
+		return s, e, true
+	}
+	if (r.Protocol == ProtocolTorrent || strings.TrimSpace(r.InfoHash) != "") && !r.Info.FullSeason {
+		if len(r.Info.Episodes) == 1 && r.Info.Episodes[0] > 0 {
+			season := 0
+			if len(r.Info.Seasons) == 1 && r.Info.Seasons[0] >= 0 {
+				season = r.Info.Seasons[0]
+			}
+			return season, r.Info.Episodes[0], true
+		}
+		if len(r.Info.Episodes) == 0 && len(r.Info.AbsoluteEpisodes) == 1 && r.Info.AbsoluteEpisodes[0] > 0 {
+			return 0, r.Info.AbsoluteEpisodes[0], true
+		}
+	}
+	return 0, 0, false
+}
+
+// HasExplicitFileTarget reports whether r narrows a multi-file release to a
+// specific file, archive member, or track rather than an episode.
+func (r Release) HasExplicitFileTarget() bool {
+	if r.explicitFileSelectionKey() != "" {
+		return true
+	}
+	if _, _, ok := r.EpisodeScope(); ok {
+		return false
+	}
+	return r.guidFileSelectionKey() != ""
+}
+
+// HasFileOrEpisodeScope reports whether r narrows a multi-file release to a
+// single file/member/track or a single episode.
+func (r Release) HasFileOrEpisodeScope() bool {
+	if r.explicitFileSelectionKey() != "" {
+		return true
+	}
+	if _, _, ok := r.EpisodeScope(); ok {
+		return true
+	}
+	return r.guidFileSelectionKey() != ""
+}
+
+// ScopedContentID narrows base to the targeted file or episode when r selects
+// one entry inside a multi-file release (an explicit file/member/track target,
+// an episode target/GUID/single-episode torrent, or a btih:<hash>/<fileIdx>
+// GUID), so health, blocklist, and probe cache state do not bleed across other
+// files or episodes of the same pack.
+func (r Release) ScopedContentID(base string) string {
+	if base == "" {
+		return ""
+	}
+	if sel := r.explicitFileSelectionKey(); sel != "" {
+		suffix := "|file:" + sel
+		if strings.HasSuffix(base, suffix) {
+			return base
+		}
+		return base + suffix
+	}
+	if season, episode, ok := r.EpisodeScope(); ok {
+		return TargetReleaseID(base, ReleaseTarget{Season: season, Episode: episode})
+	}
+	if sel := r.guidFileSelectionKey(); sel != "" {
+		suffix := "|file:" + sel
+		if strings.HasSuffix(base, suffix) {
+			return base
+		}
+		return base + suffix
+	}
+	return base
+}
+
+// PreFetchContentID returns r's pre-fetch Usenet content identity
+// (size bucket + poster + upload day), or "" when those facts are absent.
+func (r Release) PreFetchContentID() string {
+	if r.Protocol != ProtocolUsenet {
+		return ""
+	}
+	ts := r.UsenetDate
+	if ts.IsZero() {
+		ts = r.PubDate
+	}
+	return r.ScopedContentID(PreFetchContentIDFor(r.Size, r.Poster, ts))
+}
+
+// EffectiveContentID returns r's message-ID content identity once known,
+// falling back to PreFetchContentID before fetching.
+func (r Release) EffectiveContentID() string {
+	if r.ContentID != "" {
+		return r.ScopedContentID(r.ContentID)
+	}
+	return r.PreFetchContentID()
+}
+
+// ProbeContentKeys returns the durable content-identity keys under which
+// probed container metadata for r may be stored or looked up, ordered from
+// strongest (exact content identity) to weakest (pre-fetch identity). Multi-file
+// and per-episode releases are scoped via ScopedContentID; untargeted season
+// packs return nil so they never read or pollute a shared bare key.
+func (r Release) ProbeContentKeys() []string {
+	if r.Info.FullSeason && !r.HasFileOrEpisodeScope() {
+		return nil
+	}
+	var out []string
+	add := func(k string) {
+		if k == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == k {
+				return
+			}
+		}
+		out = append(out, k)
+	}
+	if r.ContentID != "" {
+		add(r.ScopedContentID(r.ContentID))
+	}
+	if hash := strings.ToLower(strings.TrimSpace(r.InfoHash)); hash != "" {
+		add(r.ScopedContentID("bt:" + hash))
+	}
+	if pre := r.PreFetchContentID(); pre != "" {
+		add(pre)
+	}
+	if len(out) == 0 && r.ID != "" {
+		add(r.ScopedContentID("rel:" + r.ID))
+	}
+	return out
 }
 
 // Resolution is the resolver's answer for a title and client: the winning
@@ -152,6 +422,7 @@ type Resolution struct {
 	Release         Release   `json:"release"`
 	NZB             []byte    `json:"-"`
 	Alternates      []Release `json:"alternates"` // next candidates, best first
+	FailedReleases  []string  `json:"-"`          // concrete release IDs rejected during this resolve
 	ResolvedAt      time.Time `json:"resolvedAt"`
 }
 
@@ -261,6 +532,15 @@ const (
 	ProfileLanguageAny      = "any"      // every language
 )
 
+// A quality profile's AudioLanguageMode controls how a specific Language
+// applies. Existing profiles without this field keep AudioLanguageModeRequired
+// (strict filtering); new profiles default to AudioLanguageModePreferred
+// (ranking first, falling back to other releases, original language first).
+const (
+	AudioLanguageModeRequired  = "required"
+	AudioLanguageModePreferred = "preferred"
+)
+
 // QualityProfile is an owner-editable rule set ranking releases for a class
 // of client.
 type QualityProfile struct {
@@ -295,7 +575,11 @@ type QualityProfile struct {
 	// 0 means unset (a profile built outside SelectProfile), in which
 	// case MaxHeight itself is the configured value. Runtime-only,
 	// never persisted with the profile.
-	ConfiguredMaxHeight    int      `json:"-"`
+	ConfiguredMaxHeight int `json:"-"`
+	// CeilingSource names the runtime declaration, registry default, owner
+	// override, quality rule, or download reshape that lowered MaxHeight
+	// below ConfiguredMaxHeight. Runtime-only, never persisted.
+	CeilingSource          string   `json:"-"`
 	FallbackBelowMin       bool     `json:"fallbackBelowMin,omitempty"`
 	MinHeight              int      `json:"minHeight"` // floor, e.g. 720
 	AllowHDR               bool     `json:"allowHdr"`  // only applied when the client also supports it
@@ -308,11 +592,16 @@ type QualityProfile struct {
 	// Language is the profile's audio language, as in Radarr: "" or
 	// ProfileLanguageOriginal accepts each title's original language
 	// alongside the preferred ones, ProfileLanguageAny accepts every
-	// language, and any other value names the one language a release's
-	// audio must be in (an ISO code or a language name; multi/dual-audio
-	// releases pass).
+	// language, and any other value names a specific language (an ISO code or
+	// a language name) whose strictness is governed by AudioLanguageMode.
 	Language string `json:"language,omitempty"`
-	AllowCam bool   `json:"allowCam"` // the only pre-release switch; CAM/TS/TC and screener/R5/workprint copies play only for profiles that allow them
+	// AudioLanguageMode controls how a specific Language applies: "" or
+	// AudioLanguageModeRequired strictly filters out non-matching releases
+	// (existing profiles keep this behaviour); AudioLanguageModePreferred
+	// ranks matching releases first and keeps other releases playable as
+	// fallbacks.
+	AudioLanguageMode string `json:"audioLanguageMode,omitempty"`
+	AllowCam          bool   `json:"allowCam"` // the only pre-release switch; CAM/TS/TC and screener/R5/workprint copies play only for profiles that allow them
 	// SelectionKey is the canonical hash of this profile's configured
 	// definition, computed by resolver.SelectProfile from the pristine
 	// configured profile before download reshaping or client-cap
@@ -320,6 +609,17 @@ type QualityProfile struct {
 	// original language is not: it is per-title evaluation context, not a
 	// profile fact. Runtime-only, never persisted with the profile.
 	SelectionKey string `json:"-"`
+}
+
+// EffectiveAudioLanguageMode returns the resolved mode for a specific profile
+// Language: AudioLanguageModePreferred only when explicitly configured, and
+// AudioLanguageModeRequired otherwise so existing profiles keep strict
+// filtering.
+func (p QualityProfile) EffectiveAudioLanguageMode() string {
+	if strings.EqualFold(strings.TrimSpace(p.AudioLanguageMode), AudioLanguageModePreferred) {
+		return AudioLanguageModePreferred
+	}
+	return AudioLanguageModeRequired
 }
 
 // SizeBoundsForKey returns the configured (min, max) MB/min bounds for a rating key.
@@ -383,4 +683,67 @@ func (r Release) ReportedTitleIDs() IDs {
 		return IDs{}
 	}
 	return r.TitleIDs
+}
+
+// SameReleaseContent reports whether a and b represent the same underlying
+// media release (same ID, content/source/info/stream identity, GUID on the
+// same indexer, or normalized release name). Content-level rejections such as
+// a probed audio language mismatch use this to avoid retrying reposts or
+// vault/indexer copies of the same release within one start without preventing
+// broken-upload repost failover.
+func SameReleaseContent(a, b Release) bool {
+	if a.ID != "" && a.ID == b.ID {
+		return true
+	}
+	if ac, bc := a.EffectiveContentID(), b.EffectiveContentID(); ac != "" && ac == bc {
+		return true
+	}
+	if a.InfoHash != "" && strings.EqualFold(a.InfoHash, b.InfoHash) {
+		return true
+	}
+	if a.SourceHash != "" && a.SourceHash == b.SourceHash {
+		return true
+	}
+	if a.StreamURL != "" && a.StreamURL == b.StreamURL {
+		return true
+	}
+	if a.GUID != "" && a.GUID == b.GUID && a.Indexer != "" && a.Indexer == b.Indexer {
+		return true
+	}
+	an, bn := normalizedReleaseIdentity(a.Name), normalizedReleaseIdentity(b.Name)
+	return an != "" && an == bn
+}
+
+// ReleaseContentKey returns a canonical string summarizing a release's
+// content-equivalence keys for deduplication and flight keying.
+func (r Release) ReleaseContentKey() string {
+	return strings.Join([]string{
+		r.ID,
+		r.EffectiveContentID(),
+		strings.ToLower(r.InfoHash),
+		r.SourceHash,
+		r.StreamURL,
+		normalizedReleaseIdentity(r.Name),
+	}, "\x00")
+}
+
+func normalizedReleaseIdentity(name string) string {
+	s := strings.TrimSpace(name)
+	if s == "" {
+		return ""
+	}
+	if dot := strings.LastIndexByte(s, '.'); dot > 0 {
+		switch strings.ToLower(s[dot+1:]) {
+		case "mkv", "mp4", "m4v", "avi", "ts", "m2ts", "mov", "webm", "nzb":
+			s = s[:dot]
+		}
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

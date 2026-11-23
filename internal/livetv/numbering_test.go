@@ -17,7 +17,7 @@ func TestNumberReservationsSurviveDisappearance(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		if err = assignImportedNumbers(ctx, tx, "s", cs, nil, nil, at); err != nil {
+		if err = assignImportedNumbers(ctx, tx, "s", cs, nil, nil, at, false); err != nil {
 			t.Fatal(err)
 		}
 		if err = tx.Commit(); err != nil {
@@ -40,5 +40,24 @@ func TestNumberReservationsSurviveDisappearance(t *testing.T) {
 	expired := assign([]Channel{{ID: "e", Group: "News"}}, now.Add(10*24*time.Hour))
 	if expired[0].Number != "1" {
 		t.Fatalf("expired: %+v", expired)
+	}
+}
+
+func TestPluginSourceNumbersAvoidOtherSources(t *testing.T) {
+	s := testService(t, Options{})
+	ctx := context.Background()
+	tx, err := s.o.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	others := []Channel{{ID: "bbc1", SourceID: "m3u", Number: "101"}, {ID: "bbc2", SourceID: "m3u", Number: "102"}, {ID: "itv", SourceID: "m3u", Number: "104"}}
+	cs := []Channel{{ID: "cpac", Number: "101", ProviderNumber: "101"}, {ID: "gnn", Number: "103", ProviderNumber: "103"}, {ID: "gnt", Number: "104", ProviderNumber: "104"}}
+	if err := assignImportedNumbers(ctx, tx, "plugin", cs, nil, others, time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	// 103 is free and kept; 101 is taken -> 105 (102, 103, 104 taken); 104 taken -> 106.
+	if cs[0].Number != "105" || cs[1].Number != "103" || cs[2].Number != "106" {
+		t.Fatalf("numbers %s %s %s", cs[0].Number, cs[1].Number, cs[2].Number)
 	}
 }

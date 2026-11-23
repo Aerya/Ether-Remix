@@ -8,15 +8,11 @@ export const PLEX_ACCESS_URL = "https://app.plex.tv/desktop/#!/settings/manage-l
 /**
  * The viewer's lifecycle. Servers send it on every viewer; the fallback
  * derives it from the owner flag and Plex link so partial payloads (and the
- * mock's DLNA guests) still behave safely: Plex viewers are never managed
- * in Ether.
+ * mock's DLNA guests) still behave safely: Plex viewers can be paused and
+ * resumed in Ether, while removal and merging remain managed on plex.tv.
  */
 export function viewerLifecycle(viewer: Viewer): ViewerLifecycle {
-  if (viewer.lifecycle)
-    // Plex viewers are managed on plex.tv and are never shown as paused.
-    return viewer.lifecycle.managedBy === "plex" && viewer.lifecycle.paused
-      ? { ...viewer.lifecycle, paused: false }
-      : viewer.lifecycle;
+  if (viewer.lifecycle) return viewer.lifecycle;
   if (viewer.isOwner)
     return {
       source: "owner",
@@ -34,7 +30,7 @@ export function viewerLifecycle(viewer: Viewer): ViewerLifecycle {
       plexShared: viewerStatus(viewer) === "active",
       canRemove: false,
       canMerge: false,
-      canPause: false,
+      canPause: true,
       managedBy: "plex",
     };
   return {

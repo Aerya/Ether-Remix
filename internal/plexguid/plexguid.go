@@ -50,6 +50,15 @@ func init() {
 	// The credit check now also compares a movie's cast when its directors
 	// agree; records proved under the director-only check are re-verified.
 	store.Register("plexguid", 8, `UPDATE plexguid_identity SET credits_rule=0 WHERE credits_rule=1;`)
+	// Per-title Plex provider credits (real 24-hex person tagKeys, fallback
+	// portraits, slug and age rating), invalidated when the title's verified
+	// plex:// guid or catalogue refresh stamp changes.
+	store.Register("plexguid", 9, `CREATE TABLE plexguid_title_credits(rating_key INTEGER PRIMARY KEY, guid TEXT NOT NULL, catalog_stamp INTEGER NOT NULL DEFAULT 0, fetched_at INTEGER NOT NULL, payload TEXT NOT NULL);`)
+	// Reverse index from real 24-hex Plex person tagKeys to TMDB person IDs
+	// so /library/people/{tagKey} and /library/people/{tagKey}/media resolve
+	// directly in O(1) without scanning titles.
+	store.Register("plexguid", 10, `CREATE TABLE plexguid_person_map(tag_key TEXT PRIMARY KEY, person_tmdb INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '', thumb TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX plexguid_person_map_tmdb ON plexguid_person_map(person_tmdb);`)
 }
 
 const (
@@ -57,11 +66,13 @@ const (
 	recheckInterval   = 24 * time.Hour
 	bgWorkers         = 2
 	bgQueueSize       = 256
-	bgLookupTimeout   = 3 * time.Second
+	bgLookupTimeout   = 10 * time.Second
 	childrenPageSize  = 50
 	maxChildrenItems  = 2500
 	priorityQueueSize = 256
 )
+
+var repairTickInterval = time.Second
 
 type Options struct {
 	HTTP *http.Client
@@ -77,6 +88,10 @@ type Options struct {
 	// optional dependency, injected by the app so this package never imports
 	// the catalogue. Nil disables the check.
 	Namesakes func(context.Context, core.RatingKey) (bool, error)
+	// EnsureTitle warms the local catalogue row for a rating key discovered
+	// via reverse GUID lookup so identity verification has the local title and
+	// release year even when the title has never been opened before.
+	EnsureTitle func(context.Context, core.RatingKey) error
 }
 
 type Service struct {
@@ -99,9 +114,20 @@ type Service struct {
 	// as a legacy namesake. repairMappings drains it before advancing its scan
 	// cursor so those rows are re-verified within seconds; a full queue drops
 	// the request and the background scan eventually reaches the row.
-	priority   chan core.RatingKey
-	prioQueued map[core.RatingKey]bool
+	priority        chan core.RatingKey
+	prioQueued      map[core.RatingKey]bool
+	flights         map[core.RatingKey]*resolveFlight
+	creditFlights   map[core.RatingKey]*creditFlight
+	creditFails     map[core.RatingKey]time.Time
+	recordedPersons map[string]recordedPerson
 }
+
+type resolveFlight struct {
+	done chan struct{}
+	guid string
+}
+
+const maxBoundedResolveFlights = 8
 
 func New(db *sql.DB, o Options) *Service {
 	if o.HTTP == nil {
@@ -228,14 +254,39 @@ func (s *Service) worker() {
 	}
 }
 
-// repairMappings re-verifies only identities encountered by consumers.
+// repairMappings re-verifies identities encountered by consumers first, and
+// runs a bounded, paced keyset pass over pre-rule-2 mappings (and children
+// lacking parentage) left behind by upgrades. Once a full pass finds no rows
+// needing repair it stops scanning and sleeps on priority requests alone.
 func (s *Service) repairMappings() {
 	defer s.wg.Done()
-	// Sleep while unused, and pace repairs to avoid competing with playback.
-	for {
+	interval := repairTickInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	queries := [3]string{
+		`SELECT m.rating_key FROM plexguid_mappings m WHERE m.rating_key>? AND m.guid<>'' AND NOT EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=m.rating_key AND i.guid=m.guid) ORDER BY m.rating_key LIMIT 1`,
+		`SELECT m.rating_key FROM plexguid_mappings m WHERE m.rating_key>? AND m.rating_key>=3000000000000000 AND m.rating_key<5000000000000000 AND m.guid<>'' AND NOT EXISTS (SELECT 1 FROM plexguid_parentage p WHERE p.rating_key=m.rating_key) ORDER BY m.rating_key LIMIT 1`,
+		`SELECT m.rating_key FROM plexguid_mappings m JOIN plexguid_identity i ON i.rating_key=m.rating_key AND i.guid=m.guid WHERE m.rating_key>? AND i.credits_rule<>2 AND m.guid<>'' ORDER BY m.rating_key LIMIT 1`,
+	}
+	var after [3]int64
+	var foundInPass [3]bool
+	var done [3]bool
+	var turn int
+	sleep := func(d time.Duration) bool {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
 		select {
 		case <-s.ctx.Done():
-			return
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
+	drainPriority := func() (handled, ok bool) {
+		select {
+		case <-s.ctx.Done():
+			return false, false
 		case k := <-s.priority:
 			s.mu.Lock()
 			delete(s.prioQueued, k)
@@ -243,13 +294,109 @@ func (s *Service) repairMappings() {
 			if s.o.Token != nil && s.o.Token() != "" {
 				s.queueRepair(k)
 			}
+			return true, true
+		default:
+			return false, true
 		}
-		timer := time.NewTimer(time.Second)
-		select {
-		case <-s.ctx.Done():
-			timer.Stop()
+	}
+	allDone := func() bool { return done[0] && done[1] && done[2] }
+	nextQueue := func(from int) (int, int64, bool) {
+		for i := 0; i < len(queries); i++ {
+			q := (from + i) % len(queries)
+			if done[q] {
+				continue
+			}
+			var key int64
+			err := s.db.QueryRowContext(s.ctx, queries[q], after[q]).Scan(&key)
+			if err == nil {
+				foundInPass[q] = true
+				return q, key, true
+			}
+			if err == sql.ErrNoRows {
+				if !foundInPass[q] {
+					done[q] = true
+				} else {
+					after[q] = 0
+					foundInPass[q] = false
+				}
+				continue
+			}
+			// A query error is not a reason to advance or finish the cursor.
+			return -1, 0, false
+		}
+		return -1, 0, false
+	}
+	for {
+		if allDone() {
+			// Every stored row is at the current rule; sleep until a consumer
+			// enqueues a priority key or the service closes.
+			select {
+			case <-s.ctx.Done():
+				return
+			case k := <-s.priority:
+				s.mu.Lock()
+				delete(s.prioQueued, k)
+				s.mu.Unlock()
+				if s.o.Token != nil && s.o.Token() != "" {
+					s.queueRepair(k)
+				}
+			}
+			if !sleep(interval) {
+				return
+			}
+			continue
+		}
+		if handled, ok := drainPriority(); !ok {
 			return
-		case <-timer.C:
+		} else if handled {
+			if !sleep(interval) {
+				return
+			}
+			continue
+		}
+		if s.o.Token == nil || s.o.Token() == "" {
+			timer := time.NewTimer(min(10*time.Second, interval*10))
+			select {
+			case <-s.ctx.Done():
+				timer.Stop()
+				return
+			case k := <-s.priority:
+				timer.Stop()
+				s.mu.Lock()
+				delete(s.prioQueued, k)
+				s.mu.Unlock()
+			case <-timer.C:
+			}
+			continue
+		}
+		queue, key, ok := nextQueue(turn)
+		if !ok {
+			if allDone() {
+				continue
+			}
+			if !sleep(min(time.Minute, interval*60)) {
+				return
+			}
+			continue
+		}
+		turn = (queue + 1) % len(queries)
+		k := core.RatingKey(key)
+		if !resolvableKey(k) {
+			after[queue] = key
+			continue
+		}
+		if s.queueRepair(k) {
+			after[queue] = key
+		} else {
+			s.mu.Lock()
+			alreadyPending := s.pending[k]
+			s.mu.Unlock()
+			if alreadyPending {
+				after[queue] = key
+			}
+		}
+		if !sleep(interval) {
+			return
 		}
 	}
 }
@@ -294,6 +441,9 @@ const identityExists = `EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating
 
 // staleCreditsRule marks proofs predating mandatory year verification (rule 2).
 const staleCreditsRule = `EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=m.rating_key AND i.guid=m.guid AND i.credits_rule<>2)`
+
+// identityCurrent is true when the mapping row carries a current rule-2 proof.
+const identityCurrent = `EXISTS (SELECT 1 FROM plexguid_identity i WHERE i.rating_key=m.rating_key AND i.guid=m.guid AND i.credits_rule=2)`
 
 // unprovenMapping reports whether k currently has a stored guid not proved
 // under the current rule: a legacy row (no identity record) or one whose
@@ -529,10 +679,13 @@ func (s *Service) storeMappingIdentity(ctx context.Context, k core.RatingKey, id
 		return err
 	}
 	if old != guid {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plexguid_title_credits WHERE rating_key=? AND guid<>?`, int64(k), guid); err != nil {
+			return err
+		}
 		// Delete only children whose recorded parentage proves they belong
 		// to the old tree. Unknown legacy children stay available.
 		remove := func(query string, args ...any) error {
-			for _, table := range []string{"plexguid_verified", "plexguid_identity", "plexguid_mappings", "plexguid_parentage"} {
+			for _, table := range []string{"plexguid_verified", "plexguid_identity", "plexguid_mappings", "plexguid_parentage", "plexguid_title_credits"} {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rating_key IN (`+query+`)`, args...); err != nil {
 					return err
 				}
@@ -595,6 +748,70 @@ func (s *Service) storeMappingIdentity(ctx context.Context, k core.RatingKey, id
 
 func (s *Service) Resolve(ctx context.Context, k core.RatingKey) (string, error) {
 	return s.resolve(ctx, k, true)
+}
+
+// ResolveBounded returns a cached verified plex:// GUID immediately, or waits
+// at most wait for one deduplicated detached resolution to finish. If wait
+// expires first, the lookup continues in the background within the service
+// lifecycle so subsequent opens hit the durable cache without blocking this
+// response beyond wait.
+func (s *Service) ResolveBounded(ctx context.Context, k core.RatingKey, wait time.Duration) string {
+	if s == nil || !resolvableKey(k) || s.ctx.Err() != nil {
+		return ""
+	}
+	if g := s.Cached(ctx, k); g != "" {
+		return g
+	}
+	if s.o.Token == nil || s.o.Token() == "" {
+		return ""
+	}
+	if !s.unprovenMapping(ctx, k) {
+		if cached, ok := s.freshCached(ctx, k); ok {
+			return cached
+		}
+	}
+	if wait <= 0 {
+		return ""
+	}
+	s.mu.Lock()
+	if s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return ""
+	}
+	f := s.flights[k]
+	if f == nil && len(s.flights) < maxBoundedResolveFlights {
+		if s.flights == nil {
+			s.flights = map[core.RatingKey]*resolveFlight{}
+		}
+		f = &resolveFlight{done: make(chan struct{})}
+		s.flights[k] = f
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			bg, cancel := context.WithTimeout(s.ctx, bgLookupTimeout)
+			defer cancel()
+			g, _ := s.Resolve(bg, k)
+			f.guid = g
+			s.mu.Lock()
+			delete(s.flights, k)
+			s.mu.Unlock()
+			close(f.done)
+		}()
+	}
+	s.mu.Unlock()
+	if f == nil {
+		return ""
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-f.done:
+		return f.guid
+	case <-timer.C:
+		return ""
+	case <-ctx.Done():
+		return ""
+	}
 }
 
 // reverify is the repair worker's entry point. For a stored movie or show it
@@ -676,16 +893,18 @@ func (s *Service) resolve(ctx context.Context, k core.RatingKey, useCache bool) 
 }
 
 type providerItem struct {
-	GUID            string `json:"guid"`
-	RatingKey       string `json:"ratingKey"`
-	Type            string `json:"type"`
-	Year            int    `json:"year"`
-	Index           *int   `json:"index"`
-	ParentIndex     *int   `json:"parentIndex"`
-	ParentGUID      string `json:"parentGuid"`
-	GrandparentGUID string `json:"grandparentGuid"`
-	Title           string `json:"title"`
-	IDs             []struct {
+	GUID             string `json:"guid"`
+	RatingKey        string `json:"ratingKey"`
+	Slug             string `json:"slug"`
+	Type             string `json:"type"`
+	Year             int    `json:"year"`
+	Index            *int   `json:"index"`
+	ParentIndex      *int   `json:"parentIndex"`
+	ParentGUID       string `json:"parentGuid"`
+	GrandparentGUID  string `json:"grandparentGuid"`
+	Title            string `json:"title"`
+	ContentRatingAge int    `json:"contentRatingAge"`
+	IDs              []struct {
 		ID string `json:"id"`
 	} `json:"Guid"`
 	// The canonical Plex record's credits, as the metadata provider returns
@@ -695,12 +914,29 @@ type providerItem struct {
 	// id, title and year while its credits belong to another work (Plex
 	// merged two "Runner"s); these are compared against the catalogue's own
 	// credits so such an identity is refused.
-	Director []providerPerson `json:"Director"`
-	Role     []providerPerson `json:"Role"`
+	Director         []providerPerson `json:"Director"`
+	Writer           []providerPerson `json:"Writer"`
+	Role             []providerPerson `json:"Role"`
+	Producer         []providerPerson `json:"Producer"`
+	CommonSenseMedia []struct {
+		AgeRating []struct {
+			Age  int    `json:"age"`
+			Type string `json:"type"`
+		} `json:"AgeRating"`
+	} `json:"CommonSenseMedia"`
 }
 
 type providerPerson struct {
-	Tag string `json:"tag"`
+	ID     string `json:"id"`
+	Tag    string `json:"tag"`
+	TagKey string `json:"tagKey"`
+	Role   string `json:"role"`
+	Thumb  string `json:"thumb"`
+	Key    string `json:"key"`
+	GUID   string `json:"guid"`
+	IDs    []struct {
+		ID string `json:"id"`
+	} `json:"Guid"`
 }
 
 func (s *Service) getPage(ctx context.Context, path string, q url.Values) ([]providerItem, int, error) {
@@ -736,7 +972,7 @@ func (s *Service) getPage(ctx context.Context, path string, q url.Values) ([]pro
 			Metadata  []providerItem `json:"Metadata"`
 		} `json:"MediaContainer"`
 	}
-	if e = json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&body); e != nil {
+	if e = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); e != nil {
 		return nil, 0, fmt.Errorf("Plex metadata response invalid")
 	}
 	return body.Container.Metadata, body.Container.TotalSize, nil

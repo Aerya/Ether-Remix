@@ -1,8 +1,8 @@
-// Package archivetest builds small RAR 4.x / RAR 5.0 archives (and Copy-mode
+// Package archivetest builds small RAR 4.x / RAR 5.0 archives (and Copy/LZMA2
 // 7z archives) for tests. It is for tests only: production code must not
 // import it.
 //
-// The archives are structurally valid with correct header CRCs. File data is
+// The RAR archives are structurally valid with correct header CRCs. File data is
 // written verbatim: Method, Encrypted and Solid only set the corresponding
 // header flags (nothing is compressed or encrypted), which is all a header
 // parser can observe.
@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"hash/crc32"
 	"unicode/utf16"
+
+	"github.com/ulikunitz/xz/lzma"
 )
 
 // Signatures.
@@ -571,8 +573,8 @@ func BuildRAR(files []RARFile, opts RAROptions) ([][]byte, error) {
 	return vols, nil
 }
 
-// SevenZipFile is one input file for Build7zCopy. Empty Data without Dir is
-// an empty file.
+// SevenZipFile is one input file for Build7zCopy or Build7zLZMA2. Empty Data
+// without Dir is an empty file.
 type SevenZipFile struct {
 	Name string
 	Data []byte
@@ -600,6 +602,32 @@ func Number7z(v uint64) []byte { return num7z(v) }
 // substream when solid (7-Zip itself never does that for Copy), else one
 // folder per file.
 func Build7zCopy(files []SevenZipFile, solid bool) []byte {
+	return build7z(files, solid, false)
+}
+
+// Build7zLZMA2 writes a 7z archive with a plain header whose non-empty files
+// are compressed with LZMA2 (64 KiB dictionary): one shared folder when solid,
+// or one independent folder per file when !solid.
+func Build7zLZMA2(files []SevenZipFile, solid bool) []byte {
+	return build7z(files, solid, true)
+}
+
+func lzma2Compress(data []byte) []byte {
+	var buf bytes.Buffer
+	w, err := lzma.Writer2Config{DictCap: 1 << 16}.NewWriter2(&buf)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := w.Write(data); err != nil {
+		panic(err)
+	}
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func build7z(files []SevenZipFile, solid bool, useLZMA2 bool) []byte {
 	const (
 		kEnd = iota
 		kHeader
@@ -620,14 +648,39 @@ func Build7zCopy(files []SevenZipFile, solid bool) []byte {
 		_
 		kName
 	)
-	var packed []byte
+	var rawAll []byte
 	var sizes []uint64
+	var packSizes []uint64
+	var unpackSizes []uint64
+	var packed []byte
 	for _, f := range files {
-		if len(f.Data) > 0 {
+		if len(f.Data) == 0 {
+			continue
+		}
+		sizes = append(sizes, uint64(len(f.Data)))
+		if solid {
+			rawAll = append(rawAll, f.Data...)
+		} else if useLZMA2 {
+			comp := lzma2Compress(f.Data)
+			packed = append(packed, comp...)
+			packSizes = append(packSizes, uint64(len(comp)))
+			unpackSizes = append(unpackSizes, uint64(len(f.Data)))
+		} else {
 			packed = append(packed, f.Data...)
-			sizes = append(sizes, uint64(len(f.Data)))
+			packSizes = append(packSizes, uint64(len(f.Data)))
+			unpackSizes = append(unpackSizes, uint64(len(f.Data)))
 		}
 	}
+	if solid && len(sizes) > 0 {
+		if useLZMA2 {
+			packed = lzma2Compress(rawAll)
+		} else {
+			packed = rawAll
+		}
+		packSizes = []uint64{uint64(len(packed))}
+		unpackSizes = []uint64{uint64(len(rawAll))}
+	}
+
 	var h []byte
 	add := func(b ...[]byte) {
 		for _, x := range b {
@@ -637,27 +690,30 @@ func Build7zCopy(files []SevenZipFile, solid bool) []byte {
 	add([]byte{kHeader})
 	if len(sizes) > 0 {
 		add([]byte{kMainStreamsInfo})
-		folderSizes := sizes
-		if solid {
-			folderSizes = []uint64{uint64(len(packed))}
-		}
-		add([]byte{kPackInfo}, num7z(0), num7z(uint64(len(folderSizes))), []byte{kSize})
-		for _, s := range folderSizes {
+		add([]byte{kPackInfo}, num7z(0), num7z(uint64(len(packSizes))), []byte{kSize})
+		for _, s := range packSizes {
 			add(num7z(s))
 		}
-		add([]byte{kEnd, kUnpackInfo, kFolder}, num7z(uint64(len(folderSizes))), []byte{0})
-		for range folderSizes {
-			add(num7z(1), []byte{0x01, 0x00}) // one simple coder, method 00 (Copy)
+		add([]byte{kEnd, kUnpackInfo, kFolder}, num7z(uint64(len(unpackSizes))), []byte{0})
+		for range unpackSizes {
+			if useLZMA2 {
+				add(num7z(1), []byte{0x21, 0x21}, num7z(1), []byte{8})
+			} else {
+				add(num7z(1), []byte{0x01, 0x00})
+			}
 		}
 		add([]byte{kCodersUnpackSize})
-		for _, s := range folderSizes {
+		for _, s := range unpackSizes {
 			add(num7z(s))
 		}
 		add([]byte{kEnd})
-		if solid {
-			add([]byte{kSubStreamsInfo, kNumUnpackStream}, num7z(uint64(len(sizes))), []byte{kSize})
-			for _, s := range sizes[:len(sizes)-1] {
-				add(num7z(s))
+		if solid || useLZMA2 {
+			add([]byte{kSubStreamsInfo})
+			if solid {
+				add([]byte{kNumUnpackStream}, num7z(uint64(len(sizes))), []byte{kSize})
+				for _, s := range sizes[:len(sizes)-1] {
+					add(num7z(s))
+				}
 			}
 			add([]byte{kCRC, 1})
 			for _, f := range files {
@@ -694,7 +750,7 @@ func Build7zCopy(files []SevenZipFile, solid bool) []byte {
 		ef := bits(emptyFile)
 		add([]byte{kEmptyFile}, num7z(uint64(len(ef))), ef)
 	}
-	add([]byte{0x19}, num7z(3), []byte{0, 0, 0}) // kDummy padding
+	add([]byte{0x19}, num7z(3), []byte{0, 0, 0})
 	var names []byte
 	for _, f := range files {
 		for _, c := range utf16.Encode([]rune(f.Name)) {

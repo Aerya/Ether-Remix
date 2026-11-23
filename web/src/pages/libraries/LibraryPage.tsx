@@ -1,6 +1,6 @@
-import { Button, toast } from "@braedonsaunders/appkit-ui";
-import { ArrowLeft, Plus } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { Badge, Button, toast } from "@braedonsaunders/appkit-ui";
+import { ArrowLeft, Plus, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -10,15 +10,24 @@ import { LevelBadge } from "../../components/status";
 import { Workspace } from "../../components/workspace";
 import { t } from "../../i18n";
 import { api, ApiError, errorMessage } from "../../lib/api";
+import { usePageTitle } from "../../lib/document-title";
 import { useAsync } from "../../lib/hooks";
 import { isRuleComplete } from "../../lib/rules";
 import { asObj } from "../settings/SchemaForm";
-import { librariesApi, type Library } from "./api";
+import { librariesApi, type Library, type LibrarySyncRequest } from "./api";
 import { CatalogBrowser } from "./browser/Catalog";
 import { RulesPanel, type VisibilityRule } from "./browser/LibraryVisibility";
 import { LibraryEditor } from "./LibraryEditor";
 import { LibrarySettings } from "./LibrarySettings";
+import { LibraryTabsSection } from "./LibraryTabsSection";
 import { PluginBrowse } from "./PluginBrowse";
+import {
+  DeleteGuardChoice,
+  formatSyncProgress,
+  notifySyncError,
+  notifySyncResponse,
+  resolveDeleteGuard,
+} from "./syncStatus";
 
 interface RulesDraft {
   rules: VisibilityRule[];
@@ -73,6 +82,13 @@ function LibraryRulesTab({
   return (
     <div className="catalog-scroll app-scroll">
       <div className="mx-auto max-w-6xl space-y-4 px-5 pb-5 pt-4 lg:px-7">
+        {library.rulesBroken ? (
+          <p role="alert" className="text-sm text-danger">
+            {t(
+              "Some saved rules could not be read. Titles stay hidden until you edit or remove the rules and save.",
+            )}
+          </p>
+        ) : null}
         <RulesPanel
           pluginLibrary={library.source === "plugin" ? library : undefined}
           libraryId={library.id}
@@ -80,11 +96,13 @@ function LibraryRulesTab({
           rules={rules}
           fallback={fallback}
           region={region}
-          onRules={(next) => setDraft({ rules: next, visibilityDefault: fallback })}
+          onRules={(next, nextFallback) =>
+            setDraft({ rules: next, visibilityDefault: nextFallback ?? fallback })
+          }
           onFallback={(value) => setDraft({ rules, visibilityDefault: value })}
         />
         <SaveBar
-          dirty={dirty}
+          dirty={dirty || !!library.rulesBroken}
           saving={saving}
           error={error}
           disabled={dirty && !rulesReady}
@@ -99,17 +117,54 @@ function LibraryRulesTab({
   );
 }
 
-/** One library: Browse · Rules · Settings. */
+/** One library: Browse · Rules · Tabs · Settings. */
 export function LibraryPage() {
   const { id: rawId, tab: rawTab } = useParams();
   const navigate = useNavigate();
   const { health, refreshDashboard } = useApp();
   const [params, setParams] = useSearchParams();
   const [savingAsLibrary, setSavingAsLibrary] = useState(false);
+  const [syncBusy, setSyncBusy] = useState<"keep" | "force" | "sync" | "full" | null>(null);
   const id = Number(rawId);
   const library = useAsync((signal) => librariesApi.get(id, signal), [id]);
   const lib = library.data;
+  const activeLib = lib && lib.id === id ? lib : null;
+  const activeTabLabel =
+    rawTab === "rules"
+      ? t("Rules")
+      : rawTab === "tabs"
+        ? t("Tabs")
+        : rawTab === "settings"
+          ? t("Settings")
+          : null;
+  usePageTitle(activeLib ? [t("Libraries"), activeLib.name, activeTabLabel] : null);
   const catalogHealth = health.find((h) => h.id === "catalog");
+  const pluginRunning = Boolean(lib?.source === "plugin" && lib.sync?.running);
+
+  useEffect(() => {
+    if (!pluginRunning) return;
+    const timer = window.setInterval(() => {
+      void library.reload();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [pluginRunning, library.reload]);
+
+  const runPluginSync = useCallback(
+    async (action: "keep" | "force" | "sync" | "full", opts: LibrarySyncRequest) => {
+      if (!lib) return;
+      setSyncBusy(action);
+      try {
+        const res = await librariesApi.sync(lib.id, opts);
+        notifySyncResponse(res);
+      } catch (e) {
+        notifySyncError(e);
+      } finally {
+        await library.reload();
+        setSyncBusy(null);
+      }
+    },
+    [lib, library.reload],
+  );
 
   if (!Number.isSafeInteger(id) || id <= 0)
     return (
@@ -133,10 +188,13 @@ export function LibraryPage() {
   const tabs = [
     { key: "browse", label: t("Browse") },
     { key: "rules", label: t("Rules") },
+    { key: "tabs", label: t("Tabs") },
     { key: "settings", label: t("Settings") },
   ];
   const tab = tabs.some((x) => x.key === rawTab) ? rawTab! : "browse";
   const catalogType = lib.mediaType || "";
+  const syncGuard =
+    lib.source === "plugin" && !lib.sync?.running ? resolveDeleteGuard(lib.sync) : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -154,6 +212,13 @@ export function LibraryPage() {
                 level={catalogHealth.level}
                 label={catalogHealth.level === "ok" ? t("Healthy") : catalogHealth.summary}
               />
+            ) : lib.source === "plugin" && lib.sync?.running ? (
+              <Badge variant="secondary" className="gap-1">
+                <RefreshCw size={11} className="animate-spin" aria-hidden />
+                {lib.sync.phase === "reindexing" ? t("Reindexing") : t("Syncing")}
+              </Badge>
+            ) : syncGuard ? (
+              <LevelBadge level="warn" label={t("Needs review")} />
             ) : lib.sync?.lastError ? (
               <LevelBadge level="error" label={t("Sync failed")} />
             ) : null}
@@ -165,7 +230,7 @@ export function LibraryPage() {
           </>
         }
       >
-        <div className={tab === "settings" ? "[&>div]:!mb-0" : undefined}>
+        <div className={tab === "settings" || tab === "tabs" ? "[&>div]:!mb-0" : undefined}>
           <SubtabNav
             ariaLabel={t("Library sections")}
             active={tab}
@@ -179,6 +244,29 @@ export function LibraryPage() {
           lib.source === "plugin" ? (
             <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
               <div className="space-y-5 px-5 py-5 lg:px-7">
+                {lib.sync?.running ? (
+                  <div
+                    role="status"
+                    className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-xs text-fg-muted"
+                  >
+                    <RefreshCw size={13} className="animate-spin text-fg" aria-hidden />
+                    <span>
+                      {formatSyncProgress(lib.sync, lib.storedItems ?? lib.itemCount ?? 0)}
+                    </span>
+                  </div>
+                ) : syncGuard ? (
+                  <DeleteGuardChoice
+                    guard={syncGuard}
+                    busyAction={syncBusy}
+                    onKeep={() => void runPluginSync("keep", { keepExisting: true })}
+                    onRemoveMissing={() =>
+                      void runPluginSync("force", {
+                        force: true,
+                        fullWalk: syncGuard.source === "walk",
+                      })
+                    }
+                  />
+                ) : null}
                 <PluginBrowse library={lib} />
               </div>
             </div>
@@ -202,6 +290,12 @@ export function LibraryPage() {
               void refreshDashboard();
             }}
           />
+        ) : tab === "tabs" ? (
+          <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-4xl space-y-5 px-4 pb-5 pt-4 sm:px-5 lg:px-7">
+              <LibraryTabsSection library={lib} onChanged={() => void library.reload()} />
+            </div>
+          </div>
         ) : (
           <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-5 px-3 py-4">

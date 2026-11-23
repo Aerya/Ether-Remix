@@ -48,7 +48,14 @@ export type FieldDef =
       step?: number;
       unit?: string;
     }
-  | { key: string; label: string; help?: ReactNode; kind: "bool" }
+  | {
+      key: string;
+      label: string;
+      help?: ReactNode;
+      kind: "bool";
+      disabled?: boolean;
+      disabledValue?: boolean;
+    }
   | {
       key: string;
       label: string;
@@ -58,6 +65,7 @@ export type FieldDef =
       /** Runtime option source when options is empty (plugin /ether/options). */
       optionsFrom?: string;
       numeric?: boolean;
+      defaultValue?: string;
     }
   | {
       key: string;
@@ -351,6 +359,7 @@ export function SchemaField(props: {
   errors?: Record<string, string>;
   path: string;
   loadOptions?: LoadOptions;
+  disabled?: boolean;
 }) {
   if (props.def.kind === "hidden") return null;
   return (
@@ -368,6 +377,7 @@ function SchemaFieldBody({
   errors,
   path,
   loadOptions,
+  disabled,
 }: {
   def: FieldDef;
   value: unknown;
@@ -376,7 +386,10 @@ function SchemaFieldBody({
   errors?: Record<string, string>;
   path: string;
   loadOptions?: LoadOptions;
+  disabled?: boolean;
 }) {
+  const isDisabled = Boolean(disabled || (def.kind === "bool" && def.disabled));
+  const rowClassName = isDisabled ? "opacity-50" : undefined;
   const resolvedError = error ?? errorForPath(errors, path);
   const id = `f-${path.replace(/[^a-z0-9]+/gi, "-")}`;
   const description = (
@@ -403,6 +416,7 @@ function SchemaFieldBody({
               errors={errors}
               error={errorForPath(errors, `${path}.${field.key}`)}
               loadOptions={loadOptions}
+              disabled={isDisabled}
               onChange={(v) => onChange({ ...nested, [field.key]: v })}
             />
           ))}
@@ -421,12 +435,16 @@ function SchemaFieldBody({
     case "bool":
       return (
         <SettingsRow
+          className={rowClassName}
           title={<label htmlFor={id}>{def.label}</label>}
           description={description}
           control={
             <Switch
               id={id}
-              checked={Boolean(value)}
+              disabled={isDisabled}
+              checked={
+                isDisabled && def.disabledValue !== undefined ? def.disabledValue : Boolean(value)
+              }
               onChange={(e) => onChange(e.currentTarget.checked)}
               aria-label={def.label}
             />
@@ -436,6 +454,7 @@ function SchemaFieldBody({
     case "number":
       return (
         <SettingsRow
+          className={rowClassName}
           title={<label htmlFor={id}>{def.label}</label>}
           description={description}
           control={
@@ -449,6 +468,7 @@ function SchemaFieldBody({
                 min={def.min}
                 max={def.max}
                 step={def.step ?? "any"}
+                disabled={isDisabled}
                 onChange={onChange}
               />
               {def.unit ? <span className="text-sm text-fg-muted">{def.unit}</span> : null}
@@ -460,6 +480,7 @@ function SchemaFieldBody({
       const unit = UNIT_BYTES[def.unit];
       return (
         <SettingsRow
+          className={rowClassName}
           title={<label htmlFor={id}>{def.label}</label>}
           description={description}
           control={
@@ -471,6 +492,7 @@ function SchemaFieldBody({
                 value={Math.round((Number(value ?? 0) / unit) * 10) / 10}
                 min={0}
                 step={1}
+                disabled={isDisabled}
                 onChange={(n) => onChange(Math.round(n * unit))}
               />
               <span className="text-sm text-fg-muted">{def.unit}</span>
@@ -487,6 +509,7 @@ function SchemaFieldBody({
           onChange={onChange}
           description={description}
           loadOptions={loadOptions}
+          disabled={isDisabled}
         />
       );
     case "multiSelect":
@@ -642,6 +665,7 @@ function SchemaFieldBody({
           aria-invalid={resolvedError ? true : undefined}
           value={String(value ?? "")}
           placeholder={def.placeholder}
+          disabled={isDisabled}
           onChange={(e) => onChange(e.currentTarget.value)}
           className={def.wide ? undefined : "sm:w-72"}
           spellCheck={false}
@@ -650,6 +674,7 @@ function SchemaFieldBody({
       return def.wide ? (
         <SettingsRow
           stacked
+          className={rowClassName}
           title={<label htmlFor={id}>{def.label}</label>}
           description={description}
         >
@@ -657,6 +682,7 @@ function SchemaFieldBody({
         </SettingsRow>
       ) : (
         <SettingsRow
+          className={rowClassName}
           title={<label htmlFor={id}>{def.label}</label>}
           description={description}
           control={input}
@@ -672,6 +698,7 @@ type RowProps<D> = {
   onChange: (v: unknown) => void;
   description: ReactNode;
   loadOptions?: LoadOptions;
+  disabled?: boolean;
 };
 
 type OptionDef = Extract<FieldDef, { kind: "select" | "multiSelect" | "orderedList" }>;
@@ -719,10 +746,14 @@ function SelectRow({
   onChange,
   description,
   loadOptions,
+  disabled,
 }: RowProps<Extract<FieldDef, { kind: "select" }>>) {
   const { options, loading, loadError } = useFieldOptions(def, loadOptions);
+  const raw =
+    value === undefined || value === null || value === "" ? (def.defaultValue ?? "") : value;
   return (
     <SettingsRow
+      className={disabled ? "opacity-50" : undefined}
       title={def.label}
       description={
         <>
@@ -733,9 +764,10 @@ function SelectRow({
       control={
         <div className="w-48">
           <SearchSelect
-            value={String(value ?? "")}
+            value={String(raw)}
             onChange={(v) => onChange(def.numeric ? Number(v) : v)}
             options={options}
+            disabled={disabled}
             ariaLabel={def.label}
             searchable={options.length > 7}
             placeholder={t("Select…")}
@@ -1336,6 +1368,7 @@ function DurationControl({
         value={current.unit}
         onChange={(e) => update(current.amount, e.currentTarget.value as DurationUnit)}
       >
+        <option value="s">{tn(count, "Second", "Seconds")}</option>
         <option value="m">{tn(count, "Minute", "Minutes")}</option>
         <option value="h">{tn(count, "Hour", "Hours")}</option>
         <option value="d">{tn(count, "Day", "Days")}</option>

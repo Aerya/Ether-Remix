@@ -2,20 +2,22 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"strconv"
 	"strings"
 
-	"errors"
-
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex"
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/markers"
+	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/subtitles"
 	"github.com/braedonsaunders/ether/internal/trackprefs"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 // subtitleUser is u with the subtitle languages of the viewer's stream
@@ -88,6 +90,15 @@ func (s subtitleSurface) OpenFormatFrom(id, format, source string) (io.ReadClose
 }
 
 func (s subtitleSurface) CachedSidecars(ctx context.Context, t *core.Title, u *core.User, embedded []core.StreamInfo) []core.StreamInfo {
+	if t == nil {
+		return nil
+	}
+	has, _ := reqmemo.Do(ctx, "subtitles:has:"+strconv.FormatInt(int64(t.Key), 10), func() (bool, error) {
+		return s.app.subtitles.HasTitleSelections(t.Key), nil
+	})
+	if !has {
+		return nil
+	}
 	out := s.app.subtitles.CachedSidecars(t, s.app.subtitleUser(ctx, u), embedded, s.app.subtitlePrefs(ctx, u))
 	if !s.app.subtitles.Enabled() {
 		out = append(out, s.app.subtitles.ManualSidecars(t, embedded)...)
@@ -225,50 +236,159 @@ func (a *App) playSessionOn(surface string, userID int64, clientID string, key c
 // have an empty surface; Jellyfin/Emby register with surface=protocol and
 // a variant, so SessionFor (no surface, no variant) always misses them.
 func lookupPlaySession(p playSessionFinder, surface string, userID int64, clientID string, key core.RatingKey) *core.PlaySession {
-	if p == nil || clientID == "" {
+	if p == nil {
+		return nil
+	}
+	if clientID == "" {
+		if lister, ok := p.(interface{ Sessions() []*core.PlaySession }); ok {
+			for _, ps := range lister.Sessions() {
+				if ps != nil && !ps.PreparedOnly && ps.UserID == userID && ps.Key == key {
+					return ps
+				}
+			}
+		}
 		return nil
 	}
 	if sessionSurface(surface) != "" {
-		if sess, ok := p.SessionForSurfaceClient(surface, userID, clientID, key); ok {
+		if sess, ok := p.SessionForSurfaceClient(surface, userID, clientID, key); ok && sess != nil && !sess.PreparedOnly {
 			return sess
 		}
 		return nil
 	}
-	if sess, ok := p.SessionFor(userID, clientID, key); ok {
+	if sess, ok := p.SessionFor(userID, clientID, key); ok && sess != nil && !sess.PreparedOnly {
 		return sess
 	}
 	return nil
 }
 
 func (a *App) startSubtitleCorrection(ctx context.Context, t *core.Title, id string, sess *core.PlaySession) {
-	if a.subtitles == nil {
+	if a.subtitles == nil || sess == nil || sess.PreparedOnly {
 		return
 	}
-	if sess != nil {
-		if sctx := a.playback.SessionContext(sess.ID); sctx != nil {
-			ctx = sctx
-		}
+	if sctx := a.playback.SessionContext(sess.ID); sctx != nil {
+		ctx = sctx
 	}
 	a.subtitles.StartCorrection(ctx, t, id, a.liveReleaseAccess(sess))
 }
 
+func (a *App) onPlaybackMarkerEvent(ev playback.Event) {
+	if a == nil || a.markers == nil || ev.Session == nil || ev.Session.PreparedOnly {
+		return
+	}
+	switch ev.Kind {
+	case "start", "surface", "failover", "downfailover":
+	default:
+		return
+	}
+	if ev.Session.Info.Estimated || ev.Session.Info.Duration <= 0 {
+		return
+	}
+	a.markers.Warm(ev.Session.Key, ev.Session.Info)
+}
+
+func (a *App) onPlaybackSubtitleEvent(ev playback.Event) {
+	if a == nil || a.subtitles == nil || a.playback == nil || ev.Session == nil || ev.Session.PreparedOnly {
+		return
+	}
+	switch ev.Kind {
+	case "start", "surface", "failover", "downfailover":
+	default:
+		return
+	}
+	live, ok := a.playback.Session(ev.Session.ID)
+	if !ok || live == nil || live.PreparedOnly {
+		return
+	}
+	var sidecars []string
+	for _, st := range live.Info.Streams {
+		if st.Type == "subtitle" && st.External && strings.HasPrefix(st.ExternalURL, subtitles.URLPrefix) {
+			sidecars = append(sidecars, st.ExternalURL)
+		}
+	}
+	if len(sidecars) == 0 {
+		return
+	}
+	src := a.playback.SourceKey(live.ID)
+	if src == "" && live.Resolution != nil {
+		src = live.Resolution.Release.ID
+	}
+	if src == "" {
+		return
+	}
+	var pending []string
+	for _, extURL := range sidecars {
+		if !a.subtitles.HasCorrection(extURL, src) {
+			pending = append(pending, extURL)
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+	var title *core.Title
+	if a.catalog != nil && live.Key != 0 {
+		title, _ = a.catalog.CachedTitle(context.Background(), live.Key)
+	}
+	if title == nil && live.Key != 0 {
+		title = &core.Title{Key: live.Key}
+	}
+	sctx := a.playback.SessionContext(live.ID)
+	if sctx == nil {
+		sctx = context.Background()
+	}
+	for _, extURL := range pending {
+		a.subtitles.StartCorrection(sctx, title, extURL, a.liveReleaseAccess(live))
+	}
+}
+
+func (a *App) cachedEmbeddedCues(src string, info *core.MediaInfo) func() [][]subtitles.Cue {
+	if a == nil || a.transcoder == nil || src == "" || info == nil {
+		return nil
+	}
+	streams := append([]core.StreamInfo(nil), info.Streams...)
+	return func() [][]subtitles.Cue {
+		ctx := transcode.WithSubtitleSource(context.Background(), src)
+		var out [][]subtitles.Cue
+		for _, st := range streams {
+			if st.Type != "subtitle" || st.External || transcode.IsImageSubtitle(st.Codec) {
+				continue
+			}
+			raw, ok := a.transcoder.CachedSubtitle(ctx, st.Index, st.Codec)
+			if !ok || len(raw) == 0 {
+				continue
+			}
+			cues, err := subtitles.ParseCues(string(raw))
+			if err == nil && len(cues) >= 3 {
+				out = append(out, cues)
+			}
+		}
+		return out
+	}
+}
+
 func (a *App) liveReleaseAccess(sess *core.PlaySession) subtitles.ReleaseAccess {
-	if sess == nil || a.playback == nil {
+	if sess == nil || sess.PreparedOnly || a.playback == nil {
 		return subtitles.ReleaseAccess{}
 	}
 	src := a.playback.SourceKey(sess.ID)
-	if src == "" && sess.Resolution != nil {
-		src = sess.Resolution.Release.ID
+	release := ""
+	if sess.Resolution != nil {
+		release = sess.Resolution.Release.Name
+		if src == "" {
+			src = sess.Resolution.Release.ID
+		}
 	}
 	if src == "" {
 		return subtitles.ReleaseAccess{}
 	}
 	id := sess.ID
+	info := core.CloneMediaInfo(sess.Info)
 	access := subtitles.ReleaseAccess{
-		URL:      a.playback.InputURL(id),
-		Duration: sess.Info.Duration,
-		Info:     &sess.Info,
-		Source:   src,
+		URL:          a.playback.InputURL(id),
+		Duration:     info.Duration,
+		Info:         &info,
+		Release:      release,
+		Source:       src,
+		EmbeddedCues: a.cachedEmbeddedCues(src, &info),
 		Hold: func() (io.ReaderAt, int64, func(), bool) {
 			return a.playback.SourceReader(id)
 		},

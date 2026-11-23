@@ -2,6 +2,7 @@ package nzb
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"maps"
 	"slices"
@@ -29,28 +30,57 @@ func (n *NZB) SubsetMeta(keep func(*File) bool, extra map[string]string) (data [
 	if len(files) == 0 {
 		return nil, false
 	}
+	subjects := make([]string, len(files))
+	var subjectNames map[int]string
+	for i, f := range files {
+		subj := subjectFor(f)
+		subjects[i] = subj
+		if orig := f.OriginalName(); orig != "" && NameFromSubject(subj) != orig {
+			if subjectNames == nil {
+				subjectNames = make(map[int]string)
+			}
+			subjectNames[i] = orig
+		}
+	}
+	metaExtra := extra
+	if len(subjectNames) > 0 {
+		if encoded, err := json.Marshal(subjectNames); err == nil {
+			metaExtra = maps.Clone(extra)
+			if metaExtra == nil {
+				metaExtra = make(map[string]string, 1)
+			}
+			metaExtra[MetaSubjectNames] = string(encoded)
+		}
+	}
+	var keptMetaKeys []string
+	for _, typ := range slices.Sorted(maps.Keys(n.Meta)) {
+		if typ == MetaSubjectNames {
+			continue
+		}
+		if _, replaced := metaExtra[typ]; replaced {
+			continue
+		}
+		keptMetaKeys = append(keptMetaKeys, typ)
+	}
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n")
-	if len(n.Meta) > 0 || len(extra) > 0 {
+	if len(keptMetaKeys) > 0 || len(metaExtra) > 0 {
 		b.WriteString("<head>\n")
 		// Sorted, so one input always gives the same bytes: the stream
 		// engine keys release state, plans and cached segments by the
 		// digest of the document.
-		for _, typ := range slices.Sorted(maps.Keys(n.Meta)) {
-			if _, replaced := extra[typ]; replaced {
-				continue
-			}
+		for _, typ := range keptMetaKeys {
 			for _, v := range n.Meta[typ] {
 				b.WriteString(`<meta type="` + escAttr(typ) + `">` + escText(v) + "</meta>\n")
 			}
 		}
-		for _, typ := range slices.Sorted(maps.Keys(extra)) {
-			b.WriteString(`<meta type="` + escAttr(typ) + `">` + escText(extra[typ]) + "</meta>\n")
+		for _, typ := range slices.Sorted(maps.Keys(metaExtra)) {
+			b.WriteString(`<meta type="` + escAttr(typ) + `">` + escText(metaExtra[typ]) + "</meta>\n")
 		}
 		b.WriteString("</head>\n")
 	}
-	for _, f := range files {
-		b.WriteString(`<file poster="` + escAttr(f.Poster) + `" subject="` + escAttr(subjectFor(f)) + `"`)
+	for i, f := range files {
+		b.WriteString(`<file poster="` + escAttr(f.Poster) + `" subject="` + escAttr(subjects[i]) + `"`)
 		if !f.Date.IsZero() {
 			b.WriteString(` date="` + strconv.FormatInt(f.Date.Unix(), 10) + `"`)
 		}

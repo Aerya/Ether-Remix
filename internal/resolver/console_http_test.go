@@ -232,6 +232,9 @@ func TestConsoleHTTPBlocklistHealthForgetHistory(t *testing.T) {
 	if _, err := f.svc.Resolve(context.Background(), core.ResolveRequest{Title: matrixTitle(), Client: webCaps()}); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.svc.flushBookkeeping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	var hist struct {
 		Items []HistoryRecord
 		Total int

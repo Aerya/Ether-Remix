@@ -32,7 +32,7 @@ func lanOnly(next http.Handler, proxyCIDRs func() []string, allowRemote func() b
 		}
 		_, local := identity.ClientNet(r, identity.ProxyPrefixes(cidrs)...)
 		if !local || forwardedFromOutside(r) {
-			http.Error(w, "The Ether console is only available on your home network. To open it from outside, turn on \"Open this console from outside your network\" under Server › General › How apps connect.", http.StatusForbidden)
+			http.Error(w, "The Ether console is only available on your home network. To open it from outside, turn on \"Open this console from outside your network\" under Apps › Overview.", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

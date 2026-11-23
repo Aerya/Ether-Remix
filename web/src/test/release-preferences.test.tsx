@@ -21,12 +21,17 @@ async function openProfile() {
   return { fake, drawer };
 }
 
+function selectTab(drawer: HTMLElement, name: "Tiers" | "Limits" | "Scoring") {
+  fireEvent.click(within(drawer).getByRole("tab", { name }));
+}
+
 async function addRule(
   drawer: HTMLElement,
   term: string,
   field: string,
   action: "Only play" | "Prefer" | "Never play",
 ) {
+  selectTab(drawer, "Limits");
   fireEvent.change(within(drawer).getByLabelText("Add rule"), { target: { value: term } });
   fireEvent.click(within(drawer).getAllByRole("button", { name: "What it describes" })[0]!);
   fireEvent.click(await screen.findByRole("option", { name: field }, WAIT));
@@ -40,6 +45,7 @@ describe("profile rules and custom formats", () => {
     const { fake, drawer } = await openProfile();
     await addRule(drawer, "KORSUB", "Release name", "Prefer");
     await addRule(drawer, "SPARKS", "Release group", "Prefer");
+    selectTab(drawer, "Scoring");
     expect(within(drawer).getAllByDisplayValue("KORSUB").length).toBeGreaterThanOrEqual(2);
 
     fireEvent.click(within(drawer).getAllByRole("button", { name: "Advanced" })[1]!);
@@ -66,6 +72,7 @@ describe("profile rules and custom formats", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Edit 1080p" }, WAIT));
     const again = await screen.findByRole("dialog", { name: "1080p" }, WAIT);
+    selectTab(again, "Scoring");
     expect(within(again).getAllByDisplayValue("SPARKS").length).toBeGreaterThan(0);
     expect(within(again).getAllByDisplayValue("KORSUB").length).toBeGreaterThan(0);
   });
@@ -73,7 +80,9 @@ describe("profile rules and custom formats", () => {
   it("reorders the quality order and drops a removed Prefer rule's score", async () => {
     const { fake, drawer } = await openProfile();
     await addRule(drawer, "SPARKS", "Release group", "Prefer");
+    selectTab(drawer, "Tiers");
     fireEvent.click(within(drawer).getByRole("button", { name: "Move 1080p down" }));
+    selectTab(drawer, "Scoring");
     fireEvent.click(within(drawer).getByRole("button", { name: "Remove rule" }));
     fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), WAIT);
@@ -91,6 +100,7 @@ describe("profile rules and custom formats", () => {
     expect(within(drawer).getByRole("alert")).toHaveTextContent("cannot match the same release");
     const pinsBefore = calls(fake, "POST", "/releases/pins").length;
 
+    selectTab(drawer, "Scoring");
     fireEvent.change(within(drawer).getByLabelText("Release names"), {
       target: { value: "Movie.2026.1080p.WEB-DL.H.264-HEVC" },
     });
@@ -110,6 +120,7 @@ describe("profile rules and custom formats", () => {
 
   it("imports a rules file onto the unsaved draft", async () => {
     const { drawer } = await openProfile();
+    selectTab(drawer, "Limits");
     const input = within(drawer).getByLabelText("Import rules", { selector: "input" });
     const file = new File(
       [
@@ -153,6 +164,7 @@ describe("profile rules and custom formats", () => {
     const { fake } = renderApp("/quality/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" }, WAIT);
+    selectTab(drawer, "Scoring");
     fireEvent.click(
       within(drawer).getByRole("button", { name: "More options: Custom format definitions" }),
     );
@@ -201,6 +213,7 @@ describe("profile rules and custom formats", () => {
   it("adds original-language audio without a typed value", async () => {
     const { drawer } = await openProfile();
     await addRule(drawer, "Original audio", "Original-language audio", "Prefer");
+    selectTab(drawer, "Scoring");
     expect(within(drawer).getAllByDisplayValue("Original audio")).toHaveLength(1);
     expect(
       within(drawer).getAllByText(
@@ -212,6 +225,7 @@ describe("profile rules and custom formats", () => {
 
   it("adds and removes a plugin score and selects a plugin rule field", async () => {
     const { fake, drawer } = await openProfile();
+    selectTab(drawer, "Scoring");
     fireEvent.click(await within(drawer).findByRole("button", { name: "Add plugin" }, WAIT));
     expect(
       await within(drawer).findByText("From community.example.dub", {}, WAIT),
@@ -225,6 +239,7 @@ describe("profile rules and custom formats", () => {
 
     fireEvent.click(within(drawer).getByRole("button", { name: "Add plugin" }));
     await addRule(drawer, "en", "Dubbed · From community.example.dub", "Prefer");
+    selectTab(drawer, "Scoring");
     expect(within(drawer).getAllByText("From community.example.dub").length).toBeGreaterThanOrEqual(
       1,
     );
@@ -252,6 +267,7 @@ it("edits and saves a plugin step's configuration", async () => {
     const { resetRegistryCache } = await import("../lib/extend");
     resetRegistryCache();
     const { fake, drawer } = await openProfile();
+    selectTab(drawer, "Scoring");
     fireEvent.click(within(drawer).getByRole("button", { name: "Plugin to add" }));
     fireEvent.click(await screen.findByRole("option", { name: /Dub preference/ }, WAIT));
     fireEvent.click(within(drawer).getByRole("button", { name: "Add plugin" }));

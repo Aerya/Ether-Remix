@@ -21,9 +21,11 @@ import (
 //go:embed registry.json
 var registryJSON []byte
 
-// Identity is the client a match rule sees.
+// Identity is the client a match rule sees. Device is the hardware/model
+// identifier (such as X-Plex-Device); DeviceName is the user-visible name
+// (such as X-Plex-Device-Name or Jellyfin's Device/X-Emby-Device-Name).
 type Identity struct {
-	Product, Platform, Device, Model, Version string
+	Product, Platform, Device, DeviceName, Model, Version string
 }
 
 // Result is one resolved registry record after presets, patches and overrides.
@@ -44,6 +46,60 @@ type Result struct {
 	HeightLocked bool
 	// DolbyVisionOff is set when an owner override turned Dolby Vision off.
 	DolbyVisionOff bool
+	// AlwaysEncodeVideo is set when an owner override disables video copy on
+	// transcoded/remuxed streams.
+	AlwaysEncodeVideo bool
+}
+
+// App describes a client application in the registry catalogue.
+// Capabilities are evaluated through Playback and Policy on Identity unless
+// the entry lists conform-captured codecs that do not come from a preset.
+type App struct {
+	Protocol      string   `json:"protocol"`
+	Name          string   `json:"name"`
+	Product       string   `json:"product,omitempty"`
+	Products      []string `json:"products,omitempty"`
+	Identity      Identity `json:"identity,omitempty"`
+	Devices       []string `json:"devices"`
+	VideoCodecs   []string `json:"videoCodecs,omitempty"`
+	Subtitles     []string `json:"subtitles,omitempty"`
+	DirectPlay    string   `json:"directPlay"`
+	Note          string   `json:"note,omitempty"`
+	Certification string   `json:"certification"`
+}
+
+// AllProducts returns every product string associated with this app row.
+func (a App) AllProducts() []string {
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if !slices.ContainsFunc(out, func(existing string) bool { return strings.EqualFold(existing, s) }) {
+			out = append(out, s)
+		}
+	}
+	add(a.Product)
+	add(a.Name)
+	add(a.Identity.Product)
+	for _, p := range a.Products {
+		add(p)
+	}
+	return out
+}
+
+// Apps returns the registry's app catalogue in display order.
+func Apps() []App {
+	out := make([]App, len(loaded.Apps))
+	for i, item := range loaded.Apps {
+		item.Products = slices.Clone(item.Products)
+		item.Devices = slices.Clone(item.Devices)
+		item.VideoCodecs = slices.Clone(item.VideoCodecs)
+		item.Subtitles = slices.Clone(item.Subtitles)
+		out[i] = item
+	}
+	return out
 }
 
 // Device describes a representative catalogue identity, not a capability table.
@@ -58,6 +114,7 @@ type Device struct {
 func Devices() []Device { return slices.Clone(loaded.Devices) }
 
 type document struct {
+	Apps        []App             `json:"apps"`
 	Devices     []Device          `json:"devices"`
 	Version     int               `json:"version"`
 	Presets     map[string]preset `json:"presets"`
@@ -106,6 +163,40 @@ type Match struct {
 	Field string  `json:"field,omitempty"`
 	Op    string  `json:"op,omitempty"`
 	Value string  `json:"value,omitempty"`
+}
+
+// MatchesProduct reports whether m matches a client with the given product name.
+func (m Match) MatchesProduct(product string) bool {
+	return m.ok(Identity{Product: product})
+}
+
+// ProductRules returns all positive product-field match leaves across registry definitions.
+func ProductRules() []Match {
+	var out []Match
+	var walk func(m Match)
+	walk = func(m Match) {
+		if strings.EqualFold(m.Field, "product") {
+			op := strings.ToLower(m.Op)
+			if !strings.HasPrefix(op, "not") {
+				exists := slices.ContainsFunc(out, func(prev Match) bool {
+					return strings.EqualFold(prev.Op, m.Op) && strings.EqualFold(prev.Value, m.Value)
+				})
+				if !exists {
+					out = append(out, Match{Field: "product", Op: m.Op, Value: m.Value})
+				}
+			}
+		}
+		for _, child := range m.All {
+			walk(child)
+		}
+		for _, child := range m.Any {
+			walk(child)
+		}
+	}
+	for i := range loaded.Definitions {
+		walk(loaded.Definitions[i].Match)
+	}
+	return out
 }
 
 var loaded = mustLoad()
@@ -309,7 +400,7 @@ func first(role string, id Identity) Result {
 // with matching owner overrides applied.
 func Policy(id Identity, overrides []core.ClientCapabilityOverride) Result {
 	base := first("policy", id)
-	return applyOverrides(base, base.ID, "", id, overrides)
+	return applyOverrides(base, recordIDs(base.ID, ""), id, overrides)
 }
 
 // Playback is the codec and limit set for a client that did not send its
@@ -338,7 +429,7 @@ func Playback(id Identity, overrides []core.ClientCapabilityOverride) Result {
 		}
 	}
 	policyID := first("policy", id).ID
-	return applyOverrides(base, base.ID, policyID, id, overrides)
+	return applyOverrides(base, recordIDs(base.ID, policyID), id, overrides)
 }
 
 // HasQuirk reports whether a named quirk matches id.
@@ -395,11 +486,17 @@ func OverrideApplies(o core.ClientCapabilityOverride, recordIDs []string, id Ide
 	}
 	// Device and platform selectors intentionally support partial names: the
 	// device editor accepts model fragments and an optional app-name filter.
+	// Device matches either the device model/header (e.g. X-Plex-Device) or
+	// the user-visible device name (e.g. X-Plex-Device-Name, Jellyfin Device).
 	if o.Platform != "" && !strings.Contains(strings.ToLower(id.Platform), strings.ToLower(o.Platform)) {
 		return false
 	}
-	if o.Device != "" && !strings.Contains(strings.ToLower(id.Device), strings.ToLower(o.Device)) {
-		return false
+	if o.Device != "" {
+		want := strings.ToLower(o.Device)
+		if !strings.Contains(strings.ToLower(id.Device), want) &&
+			!strings.Contains(strings.ToLower(id.DeviceName), want) {
+			return false
+		}
 	}
 	if o.Version != "" && semverCompare(id.Version, o.Version) < 0 {
 		return false
@@ -407,15 +504,36 @@ func OverrideApplies(o core.ClientCapabilityOverride, recordIDs []string, id Ide
 	return true
 }
 
-func applyOverrides(base Result, playbackID, policyID string, id Identity, overrides []core.ClientCapabilityOverride) Result {
-	ids := []string{playbackID}
-	if policyID != "" && policyID != playbackID {
-		ids = append(ids, policyID)
+func recordIDs(playbackID, policyID string) []string {
+	if policyID == "" || policyID == playbackID {
+		return []string{playbackID}
 	}
-	for _, o := range overrides {
-		if !OverrideApplies(o, ids, id) {
-			continue
+	return []string{playbackID, policyID}
+}
+
+func matchingOverrides(ids []string, id Identity, overrides []core.ClientCapabilityOverride) []int {
+	var out []int
+	for i, o := range overrides {
+		if OverrideApplies(o, ids, id) {
+			out = append(out, i)
 		}
+	}
+	return out
+}
+
+// MatchingOverrides returns the indices of overrides that apply to id at
+// runtime, in application order. Both runtime override application and the
+// console's seen-devices indicator use this matcher so they cannot disagree.
+func MatchingOverrides(id Identity, overrides []core.ClientCapabilityOverride) []int {
+	if len(overrides) == 0 {
+		return nil
+	}
+	return matchingOverrides(recordIDs(first("playback", id).ID, first("policy", id).ID), id, overrides)
+}
+
+func applyOverrides(base Result, ids []string, id Identity, overrides []core.ClientCapabilityOverride) Result {
+	for _, i := range matchingOverrides(ids, id, overrides) {
+		o := overrides[i]
 		if o.VideoCodecs != nil {
 			base.Video = slices.Clone(o.VideoCodecs)
 		}
@@ -444,6 +562,9 @@ func applyOverrides(base Result, playbackID, policyID string, id Identity, overr
 		if o.DolbyVision != nil {
 			base.DolbyVision = *o.DolbyVision
 			base.DolbyVisionOff = !*o.DolbyVision
+		}
+		if o.AlwaysEncodeVideo {
+			base.AlwaysEncodeVideo = true
 		}
 		if o.Notes != "" {
 			base.Notes = o.Notes

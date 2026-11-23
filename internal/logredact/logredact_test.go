@@ -158,3 +158,98 @@ func TestCapabilityShapesAreRedacted(t *testing.T) {
 		}
 	}
 }
+
+func TestMagnetAndTrackerCredentials(t *testing.T) {
+	const (
+		infoHash = "0123456789abcdef0123456789abcdef01234567"
+		hexKey   = "deadbeefcafebabe0123456789abcdefdeadbeef"
+		host     = "tracker.example.com"
+	)
+	cases := []struct {
+		name      string
+		in        string
+		leak      []string
+		keepHosts []string
+	}{
+		{
+			name:      "encoded tr passkey",
+			in:        "magnet:?xt=urn:btih:" + infoHash + "&dn=Movie.2024&tr=" + url.QueryEscape("https://"+host+":8443/announce?passkey="+secret+"&compact=1"),
+			leak:      []string{secret},
+			keepHosts: []string{host, infoHash},
+		},
+		{
+			name:      "encoded tr pass and numbered xs authkey torrent_pass",
+			in:        "magnet:?xt=urn:btih:" + infoHash + "&tr.0=" + url.QueryEscape("https://"+host+"/announce?pass="+secret) + "&xs.0=" + url.QueryEscape("https://"+host+"/download.php?id=9&authkey="+secret+"&torrent_pass="+hexKey),
+			leak:      []string{secret, hexKey},
+			keepHosts: []string{host, infoHash},
+		},
+		{
+			name:      "encoded path passkeys after and before announce",
+			in:        "magnet:?xt=urn:btih:" + infoHash + "&tr=" + url.QueryEscape("https://"+host+"/announce/"+hexKey) + "&tr=" + url.QueryEscape("https://b."+host+"/"+hexKey+"/announce"),
+			leak:      []string{hexKey},
+			keepHosts: []string{host, "b." + host, infoHash},
+		},
+		{
+			name:      "plain error string and pass query key",
+			in:        `Get "https://` + host + `/rss?uid=7&pass=` + secret + `": EOF; announce https://` + host + `/announce/` + hexKey,
+			leak:      []string{secret, hexKey},
+			keepHosts: []string{host},
+		},
+		{
+			name:      "double encoded magnet and pre-masked support bundle host",
+			in:        "form magnets%5B%5D=" + url.QueryEscape("magnet:?xt=urn:btih:"+infoHash+"&tr="+url.QueryEscape("https://"+host+"/announce?torrent_pass="+secret)) + " bundle=magnet:?xt=urn:btih:" + infoHash + "&tr=https%3A%2F%2F[redacted]%2Fannounce%3Fpasskey%3D" + secret,
+			leak:      []string{secret},
+			keepHosts: []string{host, infoHash},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := String(tc.in)
+			for _, bad := range tc.leak {
+				if strings.Contains(out, bad) {
+					t.Fatalf("leaked %q in %q", bad, out)
+				}
+			}
+			if !strings.Contains(out, Mask) {
+				t.Fatalf("missing mask in %q", out)
+			}
+			for _, keep := range tc.keepHosts {
+				if !strings.Contains(out, keep) {
+					t.Fatalf("lost %q in %q", keep, out)
+				}
+			}
+			if twice := String(out); twice != out {
+				t.Fatalf("not idempotent:\n once: %s\ntwice: %s", out, twice)
+			}
+		})
+	}
+
+	benign := "magnet:?xt=urn:btih:" + infoHash + "&dn=Basic%20Instinct%201992%201080p&tr=" + url.QueryEscape("udp://tracker.opentrackr.org:1337/announce")
+	if got := String(benign); got != benign {
+		t.Fatalf("benign magnet modified:\n in: %s\ngot: %s", benign, got)
+	}
+}
+
+func TestStringRemovesAPIKeysAndMediaBrowserPasswords(t *testing.T) {
+	apiKey := "ek1_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456"
+	for _, in := range []string{
+		"X-Emby-Token: " + apiKey,
+		"X-MediaBrowser-Token: " + apiKey,
+		`Authorization: MediaBrowser Token="` + apiKey + `"`,
+		"GET /System/Info?api_key=" + apiKey,
+		"DELETE /Auth/Keys/" + apiKey,
+		"POST /Auth/Keys/" + apiKey + "/Delete",
+		"DELETE /Auth/Keys/" + secret,
+		`{"AccessToken":"` + apiKey + `"}`,
+		`{"NewPw":"` + secret + `","CurrentPw":"` + secret + `"}`,
+		`{"CurrentPassword":"` + secret + `","Pw":"` + secret + `"}`,
+	} {
+		out := String(in)
+		if strings.Contains(out, apiKey) || strings.Contains(out, secret) {
+			t.Errorf("leaked credential: %q -> %q", in, out)
+		}
+		if !strings.Contains(out, Mask) {
+			t.Errorf("missing mask: %q -> %q", in, out)
+		}
+	}
+}

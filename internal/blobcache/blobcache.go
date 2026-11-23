@@ -249,6 +249,7 @@ func (c *Cache) BindPluginLibrary(pluginID, libraryKey string) {
 // libraryKey and applies quota.
 func (c *Cache) Namespace(libraryKey string, quota Quota) *Namespace {
 	key := sanitizeNamespaceKey(libraryKey)
+	trimmed := strings.TrimSpace(libraryKey)
 	c.mu.Lock()
 	ns, ok := c.namespaces[key]
 	if !ok {
@@ -258,9 +259,21 @@ func (c *Cache) Namespace(libraryKey string, quota Quota) *Namespace {
 			c.logger.Warn("blobcache: create namespace failed", "library", key, "err", err)
 			ns = newEmptyNamespace(c, key, quota)
 		}
+		if trimmed != "" {
+			ns.libraryKey = trimmed
+		}
 		c.namespaces[key] = ns
-	} else if quota.MaxBytes > 0 || quota.TTL > 0 {
-		ns.SetQuota(quota)
+	} else {
+		if trimmed != "" {
+			ns.mu.Lock()
+			if ns.libraryKey == "" || ns.libraryKey == ns.key {
+				ns.libraryKey = trimmed
+			}
+			ns.mu.Unlock()
+		}
+		if quota.MaxBytes > 0 || quota.TTL > 0 {
+			ns.SetQuota(quota)
+		}
 	}
 	c.mu.Unlock()
 	return ns
@@ -351,6 +364,19 @@ func (c *Cache) enforceGlobalLimit() {
 	}
 	c.mu.Unlock()
 
+	// Evict idle incomplete partials oldest-first before touching completed blobs.
+	for _, pc := range c.collectIdlePartials(nss) {
+		if used <= limit {
+			break
+		}
+		if freed := pc.ns.evictPartial(pc.id); freed > 0 {
+			used -= freed
+		}
+	}
+	if used <= limit {
+		return
+	}
+
 	var cands []globalCandidate
 	for _, ns := range nss {
 		ns.mu.Lock()
@@ -385,15 +411,16 @@ func (c *Cache) enforceGlobalLimit() {
 	}
 }
 
-// HostBackends returns CachePut and CacheOpen functions suitable for wiring
-// into plugins.KindBackends (spec §3.6, §5.4).
+// HostBackends returns CachePut, CacheOpen, and CacheDelete functions suitable
+// for wiring into plugins.KindBackends (spec §3.6, §5.4).
 //
 // quotaFor may be nil, in which case the namespace's existing or default quota
-// is used. CacheOpen searches namespaces owned by pluginID (or any namespace
-// whose libraryKey starts with "pk-" + slug(pluginID) + "-").
+// is used. CacheOpen and CacheDelete search only namespaces owned by pluginID
+// (or any namespace whose libraryKey starts with "pk-" + slug(pluginID) + "-").
 func (c *Cache) HostBackends(quotaFor func(pluginID, libraryKey string) Quota) (
 	cachePut func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error),
 	cacheOpen func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error),
+	cacheDelete func(ctx context.Context, pluginID, blobRef string) error,
 ) {
 	cachePut = func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error) {
 		c.BindPluginLibrary(pluginID, libraryKey)
@@ -427,7 +454,42 @@ func (c *Cache) HostBackends(quotaFor func(pluginID, libraryKey string) Quota) (
 		}
 		return nil, ErrNotFound
 	}
-	return cachePut, cacheOpen
+	cacheDelete = func(ctx context.Context, pluginID, blobRef string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := ParseRef(blobRef); err != nil {
+			return err
+		}
+		if strings.TrimSpace(pluginID) == "" {
+			return nil
+		}
+		for _, ns := range c.namespacesForPlugin(pluginID) {
+			if _, err := ns.Delete(Ref(blobRef)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return cachePut, cacheOpen, cacheDelete
+}
+
+// NamespaceForPluginBlob returns the plugin-owned Namespace that holds blobRef,
+// or nil when no namespace owned by pluginID contains it.
+func (c *Cache) NamespaceForPluginBlob(pluginID, blobRef string) *Namespace {
+	if c == nil || strings.TrimSpace(pluginID) == "" {
+		return nil
+	}
+	if _, err := ParseRef(blobRef); err != nil {
+		return nil
+	}
+	for _, ns := range c.namespacesForPlugin(pluginID) {
+		if src, err := ns.Open(Ref(blobRef)); err == nil {
+			_ = src.Close()
+			return ns
+		}
+	}
+	return nil
 }
 
 func (c *Cache) namespacesForPlugin(pluginID string) []*Namespace {
@@ -448,7 +510,7 @@ func (c *Cache) namespacesForPlugin(pluginID string) []*Namespace {
 	slug := slugify(pluginID)
 	prefix := "pk-" + slug + "-"
 	for key, ns := range c.namespaces {
-		if !seen[ns] && (strings.HasPrefix(key, prefix) || pluginID == "") {
+		if !seen[ns] && ((slug != "" && strings.HasPrefix(key, prefix)) || pluginID == "") {
 			seen[ns] = true
 			out = append(out, ns)
 		}
@@ -513,26 +575,31 @@ type indexDoc struct {
 }
 
 type putFlight struct {
-	done chan struct{}
-	ref  Ref
-	err  error
+	done      chan struct{}
+	ref       Ref
+	err       error
+	abandoned bool
 }
 
 // Namespace is one library's isolated blob cache directory and index.
 type Namespace struct {
-	cache *Cache
-	key   string
-	dir   string
+	cache      *Cache
+	key        string
+	libraryKey string
+	dir        string
 
-	mu        sync.Mutex
-	quota     Quota
-	used      int64
-	blobs     map[string]*blobEntry // sha256 hex -> entry
-	keys      map[string]string     // caller key -> sha256 hex
-	flights   map[string]*putFlight // single-flight per caller key
-	dirty     bool
-	lastSaved time.Time
-	tempSeq   atomic.Uint64
+	mu           sync.Mutex
+	quota        Quota
+	used         int64
+	blobs        map[string]*blobEntry    // sha256 hex -> entry
+	keys         map[string]string        // caller key -> sha256 hex
+	flights      map[string]*putFlight    // single-flight per caller key
+	partials     map[string]*partialEntry // partial id -> tracked partial
+	partialUsed  int64                    // total bytes staged in partials
+	partialLocks map[string]chan struct{} // active partial writers by id
+	dirty        bool
+	lastSaved    time.Time
+	tempSeq      atomic.Uint64
 
 	saveMu sync.Mutex
 }
@@ -542,13 +609,16 @@ func newEmptyNamespace(c *Cache, key string, quota Quota) *Namespace {
 		quota.MaxBytes = DefaultMaxBytes
 	}
 	return &Namespace{
-		cache:   c,
-		key:     key,
-		dir:     filepath.Join(c.dir, key),
-		quota:   quota,
-		blobs:   make(map[string]*blobEntry),
-		keys:    make(map[string]string),
-		flights: make(map[string]*putFlight),
+		cache:        c,
+		key:          key,
+		libraryKey:   key,
+		dir:          filepath.Join(c.dir, key),
+		quota:        quota,
+		blobs:        make(map[string]*blobEntry),
+		keys:         make(map[string]string),
+		flights:      make(map[string]*putFlight),
+		partials:     make(map[string]*partialEntry),
+		partialLocks: make(map[string]chan struct{}),
 	}
 }
 
@@ -559,6 +629,7 @@ func (c *Cache) openNamespaceLocked(key string, quota Quota) (*Namespace, error)
 	}
 	ns.cleanStaleTempFiles()
 	ns.loadIndex()
+	ns.loadPartials()
 	return ns, nil
 }
 
@@ -690,11 +761,12 @@ func (n *Namespace) Quota() Quota {
 	return n.quota
 }
 
-// Stats returns the current bytes and blob count in this namespace.
+// Stats returns the current bytes (including staged resumable partials) and
+// completed readable blob count in this namespace.
 func (n *Namespace) Stats() (bytes int64, blobs int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.used, len(n.blobs)
+	return n.used + n.partialUsed, len(n.blobs)
 }
 
 // LookupKey checks if a blob was stored under key, is not expired, and still
@@ -883,7 +955,7 @@ func (n *Namespace) PutWithExpectedSHA256(ctx context.Context, key string, r io.
 		}
 	}
 	n.dirty = true
-	overNamespace := n.used > n.quota.EffectiveMaxBytes()
+	overNamespace := n.used+n.partialUsed > n.quota.EffectiveMaxBytes()
 	n.mu.Unlock()
 
 	if overNamespace {
@@ -895,36 +967,54 @@ func (n *Namespace) PutWithExpectedSHA256(ctx context.Context, key string, r io.
 }
 
 // SingleFlightPut returns an existing cached blob for key if present, or runs
-// fn once across concurrent callers for the same key.
+// fn once across concurrent callers for the same key. If the leader cancels or
+// panics, waiting callers with live contexts retry cleanly instead of hanging
+// or inheriting a dead flight.
 func (n *Namespace) SingleFlightPut(ctx context.Context, key string, fn func(ctx context.Context) (Ref, error)) (Ref, error) {
-	if ref, ok := n.LookupKey(key); ok {
-		return ref, nil
-	}
-	n.mu.Lock()
-	if fl, ok := n.flights[key]; ok {
-		n.mu.Unlock()
-		select {
-		case <-fl.done:
-			return fl.ref, fl.err
-		case <-ctx.Done():
-			return "", ctx.Err()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
 		}
+		if ref, ok := n.LookupKey(key); ok {
+			return ref, nil
+		}
+		n.mu.Lock()
+		if fl, ok := n.flights[key]; ok {
+			n.mu.Unlock()
+			select {
+			case <-fl.done:
+				if fl.abandoned {
+					continue
+				}
+				return fl.ref, fl.err
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		fl := &putFlight{done: make(chan struct{})}
+		n.flights[key] = fl
+		n.mu.Unlock()
+
+		ref, err := func() (ref Ref, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					ref = ""
+					err = fmt.Errorf("blobcache: singleflight panic: %v", r)
+				}
+				fl.ref = ref
+				fl.err = err
+				fl.abandoned = err != nil && ctx.Err() != nil
+				n.mu.Lock()
+				if n.flights[key] == fl {
+					delete(n.flights, key)
+				}
+				n.mu.Unlock()
+				close(fl.done)
+			}()
+			return fn(ctx)
+		}()
+		return ref, err
 	}
-	fl := &putFlight{done: make(chan struct{})}
-	n.flights[key] = fl
-	n.mu.Unlock()
-
-	// Detach from a single caller's cancellation only if needed? No, pass ctx
-	// so cancelling the sole caller cancels the download, and finish wakes any waiters.
-	ref, err := fn(ctx)
-	fl.ref = ref
-	fl.err = err
-	close(fl.done)
-
-	n.mu.Lock()
-	delete(n.flights, key)
-	n.mu.Unlock()
-	return ref, err
 }
 
 // Open opens a cached blob by its reference ("blob:<sha256>"), updating its
@@ -974,16 +1064,18 @@ func (n *Namespace) Open(ref Ref) (ByteSource, error) {
 		mimeType = "application/octet-stream"
 	}
 	size := e.Size
+	libKey := n.libraryKey
 	n.mu.Unlock()
 
 	if shouldFlush {
 		n.flushIndex()
 	}
 	return &fileSource{
-		f:    f,
-		size: size,
-		name: name,
-		mime: mimeType,
+		f:          f,
+		size:       size,
+		name:       name,
+		mime:       mimeType,
+		libraryKey: libKey,
 	}, nil
 }
 
@@ -1024,6 +1116,33 @@ func (n *Namespace) evictHash(hash string) int64 {
 	return freed
 }
 
+// Delete removes one cached blob by its reference ("blob:<sha256>") from this
+// namespace, freeing its disk file and quota accounting immediately. Deleting
+// an absent or already-evicted blob returns (false, nil).
+func (n *Namespace) Delete(ref Ref) (bool, error) {
+	n.cache.mu.Lock()
+	closed := n.cache.closed
+	n.cache.mu.Unlock()
+	if closed {
+		return false, ErrClosed
+	}
+	hash, err := ref.Hash()
+	if err != nil {
+		return false, err
+	}
+	n.mu.Lock()
+	if _, exists := n.blobs[hash]; !exists {
+		n.mu.Unlock()
+		return false, nil
+	}
+	n.dropEntryLocked(hash)
+	n.dirty = true
+	_ = os.Remove(n.blobPath(hash))
+	n.mu.Unlock()
+	n.flushIndex()
+	return true, nil
+}
+
 // Sweep evicts TTL-expired blobs and then LRU-evicts by last-open time until
 // the namespace's usage is at or below its MaxBytes quota (and any disk-floor
 // constraint).
@@ -1048,7 +1167,8 @@ func (n *Namespace) Sweep() {
 			pathsToRemove = append(pathsToRemove, n.blobPath(h))
 		}
 	}
-	if n.used > maxBytes {
+	pathsToRemove = append(pathsToRemove, n.sweepPartialsLocked(now, maxBytes)...)
+	if n.used+n.partialUsed > maxBytes {
 		sort.Slice(active, func(i, j int) bool {
 			if active[i].LastOpen != active[j].LastOpen {
 				return active[i].LastOpen < active[j].LastOpen
@@ -1056,7 +1176,7 @@ func (n *Namespace) Sweep() {
 			return active[i].Hash < active[j].Hash
 		})
 		for _, e := range active {
-			if n.used <= maxBytes {
+			if n.used+n.partialUsed <= maxBytes {
 				break
 			}
 			if n.dropEntryLocked(e.Hash) > 0 {
@@ -1085,7 +1205,9 @@ func (n *Namespace) Purge() {
 	n.mu.Lock()
 	n.blobs = make(map[string]*blobEntry)
 	n.keys = make(map[string]string)
+	n.partials = make(map[string]*partialEntry)
 	n.used = 0
+	n.partialUsed = 0
 	n.dirty = false
 	dir := n.dir
 	n.mu.Unlock()
@@ -1104,10 +1226,11 @@ func containsString(xs []string, target string) bool {
 
 // fileSource implements ByteSource over an *os.File.
 type fileSource struct {
-	f    *os.File
-	size int64
-	name string
-	mime string
+	f          *os.File
+	size       int64
+	name       string
+	mime       string
+	libraryKey string
 }
 
 func (s *fileSource) ReadAt(p []byte, off int64) (int, error) {
@@ -1122,7 +1245,8 @@ func (s *fileSource) Seek(offset int64, whence int) (int64, error) {
 	return s.f.Seek(offset, whence)
 }
 
-func (s *fileSource) Size() int64  { return s.size }
-func (s *fileSource) Name() string { return s.name }
-func (s *fileSource) MIME() string { return s.mime }
-func (s *fileSource) Close() error { return s.f.Close() }
+func (s *fileSource) Size() int64        { return s.size }
+func (s *fileSource) Name() string       { return s.name }
+func (s *fileSource) MIME() string       { return s.mime }
+func (s *fileSource) LibraryKey() string { return s.libraryKey }
+func (s *fileSource) Close() error       { return s.f.Close() }

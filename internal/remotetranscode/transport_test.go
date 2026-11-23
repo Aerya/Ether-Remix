@@ -96,7 +96,7 @@ func TestMutualTLSAdapterAndDisconnect(t *testing.T) {
 		t.Fatal("retry extended lease", err)
 	}
 	for _, protocol := range []string{core.ProtocolHLS, core.ProtocolDASH, core.ProtocolHTTP} {
-		req := core.HLSRequest{SessionID: "protocol-" + protocol, Protocol: protocol, Decision: start.Decision}
+		req := core.HLSRequest{SessionID: "protocol-" + protocol, Protocol: protocol, Decision: start.Decision, PMSDASH: protocol == core.ProtocolDASH}
 		if protocol == core.ProtocolHLS {
 			index := 2
 			req.SoftSubtitleStream = &index
@@ -107,7 +107,7 @@ func TestMutualTLSAdapterAndDisconnect(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if protocol == core.ProtocolDASH && (f.request.ManifestSessionID != req.SessionID || f.request.SessionID == req.SessionID) {
+		if protocol == core.ProtocolDASH && (f.request.ManifestSessionID != req.SessionID || f.request.SessionID == req.SessionID || !f.request.PMSDASH) {
 			t.Fatal("worker did not separate public DASH URLs from exact encoder ownership")
 		}
 		checkRepresentations(t, next, protocol)

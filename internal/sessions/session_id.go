@@ -9,11 +9,21 @@ import (
 
 // sessionID preserves existing IDs for other surfaces. Silo Apple requires a
 // canonical random UUID; the media grant is generated independently.
+// Jellyfin and Emby ids are 32 lowercase hex digits, the shape of their
+// PlaySessionId: Jellyfin for Android keys every player request on the first
+// such path segment and fails playback when a URL has none.
 func sessionID(protocol frontend.Protocol) (string, error) {
-	if protocol != "silo" {
-		return rand.Text(), nil
+	switch protocol {
+	case "silo":
+		return randomUUID()
+	case "jellyfin", "emby":
+		var id [16]byte
+		if _, err := rand.Read(id[:]); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%x", id[:]), nil
 	}
-	return randomUUID()
+	return rand.Text(), nil
 }
 
 func randomUUID() (string, error) {

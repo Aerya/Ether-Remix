@@ -22,6 +22,11 @@ func (i *instance) sourceVersions(r *http.Request, scope frontend.VersionScope, 
 			releases = append(releases, version.ID)
 		}
 	}
+	// A plugin library item has no catalogue editions and no detail source:
+	// the broker plans it only through a version handle from its own menu.
+	if len(versions) == 0 && detail.Title.Key.IsPluginKey() {
+		return i.pluginVersions(r, scope, detail)
+	}
 	// A detail page does not open a resolver. Probed copies already on disk
 	// are a catalogue read, and they are the only file a cold title has.
 	if len(versions) == 0 && i.host.Editions != nil {
@@ -104,4 +109,77 @@ func (i *instance) probedVersion(r *http.Request, scope frontend.VersionScope, d
 		return nil, nil, frontend.ErrSourceGone
 	}
 	return []frontend.Version{{ID: plan.DetailSource, Media: plan.Media}}, offers, nil
+}
+
+// pluginVersions lists a plugin library item's own version menu (its Auto
+// slot and the sources its resolver returned) as version-handle offers.
+// Without it a plugin item fell through to probedVersion, whose detail-source
+// offer the broker refuses for plugin keys, so no plugin item could play.
+// The menu asks the plugin's resolver, so like probedVersion it runs only for
+// watch and the versions list, never for item browse.
+func (i *instance) pluginVersions(r *http.Request, scope frontend.VersionScope, detail frontend.ItemDetail) ([]frontend.Version, []frontend.SourceOffer, error) {
+	if i.host.Editions == nil || i.host.VersionHandles == nil || i.host.SourceOffers == nil || !detailOpensSource(r.URL.Path) {
+		return nil, nil, nil
+	}
+	batch, ok := i.host.VersionHandles.(frontend.VersionHandleBatch)
+	if !ok {
+		return nil, nil, nil
+	}
+	title := detail.Title
+	// Watch and /versions are explicit playback/version requests: clear
+	// LocalResponse and tag IndexerPurposePlayback so cold plugin items invoke
+	// /resolve instead of returning empty cache-only results.
+	vctx := frontend.WithoutLocalResponse(frontend.WithIndexerPurpose(r.Context(), frontend.IndexerPurposePlayback))
+	req := frontend.ResolveRequest{Title: &title, Client: scope.Caps, User: scope.Viewer}
+	var (
+		variants []frontend.ReleaseVariant
+		err      error
+	)
+	if slots, ok := i.host.Editions.(frontend.VersionSlots); ok {
+		variants, err = slots.VersionSlots(vctx, req, frontend.MaxVariants, true)
+	} else {
+		variants, err = i.host.Editions.Variants(vctx, req, frontend.MaxVariants)
+	}
+	if err != nil || len(variants) == 0 {
+		return nil, nil, nil
+	}
+	versions := make([]frontend.Version, 0, len(variants))
+	releases := make([]string, 0, len(variants))
+	seen := make(map[string]bool, len(variants))
+	for _, variant := range variants {
+		id := variant.ID
+		if id == "" {
+			id = variant.Release.ID
+		}
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		versions = append(versions, frontend.Version{ID: id, Name: variant.Label, Edition: variant.Edition, Media: variant.Info})
+		releases = append(releases, id)
+	}
+	if len(versions) == 0 {
+		return nil, nil, nil
+	}
+	handles, err := batch.IssueBatch(vctx, scope, title.Key, releases)
+	if err != nil {
+		return nil, nil, nil
+	}
+	targets := make([]frontend.SourceOfferTarget, 0, len(versions))
+	kept := versions[:0]
+	for _, version := range versions {
+		if handles[version.ID] == "" {
+			continue
+		}
+		kept = append(kept, version)
+		targets = append(targets, frontend.SourceOfferTarget{Item: title.Key, VersionHandle: handles[version.ID]})
+	}
+	if len(targets) == 0 {
+		return nil, nil, nil
+	}
+	offers, err := i.host.SourceOffers.IssueBatch(vctx, scope, targets)
+	if err != nil || len(offers) != len(kept) {
+		return nil, nil, nil
+	}
+	return kept, offers, nil
 }

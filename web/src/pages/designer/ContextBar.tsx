@@ -3,16 +3,14 @@ import { ChevronDown, Globe, Laptop, Smartphone, Tv } from "lucide-react";
 import { useState } from "react";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { localized, t } from "../../i18n";
-import type { Device, LayoutSection } from "../../lib/contract";
+import type { Device } from "../../lib/contract";
 import { WEEKDAYS, WEEKDAYS_LONG, formatHour } from "../../lib/format";
-import { SECTIONS } from "../../lib/layout";
 
 /** The context a Home is previewed in (the viewer is chosen separately). */
 export interface ViewContext {
   device: Device;
   day: number;
   hour: number;
-  section: LayoutSection;
 }
 
 const DEVICE_OPTIONS = localized(() => [
@@ -42,15 +40,7 @@ export function ContextBar({
       aria-label={t("Preview context")}
     >
       <ToolbarPicker
-        ariaLabel={t("Page")}
-        value={ctx.section}
-        onChange={(s) => onChange({ ...ctx, section: s })}
-        options={SECTIONS.map((s) => ({ value: s.value, label: s.label }))}
-        menuClassName="w-40"
-      />
-      <ToolbarPicker
         ariaLabel={t("Device")}
-        iconOnly
         value={ctx.device}
         onChange={(d) => onChange({ ...ctx, device: d })}
         options={DEVICE_OPTIONS}

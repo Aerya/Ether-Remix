@@ -49,6 +49,9 @@ func (c *Catalog) CountPlayedEpisodes(ctx context.Context, show core.Filter, use
 // playedEpisodesWhere is storedEpisodesWhere plus the viewer's play (the
 // caller adds w.view_count>0) and an optional single-series restriction.
 func (c *Catalog) playedEpisodesWhere(ctx context.Context, show core.Filter, showKey core.RatingKey) (string, []any, error) {
+	if err := c.ensureCatalogueSources(ctx, show); err != nil {
+		return "", nil, err
+	}
 	show = c.viewerPaging(ctx, show)
 	where, args, err := c.storedEpisodesWhere(show)
 	if err != nil {

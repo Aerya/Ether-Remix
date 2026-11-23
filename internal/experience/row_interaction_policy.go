@@ -3,6 +3,7 @@ package experience
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -13,14 +14,24 @@ import (
 // RowInteractionPolicy rechecks persisted impressions against current scope
 // before recording personalization events.
 type RowInteractionPolicy struct {
-	Libraries         []Library
-	Visibility        Visibility
-	Get               func(context.Context, core.RatingKey) (*core.Title, error)
-	AllowEntry        func(context.Context, *core.User, string, string) bool
-	CollectionMembers func(context.Context, *core.User, core.RatingKey, []core.NeutralEntryRef) bool
-	Impression        func(*core.User, core.NeutralImpression)
-	EntryImpression   func(*core.User, core.NeutralImpression, core.NeutralEntryRef)
-	DetailOpen        func(context.Context, *core.User, *core.Title)
+	Libraries           []Library
+	LiveLibraries       func() []Library
+	Visibility          Visibility
+	Get                 func(context.Context, core.RatingKey) (*core.Title, error)
+	AllowEntry          func(context.Context, *core.User, string, string) bool
+	CollectionMembers   func(context.Context, *core.User, core.RatingKey, []core.NeutralEntryRef) bool
+	Collections         core.Collections
+	PlaylistExistsBatch func(context.Context, int64, []core.RatingKey) (map[core.RatingKey]bool, error)
+	Impression          func(*core.User, core.NeutralImpression)
+	EntryImpression     func(*core.User, core.NeutralImpression, core.NeutralEntryRef)
+	DetailOpen          func(context.Context, *core.User, *core.Title)
+}
+
+func (p RowInteractionPolicy) libraries() []Library {
+	if p.LiveLibraries != nil {
+		return p.LiveLibraries()
+	}
+	return p.Libraries
 }
 
 func (p RowInteractionPolicy) Allowed(ctx context.Context, u *core.User, subject ReceiptSubject) bool {
@@ -60,22 +71,120 @@ func (p RowInteractionPolicy) Allowed(ctx context.Context, u *core.User, subject
 // checking its full membership for each card otherwise costs N squared reads.
 type rowInteractionBatchKey struct{}
 
+type rowInteractionPrefetchKey struct{}
+type rowInteractionPrefetch struct {
+	viewer      *core.User
+	cols        map[core.RatingKey]*core.Collection
+	matched     map[core.RatingKey]bool
+	want        map[core.RatingKey][]core.RatingKey
+	checkedCols map[core.RatingKey]bool
+	playlists   map[core.RatingKey]bool
+	checkedPls  map[core.RatingKey]bool
+}
+
+// PrepareBatch runs at the start of one fenced IssueBatch pass to batch
+// collection visibility/membership and playlist ownership checks across all
+// subjects in the pass. It is never shared across retries or requests.
+func (p RowInteractionPolicy) PrepareBatch(ctx context.Context, u *core.User, subjects []ReceiptSubject) context.Context {
+	if u == nil || len(subjects) == 0 {
+		return ctx
+	}
+	seenImp := map[*core.NeutralImpression]bool{}
+	var colKeys, plKeys []core.RatingKey
+	checkedCols := map[core.RatingKey]bool{}
+	want := map[core.RatingKey][]core.RatingKey{}
+	checkedPls := map[core.RatingKey]bool{}
+	addCol := func(k core.RatingKey) {
+		if k != 0 && !checkedCols[k] {
+			checkedCols[k] = true
+			colKeys = append(colKeys, k)
+		}
+	}
+	for _, subject := range subjects {
+		imp := subject.Impression
+		if imp == nil || seenImp[imp] {
+			continue
+		}
+		seenImp[imp] = true
+		if imp.Collection != 0 {
+			addCol(imp.Collection)
+			if _, ok := want[imp.Collection]; !ok {
+				if w, valid := rowViewMemberKeys(imp.Entries); valid {
+					want[imp.Collection] = w
+				}
+			}
+		}
+		for _, entry := range imp.Entries {
+			switch frontend.RowEntryKind(entry.Kind) {
+			case frontend.RowEntryCollection:
+				if k, err := core.ParseRatingKey(entry.ID); err == nil {
+					addCol(k)
+				}
+			case frontend.RowEntryPlaylist:
+				if k, err := core.ParseRatingKey(entry.ID); err == nil && !checkedPls[k] {
+					checkedPls[k] = true
+					plKeys = append(plKeys, k)
+				}
+			}
+		}
+	}
+	pf := rowInteractionPrefetch{viewer: u}
+	if checker, ok := p.Collections.(RowViewCollectionBatchChecker); ok && len(colKeys) > 0 {
+		if cols, matched, err := checker.CheckMembersBatch(ctx, u, colKeys, want, rowViewMemberScanLimit); err == nil {
+			pf.cols = cols
+			pf.matched = matched
+			pf.want = want
+			pf.checkedCols = checkedCols
+		}
+	}
+	if p.PlaylistExistsBatch != nil && len(plKeys) > 0 {
+		if pls, err := p.PlaylistExistsBatch(ctx, u.ID, plKeys); err == nil {
+			pf.playlists = pls
+			pf.checkedPls = checkedPls
+		}
+	}
+	if pf.checkedCols == nil && pf.checkedPls == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, rowInteractionPrefetchKey{}, pf)
+}
+
 func (p RowInteractionPolicy) allowedImpression(ctx context.Context, u *core.User, imp *core.NeutralImpression) bool {
 	if len(imp.Entries) == 0 || imp.Kind == "" {
 		return false
 	}
-	if imp.Collection != 0 && !p.AllowEntry(ctx, u, string(frontend.RowEntryCollection), imp.Collection.String()) {
-		return false
+	pf, hasPF := ctx.Value(rowInteractionPrefetchKey{}).(rowInteractionPrefetch)
+	if hasPF && pf.viewer != u {
+		hasPF = false
 	}
-	if imp.Collection != 0 && !p.CollectionMembers(ctx, u, imp.Collection, imp.Entries) {
-		return false
+	if imp.Collection != 0 {
+		checked := false
+		if hasPF && pf.checkedCols[imp.Collection] {
+			if want, valid := rowViewMemberKeys(imp.Entries); valid {
+				if preWant, ok := pf.want[imp.Collection]; ok && slices.Equal(preWant, want) {
+					c := pf.cols[imp.Collection]
+					if c == nil || !pf.matched[imp.Collection] || !p.Visibility.CollectionAllowed(u, c) {
+						return false
+					}
+					checked = true
+				}
+			}
+		}
+		if !checked {
+			if !p.AllowEntry(ctx, u, string(frontend.RowEntryCollection), imp.Collection.String()) {
+				return false
+			}
+			if !p.CollectionMembers(ctx, u, imp.Collection, imp.Entries) {
+				return false
+			}
+		}
 	}
 	switch frontend.Placement(imp.Placement) {
 	case frontend.PlacementHome:
 	case frontend.PlacementLibrary:
 		id, err := strconv.Atoi(imp.ViewID)
 		valid := false
-		for _, lib := range p.Libraries {
+		for _, lib := range p.libraries() {
 			if lib.ID == id {
 				valid = true
 				break
@@ -96,6 +205,25 @@ func (p RowInteractionPolicy) allowedImpression(ctx context.Context, u *core.Use
 		return false
 	}
 	for _, entry := range imp.Entries {
+		if hasPF {
+			switch frontend.RowEntryKind(entry.Kind) {
+			case frontend.RowEntryPlaylist:
+				if k, err := core.ParseRatingKey(entry.ID); err == nil && pf.checkedPls[k] {
+					if !pf.playlists[k] {
+						return false
+					}
+					continue
+				}
+			case frontend.RowEntryCollection:
+				if k, err := core.ParseRatingKey(entry.ID); err == nil && pf.checkedCols[k] {
+					c := pf.cols[k]
+					if c == nil || !p.Visibility.CollectionAllowed(u, c) {
+						return false
+					}
+					continue
+				}
+			}
+		}
 		if !p.AllowEntry(ctx, u, entry.Kind, entry.ID) {
 			return false
 		}

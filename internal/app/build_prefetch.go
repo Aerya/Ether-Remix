@@ -23,6 +23,7 @@ func (a *App) buildPrefetch(ctx context.Context, cfg config.Config) error {
 		Catalog: a.catalog, Resolver: a.resolver, Engine: a.media,
 		Cache: a.cache, State: a.state, Auth: a.users, Hints: a.playback,
 		Logger:   log.With("component", "prefetch"),
+		Events:   a.eventBus,
 		PostPlay: a.personalize, Prewarmer: prewarmer, Markers: a.markers,
 		PostPlayEnabled: func() bool {
 			c := a.cfg.Get().Personalize

@@ -22,7 +22,10 @@ type TitlePoster struct {
 	OriginalTitle string
 	Year          int
 	Show          bool
-	Width         int
+	// Kind overrides the FILM/SERIES label for non-video media (BOOK,
+	// AUDIOBOOK, ALBUM, SONG, ARTIST, PODCAST).
+	Kind  string
+	Width int
 }
 
 // generatedAccents are rich, mid-dark tones white type reads well on.
@@ -40,6 +43,9 @@ func (p TitlePoster) Request() PosterRequest {
 	kind := "FILM"
 	if p.Show {
 		kind = "SERIES"
+	}
+	if p.Kind != "" {
+		kind = p.Kind
 	}
 	subtitle := kind
 	if p.Year > 0 {
@@ -121,7 +127,37 @@ func ForTitle(t *core.Title) (TitlePoster, bool) {
 	if year == 0 && !t.Released.IsZero() {
 		year = t.Released.Year()
 	}
-	return TitlePoster{Key: t.Key.String(), Title: t.Title, OriginalTitle: t.OriginalTitle, Year: year, Show: t.Type == core.TypeShow}, true
+	return TitlePoster{Key: t.Key.String(), Title: t.Title, OriginalTitle: t.OriginalTitle, Year: year, Show: t.Type == core.TypeShow, Kind: mediaPosterKind(t)}, true
+}
+
+// mediaPosterKind labels a generated poster for non-video media by what the
+// title is, never FILM: a book with no cover reads BOOK.
+func mediaPosterKind(t *core.Title) string {
+	switch t.MediaRole {
+	case core.MediaRoleAlbum:
+		return "ALBUM"
+	case core.MediaRoleTrack:
+		return "SONG"
+	case core.MediaRoleArtist:
+		return "ARTIST"
+	case core.MediaRoleAudiobook:
+		return "AUDIOBOOK"
+	case core.MediaRoleBook:
+		return "BOOK"
+	}
+	switch t.MediaClass {
+	case core.MediaClassBook:
+		return "BOOK"
+	case core.MediaClassAudiobook:
+		return "AUDIOBOOK"
+	case core.MediaClassMusic:
+		return "MUSIC"
+	case core.MediaClassPodcast:
+		return "PODCAST"
+	case core.MediaClassPhoto:
+		return "PHOTO"
+	}
+	return ""
 }
 
 // maxQueryTitle bounds the names a self-describing poster URL carries.

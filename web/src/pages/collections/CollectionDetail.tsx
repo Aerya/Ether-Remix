@@ -7,7 +7,16 @@ import {
   EmptyState,
   Spinner,
 } from "@braedonsaunders/appkit-ui";
-import { CalendarClock, Filter, Layers, RefreshCw, SearchX, Users } from "lucide-react";
+import {
+  CalendarClock,
+  Filter,
+  Folder,
+  Layers,
+  Puzzle,
+  RefreshCw,
+  SearchX,
+  Users,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { Artwork } from "../../components/Artwork";
 import { ErrorPanel, PosterSkeletons } from "../../components/feedback";
@@ -127,6 +136,23 @@ export function CollectionDetail({
                   {spec.enabled ? t("Published") : t("Draft")}
                 </Badge>
               ) : null}
+              {!template && spec.folder ? (
+                <Badge variant="secondary">
+                  <Folder size={10} className="mr-1" aria-hidden />
+                  {spec.folder}
+                </Badge>
+              ) : null}
+              {!template && spec.addonSync && !spec.addonSync.removed ? (
+                <Badge variant="secondary">
+                  <Puzzle size={10} className="mr-1" aria-hidden />
+                  {t("Synced from {addon}", {
+                    addon: spec.addonSync.addonName || spec.addonSync.addonId,
+                  })}
+                </Badge>
+              ) : null}
+              {!template && spec.addonSync?.removed ? (
+                <Badge variant="warning">{t("Removed from add-on")}</Badge>
+              ) : null}
             </div>
             <h2
               id="collection-title"
@@ -203,6 +229,16 @@ export function CollectionDetail({
         </dl>
       </section>
       <div className="space-y-6 p-5 sm:p-6 xl:p-8">
+        {!template && spec.addonSync?.removed ? (
+          <Alert variant="warning">
+            <AlertDescription>
+              {t(
+                "This catalogue is no longer listed by {addon}. Its existing titles are kept until you edit or delete this collection, or restore the catalogue in the add-on.",
+                { addon: spec.addonSync.addonName || spec.addonSync.addonId },
+              )}
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <section aria-labelledby="collection-titles">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-baseline gap-2">

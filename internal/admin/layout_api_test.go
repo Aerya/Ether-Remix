@@ -17,12 +17,12 @@ func TestLayoutDocumentEndpoints(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"layout":{"global":[]`) || !strings.Contains(rec.Body.String(), `"defaults":{"maxRows"`) {
 		t.Fatalf("GET %d %s", rec.Code, rec.Body)
 	}
-	draft := `{"viewerId":2,"layout":{"global":[{"section":"home","rows":[{"row":"a","status":"always","slot":1}]}],"viewers":[]},"device":"mobile","at":"2026-10-17T20:30:00Z","section":"movies","count":20}`
+	draft := `{"viewerId":2,"layout":{"global":[{"section":"home","rows":[{"row":"a","status":"always","slot":1}]}],"viewers":[]},"device":"mobile","at":"2026-10-17T20:30:00Z","section":"library:1","count":20}`
 	rec = serve(h, req(http.MethodPost, "/ether/api/layout/preview", draft))
 	if rec.Code != 200 {
 		t.Fatalf("preview %d %s", rec.Code, rec.Body)
 	}
-	if e.who != 2 || e.hc.Device != "mobile" || e.section != "movies" || e.limit != 20 || e.writes != 0 || len(e.doc.Global) != 0 {
+	if e.who != 2 || e.hc.Device != "mobile" || e.section != "library:1" || e.limit != 20 || e.writes != 0 || len(e.doc.Global) != 0 {
 		t.Fatalf("preview inputs/persistence %+v", e)
 	}
 	for _, v := range []string{`"layer":"global"`, `"slot":1`, `"anchorSlot":1`, `"placement":"global anchor at slot 1"`, `"policyLayer":"global"`, `"viewer":{"id":2,"title":"bob"}`} {
@@ -52,7 +52,7 @@ func TestLayoutDocumentEndpoints(t *testing.T) {
 func TestLayoutPreviewCarriesDialsAndHomeDeduped(t *testing.T) {
 	e := &fakeEngine{}
 	h := personalizationHandler(t, e)
-	draft := `{"layout":{"global":[{"section":"movies","dedupeHome":false,"tuning":{"discovery":0.8,"variety":0.2},"rows":[]}],"viewers":[]},"section":"movies"}`
+	draft := `{"layout":{"global":[{"section":"library:1","dedupeHome":false,"tuning":{"discovery":0.8,"variety":0.2},"rows":[]}],"viewers":[]},"section":"library:1"}`
 	rec := serve(h, req(http.MethodPost, "/ether/api/layout/preview", draft))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"homeDeduped":12`) {
 		t.Fatalf("preview %d %s", rec.Code, rec.Body)

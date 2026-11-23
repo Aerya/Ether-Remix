@@ -16,6 +16,16 @@ func (s *Service) Router(cat core.Catalog) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(v)
 	}
+	writeErr := func(w http.ResponseWriter, status int, code, msg string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{
+				"code":    code,
+				"message": msg,
+			},
+		})
+	}
 	r.Get("/settings", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Settings(r.Context())
 		if e != nil {
@@ -27,11 +37,11 @@ func (s *Service) Router(cat core.Catalog) http.Handler {
 	r.Put("/settings", func(w http.ResponseWriter, r *http.Request) {
 		var v Settings
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&v) != nil {
-			http.Error(w, "Invalid settings", 400)
+			writeErr(w, http.StatusBadRequest, "bad_json", "Invalid settings")
 			return
 		}
 		if e := s.SaveSettings(r.Context(), v); e != nil {
-			http.Error(w, e.Error(), 400)
+			writeErr(w, http.StatusBadRequest, "validation", e.Error())
 			return
 		}
 		v, err := s.Settings(r.Context())

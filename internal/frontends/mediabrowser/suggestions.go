@@ -1,6 +1,7 @@
 package mediabrowser
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,9 +11,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
-// suggestions projects the same authorized home recommendations used by the
-// personal libraries. Read fresh rows so a policy change cannot reuse stale
-// viewer recommendations. Experience applies viewer visibility and safety.
+// suggestions projects the same authorized home or library recommendations used
+// by the personal libraries. Read fresh rows so a policy change cannot reuse
+// stale viewer recommendations. Experience applies viewer visibility and safety.
 func (i *instance) suggestions(w http.ResponseWriter, r *http.Request) {
 	v, _, err := i.viewer(r)
 	if err != nil || v == nil {
@@ -48,12 +49,30 @@ func (i *instance) suggestions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	viewID, scoped, valid := parseLibraryParentView(r)
+	if !valid {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
 	types, media := suggestionValues(r, "type"), suggestionValues(r, "mediaType")
 	if i.host.Experience == nil {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	rows, err := i.personalHomeRows(r.Context(), v, device(r))
+	var rows []frontend.Row
+	if scoped {
+		if viewID == "" {
+			i.pageWithCount(w, r, v, frontend.Page{Items: []frontend.Title{}, Total: 0}, offset, 0, "", &count)
+			return
+		}
+		rows, err = i.personalLibraryRows(r.Context(), v, device(r), viewID)
+		if errors.Is(err, frontend.ErrNotFound) {
+			i.pageWithCount(w, r, v, frontend.Page{Items: []frontend.Title{}, Total: 0}, offset, 0, "", &count)
+			return
+		}
+	} else {
+		rows, err = i.personalHomeRows(r.Context(), v, device(r))
+	}
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return

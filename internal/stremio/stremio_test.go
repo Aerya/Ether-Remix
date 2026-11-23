@@ -528,10 +528,153 @@ func TestHonestUserAgentAndRefusal(t *testing.T) {
 	}))
 	defer srv.Close()
 	err := NewService(nil).Test(t.Context(), config.Indexer{URL: srv.URL + "/" + secret + "/manifest.json"})
-	if ua != userAgent || !strings.HasPrefix(ua, "Ether ") {
+	if ua != userAgent() || !strings.HasPrefix(ua, "Ether/") {
 		t.Fatalf("user agent %q", ua)
 	}
 	if err == nil || !strings.Contains(err.Error(), "refused Ether") || strings.Contains(err.Error(), secret) {
 		t.Fatalf("err %v", err)
+	}
+}
+
+func TestPartialLookupFailureIsIncompleteNotCachedAndLogs(t *testing.T) {
+	req := core.SearchRequest{
+		Type:            core.TypeEpisode,
+		IDs:             core.IDs{IMDB: "tt2560140", TMDB: 1429},
+		Title:           "Attack on Titan",
+		Season:          3,
+		Episode:         15,
+		AbsoluteEpisode: 52,
+		Anime:           true,
+	}
+	seasonPath := "/stream/series/tt2560140:3:15.json"
+	absPath := "/stream/series/tt2560140:1:52.json"
+	seasonBody := `{"streams":[{"name":"Addon","title":"Attack on Titan S03E15 1080p WEB-DL","infoHash":"` + hashA + `"}]}`
+	absBody := `{"streams":[{"name":"Addon","title":"[SubsPlease] Shingeki no Kyojin - 52 (1080p)","infoHash":"` + hashB + `"}]}`
+
+	var mu sync.Mutex
+	failPath := absPath
+	failStatus := http.StatusInternalServerError
+	failRetry := ""
+	var hits []string
+	var bodyFor func(string) string
+	bodyFor = func(p string) string {
+		switch p {
+		case seasonPath:
+			return seasonBody
+		case absPath:
+			return absBody
+		default:
+			return `{"streams":[]}`
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/manifest.json") {
+			fmt.Fprint(w, manifestJSON)
+			return
+		}
+		mu.Lock()
+		hits = append(hits, r.URL.Path)
+		fp, fs, fr := failPath, failStatus, failRetry
+		bf := bodyFor
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, fp) && fs != 0 {
+			if fr != "" {
+				w.Header().Set("Retry-After", fr)
+			}
+			w.WriteHeader(fs)
+			return
+		}
+		fmt.Fprint(w, bf(strings.TrimPrefix(r.URL.Path, "/"+secret)))
+	}))
+	defer srv.Close()
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	svc := NewService(srv.Client())
+	cfg := config.Indexer{ID: "ad", Name: "Addon", Kind: config.IndexerKindStremio, Protocol: "torrent", URL: srv.URL + "/" + secret + "/manifest.json", Enabled: true}
+	c := newznab.New(cfg, nil, newznab.Options{Backend: svc.Backend})
+
+	// 1. One lookup succeeds with streams, the other fails with 500: partial
+	// results are returned, coverage is incomplete, failure is logged without
+	// secrets, and the partial answer is NOT cached.
+	ctx1, cov1 := core.WithSearchCoverage(t.Context())
+	rels, err := c.Search(ctx1, req)
+	if err != nil || len(rels) != 1 || rels[0].InfoHash != hashA {
+		t.Fatalf("partial search: rels=%+v err=%v", rels, err)
+	}
+	if !cov1.Incomplete() {
+		t.Fatal("partial lookup failure did not mark search coverage incomplete")
+	}
+	if !strings.Contains(logBuf.String(), "stream lookup failed") || strings.Contains(logBuf.String(), secret) {
+		t.Fatalf("unexpected log output: %q", logBuf.String())
+	}
+
+	// Now both lookups succeed: because the partial answer was not cached,
+	// the retry asks the addon again and gets both streams.
+	mu.Lock()
+	failStatus = 0
+	mu.Unlock()
+	ctx2, cov2 := core.WithSearchCoverage(t.Context())
+	rels, err = c.Search(ctx2, req)
+	if err != nil || len(rels) != 2 {
+		t.Fatalf("complete retry: rels=%+v err=%v", rels, err)
+	}
+	if cov2.Incomplete() {
+		t.Fatal("complete search marked incomplete")
+	}
+
+	// 2. Empty first lookup + failing second lookup must return an error,
+	// mark coverage incomplete, and not cache an empty answer.
+	reqEmpty := req
+	reqEmpty.Episode, reqEmpty.AbsoluteEpisode = 16, 53
+	mu.Lock()
+	failPath = "/stream/series/tt2560140:1:53.json"
+	failStatus = http.StatusBadGateway
+	bodyFor = func(string) string { return `{"streams":[]}` }
+	mu.Unlock()
+	ctx3, cov3 := core.WithSearchCoverage(t.Context())
+	if rels, err := c.Search(ctx3, reqEmpty); err == nil || len(rels) != 0 {
+		t.Fatalf("empty+502 search: rels=%+v err=%v, want error", rels, err)
+	}
+	if !cov3.Incomplete() {
+		t.Fatal("empty+502 search did not mark coverage incomplete")
+	}
+
+	// 3. First lookup succeeds with streams, second returns 429: partial
+	// results are returned, coverage is incomplete, not cached, and the addon
+	// is paused so the next search fails without hitting the server.
+	reqRL := req
+	reqRL.Episode, reqRL.AbsoluteEpisode = 17, 54
+	mu.Lock()
+	failPath = "/stream/series/tt2560140:1:54.json"
+	failStatus = http.StatusTooManyRequests
+	failRetry = "120"
+	bodyFor = func(p string) string {
+		if p == "/stream/series/tt2560140:3:17.json" {
+			return seasonBody
+		}
+		return `{"streams":[]}`
+	}
+	hitsBefore := len(hits)
+	mu.Unlock()
+	ctx4, cov4 := core.WithSearchCoverage(t.Context())
+	rels, err = c.Search(ctx4, reqRL)
+	if err != nil || len(rels) != 1 || rels[0].InfoHash != hashA {
+		t.Fatalf("partial 429 search: rels=%+v err=%v", rels, err)
+	}
+	if !cov4.Incomplete() {
+		t.Fatal("partial 429 did not mark coverage incomplete")
+	}
+	if _, err := c.Search(t.Context(), reqRL); !errors.Is(err, core.ErrBudgetExhausted) {
+		t.Fatalf("addon not paused after partial 429: err=%v", err)
+	}
+	mu.Lock()
+	gotHits := len(hits) - hitsBefore
+	mu.Unlock()
+	if gotHits != 2 {
+		t.Fatalf("expected 2 requests (1 ok + 1 429, none while paused), got %d", gotHits)
 	}
 }

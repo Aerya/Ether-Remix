@@ -13,6 +13,133 @@ type DASHTrack struct {
 	ID                                             uint32
 	Kind, Codec                                    string
 	Width, Height, SampleRate, Channels, Bandwidth int
+	Timescale, DefaultDuration                     uint32
+	EditShift                                      int64
+}
+
+// ParseDASHInit inspects an fMP4 initialization segment and describes each
+// video and audio track it declares.
+func ParseDASHInit(init []byte) ([]DASHTrack, error) {
+	tracks, err := parseInitTracks(init)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DASHTrack, 0, len(tracks))
+	for _, t := range tracks {
+		kind := "video"
+		if t.Handler == "soun" {
+			kind = "audio"
+		} else if t.Handler != "vide" {
+			continue
+		}
+		out = append(out, DASHTrack{
+			ID:              t.TrackID,
+			Kind:            kind,
+			Codec:           t.Codecs,
+			Width:           t.Width,
+			Height:          t.Height,
+			SampleRate:      t.SampleRate,
+			Channels:        t.Channels,
+			Timescale:       t.Timescale,
+			DefaultDuration: t.DefaultDuration,
+			EditShift:       t.EditShift,
+		})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("DASH init has no video or audio tracks")
+	}
+	return out, nil
+}
+
+// IsolateDASHTrack returns a single-track fMP4 init or media segment for track id.
+func IsolateDASHTrack(src []byte, id uint32) ([]byte, error) {
+	return isolateDASHTrack(src, id)
+}
+
+// FMP4TrackSpan reports a media segment's presentation start time and total
+// duration for trackID in that track's media timescale.
+func FMP4TrackSpan(seg []byte, trackID, defaultDur uint32, editShift int64) (start, dur int64, ok bool) {
+	top, err := readBoxes(seg, 0, len(seg))
+	if err != nil {
+		return 0, 0, false
+	}
+	haveStart := false
+	var total int64
+	for _, box := range top {
+		if box.typ != "moof" {
+			continue
+		}
+		trafs, err := readBoxes(seg, box.start+box.hdr, box.end)
+		if err != nil {
+			continue
+		}
+		for _, traf := range trafs {
+			if traf.typ != "traf" {
+				continue
+			}
+			kids, err := readBoxes(seg, traf.start+traf.hdr, traf.end)
+			if err != nil {
+				continue
+			}
+			var id uint32
+			def := defaultDur
+			var base, cto, fragDur int64
+			haveBase, haveRun := false, false
+			for _, k := range kids {
+				p := k.payload(seg)
+				switch k.typ {
+				case "tfhd":
+					if len(p) < 8 {
+						continue
+					}
+					id = binary.BigEndian.Uint32(p[4:])
+					flags := uint32(p[1])<<16 | uint32(p[2])<<8 | uint32(p[3])
+					o := 8
+					if flags&0x01 != 0 {
+						o += 8
+					}
+					if flags&0x02 != 0 {
+						o += 4
+					}
+					if flags&0x08 != 0 && len(p) >= o+4 {
+						def = binary.BigEndian.Uint32(p[o:])
+					}
+				case "tfdt":
+					if len(p) < 8 {
+						continue
+					}
+					if p[0] == 1 && len(p) >= 12 {
+						base = int64(binary.BigEndian.Uint64(p[4:]))
+						if base < 0 {
+							base = 0
+						}
+					} else {
+						base = int64(binary.BigEndian.Uint32(p[4:]))
+					}
+					haveBase = true
+				case "trun":
+					if !haveRun {
+						if off, n, has := trunFirstOffset(p); has && n > 0 {
+							cto, haveRun = off, true
+						}
+					}
+					fragDur += trunDuration(p, def)
+				}
+			}
+			if id != trackID || !haveBase {
+				continue
+			}
+			if !haveStart {
+				start = base + cto - editShift
+				if start < 0 {
+					start = 0
+				}
+				haveStart = true
+			}
+			total += fragDur
+		}
+	}
+	return start, total, haveStart && total > 0
 }
 
 // DASHSegmentIndex preserves the shared encoder while exposing separate tracks
@@ -29,23 +156,18 @@ func (s *continuousSegmentIndex) DASHTracks() ([]DASHTrack, error) {
 	if !ok {
 		return nil, fmt.Errorf("DASH init unavailable")
 	}
-	tracks, err := parseInitTracks(b)
+	out, err := ParseDASHInit(b)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]DASHTrack, 0, len(tracks))
-	for _, t := range tracks {
-		kind := "video"
-		if t.Handler == "soun" {
-			kind = "audio"
-		} else if t.Handler != "vide" {
-			continue
+	_, _, _, videoBW := s.Format()
+	audioBW := max(s.enc.req.Decision.AudioBitrateKbps, 128) * 1000
+	for i := range out {
+		if out[i].Kind == "audio" {
+			out[i].Bandwidth = audioBW
+		} else {
+			out[i].Bandwidth = videoBW
 		}
-		_, _, _, bandwidth := s.Format()
-		if kind == "audio" {
-			bandwidth = max(s.enc.req.Decision.AudioBitrateKbps, 128) * 1000
-		}
-		out = append(out, DASHTrack{t.TrackID, kind, t.Codecs, t.Width, t.Height, t.SampleRate, t.Channels, bandwidth})
 	}
 	return out, nil
 }

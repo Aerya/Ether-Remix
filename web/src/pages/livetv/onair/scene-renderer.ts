@@ -826,6 +826,14 @@ export async function loadStyleFonts(look: Look) {
       }),
   );
 }
+export const DEFAULT_WORDS: Record<string, string> = {
+  "words.back": "NOW RESUMING",
+  "words.break": "BACK IN A MOMENT",
+  "words.now": "NOW PLAYING",
+  "words.offair": "OFF AIR",
+  "words.tonight": "TONIGHT",
+  "words.upNext": "UP NEXT",
+};
 /** Resolve the owned style's shared kit and live slots without template lookups. */
 export function styleBindings(look: Look, bindings: Bindings = {}): SceneBindings {
   const tokens: Record<string, unknown> = {
@@ -837,6 +845,7 @@ export function styleBindings(look: Look, bindings: Bindings = {}): SceneBinding
     "type.body": normalizeFont(look.brand.type.body),
     "type.mono": normalizeFont(look.brand.type.body),
     energy: look.brand.energy,
+    ...DEFAULT_WORDS,
     "words.tagline": look.brand.tagline,
     "brand.logo": look.brand.logo ?? "",
   };
@@ -846,7 +855,8 @@ export function styleBindings(look: Look, bindings: Bindings = {}): SceneBinding
       : 0;
   for (const control of look.controls) tokens[`control.${control.id}`] = control.value;
   const slots: Record<string, string> = {
-    "channel.name": bindings.channel?.name ?? look.name,
+    "channel.name": look.name,
+    "offair.message": look.brand.tagline || "Off air",
     "brand.logo": look.brand.logo ?? "",
   };
   const flatten = (value: unknown, prefix: string) => {
@@ -862,6 +872,8 @@ export function styleBindings(look: Look, bindings: Bindings = {}): SceneBinding
       );
   };
   flatten(bindings, "");
+  if (!slots["channel.name"]) slots["channel.name"] = look.name;
+  if (!slots["offair.message"]) slots["offair.message"] = look.brand.tagline || "Off air";
   return { tokens, slots };
 }
 type WorkerRequest = {

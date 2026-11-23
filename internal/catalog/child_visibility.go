@@ -43,7 +43,7 @@ func (c *Catalog) childVisibilityCondsOn(p *core.Filter, e childCols) ([]string,
 	// Catalogue rules apply to the parent show, not to episodes. Viewer
 	// restrictions below still apply to the hydrated episode's own facts.
 	if p.MaxContentRating != "" {
-		level := contentrating.LevelOf(p.MaxContentRating)
+		level := contentrating.EnforceLevelOf(p.MaxContentRating)
 		if level == contentrating.Unrated {
 			conds = append(conds, "1=0")
 		} else {
@@ -56,7 +56,7 @@ func (c *Catalog) childVisibilityCondsOn(p *core.Filter, e childCols) ([]string,
 		}
 	}
 	if p.MinContentRating != "" {
-		level := contentrating.LevelOf(p.MinContentRating)
+		level := contentrating.EnforceLevelOf(p.MinContentRating)
 		if level == contentrating.Unrated {
 			conds = append(conds, "1=0")
 		} else {
@@ -64,26 +64,19 @@ func (c *Catalog) childVisibilityCondsOn(p *core.Filter, e childCols) ([]string,
 			args = append(args, int(level))
 		}
 	}
-	matchRatings := func(values []string) (string, []any) {
-		var parts []string
-		var vals []any
-		for _, value := range values {
-			if strings.EqualFold(value, "NR") || strings.EqualFold(value, "None") {
-				parts = append(parts, "("+rating+"='' OR REPLACE(REPLACE(REPLACE(REPLACE("+rating+",' ',''),'-',''),'_',''),'.','') IN ('nr','notrated','unrated'))")
-			} else {
-				parts = append(parts, rating+"=?")
-				vals = append(vals, strings.ToLower(strings.TrimSpace(value)))
-			}
+	if len(p.ContentRatings) > 0 || len(p.ExcludeContentRatings) > 0 {
+		conds = append(conds, sqlBlockUncertifiedAdult("t"))
+		if e.key == "e.key" {
+			conds = append(conds, sqlBlockUncertifiedAdult("e"))
 		}
-		return "(" + strings.Join(parts, " OR ") + ")", vals
 	}
 	if len(p.ContentRatings) > 0 {
-		sql, vals := matchRatings(p.ContentRatings)
+		sql, vals := sqlMatchRatings(rating, rank, p.ContentRatings)
 		conds = append(conds, sql)
 		args = append(args, vals...)
 	}
 	if len(p.ExcludeContentRatings) > 0 {
-		sql, vals := matchRatings(p.ExcludeContentRatings)
+		sql, vals := sqlMatchRatings(rating, rank, p.ExcludeContentRatings)
 		conds = append(conds, "NOT "+sql)
 		args = append(args, vals...)
 	}

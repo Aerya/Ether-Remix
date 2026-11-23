@@ -2,6 +2,7 @@ package livetv
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ type broadcastKey struct {
 type broadcastRegistry struct {
 	mu        sync.Mutex
 	outputs   map[broadcastKey]*broadcast
+	retiring  map[*broadcast]broadcastKey
 	closed    bool
 	yielding  atomic.Int32
 	onAcquire func()
@@ -88,23 +90,8 @@ func (r *broadcastRegistry) watchedChannelIDs() map[string]bool {
 }
 
 func (r *broadcastRegistry) acquire(ctx context.Context, key broadcastKey, id string, decision core.Decision, create func() (*broadcast, error), caps ...core.ClientCaps) (*broadcastLease, error) {
-	// Keep the requested channel warm while yielding other grace-period
-	// encoders. A same-channel reopen must retain its encoded live window.
-	r.mu.Lock()
-	existing := r.outputs[key]
-	r.mu.Unlock()
-	needsEncoder := true
-	if existing != nil {
-		existing.mu.Lock()
-		needsEncoder = existing.closed || existing.renditions[id] == nil
-		existing.mu.Unlock()
-	}
-	// Joining an encoded rendition allocates no encoder or server stream unit.
-	// Preserve other warm channels instead of needlessly forcing their next tune
-	// through cold startup. Actual new encoders still yield unused outputs.
-	if needsEncoder {
-		r.yieldIdle(existing)
-	}
+	// Provider admission and stream-limit handling yield idle outputs only
+	// when capacity is needed. A new rendition alone must not evict warm TV.
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -136,11 +123,26 @@ func (r *broadcastRegistry) acquire(ctx context.Context, key broadcastKey, id st
 		r.outputs[key] = b
 		b.start()
 	}
+	b.mu.Lock()
+	b.attaching++
+	b.mu.Unlock()
 	r.mu.Unlock()
 	if onAcquire != nil {
 		onAcquire()
 	}
-	if _, err := b.addRendition(ctx, id, decision, caps...); err != nil {
+	_, err := b.addRendition(ctx, id, decision, caps...)
+	if err != nil && errors.Is(err, transcode.ErrTooManyTranscodes) && r.yieldIdleForCapacity(ctx, b) {
+		_, err = b.addRendition(ctx, id, decision, caps...)
+	}
+	b.mu.Lock()
+	if b.attaching > 0 {
+		b.attaching--
+	}
+	b.mu.Unlock()
+	if err != nil {
+		if !running {
+			r.discardCold(b)
+		}
 		return nil, err
 	}
 	b.logger.Debug("broadcast viewer attached", "running", running, "rendition", id)
@@ -265,10 +267,19 @@ func (r *broadcastRegistry) yieldIdle(except *broadcast) bool {
 	r.mu.Lock()
 	var idle []*broadcast
 	for key, b := range r.outputs {
-		if b != except && b.unwatched(now) {
+		b.mu.Lock()
+		// Claim the idle output under the same lock used to attach viewers.
+		if b != except && b.viewers == 0 && b.attaching == 0 && b.hadViewer && !b.closed && now.Sub(b.created) >= 2*time.Second {
+			b.closed = true
+			b.cancel()
 			delete(r.outputs, key)
+			if r.retiring == nil {
+				r.retiring = map[*broadcast]broadcastKey{}
+			}
+			r.retiring[b] = key
 			idle = append(idle, b)
 		}
+		b.mu.Unlock()
 	}
 	r.mu.Unlock()
 	for _, b := range idle {
@@ -276,9 +287,74 @@ func (r *broadcastRegistry) yieldIdle(except *broadcast) bool {
 		b.logger.Debug("broadcast yielded its stream to a tuned channel")
 		// close waits for the output's goroutines; never block the caller's
 		// frame clock on it.
-		go func() { defer r.yielding.Add(-1); b.close() }()
+		go func() {
+			defer r.yielding.Add(-1)
+			b.close()
+			r.mu.Lock()
+			delete(r.retiring, b)
+			r.mu.Unlock()
+		}()
 	}
 	return len(idle) > 0 || r.yielding.Load() > 0
+}
+
+// yieldIdleForCapacity synchronously reclaims idle broadcasts (ignoring the
+// 2 s warmup floor) and idle renditions on active broadcasts so their
+// transcode slots are freed immediately before retrying a capacity-limited tune.
+func (r *broadcastRegistry) yieldIdleForCapacity(ctx context.Context, except *broadcast) bool {
+	r.mu.Lock()
+	var idle []*broadcast
+	var active []*broadcast
+	for key, b := range r.outputs {
+		if b == except {
+			continue
+		}
+		b.mu.Lock()
+		if b.viewers == 0 && b.attaching == 0 && b.hadViewer && !b.closed {
+			b.closed = true
+			b.cancel()
+			delete(r.outputs, key)
+			idle = append(idle, b)
+		} else if !b.closed && b.hasIdleRenditionLocked() {
+			active = append(active, b)
+		}
+		b.mu.Unlock()
+	}
+	if len(idle) > 0 {
+		r.yielding.Add(int32(len(idle)))
+	}
+	r.mu.Unlock()
+	reclaimed := len(idle) > 0
+	for _, b := range idle {
+		b.logger.Debug("broadcast synchronously yielded its encoder slot for capacity")
+		b.wg.Wait()
+		r.yielding.Add(-1)
+	}
+	for _, b := range active {
+		if b.dropIdleRenditions() {
+			reclaimed = true
+		}
+	}
+	if reclaimed {
+		return true
+	}
+	if r.yielding.Load() <= 0 {
+		return false
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	tick := time.NewTicker(25 * time.Millisecond)
+	defer deadline.Stop()
+	defer tick.Stop()
+	for r.yielding.Load() > 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return true
+		case <-tick.C:
+		}
+	}
+	return true
 }
 
 // A failed cold tune keeps no grace-period encoder running for an absent viewer.
@@ -286,7 +362,7 @@ func (r *broadcastRegistry) discardCold(b *broadcast) {
 	r.mu.Lock()
 	b.startMu.Lock()
 	b.mu.Lock()
-	unused := b.viewers == 0
+	unused := b.viewers == 0 && b.attaching == 0
 	if unused {
 		b.closed = true
 		b.cancel()

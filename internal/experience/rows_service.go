@@ -28,6 +28,12 @@ type RowServiceDeps struct {
 	// HomeFallback supplies bounded library rows when a neutral Home has no
 	// discovery shelves left after policy filtering. Plex does not use it.
 	HomeFallback func(context.Context, frontend.RowRequest) ([]frontend.Row, error)
+	// PrefetchTitles optionally warms parent shows before per-entry visibility
+	// checks so rows containing episodes never trigger per-show catalog reads.
+	PrefetchTitles func(context.Context, []core.RatingKey)
+	// PrepareRows optionally batches collection and playlist checks for a
+	// single row-filtering pass (called fresh before each pass).
+	PrepareRows func(context.Context, *core.User, []frontend.Row) context.Context
 	// RankedSource disables retries when the source ranks policy-filtered candidates once.
 	RankedSource bool
 }
@@ -91,10 +97,36 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 			}
 			candidates = kept
 		}
+		if s.d.PrefetchTitles != nil {
+			var parents []core.RatingKey
+			seenParent := map[core.RatingKey]bool{}
+			for _, row := range candidates {
+				for _, entry := range row.Entries {
+					if entry.Kind != frontend.RowEntryTitle || entry.Title == nil {
+						continue
+					}
+					show := entry.Title.ShowKey
+					if show == 0 && (entry.Title.Type == core.TypeEpisode || entry.Title.Type == core.TypeSeason) {
+						show = core.ShowKey(entry.Title.Key.TMDB())
+					}
+					if show != 0 && !seenParent[show] {
+						seenParent[show] = true
+						parents = append(parents, show)
+					}
+				}
+			}
+			if len(parents) > 0 {
+				s.d.PrefetchTitles(ctx, parents)
+			}
+		}
+		passCtx := ctx
+		if s.d.PrepareRows != nil {
+			passCtx = s.d.PrepareRows(ctx, req.Viewer, candidates)
+		}
 		out = make([]frontend.Row, 0, len(candidates))
 		expand := false
 		for _, row := range candidates {
-			if !s.d.AllowRow(ctx, req.Viewer, row) {
+			if !s.d.AllowRow(passCtx, req.Viewer, row) {
 				continue
 			}
 			entries := make([]frontend.RowEntry, 0, len(row.Entries))
@@ -103,7 +135,7 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 				entry.Handle = ""
 				id := entryIdentity(entry)
 				key := string(entry.Kind) + ":" + id
-				if id != "" && !seen[key] && s.permitted(ctx, req.Viewer, entry) {
+				if id != "" && !seen[key] && s.permitted(passCtx, req.Viewer, entry) {
 					seen[key] = true
 					entries = append(entries, entry)
 				}
@@ -183,6 +215,10 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 
 	// Layout only sees permitted rows; reject injected or altered rows rather than
 	// trusting a layout provider to manufacture authorization decisions.
+	passCtx := ctx
+	if s.d.PrepareRows != nil {
+		passCtx = s.d.PrepareRows(ctx, req.Viewer, out)
+	}
 	var subjects []ReceiptSubject
 	var handles []*string
 	for i := range out {
@@ -193,12 +229,12 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 			row.Entries = row.Entries[:min(10, len(row.Entries))]
 			row.More = false
 		}
-		if !s.d.AllowRow(ctx, req.Viewer, *row) {
+		if !s.d.AllowRow(passCtx, req.Viewer, *row) {
 			return nil, errors.New("experience: layout returned unauthorized row")
 		}
 		row.Items = nil
 		for j := range row.Entries {
-			if entryIdentity(row.Entries[j]) == "" || !s.permitted(ctx, req.Viewer, row.Entries[j]) {
+			if entryIdentity(row.Entries[j]) == "" || !s.permitted(passCtx, req.Viewer, row.Entries[j]) {
 				return nil, errors.New("experience: layout returned unauthorized entry")
 			}
 		}

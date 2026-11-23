@@ -212,3 +212,30 @@ SELECT 1,'movie',0,COALESCE(h.checked,0),0,COUNT(*) FROM catalog_titles t LEFT J
 	}
 	return yearPending, rows.Err()
 }
+
+// MirrorCounts reads the indexed episode and franchise totals from
+// catalog_stats_tally without scanning catalog_titles.
+func (c *Catalog) MirrorCounts(ctx context.Context) (episodes, collections int, err error) {
+	if c == nil || c.db == nil {
+		return 0, 0, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `SELECT kind, CAST(COALESCE(SUM(n),0) AS BIGINT) FROM (SELECT kind, n FROM catalog_stats_tally WHERE kind IN ('episode', ?) UNION ALL SELECT kind, d FROM catalog_stats_tally_delta WHERE kind IN ('episode', ?)) s GROUP BY kind`, statsCollectionsKind, statsCollectionsKind)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind string
+		var n int64
+		if err := rows.Scan(&kind, &n); err != nil {
+			return 0, 0, err
+		}
+		switch kind {
+		case "episode":
+			episodes = max(int(n), 0)
+		case statsCollectionsKind:
+			collections = max(int(n), 0)
+		}
+	}
+	return episodes, collections, rows.Err()
+}

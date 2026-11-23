@@ -24,6 +24,12 @@ func TestDownloadQueueSurvivesRestart(t *testing.T) {
 	}
 	it := f.waitStatus(t, qid, downloadAvailable)
 	id := int64(it["id"].(float64))
+	path := "/downloadQueue/" + itoa(qid) + "/item/" + itoa(id) + "/media"
+	beforeHead := f.do(t, http.MethodHead, path, ownerToken, nil)
+	if beforeHead.Code != http.StatusOK || beforeHead.Header().Get("ETag") == "" || beforeHead.Header().Get("Last-Modified") == "" {
+		t.Fatalf("pre-restart HEAD: %d headers=%v", beforeHead.Code, beforeHead.Header())
+	}
+	etagBefore, lmBefore := beforeHead.Header().Get("ETag"), beforeHead.Header().Get("Last-Modified")
 	f.srv.Close()
 	f.srv = newTestServer(deps)
 	if got := f.queue(t); got != qid {
@@ -33,10 +39,9 @@ func TestDownloadQueueSurvivesRestart(t *testing.T) {
 	if len(items) != 1 || items[0]["status"] != downloadAvailable || int64(items[0]["id"].(float64)) != id {
 		t.Fatalf("restored items: %v", items)
 	}
-	path := "/downloadQueue/" + itoa(qid) + "/item/" + itoa(id) + "/media"
-	rec = f.do(t, http.MethodGet, path, ownerToken, map[string]string{"Range": "bytes=10-19"})
-	if rec.Code != 206 || rec.Body.String() != f.remux.payload[10:20] {
-		t.Fatalf("media: %d %q", rec.Code, rec.Body.String())
+	rec = f.do(t, http.MethodGet, path, ownerToken, map[string]string{"Range": "bytes=10-19", "If-Range": etagBefore})
+	if rec.Code != 206 || rec.Body.String() != f.remux.payload[10:20] || rec.Header().Get("ETag") != etagBefore || rec.Header().Get("Last-Modified") != lmBefore {
+		t.Fatalf("media after restart: %d %q etag=%q lm=%q", rec.Code, rec.Body.String(), rec.Header().Get("ETag"), rec.Header().Get("Last-Modified"))
 	}
 	if rec := f.do(t, http.MethodGet, path, friendToken, nil); rec.Code != 403 {
 		t.Fatalf("foreign: %d %s", rec.Code, rec.Body.String())

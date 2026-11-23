@@ -2,6 +2,7 @@ import { useSlots, PluginActionMenu } from "../../viewspec/slots/Slots";
 import { PluginView } from "../../viewspec/PluginView";
 import { SlotAnchor } from "../../components/SlotXray";
 import { textOf } from "../../lib/extend";
+import { usePageTitle } from "../../lib/document-title";
 import { SubtabNav } from "../../components/layout";
 import {
   Avatar,
@@ -14,6 +15,7 @@ import {
 import { ArrowLeft, CheckCircle2, Gauge, History } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useAppOptional } from "../../app-context";
 import { PageSubtabs } from "../../components/layout";
 import { Artwork } from "../../components/Artwork";
 import { Meter } from "../../components/charts";
@@ -38,7 +40,7 @@ import { HomeCanvas } from "../designer/HomeCanvas";
 import { ViewerWatchlist } from "./sections/ViewerWatchlist";
 import { TasteView } from "./TasteView";
 import { ViewerDashboard } from "./ViewerDashboard";
-import { ViewerAccess } from "./ViewerAccess";
+import { ViewerAccess, ViewerAccountSync } from "./ViewerAccess";
 import { ViewerActions, TvCodeForm } from "./ViewerActions";
 import { ViewerPlayback } from "./ViewerPlayback";
 import { ViewerStatus, viewerLifecycle, viewerStatus } from "./ViewerStatus";
@@ -70,10 +72,12 @@ export default function ViewerProfile() {
   const listTab = ["alerts", "hidden"].includes(search.get("list") ?? "")
     ? search.get("list")!
     : "watchlist";
+  const signInTab = search.get("signin") === "sync" ? "sync" : "access";
 
   const viewer = useAsync<ViewerDetail | null>(() => api.viewer(id), [id]);
   const taste = useAsync(() => api.taste(id), [id]);
   const [refreshing, setRefreshing] = useState(false);
+  const [settingsRev, setSettingsRev] = useState(0);
   const loadFavorites = useCallback(
     () => apiFetch<{ enabled: boolean }>(`/viewers/${id}/favorites-mirror`),
     [id],
@@ -121,6 +125,33 @@ export default function ViewerProfile() {
   );
 
   const v = viewer.data;
+  const activeViewer = v && v.id === id ? v : null;
+  const tabTitle = pluginTab
+    ? textOf(pluginTab.label) || pluginTab.meta?.key || null
+    : tab === "home"
+      ? t("Home")
+      : tab === "taste"
+        ? t("Taste")
+        : tab === "activity"
+          ? t("Recent activity")
+          : tab === "playback"
+            ? t("Audio & subtitles")
+            : tab === "limits"
+              ? t("Limits")
+              : tab === "sign-in"
+                ? t("Sign-in & devices")
+                : tab === "lists"
+                  ? t("Lists & alerts")
+                  : null;
+  const subTitle =
+    tab === "sign-in" && signInTab === "sync"
+      ? t("Connected accounts")
+      : tab === "lists" && listTab === "alerts"
+        ? t("Alerts")
+        : tab === "lists" && listTab === "hidden"
+          ? t("Not interested")
+          : null;
+  usePageTitle(activeViewer ? [t("Viewers"), viewerName(activeViewer), tabTitle, subTitle] : null);
   const setTab = (next: string) => navigate(`/viewers/${id}/${next}`);
 
   const refresh = async () => {
@@ -150,9 +181,14 @@ export default function ViewerProfile() {
     );
   const name = viewerName(v);
   const life = viewerLifecycle(v);
+  const plexConnected = useAppOptional()?.boot.plexEnabled !== false;
   // Watchlist, alerts and connected apps need server access; a viewer kept
-  // for imported history (or whose access ended) has none of them.
-  const serverAccess = v.isOwner || viewerStatus(v) === "active";
+  // for imported history (or paused / unshared) has none of them.
+  const serverAccess =
+    v.isOwner ||
+    (!life.paused &&
+      !(life.managedBy === "plex" && life.plexShared === false) &&
+      viewerStatus(v) === "active");
 
   return (
     <DetailPageLayout
@@ -165,12 +201,23 @@ export default function ViewerProfile() {
               <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold text-fg">
                 {name}
                 <ViewerDisplayName viewer={v} onChange={() => void viewer.reload()} />
-                {life.paused ? (
+                {life.managedBy === "plex" && plexConnected ? (
+                  <>
+                    {life.paused ? <Badge variant="warning">{t("Paused by owner")}</Badge> : null}
+                    {life.plexShared === false ? (
+                      <Badge variant="outline">{t("Not shared on plex.tv")}</Badge>
+                    ) : (
+                      <>
+                        {!life.paused ? <ViewerStatus viewer={v} /> : null}
+                        <Badge variant="secondary">{t("Managed on plex.tv")}</Badge>
+                      </>
+                    )}
+                  </>
+                ) : life.paused ? (
                   <Badge variant="warning">{t("Paused")}</Badge>
                 ) : (
                   <ViewerStatus viewer={v} />
                 )}
-                {life.managedBy === "plex" ? <Badge>{t("Managed on plex.tv")}</Badge> : null}
               </h1>
               <p className="text-sm text-fg-muted">
                 {v.username} · {t("Active {time}", { time: relativeTime(v.lastActive) })}
@@ -184,7 +231,10 @@ export default function ViewerProfile() {
             />
             <ViewerActions
               viewer={v}
-              onChange={() => void viewer.reload()}
+              onChange={() => {
+                void viewer.reload();
+                setSettingsRev((n) => n + 1);
+              }}
               onRebuild={() => void refresh()}
               rebuilding={refreshing}
               onPreviewHome={() => setTab("home")}
@@ -226,26 +276,48 @@ export default function ViewerProfile() {
       ) : tab === "overview" ? (
         <ViewerDashboard viewer={v} taste={taste.data} />
       ) : tab === "limits" ? (
-        <ViewerAccess key={id} viewer={v} />
+        <ViewerAccess key={`${id}:${settingsRev}`} viewer={v} />
       ) : tab === "playback" ? (
-        <ViewerPlayback key={id} viewer={v} />
+        <ViewerPlayback key={`${id}:${settingsRev}`} viewer={v} />
       ) : tab === "sign-in" ? (
         <div className="space-y-6">
-          <SignInMethods
-            base={`/users/${id}`}
-            token={getToken()}
-            owner
-            showInvite={!v.isOwner}
-            quickConnect={
-              <section className="rounded-xl border border-border bg-surface p-5 space-y-4">
-                <h2 className="font-semibold">{t("Approve a TV code")}</h2>
-                <TvCodeForm key={id} viewer={v} />
-              </section>
+          <PageSubtabs
+            ariaLabel={t("Sign-in and devices sections")}
+            active={signInTab}
+            onSelect={(next) =>
+              setSearch(
+                (previous) => {
+                  if (next === "access") previous.delete("signin");
+                  else previous.set("signin", next);
+                  return previous;
+                },
+                { preventScrollReset: true },
+              )
             }
-            beforeDevices={
-              serverAccess ? <ConnectApps base={`/viewers/${id}`} token={getToken()} /> : null
-            }
+            tabs={[
+              { key: "access", label: t("Access & devices") },
+              { key: "sync", label: t("Connected accounts") },
+            ]}
           />
+          {signInTab === "sync" ? (
+            <ViewerAccountSync key={id} viewer={v} />
+          ) : (
+            <SignInMethods
+              base={`/users/${id}`}
+              token={getToken()}
+              owner
+              self={v.isOwner}
+              quickConnect={
+                <section className="rounded-xl border border-border bg-surface p-5 space-y-4">
+                  <h2 className="font-semibold">{t("Approve a TV code")}</h2>
+                  <TvCodeForm key={id} viewer={v} />
+                </section>
+              }
+              beforeDevices={
+                serverAccess ? <ConnectApps base={`/viewers/${id}`} token={getToken()} /> : null
+              }
+            />
+          )}
         </div>
       ) : tab === "home" ? (
         <TheirHome viewer={v} />
@@ -398,7 +470,6 @@ function TheirHome({ viewer }: { viewer: Viewer }) {
     device: "tv",
     day: now.getDay(),
     hour: now.getHours(),
-    section: "home",
   });
   return (
     <div className="space-y-4">

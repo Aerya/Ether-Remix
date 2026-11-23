@@ -1,0 +1,1695 @@
+{
+  "events": [
+    {
+      "id": "401850981",
+      "uid": "s:1100~l:1106~e:401850981",
+      "date": "2026-11-19T05:00Z",
+      "endDate": "2026-11-23T05:00Z",
+      "name": "The RSM Classic",
+      "shortName": "The RSM Classic",
+      "primary": true,
+      "hasPlayerStats": true,
+      "hasCourseStats": true,
+      "purse": 7400000,
+      "displayPurse": "$7,400,000",
+      "league": {
+        "id": "1106",
+        "name": "PGA Tour",
+        "abbreviation": "PGA",
+        "shortName": "PGA Tour",
+        "slug": "pga"
+      },
+      "season": {
+        "year": 2026
+      },
+      "seasonType": {
+        "id": "2",
+        "name": "Regular Season"
+      },
+      "links": [
+        {
+          "language": "en-US",
+          "rel": [
+            "live",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/golf/leaderboard?tournamentId=401850981",
+          "text": "Full Scorecard",
+          "shortText": "Live",
+          "isExternal": false,
+          "isPremium": false,
+          "isHidden": false
+        },
+        {
+          "language": "en-US",
+          "rel": [
+            "live",
+            "sportscenter",
+            "app",
+            "event"
+          ],
+          "href": "sportscenter://x-callback-url/showGame?url=https%3A%2F%2Fwww.espn.com%2Fgolf%2Fleaderboard%3FtournamentId%3D401850981%26modifier%3Dwebview",
+          "text": "Full Scorecard",
+          "shortText": "Live",
+          "isExternal": false,
+          "isPremium": false,
+          "isHidden": false
+        }
+      ],
+      "tournament": {
+        "id": "3358",
+        "displayName": "The RSM Classic",
+        "major": false,
+        "scoringSystem": {
+          "id": "1",
+          "name": "Medal"
+        },
+        "numberOfRounds": 4,
+        "cutRound": 2,
+        "cutScore": -2,
+        "cutCount": 66
+      },
+      "status": {
+        "type": {
+          "id": "2",
+          "name": "STATUS_IN_PROGRESS",
+          "state": "in",
+          "completed": false,
+          "description": "In Progress"
+        }
+      },
+      "defendingChampion": {
+        "athlete": {
+          "id": "4585548",
+          "displayName": "Sami V\u00e4lim\u00e4ki",
+          "amateur": false
+        },
+        "displayName": ""
+      },
+      "playoffType": {
+        "id": -1,
+        "description": "None",
+        "minimumHoles": 0
+      },
+      "competitions": [
+        {
+          "id": "401850981",
+          "uid": "s:1100~l:1106~e:401850981~c:401850981",
+          "date": "2026-11-19T05:00Z",
+          "endDate": "2026-11-23T05:00Z",
+          "recent": true,
+          "onWatchESPN": false,
+          "dataFormat": "API",
+          "status": {
+            "period": 3,
+            "type": {
+              "id": "2",
+              "name": "STATUS_IN_PROGRESS",
+              "state": "in",
+              "description": "In Progress",
+              "detail": "Round 3 - In Progress",
+              "shortDetail": "Round 3 - In Progress"
+            }
+          },
+          "broadcasts": [
+            {
+              "media": {
+                "id": "755",
+                "slug": "espnplus",
+                "name": "ESPN+",
+                "shortName": "ESPN+",
+                "callLetters": "ESPN+"
+              },
+              "lang": "en",
+              "region": "us"
+            },
+            {
+              "media": {
+                "id": "760",
+                "slug": "golf-channel",
+                "name": "Golf Channel",
+                "shortName": "Golf Chnl",
+                "callLetters": "Golf Chnl"
+              },
+              "lang": "en",
+              "region": "us"
+            }
+          ],
+          "competitors": [
+            {
+              "id": "4425904",
+              "uid": "s:1100~a:4425904",
+              "movement": 0,
+              "earnings": 0.0,
+              "sortOrder": 1,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 3",
+                "period": 3,
+                "teeTime": "2026-11-22T16:15Z",
+                "hole": 3,
+                "startHole": 1,
+                "thru": 3,
+                "displayThru": "3",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "-1(3)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "1",
+                  "displayName": "1",
+                  "isTie": false
+                },
+                "todayDetail": "-1(3)"
+              },
+              "score": {
+                "value": 133.0,
+                "displayValue": "-9"
+              },
+              "linescores": [
+                {
+                  "value": 64.0,
+                  "displayValue": "-6",
+                  "period": 1,
+                  "inScore": 31,
+                  "outScore": 33,
+                  "currentPosition": 4,
+                  "teeTime": "2026-11-19T14:58Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 69.0,
+                  "displayValue": "-3",
+                  "period": 2,
+                  "inScore": 35,
+                  "outScore": 34,
+                  "startPosition": 4,
+                  "currentPosition": 1,
+                  "teeTime": "2026-11-20T13:52Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 10.0,
+                  "displayValue": "-1",
+                  "period": 3,
+                  "outScore": 10,
+                  "startPosition": 1,
+                  "currentPosition": 1,
+                  "teeTime": "2026-11-22T16:15Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -10.0,
+                  "displayValue": "-10"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "4425904",
+                "displayName": "Michael Thorbjornsen",
+                "shortName": "M. Thorbjornsen",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            },
+            {
+              "id": "11101",
+              "uid": "s:1100~a:11101",
+              "movement": -8,
+              "earnings": 0.0,
+              "sortOrder": 2,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 4",
+                "period": 3,
+                "teeTime": "2026-11-22T15:42Z",
+                "hole": 4,
+                "startHole": 1,
+                "thru": 4,
+                "displayThru": "4",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "-2(4)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "2",
+                  "displayName": "T2",
+                  "isTie": true
+                },
+                "todayDetail": "-2(4)"
+              },
+              "score": {
+                "value": 135.0,
+                "displayValue": "-7"
+              },
+              "linescores": [
+                {
+                  "value": 65.0,
+                  "displayValue": "-7",
+                  "period": 1,
+                  "inScore": 33,
+                  "outScore": 32,
+                  "currentPosition": 2,
+                  "teeTime": "2026-11-19T13:30Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 70.0,
+                  "displayValue": "E",
+                  "period": 2,
+                  "inScore": 37,
+                  "outScore": 33,
+                  "startPosition": 2,
+                  "currentPosition": 10,
+                  "teeTime": "2026-11-20T14:36Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 13.0,
+                  "displayValue": "-2",
+                  "period": 3,
+                  "outScore": 13,
+                  "startPosition": 10,
+                  "currentPosition": 2,
+                  "teeTime": "2026-11-22T15:42Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -9.0,
+                  "displayValue": "-9"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "11101",
+                "displayName": "Max Greyserman",
+                "shortName": "M. Greyserman",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            },
+            {
+              "id": "11383",
+              "uid": "s:1100~a:11383",
+              "movement": -2,
+              "earnings": 0.0,
+              "sortOrder": 3,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 4",
+                "period": 3,
+                "teeTime": "2026-11-22T15:53Z",
+                "hole": 4,
+                "startHole": 1,
+                "thru": 4,
+                "displayThru": "4",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "-1(4)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "2",
+                  "displayName": "T2",
+                  "isTie": true
+                },
+                "todayDetail": "-1(4)"
+              },
+              "score": {
+                "value": 134.0,
+                "displayValue": "-8"
+              },
+              "linescores": [
+                {
+                  "value": 69.0,
+                  "displayValue": "-3",
+                  "period": 1,
+                  "inScore": 34,
+                  "outScore": 35,
+                  "currentPosition": 35,
+                  "teeTime": "2026-11-19T13:30Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 65.0,
+                  "displayValue": "-5",
+                  "period": 2,
+                  "inScore": 32,
+                  "outScore": 33,
+                  "startPosition": 35,
+                  "currentPosition": 4,
+                  "teeTime": "2026-11-20T14:36Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 14.0,
+                  "displayValue": "-1",
+                  "period": 3,
+                  "outScore": 14,
+                  "startPosition": 4,
+                  "currentPosition": 2,
+                  "teeTime": "2026-11-22T15:53Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -9.0,
+                  "displayValue": "-9"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "11383",
+                "displayName": "Max McGreevy",
+                "shortName": "M. McGreevy",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            },
+            {
+              "id": "4585549",
+              "uid": "s:1100~a:4585549",
+              "movement": 1,
+              "earnings": 0.0,
+              "sortOrder": 4,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 3",
+                "period": 3,
+                "teeTime": "2026-11-22T16:15Z",
+                "hole": 3,
+                "startHole": 1,
+                "thru": 3,
+                "displayThru": "3",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "E(3)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "2",
+                  "displayName": "T2",
+                  "isTie": true
+                },
+                "todayDetail": "E(3)"
+              },
+              "score": {
+                "value": 133.0,
+                "displayValue": "-9"
+              },
+              "linescores": [
+                {
+                  "value": 68.0,
+                  "displayValue": "-4",
+                  "period": 1,
+                  "inScore": 36,
+                  "outScore": 32,
+                  "currentPosition": 17,
+                  "teeTime": "2026-11-19T14:14Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 65.0,
+                  "displayValue": "-5",
+                  "period": 2,
+                  "inScore": 34,
+                  "outScore": 31,
+                  "startPosition": 17,
+                  "currentPosition": 1,
+                  "teeTime": "2026-11-20T15:20Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 11.0,
+                  "displayValue": "E",
+                  "period": 3,
+                  "outScore": 11,
+                  "startPosition": 1,
+                  "currentPosition": 2,
+                  "teeTime": "2026-11-22T16:15Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -9.0,
+                  "displayValue": "-9"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "4585549",
+                "displayName": "Marco Penge",
+                "shortName": "M. Penge",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/eng.png",
+                  "alt": "England"
+                }
+              }
+            },
+            {
+              "id": "4858859",
+              "uid": "s:1100~a:4858859",
+              "movement": 1,
+              "earnings": 0.0,
+              "sortOrder": 5,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 3",
+                "period": 3,
+                "teeTime": "2026-11-22T16:15Z",
+                "hole": 3,
+                "startHole": 1,
+                "thru": 3,
+                "displayThru": "3",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "E(3)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "2",
+                  "displayName": "T2",
+                  "isTie": true
+                },
+                "todayDetail": "E(3)"
+              },
+              "score": {
+                "value": 133.0,
+                "displayValue": "-9"
+              },
+              "linescores": [
+                {
+                  "value": 68.0,
+                  "displayValue": "-4",
+                  "period": 1,
+                  "inScore": 35,
+                  "outScore": 33,
+                  "currentPosition": 17,
+                  "teeTime": "2026-11-19T14:36Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 65.0,
+                  "displayValue": "-5",
+                  "period": 2,
+                  "inScore": 31,
+                  "outScore": 34,
+                  "startPosition": 17,
+                  "currentPosition": 1,
+                  "teeTime": "2026-11-20T13:30Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 11.0,
+                  "displayValue": "E",
+                  "period": 3,
+                  "outScore": 11,
+                  "startPosition": 1,
+                  "currentPosition": 2,
+                  "teeTime": "2026-11-22T16:15Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -9.0,
+                  "displayValue": "-9"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "4858859",
+                "displayName": "Rasmus Neergaard-Petersen",
+                "shortName": "R. Neergaard-Petersen",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/den.png",
+                  "alt": "Denmark"
+                }
+              }
+            },
+            {
+              "id": "4602218",
+              "uid": "s:1100~a:4602218",
+              "movement": -13,
+              "earnings": 0.0,
+              "sortOrder": 6,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 10",
+                "period": 3,
+                "teeTime": "2026-11-22T14:36Z",
+                "hole": 10,
+                "startHole": 1,
+                "thru": 10,
+                "displayThru": "10",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "-3(10)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "6",
+                  "displayName": "T6",
+                  "isTie": true
+                },
+                "todayDetail": "-3(10)"
+              },
+              "score": {
+                "value": 137.0,
+                "displayValue": "-5"
+              },
+              "linescores": [
+                {
+                  "value": 68.0,
+                  "displayValue": "-2",
+                  "period": 1,
+                  "inScore": 35,
+                  "outScore": 33,
+                  "currentPosition": 51,
+                  "teeTime": "2026-11-19T13:52Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 69.0,
+                  "displayValue": "-3",
+                  "period": 2,
+                  "inScore": 34,
+                  "outScore": 35,
+                  "startPosition": 51,
+                  "currentPosition": 19,
+                  "teeTime": "2026-11-20T14:58Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 36.0,
+                  "displayValue": "-3",
+                  "period": 3,
+                  "inScore": 4,
+                  "outScore": 32,
+                  "startPosition": 19,
+                  "currentPosition": 6,
+                  "teeTime": "2026-11-22T14:36Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -8.0,
+                  "displayValue": "-8"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "4602218",
+                "displayName": "Davis Thompson",
+                "shortName": "D. Thompson",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            },
+            {
+              "id": "11253",
+              "uid": "s:1100~a:11253",
+              "movement": 2,
+              "earnings": 0.0,
+              "sortOrder": 7,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 4",
+                "period": 3,
+                "teeTime": "2026-11-22T15:53Z",
+                "hole": 4,
+                "startHole": 1,
+                "thru": 4,
+                "displayThru": "4",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "E(4)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "6",
+                  "displayName": "T6",
+                  "isTie": true
+                },
+                "todayDetail": "E(4)"
+              },
+              "score": {
+                "value": 134.0,
+                "displayValue": "-8"
+              },
+              "linescores": [
+                {
+                  "value": 66.0,
+                  "displayValue": "-4",
+                  "period": 1,
+                  "inScore": 32,
+                  "outScore": 34,
+                  "currentPosition": 17,
+                  "teeTime": "2026-11-19T13:30Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 68.0,
+                  "displayValue": "-4",
+                  "period": 2,
+                  "inScore": 35,
+                  "outScore": 33,
+                  "startPosition": 17,
+                  "currentPosition": 4,
+                  "teeTime": "2026-11-20T14:36Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 15.0,
+                  "displayValue": "E",
+                  "period": 3,
+                  "outScore": 15,
+                  "startPosition": 4,
+                  "currentPosition": 6,
+                  "teeTime": "2026-11-22T15:53Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -8.0,
+                  "displayValue": "-8"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "11253",
+                "displayName": "Rasmus H\u00f8jgaard",
+                "shortName": "R. H\u00f8jgaard",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/den.png",
+                  "alt": "Denmark"
+                }
+              }
+            },
+            {
+              "id": "5215013",
+              "uid": "s:1100~a:5215013",
+              "movement": -11,
+              "earnings": 0.0,
+              "sortOrder": 8,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 9",
+                "period": 3,
+                "teeTime": "2026-11-22T14:47Z",
+                "hole": 9,
+                "startHole": 1,
+                "thru": 9,
+                "displayThru": "9",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "-2(9)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "8",
+                  "displayName": "T8",
+                  "isTie": true
+                },
+                "todayDetail": "-2(9)"
+              },
+              "score": {
+                "value": 137.0,
+                "displayValue": "-5"
+              },
+              "linescores": [
+                {
+                  "value": 68.0,
+                  "displayValue": "-4",
+                  "period": 1,
+                  "inScore": 34,
+                  "outScore": 34,
+                  "currentPosition": 17,
+                  "teeTime": "2026-11-19T13:52Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 69.0,
+                  "displayValue": "-1",
+                  "period": 2,
+                  "inScore": 35,
+                  "outScore": 34,
+                  "startPosition": 17,
+                  "currentPosition": 19,
+                  "teeTime": "2026-11-20T14:58Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 33.0,
+                  "displayValue": "-2",
+                  "period": 3,
+                  "outScore": 33,
+                  "startPosition": 19,
+                  "currentPosition": 8,
+                  "teeTime": "2026-11-22T14:47Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -7.0,
+                  "displayValue": "-7"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "5215013",
+                "displayName": "Jackson Koivun",
+                "shortName": "J. Koivun",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            },
+            {
+              "id": "5408",
+              "uid": "s:1100~a:5408",
+              "movement": -2,
+              "earnings": 0.0,
+              "sortOrder": 9,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 5",
+                "period": 3,
+                "teeTime": "2026-11-22T15:31Z",
+                "hole": 5,
+                "startHole": 1,
+                "thru": 5,
+                "displayThru": "5",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "E(5)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "8",
+                  "displayName": "T8",
+                  "isTie": true
+                },
+                "todayDetail": "E(5)"
+              },
+              "score": {
+                "value": 135.0,
+                "displayValue": "-7"
+              },
+              "linescores": [
+                {
+                  "value": 67.0,
+                  "displayValue": "-3",
+                  "period": 1,
+                  "inScore": 35,
+                  "outScore": 32,
+                  "currentPosition": 35,
+                  "teeTime": "2026-11-19T13:52Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 68.0,
+                  "displayValue": "-4",
+                  "period": 2,
+                  "inScore": 33,
+                  "outScore": 35,
+                  "startPosition": 35,
+                  "currentPosition": 10,
+                  "teeTime": "2026-11-20T14:58Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 19.0,
+                  "displayValue": "E",
+                  "period": 3,
+                  "outScore": 19,
+                  "startPosition": 10,
+                  "currentPosition": 8,
+                  "teeTime": "2026-11-22T15:31Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -7.0,
+                  "displayValue": "-7"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "5408",
+                "displayName": "Harris English",
+                "shortName": "H. English",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            },
+            {
+              "id": "4589438",
+              "uid": "s:1100~a:4589438",
+              "movement": -2,
+              "earnings": 0.0,
+              "sortOrder": 10,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 4",
+                "period": 3,
+                "teeTime": "2026-11-22T15:42Z",
+                "hole": 4,
+                "startHole": 1,
+                "thru": 4,
+                "displayThru": "4",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "E(4)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "8",
+                  "displayName": "T8",
+                  "isTie": true
+                },
+                "todayDetail": "E(4)"
+              },
+              "score": {
+                "value": 135.0,
+                "displayValue": "-7"
+              },
+              "linescores": [
+                {
+                  "value": 67.0,
+                  "displayValue": "-3",
+                  "period": 1,
+                  "inScore": 34,
+                  "outScore": 33,
+                  "currentPosition": 35,
+                  "teeTime": "2026-11-19T15:09Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 68.0,
+                  "displayValue": "-4",
+                  "period": 2,
+                  "inScore": 33,
+                  "outScore": 35,
+                  "startPosition": 35,
+                  "currentPosition": 10,
+                  "teeTime": "2026-11-20T13:52Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 15.0,
+                  "displayValue": "E",
+                  "period": 3,
+                  "outScore": 15,
+                  "startPosition": 10,
+                  "currentPosition": 8,
+                  "teeTime": "2026-11-22T15:42Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -7.0,
+                  "displayValue": "-7"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "4589438",
+                "displayName": "Harry Hall",
+                "shortName": "H. Hall",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/eng.png",
+                  "alt": "England"
+                }
+              }
+            },
+            {
+              "id": "9221",
+              "uid": "s:1100~a:9221",
+              "movement": 4,
+              "earnings": 0.0,
+              "sortOrder": 11,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 4",
+                "period": 3,
+                "teeTime": "2026-11-22T15:53Z",
+                "hole": 4,
+                "startHole": 1,
+                "thru": 4,
+                "displayThru": "4",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "+1(4)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "8",
+                  "displayName": "T8",
+                  "isTie": true
+                },
+                "todayDetail": "+1(4)"
+              },
+              "score": {
+                "value": 134.0,
+                "displayValue": "-8"
+              },
+              "linescores": [
+                {
+                  "value": 66.0,
+                  "displayValue": "-4",
+                  "period": 1,
+                  "inScore": 33,
+                  "outScore": 33,
+                  "currentPosition": 17,
+                  "teeTime": "2026-11-19T14:25Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 68.0,
+                  "displayValue": "-4",
+                  "period": 2,
+                  "inScore": 33,
+                  "outScore": 35,
+                  "startPosition": 17,
+                  "currentPosition": 4,
+                  "teeTime": "2026-11-20T15:31Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 16.0,
+                  "displayValue": "+1",
+                  "period": 3,
+                  "outScore": 16,
+                  "startPosition": 4,
+                  "currentPosition": 8,
+                  "teeTime": "2026-11-22T15:53Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -7.0,
+                  "displayValue": "-7"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "9221",
+                "displayName": "Haotong Li",
+                "shortName": "H. Li",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/chn.png",
+                  "alt": "China"
+                }
+              }
+            },
+            {
+              "id": "5076011",
+              "uid": "s:1100~a:5076011",
+              "movement": 4,
+              "earnings": 0.0,
+              "sortOrder": 12,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "Thru 3",
+                "period": 3,
+                "teeTime": "2026-11-22T16:04Z",
+                "hole": 3,
+                "startHole": 1,
+                "thru": 3,
+                "displayThru": "3",
+                "playoff": false,
+                "behindCurrentRound": false,
+                "detail": "+1(3)",
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_IN_PROGRESS",
+                  "state": "in",
+                  "completed": false,
+                  "description": "In Progress",
+                  "detail": "In Progress",
+                  "shortDetail": "In Progress"
+                },
+                "position": {
+                  "id": "8",
+                  "displayName": "T8",
+                  "isTie": true
+                },
+                "todayDetail": "+1(3)"
+              },
+              "score": {
+                "value": 134.0,
+                "displayValue": "-8"
+              },
+              "linescores": [
+                {
+                  "value": 68.0,
+                  "displayValue": "-2",
+                  "period": 1,
+                  "inScore": 34,
+                  "outScore": 34,
+                  "currentPosition": 51,
+                  "teeTime": "2026-11-19T15:42Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 66.0,
+                  "displayValue": "-6",
+                  "period": 2,
+                  "inScore": 32,
+                  "outScore": 34,
+                  "startPosition": 51,
+                  "currentPosition": 4,
+                  "teeTime": "2026-11-20T14:25Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 12.0,
+                  "displayValue": "+1",
+                  "period": 3,
+                  "outScore": 12,
+                  "startPosition": 4,
+                  "currentPosition": 8,
+                  "teeTime": "2026-11-22T16:04Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "period": 4,
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -7.0,
+                  "displayValue": "-7"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "5076011",
+                "displayName": "Adrien Dumont de Chassart",
+                "shortName": "A. Dumont de Chassart",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/bel.png",
+                  "alt": "Belgium"
+                }
+              }
+            },
+            {
+              "id": "9569",
+              "uid": "s:1100~a:9569",
+              "movement": 0,
+              "earnings": 0.0,
+              "sortOrder": 67,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "CUT",
+                "period": 2,
+                "hole": 18,
+                "startHole": 1,
+                "behindCurrentRound": true,
+                "detail": "-2(CUT)",
+                "type": {
+                  "id": "3",
+                  "name": "STATUS_CUT",
+                  "state": "post",
+                  "completed": false,
+                  "description": "Missed Cut",
+                  "detail": "Missed Cut",
+                  "shortDetail": "CUT"
+                },
+                "position": {
+                  "id": "67",
+                  "displayName": "-",
+                  "isTie": false
+                }
+              },
+              "score": {
+                "value": 141.0,
+                "displayValue": "-1"
+              },
+              "linescores": [
+                {
+                  "value": 71.0,
+                  "displayValue": "+1",
+                  "period": 1,
+                  "inScore": 36,
+                  "outScore": 35,
+                  "currentPosition": 111,
+                  "teeTime": "2026-11-19T14:14Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 70.0,
+                  "displayValue": "-2",
+                  "period": 2,
+                  "inScore": 34,
+                  "outScore": 36,
+                  "startPosition": 111,
+                  "currentPosition": 67,
+                  "teeTime": "2026-11-20T15:20Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -1.0,
+                  "displayValue": "-1"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "9569",
+                "displayName": "Tyler Duncan",
+                "shortName": "T. Duncan",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            },
+            {
+              "id": "9600",
+              "uid": "s:1100~a:9600",
+              "movement": 0,
+              "earnings": 0.0,
+              "sortOrder": 68,
+              "amateur": false,
+              "featured": false,
+              "status": {
+                "displayValue": "CUT",
+                "period": 2,
+                "hole": 18,
+                "startHole": 1,
+                "behindCurrentRound": true,
+                "detail": "-2(CUT)",
+                "type": {
+                  "id": "3",
+                  "name": "STATUS_CUT",
+                  "state": "post",
+                  "completed": false,
+                  "description": "Missed Cut",
+                  "detail": "Missed Cut",
+                  "shortDetail": "CUT"
+                },
+                "position": {
+                  "id": "67",
+                  "displayName": "-",
+                  "isTie": false
+                }
+              },
+              "score": {
+                "value": 141.0,
+                "displayValue": "-1"
+              },
+              "linescores": [
+                {
+                  "value": 71.0,
+                  "displayValue": "+1",
+                  "period": 1,
+                  "inScore": 38,
+                  "outScore": 33,
+                  "currentPosition": 111,
+                  "teeTime": "2026-11-19T14:25Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                },
+                {
+                  "value": 70.0,
+                  "displayValue": "-2",
+                  "period": 2,
+                  "inScore": 34,
+                  "outScore": 36,
+                  "startPosition": 111,
+                  "currentPosition": 67,
+                  "teeTime": "2026-11-20T15:31Z",
+                  "hasStream": false,
+                  "isPlayoff": false
+                }
+              ],
+              "statistics": [
+                {
+                  "name": "scoreToPar",
+                  "value": -1.0,
+                  "displayValue": "-1"
+                },
+                {
+                  "name": "officialAmount",
+                  "displayValue": "--"
+                },
+                {
+                  "name": "cupPoints",
+                  "value": 0.0,
+                  "displayValue": "0"
+                }
+              ],
+              "athlete": {
+                "id": "9600",
+                "displayName": "Paul Peterson",
+                "shortName": "P. Peterson",
+                "flag": {
+                  "href": "https://a.espncdn.com/i/teamlogos/countries/500/usa.png",
+                  "alt": "USA"
+                }
+              }
+            }
+          ],
+          "leaders": [
+            {
+              "name": "driveDistAvg",
+              "displayName": "Driving Distance",
+              "shortDisplayName": "Driving Distance",
+              "abbreviation": "YDS/DRV",
+              "leaders": [
+                {
+                  "displayValue": "304.2",
+                  "value": 304.2,
+                  "athlete": {
+                    "id": "1548",
+                    "displayName": "Ryan Brehm"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "fwysHit",
+              "displayName": "Driving Accuracy",
+              "shortDisplayName": "Driving Accuracy",
+              "abbreviation": "DRV ACC",
+              "leaders": [
+                {
+                  "displayValue": "93.8",
+                  "value": 93.75,
+                  "athlete": {
+                    "id": "9040",
+                    "displayName": "Zac Blair"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "gir",
+              "displayName": "GIR",
+              "shortDisplayName": "GIR",
+              "abbreviation": "GIR",
+              "leaders": [
+                {
+                  "displayValue": "87.2",
+                  "value": 87.18,
+                  "athlete": {
+                    "id": "4858859",
+                    "displayName": "Rasmus Neergaard-Petersen"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "puttsGirAvg",
+              "displayName": "Putts per GIR",
+              "shortDisplayName": "Putts per GIR",
+              "abbreviation": "PP GIR",
+              "leaders": [
+                {
+                  "displayValue": "1.560",
+                  "value": 1.56,
+                  "athlete": {
+                    "id": "4832046",
+                    "displayName": "Nick Dunlap"
+                  }
+                }
+              ]
+            }
+          ],
+          "holeByHoleSource": {
+            "id": "2",
+            "state": "full",
+            "description": "feed"
+          },
+          "scoringSystem": {
+            "id": "1",
+            "name": "Medal"
+          }
+        }
+      ],
+      "courses": [
+        {
+          "id": "10586",
+          "name": "Sea Island Golf Club (Seaside Course)",
+          "totalYards": 7157,
+          "shotsToPar": 70,
+          "parIn": 35,
+          "parOut": 35,
+          "host": true,
+          "address": {
+            "city": "Saint Simons Island",
+            "state": "GA",
+            "country": "USA",
+            "zipCode": "31522"
+          }
+        },
+        {
+          "id": "10694",
+          "name": "Sea Island Golf Club (Plantation Course)",
+          "totalYards": 7060,
+          "shotsToPar": 72,
+          "parIn": 36,
+          "parOut": 36,
+          "host": false,
+          "address": {
+            "city": "Saint Simons Island",
+            "state": "GA",
+            "country": "USA",
+            "zipCode": "31522"
+          }
+        }
+      ]
+    }
+  ]
+}

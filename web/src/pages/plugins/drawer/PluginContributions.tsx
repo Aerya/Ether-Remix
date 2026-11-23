@@ -6,6 +6,7 @@ import {
   Film,
   FolderSearch,
   Library,
+  Radio,
   Subtitles,
   Tv,
   type LucideIcon,
@@ -31,6 +32,13 @@ const META: Record<
     about: () => t("Its channels and programme guide, in Live TV."),
     href: "/livetv",
     link: () => t("Open Live TV"),
+  },
+  live_events: {
+    icon: Radio,
+    title: () => t("Live events"),
+    about: () => t("Live event feeds and screens shown in your apps."),
+    href: "/apps/vela",
+    link: () => t("Open Vela"),
   },
   list_source: {
     icon: Library,
@@ -216,28 +224,88 @@ function PartRows({
           </ul>
         );
       return (
+        <div className="space-y-2">
+          {detail.stremioOnly ? (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-bg-subtle/60 px-3 py-2">
+              <span className="text-xs text-fg-muted">
+                {t("Import multiple catalogues into a folder and follow manifest changes.")}
+              </span>
+              <RowLink
+                to={`/collections?importAddon=${encodeURIComponent(detail.id)}`}
+                label={t("Import catalogues…")}
+                onClose={onClose}
+              />
+            </div>
+          ) : null}
+          <ul className="divide-y divide-border">
+            {lists.map((d) => {
+              const [name, type] = textOf(d.label)
+                .split("·")
+                .map((s) => s.trim());
+              const used = usage[d.id] ?? 0;
+              return (
+                <Row
+                  key={d.id}
+                  title={name ?? textOf(d.label)}
+                  badge={type ? <Badge variant="secondary">{typeLabel(type)}</Badge> : null}
+                  detail={
+                    used
+                      ? tn(used, "Used by {count} collection", "Used by {count} collections")
+                      : t("Not used yet")
+                  }
+                  action={
+                    <RowLink
+                      to={pluginCollectionHref(d.id, textOf(d.label))}
+                      label={t("Make a collection")}
+                      onClose={onClose}
+                    />
+                  }
+                />
+              );
+            })}
+          </ul>
+        </div>
+      );
+    }
+    case "livetv_channels":
+      return <LiveTVRow detail={detail} onClose={onClose} />;
+    case "live_events": {
+      const feeds = detail.manifest.ether?.contributes?.liveFeeds ?? [];
+      const screens = detail.manifest.ether?.contributes?.screens ?? [];
+      if (!feeds.length && !screens.length) {
+        return (
+          <ul>
+            <Row title={t("No live event feeds or screens declared")} action={link} />
+          </ul>
+        );
+      }
+      return (
         <ul className="divide-y divide-border">
-          {lists.map((d) => {
-            const [name, type] = textOf(d.label)
-              .split("·")
-              .map((s) => s.trim());
-            const used = usage[d.id] ?? 0;
+          {screens.map((sc) => {
+            const title = sc.title && !sc.title.startsWith("$t:") ? sc.title : sc.id;
             return (
               <Row
-                key={d.id}
-                title={name ?? textOf(d.label)}
-                badge={type ? <Badge variant="secondary">{typeLabel(type)}</Badge> : null}
+                key={`screen:${sc.id}`}
+                title={t("{app} › {screen}", { app: "Vela", screen: title })}
+                badge={<Badge variant="secondary">{t("App screen")}</Badge>}
+                detail={t("Top-level screen in Vela")}
+                action={link}
+              />
+            );
+          })}
+          {feeds.map((lf) => {
+            const title = lf.title && !lf.title.startsWith("$t:") ? lf.title : lf.id;
+            return (
+              <Row
+                key={`feed:${lf.id}`}
+                title={title}
+                badge={<Badge variant="secondary">{t("Live feed")}</Badge>}
                 detail={
-                  used
-                    ? tn(used, "Used by {count} collection", "Used by {count} collections")
-                    : t("Not used yet")
-                }
-                action={
-                  <RowLink
-                    to={pluginCollectionHref(d.id, textOf(d.label))}
-                    label={t("Make a collection")}
-                    onClose={onClose}
-                  />
+                  lf.minIntervalSec
+                    ? t("Minimum poll interval: {seconds}s", {
+                        seconds: formatNumber(lf.minIntervalSec, 0),
+                      })
+                    : undefined
                 }
               />
             );
@@ -245,8 +313,6 @@ function PartRows({
         </ul>
       );
     }
-    case "livetv_channels":
-      return <LiveTVRow detail={detail} onClose={onClose} />;
     case "debrid_provider":
       return (
         <ul>

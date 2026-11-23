@@ -1,11 +1,13 @@
 package silo
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -39,19 +41,91 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if q.Get("source") == "section" && q.Get("section_id") != "" {
+		i.sectionBrowse(w, r, offset, limit)
+		return
+	}
 	query := frontend.ItemQuery{Offset: offset, Limit: limit}
+	if personID := q.Get("person_id"); personID != "" {
+		if _, peErr := ids.ParseGUID(ids.Person, personID); peErr == nil {
+			reader, ok := i.host.Experience.(frontend.PeopleReader)
+			if !ok {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			person, e := reader.Person(r.Context(), v, device(r), personID, frontend.PersonReadOptions{})
+			if e != nil || person.TMDB <= 0 {
+				if errors.Is(e, frontend.ErrNotFound) || e == nil {
+					notFound(w)
+					return
+				}
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			query.Filter.Person = person.TMDB
+		} else {
+			facetView := q.Get("library_id")
+			if facetView != "" && facetView != nowAvailableLibraryID {
+				facetView, err = i.nativeID(r.Context(), "library", facetView)
+				if err != nil {
+					notFound(w)
+					return
+				}
+			} else {
+				facetView = ""
+			}
+			facet, e := i.host.Experience.ResolveFacet(r.Context(), v, device(r), facetView, "person", personID)
+			if e != nil {
+				if errors.Is(e, frontend.ErrNotFound) {
+					notFound(w)
+					return
+				}
+				http.Error(w, "Bad Request", 400)
+				return
+			}
+			n, e := strconv.ParseInt(facet.Key, 10, 64)
+			if e != nil || n <= 0 {
+				http.Error(w, "Bad Request", 400)
+				return
+			}
+			query.Filter.Person = n
+		}
+	}
 	var page frontend.Page
 	exact := true
 	more := false
 	if term := q.Get("q"); term != "" {
-		result, e := i.host.Experience.Search(r.Context(), v, device(r), term, query)
-		if e != nil {
-			http.Error(w, "Unavailable", 503)
-			return
+		scopedView := ""
+		if rawLib := q.Get("library_id"); rawLib != "" && rawLib != nowAvailableLibraryID {
+			view, e := i.nativeID(r.Context(), "library", rawLib)
+			if e != nil {
+				notFound(w)
+				return
+			}
+			if sr, ok := i.host.Experience.(frontend.LibraryScopeReader); ok {
+				if _, scoped, se := sr.LibraryBrowseFilter(r.Context(), v, view, frontend.Filter{}); se == nil && scoped {
+					scopedView = view
+				}
+			}
 		}
-		page = result.Page
-		exact = result.TotalExact
-		more = result.Continuation == frontend.ContinuationMore
+		if scopedView != "" {
+			query.Filter.Query = term
+			page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), scopedView, query)
+			if err != nil {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			more = offset+len(page.Items) < page.Total
+		} else {
+			result, e := i.host.Experience.Search(r.Context(), v, device(r), term, query)
+			if e != nil {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			page = result.Page
+			exact = result.TotalExact
+			more = result.Continuation == frontend.ContinuationMore
+		}
 	} else if q.Get("library_id") == nowAvailableLibraryID {
 		titles, ok := i.nowAvailableTitles(r, v)
 		if !ok {
@@ -96,7 +170,7 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 	for _, t := range page.Items {
 		item := titleDTO(t, state[t.Key])
 		if granted, ok := cards[t.Key]; ok {
-			paintCatalogArtwork(r, granted, item)
+			i.paintCatalogArtwork(r, granted, item)
 		} else {
 			i.artwork(r, v, token, t.Key, item)
 		}
@@ -211,6 +285,33 @@ func (i *instance) childItems(w http.ResponseWriter, r *http.Request) {
 			item["episode_count"] = t.LeafCount
 		}
 		i.paintCardArtwork(r, artwork[t.Key], item)
+		if t.Type == "episode" {
+			// The series page labels its next-up episode "Resume S4·E2" and
+			// draws watched/progress state from each episode's user_data.
+			st := states[t.Key]
+			// The app decodes this as the watch rollup: the three counts are
+			// required, and a missing one fails the whole episode list.
+			played := st.ViewCount > 0
+			inProgress := st.ViewOffset > 0 && !played
+			watched, unplayed, progressing := 0, 1, 0
+			if played {
+				watched, unplayed = 1, 0
+			}
+			if inProgress {
+				progressing = 1
+			}
+			data := map[string]any{"played": played, "is_in_progress": inProgress, "watched_count": watched, "unplayed_count": unplayed, "in_progress_count": progressing}
+			if st.ViewOffset > 0 {
+				data["position_seconds"] = st.ViewOffset.Seconds()
+			}
+			switch {
+			case st.Duration > 0:
+				data["duration_seconds"] = st.Duration.Seconds()
+			case t.Runtime > 0:
+				data["duration_seconds"] = t.Runtime.Seconds()
+			}
+			item["user_data"] = data
+		}
 		if t.Type == "episode" && (t.StillPath != "" || t.PosterPath != "" || t.BackdropPath != "") {
 			item["poster_is_episode_still"] = t.StillPath != "" && t.PosterPath == t.StillPath
 			item["backdrop_is_episode_still"] = t.StillPath != "" && t.BackdropPath == t.StillPath
@@ -304,11 +405,8 @@ func (i *instance) catalogCards(r *http.Request, v *frontend.Viewer, token strin
 
 // paintCatalogArtwork writes the fields artwork writes for a list card: the
 // first signed image of each kind and its thumbhash.
-func paintCatalogArtwork(r *http.Request, granted []frontend.GrantedImage, out map[string]any) {
-	prefix := ""
-	if r.Context().Value(sharedPrefix{}) != nil {
-		prefix = "/silo"
-	}
+func (i *instance) paintCatalogArtwork(r *http.Request, granted []frontend.GrantedImage, out map[string]any) {
+	prefix := i.pathPrefix(r)
 	fields := map[string]string{frontend.ImagePoster: "poster_url", frontend.ImageBackdrop: "backdrop_url", frontend.ImageLogo: "logo_url"}
 	hashes := map[string]string{frontend.ImagePoster: "poster_thumbhash", frontend.ImageBackdrop: "backdrop_thumbhash"}
 	for _, grant := range granted {
@@ -338,3 +436,78 @@ func (i *instance) pageEditions(r *http.Request, v *frontend.Viewer, keys []fron
 	}
 	return versions, true
 }
+
+// sectionBrowse serves a section's "Explore all" page: the items of that one
+// Home or library section, paged. The catalog used to ignore section_id and
+// answer with the whole catalogue (53,000 titles behind "On Now").
+func (i *instance) sectionBrowse(w http.ResponseWriter, r *http.Request, offset, limit int) {
+	q := r.URL.Query()
+	sectionID := q.Get("section_id")
+	path := "/api/v2/home/sections"
+	library := q.Get("library_id")
+	if library != "" && q.Get("scope") != "home" {
+		path = "/api/v2/library/" + library + "/sections"
+	}
+	params := url.Values{"item_limit": {"100"}}
+	for _, key := range []string{"image_size", "backdrop_width", "poster_width", "logo_width", "still_width"} {
+		if value := q.Get(key); value != "" {
+			params.Set(key, value)
+		}
+	}
+	sub := r.Clone(r.Context())
+	u := *r.URL
+	u.Path, u.RawPath, u.RawQuery = path, "", params.Encode()
+	sub.URL = &u
+	sub.RequestURI = u.RequestURI()
+	if path != "/api/v2/home/sections" {
+		sub.SetPathValue("library", library)
+	}
+	capture := &captureWriter{header: http.Header{}, status: 200}
+	i.sections(capture, sub)
+	if capture.status != 200 {
+		http.Error(w, http.StatusText(capture.status), capture.status)
+		return
+	}
+	var doc struct {
+		Sections []struct {
+			ID    string `json:"id"`
+			Items []any  `json:"items"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(capture.body.Bytes(), &doc); err != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	var items []any
+	found := false
+	for _, section := range doc.Sections {
+		if section.ID == sectionID {
+			items, found = section.Items, true
+			break
+		}
+	}
+	if !found {
+		notFound(w)
+		return
+	}
+	start := min(offset, len(items))
+	end := len(items)
+	if limit > 0 {
+		end = min(start+limit, len(items))
+	}
+	var next any
+	if end < len(items) {
+		next = strconv.Itoa(end)
+	}
+	reply(w, 200, map[string]any{"items": items[start:end], "total": len(items), "total_exact": true, "window_cursor": "", "page": map[string]any{"has_more": next != nil, "next_cursor": next}})
+}
+
+type captureWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (c *captureWriter) Header() http.Header         { return c.header }
+func (c *captureWriter) Write(b []byte) (int, error) { return c.body.Write(b) }
+func (c *captureWriter) WriteHeader(status int)      { c.status = status }

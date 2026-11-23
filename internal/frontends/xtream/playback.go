@@ -1,6 +1,8 @@
 package xtream
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -11,7 +13,7 @@ import (
 
 func (i *instance) active(r *http.Request, l login) int {
 	if status, ok := i.host.LazyStreams.(frontend.AppConnectionStatus); ok {
-		n, err := status.AppConnections(r.Context(), l.password)
+		n, err := status.AppConnections(r.Context(), l.credential)
 		if err == nil {
 			return n
 		}
@@ -26,7 +28,7 @@ func (i *instance) active(r *http.Request, l login) int {
 			n++
 		}
 	}
-	return min(n, 1)
+	return n
 }
 func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 	if i.host.Capabilities == nil || i.host.LazyStreams == nil {
@@ -44,6 +46,10 @@ func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 		http.NotFound(w, r)
 		return
 	}
+	// Give each peer/item its own broker ownership while repeated ranges/HLS
+	// requests for that item reuse it. A login-wide ID would stop multi-view.
+	sum := sha256.Sum256([]byte(l.device.ID + "/" + ip.String() + "/" + strings.Split(r.URL.Path, "/")[1] + "/" + id))
+	l.device.ID += "-" + hex.EncodeToString(sum[:12])
 	ctx := frontend.WithClientIP(r.Context(), ip)
 	profile, err := i.host.Capabilities.Build(ctx, frontend.CapabilityRequest{Viewer: l.viewer, Device: caps.DeviceInfo{Protocol: "xtream", ClientID: l.device.ID, Product: l.device.Product, VideoCodecs: []string{"h264", "hevc", "mpeg2video", "av1", "vp9"}, AudioCodecs: []string{"aac", "ac3", "eac3", "dts", "truehd", "flac", "mp3", "opus"}, Containers: []string{"mkv", "mp4", "mpegts", "ts"}, MaxHeight: 4320, HDR10: true}, UserAgent: r.UserAgent()})
 	if err != nil {
@@ -64,7 +70,7 @@ func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 		if !i.admit(w, r.WithContext(ctx), l, req) {
 			return
 		}
-		path, err := i.host.LazyStreams.Issue(ctx, l.password, req)
+		path, err := i.host.LazyStreams.Issue(ctx, l.credential, req)
 		if err != nil || !strings.HasPrefix(path, "/sessions/lazy/") {
 			http.Error(w, "Unavailable", 503)
 			return
@@ -73,6 +79,11 @@ func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 		if base == "" {
 			http.Error(w, "Unavailable", 503)
 			return
+		}
+		if ext == "ts" {
+			// IPTV apps that ask for ".ts" (ExoPlayer infers the container from
+			// the extension) get one continuous MPEG-TS stream, not a playlist.
+			path = strings.TrimSuffix(path, "index.m3u8") + "stream.ts"
 		}
 		http.Redirect(w, r, base+path, http.StatusTemporaryRedirect)
 		return
@@ -97,12 +108,17 @@ func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 		return
 	}
 	// The normal broker serves the original file and implements Range/If-Range.
-	lazy.ServeAuthenticated(w, r.WithContext(ctx), l.password, req)
+	lazy.ServeAuthenticated(w, r.WithContext(ctx), l.credential, req)
 }
 
 func (i *instance) admit(w http.ResponseWriter, r *http.Request, l login, req frontend.PlanRequest) bool {
 	if admission, ok := i.host.LazyStreams.(frontend.AppConnectionAdmission); ok {
-		if err := admission.PrepareAppConnection(r, l.password, req); err != nil {
+		if err := admission.PrepareAppConnection(r, l.credential, req); err != nil {
+			var reqLang *frontend.RequiredAudioLanguageError
+			if errors.As(err, &reqLang) {
+				http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
+				return false
+			}
 			status := http.StatusServiceUnavailable
 			if errors.Is(err, frontend.ErrStreamLimit) {
 				status = http.StatusTooManyRequests
@@ -115,4 +131,21 @@ func (i *instance) admit(w http.ResponseWriter, r *http.Request, l login, req fr
 		}
 	}
 	return true
+}
+
+func (i *instance) connectionLimit(r *http.Request, l login) int {
+	if limits, ok := i.host.LazyStreams.(frontend.AppConnectionLimits); ok {
+		n, err := limits.AppConnectionLimit(r.Context(), l.credential)
+		if err != nil {
+			return 1
+		}
+		if n > 0 {
+			return n
+		}
+		return 1000
+	}
+	if l.viewer.StreamLimit > 0 {
+		return l.viewer.StreamLimit
+	}
+	return 1000
 }

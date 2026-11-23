@@ -46,11 +46,23 @@ export function sourceMonogram(name: string): string {
   return letters || "?";
 }
 
-function SourceMark({ name, logo }: { name: string; logo?: ReactNode }) {
+function SourceMark({
+  name,
+  logo,
+  compact,
+}: {
+  name: string;
+  logo?: ReactNode;
+  compact?: boolean;
+}) {
   return (
     <span
       aria-hidden
-      className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-bg-subtle text-sm font-semibold text-fg-muted"
+      className={
+        compact
+          ? "flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-bg-subtle text-sm font-semibold text-fg-muted sm:size-11"
+          : "flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-bg-subtle text-sm font-semibold text-fg-muted"
+      }
     >
       {logo ?? sourceMonogram(name)}
     </span>
@@ -84,6 +96,7 @@ export function SourceCard({
   position,
   description,
   meta,
+  notice,
   problem,
   editLabel,
   onEdit,
@@ -96,6 +109,7 @@ export function SourceCard({
   position: number;
   description?: ReactNode;
   meta?: ReactNode;
+  notice?: string | null;
   problem?: string | null;
   editLabel: string;
   onEdit: () => void;
@@ -104,29 +118,48 @@ export function SourceCard({
   /** Vendored brand mark. Omitted brands keep the monogram. */
   logo?: ReactNode;
 }) {
+  const hasDetails = Boolean(description || notice || problem);
   return (
-    <article className="flex items-start gap-3 rounded-xl border border-border bg-surface p-4">
-      {handle ? <DragHandle handle={handle} label={t("Drag to reorder {name}", { name })} /> : null}
-      <SourceMark name={name} logo={logo} />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium tabular-nums text-fg-subtle">{position}</span>
-          <h3 className="font-semibold text-fg">{name}</h3>
-          {meta}
-        </div>
-        {description ? <div className="mt-1 text-sm text-fg-muted">{description}</div> : null}
-        {problem ? (
-          <p className="mt-2 text-sm text-danger" role="status">
-            {problem}
-          </p>
+    <article className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-2.5 gap-y-2 rounded-xl border border-border bg-surface p-3.5 sm:gap-x-3 sm:gap-y-1 sm:p-4">
+      <div className="col-start-1 row-start-1 flex shrink-0 items-center gap-2 sm:row-span-2">
+        {handle ? (
+          <DragHandle handle={handle} label={t("Drag to reorder {name}", { name })} />
         ) : null}
+        <SourceMark name={name} logo={logo} compact />
       </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="col-start-2 row-start-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 self-center">
+        <span className="text-xs font-medium tabular-nums text-fg-subtle">{position}</span>
+        <h3 className="font-semibold text-fg">{name}</h3>
+        {meta}
+      </div>
+      <div className="col-start-3 row-start-1 flex shrink-0 items-center gap-1 self-center sm:row-span-2 sm:self-start">
         {order}
         <Button variant="outline" size="sm" onClick={onEdit} aria-label={editLabel}>
-          <Pencil size={13} /> {t("Edit")}
+          <Pencil size={13} />
+          <span className="hidden sm:inline">{t("Edit")}</span>
         </Button>
       </div>
+      {hasDetails ? (
+        <div className="col-span-full row-start-2 min-w-0 sm:col-span-1 sm:col-start-2">
+          {description ? <div className="text-sm text-fg-muted">{description}</div> : null}
+          {notice ? (
+            <p
+              className={description ? "mt-2 text-sm text-fg-muted" : "text-sm text-fg-muted"}
+              role="status"
+            >
+              {notice}
+            </p>
+          ) : null}
+          {problem ? (
+            <p
+              className={description || notice ? "mt-2 text-sm text-danger" : "text-sm text-danger"}
+              role="status"
+            >
+              {problem}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   );
 }

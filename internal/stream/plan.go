@@ -14,11 +14,12 @@ import (
 type planKind string
 
 const (
-	kindPlain planKind = "plain"
-	kindRAR   planKind = "rar"
-	kind7z    planKind = "7z"
-	kindZIP   planKind = "zip"
-	kindSplit planKind = "split"
+	kindPlain      planKind = "plain"
+	kindRAR        planKind = "rar"
+	kind7z         planKind = "7z"
+	kindZIP        planKind = "zip"
+	kindSplit      planKind = "split"
+	kindArchiveRaw planKind = "archive-raw"
 )
 
 // volInfo is what the layout knows (or assumes) about one volume.
@@ -83,17 +84,27 @@ func (l *layout) pieces(off, n int64) []piece {
 
 // plan is the resolved main video of a release.
 type plan struct {
-	kind planKind
-	name string
-	size int64
-	vols []*postedFile
-	rel  *release
+	report   sync.Once
+	restored bool
+	siblings []*plan
+	kind     planKind
+	name     string
+	size     int64
+	vols     []*postedFile
+	rel      *release
 
 	// RAR: the member name every continuation header must carry, and
 	// whether volumes use RAR5 headers.
 	member string
 	// 7z: the member's extents in the concatenated archive.
 	concatExt []archive.Extent
+
+	// Non-video release planning metadata.
+	rawNonVideo    bool   // skip video-only assumptions (ISO expansion, vault layout)
+	resolvedMember bool   // archive member already resolved by stream.Engine
+	archiveFormat  string // kindArchiveRaw: "rar", "7z", or "zip"
+	archiveConcat  bool   // kindArchiveRaw: vols are byte-split pieces of one stream
+	shiftedOffsets bool   // volumes address non-zero yEnc offsets (skip vault head cache)
 
 	// Encrypted plans use verified ciphertext extents, plus a plaintext layout
 	// for scheduling. Keys exist only in this bounded, in-memory release plan.
@@ -161,7 +172,7 @@ func (p *plan) buildLocked(version int) (*layout, error) {
 		if vi.size < 0 || vi.dataSize < 0 {
 			return nil, fmt.Errorf("stream: volume %d has a negative size: %w", k, ErrCorrupt)
 		}
-		if !p.verified[k] {
+		if !p.verified[k] || !p.vols[k].SizeKnown() {
 			p.vols[k].setAssumed(vi.size)
 		}
 	}
@@ -322,12 +333,15 @@ func (p *plan) inspect(ctx context.Context, v verifier, k int) (volInfo, error) 
 	size := pf.Size()
 	switch p.kind {
 	case kindRAR:
-		vol, err := archive.ReadRARVolume(b.reader(ctx, pf), size, b.rarOptions(ctx, 1))
+		vol, err := archive.ReadRARVolume(b.reader(ctx, pf), size, b.rarOptionsFor(ctx, pf, 1))
 		if err != nil {
 			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s): %w", k+1, pf.Name(), err)
 		}
 		if len(vol.Files) == 0 {
 			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s) has no file header: %w", k+1, pf.Name(), ErrCorrupt)
+		}
+		if (k == 0 && rarVolumeIsContinuation(vol)) || (k > 0 && rarVolumeClaimsFirst(vol)) || (vol.Number >= 0 && vol.Number != k) {
+			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s) has unexpected volume number %d: %w", k+1, pf.Name(), vol.Number, errArchivePartsOutOfOrder)
 		}
 		f := vol.Files[0]
 		if f.Name != p.member || (k > 0 && !f.SplitBefore) {
@@ -336,7 +350,7 @@ func (p *plan) inspect(ctx context.Context, v verifier, k int) (volInfo, error) 
 		if m := rarMember(vol.Format, &f); m.Streamable() != nil {
 			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s): %w", k+1, pf.Name(), m.Streamable())
 		}
-		return volInfo{size: size, dataOff: f.DataOffset, dataSize: f.PackedSize}, nil
+		return volInfo{size: rarVolSize(pf, f.DataOffset, f.PackedSize), dataOff: f.DataOffset, dataSize: f.PackedSize}, nil
 	case kind7z, kindZIP:
 		return volInfo{size: size}, nil
 	default:
@@ -346,60 +360,76 @@ func (p *plan) inspect(ctx context.Context, v verifier, k int) (volInfo, error) 
 
 // rebuildExact inspects every volume and rebuilds the layout from facts.
 func (p *plan) rebuildExact(ctx context.Context, v verifier) error {
-	p.mu.Lock()
-	if p.exactErr != nil {
-		err := p.exactErr
-		p.mu.Unlock()
-		return err
-	}
-	if ch := p.exact; ch != nil {
-		p.mu.Unlock()
-		select {
-		case <-ch:
+	for {
+		p.mu.Lock()
+		if p.exactErr != nil {
+			err := p.exactErr
+			p.mu.Unlock()
+			return err
+		}
+		allVerified := true
+		for _, ok := range p.verified {
+			if !ok {
+				allVerified = false
+				break
+			}
+		}
+		if allVerified {
+			p.mu.Unlock()
 			return nil
-		case <-ctx.Done():
-			return ctx.Err()
 		}
-	}
-	ch := make(chan struct{})
-	p.exact = ch
-	p.mu.Unlock()
-
-	infos := make([]volInfo, len(p.vols))
-	b := &builder{e: v.e, rel: p.rel, prio: v.prio, fo: v.fo}
-	err := b.parallel(ctx, len(p.vols), func(ctx context.Context, k int) error {
-		vi, err := p.inspect(ctx, v, k)
-		infos[k] = vi
-		return err
-	})
-
-	p.mu.Lock()
-	defer func() {
-		p.exact = nil
-		close(ch)
+		if ch := p.exact; ch != nil {
+			p.mu.Unlock()
+			select {
+			case <-ch:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		ch := make(chan struct{})
+		p.exact = ch
 		p.mu.Unlock()
-	}()
-	if err != nil {
-		if IsRejection(err) && ctx.Err() == nil {
-			p.exactErr = err
+
+		infos := make([]volInfo, len(p.vols))
+		b := &builder{e: v.e, rel: p.rel, prio: v.prio, fo: v.fo}
+		err := b.parallel(ctx, len(p.vols), func(ctx context.Context, k int) error {
+			vi, err := p.inspect(ctx, v, k)
+			infos[k] = vi
+			return err
+		})
+
+		p.mu.Lock()
+		finish := func() {
+			p.exact = nil
+			close(ch)
+			p.mu.Unlock()
 		}
-		return err
+		if err != nil {
+			if IsRejection(err) && ctx.Err() == nil {
+				p.exactErr = err
+			}
+			finish()
+			return err
+		}
+		p.info = infos
+		for k := range p.verified {
+			p.verified[k] = true
+		}
+		version := 1
+		if p.lay != nil {
+			version = p.lay.version + 1
+		}
+		l, err := p.buildLocked(version)
+		if err != nil {
+			p.exactErr = err
+			finish()
+			return err
+		}
+		p.lay = l
+		finish()
+		return nil
 	}
-	p.info = infos
-	for k := range p.verified {
-		p.verified[k] = true
-	}
-	version := 1
-	if p.lay != nil {
-		version = p.lay.version + 1
-	}
-	l, err := p.buildLocked(version)
-	if err != nil {
-		p.exactErr = err
-		return err
-	}
-	p.lay = l
-	return nil
 }
 
 // clipBoundary is one clip of a concatenated Blu-ray main feature.

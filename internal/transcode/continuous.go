@@ -96,6 +96,9 @@ type EncoderRequest struct {
 	// segment of VBV buffer under the ceiling, so keyframes of moving
 	// pictures are not starved. Scheduled channels keep a one-second bound.
 	LiveSource bool
+	// StartSeq is the initial media sequence number for a rendition joining
+	// an already-running broadcast. Zero starts at segment 0.
+	StartSeq int64
 }
 
 // ContinuousEncoder never restarts and never changes output parameters.

@@ -25,7 +25,7 @@ const (
 var subtitleTags = []struct{ token, name string }{
 	{"VOSTFR", "french"}, {"VOST", "french"}, {"SUBFRENCH", "french"}, {"STFR", "french"},
 	{"VOSE", "spanish"}, {"SUBESP", "spanish"},
-	{"LEGENDADO", LanguagePortugueseBrazil},
+	{"LEGENDADO", LanguagePortugueseBrazil}, {"LEGENDADA", LanguagePortugueseBrazil}, {"LEGENDADOS", LanguagePortugueseBrazil}, {"LEGENDADAS", LanguagePortugueseBrazil},
 	{"SUBITA", "italian"},
 	{"ENGSUB", "english"}, {"ENGSUBS", "english"},
 }
@@ -77,6 +77,12 @@ func shortLanguageTags(spaced string, floor int, subs map[int]bool) (audio, subt
 		legacy := false
 		for _, tag := range languages {
 			if strings.EqualFold(code, tag.token) {
+				legacy = true
+				break
+			}
+			if strings.ContainsRune(tag.token, ' ') && at+len(tag.token) <= len(spaced) &&
+				strings.EqualFold(spaced[at:at+len(tag.token)], tag.token) &&
+				(at+len(tag.token) == len(spaced) || isLangSep(spaced[at+len(tag.token)]) || spaced[at+len(tag.token)] == '-') {
 				legacy = true
 				break
 			}
@@ -137,7 +143,7 @@ func LanguageName(v string) string {
 	}
 	name, ok := isoLanguages[tag.Primary]
 	if !ok {
-		return s
+		return tag.Primary
 	}
 	switch {
 	case name == "spanish" && latinAmerica[tag.Region]:
@@ -150,6 +156,31 @@ func LanguageName(v string) string {
 		return LanguagePortuguesePortugal
 	}
 	return name
+}
+
+// LanguageDisplayName formats a language code or canonical parser name for
+// user-facing text (e.g. "en" -> "English", "spanish-latino" -> "Spanish (Latino)").
+func LanguageDisplayName(v string) string {
+	name := LanguageName(v)
+	switch name {
+	case "":
+		return ""
+	case LanguageSpanishLatino:
+		return "Spanish (Latino)"
+	case LanguageSpanishSpain:
+		return "Spanish (Spain)"
+	case LanguagePortugueseBrazil:
+		return "Portuguese (Brazil)"
+	case LanguagePortuguesePortugal:
+		return "Portuguese (Portugal)"
+	}
+	parts := strings.Split(name, "-")
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, "-")
 }
 
 // KnownLanguage reports whether v names a language the parser knows, in

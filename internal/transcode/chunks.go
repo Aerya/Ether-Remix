@@ -55,6 +55,14 @@ const maxForcedKeySegments = 400
 // (2 x the default 0.7s -muxdelay) unless mpegts_copyts is set.
 const tsMuxDelay = 1400 * time.Millisecond
 
+// maxChunkParseRetries bounds consecutive live polls that fail to parse the
+// same listed chunk before failing the run so normal retry/failover runs.
+const maxChunkParseRetries = 5
+
+// maxReinitChunks bounds consecutive fMP4 re-init chunks (moov without moof)
+// skipped without seeing a media fragment.
+const maxReinitChunks = 32
+
 // chunkRun is one chunked run's bookkeeping, owned by its watch goroutine.
 type chunkRun struct {
 	dir        string // ffmpeg writes chunks here
@@ -80,10 +88,16 @@ type chunkRun struct {
 	heldEnd          time.Duration
 	heldSource       string
 	// The published segment whose media the run's preroll repeated.
-	prerollOK  bool
-	prerollSeg int
-	failed     bool // output that cannot be published: see failChunkRun
-	tsBoundary *tsDiscontinuity
+	prerollOK    bool
+	prerollSeg   int
+	reinitDone   bool // fMP4: took init from the first complete in-band moov
+	needReinit   bool // fMP4: saw an incomplete in-band moov and still need a complete one
+	needChunkEnd bool // fMP4: skipped a moov-only chunk whose buffered samples spill into the next chunk
+	reinitSkips  int  // consecutive moov-only chunks skipped
+	parseErrAt   int  // playlist index of consecutive live parse errors
+	parseErrs    int  // consecutive live parse errors at parseErrAt
+	failed       bool // output that cannot be published: see failChunkRun
+	tsBoundary   *tsDiscontinuity
 }
 
 // chunkStart is the media time a chunk starts at (its first video
@@ -448,6 +462,9 @@ func fmp4ChunkEnd(path string, tracks []trackInit) (time.Duration, bool, error) 
 				if !ok || tr.Timescale == 0 || tr.EditBad || !haveBase || base < 0 || samples == 0 {
 					continue
 				}
+				if dur == 0 && defDur == 0 && tr.DefaultDuration > 0 {
+					dur = int64(samples) * int64(tr.DefaultDuration)
+				}
 				end := ticksToDuration(base+dur-tr.EditShift, tr.Timescale)
 				if !found || end > maxEnd {
 					maxEnd, found = end, true
@@ -649,8 +666,8 @@ func appendFile(w io.Writer, path string) error {
 	return err
 }
 
-// copyMP4Boxes copies a media chunk's top-level boxes, skipping sidx and
-// (unless keepStyp) styp.
+// copyMP4Boxes copies a media chunk's top-level boxes, skipping sidx, in-band
+// ftyp/moov and (unless keepStyp) styp.
 func copyMP4Boxes(w io.Writer, path string, keepStyp bool) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -684,12 +701,458 @@ func copyMP4Boxes(w io.Writer, path string, keepStyp bool) error {
 		if boxSize < 8 || boxSize > size-off {
 			return fmt.Errorf("fmp4: bad %q box in %s", typ, filepath.Base(path))
 		}
-		if typ != "sidx" && (typ != "styp" || keepStyp) {
+		if typ != "sidx" && typ != "ftyp" && typ != "moov" && (typ != "styp" || keepStyp) {
 			if _, err := io.Copy(w, io.NewSectionReader(f, off, boxSize)); err != nil {
 				return err
 			}
 		}
 		off += boxSize
+	}
+	return nil
+}
+
+func (cr *chunkRun) noteParseErr() int {
+	if cr.parseErrAt != cr.next {
+		cr.parseErrAt = cr.next
+		cr.parseErrs = 0
+	}
+	cr.parseErrs++
+	return cr.parseErrs
+}
+
+func (cr *chunkRun) fmp4InitPath(r *run) string {
+	if cr.initPath != "" {
+		return cr.initPath
+	}
+	if r != nil && r.spec.InitName != "" {
+		return filepath.Join(r.spec.Dir, r.spec.InitName)
+	}
+	return ""
+}
+
+func (cr *chunkRun) resetFMP4Init(r *run) {
+	cr.fmp4Tracks = nil
+	cr.fmp4Read = false
+	cr.vTrack = 0
+	cr.vScale = 0
+	cr.vShift = 0
+	cr.vBad = false
+	if r != nil && (r.edits == nil || !r.edits.published) {
+		r.edits = nil
+	}
+}
+
+// prepareFMP4Chunk handles in-band moov boxes written by ffmpeg's hls/mp4
+// muxer when an initial cut could not finalize moov (for example before EAC3
+// packets were parsed): a chunk holding moov without moof is treated as a
+// re-init and skipped, the init is taken from the first complete moov, and
+// any in-band ftyp/moov preceding a moof is stripped before retained-clock
+// shifting or single-chunk segment rename.
+func (cr *chunkRun) prepareFMP4Chunk(path string, r *run) (skip bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return false, err
+	}
+	size := st.Size()
+	var (
+		ftypBytes []byte
+		moovBytes []byte
+		hasMoov   bool
+		hasMoof   bool
+		hdr       [16]byte
+	)
+	for off := int64(0); off < size; {
+		if size-off < 8 {
+			f.Close()
+			return false, errShortBox
+		}
+		if _, err := f.ReadAt(hdr[:8], off); err != nil {
+			f.Close()
+			return false, err
+		}
+		boxSize := int64(binary.BigEndian.Uint32(hdr[:4]))
+		typ := string(hdr[4:8])
+		switch boxSize {
+		case 1:
+			if size-off < 16 {
+				f.Close()
+				return false, errShortBox
+			}
+			if _, err := f.ReadAt(hdr[8:16], off+8); err != nil {
+				f.Close()
+				return false, err
+			}
+			boxSize = int64(binary.BigEndian.Uint64(hdr[8:16]))
+		case 0:
+			boxSize = size - off
+		}
+		if boxSize < 8 || boxSize > size-off {
+			f.Close()
+			return false, fmt.Errorf("fmp4: bad %q box in %s", typ, filepath.Base(path))
+		}
+		switch typ {
+		case "ftyp":
+			if ftypBytes == nil && boxSize <= maxMoofSize {
+				b := make([]byte, boxSize)
+				if _, err := f.ReadAt(b, off); err != nil && !errors.Is(err, io.EOF) {
+					f.Close()
+					return false, err
+				}
+				ftypBytes = b
+			}
+		case "moov":
+			if boxSize > maxMoofSize {
+				f.Close()
+				return false, fmt.Errorf("fmp4: moov of %d bytes", boxSize)
+			}
+			if !hasMoov {
+				b := make([]byte, boxSize)
+				if _, err := f.ReadAt(b, off); err != nil && !errors.Is(err, io.EOF) {
+					f.Close()
+					return false, err
+				}
+				moovBytes = b
+				hasMoov = true
+			}
+		case "moof":
+			hasMoof = true
+		}
+		off += boxSize
+	}
+	if err := f.Close(); err != nil {
+		return false, err
+	}
+
+	initPath := cr.fmp4InitPath(r)
+	if !hasMoov {
+		if !hasMoof {
+			return false, fmt.Errorf("fmp4: no fragment in %s", filepath.Base(path))
+		}
+		if cr.needReinit && !cr.reinitDone {
+			if initPath != "" && fmp4InitFileComplete(initPath) {
+				cr.resetFMP4Init(r)
+				cr.reinitDone = true
+				cr.needReinit = false
+			} else {
+				return false, errors.New("fmp4: incomplete init before media fragment")
+			}
+		}
+		return false, nil
+	}
+
+	if !hasMoof {
+		if !cr.reinitDone && !cr.fmp4Read {
+			if isCompleteFMP4Moov(moovBytes) {
+				if initPath == "" {
+					return false, errors.New("fmp4: no init path for re-init chunk")
+				}
+				if err := writeReinitFile(initPath, ftypBytes, moovBytes); err != nil {
+					return false, err
+				}
+				cr.initPath = initPath
+				cr.resetFMP4Init(r)
+				cr.reinitDone = true
+				cr.needReinit = false
+			} else {
+				cr.needReinit = true
+				cr.needChunkEnd = true
+			}
+		}
+		return true, nil
+	}
+
+	if !cr.reinitDone && !cr.fmp4Read {
+		if isCompleteFMP4Moov(moovBytes) {
+			if cr.needReinit || initPath == "" || !fmp4InitFileComplete(initPath) {
+				if initPath == "" {
+					return false, errors.New("fmp4: no init path for re-init chunk")
+				}
+				if err := writeReinitFile(initPath, ftypBytes, moovBytes); err != nil {
+					return false, err
+				}
+				cr.initPath = initPath
+				cr.resetFMP4Init(r)
+			}
+			cr.reinitDone = true
+			cr.needReinit = false
+		} else if cr.needReinit || initPath == "" || !fmp4InitFileComplete(initPath) {
+			return false, errors.New("fmp4: incomplete moov in chunk")
+		}
+	}
+	if err := stripInBandInitBoxes(path); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func fmp4InitFileComplete(initPath string) bool {
+	b, err := os.ReadFile(initPath)
+	if err != nil || hasUnclosedMP4Box(b, 0, len(b)) {
+		return false
+	}
+	top, err := readBoxes(b, 0, len(b))
+	if err != nil {
+		return false
+	}
+	for _, x := range top {
+		if x.typ == "moov" {
+			return isCompleteFMP4Moov(b[x.start:x.end])
+		}
+	}
+	return false
+}
+
+// isCompleteFMP4Moov reports whether moovBytes is a closed fragmented-MP4 moov
+// with mvex/trex and complete track descriptions (including dec3/dac3 for
+// E-AC-3/AC-3 tracks).
+func isCompleteFMP4Moov(moovBytes []byte) bool {
+	if len(moovBytes) < 8 || hasUnclosedMP4Box(moovBytes, 0, len(moovBytes)) {
+		return false
+	}
+	top, err := readBoxes(moovBytes, 0, len(moovBytes))
+	if err != nil || len(top) != 1 || top[0].typ != "moov" {
+		return false
+	}
+	moov := top[0]
+	mvex, ok := child(moovBytes, moov, "mvex")
+	if !ok {
+		return false
+	}
+	if _, ok := child(moovBytes, mvex, "trex"); !ok {
+		return false
+	}
+	kids, err := readBoxes(moovBytes, moov.start+moov.hdr, moov.end)
+	if err != nil {
+		return false
+	}
+	traks := 0
+	for _, k := range kids {
+		if k.typ != "trak" {
+			continue
+		}
+		ti, err := parseTrak(moovBytes, moov, k)
+		if err != nil || ti.EditBad {
+			return false
+		}
+		if ti.Handler == "soun" && !audioSampleEntryComplete(moovBytes, k) {
+			return false
+		}
+		traks++
+	}
+	return traks > 0
+}
+
+func hasUnclosedMP4Box(b []byte, off, end int) bool {
+	for off < end {
+		if end-off < 8 {
+			return true
+		}
+		raw := binary.BigEndian.Uint32(b[off : off+4])
+		if raw == 0 {
+			return true
+		}
+		typ := string(b[off+4 : off+8])
+		hdr := 8
+		size := int64(raw)
+		if size == 1 {
+			if end-off < 16 {
+				return true
+			}
+			size = int64(binary.BigEndian.Uint64(b[off+8 : off+16]))
+			hdr = 16
+		}
+		if size < int64(hdr) || size > int64(end-off) {
+			return true
+		}
+		switch typ {
+		case "moov", "trak", "edts", "mdia", "minf", "stbl", "mvex":
+			if hasUnclosedMP4Box(b, off+hdr, off+int(size)) {
+				return true
+			}
+		}
+		off += int(size)
+	}
+	return false
+}
+
+func audioSampleEntryComplete(b []byte, trak mp4Box) bool {
+	stsd, ok := path(b, trak, "mdia", "minf", "stbl", "stsd")
+	if !ok || stsd.end-(stsd.start+stsd.hdr) < 16 {
+		return false
+	}
+	entries, err := readBoxes(b, stsd.start+stsd.hdr+8, stsd.end)
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	for _, e := range entries {
+		if e.end-e.start < 8 || binary.BigEndian.Uint32(b[e.start:e.start+4]) == 0 {
+			return false
+		}
+		var want string
+		switch e.typ {
+		case "ec-3":
+			want = "dec3"
+		case "ac-3":
+			want = "dac3"
+		default:
+			continue
+		}
+		p := e.payload(b)
+		if len(p) < 28 {
+			return false
+		}
+		childrenAt := 28
+		switch binary.BigEndian.Uint16(p[8:]) {
+		case 1:
+			childrenAt += 16
+		case 2:
+			childrenAt += 36
+		}
+		if e.start+e.hdr+childrenAt > e.end || hasUnclosedMP4Box(b, e.start+e.hdr+childrenAt, e.end) {
+			return false
+		}
+		kids, err := readBoxes(b, e.start+e.hdr+childrenAt, e.end)
+		if err != nil {
+			return false
+		}
+		have := false
+		for _, k := range kids {
+			if k.typ == want && k.end > k.start+k.hdr {
+				have = true
+				break
+			}
+		}
+		if !have {
+			return false
+		}
+	}
+	return true
+}
+
+var defaultFMP4Ftyp = []byte{
+	0, 0, 0, 28, 'f', 't', 'y', 'p',
+	'i', 's', 'o', '5',
+	0, 0, 2, 0,
+	'i', 's', 'o', '5', 'i', 's', 'o', '6', 'm', 'p', '4', '1',
+}
+
+func writeReinitFile(initPath string, ftyp, moov []byte) error {
+	if len(ftyp) == 0 {
+		if existing, err := os.ReadFile(initPath); err == nil {
+			top, _ := readBoxes(existing, 0, len(existing))
+			for _, x := range top {
+				if x.typ == "ftyp" && x.end <= len(existing) && binary.BigEndian.Uint32(existing[x.start:x.start+4]) != 0 {
+					ftyp = existing[x.start:x.end]
+					break
+				}
+			}
+		}
+	}
+	if len(ftyp) == 0 {
+		ftyp = defaultFMP4Ftyp
+	}
+	if err := os.MkdirAll(filepath.Dir(initPath), 0o755); err != nil {
+		return err
+	}
+	tmp := initPath + ".reinit.tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := out.Write(ftyp); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if _, err := out.Write(moov); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, initPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func stripInBandInitBoxes(path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	st, err := in.Stat()
+	if err != nil {
+		in.Close()
+		return err
+	}
+	size := st.Size()
+	tmp := path + ".strip.tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		in.Close()
+		return err
+	}
+	fail := func(err error) error {
+		in.Close()
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	var hdr [16]byte
+	for off := int64(0); off < size; {
+		if size-off < 8 {
+			return fail(errShortBox)
+		}
+		if _, err := in.ReadAt(hdr[:8], off); err != nil {
+			return fail(err)
+		}
+		boxSize := int64(binary.BigEndian.Uint32(hdr[:]))
+		typ := string(hdr[4:8])
+		switch boxSize {
+		case 1:
+			if size-off < 16 {
+				return fail(errShortBox)
+			}
+			if _, err := in.ReadAt(hdr[8:16], off+8); err != nil {
+				return fail(err)
+			}
+			boxSize = int64(binary.BigEndian.Uint64(hdr[8:]))
+		case 0:
+			boxSize = size - off
+		}
+		if boxSize < 8 || boxSize > size-off {
+			return fail(fmt.Errorf("fmp4: bad %q box in %s", typ, filepath.Base(path)))
+		}
+		if typ != "ftyp" && typ != "moov" {
+			if _, err := io.Copy(out, io.NewSectionReader(in, off, boxSize)); err != nil {
+				return fail(err)
+			}
+		}
+		off += boxSize
+	}
+	// Close both handles before Rename for Windows compatibility.
+	if err := in.Close(); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }
@@ -789,7 +1252,9 @@ func mkvSource(r *run) string {
 // handler).
 func (s *Session) failChunkRun(r *run, cr *chunkRun, path string, err error) {
 	s.log.Warn("HLS run output unusable", "run", r.seq, "err", err)
-	s.removals.remove(path)
+	if path != "" {
+		s.removals.remove(path)
+	}
 	cr.failed = true
 	r.stderr.add(err.Error())
 	s.mu.Lock()
@@ -835,6 +1300,7 @@ func (s *Session) collectChunks(r *run, exited bool) {
 	s.mu.Lock()
 	skip := s.closed || (r.stopped && s.cur != r)
 	stopped := r.stopped
+	eof := !skip && exited && !stopped && r.proc.Err() == nil
 	s.mu.Unlock()
 	if skip {
 		return
@@ -863,6 +1329,26 @@ func (s *Session) collectChunks(r *run, exited bool) {
 					break
 				}
 			}
+			if cr.container == ContainerFMP4 {
+				skipChunk, err := cr.prepareFMP4Chunk(path, r)
+				if err != nil {
+					if !exited && cr.noteParseErr() < maxChunkParseRetries {
+						break
+					}
+					s.failChunkRun(r, cr, path, fmt.Errorf("transcode: read chunk %s: %w", e.name, err))
+					return
+				}
+				if skipChunk {
+					s.removals.remove(path)
+					cr.parseErrs = 0
+					cr.reinitSkips++
+					if cr.reinitSkips > maxReinitChunks {
+						s.failChunkRun(r, cr, "", fmt.Errorf("transcode: fMP4 run wrote %d re-init chunks without media", cr.reinitSkips))
+						return
+					}
+					continue
+				}
+			}
 			if s.heldToClock(r) {
 				if err := s.moveOntoRetained(r, path); err != nil {
 					s.failChunkRun(r, cr, path, fmt.Errorf("transcode: %s on the retained clock: %w", e.name, err))
@@ -872,15 +1358,24 @@ func (s *Session) collectChunks(r *run, exited bool) {
 			start, err := cr.chunkStartWithEdits(path, r.edits)
 			if err != nil {
 				// A transient read must not consume the playlist entry and
-				// silently remove a GOP. Retry while the producer is alive;
-				// after exit, unusable media takes the normal failover path.
-				if !exited {
+				// silently remove a GOP. Retry a bounded number of times
+				// while the producer is alive; persistent parse errors and
+				// unusable post-exit media take the normal failover path.
+				if !exited && cr.noteParseErr() < maxChunkParseRetries {
 					break
 				}
 				s.failChunkRun(r, cr, path, fmt.Errorf("transcode: read chunk %s: %w", e.name, err))
 				return
 			}
+			cr.parseErrs = 0
+			cr.reinitSkips = 0
 			c := fmp4Chunk{path: path, start: start, end: start + e.dur}
+			if cr.needChunkEnd && cr.container == ContainerFMP4 {
+				if end, ok, err := fmp4ChunkEnd(path, cr.fmp4Tracks); err == nil && ok && end > c.end {
+					c.end = end
+				}
+				cr.needChunkEnd = false
+			}
 			if exited && cr.next == len(p.entries)-1 {
 				switch cr.container {
 				case ContainerMatroska:
@@ -929,8 +1424,12 @@ func (s *Session) collectChunks(r *run, exited bool) {
 			outs = append(outs, cr.sl.add(c)...)
 		}
 	}
+	if exited && !stopped && cr.needReinit && !cr.reinitDone {
+		s.failChunkRun(r, cr, "", errors.New("transcode: fMP4 run ended without a complete init"))
+		return
+	}
 	if exited {
-		outs = append(outs, cr.sl.flush(!stopped && r.proc.Err() == nil)...)
+		outs = append(outs, cr.sl.flush(eof)...)
 	}
 	if len(outs) == 0 {
 		return
@@ -1068,6 +1567,9 @@ func (s *Session) collectChunks(r *run, exited bool) {
 			}
 			if r.paused {
 				r.pausedDone = r.maxDone
+				if encSeg, ok := s.encoderSegLocked(r); ok && (!r.hasPausedLead || encSeg > r.pausedLead) {
+					r.pausedLead, r.hasPausedLead = encSeg, true
+				}
 			}
 		}
 	}

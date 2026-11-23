@@ -25,6 +25,13 @@ func mirroredTitles(ctx context.Context, cat core.Catalog, keys []core.RatingKey
 			}
 		}
 	}
+	var missing []core.RatingKey
+	for _, k := range keys {
+		if _, ok := out[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	preloadTitles(ctx, cat, missing)
 	return out
 }
 func historyTitle(ctx context.Context, cat core.Catalog, cached map[core.RatingKey]core.Title, key core.RatingKey) (*core.Title, error) {

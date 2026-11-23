@@ -66,6 +66,9 @@ func checkInvariants(t testing.TB, c *Cache) {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.pendingUnlinkBytes < 0 {
+		t.Errorf("negative pendingUnlinkBytes=%d", c.pendingUnlinkBytes)
+	}
 	var used int64
 	n := 0
 	walk := func(l *lruList, parked bool) {
@@ -123,11 +126,19 @@ func diskUsage(t testing.TB, c *Cache) (int64, int) {
 	var used int64
 	n := 0
 	err := filepath.WalkDir(c.dataDir, func(p string, d fs.DirEntry, err error) error {
+		// A segment the cache removes while the walk lists its directory is
+		// already out of the index; it is not on disk either.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
 		if _, ok := parseSegName(d.Name()); ok && !d.IsDir() {
 			info, err := d.Info()
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -211,15 +222,19 @@ func TestReplaceAndUsage(t *testing.T) {
 
 func TestLRUEvictionOrder(t *testing.T) {
 	const sz = 100
-	c := openT(t, t.TempDir(), 3*sz)
+	// Budget 340 -> 95% high watermark = 323, 90% low watermark = 306:
+	// 3 segments (300B) stay below high watermark; 4th triggers eviction to 300B.
+	c := openT(t, t.TempDir(), 340)
 	for seg := range 3 {
 		mustPut(t, c, "r", seg, payload("r", seg, 0, sz))
 	}
+	c.waitEvict()
 	if _, ok := c.Get("r", 0); !ok { // refresh 0: LRU order is now 1, 2, 0
 		t.Fatal("miss")
 	}
 	c.Has("r", 1) // Has must not refresh
 	mustPut(t, c, "r", 3, payload("r", 3, 0, sz))
+	c.waitEvict()
 	if c.Has("r", 1) {
 		t.Fatal("segment 1 should have been evicted")
 	}
@@ -232,6 +247,7 @@ func TestLRUEvictionOrder(t *testing.T) {
 		t.Fatalf("evicted file still on disk: %v", err)
 	}
 	mustPut(t, c, "r", 4, payload("r", 4, 0, 2*sz)) // evicts 2 then 0
+	c.waitEvict()
 	if c.Has("r", 2) || c.Has("r", 0) || !c.Has("r", 3) || !c.Has("r", 4) {
 		t.Fatal("wrong eviction for double-size put")
 	}
@@ -254,6 +270,7 @@ func TestTooLarge(t *testing.T) {
 		t.Fatal("oversize segment stored")
 	}
 	mustPut(t, c, "r", 0, make([]byte, 100)) // exactly the budget is fine
+	c.waitEvict()
 	if used, _ := c.Usage(); used != 100 {
 		t.Fatalf("used=%d", used)
 	}
@@ -261,7 +278,8 @@ func TestTooLarge(t *testing.T) {
 
 func TestPinnedNeverEvicted(t *testing.T) {
 	const sz = 100
-	c := openT(t, t.TempDir(), 4*sz)
+	// Budget 450 -> 95% high = 427, 90% low = 405: 3 pinned + 1 unpinned = 400 <= 405.
+	c := openT(t, t.TempDir(), 450)
 	for seg := range 3 {
 		mustPut(t, c, "pinned", seg, payload("pinned", seg, 0, sz))
 	}
@@ -275,6 +293,7 @@ func TestPinnedNeverEvicted(t *testing.T) {
 		mustPut(t, c, "other", seg, payload("other", seg, 0, sz))
 		checkInvariants(t, c)
 	}
+	c.waitEvict()
 	for seg := range 3 {
 		if !c.Has("pinned", seg) {
 			t.Fatalf("pinned segment %d evicted", seg)
@@ -289,6 +308,7 @@ func TestPinnedNeverEvicted(t *testing.T) {
 	}
 	mustPut(t, c, "pinned", 3, payload("pinned", 3, 0, sz))
 	mustPut(t, c, "pinned", 4, payload("pinned", 4, 0, sz))
+	c.waitEvict()
 	if used, _ := c.Usage(); used != 6*sz {
 		t.Fatalf("over-budget used=%d want %d", used, 6*sz)
 	}
@@ -326,7 +346,7 @@ func TestPinnedNeverEvicted(t *testing.T) {
 
 func TestProtectCallback(t *testing.T) {
 	const sz = 100
-	c := openT(t, t.TempDir(), 3*sz)
+	c := openT(t, t.TempDir(), 340)
 	var calls atomic.Int32
 	var mu sync.Mutex
 	protected := map[string]bool{"a": true}
@@ -339,10 +359,12 @@ func TestProtectCallback(t *testing.T) {
 	mustPut(t, c, "a", 0, payload("a", 0, 0, sz))
 	mustPut(t, c, "a", 1, payload("a", 1, 0, sz))
 	mustPut(t, c, "b", 0, payload("b", 0, 0, sz))
+	c.waitEvict()
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("callback called %d times without eviction", n)
 	}
 	mustPut(t, c, "b", 1, payload("b", 1, 0, sz))
+	c.waitEvict()
 	if calls.Load() == 0 {
 		t.Fatal("callback not called during eviction")
 	}
@@ -354,11 +376,13 @@ func TestProtectCallback(t *testing.T) {
 	protected = map[string]bool{}
 	mu.Unlock()
 	mustPut(t, c, "b", 2, payload("b", 2, 0, sz))
+	c.waitEvict()
 	if c.Has("a", 0) || !c.Has("a", 1) || !c.Has("b", 1) || !c.Has("b", 2) {
 		t.Fatal("expected a/0 evicted after protection lifted")
 	}
 	c.Protect(nil)
 	mustPut(t, c, "b", 3, payload("b", 3, 0, sz))
+	c.waitEvict()
 	if used, _ := c.Usage(); used != 3*sz {
 		t.Fatalf("used=%d", used)
 	}
@@ -373,8 +397,139 @@ func TestProtectResultCached(t *testing.T) {
 	for seg := range 10 {
 		mustPut(t, c, "r", seg, payload("r", seg, 0, 100))
 	}
+	c.waitEvict()
 	if n := calls.Load(); n != 1 {
 		t.Fatalf("callback called %d times, want 1 (cached)", n)
+	}
+}
+
+func TestEvictWatermarks(t *testing.T) {
+	// Budget 1000 -> 95% high watermark = 950, 90% low watermark = 900.
+	const sz = 10
+	c := openT(t, t.TempDir(), 1000)
+	for seg := range 94 {
+		mustPut(t, c, "r", seg, payload("r", seg, 0, sz))
+	}
+	c.waitEvict()
+	if used, _ := c.Usage(); used != 940 {
+		t.Fatalf("evicted below 95%% high watermark: used=%d want 940", used)
+	}
+	// Crossing 95% wakes the worker and evicts down to the 90% low watermark.
+	mustPut(t, c, "r", 94, payload("r", 94, 0, sz))
+	c.waitEvict()
+	if used, _ := c.Usage(); used != 900 {
+		t.Fatalf("after 95%% trigger used=%d want 900 (90%% low watermark)", used)
+	}
+	for seg := range 5 {
+		if c.Has("r", seg) {
+			t.Fatalf("oldest segment %d should have been evicted", seg)
+		}
+	}
+	if !c.Has("r", 5) || !c.Has("r", 94) {
+		t.Fatal("evicted past low watermark or dropped newest")
+	}
+	if du, n := diskUsage(t, c); du != 900 || n != 90 {
+		t.Fatalf("disk=%d,%d want 900,90", du, n)
+	}
+	// Hysteresis: writes between 90% and 95% do not trigger eviction.
+	for seg := 95; seg < 99; seg++ {
+		mustPut(t, c, "r", seg, payload("r", seg, 0, sz))
+	}
+	c.waitEvict()
+	if used, _ := c.Usage(); used != 940 {
+		t.Fatalf("hysteresis broken: used=%d want 940", used)
+	}
+	checkInvariants(t, c)
+}
+
+func TestPutNeverBlocksOnEvictionAndDropsFarOverBudget(t *testing.T) {
+	// Budget 1000 -> high 950, low 900, hard 1100.
+	const sz = 10
+	c := openT(t, t.TempDir(), 1000)
+	if err := c.Pin("pinned", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	c.Protect(func() map[string]bool { return map[string]bool{"active": true} })
+
+	// 200B pinned + 200B active + 540B evictable = 940B (< 950B high watermark).
+	for seg := range 20 {
+		mustPut(t, c, "pinned", seg, payload("pinned", seg, 0, sz))
+		mustPut(t, c, "active", seg, payload("active", seg, 0, sz))
+	}
+	for seg := range 54 {
+		mustPut(t, c, "old", seg, payload("old", seg, 0, sz))
+	}
+	c.waitEvict()
+	if used, _ := c.Usage(); used != 940 {
+		t.Fatalf("initial used=%d want 940", used)
+	}
+
+	evictBlocked := make(chan struct{})
+	releaseUnlink := make(chan struct{})
+	var blockOnce sync.Once
+	c.mu.Lock()
+	c.beforeUnlink = func() {
+		blockOnce.Do(func() {
+			close(evictBlocked)
+			<-releaseUnlink
+		})
+	}
+	c.mu.Unlock()
+
+	// Reach 95% (950B): Put returns immediately while worker blocks in beforeUnlink
+	// holding evictMu.
+	mustPut(t, c, "old", 54, payload("old", 54, 0, sz))
+	<-evictBlocked
+
+	// While the worker holds evictMu, concurrent Puts push far past 110% (400B of
+	// new segments + active + pinned writes) and must all finish without blocking.
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Go(func() {
+			for i := range 5 {
+				seg := g*5 + i
+				mustPut(t, c, "burst", seg, payload("burst", seg, 0, sz))
+			}
+		})
+	}
+	mustPut(t, c, "pinned", 20, payload("pinned", 20, 0, sz))
+	mustPut(t, c, "active", 20, payload("active", 20, 0, sz))
+	wg.Wait()
+
+	// Before the worker is unblocked: accounting is exact, usage is bounded by
+	// the 110% inline drop, and pinned/active segments are intact.
+	if used, _ := c.Usage(); used > hardWatermark(1000) {
+		close(releaseUnlink)
+		t.Fatalf("used=%d exceeded hard watermark %d while worker was blocked", used, hardWatermark(1000))
+	}
+	checkInvariants(t, c)
+	for seg := range 21 {
+		if !c.Has("pinned", seg) || !c.Has("active", seg) {
+			close(releaseUnlink)
+			t.Fatalf("protected/pinned segment %d dropped under over-budget burst", seg)
+		}
+	}
+
+	// Unblock worker and wait for async eviction + unlinks to finish.
+	c.mu.Lock()
+	c.beforeUnlink = nil
+	c.mu.Unlock()
+	close(releaseUnlink)
+	c.waitEvict()
+
+	if used, _ := c.Usage(); used != 900 {
+		t.Fatalf("settled used=%d want 900 (90%% low watermark)", used)
+	}
+	for seg := range 21 {
+		gotP, okP := c.Get("pinned", seg)
+		gotA, okA := c.Get("active", seg)
+		if !okP || !bytes.Equal(gotP, payload("pinned", seg, 0, sz)) || !okA || !bytes.Equal(gotA, payload("active", seg, 0, sz)) {
+			t.Fatalf("segment %d damaged: okP=%v okA=%v", seg, okP, okA)
+		}
+	}
+	checkInvariants(t, c)
+	if du, n := diskUsage(t, c); du != mustUsed(c) || n != c.segCountSafe() {
+		t.Fatalf("disk=%d,%d index=%d,%d", du, n, mustUsed(c), c.segCountSafe())
 	}
 }
 
@@ -799,6 +954,7 @@ func TestConcurrentStress(t *testing.T) {
 		})
 	}
 	wg.Wait()
+	c.waitEvict()
 	if n := corrupt.Load(); n != 0 {
 		t.Fatalf("%d Gets returned data that was never Put for that key", n)
 	}
@@ -820,6 +976,11 @@ func TestConcurrentStress(t *testing.T) {
 		t.Fatalf("used=%d > budget=%d with nothing protected", used, b)
 	}
 	checkInvariants(t, c)
+	// Finish unlinks the stress run queued (or a drain still has in flight)
+	// before comparing the disk with the index.
+	c.evictMu.Lock()
+	c.drainPendingUnlinks()
+	c.evictMu.Unlock()
 	if du, n := diskUsage(t, c); du != mustUsed(c) || n != c.segCountSafe() {
 		t.Fatalf("disk=%d,%d index=%d,%d", du, n, mustUsed(c), c.segCountSafe())
 	}
@@ -944,9 +1105,6 @@ func TestOpenLargeCacheLazyValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if elapsed >= 100*time.Millisecond {
-		t.Fatalf("Open took %v", elapsed)
-	}
 	if c.segCountSafe() != 0 {
 		t.Fatal("Open indexed disk entries")
 	}

@@ -11,7 +11,7 @@ import (
 )
 
 func TestDiscoveryHeadAcrossPagesAndRenderedMetadata(t *testing.T) {
-	for _, section := range []string{"home", "movies", "shows"} {
+	for _, section := range []string{"home", "library:1", "library:2"} {
 		t.Run(section, func(t *testing.T) {
 			rows := []core.HomeRow{row("theme", KindEra, 24), row("cw", KindContinue, 0), row("trend", KindTrending, 24), row("crowd", KindCrowd, 24), row("new", KindNewReleases, 24), row("top", KindTop10, 10)}
 			for _, rendered := range []bool{false, true} {
@@ -113,7 +113,7 @@ func TestDiscoverySurvivesCandidateCapAndMixesHome(t *testing.T) {
 func TestFinalizeRenderedRowsUsesCounts(t *testing.T) {
 	h := newHarness(t, nil)
 	hubs := []core.Hub{{ID: "movie.era.1990", ItemCount: 24}, {ID: "movie.newreleases", ItemCount: 24}, {ID: "movie.trending", ItemCount: 24}, {ID: "movie.top10", ItemCount: 10}}
-	got, err := h.e.FinalizeHome(context.Background(), &core.User{ID: 1}, hubContext(testNow, core.DeviceWeb), "movies", hubs)
+	got, err := h.e.FinalizeHome(context.Background(), &core.User{ID: 1}, hubContext(testNow, core.DeviceWeb), "library:1", hubs)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -118,9 +118,10 @@ func (c *Catalog) seekYearKeys(ctx context.Context, q core.BrowseQuery, where st
 	return mergedPage(all, q.Desc, offset, limit), nil
 }
 
-// CountWatched counts the titles matching f that userID has played (a watch
-// row with a view), driven from the viewer's watch rows: its cost follows
-// the viewer's history, not the library.
+// CountWatched counts the titles matching f that userID has played, driven
+// from the viewer's watch rows: its cost follows the viewer's history, not
+// the library. For shows, a show counts as watched only when all of its aired
+// regular episodes are watched (matching Browse).
 func (c *Catalog) CountWatched(ctx context.Context, f core.Filter, userID int64) (int, error) {
 	f = c.viewerPaging(ctx, f)
 	where, args, err := c.browseWhere(f)
@@ -128,6 +129,11 @@ func (c *Catalog) CountWatched(ctx context.Context, f core.Filter, userID int64)
 		return 0, err
 	}
 	var n int
-	err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM state_watch w CROSS JOIN catalog_titles t WHERE w.user_id=? AND w.view_count>0 AND t.key=w.rating_key AND `+where, append([]any{userID}, args...)...).Scan(&n)
+	if f.Type == core.TypeMovie {
+		err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM state_watch w CROSS JOIN catalog_titles t WHERE w.user_id=? AND w.view_count>0 AND t.key=w.rating_key AND `+where, append([]any{userID}, args...)...).Scan(&n)
+		return n, err
+	}
+	wSQL, wArgs := c.watchedKeysForTypeSQL(f.Type, userID)
+	err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles t WHERE t.key IN (`+wSQL+`) AND `+where, append(wArgs, args...)...).Scan(&n)
 	return n, err
 }

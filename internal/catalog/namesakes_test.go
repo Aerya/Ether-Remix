@@ -85,3 +85,35 @@ func TestSeriesNamesakeUsesDifferentYearAndSameType(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateRuntimePersistsAndInvalidatesCache(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(store.OpenTest(t), nil, config.Catalog{}, slog.New(slog.DiscardHandler),
+		WithNow(func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := core.MovieKey(42)
+	seedNamesakeTitle(t, c, key, core.TypeMovie, "The Runner", 2026)
+
+	// Populate titleCache before updating runtime.
+	got, err := c.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runtime != 90*time.Minute {
+		t.Fatalf("initial runtime = %v, want 90m", got.Runtime)
+	}
+
+	want := 97*time.Minute + 56*time.Second
+	if err := c.UpdateRuntime(ctx, key, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runtime != want {
+		t.Fatalf("updated runtime = %v, want %v", got.Runtime, want)
+	}
+}

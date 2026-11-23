@@ -36,6 +36,7 @@ type Posters struct {
 	AssetFolder  string         `json:"assetFolder,omitempty"`
 	Accounts     PosterAccounts `json:"accounts"`
 	Version      int            `json:"version,omitempty"`
+	Generation   uint64         `json:"generation,omitempty"`
 	Enabled      bool           `json:"enabled"`
 	Source       string         `json:"source"`
 	BaseURL      string         `json:"baseUrl"`
@@ -62,9 +63,9 @@ func (p Posters) Selected() Posters {
 	p = p.Normalize()
 	a := p.Accounts.Entries()[p.Source]
 	if a == nil || !a.Enabled {
-		return Posters{}
+		return Posters{Generation: p.Generation}
 	}
-	return Posters{Enabled: true, Source: p.Source, BaseURL: a.BaseURL, APIKey: a.APIKey, URLTemplate: a.URLTemplate, Profile: a.Profile}
+	return Posters{Generation: p.Generation, Enabled: true, Source: p.Source, BaseURL: a.BaseURL, APIKey: a.APIKey, URLTemplate: a.URLTemplate, Profile: a.Profile}
 }
 func (p Posters) Validate() error {
 	if p.AssetFolder != "" {

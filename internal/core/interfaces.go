@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -19,13 +20,33 @@ const (
 	SortYear       SortOrder = "year"
 	SortRating     SortOrder = "rating"
 	SortDuration   SortOrder = "duration"
+	SortIndex      SortOrder = "index"   // plugin item ordinal index
 	SortAdded      SortOrder = "added"   // movie/episode release or air date; series and seasons use the latest aired episode, then the premiere
 	SortUpdated    SortOrder = "updated" // actual catalogue metadata update time
 	// SortPlayed orders a viewer's played titles by when they last played
 	// them (Jellyfin/Emby "DatePlayed"). It is served from the viewer's watch
 	// rows, never the catalogue's sort columns.
 	SortPlayed SortOrder = "played"
+	// SortLastViewed is the canonical Vela/tab sort ID for ordering titles by
+	// when the requesting viewer last viewed them.
+	SortLastViewed SortOrder = "lastViewed"
 )
+
+// IsLastViewed reports whether s requests viewer watch-recency ordering.
+func (s SortOrder) IsLastViewed() bool {
+	return IsLastViewedSort(string(s))
+}
+
+// IsLastViewedSort reports whether raw names the lastViewed sort or one of its
+// accepted aliases ("lastViewed", "played", "last_viewed").
+func IsLastViewedSort(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "lastviewed", "last_viewed", "played":
+		return true
+	default:
+		return false
+	}
+}
 
 // SortSpec pairs a catalogue sort column with its direction.
 type SortSpec struct {
@@ -69,8 +90,12 @@ type FilterGroup struct {
 	LastViewedAfter  int64         `json:"lastViewedAfter,omitempty"`
 	LastViewedBefore int64         `json:"lastViewedBefore,omitempty"`
 	OnWatchlist      *bool         `json:"onWatchlist,omitempty"`
+	Watchlist        *bool         `json:"watchlist,omitempty"`
+	Favorite         *bool         `json:"favorite,omitempty"`
+	Watched          *bool         `json:"watched,omitempty"`
 	Unwatched        *bool         `json:"unwatched,omitempty"`
 	InProgress       *bool         `json:"inProgress,omitempty"`
+	History          *bool         `json:"history,omitempty"`
 	UserID           int64         `json:"userId,omitempty"`
 	Operator         string        `json:"operator"`
 	Filter           *Filter       `json:"filter,omitempty"`
@@ -109,13 +134,19 @@ type Filter struct {
 	HiddenShowSeq    int64 `json:"-"`
 	HiddenEpisodeSeq int64 `json:"-"`
 	// ChildVisibility is the viewer policy evaluated on hydrated episodes.
-	ChildVisibility         *Filter            `json:"-"`
+	ChildVisibility *Filter `json:"-"`
+	// MovieFilter and EpisodeFilter carry per-kind share predicates across
+	// mixed movie+episode shelf queries (RecentPage, OnDeckPageSince).
+	MovieFilter             *Filter            `json:"-"`
+	EpisodeFilter           *Filter            `json:"-"`
 	RuleVisibility          string             `json:"-"` // owner-only rules browser: hidden, shown or all
 	ApplyCanonicalInPreview bool               `json:"-"` // filter-library rules preview keeps canonical rules
 	PreviewRules            []LibraryExclusion `json:"-"`
 	PreviewFallback         string             `json:"-"`
 	ExtraRules              []LibraryExclusion `json:"-"` // saved rules on a filter library
 	ExtraFallback           string             `json:"-"`
+	TabRules                []LibraryExclusion `json:"-"` // saved filters on a library or view tab
+	TabFallback             string             `json:"-"`
 	KnownAddedDate          bool               `json:"-"` // only released/aired titles, before pagination
 	// ExcludeKeys applies local visibility policy before counting and pagination.
 	ExcludeKeys []RatingKey `json:"-"`
@@ -131,51 +162,55 @@ type Filter struct {
 	CatalogueSources  []string `json:"catalogueSources,omitempty"`
 	// ExcludeGenres and ExcludeKeywords remove viewer-blocked facts before
 	// counting and pagination. Matching is case-insensitive.
-	ExcludeGenres         []string        `json:"-"`
-	ExcludeKeywords       []string        `json:"-"`
-	AddedAfter            int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
-	AddedBefore           int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
-	UpdatedAfter          int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
-	UpdatedBefore         int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
-	Type                  MediaType       `json:"type,omitempty"` // movie or show
-	Genres                []string        `json:"genres,omitempty"`
-	ReleaseGate           string          `json:"releaseGate,omitempty"` // admitted, held, unknown in current policy snapshot
-	Playable              string          `json:"playable,omitempty"`    // yes or unknown from fresh local evidence
-	DebridCached          string          `json:"debridCached,omitempty"`
-	Qualities             []string        `json:"qualities,omitempty"` // known 4k, hdr, dv, atmos release facts
-	Anime                 bool            `json:"anime,omitempty"`     // positive canonical anime keyword
-	Kids                  bool            `json:"kids,omitempty"`      // positive canonical Kids genre
-	Tags                  []string        `json:"tags,omitempty"`      // owner annotations, distinct from provider keywords
-	Keywords              []string        `json:"keywords,omitempty"`  // every keyword must match (case-insensitive)
-	YearFrom              int             `json:"yearFrom,omitempty"`
-	YearTo                int             `json:"yearTo,omitempty"`
-	Years                 []int           `json:"years,omitempty"`
-	ExcludeYears          []int           `json:"excludeYears,omitempty"`
-	MinVotes              int             `json:"minVotes,omitempty"`
-	MaxVotes              int             `json:"maxVotes,omitempty"`
-	MinPopularity         float64         `json:"minPopularity,omitempty"`
-	MaxPopularity         float64         `json:"maxPopularity,omitempty"`
-	DateAddedFrom         int64           `json:"dateAddedFrom,omitempty"` // release/air date, never insertion
-	DateAddedTo           int64           `json:"dateAddedTo,omitempty"`
-	EtherAddedFrom        int64           `json:"etherAddedFrom,omitempty"`
-	EtherAddedTo          int64           `json:"etherAddedTo,omitempty"`
-	Statuses              []string        `json:"statuses,omitempty"`
-	MinSeasons            int             `json:"minSeasons,omitempty"`
-	MaxSeasons            int             `json:"maxSeasons,omitempty"`
-	MinEpisodes           int             `json:"minEpisodes,omitempty"`
-	MaxEpisodes           int             `json:"maxEpisodes,omitempty"`
-	MinRating             float64         `json:"minRating,omitempty"`
-	MaxRating             float64         `json:"maxRating,omitempty"`
-	ExcludeRatings        []float64       `json:"excludeRatings,omitempty"`
-	MaxRuntime            time.Duration   `json:"maxRuntime,omitempty"`
-	MinRuntime            time.Duration   `json:"minRuntime,omitempty"`
-	ExcludeRuntimes       []time.Duration `json:"excludeRuntimes,omitempty"`
-	Languages             []string        `json:"languages,omitempty"`
-	Countries             []string        `json:"countries,omitempty"`
-	ExcludeCountries      []string        `json:"excludeCountries,omitempty"`
-	ContentRatings        []string        `json:"contentRatings,omitempty"`
-	ExcludeContentRatings []string        `json:"excludeContentRatings,omitempty"`
-	MaxContentRating      string          `json:"maxContentRating,omitempty"` // per-user limit
+	ExcludeGenres          []string        `json:"-"`
+	ExcludeKeywords        []string        `json:"-"`
+	AddedAfter             int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
+	AddedBefore            int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
+	UpdatedAfter           int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
+	UpdatedBefore          int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
+	Type                   MediaType       `json:"type,omitempty"` // movie or show
+	Genres                 []string        `json:"genres,omitempty"`
+	ReleaseGate            string          `json:"releaseGate,omitempty"`            // admitted, held, unknown in current policy snapshot
+	Playable               string          `json:"playable,omitempty"`               // yes or unknown from fresh local evidence
+	DebridCached           string          `json:"debridCached,omitempty"`           //
+	Qualities              []string        `json:"qualities,omitempty"`              // known 4k, hdr, dv, atmos release facts
+	EvidenceResolutions    []string        `json:"evidenceResolutions,omitempty"`    // 4k, 1080p, 720p, sd from fresh release evidence
+	EvidenceHDR            []string        `json:"evidenceHdr,omitempty"`            // dv, hdr10, sdr from fresh release evidence
+	EvidenceAudioLanguages []string        `json:"evidenceAudioLanguages,omitempty"` // normalized audio language codes from fresh release evidence
+	Anime                  bool            `json:"anime,omitempty"`                  // positive canonical anime keyword
+	Kids                   bool            `json:"kids,omitempty"`                   // positive canonical Kids genre
+	Tags                   []string        `json:"tags,omitempty"`                   // owner annotations, distinct from provider keywords
+	Keywords               []string        `json:"keywords,omitempty"`               // every keyword must match (case-insensitive)
+	YearFrom               int             `json:"yearFrom,omitempty"`
+	YearTo                 int             `json:"yearTo,omitempty"`
+	Years                  []int           `json:"years,omitempty"`
+	ExcludeYears           []int           `json:"excludeYears,omitempty"`
+	MinVotes               int             `json:"minVotes,omitempty"`
+	MaxVotes               int             `json:"maxVotes,omitempty"`
+	MinPopularity          float64         `json:"minPopularity,omitempty"`
+	MaxPopularity          float64         `json:"maxPopularity,omitempty"`
+	DateAddedFrom          int64           `json:"dateAddedFrom,omitempty"` // release/air date, never insertion
+	DateAddedTo            int64           `json:"dateAddedTo,omitempty"`
+	EtherAddedFrom         int64           `json:"etherAddedFrom,omitempty"`
+	EtherAddedTo           int64           `json:"etherAddedTo,omitempty"`
+	Statuses               []string        `json:"statuses,omitempty"`
+	MinSeasons             int             `json:"minSeasons,omitempty"`
+	MaxSeasons             int             `json:"maxSeasons,omitempty"`
+	MinEpisodes            int             `json:"minEpisodes,omitempty"`
+	MaxEpisodes            int             `json:"maxEpisodes,omitempty"`
+	MinRating              float64         `json:"minRating,omitempty"`
+	MaxRating              float64         `json:"maxRating,omitempty"`
+	MaxRatingExclusive     bool            `json:"maxRatingExclusive,omitempty"`
+	ExcludeRatings         []float64       `json:"excludeRatings,omitempty"`
+	MaxRuntime             time.Duration   `json:"maxRuntime,omitempty"`
+	MinRuntime             time.Duration   `json:"minRuntime,omitempty"`
+	ExcludeRuntimes        []time.Duration `json:"excludeRuntimes,omitempty"`
+	Languages              []string        `json:"languages,omitempty"`
+	Countries              []string        `json:"countries,omitempty"`
+	ExcludeCountries       []string        `json:"excludeCountries,omitempty"`
+	ContentRatings         []string        `json:"contentRatings,omitempty"`
+	ExcludeContentRatings  []string        `json:"excludeContentRatings,omitempty"`
+	MaxContentRating       string          `json:"maxContentRating,omitempty"` // per-user limit
 	// SaferPlexRating applies cached Plex content-rating levels in SQL
 	// together with MaxContentRating so paging and counts stay correct.
 	SaferPlexRating bool `json:"-"`
@@ -191,12 +226,13 @@ type Filter struct {
 	// NameStartsWith, NameStartsWithOrGreater and NameLessThan are
 	// Jellyfin and Emby's alphabet jump: bounds on the sort title in the
 	// same order as FirstCharacter's buckets (catalog sort_name.go).
-	NameStartsWith          string         `json:"nameStartsWith,omitempty"`
-	NameStartsWithOrGreater string         `json:"nameStartsWithOrGreater,omitempty"`
-	NameLessThan            string         `json:"nameLessThan,omitempty"`
-	Query                   string         `json:"query,omitempty"` // title substring
-	TitleFilters            []StringFilter `json:"titleFilters,omitempty"`
-	ReleasedFilters         []DateFilter   `json:"releasedFilters,omitempty"`
+	NameStartsWith          string              `json:"nameStartsWith,omitempty"`
+	NameStartsWithOrGreater string              `json:"nameStartsWithOrGreater,omitempty"`
+	NameLessThan            string              `json:"nameLessThan,omitempty"`
+	Query                   string              `json:"query,omitempty"`  // title / in-library search query
+	Facets                  map[string][]string `json:"facets,omitempty"` // plugin library facet bucket filters (OR within field, AND across fields)
+	TitleFilters            []StringFilter      `json:"titleFilters,omitempty"`
+	ReleasedFilters         []DateFilter        `json:"releasedFilters,omitempty"`
 	// MinContentRating is an additive share-policy predicate (plex.tv share
 	// filters). It does not replace MaxContentRating or ContentRatings.
 	MinContentRating string `json:"-"`
@@ -252,6 +288,14 @@ type BrowseQuery struct {
 	// NoTotal skips counting the filter's matches, which reads every title
 	// the filter admits. Page.Total is then offset plus the items returned.
 	NoTotal bool
+	// CheapTotal, when set alongside NoTotal, returns an exact Page.Total
+	// (with Page.TotalExact = true) only when an exact count is available
+	// cheaply (tallies, cached counts, or bounded index counts). Otherwise
+	// it skips counting and leaves Page.TotalExact false.
+	CheapTotal bool
+	// SuppressExpand skips starting background plugin facet or person
+	// expansion when sampling rows or fanning out search queries.
+	SuppressExpand bool
 	// ListRows reads a key-ordered (SortKey) page as list rows instead of
 	// full titles (an export). Other page shapes ignore it.
 	ListRows *ListRows
@@ -272,6 +316,12 @@ type ListRows struct {
 type Page struct {
 	Items []Title
 	Total int
+	// TotalExact reports whether Total is an exact count of all items matching
+	// the query (never a page-window estimate).
+	TotalExact bool
+	// Expanding reports whether a background plugin facet or person expansion
+	// is currently running for this slice.
+	Expanding bool
 }
 
 // AiredEpisodeTally counts one show's stored, aired episodes for a viewer
@@ -390,6 +440,13 @@ type Collection struct {
 	MembershipRevision string `json:"-"`
 }
 
+// OwnedCollectionLister lists the collections the owner made or enabled,
+// without the movie franchises the catalogue derives. Listing franchises
+// groups the whole movie library, so a search never does it.
+type OwnedCollectionLister interface {
+	ListOwned(ctx context.Context, user *User, t MediaType) ([]Collection, error)
+}
+
 type Collections interface {
 	List(ctx context.Context, user *User, t MediaType) ([]Collection, error)
 	Get(ctx context.Context, user *User, key RatingKey) (*Collection, error)
@@ -419,18 +476,34 @@ type Recommender interface {
 // ---------------------------------------------------------------------------
 // Watch state (internal/state)
 
+// ReadingProgress records a viewer's reading position inside a book item.
+type ReadingProgress struct {
+	Locator    string    `json:"locator"`
+	Fraction   float64   `json:"fraction"`
+	Label      string    `json:"label,omitempty"`
+	ObservedAt time.Time `json:"observedAt,omitempty"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// ReadingState is an optional interface implemented by State stores that
+// persist book reading progress alongside video/audio watch state.
+type ReadingState interface {
+	SetReadingProgress(ctx context.Context, userID int64, key RatingKey, progress ReadingProgress) error
+}
+
 type WatchStatus struct {
-	Key             RatingKey     `json:"key"`
-	ViewOffset      time.Duration `json:"viewOffset"`
-	ViewCount       int           `json:"viewCount"`
-	LastViewedAt    time.Time     `json:"lastViewedAt,omitempty"`
-	LastRatedAt     time.Time     `json:"lastRatedAt,omitempty"`
-	UserRating      float64       `json:"userRating,omitempty"` // 0-10
-	InWatchlist     bool          `json:"inWatchlist,omitempty"`
-	IsFavorite      bool          `json:"isFavorite,omitempty"`      // Derived from the viewer’s favorites set.
-	IsNotInterested bool          `json:"isNotInterested,omitempty"` // Derived from the viewer’s recommendation exclusions.
-	Duration        time.Duration `json:"duration,omitempty"`
-	UpdatedAt       time.Time     `json:"updatedAt"`
+	Key             RatingKey        `json:"key"`
+	ViewOffset      time.Duration    `json:"viewOffset"`
+	ViewCount       int              `json:"viewCount"`
+	LastViewedAt    time.Time        `json:"lastViewedAt,omitempty"`
+	LastRatedAt     time.Time        `json:"lastRatedAt,omitempty"`
+	UserRating      float64          `json:"userRating,omitempty"` // 0-10
+	InWatchlist     bool             `json:"inWatchlist,omitempty"`
+	IsFavorite      bool             `json:"isFavorite,omitempty"`      // Derived from the viewer’s favorites set.
+	IsNotInterested bool             `json:"isNotInterested,omitempty"` // Derived from the viewer’s recommendation exclusions.
+	Duration        time.Duration    `json:"duration,omitempty"`
+	Reading         *ReadingProgress `json:"reading,omitempty"`
+	UpdatedAt       time.Time        `json:"updatedAt"`
 }
 
 type HistoryEntry struct {
@@ -558,11 +631,21 @@ type SearchRequest struct {
 	IDs           IDs       // movie ids, or the show's ids for episodes
 	Title         string
 	OriginalTitle string // optional original-language or canonical title (additive)
-	Year          int
-	Season        int
-	Episode       int
-	EpisodeTitle  string   // optional title used to distinguish same-numbered episodes
-	SpecialTitles []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
+	// EnglishTitle is TMDB's primary en-US title when the catalogue language
+	// is non-English; matching only, never part of a query or cache key (additive).
+	EnglishTitle string `json:"-"`
+	Year         int
+	Season       int
+	Episode      int
+	// AltSeason/AltEpisode are additional release numbers from independent release numbering (zero when unset).
+	AltSeason             int
+	AltEpisode            int
+	ReleaseAliases        []EpisodeNumber
+	ReleasePackTargets    []EpisodeNumber
+	ReleaseNumberingKnown bool
+	ReleaseAliasesOnly    bool     // canonical discovery already ran; query additional forms only
+	EpisodeTitle          string   // optional title used to distinguish same-numbered episodes
+	SpecialTitles         []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
 	// AbsoluteEpisode is the episode's number counted from the series
 	// start (0 = unknown), and Anime marks a series whose releases are
 	// commonly numbered that way (additive).
@@ -572,7 +655,11 @@ type SearchRequest struct {
 	// seasons (0 when unmapped or Cour 1).
 	Cour        int
 	CourEpisode int
-	Anime       bool
+	// CourTVDBSeason and CourTVDBEpisode are the anime-lists TVDB season and
+	// episode for an offset TMDB anime season entry (0 when unmapped).
+	CourTVDBSeason  int
+	CourTVDBEpisode int
+	Anime           bool
 	// AlternativeTitles are other names of the movie or series (TMDB
 	// alternative titles) a release name may use; matching only, never
 	// part of a query or cache key (additive).
@@ -601,8 +688,20 @@ type ResolveRequest struct {
 	// PlayedRelease is the release this viewer last played of the title
 	// (the one a resume opens); Variants names Auto after it (additive).
 	PlayedRelease string
+	// PlayedSelector is the version slot selector PlayedRelease fulfilled
+	// (empty or Auto when played via Auto). When set to a non-Auto slot,
+	// PlayedRelease stays behind that slot instead of replacing Auto.
+	PlayedSelector string
+	// PlayedReleaseRecord carries the persisted release record for
+	// PlayedRelease when available (e.g. from playback_resume) so the slot
+	// keeps its release metadata even after the search cache expires.
+	PlayedReleaseRecord *Release
 	// Exclude releases already tried (failover).
 	Exclude []string
+	// ExcludeReleases excludes every copy/repost matching these releases
+	// (same content/source/info/stream identity or normalized release name),
+	// used for content-level rejections such as probed audio language mismatch.
+	ExcludeReleases []Release
 	// Prefer is a release ID to try first (the viewer picked a version in
 	// Plex's "Play Version" picker). It is health-checked like any other
 	// candidate; when it is unavailable, normal ranking applies (additive).
@@ -718,6 +817,61 @@ type OriginSource interface {
 	Origin() string
 }
 
+// MIMESource is implemented by a MediaSource that knows its declared media
+// MIME type (for example a plugin kind stream declaring audio/flac or
+// application/epub+zip).
+type MIMESource interface {
+	MIME() string
+}
+
+// DirectSourceLink is one provider-issued URL for a source's file: the same
+// bytes Ether reads, at an address a client may fetch by itself. Edge names
+// the host in the URL so a redirect is auditable without logging a signed
+// link; it is display metadata, never part of the address.
+type DirectSourceLink struct {
+	URL      string
+	Provider string
+	Edge     string
+	Expires  time.Time
+}
+
+// DirectURLSource is implemented by a MediaSource whose bytes also exist at a
+// provider URL that authorises its own read (additive). A frontend may then
+// redirect a client to that URL instead of relaying the bytes itself, which
+// lets the client re-decide its connection on every request rather than
+// inheriting the one route Ether's session pinned. ok is false when no live
+// URL is held, or when fetching it needs something a client cannot provide
+// (an addon's request headers, a private route, an expired signature).
+type DirectURLSource interface {
+	DirectURL() (link DirectSourceLink, ok bool)
+}
+
+// ArchiveVolumeSource is implemented by a MediaSource backed by one or more
+// raw archive volume streams (such as a compressed or solid RAR/7z/ZIP set on
+// Usenet) that a caller can extract through an archive reader. Calling
+// ArchiveVolumes hands volume inspection to the caller; closing the parent
+// MediaSource closes all returned volume MediaSources.
+type ArchiveVolumeSource interface {
+	ArchiveVolumes() (volumes []MediaSource, format string, member string)
+}
+
+// ResolvedMemberSource is implemented by a MediaSource that has already
+// extracted or planned the target archive member, so callers should not unwrap
+// an outer archive a second time using release.fileHint.
+type ResolvedMemberSource interface {
+	ResolvedArchiveMember() bool
+}
+
+// CompressedZipMemberSource is implemented by a MediaSource backed by the raw
+// compressed byte stream of a single member inside a provider's server-side
+// ZIP archive (such as a deflate-compressed entry inside a TorBox auto-zip).
+// Callers capable of archive extraction decode the stream using method,
+// uncompressedSize and expectedCRC32 and continue container and digest checks
+// on the decoded member.
+type CompressedZipMemberSource interface {
+	CompressedZipMember() (name string, method uint16, uncompressedSize int64, expectedCRC32 uint32)
+}
+
 type Engine interface {
 	// Open builds the byte-offset index for the main video file of an NZB.
 	Open(ctx context.Context, releaseID string, nzb []byte) (MediaSource, error)
@@ -745,16 +899,19 @@ type StreamInfo struct {
 	Interlaced        bool `json:"interlaced,omitempty"`
 	VariableFrameRate bool `json:"variableFrameRate,omitempty"`
 
-	Index         int    `json:"index"`
-	Type          string `json:"type"` // video, audio, subtitle
-	Codec         string `json:"codec"`
-	Profile       string `json:"profile,omitempty"`
-	Level         int    `json:"level,omitempty"`
-	Language      string `json:"language,omitempty"`
-	Title         string `json:"title,omitempty"`
-	CodecLongName string `json:"codecLongName,omitempty"`
-	Default       bool   `json:"default,omitempty"`
-	Forced        bool   `json:"forced,omitempty"`
+	Index int `json:"index"`
+	// ContainerTrackID is the Matroska TrackNumber when the probe read it:
+	// the id a player's own demuxer gives the track. Zero is unknown.
+	ContainerTrackID int    `json:"containerTrackId,omitempty"`
+	Type             string `json:"type"` // video, audio, subtitle
+	Codec            string `json:"codec"`
+	Profile          string `json:"profile,omitempty"`
+	Level            int    `json:"level,omitempty"`
+	Language         string `json:"language,omitempty"`
+	Title            string `json:"title,omitempty"`
+	CodecLongName    string `json:"codecLongName,omitempty"`
+	Default          bool   `json:"default,omitempty"`
+	Forced           bool   `json:"forced,omitempty"`
 	// Nil means the source did not report this ffprobe disposition.
 	DefaultDisposition *bool   `json:"defaultDisposition,omitempty"`
 	ForcedDisposition  *bool   `json:"forcedDisposition,omitempty"`
@@ -870,6 +1027,35 @@ type MediaInfo struct {
 	CopyTimeline *CopyTimeline   `json:",omitempty"`
 }
 
+// HasPlayableMedia reports whether probed facts describe something a client
+// can play: a video stream, or (for music, audiobooks and other audio-only
+// items) at least one audio stream.
+// AudioOnly reports a probed source that has audio streams and no video
+// stream. A source with no stream facts yet is not audio-only.
+func (m MediaInfo) AudioOnly() bool {
+	if m.Video() != nil {
+		return false
+	}
+	for _, st := range m.Streams {
+		if st.Type == "audio" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m MediaInfo) HasPlayableMedia() bool {
+	if m.Video() != nil {
+		return true
+	}
+	for i := range m.Streams {
+		if m.Streams[i].Type == "audio" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m MediaInfo) Video() *StreamInfo {
 	for i := range m.Streams {
 		if m.Streams[i].Type == "video" {
@@ -925,6 +1111,13 @@ type Decision struct {
 	// StripDolbyVision copies the compatible HDR10 base layer while
 	// removing Dolby Vision RPU/configuration data; it never re-encodes.
 	StripDolbyVision bool `json:"stripDolbyVision,omitempty"`
+}
+
+// EncodesVideo reports whether this decision re-encodes a video stream.
+// Audio-only items (info.Video() == nil) carry VideoCopy=false because there
+// is no video stream to copy, and they never count as video transcodes.
+func (d *Decision) EncodesVideo(info MediaInfo) bool {
+	return info.Video() != nil && !d.VideoCopy
 }
 
 type HWAccel struct {

@@ -33,7 +33,7 @@ func (s *Service) DeleteUpload(key core.RatingKey, stream core.StreamInfo) error
 	if json.Unmarshal(raw, &sel) != nil || sel.ID != id {
 		return core.ErrNotFound
 	}
-	if err := os.Remove(index); err != nil {
+	if err := s.removeIndexFile(index); err != nil {
 		return err
 	}
 	for _, ext := range []string{".srt", ".vtt", ".json"} {

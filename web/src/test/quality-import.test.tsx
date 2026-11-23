@@ -73,13 +73,14 @@ describe("Quality profile import from guides", () => {
     const editor = await screen.findByRole("dialog", { name: "UHD (TRaSH)" }, WAIT);
     expect(within(editor).getByText("Allowed qualities")).toBeInTheDocument();
     expect(within(editor).getAllByText("WEB-DL 4K").length).toBeGreaterThan(0);
-    expect(within(editor).getByLabelText("Minimum score")).toHaveValue(1000);
     // The imported profile's media and source are read-only.
     expect(
       within(editor).getByText("Set by the Radarr profile it was imported from."),
     ).toBeInTheDocument();
     expect(within(editor).getByText("TRaSH Guides")).toBeInTheDocument();
     expect(within(editor).queryByRole("radio", { name: "Both" })).not.toBeInTheDocument();
+    fireEvent.click(within(editor).getByRole("tab", { name: "Scoring" }));
+    expect(within(editor).getByLabelText("Minimum score")).toHaveValue(1000);
   });
 
   it("shows own and default format counts in the picker", async () => {

@@ -31,7 +31,6 @@ import { invalidateRegistry } from "../../lib/extend";
 import { useStreamEvent } from "../../lib/stream";
 import { CatalogueTab } from "./CatalogueTab";
 import { DirectoryBrowser } from "./DirectoryBrowser";
-import { openInStudio } from "./openInStudio";
 import { InstallDrawer } from "./InstallDrawer";
 import { InstalledPluginDrawer } from "./InstalledPluginDrawer";
 import { healthHeadline } from "./drawer/health";
@@ -106,7 +105,6 @@ export default function Plugins() {
     [plugins.length, locale],
   );
   const active = useRouteTab(tabs, "installed");
-  const installedIds = useMemo(() => new Set(plugins.map((p) => p.id)), [plugins]);
 
   const toggle = async (p: PluginSummary, on: boolean) => {
     setToggling(p.id);
@@ -211,7 +209,6 @@ export default function Plugins() {
         <RuntimeLimitsEditor />
       ) : (
         <CatalogueTab
-          installedIds={installedIds}
           onInstalled={(id) => void installed(id)}
           onSelectInstalled={(id) => {
             navigate("/plugins/installed");
@@ -351,10 +348,9 @@ function PluginCard({
   onToggle: (on: boolean) => void;
 }) {
   const health = healthHeadline(plugin);
-  const navigate = useNavigate();
   return (
     // The whole card opens the drawer; its own controls (the title button
-    // for keyboards, Open in Studio, the switch) keep their own actions.
+    // for keyboards, Configure, the switch) keep their own actions.
     <article
       aria-label={plugin.name}
       onClick={(e) => {
@@ -372,9 +368,10 @@ function PluginCard({
           <Artwork
             src={plugin.icon}
             alt={plugin.name}
+            title=""
             icon={kindIcon(plugin.kind, 20)}
             className="size-11 shrink-0 rounded-lg bg-bg-subtle"
-            imgClassName="object-contain p-1"
+            imgClassName="object-contain"
           />
         ) : (
           <span
@@ -410,17 +407,8 @@ function PluginCard({
       <p className="mt-3 line-clamp-2 min-h-10 text-sm text-fg-muted">{plugin.summary}</p>
       <div className="mt-auto flex items-center justify-between gap-3 pt-4">
         <span className="font-mono text-xs text-fg-subtle">v{plugin.version}</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="ml-auto"
-          onClick={() =>
-            void openInStudio(plugin.id)
-              .then((to) => navigate(to))
-              .catch(() => onOpen())
-          }
-        >
-          <Code2 size={14} /> {t("Open in Studio")}
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={onOpen}>
+          {t("Configure")}
         </Button>
         <Switch
           aria-label={t("Enable {name}", { name: plugin.name })}

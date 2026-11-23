@@ -2,6 +2,8 @@ package cardigann
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/newznab"
 
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/htmlindex"
@@ -59,6 +62,7 @@ type httpSession struct {
 	flareHC *http.Client
 	log     *slog.Logger
 	site    string // display name for errors
+	hosts   *newznab.HostLimiter
 
 	mu   sync.Mutex
 	ua   string
@@ -270,6 +274,14 @@ func (s *httpSession) roundTrip(ctx context.Context, req request) (*response, er
 			return nil, err
 		}
 		for k, vs := range req.headers {
+			if strings.EqualFold(k, "Connection") {
+				for _, v := range vs {
+					if strings.EqualFold(v, "close") {
+						hreq.Close = true
+					}
+				}
+				continue
+			}
 			for _, v := range vs {
 				hreq.Header.Add(k, v)
 			}
@@ -286,8 +298,13 @@ func (s *httpSession) roundTrip(ctx context.Context, req request) (*response, er
 		if s.log != nil {
 			s.log.Debug("cardigann request", "site", s.site, "method", method, "host", target.Host, "path", target.Path)
 		}
+		releaseHost, err := s.hosts.Acquire(ctx, target.String())
+		if err != nil {
+			return nil, err
+		}
 		hresp, err := s.client.Do(hreq)
 		if err != nil {
+			releaseHost()
 			// url.Error embeds the URL, which may carry passkeys.
 			var ue *url.Error
 			if errors.As(err, &ue) {
@@ -295,8 +312,27 @@ func (s *httpSession) roundTrip(ctx context.Context, req request) (*response, er
 			}
 			return nil, fmt.Errorf("%s: request to %s failed: %w", s.site, target.Host, err)
 		}
-		data, err := io.ReadAll(io.LimitReader(hresp.Body, maxResponseBytes+1))
+		var bodyReader io.ReadCloser = hresp.Body
+		if !hresp.Uncompressed {
+			switch strings.ToLower(strings.TrimSpace(hresp.Header.Get("Content-Encoding"))) {
+			case "gzip":
+				zr, zerr := gzip.NewReader(hresp.Body)
+				if zerr != nil {
+					hresp.Body.Close()
+					releaseHost()
+					return nil, fmt.Errorf("%s: decode gzip response: %w", s.site, zerr)
+				}
+				bodyReader = zr
+			case "deflate":
+				bodyReader = flate.NewReader(hresp.Body)
+			}
+		}
+		data, err := io.ReadAll(io.LimitReader(bodyReader, maxResponseBytes+1))
+		if bodyReader != hresp.Body {
+			bodyReader.Close()
+		}
 		hresp.Body.Close()
+		releaseHost()
 		if err != nil {
 			return nil, fmt.Errorf("%s: read response: %w", s.site, err)
 		}
@@ -384,6 +420,11 @@ func (s *httpSession) solve(ctx context.Context, flare, target string) (*flareSo
 	if s.log != nil {
 		s.log.Info("cardigann: solving browser challenge through FlareSolverr", "site", s.site)
 	}
+	releaseHost, err := s.hosts.Acquire(ctx, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHost()
 	resp, err := s.flareHC.Do(req)
 	if err != nil {
 		var ue *url.Error

@@ -13,6 +13,13 @@ import (
 )
 
 func init() {
+	store.RegisterAfter("stats_device_registry", "stats_seen_devices")
+	store.Register("stats_device_registry", 2, `ALTER TABLE stats_device_registry ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE stats_device_registry ADD COLUMN latest_play_id TEXT NOT NULL DEFAULT '';
+UPDATE stats_device_registry SET latest_play_id=COALESCE((SELECT p.id FROM stats_plays p WHERE p.platform=stats_device_registry.platform AND p.device=stats_device_registry.name ORDER BY p.updated DESC,p.id DESC LIMIT 1),'') WHERE id<>1;
+UPDATE stats_device_registry SET last_seen=COALESCE((SELECT p.updated FROM stats_plays p WHERE p.id=stats_device_registry.latest_play_id),0);
+CREATE INDEX stats_device_registry_seen ON stats_device_registry(last_seen DESC,id DESC);`)
+
 	store.Register("stats_device_registry", 1, `
 CREATE TABLE stats_device_registry_counter (id INTEGER PRIMARY KEY CHECK(id=1),next_id INTEGER NOT NULL);
 INSERT INTO stats_device_registry_counter(id,next_id) VALUES(1,2);

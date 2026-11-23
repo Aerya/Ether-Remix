@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/braedonsaunders/ether/internal/agent/tools"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/onair"
-	"strconv"
 )
 
 type OnAirService interface {
@@ -28,7 +30,7 @@ func lookInput(in map[string]any) (onair.Look, error) {
 	if e != nil || len(b) > 64<<10 {
 		return l, tools.Userf("look must be an object under 64 KB")
 	}
-	e = json.Unmarshal(b, &l)
+	l, e = onair.ParseLookDraft(b)
 	if e != nil {
 		return l, tools.Userf("invalid look: %v", e)
 	}
@@ -56,7 +58,7 @@ func channelSummary(ctx context.Context, d Deps, id string) (map[string]any, err
 	return map[string]any{"id": c.ID, "name": c.Name, "kind": c.Kind, "genres": genres, "titles": titles, "look": c.Look}, nil
 }
 func onairTools(d Deps) []tools.Tool {
-	draft := tool(tools.Tool{Name: "look_draft", Title: "Draft a style", ReadOnly: true, OpenWorld: true, Description: "Build a style in visible stages. First submit look with a brand kit and empty scenes, then submit the cumulative look with one more scene per call. Omit prompt to validate a supplied look directly; invalid scenes return repair errors. Use prompt only for a complete generated revision. Returns complete validated owned scenes, controls, motion and sound without saving. Include the current look as look to preserve unsaved edits, or lookId for a saved base. The owner saves with Save style. document.poster is a numeric timestamp in seconds (for example 0), never an image or string. Layer motion behaviours use the field behave (not behaviours or behaviors). " + onair.StyleDraftGuide, InputSchema: schema(map[string]any{"prompt": pString("Optional generated revision request. Omit when submitting look directly; do not send null.", 2000), "channelId": pString("Optional local channel id to match programming", 128), "lookId": pString("Optional saved base look id", 128), "sceneId": pString("Optional scene id to revise; preserves all other scenes", 128), "look": map[string]any{"type": "object", "additionalProperties": true, "description": "Complete cumulative style object. Required when prompt is omitted. First call: brand kit and scenes: []; subsequent calls: preserve existing scenes and add one. Never send null."}}), Execute: func(ctx context.Context, _ tools.Principal, in map[string]any) (tools.Result, error) {
+	draft := tool(tools.Tool{Name: "look_draft", Title: "Draft a style", ReadOnly: true, OpenWorld: true, Description: "Build a complete 9-role style in visible stages. First submit look with a brand kit, all 9 roles in roles, and scenes: [], then submit the cumulative look adding 1–3 designed scenes per call until all 9 roles (ident, upnext, tonight, break, back, offair, welcome, lowerthird, bug) are covered and missingRoles is empty. Never claim the style is done while missingRoles is non-empty. Omit prompt to validate a supplied look directly; obvious schema errors are repaired and remaining errors are returned. Use prompt only for a complete generated revision. Returns complete validated owned scenes, controls, motion and sound without saving. Include the current look as look to preserve unsaved edits, or lookId for a saved base. The owner saves with Save style. document.poster is a numeric timestamp in seconds (for example 4), never an image or string. Layer motion behaviours use the field behave (not behaviours or behaviors). " + onair.StyleDraftGuide, InputSchema: schema(map[string]any{"prompt": pString("Optional generated revision request. Omit when submitting look directly; do not send null.", 2000), "channelId": pString("Optional local channel id to match programming", 128), "lookId": pString("Optional saved base look id", 128), "sceneId": pString("Optional scene id to revise; preserves all other scenes", 128), "look": map[string]any{"type": "object", "additionalProperties": true, "description": "Complete cumulative style object. Required when prompt is omitted. First call: brand kit, roles for all 9 roles, and scenes: []; subsequent calls: preserve existing scenes and add 1–3 complete scenes until missingRoles is empty. Never send null."}}), Execute: func(ctx context.Context, _ tools.Principal, in map[string]any) (tools.Result, error) {
 		if d.OnAir == nil {
 			return tools.Result{}, tools.Userf("On Air is unavailable")
 		}
@@ -110,7 +112,33 @@ func onairTools(d Deps) []tools.Tool {
 		if e != nil {
 			return tools.Result{}, tools.Userf("%v", e)
 		}
-		return tools.Result{Data: map[string]any{"look": l}}, nil
+		if sceneID != "" {
+			found := false
+			for _, sc := range l.Scenes {
+				if sc.ID == sceneID && len(sc.Document.Layers) > 0 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return tools.Result{}, tools.Userf("include a non-empty scene %q in look.scenes", sceneID)
+			}
+			return tools.Result{Data: map[string]any{"complete": true, "look": l, "missingRoles": []string{}}}, nil
+		}
+		missing := onair.MissingRoles(l)
+		if missing == nil {
+			missing = []string{}
+		}
+		data := map[string]any{
+			"complete":        len(missing) == 0,
+			"incompleteRoles": missing,
+			"look":            l,
+			"missingRoles":    missing,
+		}
+		if len(missing) > 0 {
+			data["action"] = fmt.Sprintf("Style draft is incomplete: call look_draft with the cumulative look adding enabled, non-empty scenes for (%s) before finishing.", strings.Join(missing, ", "))
+		}
+		return tools.Result{Data: data}, nil
 	}})
 	alias := draft
 	alias.Name = "livetv_look_draft"
@@ -126,7 +154,7 @@ func onairTools(d Deps) []tools.Tool {
 		v, e := channelSummary(ctx, d, id)
 		return tools.Result{Data: v}, e
 	}}),
-		tool(tools.Tool{Name: "livetv_look_save", Title: "Save a channel look", Description: "Propose saving a validated On Air look. Nothing is written until the owner approves.", InputSchema: schema(map[string]any{"look": map[string]any{"type": "object", "additionalProperties": true}}, "look"), Execute: func(ctx context.Context, _ tools.Principal, in map[string]any) (tools.Result, error) {
+		tool(tools.Tool{Name: "livetv_look_save", Title: "Save a channel look", Description: "Propose saving a complete validated 9-role On Air look. Nothing is written until the owner approves.", InputSchema: schema(map[string]any{"look": map[string]any{"type": "object", "additionalProperties": true}}, "look"), Execute: func(ctx context.Context, _ tools.Principal, in map[string]any) (tools.Result, error) {
 			if d.OnAir == nil {
 				return tools.Result{}, tools.Userf("On Air is unavailable")
 			}
@@ -137,6 +165,9 @@ func onairTools(d Deps) []tools.Tool {
 			l, e = d.OnAir.Draft(ctx, l)
 			if e != nil {
 				return tools.Result{}, tools.Userf("%v", e)
+			}
+			if missing := onair.MissingRoles(l); len(missing) > 0 {
+				return tools.Result{}, tools.Userf("look is missing required roles (%s); include at least one enabled, non-empty scene for every role", strings.Join(missing, ", "))
 			}
 			b, _ := json.Marshal(l)
 			var v map[string]any

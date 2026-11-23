@@ -527,7 +527,8 @@ export function ArtworkPreview({
         <Artwork
           src={artworkPreviewURL(spec.artwork.url)}
           alt=""
-          title={t("Add an image URL")}
+          title={size === "sm" ? "" : t("Add an image URL")}
+          icon={<Link2 size={size === "sm" ? 16 : 22} aria-hidden />}
           className="size-full"
           eager
         />

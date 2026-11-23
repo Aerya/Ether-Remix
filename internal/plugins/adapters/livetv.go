@@ -28,9 +28,10 @@ type channelSourceKind struct {
 	meta       plugins.ChannelsMeta
 
 	// mode caches whether the plugin is a plain Stremio add-on (its
-	// channels come from `tv` catalogs) once its record has been read.
-	modeMu sync.Mutex
-	mode   channelMode
+	// channels come from `tv` or event catalogs) once its record has been read.
+	modeMu           sync.Mutex
+	mode             channelMode
+	onDemandInterval time.Duration
 }
 
 type channelMode int
@@ -51,10 +52,22 @@ func (k *channelSourceKind) stremioAddon(ctx context.Context) bool {
 			k.mode = modeNative
 			if rec.Manifest.SpeaksStremio() {
 				k.mode = modeAddon
+				if rec.Manifest.ServesLiveEvents() {
+					k.onDemandInterval = eventAddonRefreshInterval
+				}
 			}
 		}
 	}
 	return k.mode == modeAddon
+}
+
+// OnDemandRefreshInterval reports the short refresh interval used while an
+// event-based add-on source is in use, or zero for regular scheduled sources.
+func (k *channelSourceKind) OnDemandRefreshInterval() time.Duration {
+	k.stremioAddon(context.Background())
+	k.modeMu.Lock()
+	defer k.modeMu.Unlock()
+	return k.onDemandInterval
 }
 
 func (k *channelSourceKind) ID() string {
@@ -338,9 +351,22 @@ func (k *channelSourceKind) fetchChannelGuide(ctx context.Context, rawChID strin
 
 // openPluginStream resolves a lazy plugin://<pluginID>/... StreamSource at
 // tune time under the 3-second Open deadline (SPEC §5.1.2).
-func (b *Bridge) openPluginStream(ctx context.Context, _ livetv.Channel, src livetv.StreamSource) (string, http.Header, error) {
+func (b *Bridge) openPluginStream(ctx context.Context, c livetv.Channel, src livetv.StreamSource) (string, http.Header, error) {
 	if b.mgr == nil {
 		return "", nil, core.ErrNotAvailable
+	}
+	if _, _, _, isEvent := parseEventChannelStreamURL(src.URL); isEvent {
+		if b.tv == nil {
+			return "", nil, core.ErrNotAvailable
+		}
+		subs, _, _, _, err := b.expandPluginStream(ctx, b.tv, c, src)
+		if err != nil || len(subs) == 0 {
+			if err != nil {
+				return "", nil, err
+			}
+			return "", nil, core.ErrNotAvailable
+		}
+		return subs[0].URL, headersFromMap(subs[0].Headers), nil
 	}
 	u, err := url.Parse(src.URL)
 	if err != nil || u.Scheme != "plugin" || u.Host == "" {

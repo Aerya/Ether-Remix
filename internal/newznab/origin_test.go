@@ -17,7 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// The label, feed GUID and NZB directory deliberately collide. Only the
+// The label, feed GUID and vault deliberately collide. Only the
 // configured originating client may supply a private trust context or cache.
 func TestOriginatingIndexerIdentity(t *testing.T) {
 	ctx := context.Background()
@@ -49,8 +49,8 @@ func TestOriginatingIndexerIdentity(t *testing.T) {
 		{ID: "origin-a", Name: "Duplicate label", URL: a.URL, Enabled: true},
 		{ID: "origin-b", Name: "Duplicate label", URL: b.URL, Enabled: true},
 	}
-	dir := t.TempDir()
-	m := NewManager(db, cfgs, Options{NZBDir: dir})
+	v := &testVault{}
+	m := NewManager(db, cfgs, Options{Vault: v})
 	request := core.SearchRequest{Type: core.TypeMovie, Title: "Two Origins", Year: 2020}
 	releases, err := m.Search(ctx, request)
 	if err != nil || len(releases) != 2 {
@@ -73,17 +73,14 @@ func TestOriginatingIndexerIdentity(t *testing.T) {
 			}
 		}
 	}
-	if grabsA.Load() != 1 || grabsB.Load() != 1 {
-		t.Fatalf("shared disk cache crossed origins: A=%d B=%d", grabsA.Load(), grabsB.Load())
-	}
 	// Backend/cached releases can retain the same opaque ID even when their
-	// originating identity is already bound. The disk namespace must bind both.
+	// originating identity is already bound. The vault alias must bind both.
 	for _, id := range []string{"origin-a", "origin-b"} {
 		r := byID[id]
 		r.ID = "shared-opaque-release"
 		got, err := m.FetchNZB(ctx, r)
 		if err != nil || string(got) != bodies[id] {
-			t.Fatalf("opaque ID crossed client disk cache: origin=%s got=%s err=%v", id, got, err)
+			t.Fatalf("opaque ID crossed client vault alias: origin=%s got=%s err=%v", id, got, err)
 		}
 	}
 	for _, c := range m.Clients() {
@@ -136,7 +133,7 @@ func TestOriginatingIndexerIdentity(t *testing.T) {
 	renamed := append([]config.Indexer(nil), cfgs...)
 	renamed[0].Name = "Renamed A"
 	renamed[1].Name = "Renamed B"
-	restarted := NewManager(db, []config.Indexer{renamed[1], renamed[0]}, Options{NZBDir: t.TempDir()})
+	restarted := NewManager(db, []config.Indexer{renamed[1], renamed[0]}, Options{Vault: &testVault{}})
 	cached, err := restarted.Search(ctx, request)
 	if err != nil || len(cached) != 2 {
 		t.Fatalf("restart cache binding failed: %+v %v", cached, err)
@@ -152,8 +149,8 @@ func TestOriginatingIndexerIdentity(t *testing.T) {
 		t.Fatalf("bulk cache lost origin scope: %+v %v", discovered, err)
 	}
 	// Unbound or unknown records cannot pick the first duplicate, even when a
-	// shared on-disk descriptor is already available. Explicit IDs also fail closed.
-	ambiguous := NewManager(db, cfgs, Options{NZBDir: dir})
+	// shared stored descriptor is already available. Explicit IDs also fail closed.
+	ambiguous := NewManager(db, cfgs, Options{Vault: v})
 	beforeA, beforeB := grabsA.Load(), grabsB.Load()
 	for _, id := range []string{"", "removed-indexer"} {
 		r := byID["origin-a"]

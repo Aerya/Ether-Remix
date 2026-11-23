@@ -38,8 +38,8 @@ func (e *castExperience) AuthorizePersonImages(_ context.Context, viewer *core.V
 	}
 	return allowed, nil
 }
-func (e *castExperience) AuthorizePersonImage(ctx context.Context, viewer *core.Viewer, device core.Device, item core.RatingKey, image frontend.Image, admission func(context.Context) error) error {
-	if !e.allowed || viewer.ID != 1 || device.ID != "tv" || item != core.MovieKey(42) || !frontend.SameImage(image, e.image) {
+func (e *castExperience) AuthorizePersonImage(ctx context.Context, viewer *core.Viewer, _ core.Device, item core.RatingKey, image frontend.Image, admission func(context.Context) error) error {
+	if !e.allowed || viewer.ID != 1 || item != core.MovieKey(42) || !frontend.SameImage(image, e.image) {
 		return core.ErrUnauthorized
 	}
 	if admission != nil {
@@ -146,21 +146,22 @@ func testVelaCreditArtworkScopedGrants(t *testing.T, field string) {
 		t.Fatal(err)
 	}
 	secret := u.Path[len("/vela/v0/images/"):]
-	serve := func() int {
+	serveWithToken := func(bearer string) int {
 		r := httptest.NewRequest(http.MethodGet, u.String(), nil)
 		r.SetPathValue("secret", secret)
+		if bearer != "" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
+		}
 		w := httptest.NewRecorder()
 		i.image(w, r)
 		return w.Code
 	}
+	serve := func() int { return serveWithToken("") }
 	if code := serve(); code != 200 {
 		t.Fatalf("portrait status=%d", code)
 	}
-	if err := service.Revoke(ctx, otherCredential, secret); err == nil {
-		t.Fatal("another viewer revoked portrait")
-	}
-	if code := serve(); code != 200 {
-		t.Fatalf("other viewer affected portrait: %d", code)
+	if code := serveWithToken(otherCredential); code != 404 {
+		t.Fatalf("another viewer opened portrait: %d", code)
 	}
 	exp.allowed = false
 	if code := serve(); code != 404 {
@@ -170,7 +171,13 @@ func testVelaCreditArtworkScopedGrants(t *testing.T, field string) {
 	if err := service.Revoke(ctx, credential, secret); err != nil {
 		t.Fatal(err)
 	}
+	if code := serve(); code != 200 {
+		t.Fatalf("documented no-op revoke denied active portrait: %d", code)
+	}
+	if _, err := db.Exec(`UPDATE auth_users SET active=0 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
 	if code := serve(); code != 404 {
-		t.Fatalf("revoked portrait status=%d", code)
+		t.Fatalf("deactivated viewer portrait status=%d", code)
 	}
 }

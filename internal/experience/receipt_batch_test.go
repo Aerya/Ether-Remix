@@ -22,10 +22,15 @@ func TestReceiptBatchAtomicOnLaterBindFailure(t *testing.T) {
 	failure := errors.New("later bind")
 	opts.bindHeaders = func(ctx context.Context, tx *sql.Tx, hs []capability.Header) error {
 		calls++
-		if calls == 2 {
-			return failure
+		for n, h := range hs {
+			if n == 1 {
+				return failure
+			}
+			if err := capability.BindHeadersInTx(ctx, tx, []capability.Header{h}); err != nil {
+				return err
+			}
 		}
-		return capability.BindHeadersInTx(ctx, tx, hs)
+		return nil
 	}
 	s, err := NewReceipts(opts)
 	if err != nil {
@@ -36,7 +41,7 @@ func TestReceiptBatchAtomicOnLaterBindFailure(t *testing.T) {
 		subjects[i] = ReceiptSubject{Kind: "title", ID: fmt.Sprint(i)}
 	}
 	tokens, err := s.IssueBatch(context.Background(), &core.User{ID: 1}, core.Device{ID: "tv"}, "jellyfin", subjects)
-	if !errors.Is(err, failure) || tokens != nil || calls != 2 {
+	if !errors.Is(err, failure) || tokens != nil || calls != 1 {
 		t.Fatalf("tokens=%v err=%v calls=%d", tokens, err, calls)
 	}
 	for _, table := range []string{"experience_receipts", "capability_headers"} {

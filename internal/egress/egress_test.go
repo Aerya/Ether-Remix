@@ -24,7 +24,7 @@ func TestRouteMatrix(t *testing.T) {
 	prev := Current()
 	t.Cleanup(func() { Set(prev) })
 
-	Set(Policy{Enabled: true, Proxy: u, Indexers: true, Stremio: true, Debrid: true, Usenet: true})
+	Set(Policy{Enabled: true, Proxy: u, Indexers: true, Stremio: true, LiveTV: true, Debrid: true, Usenet: true})
 	if err := get(CapIndexers, "http://indexer.example/search"); err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +43,17 @@ func TestRouteMatrix(t *testing.T) {
 	if hits != before {
 		t.Fatalf("direct or metadata used the proxy: %d -> %d", before, hits)
 	}
+
+	// Live TV alone through the proxy; add-ons stay direct.
+	Set(Policy{Enabled: true, Proxy: u, LiveTV: true})
+	if err := get(CapLiveTV, "http://provider.example/live"); err != nil {
+		t.Fatal(err)
+	}
+	_ = get(CapStremio, "http://indexer.example/addon")
+	if hits != before+1 {
+		t.Fatalf("Live TV-only route hits %d, want %d", hits, before+1)
+	}
+	before = hits
 
 	Set(Policy{Enabled: true, Proxy: u, Metadata: true})
 	if err := get(CapMetadata, "http://indexer.example/meta"); err != nil {

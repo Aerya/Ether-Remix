@@ -27,7 +27,22 @@ func (c *Client) bindReleases(results []core.Release) []core.Release {
 		}
 	}
 	c.markOnDemand(out)
+	c.stampSourceOrder(out)
 	return out
+}
+
+// stampSourceOrder records each Stremio add-on result's 1-based position in
+// the add-on's response so later cache sorting or asynchronous batching cannot
+// lose it. Existing positive positions survive re-binding.
+func (c *Client) stampSourceOrder(results []core.Release) {
+	if cfg := c.Config(); !cfg.IsStremio() && !cfg.IsAddon() {
+		return
+	}
+	for i := range results {
+		if results[i].SourceOrder <= 0 {
+			results[i].SourceOrder = i + 1
+		}
+	}
 }
 
 // markOnDemand marks a Stremio add-on's stream links on demand

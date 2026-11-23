@@ -59,16 +59,19 @@
               "markers",
               "notify",
               "events",
+              "flow_actions",
               "ranking_step",
               "rule_condition",
               "tools",
               "ui",
               "onair_content",
               "livetv_pack",
+              "poster_badges",
               "catalog_provider",
               "kind_resolver",
               "frontend_adapter",
-              "matcher"
+              "matcher",
+              "live_events"
             ]
           },
           "type": "array",
@@ -121,7 +124,109 @@
               "type": "array"
             },
             "events": {
+              "description": "Event subscriptions and custom events published to Ether's event bus. At least one of subscribe or publish is required when events capability is declared.",
               "properties": {
+                "publish": {
+                  "items": {
+                    "properties": {
+                      "description": {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "items": {
+                          "properties": {
+                            "description": {
+                              "maxLength": 200,
+                              "type": "string"
+                            },
+                            "enum": {
+                              "items": {
+                                "properties": {
+                                  "label": {
+                                    "maxLength": 60,
+                                    "type": "string"
+                                  },
+                                  "value": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "value"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "example": true,
+                            "filterable": {
+                              "type": "boolean"
+                            },
+                            "label": {
+                              "maxLength": 60,
+                              "type": "string"
+                            },
+                            "name": {
+                              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$",
+                              "type": "string"
+                            },
+                            "pii": {
+                              "type": "boolean"
+                            },
+                            "secret": {
+                              "type": "boolean"
+                            },
+                            "type": {
+                              "enum": [
+                                "string",
+                                "int",
+                                "float",
+                                "bool",
+                                "duration_ms",
+                                "timestamp",
+                                "enum",
+                                "string_list",
+                                "object"
+                              ],
+                              "type": "string"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "type",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "key": {
+                        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,2}$",
+                        "type": "string"
+                      },
+                      "label": {
+                        "maxLength": 60,
+                        "type": "string"
+                      },
+                      "version": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 64,
+                  "type": "array"
+                },
                 "subscribe": {
                   "items": {
                     "type": "string"
@@ -129,10 +234,206 @@
                   "type": "array"
                 }
               },
-              "required": [
-                "subscribe"
-              ],
               "type": "object"
+            },
+            "flowActions": {
+              "description": "Custom actions contributed to Ether Flows (requires flow_actions capability).",
+              "items": {
+                "properties": {
+                  "description": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "idempotent": {
+                    "type": "boolean"
+                  },
+                  "key": {
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                    "type": "string"
+                  },
+                  "label": {
+                    "maxLength": 60,
+                    "type": "string"
+                  },
+                  "outputs": {
+                    "items": {
+                      "properties": {
+                        "description": {
+                          "maxLength": 200,
+                          "type": "string"
+                        },
+                        "enum": {
+                          "items": {
+                            "properties": {
+                              "label": {
+                                "maxLength": 60,
+                                "type": "string"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "example": true,
+                        "filterable": {
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "maxLength": 60,
+                          "type": "string"
+                        },
+                        "name": {
+                          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$",
+                          "type": "string"
+                        },
+                        "pii": {
+                          "type": "boolean"
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "bool",
+                            "duration_ms",
+                            "timestamp",
+                            "enum",
+                            "string_list",
+                            "object"
+                          ],
+                          "type": "string"
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "type",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "params": {
+                    "items": {
+                      "properties": {
+                        "default": true,
+                        "description": {
+                          "maxLength": 200,
+                          "type": "string"
+                        },
+                        "enum": {
+                          "items": {
+                            "properties": {
+                              "label": {
+                                "maxLength": 60,
+                                "type": "string"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "key": {
+                          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+                          "type": "string"
+                        },
+                        "label": {
+                          "maxLength": 60,
+                          "type": "string"
+                        },
+                        "picker": {
+                          "enum": [
+                            "channel",
+                            "viewer",
+                            "library",
+                            "source",
+                            "event",
+                            "plugin"
+                          ],
+                          "type": "string"
+                        },
+                        "required": {
+                          "type": "boolean"
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "template": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "bool",
+                            "duration_ms",
+                            "timestamp",
+                            "enum",
+                            "string_list",
+                            "object"
+                          ],
+                          "type": "string"
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "type",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "route": {
+                    "pattern": "^/",
+                    "type": "string"
+                  },
+                  "sideEffect": {
+                    "type": "boolean"
+                  },
+                  "timeout": {
+                    "description": "Go duration up to 60s (default 30s).",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "route"
+                ],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "type": "array"
             },
             "frontendAdapters": {
               "items": {
@@ -166,6 +467,12 @@
                   },
                   "protocolHint": {
                     "type": "string"
+                  },
+                  "searchPaths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
                 "type": "object"
@@ -242,6 +549,29 @@
               },
               "type": "array"
             },
+            "liveFeeds": {
+              "items": {
+                "properties": {
+                  "entityKinds": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "minIntervalSec": {
+                    "type": "integer"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
             "markers": {
               "properties": {
                 "kinds": {
@@ -280,6 +610,26 @@
                   },
                   "browse": {
                     "properties": {
+                      "expand": {
+                        "properties": {
+                          "facets": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "levels": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "ttlHours": {
+                            "type": "integer"
+                          }
+                        },
+                        "type": "object"
+                      },
                       "facets": {
                         "items": {
                           "type": "string"
@@ -327,6 +677,9 @@
                           },
                           "type": "array"
                         },
+                        "fact": {
+                          "type": "boolean"
+                        },
                         "indexed": {
                           "type": "boolean"
                         },
@@ -348,6 +701,12 @@
                             "strings",
                             "people"
                           ]
+                        },
+                        "values": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
                         }
                       },
                       "type": "object"
@@ -372,8 +731,24 @@
                         "label": {
                           "type": "string"
                         },
+                        "media": {
+                          "enum": [
+                            "video",
+                            "music",
+                            "audiobook",
+                            "book",
+                            "podcast",
+                            "photo"
+                          ]
+                        },
+                        "parent": {
+                          "type": "string"
+                        },
                         "playable": {
                           "type": "boolean"
+                        },
+                        "role": {
+                          "type": "string"
                         }
                       },
                       "type": "object"
@@ -382,11 +757,623 @@
                   },
                   "library": {
                     "properties": {
+                      "card": {
+                        "enum": [
+                          "poster",
+                          "landscape",
+                          "square"
+                        ]
+                      },
+                      "dateDisplay": {
+                        "enum": [
+                          "year",
+                          "date"
+                        ]
+                      },
                       "icon": {
                         "type": "string"
                       },
                       "name": {
                         "type": "string"
+                      },
+                      "shelves": {
+                        "items": {
+                          "properties": {
+                            "direction": {
+                              "enum": [
+                                "asc",
+                                "desc"
+                              ]
+                            },
+                            "facet": {
+                              "type": "string"
+                            },
+                            "filters": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "exclude": {
+                                      "items": {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "groups": {
+                                      "items": {
+                                        "properties": {
+                                          "action": {
+                                            "type": "string"
+                                          },
+                                          "match": {
+                                            "type": "string"
+                                          },
+                                          "mediaType": {
+                                            "type": "string"
+                                          },
+                                          "name": {
+                                            "type": "string"
+                                          },
+                                          "rules": {
+                                            "items": {
+                                              "properties": {
+                                                "field": {
+                                                  "type": "string"
+                                                },
+                                                "label": {
+                                                  "type": "string"
+                                                },
+                                                "labels": {
+                                                  "items": {
+                                                    "type": "string"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "op": {
+                                                  "type": "string"
+                                                },
+                                                "value": {}
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "scope": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "match": {
+                                      "type": "string"
+                                    },
+                                    "rules": {
+                                      "items": {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "visibilityDefault": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "field": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "labels": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "op": {
+                                      "type": "string"
+                                    },
+                                    "value": {}
+                                  },
+                                  "type": "object"
+                                },
+                                {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              ]
+                            },
+                            "key": {
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "level": {
+                              "type": "string"
+                            },
+                            "sort": {
+                              "enum": [
+                                "title",
+                                "added",
+                                "released",
+                                "year",
+                                "rating",
+                                "index",
+                                "lastViewed"
+                              ]
+                            },
+                            "value": {
+                              "type": "string"
+                            },
+                            "values": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "tabs": {
+                        "items": {
+                          "properties": {
+                            "card": {
+                              "enum": [
+                                "poster",
+                                "landscape",
+                                "square"
+                              ]
+                            },
+                            "direction": {
+                              "enum": [
+                                "asc",
+                                "desc"
+                              ]
+                            },
+                            "facet": {
+                              "type": "string"
+                            },
+                            "filters": {
+                              "properties": {
+                                "exclude": {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "groups": {
+                                  "items": {
+                                    "properties": {
+                                      "action": {
+                                        "type": "string"
+                                      },
+                                      "match": {
+                                        "type": "string"
+                                      },
+                                      "mediaType": {
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "type": "string"
+                                      },
+                                      "rules": {
+                                        "items": {
+                                          "properties": {
+                                            "field": {
+                                              "type": "string"
+                                            },
+                                            "label": {
+                                              "type": "string"
+                                            },
+                                            "labels": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "op": {
+                                              "type": "string"
+                                            },
+                                            "value": {}
+                                          },
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "scope": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "match": {
+                                  "type": "string"
+                                },
+                                "rules": {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "visibilityDefault": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "key": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "enum": [
+                                "recommended",
+                                "library",
+                                "collections",
+                                "people",
+                                "view",
+                                "live"
+                              ]
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "layout": {
+                              "enum": [
+                                "grid",
+                                "list",
+                                "timeline"
+                              ]
+                            },
+                            "level": {
+                              "type": "string"
+                            },
+                            "order": {
+                              "enum": [
+                                "count",
+                                "name"
+                              ]
+                            },
+                            "search": {
+                              "type": "boolean"
+                            },
+                            "searchPlaceholder": {
+                              "type": "string"
+                            },
+                            "shelves": {
+                              "items": {
+                                "properties": {
+                                  "direction": {
+                                    "enum": [
+                                      "asc",
+                                      "desc"
+                                    ]
+                                  },
+                                  "facet": {
+                                    "type": "string"
+                                  },
+                                  "filters": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "type": "object"
+                                      },
+                                      {
+                                        "properties": {
+                                          "exclude": {
+                                            "items": {
+                                              "properties": {
+                                                "field": {
+                                                  "type": "string"
+                                                },
+                                                "label": {
+                                                  "type": "string"
+                                                },
+                                                "labels": {
+                                                  "items": {
+                                                    "type": "string"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "op": {
+                                                  "type": "string"
+                                                },
+                                                "value": {}
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "groups": {
+                                            "items": {
+                                              "properties": {
+                                                "action": {
+                                                  "type": "string"
+                                                },
+                                                "match": {
+                                                  "type": "string"
+                                                },
+                                                "mediaType": {
+                                                  "type": "string"
+                                                },
+                                                "name": {
+                                                  "type": "string"
+                                                },
+                                                "rules": {
+                                                  "items": {
+                                                    "properties": {
+                                                      "field": {
+                                                        "type": "string"
+                                                      },
+                                                      "label": {
+                                                        "type": "string"
+                                                      },
+                                                      "labels": {
+                                                        "items": {
+                                                          "type": "string"
+                                                        },
+                                                        "type": "array"
+                                                      },
+                                                      "op": {
+                                                        "type": "string"
+                                                      },
+                                                      "value": {}
+                                                    },
+                                                    "type": "object"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "scope": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "match": {
+                                            "type": "string"
+                                          },
+                                          "rules": {
+                                            "items": {
+                                              "properties": {
+                                                "field": {
+                                                  "type": "string"
+                                                },
+                                                "label": {
+                                                  "type": "string"
+                                                },
+                                                "labels": {
+                                                  "items": {
+                                                    "type": "string"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "op": {
+                                                  "type": "string"
+                                                },
+                                                "value": {}
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "visibilityDefault": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "type": "object"
+                                      },
+                                      {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      {
+                                        "items": {
+                                          "properties": {
+                                            "field": {
+                                              "type": "string"
+                                            },
+                                            "label": {
+                                              "type": "string"
+                                            },
+                                            "labels": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "op": {
+                                              "type": "string"
+                                            },
+                                            "value": {}
+                                          },
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      }
+                                    ]
+                                  },
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "label": {
+                                    "type": "string"
+                                  },
+                                  "level": {
+                                    "type": "string"
+                                  },
+                                  "sort": {
+                                    "enum": [
+                                      "title",
+                                      "added",
+                                      "released",
+                                      "year",
+                                      "rating",
+                                      "index",
+                                      "lastViewed"
+                                    ]
+                                  },
+                                  "value": {
+                                    "type": "string"
+                                  },
+                                  "values": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "sort": {
+                              "enum": [
+                                "title",
+                                "added",
+                                "released",
+                                "year",
+                                "rating",
+                                "index",
+                                "lastViewed"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
@@ -399,6 +1386,16 @@
                     },
                     "type": "object"
                   },
+                  "media": {
+                    "enum": [
+                      "video",
+                      "music",
+                      "audiobook",
+                      "book",
+                      "podcast",
+                      "photo"
+                    ]
+                  },
                   "present": {
                     "properties": {
                       "adapterOnly": {
@@ -408,6 +1405,9 @@
                         "properties": {
                           "collectionType": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           },
                           "itemTypes": {
                             "additionalProperties": {
@@ -422,12 +1422,18 @@
                         "properties": {
                           "base": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           }
                         },
                         "type": "object"
                       },
                       "silo": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -436,6 +1442,20 @@
                       },
                       "stremio": {
                         "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
+                          "type": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "vela": {
+                        "properties": {
+                          "default": {
+                            "type": "boolean"
+                          },
                           "type": {
                             "type": "string"
                           }
@@ -446,6 +1466,9 @@
                         "properties": {
                           "category": {
                             "type": "string"
+                          },
+                          "default": {
+                            "type": "boolean"
                           }
                         },
                         "type": "object"
@@ -593,6 +1616,31 @@
               },
               "type": "array"
             },
+            "posterBadges": {
+              "items": {
+                "properties": {
+                  "description": {
+                    "maxLength": 120,
+                    "type": "string"
+                  },
+                  "key": {
+                    "pattern": "^[a-z][a-z0-9_]{0,31}$",
+                    "type": "string"
+                  },
+                  "label": {
+                    "maxLength": 40,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "maxItems": 4,
+              "type": "array"
+            },
             "rankingSteps": {
               "items": {
                 "properties": {
@@ -640,6 +1688,125 @@
                   "key",
                   "label"
                 ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "screens": {
+              "items": {
+                "properties": {
+                  "feed": {
+                    "type": "string"
+                  },
+                  "frontends": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "sections": {
+                    "items": {
+                      "properties": {
+                        "entityKind": {
+                          "type": "string"
+                        },
+                        "feed": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "league": {
+                          "type": "string"
+                        },
+                        "leagues": {
+                          "items": {
+                            "properties": {
+                              "abbr": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "logo": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "query": {
+                          "properties": {
+                            "category": {
+                              "type": "string"
+                            },
+                            "favorites": {
+                              "type": "boolean"
+                            },
+                            "feed": {
+                              "type": "string"
+                            },
+                            "league": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "items": {
+                                "enum": [
+                                  "pre",
+                                  "in",
+                                  "post",
+                                  "delayed",
+                                  "postponed",
+                                  "canceled"
+                                ]
+                              },
+                              "type": "array"
+                            },
+                            "window": {
+                              "enum": [
+                                "today",
+                                "week",
+                                "recent"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "hero",
+                            "events",
+                            "table",
+                            "schedule",
+                            "leagues",
+                            "entities"
+                          ]
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
                 "type": "object"
               },
               "type": "array"
@@ -811,6 +1978,14 @@
         },
         "permissions": {
           "properties": {
+            "ai": {
+              "description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (\"complete\"), or also on interactive search routes — Stremio catalog search, kinds search, and frontend adapter search routes — with a hard 20 s bound and per-query caching (\"complete+search\"). Every other viewer/client path stays refused.",
+              "enum": [
+                "none",
+                "complete",
+                "complete+search"
+              ]
+            },
             "catalog": {
               "enum": [
                 "none",
@@ -829,6 +2004,13 @@
                 "read"
               ]
             },
+            "media": {
+              "description": "Probe container metadata ({durationSec, container, width, height, sizeBytes}) for a PlayableSource via media.probe from jobs, actions, background sync, and other non-viewer routes (\"probe\"). Reuses Ether's durable release_probes cache, is rate-limited per plugin, and is bounded at 10 s per probe. Every viewer or client request path is refused.",
+              "enum": [
+                "none",
+                "probe"
+              ]
+            },
             "network": {
               "items": {
                 "pattern": "^(\\*\\.)?([a-z0-9-]+\\.)*[a-z0-9-]+$",
@@ -841,6 +2023,16 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "sources": {
+              "description": "Ask Ether to search indexers and inspect or acquire debrid/Usenet releases via sources.resolve (\"search\", \"search+check\", \"acquire\", or \"acquire+check\"). The \"+check\" variants also permit background usenet_check calls in jobs and schedules within the owner's per-plugin daily allowance. Requires the kind_resolver capability.",
+              "enum": [
+                "none",
+                "search",
+                "search+check",
+                "acquire",
+                "acquire+check"
+              ]
             },
             "viewers": {
               "properties": {
@@ -919,8 +2111,20 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "maxItems": {
+                  "default": 2000000,
+                  "description": "Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "memoryBytes": {
                   "default": 33554432,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "poolSize": {
+                  "default": 2,
+                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize \u003e= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.",
                   "minimum": 0,
                   "type": "integer"
                 },

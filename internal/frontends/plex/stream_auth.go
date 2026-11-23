@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,7 +17,18 @@ import (
 const streamGrantParam = frontend.StreamGrantParam
 
 func transcodeSessionID(path string) string {
-	rest, ok := strings.CutPrefix(path, "/video/:/transcode/universal/session/")
+	var rest string
+	var ok bool
+	for _, prefix := range []string{
+		"/video/:/transcode/universal/session/",
+		"/music/:/transcode/universal/session/",
+		"/audio/:/transcode/universal/session/",
+		"/subtitles/:/transcode/universal/session/",
+	} {
+		if rest, ok = strings.CutPrefix(path, prefix); ok {
+			break
+		}
+	}
 	if !ok {
 		return ""
 	}
@@ -223,4 +235,69 @@ func (s *Server) serveStreamManifest(w http.ResponseWriter, r *http.Request, id 
 	if r.Method != http.MethodHead {
 		_, _ = w.Write([]byte(body))
 	}
+}
+
+// manifestRefetchWindow bounds how long after an authenticated start.mpd a
+// native player may fetch the same manifest again without credentials.
+const manifestRefetchWindow = 2 * time.Minute
+
+type manifestRefetchKey struct{}
+
+func manifestRefetchFrom(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(manifestRefetchKey{}).(string)
+	return id, ok && id != ""
+}
+
+// noteManifestServed records that an authenticated start.mpd is receiving
+// session id's manifest, and from which client address.
+func (s *Server) noteManifestServed(id string, pr *Request) {
+	e, ok := s.transcodes.get(id)
+	if !ok || pr == nil || !pr.RemoteIP.IsValid() {
+		return
+	}
+	e.manifestIP, e.manifestAt = pr.RemoteIP, s.now()
+	s.transcodes.put(e)
+}
+
+// authenticateManifestRefetch admits Samsung's native DASH player
+// (SamsungDASH/2.0), which re-requests start.mpd carrying only ?session=
+// after the Plex app fetched it with its token. Only a started DASH
+// session whose manifest an authenticated request received from the same
+// client address within manifestRefetchWindow qualifies, and the request
+// can only read that session's manifest (segments then carry its stream
+// grant). It never starts, changes or controls playback.
+func (s *Server) authenticateManifestRefetch(r *http.Request, pr *Request) (*http.Request, bool) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return nil, false
+	}
+	if r.URL.Path != "/video/:/transcode/universal/start.mpd" || pr == nil || pr.Token != "" || !pr.RemoteIP.IsValid() {
+		return nil, false
+	}
+	id := r.URL.Query().Get("session")
+	if id == "" {
+		return nil, false
+	}
+	e, ok := s.transcodes.get(id)
+	if !ok || !e.started || !e.manifestIP.IsValid() || e.manifestIP != pr.RemoteIP {
+		return nil, false
+	}
+	if age := s.now().Sub(e.manifestAt); age < 0 || age > manifestRefetchWindow {
+		return nil, false
+	}
+	u := s.activeViewer(r.Context(), e.userID)
+	if u == nil {
+		return nil, false
+	}
+	if policy, ok := s.policy().(frontend.UserPolicySource); ok {
+		u = policy.UserPolicy(u)
+	}
+	if policy, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !policy.CanPlay(u, pr.ClientCaps(0).Remote, s.now()) {
+		return nil, false
+	}
+	pr.User = u
+	pr.Capability = true
+	if pr.ClientID == "" {
+		pr.ClientID = e.clientID
+	}
+	return r.WithContext(context.WithValue(r.Context(), manifestRefetchKey{}, id)), true
 }

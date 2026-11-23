@@ -19,12 +19,12 @@ func TestLivePlaylistSlidesWithRealDurations(t *testing.T) {
 	s.mu.Lock()
 	for n := 0; n < 15; n++ {
 		s.done[0][n] = true
-		s.noteLiveDurationLocked(n, 2*time.Second+time.Duration(n)*100*time.Millisecond)
+		s.noteLiveDurationLocked(0, n, 2*time.Second+time.Duration(n)*100*time.Millisecond)
 	}
 	s.liveDiscontinuities = map[int]bool{3: true, 12: true}
 	body := string(s.renderPlaylistLocked(0))
 	s.mu.Unlock()
-	for _, want := range []string{"#EXT-X-MEDIA-SEQUENCE:5\n", "#EXT-X-DISCONTINUITY-SEQUENCE:1\n", "#EXT-X-TARGETDURATION:4\n", "#EXTINF:3.400000,\n"} {
+	for _, want := range []string{"#EXT-X-MEDIA-SEQUENCE:5\n", "#EXT-X-DISCONTINUITY-SEQUENCE:1\n", "#EXT-X-TARGETDURATION:8\n", "#EXTINF:3.400000,\n"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q:\n%s", want, body)
 		}

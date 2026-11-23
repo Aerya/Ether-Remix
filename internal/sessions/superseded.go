@@ -28,15 +28,21 @@ func (b *Broker) rememberRetiredLocked(s *brokerSession) {
 }
 
 // collectSupersededLocked keeps one active playback for a viewer, surface and
-// device, regardless of which item or channel that device opens next.
+// device, except sibling tiles within the same multiview group. A playback
+// outside the group still supersedes the whole group, and re-tuning the same
+// tile replaces only that tile.
 func (b *Broker) collectSupersededLocked(replacement *brokerSession) []*brokerSession {
 	var old []*brokerSession
 	for id, s := range b.sessions {
-		if s.public.ViewerID == replacement.public.ViewerID && s.clientID == replacement.clientID {
-			delete(b.sessions, id)
-			b.rememberRetiredLocked(s)
-			old = append(old, s)
+		if s.public.ViewerID != replacement.public.ViewerID || s.clientID != replacement.clientID {
+			continue
 		}
+		if replacement.multiviewGroup != "" && s.multiviewGroup == replacement.multiviewGroup && s.multiviewTile != replacement.multiviewTile {
+			continue
+		}
+		delete(b.sessions, id)
+		b.rememberRetiredLocked(s)
+		old = append(old, s)
 	}
 	return old
 }

@@ -209,13 +209,13 @@ func (p *pendingWrites) close(ctx context.Context) error {
 		p.remove(k, w.seq)
 	}
 }
-func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt time.Time) core.WatchStatus {
+func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt time.Time, resumeAfter time.Duration) core.WatchStatus {
 	// A read racing a just-committed entry must not apply it twice.
 	if !watchAt.Before(w.progress.at) {
 		return ws
 	}
 	if w.progress.before != nil {
-		ws = overlayPending(ws, pendingWrite{kind: "progress", progress: *w.progress.before}, counted, watchAt)
+		ws = overlayPending(ws, pendingWrite{kind: "progress", progress: *w.progress.before}, counted, watchAt, resumeAfter)
 	}
 	switch w.kind {
 	case "scrobble":
@@ -224,6 +224,7 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 	case "unscrobble":
 		ws.ViewCount = 0
 		ws.ViewOffset = 0
+		ws.Reading = nil
 	default:
 		if strings.HasPrefix(w.progress.state, "explicit-") {
 			if w.progress.duration > 0 {
@@ -231,7 +232,11 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 			}
 			switch w.progress.state {
 			case "explicit-resume":
-				ws.ViewOffset = w.progress.offset
+				if w.progress.skipResume {
+					ws.ViewOffset = 0
+				} else {
+					ws.ViewOffset = w.progress.offset
+				}
 				ws.LastViewedAt = w.progress.at
 			case "explicit-complete":
 				ws.ViewOffset = 0
@@ -247,10 +252,14 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 			return ws
 		}
 		if w.progress.state == "progress" {
-			if w.progress.offset <= time.Minute {
+			if (resumeAfter > 0 && w.progress.offset < resumeAfter) || (resumeAfter == 0 && w.progress.offset <= time.Minute) {
 				return ws
 			}
-			ws.ViewOffset = w.progress.offset
+			if w.progress.skipResume {
+				ws.ViewOffset = 0
+			} else {
+				ws.ViewOffset = w.progress.offset
+			}
 			break
 		}
 		if w.progress.duration > 0 {
@@ -262,7 +271,7 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 				ws.ViewCount++
 			}
 			ws.ViewOffset = 0
-		} else if ws.Duration > 0 && offset < time.Duration(StartedThreshold*float64(ws.Duration)) {
+		} else if w.progress.skipResume || notStartedWith(offset, ws.Duration, resumeAfter) {
 			ws.ViewOffset = 0
 		} else {
 			ws.ViewOffset = offset

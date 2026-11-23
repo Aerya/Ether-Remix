@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+type forceCatalogueSyncKey struct{}
+
+func withForceCatalogueSync(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forceCatalogueSyncKey{}, true)
+}
+
+func isForceCatalogueSync(ctx context.Context) bool {
+	v, _ := ctx.Value(forceCatalogueSyncKey{}).(bool)
+	return v
+}
+
 func (a *App) catalogueSourceType(ctx context.Context, id string) (string, error) {
 	if id == "tmdb-movies" {
 		return "movie", nil
@@ -83,6 +94,8 @@ func (a *App) validateCatalogueSources(ctx context.Context, lib core.Library, id
 
 // One loader per App; lock only remote refreshes. The persisted timestamp
 // avoids network work after the first bounded load for an opened catalogue.
+// Each list imports independently under its own timeout so one failing or huge
+// list never blocks sibling lists in the same library.
 func (a *App) wireCatalogueSources() {
 	if a.catalog == nil {
 		return
@@ -95,45 +108,65 @@ func (a *App) wireCatalogueSources() {
 		err error
 	}
 	failures := map[string]sourceFailure{}
+	recordError := func(parent context.Context, id string, err error) {
+		if err == nil {
+			return
+		}
+		errCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+		defer cancel()
+		_, _ = a.db.ExecContext(errCtx, `INSERT INTO libraries_catalogue_state(source_id,refreshed,item_count,last_error) VALUES(?,0,0,?) ON CONFLICT(source_id) DO UPDATE SET refreshed=0,last_error=excluded.last_error`, id, err.Error())
+	}
 	a.catalog.SetCatalogueSourceLoader(func(ctx context.Context, ids []string) error {
-		force, _ := ctx.Value(catalogueForceKey{}).(bool)
-		var errs []error
+		force := isForceCatalogueSync(ctx)
+		succeeded := 0
+		var firstErr error
 		for _, id := range ids {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !strings.HasPrefix(id, "stremio:") {
+				succeeded++
 				continue
 			}
-			typ, err := a.catalogueSourceType(ctx, id)
+			itemCtx, cancel := context.WithTimeout(ctx, catalogueSyncTimeout())
+			typ, err := a.catalogueSourceType(itemCtx, id)
 			if err != nil {
-				errs = append(errs, err)
+				cancel()
+				recordError(ctx, id, err)
+				if firstErr == nil {
+					firstErr = err
+				}
 				continue
 			}
 			var refreshed int64
-			_ = a.db.QueryRowContext(ctx, `SELECT refreshed FROM libraries_catalogue_state WHERE source_id=?`, id).Scan(&refreshed)
+			_ = a.db.QueryRowContext(itemCtx, `SELECT refreshed FROM libraries_catalogue_state WHERE source_id=?`, id).Scan(&refreshed)
 			if !force && time.Since(time.Unix(refreshed, 0)) < time.Hour {
+				cancel()
+				succeeded++
 				continue
 			}
-			if err := func() error {
+			err = func() error {
 				select {
 				case lock <- struct{}{}:
-				case <-ctx.Done():
-					return ctx.Err()
+				case <-itemCtx.Done():
+					return itemCtx.Err()
 				}
 				defer func() { <-lock }()
-				if failed, ok := failures[id]; !force && ok && time.Since(failed.at) < time.Minute {
-					return failed.err
-				}
-				_ = a.db.QueryRowContext(ctx, `SELECT refreshed FROM libraries_catalogue_state WHERE source_id=?`, id).Scan(&refreshed)
-				if !force && time.Since(time.Unix(refreshed, 0)) < time.Hour {
-					return nil
+				if !force {
+					if failed, ok := failures[id]; ok && time.Since(failed.at) < time.Minute {
+						return failed.err
+					}
+					_ = a.db.QueryRowContext(itemCtx, `SELECT refreshed FROM libraries_catalogue_state WHERE source_id=?`, id).Scan(&refreshed)
+					if time.Since(time.Unix(refreshed, 0)) < time.Hour {
+						return nil
+					}
 				}
 				if a.collections == nil {
 					return fmt.Errorf("catalogue sources unavailable")
 				}
 				parts := strings.SplitN(id, ":", 3)
-				bounded, cancel := context.WithTimeout(ctx, catalogueSyncTimeout())
-				defer cancel()
 				started := time.Now()
-				titles, err := a.collections.GatherCatalogueSource(bounded, extend.PluginID(parts[1], parts[2]), typ)
+				titles, err := a.collections.GatherCatalogueSource(itemCtx, extend.PluginID(parts[1], parts[2]), typ)
 				if err != nil {
 					if errors.Is(err, context.DeadlineExceeded) {
 						err = fmt.Errorf("catalogue synchronization timed out after %s: %w", catalogueSyncTimeout(), err)
@@ -141,8 +174,8 @@ func (a *App) wireCatalogueSources() {
 					failures[id] = sourceFailure{at: time.Now(), err: err}
 					return err
 				}
-				delete(failures, id)
 				fetched := time.Since(started)
+				delete(failures, id)
 				unique := make([]core.Title, 0, len(titles))
 				seen := map[core.RatingKey]bool{}
 				for _, title := range titles {
@@ -152,28 +185,30 @@ func (a *App) wireCatalogueSources() {
 					}
 				}
 				titles = unique
-				if err := a.catalog.UpsertCollectionTitles(bounded, titles); err != nil {
+				writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer writeCancel()
+				if err := a.catalog.UpsertCollectionTitles(writeCtx, titles); err != nil {
 					return err
 				}
-				tx, err := a.db.BeginTx(bounded, nil)
+				tx, err := a.db.BeginTx(writeCtx, nil)
 				if err != nil {
 					return err
 				}
 				defer tx.Rollback()
-				if _, err = tx.ExecContext(bounded, `DELETE FROM libraries_catalogue_members WHERE source_id=?`, id); err != nil {
+				if _, err = tx.ExecContext(writeCtx, `DELETE FROM libraries_catalogue_members WHERE source_id=?`, id); err != nil {
 					return err
 				}
-				stmt, err := tx.PrepareContext(bounded, `INSERT INTO libraries_catalogue_members(source_id,key) VALUES(?,?) ON CONFLICT DO NOTHING`)
+				stmt, err := tx.PrepareContext(writeCtx, `INSERT INTO libraries_catalogue_members(source_id,key) VALUES(?,?) ON CONFLICT DO NOTHING`)
 				if err != nil {
 					return err
 				}
 				defer stmt.Close()
 				for _, title := range titles {
-					if _, err = stmt.ExecContext(bounded, id, int64(title.Key)); err != nil {
+					if _, err = stmt.ExecContext(writeCtx, id, int64(title.Key)); err != nil {
 						return err
 					}
 				}
-				if _, err = tx.ExecContext(bounded, `INSERT INTO libraries_catalogue_state(source_id,refreshed,item_count) VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET refreshed=excluded.refreshed,item_count=excluded.item_count,last_error=''`, id, time.Now().Unix(), len(titles)); err != nil {
+				if _, err = tx.ExecContext(writeCtx, `INSERT INTO libraries_catalogue_state(source_id,refreshed,item_count,last_error) VALUES(?,?,?,'') ON CONFLICT(source_id) DO UPDATE SET refreshed=excluded.refreshed,item_count=excluded.item_count,last_error=''`, id, time.Now().Unix(), len(titles)); err != nil {
 					return err
 				}
 				if err = tx.Commit(); err == nil {
@@ -183,16 +218,20 @@ func (a *App) wireCatalogueSources() {
 					}
 				}
 				return err
-			}(); err != nil {
-				reportCtx, reportCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-				_, _ = a.db.ExecContext(reportCtx, `INSERT INTO libraries_catalogue_state(source_id,refreshed,item_count,last_error) VALUES(?,0,0,?) ON CONFLICT(source_id) DO UPDATE SET last_error=excluded.last_error`, id, err.Error())
-				reportCancel()
-				errs = append(errs, fmt.Errorf("%s: %w", id, err))
-				if ctx.Err() != nil {
-					break
+			}()
+			cancel()
+			if err != nil {
+				recordError(ctx, id, err)
+				if firstErr == nil {
+					firstErr = err
 				}
+				continue
 			}
+			succeeded++
 		}
-		return errors.Join(errs...)
+		if firstErr != nil && succeeded == 0 {
+			return firstErr
+		}
+		return nil
 	})
 }

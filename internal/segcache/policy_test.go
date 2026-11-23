@@ -44,7 +44,8 @@ func TestOffBypassesWritesAndZeroBudgetStillMeansUnlimited(t *testing.T) {
 }
 
 func TestAdaptiveKeepsReplayButExpiryWins(t *testing.T) {
-	c := openT(t, t.TempDir(), 20)
+	// Budget 23 -> 95% high watermark = 21, 90% low watermark = 20.
+	c := openT(t, t.TempDir(), 23)
 	now := time.Now()
 	c.now = func() time.Time { return now }
 	c.SetPolicy(Policy{Mode: "adaptive", ReplayBoost: 24 * time.Hour, Retention: 48 * time.Hour})
@@ -53,8 +54,10 @@ func TestAdaptiveKeepsReplayButExpiryWins(t *testing.T) {
 	c.RecordPlay("favourite", "Favourite", 100)
 	now = now.Add(time.Hour)
 	mustPut(t, c, "once", 0, make([]byte, 10))
+	c.waitEvict()
 	now = now.Add(time.Hour)
 	mustPut(t, c, "new", 0, make([]byte, 10))
+	c.waitEvict()
 	if !c.Has("favourite", 0) || c.Has("once", 0) || !c.Has("new", 0) {
 		t.Fatal("replay credit ignored")
 	}
@@ -93,7 +96,8 @@ func TestPlaybackMetadataAndCounters(t *testing.T) {
 }
 
 func TestAdaptiveProtectsLargeFavouriteAcrossManySegments(t *testing.T) {
-	c := openT(t, t.TempDir(), 1001)
+	// Budget 1120 -> 95% high watermark = 1064, 90% low watermark = 1008.
+	c := openT(t, t.TempDir(), 1120)
 	now := time.Now()
 	c.now = func() time.Time { return now }
 	c.SetPolicy(Policy{Mode: "adaptive", ReplayBoost: 24 * time.Hour})
@@ -103,10 +107,12 @@ func TestAdaptiveProtectsLargeFavouriteAcrossManySegments(t *testing.T) {
 	c.RecordPlay("large", "Large", 1000)
 	c.RecordPlay("large", "Large", 1000)
 	now = now.Add(time.Hour)
-	mustPut(t, c, "one-off", 0, []byte{1})
+	mustPut(t, c, "one-off", 0, make([]byte, 60))
+	c.waitEvict()
 	now = now.Add(time.Hour)
-	mustPut(t, c, "new", 0, []byte{1})
-	if c.ReleaseBytes("large") != 1000 || c.Has("one-off", 0) {
+	mustPut(t, c, "new", 0, make([]byte, 8))
+	c.waitEvict()
+	if c.ReleaseBytes("large") != 1000 || c.Has("one-off", 0) || !c.Has("new", 0) {
 		t.Fatal("large replay lost to sampling bias")
 	}
 	checkInvariants(t, c)

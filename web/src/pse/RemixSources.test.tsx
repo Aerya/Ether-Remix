@@ -10,21 +10,32 @@ vi.mock("../pages/livetv/model", async (original) => ({
   tv: { sources },
 }));
 vi.mock("../pages/livetv/SourceEditor", () => ({
-  SourceEditor: ({
-    source,
+  SourceDrawer: ({
+    sourceId,
+    adding,
+    sources,
     onSaved,
     onDeleted,
+    onClose,
   }: {
-    source: { id: string; name: string } | null;
+    sourceId: string | null;
+    adding: string | null;
+    sources: { id: string; name: string }[] | null;
     onSaved: (s: { id: string }) => void;
     onDeleted: () => void;
-  }) => (
-    <div>
-      <p>{source ? `Editing ${source.name}` : "Creating IPTV"}</p>
-      <button onClick={() => onSaved({ id: source?.id ?? "new-provider" })}>Save fixture</button>
-      <button onClick={onDeleted}>Delete fixture</button>
-    </div>
-  ),
+    onClose: () => void;
+  }) => {
+    if (!sourceId && !adding) return null;
+    const source = sources?.find((s) => s.id === sourceId);
+    return (
+      <div role="dialog">
+        <p>{source ? `Editing ${source.name}` : "Creating IPTV"}</p>
+        <button onClick={() => onSaved({ id: source?.id ?? "new-provider" })}>Save fixture</button>
+        <button onClick={onDeleted}>Delete fixture</button>
+        <button onClick={onClose}>Close fixture</button>
+      </div>
+    );
+  },
 }));
 vi.mock("../components/Drawer", () => ({
   Drawer: ({

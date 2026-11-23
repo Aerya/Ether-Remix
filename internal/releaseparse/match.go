@@ -273,6 +273,13 @@ func TitlesMatch(a, b string) bool {
 	if ca != "" && ca == cb {
 		return true
 	}
+	// Titles that differ only in how words are joined are the same title:
+	// K-Pop/KPop, Spider-Man/Spiderman, X-Men/XMen, WALL-E/WALLE, and an
+	// apostrophe written as a dot (JoJo.s/JoJo's). Different words, extra
+	// words and sequel numbers still differ once spaces are removed.
+	if ja, jb := strings.ReplaceAll(na, " ", ""), strings.ReplaceAll(nb, " ", ""); len(ja) >= 3 && ja == jb {
+		return true
+	}
 	// Compare exact romanisations without relaxing sequel or word identity.
 	if strings.ContainsAny(a+b, "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя") {
 		for _, foldYo := range []bool{false, true} {
@@ -282,10 +289,19 @@ func TitlesMatch(a, b string) bool {
 			}
 		}
 	}
-	// Tracker dual titles pair a Cyrillic original with a Latin title.
-	// Keep slashes in ordinary titles ("Face / Off") meaningful.
+	if containsHangul(a) || containsHangul(b) {
+		ra, rb := transliterateHangul(a), transliterateHangul(b)
+		if !containsHangul(ra) && !containsHangul(rb) && TitlesMatch(ra, rb) {
+			return true
+		}
+	}
+	// Tracker dual titles pair a non-Latin original (Cyrillic/Hangul/CJK) with
+	// a Latin title. Keep slashes in ordinary titles ("Face / Off") meaningful.
+	isNonLatinDual := func(r rune) bool {
+		return unicode.In(r, unicode.Cyrillic, unicode.Hangul, unicode.Han, unicode.Hiragana, unicode.Katakana)
+	}
 	for _, pair := range [][2]string{{a, b}, {b, a}} {
-		if !strings.ContainsFunc(pair[0], func(r rune) bool { return unicode.In(r, unicode.Cyrillic) }) ||
+		if !strings.ContainsFunc(pair[0], isNonLatinDual) ||
 			!strings.ContainsFunc(pair[0], func(r rune) bool { return unicode.In(r, unicode.Latin) }) {
 			continue
 		}
@@ -390,6 +406,38 @@ func TitleAliases(title string) []string {
 	return out
 }
 
+// SubtitleAliases returns standalone halves of a colon-delimited title
+// (e.g. "Demon Slayer: Kimetsu no Yaiba" -> "Demon Slayer", "Kimetsu no Yaiba",
+// or "The Lord of the Rings: The Rings of Power" -> "The Rings of Power")
+// only when alternatives independently confirms that half as a known alias
+// for the same title. Unconfirmed prefixes such as sequel names
+// ("The Signal: Reloaded") are never returned.
+func SubtitleAliases(title string, alternatives []string) []string {
+	if len(alternatives) == 0 {
+		return nil
+	}
+	left, right, ok := strings.Cut(strings.TrimSpace(title), ":")
+	if !ok {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, half := range []string{strings.TrimSpace(left), strings.TrimSpace(right)} {
+		norm := NormalizeTitle(half)
+		if len([]rune(norm)) < 4 || seen[norm] || TitlesMatch(half, title) {
+			continue
+		}
+		for _, alt := range alternatives {
+			if TitlesMatch(half, alt) {
+				seen[norm] = true
+				out = append(out, half)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // TitleMatches reports whether a parsed release title matches the wanted title.
 func TitleMatches(parsed core.ReleaseInfo, want string) bool {
 	return TitlesMatch(parsed.Title, want)
@@ -449,24 +497,33 @@ func IsObfuscated(title string) bool {
 		return true
 	}
 	fields := strings.Fields(t)
-	if len(fields) == 1 && len(fields[0]) >= 12 {
-		w := fields[0]
-		hasDigit, hasLetter := false, false
-		for _, r := range w {
-			if unicode.IsDigit(r) {
-				hasDigit = true
-			}
-			if unicode.IsLetter(r) {
-				hasLetter = true
-			}
+	if len(fields) != 1 {
+		return false
+	}
+	w := fields[0]
+	// Obfuscated Usenet/scene hashes are pure ASCII; non-Latin single-word
+	// titles (Korean, Japanese, Chinese, Cyrillic, etc.) have no ASCII vowels
+	// and occupy 3+ UTF-8 bytes per character.
+	hasDigit, hasLetter := false, false
+	runeCount := 0
+	for _, r := range w {
+		if r >= 128 {
+			return false
 		}
-		if hasDigit && hasLetter {
-			return true
+		runeCount++
+		if unicode.IsDigit(r) {
+			hasDigit = true
+		}
+		if unicode.IsLetter(r) {
+			hasLetter = true
 		}
 	}
-	// No vowel in a longish single token is a strong obfuscation signal.
-	if len(fields) == 1 && len(fields[0]) >= 10 {
-		lower := strings.ToLower(fields[0])
+	if runeCount >= 12 && hasDigit && hasLetter {
+		return true
+	}
+	// No vowel in a longish single ASCII token is a strong obfuscation signal.
+	if runeCount >= 10 {
+		lower := strings.ToLower(w)
 		if !strings.ContainsAny(lower, "aeiou") {
 			return true
 		}
@@ -495,10 +552,22 @@ func EpisodeMatchesAbsolute(parsed core.ReleaseInfo, absolute int) bool {
 	return false
 }
 
+// AbsoluteConflict reports whether parsed info names absolute episode
+// numbers and none of them is the wanted absolute count: the release
+// names a different episode, whatever season numbering it also carries.
+// A cour-numbered release's number is cour-local, not series-absolute,
+// so cour releases never conflict on it.
+func AbsoluteConflict(parsed core.ReleaseInfo, absolute int) bool {
+	return parsed.Cour == 0 && absolute > 0 && len(parsed.AbsoluteEpisodes) > 0 && !EpisodeMatchesAbsolute(parsed, absolute)
+}
+
 // EpisodeMatchesNumbering accepts canonical season numbering or verified
 // absolute numbering. Some anime releases put the absolute number in Eyyyy;
 // allow that only in season 1 or at 100+, never for specials or cour resets.
 func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute int) bool {
+	if AbsoluteConflict(parsed, absolute) {
+		return false
+	}
 	if EpisodeMatches(parsed, season, episode) {
 		return true
 	}
@@ -509,11 +578,72 @@ func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute 
 	if len(parsed.AbsoluteEpisodes) > 0 {
 		return EpisodeMatchesAbsolute(parsed, absolute)
 	}
+	if len(parsed.Seasons) == 0 {
+		for _, n := range parsed.Episodes {
+			if n == absolute {
+				return true
+			}
+		}
+		return false
+	}
 	if len(parsed.Seasons) != 1 || parsed.Seasons[0] <= 0 {
 		return false
 	}
 	for _, n := range parsed.Episodes {
 		if n == absolute && (parsed.Seasons[0] == 1 || n >= 100) {
+			return true
+		}
+	}
+	return false
+}
+
+// EpisodeMatchesRequest reports whether parsed info matches req's canonical
+// episode, verified absolute count, anime cour mapping, configured release
+// numbering aliases, or exact broadcast air date. Shared by the resolver and
+// Stremio stream name selection.
+func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
+	abs := req.AbsoluteEpisode
+	if abs <= 0 && req.Season == 1 {
+		abs = req.Episode
+	}
+	// A release naming a different absolute episode is a different
+	// episode, even when its season numbering matches a configured
+	// alias (e.g. S17E005 = absolute 633 must not satisfy absolute 583).
+	if AbsoluteConflict(info, abs) {
+		return false
+	}
+	if info.Cour == 1 && req.Cour > 1 {
+		return false
+	}
+	if info.Cour > 1 {
+		if req.Cour == info.Cour && req.CourEpisode > 0 &&
+			(EpisodeMatches(info, req.Season, req.CourEpisode) ||
+				(req.CourTVDBSeason > 0 && EpisodeMatches(info, req.CourTVDBSeason, req.CourEpisode))) {
+			return true
+		}
+		return false
+	}
+	if EpisodeMatchesNumbering(info, req.Season, req.Episode, abs) {
+		return true
+	}
+	if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 && info.Cour == 0 && len(info.Seasons) > 0 &&
+		(len(info.AbsoluteEpisodes) == 0 || abs <= 0 || EpisodeMatchesAbsolute(info, abs)) &&
+		EpisodeMatches(info, req.CourTVDBSeason, req.CourTVDBEpisode) {
+		return true
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		if EpisodeMatches(info, n.Season, n.Episode) {
+			return true
+		}
+	}
+	if req.Season > 0 && !info.FullSeason && EpisodeMatchesAirDate(info, req.Released) {
+		if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
+			return true
+		}
+		// Cumulative bare episode numbering (e.g. Korean variety E600) on a
+		// multi-season show whose absolute count is unknown still identifies
+		// the episode when its air date matches exactly.
+		if req.Season > 1 && abs <= 0 && len(info.Seasons) == 0 && len(info.AbsoluteEpisodes) == 0 && len(info.Episodes) == 1 && info.Episodes[0] > req.Episode {
 			return true
 		}
 	}

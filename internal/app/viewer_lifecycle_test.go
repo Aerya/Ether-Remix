@@ -46,6 +46,7 @@ func TestViewerMergeAndPurgeAcrossComponents(t *testing.T) {
 	// History unions: 2 source rows + 1 target row.
 	exec(`INSERT INTO state_history(user_id,rating_key,viewed_at) VALUES(?,10,1),(?,11,2),(?,10,3)`, src, src, dst)
 	exec(`INSERT INTO stats_plays(id,user_id,rating_key,username,title,platform,device,decision,started,updated) VALUES('p1',?,10,'src','T','tv','d','direct',1,1)`, src)
+	exec(`INSERT INTO stats_play_timeline(play_id,seq,at_ms,entry_type,kind,level,message,detail) VALUES('p1',1,1000,'event','started','info','Playback requested','')`)
 	exec(`INSERT INTO personalize_plays(user_id,item_key,taste_key,started_at,updated_at) VALUES(?,10,10,1,1)`, src)
 	// A playlist with items follows its owner.
 	exec(`INSERT INTO state_playlists(id,user_id,title,updated_at) VALUES(77,?,'Mix',1)`, src)
@@ -93,6 +94,9 @@ func TestViewerMergeAndPurgeAcrossComponents(t *testing.T) {
 	if n := count(`SELECT COUNT(*) FROM state_playlist_items WHERE playlist_id=77`); n != 1 {
 		t.Fatalf("playlist items=%d, want 1", n)
 	}
+	if n := count(`SELECT COUNT(*) FROM stats_play_timeline WHERE play_id='p1'`); n != 1 {
+		t.Fatalf("play timeline rows after merge=%d, want 1", n)
+	}
 	var rules string
 	if err := db.QueryRowContext(ctx, `SELECT rules FROM trackprefs_rules WHERE user_id=?`, dst).Scan(&rules); err != nil || rules != `{"keep":1}` {
 		t.Fatalf("target trackprefs=%q err=%v, want target's own", rules, err)
@@ -132,6 +136,9 @@ func TestViewerMergeAndPurgeAcrossComponents(t *testing.T) {
 		if n := count(`SELECT COUNT(*) FROM `+table+` WHERE `+col+`=?`, dst); n != 0 {
 			t.Fatalf("%s still holds %d rows after removal", table, n)
 		}
+	}
+	if n := count(`SELECT COUNT(*) FROM stats_play_timeline WHERE play_id='p1'`); n != 0 {
+		t.Fatalf("play timeline rows survived viewer removal: %d", n)
 	}
 	if n := count(`SELECT COUNT(*) FROM state_playlist_items WHERE playlist_id=77`); n != 0 {
 		t.Fatalf("playlist items survived removal: %d", n)

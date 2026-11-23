@@ -36,6 +36,7 @@ type prioSem struct {
 	reserveLive bool                     // connection pools reserve one slot against all speculative work
 	waiters     [numPriorities]list.List // of *semWaiter
 	closed      bool
+	onSaturated func(active, maxConns, waiting int)
 }
 
 type semWaiter struct {
@@ -201,7 +202,17 @@ func (s *prioSem) Acquire(ctx context.Context, prio core.Priority) error {
 	}
 	w := &semWaiter{prio: prio, burstUntil: burstUntil(ctx), ready: make(chan struct{})}
 	elem := s.waiters[prio].PushBack(w)
+	var onSat func(active, maxConns, waiting int)
+	var active, maxConns, waiting int
+	if s.onSaturated != nil && s.inUse >= s.size {
+		onSat = s.onSaturated
+		active, maxConns = s.inUse, s.size
+		waiting = s.waiters[0].Len() + s.waiters[1].Len() + s.waiters[2].Len()
+	}
 	s.mu.Unlock()
+	if onSat != nil {
+		onSat(active, maxConns, waiting)
+	}
 
 	select {
 	case <-w.ready:

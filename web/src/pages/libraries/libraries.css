@@ -5,6 +5,7 @@
   margin-bottom: 1.5rem;
 }
 .library-card {
+  height: 100%;
   border: 1px solid var(--color-border);
   border-radius: 0.75rem;
   background: var(--color-surface);
@@ -46,15 +47,17 @@
 .library-card-actions {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex-wrap: nowrap;
   margin-top: auto;
+  padding-top: 0.2rem;
 }
 .library-card-hide {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   font-size: 0.85rem;
+  white-space: nowrap;
 }
 .library-field {
   display: flex;
@@ -64,8 +67,7 @@
 }
 .library-field input,
 .library-field select,
-.library-cache-input input,
-.library-present-row input {
+.library-cache-input input {
   border: 1px solid var(--color-border);
   border-radius: 0.45rem;
   background: var(--color-bg);
@@ -77,7 +79,6 @@
 .library-field-error {
   color: var(--color-danger, #b3261e);
 }
-.library-present-row,
 .library-cache-input {
   display: inline-flex;
   align-items: center;
@@ -141,6 +142,43 @@
   gap: 1rem;
   list-style: none;
   padding: 0;
+}
+.plugin-live-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+  list-style: none;
+  padding: 0;
+}
+.plugin-live-grid-poster {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+}
+.plugin-live-grid-square {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+.plugin-live-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  text-align: left;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+.plugin-live-card:hover {
+  border-color: var(--color-primary);
+  background: var(--color-surface-hover);
+}
+.plugin-live-thumb {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: var(--color-surface-hover);
 }
 .plugin-card {
   display: flex;

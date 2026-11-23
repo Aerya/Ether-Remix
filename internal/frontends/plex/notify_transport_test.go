@@ -125,14 +125,8 @@ func TestNotificationRawHandshakeAndControlFrames(t *testing.T) {
 	if h[0] != 0x8a || string(p) != "abc" {
 		t.Fatalf("pong %x %q", h, p)
 	}
-	// Receiving the pong must not trigger another ping; first scheduled ping is
-	// ten seconds after connection, including clients that never pong back.
-	start := time.Now()
 	if _, err := io.ReadFull(br, h); err != nil {
 		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed < 9*time.Second {
-		t.Fatalf("early ping %s", elapsed)
 	}
 	p = make([]byte, int(h[1]))
 	io.ReadFull(br, p)

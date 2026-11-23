@@ -19,10 +19,7 @@ func kitKind() plugins.MediaKindMeta {
 			{Key: "track", Label: "Track", Playable: true},
 		},
 		Present: core.Presentations{
-			MediaBrowser: &struct {
-				CollectionType string            `json:"collectionType"`
-				ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-			}{CollectionType: "music"},
+			MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "music"},
 		},
 		Sync: plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
 	}
@@ -105,5 +102,56 @@ func TestKitCheckKindUpgrade(t *testing.T) {
 	grown.Levels = append(grown.Levels, plugins.KindLevel{Key: "take", Label: "Take", Playable: true})
 	if issues := CheckKindUpgrade(prev, parse(kitContentManifest(grown))); len(issues) != 0 {
 		t.Fatalf("additive upgrade: %+v", issues)
+	}
+}
+
+func TestKitCheckLibraryShelvesStringsAndParity(t *testing.T) {
+	ctx := context.Background()
+	k := kitKind()
+	k.Fields = []plugins.KindField{{Key: "topic", Type: "strings", Label: "Topic", Indexed: true}}
+	k.Library.Shelves = []plugins.KindLibraryShelf{
+		{Key: "science", Label: "$t:shelf_science", Facet: "topic", Value: "science"},
+	}
+
+	makeMan := func(en map[string]string) []byte {
+		man := map[string]any{
+			"id": "community.example.podcast", "version": "1.0.0", "name": "Podcasts",
+			"ether": map[string]any{
+				"protocol": 1, "kind": "content", "summary": "Adds a podcast library",
+				"runtime":      map[string]any{"kind": "remote"},
+				"capabilities": []string{"catalog_provider", "kind_resolver"},
+				"strings":      map[string]any{"en": en},
+				"contributes":  map[string]any{"mediaKinds": []any{k}},
+			},
+		}
+		raw, _ := json.Marshal(man)
+		return raw
+	}
+
+	rep := Check(ctx, &Package{ManifestRaw: makeMan(map[string]string{"shelf_science": "Science podcasts"})})
+	if !rep.OK {
+		t.Fatalf("valid $t: shelf label failed kit check: %+v", rep.Errors)
+	}
+
+	missing := Check(ctx, &Package{ManifestRaw: makeMan(map[string]string{"other": "Other"})})
+	if missing.OK {
+		t.Fatal("missing $t: shelf label key must fail kit check")
+	}
+
+	tooLong := Check(ctx, &Package{ManifestRaw: makeMan(map[string]string{"shelf_science": "This podcast shelf title is intentionally longer than sixty characters"})})
+	if tooLong.OK {
+		t.Fatal("overlong $t: shelf label (>60 chars) must fail kit check")
+	}
+
+	// Lint parity on invalid shelf field.
+	bad := k
+	bad.Library.Shelves = []plugins.KindLibraryShelf{
+		{Key: "bad", Label: "Bad", Facet: "missing", Value: "x"},
+	}
+	raw := kitContentManifest(bad)
+	host := CheckInstall(ctx, raw, nil)
+	kitRep := Check(ctx, &Package{ManifestRaw: raw})
+	if kitRep.OK || host == nil {
+		t.Fatalf("invalid shelf must fail in kit and host: ok=%v host=%v", kitRep.OK, host)
 	}
 }

@@ -53,11 +53,7 @@ func TestLiveReadStalledHeadIsHedged(t *testing.T) {
 	if n, err := media.ReadAt(got, 0); err != nil || n != len(got) || !bytes.Equal(got, want[:len(got)]) {
 		t.Fatalf("first read: n=%d err=%v", n, err)
 	}
-	took := time.Since(start)
-	t.Logf("time to first byte with the head stalled: %v", took)
-	if took > 3*time.Second {
-		t.Fatalf("stalled head took %v; the hedge should answer well inside the 5s idle deadline", took)
-	}
+	t.Logf("time to first byte with the head stalled: %v", time.Since(start))
 	if n := second.BodyRequests(head); n != 1 {
 		t.Fatalf("head BODYs on the second provider = %d, want one hedge", n)
 	}

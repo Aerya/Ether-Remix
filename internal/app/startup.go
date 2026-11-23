@@ -105,11 +105,16 @@ func (a *App) openFrontDoor() error {
 	if port != 0 {
 		server.Port = port
 	}
+	if consolePort, cerr := envConsolePort(); cerr != nil {
+		return cerr
+	} else if consolePort != 0 {
+		server.ConsolePort = consolePort
+	}
 	if err := f.bind(server, port != 0); err != nil {
 		return err
 	}
 	a.boundNow = true
-	a.log.Info("Ether is starting; the console shows its progress", "ui", fmt.Sprintf("http://localhost:%d/ether/", f.port))
+	a.log.Info("Ether is starting; the console shows its progress", "ui", fmt.Sprintf("http://localhost:%d/ether/", f.activeConsolePort()))
 	return nil
 }
 
@@ -310,6 +315,7 @@ func (a *App) checkIntegrityLater(ctx context.Context) {
 // once, with what to do about it.
 func (a *App) recordIntegrity(res store.Integrity) {
 	a.integrity.Store(&res)
+	a.observeIntegrityResult(res)
 	a.publishDashboard()
 	if res.OK {
 		a.log.Info("database integrity check passed", "took", time.Duration(res.Took*float64(time.Second)).Round(time.Millisecond))

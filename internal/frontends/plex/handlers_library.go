@@ -111,7 +111,7 @@ func (s *Server) onDeckWindowed(items []frontend.Title, state map[frontend.Ratin
 // default/value as strings in this endpoint's JSON, unlike /:/prefs.
 // Prefs writes are not supported (Ether's libraries are generated). Library
 // titles themselves are configured in Ether's admin UI, not via this endpoint.
-func sectionPrefs(sec Section) []model.Setting {
+func (s *Server) sectionPrefs(sec Section) []model.Setting {
 	set := func(id, label, summary, typ, def, val, enum string) model.Setting {
 		return model.Setting{ID: id, Label: label, Summary: summary, Type: typ, Default: def, Value: val, EnumValues: enum}
 	}
@@ -134,9 +134,13 @@ func sectionPrefs(sec Section) []model.Setting {
 			set("enableCreditsMarkerGeneration", "Enable credits detection", "Detect credits and allow credits skipping for items in this library when enabled in server settings.", "bool", "true", "false", ""),
 		}
 	}
+	cinemaTrailers := "false"
+	if s.extrasEnabled() {
+		cinemaTrailers = "true"
+	}
 	return []model.Setting{
 		visibility,
-		set("enableCinemaTrailers", "Enable Cinema Trailers", "Allow Cinema Trailers to play before items in this library.", "bool", "true", "false", ""),
+		set("enableCinemaTrailers", "Enable Cinema Trailers", "Allow Cinema Trailers to play before items in this library.", "bool", "true", cinemaTrailers, ""),
 		original,
 		set("enableBIFGeneration", "Enable video preview thumbnails", "Generate video preview thumbnails for items in this library when enabled in server settings.", "bool", "true", "false", ""),
 		collections,
@@ -970,6 +974,10 @@ func (s *Server) parseBrowse(ctx context.Context, sec Section, t frontend.MediaT
 				} else {
 					f.Group = &frontend.FilterGroup{Operator: "and", Children: []frontend.FilterGroup{*f.Group, state}}
 				}
+			case "label":
+				if !isNeg && len(splitVals(v)) > 0 {
+					br.none = true
+				}
 			case "limit":
 				br.limit = atoi(v)
 			}
@@ -1101,10 +1109,7 @@ func (pr *Request) pageOf(limit int) (offset, size int) {
 }
 
 func titleSortKey(t frontend.Title) string {
-	if t.SortTitle != "" {
-		return strings.ToLower(t.SortTitle)
-	}
-	return strings.ToLower(t.Title)
+	return frontend.EffectiveSortTitle(t.Title, t.SortTitle)
 }
 
 // browse runs a catalogue query honouring paging and watch-state filters.
@@ -1239,7 +1244,7 @@ func (s *Server) handleSectionSub(w http.ResponseWriter, r *http.Request) {
 		s.sectionRecentlyViewed(w, r, sec)
 	case "collections", "collection":
 		s.sectionCollections(w, r, sec, sub)
-	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "categories":
+	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "categories", "label":
 		s.sectionFacet(w, r, sec, sub)
 	case "sorts":
 		mt := s.metaType(sec, sec.Type, r.URL.Query().Get("sort"))
@@ -1253,7 +1258,7 @@ func (s *Server) handleSectionSub(w http.ResponseWriter, r *http.Request) {
 		}
 		s.write(w, r, &model.MediaContainer{Size: len(dirs), Directory: dirs})
 	case "prefs":
-		settings := sectionPrefs(sec)
+		settings := s.sectionPrefs(sec)
 		s.write(w, r, &model.MediaContainer{Size: len(settings), Setting: settings})
 	case "refresh", "analyze", "emptyTrash":
 		s.ownerOnly(s.handleOK)(w, r)
@@ -1275,7 +1280,7 @@ func (s *Server) handleSectionSubKey(w http.ResponseWriter, r *http.Request) {
 		val = chi.URLParam(r, "key")
 	}
 	switch sub {
-	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter":
+	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "label":
 		r2 := r.Clone(r.Context())
 		q := r2.URL.Query()
 		q.Set(sub, val)
@@ -1352,6 +1357,7 @@ func (s *Server) sectionList(w http.ResponseWriter, r *http.Request, sec Section
 		return
 	}
 	br := s.parseBrowse(ctx, sec, t, pr.User, q, r.URL.RawQuery)
+	br.q.Filter, _ = s.sectionBrowseScope(ctx, sec, pr.User, br.q.Filter)
 	switch sub {
 	case "unwatched":
 		br.q.Sort, br.q.Desc = frontend.SortTitle, false
@@ -1418,20 +1424,104 @@ func (s *Server) sectionList(w http.ResponseWriter, r *http.Request, sec Section
 	s.write(w, r, mc)
 }
 
+func sectionLibraryID(sec Section) frontend.LibraryID {
+	if sec.LibraryID != 0 {
+		return sec.LibraryID
+	}
+	return frontend.LibraryID(sec.ID)
+}
+
+func (s *Server) sectionBrowseScope(ctx context.Context, sec Section, u *frontend.User, f frontend.Filter) (frontend.Filter, bool) {
+	if sec.PluginID != "" || s.exp() == nil {
+		return f, false
+	}
+	sr, ok := s.exp().(frontend.LibraryScopeReader)
+	if !ok {
+		return f, false
+	}
+	out, scoped, err := sr.LibraryBrowseFilter(ctx, u, sec.IDString(), f)
+	if err != nil {
+		return f, false
+	}
+	return out, scoped
+}
+
+func (s *Server) sectionHasLibraryScope(ctx context.Context, sec Section, u *frontend.User) bool {
+	_, scoped := s.sectionBrowseScope(ctx, sec, u, frontend.Filter{})
+	return scoped
+}
+
+func (s *Server) filterSectionMembers(ctx context.Context, sec Section, items []frontend.Title) []frontend.Title {
+	if scoped, ok := s.scopedSectionMembers(ctx, sec, items); ok {
+		return scoped
+	}
+	return items
+}
+
+// scopedSectionMembers reports whether membership was actually checked.
+func (s *Server) scopedSectionMembers(ctx context.Context, sec Section, items []frontend.Title) ([]frontend.Title, bool) {
+	if len(items) == 0 || sec.PluginID != "" || s.exp() == nil {
+		return nil, false
+	}
+	sr, ok := s.exp().(frontend.LibraryScopeReader)
+	if !ok {
+		return nil, false
+	}
+	libID := sectionLibraryID(sec)
+	if libID == 0 {
+		return nil, false
+	}
+	keys := make([]frontend.RatingKey, len(items))
+	for i := range items {
+		k := items[i].Key
+		if (items[i].Type == frontend.TypeSeason || items[i].Type == frontend.TypeEpisode) && items[i].ShowKey != 0 {
+			k = items[i].ShowKey
+		}
+		keys[i] = k
+	}
+	members, scoped, err := sr.LibraryMembers(ctx, libID, keys)
+	if err != nil || !scoped {
+		return nil, false
+	}
+	out := make([]frontend.Title, 0, len(items))
+	for i := range items {
+		k := items[i].Key
+		if (items[i].Type == frontend.TypeSeason || items[i].Type == frontend.TypeEpisode) && items[i].ShowKey != 0 {
+			k = items[i].ShowKey
+		}
+		if members[k] {
+			out = append(out, items[i])
+		}
+	}
+	return out, true
+}
+
 func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Section, t frontend.MediaType, query string, mc *model.MediaContainer) {
-	ctx := r.Context()
-	pr := FromContext(ctx)
+	r = r.WithContext(s.searchRequestContext(r.Context()))
+	pr := FromContext(r.Context())
+	ctx := frontend.WithSearchClient(r.Context(), s.searchClientID(pr))
 	var items []frontend.Title
 	if strings.TrimSpace(query) != "" {
 		limit := 50
 		if n, _ := strconv.Atoi(r.URL.Query().Get("limit")); n > 0 {
 			limit = min(n, 200)
 		}
+		fetch := limit
+		scoped := s.sectionHasLibraryScope(ctx, sec, pr.User)
+		if scoped {
+			fetch = min(max(limit*4, 50), 200)
+		}
 		search := s.searchExperience()
-		res, err := search.Keyword(ctx, pr.User, query, []frontend.MediaType{t}, limit)
+		res, err := search.Keyword(ctx, pr.User, query, []frontend.MediaType{t}, fetch)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
+		}
+		if scoped {
+			res = s.filterSectionMembers(ctx, sec, res)
+			if len(res) > limit {
+				res = res[:limit]
+			}
 		}
 		items = res
 	}
@@ -1461,18 +1551,43 @@ func (s *Server) sectionFacet(w http.ResponseWriter, r *http.Request, sec Sectio
 	mc.ViewMode = viewModeList
 	mc.Content = "secondary"
 	mc.ViewGroup = "secondary"
-	titles := map[string]string{"genre": "By Genre", "year": "By Year", "decade": "By Decade", "contentRating": "By Content Rating", "country": "By Country", "studio": "By Studio", "firstCharacter": "By First Letter", "categories": ""}
+	titles := map[string]string{"genre": "By Genre", "year": "By Year", "decade": "By Decade", "contentRating": "By Content Rating", "country": "By Country", "studio": "By Studio", "firstCharacter": "By First Letter", "categories": "", "label": "By Label"}
 	mc.Title2 = titles[sub]
 	var (
 		vals []frontend.FacetValue
 		err  error
 	)
-	if sub == "firstCharacter" {
+	if sub == "label" {
+		vals = nil
+	} else if sec.PluginID != "" && s.exp() != nil {
+		pr := FromContext(ctx)
+		if sub != "firstCharacter" {
+			levelHint := ""
+			if tp := typeFromParam(r.URL.Query().Get("type")); tp != "" && tp != "collection" {
+				levelHint = string(tp)
+			}
+			if lr, ok := s.exp().(frontend.LevelFacetReader); ok && levelHint != "" {
+				vals, err = lr.FacetsAtLevel(ctx, pr.User, plexDevice(pr), sec.IDString(), levelHint, facet)
+			} else {
+				vals, err = s.exp().Facets(ctx, pr.User, plexDevice(pr), sec.IDString(), facet)
+			}
+		}
+	} else if sub == "firstCharacter" {
 		pr := FromContext(ctx)
 		br := s.parseBrowse(ctx, sec, t, pr.User, r.URL.Query())
+		br.q.Filter, _ = s.sectionBrowseScope(ctx, sec, pr.User, br.q.Filter)
 		vals, err = s.firstCharacter(ctx, br.q.Filter)
 	} else {
-		vals, err = s.facet(ctx, t, facet)
+		pr := FromContext(ctx)
+		if sf, scoped := s.sectionBrowseScope(ctx, sec, pr.User, frontend.Filter{Type: t}); scoped {
+			if fc, ok := s.catalog().(frontend.FacetFilterCatalog); ok {
+				vals, err = fc.FacetFilter(ctx, sf, facet)
+			} else {
+				vals, err = s.facet(ctx, t, facet)
+			}
+		} else {
+			vals, err = s.facet(ctx, t, facet)
+		}
 	}
 	if err != nil {
 		// Catalogues may not support every facet (e.g. firstCharacter);
@@ -1525,22 +1640,96 @@ func (s *Server) inProgressTitles(ctx context.Context, pr *Request, t frontend.M
 	return s.continueExperience(pr).InProgress(ctx, pr.User, t, limit)
 }
 
+// kindItemsBatch resolves plugin rating keys in one batched Experience read
+// when TitleBatchReader is available, avoiding per-item plugin queries on
+// play-queue, playlist, hub, and history list paths. Falls back to per-item
+// kindItem only for minimal test doubles that do not implement BatchTitles.
+func (s *Server) kindItemsBatch(ctx context.Context, pr *Request, keys []frontend.RatingKey) map[frontend.RatingKey]frontend.Title {
+	if len(keys) == 0 || s.exp() == nil {
+		return nil
+	}
+	var viewer *frontend.Viewer
+	if pr != nil {
+		viewer = pr.User
+	}
+	if batch, ok := s.exp().(frontend.TitleBatchReader); ok {
+		titles, err := batch.BatchTitles(ctx, viewer, keys)
+		if err != nil || len(titles) == 0 {
+			return nil
+		}
+		out := make(map[frontend.RatingKey]frontend.Title, len(titles))
+		for _, t := range titles {
+			if t.LibraryID != 0 {
+				sec, ok := s.sectionForLibraryCtx(ctx, t.LibraryID)
+				if !ok || !s.canSeeSection(viewer, sec.ID) {
+					continue
+				}
+			}
+			out[t.Key] = t
+		}
+		return out
+	}
+	noExpandCtx := frontend.WithNoContainerExpand(ctx)
+	out := make(map[frontend.RatingKey]frontend.Title, len(keys))
+	for _, k := range keys {
+		if _, seen := out[k]; seen {
+			continue
+		}
+		if t, err := s.kindItem(noExpandCtx, pr, k); err == nil && t != nil {
+			out[k] = *t
+		}
+	}
+	return out
+}
+
 // getTitles fetches titles concurrently, preserving order and skipping
 // failures.
 func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []frontend.Title {
+	if len(keys) == 0 {
+		return nil
+	}
+	var pr *Request
+	if ctx != nil {
+		pr = FromContext(ctx)
+	}
+	var catalogKeys, pluginKeys []frontend.RatingKey
+	for _, k := range keys {
+		if k.IsPluginKey() {
+			pluginKeys = append(pluginKeys, k)
+		} else {
+			catalogKeys = append(catalogKeys, k)
+		}
+	}
+	var pluginGot map[frontend.RatingKey]frontend.Title
+	if len(pluginKeys) > 0 {
+		pluginGot = s.kindItemsBatch(ctx, pr, pluginKeys)
+	}
 	if ctx != nil && ctx.Value(storedPolicyKey{}) != nil {
 		if cached, ok := s.catalog().(frontend.CachedTitleBatchReader); ok {
-			got, err := cached.CachedGetMany(ctx, keys)
-			if err != nil || len(got) == 0 {
+			var got map[frontend.RatingKey]frontend.Title
+			if len(catalogKeys) > 0 {
+				var err error
+				got, err = cached.CachedGetMany(ctx, catalogKeys)
+				if err != nil {
+					got = nil
+				}
+			}
+			if len(got) == 0 && len(pluginGot) == 0 {
 				return nil
 			}
-			out := make([]frontend.Title, 0, len(got))
+			out := make([]frontend.Title, 0, len(got)+len(pluginGot))
 			seen := map[frontend.RatingKey]bool{}
 			for _, k := range keys {
 				if seen[k] {
 					continue
 				}
 				seen[k] = true
+				if k.IsPluginKey() {
+					if t, ok := pluginGot[k]; ok {
+						out = append(out, t)
+					}
+					continue
+				}
 				if t, ok := got[k]; ok {
 					out = append(out, t)
 				}
@@ -1548,17 +1737,39 @@ func (s *Server) getTitles(ctx context.Context, keys []frontend.RatingKey) []fro
 			return out
 		}
 	}
-	if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(keys) > 4 {
+	if len(catalogKeys) == 0 {
+		if len(pluginGot) == 0 {
+			return nil
+		}
+		out := make([]frontend.Title, 0, len(keys))
+		for _, k := range keys {
+			if t, ok := pluginGot[k]; ok {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+	if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(catalogKeys) > 4 {
 		// Read the stored titles in batches first, cached exactly as Get
 		// reads them (detail time included): each Get below then finds its
 		// title in the catalogue's title cache instead of reading it and its
 		// facts alone (a 3000-item playlist read 2,810 titles one by one).
-		pre.PreloadStored(ctx, keys)
+		pre.PreloadStored(ctx, catalogKeys)
 	}
 	res := make([]*frontend.Title, len(keys))
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	for i, k := range keys {
+		if k.IsPluginKey() {
+			if t, ok := pluginGot[k]; ok {
+				cp := t
+				res[i] = &cp
+			}
+			continue
+		}
+		if s.catalog() == nil {
+			continue
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
@@ -1584,6 +1795,7 @@ func (s *Server) sectionOnDeck(w http.ResponseWriter, r *http.Request, sec Secti
 	pr := FromContext(ctx)
 	_, size := pr.pageOf(0)
 	items, state := s.inProgressTitles(ctx, pr, sec.Type, s.saferFetchCount(pr.User, min(size, 50)))
+	items = s.filterSectionMembers(ctx, sec, items)
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := state[items[i].Key].UpdatedAt, state[items[j].Key].UpdatedAt
 		if a.Equal(b) {
@@ -1621,6 +1833,22 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 			movieAllowed = movieAllowed || section.Type == frontend.TypeMovie
 			episodeAllowed = episodeAllowed || section.Type == frontend.TypeShow
 		}
+		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
+			filter.ExcludeGenres, filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+		}
+		movieFilter := filter
+		epFilter := filter
+		if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok {
+			var none bool
+			movieFilter, none = s.exp().MergeShareFilter(movieFilter, share.BrowseShareFilter(pr.User, frontend.TypeMovie))
+			if none {
+				movieAllowed = false
+			}
+			epFilter, none = s.exp().MergeShareFilter(epFilter, share.BrowseShareFilter(pr.User, frontend.TypeEpisode))
+			if none {
+				episodeAllowed = false
+			}
+		}
 		if !movieAllowed && !episodeAllowed {
 			mc := libraryContainer()
 			mc.SetPage(pr.Start, 0)
@@ -1633,11 +1861,11 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 		if !episodeAllowed {
 			filter.Type = frontend.TypeMovie
 		}
-		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
-			filter.ExcludeGenres, filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
-		}
-		child := filter
-		filter.ChildVisibility = &child
+		epChild := epFilter
+		epFilter.ChildVisibility = &epChild
+		filter.ChildVisibility = &epChild
+		filter.MovieFilter = &movieFilter
+		filter.EpisodeFilter = &epFilter
 		// The deck is bounded by PMS's OnDeckLimit; a page past it is
 		// empty and still carries the bounded total.
 		start := max(pr.Start, 0)
@@ -1765,6 +1993,7 @@ func (s *Server) sectionRecentlyViewed(w http.ResponseWriter, r *http.Request, s
 			return section.ID, ok
 		})
 		if err == nil {
+			items = s.filterSectionMembers(ctx, sec, items)
 			mc.Metadata = s.renderTitles(ctx, pr, items, renderOpts{media: true})
 		}
 	}
@@ -1802,34 +2031,52 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 	// apply contentDirectoryID or pinnedContentDirectoryID on this route.
 	// sectionID still selects one library. KnownAddedDate drops titles whose
 	// release or air date is missing or still in the future.
+	// personal=1 requests "Other Videos" (personal media libraries), which
+	// Ether does not host; returning empty avoids duplicating movies in tools
+	// such as Tautulli that query movie and other_video separately.
+	if rq.Get("personal") == "1" {
+		mc := libraryContainer()
+		mc.Title1 = "Recently Added"
+		mc.Mixed = model.Ptr(true)
+		mc.SetPage(max(pr.Start, 0), 0)
+		s.write(w, r, mc)
+		return
+	}
 	wantType := typeFromParam(rq.Get("type"))
 	wantSection, _ := strconv.Atoi(rq.Get("sectionID"))
-	if paged, ok := s.catalog().(frontend.RecentPageCatalog); ok && r.URL.Path == "/library/recentlyAdded" {
-		var kinds []frontend.MediaType
-		for _, sec := range s.userSections(pr.User) {
-			if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
-				continue
-			}
-			kind := sec.Type
-			if kind == frontend.TypeShow {
-				kind = frontend.TypeEpisode
-			}
-			kinds = append(kinds, kind)
+	var selected []Section
+	hasKind := false
+	for _, sec := range s.userSections(pr.User) {
+		if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
+			continue
 		}
+		selected = append(selected, sec)
+		if isKindSection(sec) {
+			hasKind = true
+		}
+	}
+	if len(selected) == 1 && (hasKind || s.sectionHasLibraryScope(ctx, selected[0], pr.User)) && s.exp() != nil {
+		sec := selected[0]
 		_, pageSize := pr.pageOf(0)
-		q := frontend.BrowseQuery{Filter: frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()}, Sort: frontend.SortAdded, Desc: true, Offset: max(pr.Start, 0), Limit: pageSize}
-		if pr.User != nil {
-			q.Filter.MaxContentRating = pr.User.MaxContentRating
-			if unwatched {
-				q.Filter.Group = &frontend.FilterGroup{Unwatched: &unwatched, UserID: pr.User.ID}
-			}
+		if r.URL.Path != "/library/recentlyAdded" {
+			pageSize = size
 		}
-		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
-			q.Filter.ExcludeGenres, q.Filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+		req := frontend.ItemQuery{
+			Filter: frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()},
+			Sort:   frontend.SortAdded,
+			Desc:   true,
+			Offset: max(pr.Start, 0),
+			Limit:  pageSize,
 		}
-		child := q.Filter
-		q.Filter.ChildVisibility = &child
-		page, err := paged.RecentPage(ctx, q, kinds)
+		if unwatched {
+			w := false
+			req.Watched = &w
+		}
+		if r.URL.Path == "/library/recentlyAdded" && sec.Type == frontend.TypeShow && sec.PluginID == "" {
+			req.Recursive = true
+			req.Types = []frontend.MediaType{frontend.TypeEpisode}
+		}
+		page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), req)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
@@ -1837,14 +2084,96 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 		mc := libraryContainer()
 		mc.Title1 = "Recently Added"
 		mc.Mixed = model.Ptr(true)
-		mc.Metadata = s.renderTitles(ctx, pr, page.Items, renderOpts{media: true})
+		mc.Metadata = s.renderTitles(ctx, pr, page.Items, renderOpts{media: true, availabilityInSQL: true})
 		mc.Size = len(mc.Metadata)
-		mc.SetPage(pr.Start, page.Total)
+		mc.SetPage(max(pr.Start, 0), page.Total)
 		s.write(w, r, mc)
 		return
 	}
-	for _, sec := range s.userSections(pr.User) {
-		if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
+	if !hasKind {
+		if paged, ok := s.catalog().(frontend.RecentPageCatalog); ok && r.URL.Path == "/library/recentlyAdded" {
+			_, pageSize := pr.pageOf(0)
+			q := frontend.BrowseQuery{Filter: frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()}, Sort: frontend.SortAdded, Desc: true, Offset: max(pr.Start, 0), Limit: pageSize}
+			if pr.User != nil {
+				q.Filter.MaxContentRating = pr.User.MaxContentRating
+				if unwatched {
+					q.Filter.Group = &frontend.FilterGroup{Unwatched: &unwatched, UserID: pr.User.ID}
+				}
+			}
+			if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
+				q.Filter.ExcludeGenres, q.Filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+			}
+			movieFilter := q.Filter
+			epFilter := q.Filter
+			movieNone, epNone := false, false
+			if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok && pr.User != nil {
+				movieFilter, movieNone = s.exp().MergeShareFilter(movieFilter, share.BrowseShareFilter(pr.User, frontend.TypeMovie))
+				epFilter, epNone = s.exp().MergeShareFilter(epFilter, share.BrowseShareFilter(pr.User, frontend.TypeEpisode))
+			}
+			var kinds []frontend.MediaType
+			for _, sec := range selected {
+				kind := sec.Type
+				if kind == frontend.TypeShow {
+					kind = frontend.TypeEpisode
+				}
+				if kind == frontend.TypeMovie && movieNone || kind == frontend.TypeEpisode && epNone {
+					continue
+				}
+				kinds = append(kinds, kind)
+			}
+			epChild := epFilter
+			epFilter.ChildVisibility = &epChild
+			q.Filter.ChildVisibility = &epChild
+			q.Filter.MovieFilter = &movieFilter
+			q.Filter.EpisodeFilter = &epFilter
+			page, err := paged.RecentPage(ctx, q, kinds)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			mc := libraryContainer()
+			mc.Title1 = "Recently Added"
+			mc.Mixed = model.Ptr(true)
+			mc.Metadata = s.renderTitles(ctx, pr, page.Items, renderOpts{media: true})
+			mc.Size = len(mc.Metadata)
+			mc.SetPage(pr.Start, page.Total)
+			s.write(w, r, mc)
+			return
+		}
+	}
+	seenKeys := map[frontend.RatingKey]bool{}
+	appendUnique := func(batch []frontend.Title) {
+		for _, item := range batch {
+			if seenKeys[item.Key] {
+				continue
+			}
+			seenKeys[item.Key] = true
+			items = append(items, item)
+		}
+	}
+	for _, sec := range selected {
+		if isKindSection(sec) && s.exp() != nil {
+			req := frontend.ItemQuery{
+				Filter:  frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()},
+				Sort:    frontend.SortAdded,
+				Desc:    true,
+				Limit:   200,
+				NoTotal: true,
+			}
+			if unwatched {
+				w := false
+				req.Watched = &w
+			}
+			if r.URL.Path == "/library/recentlyAdded" && sec.Type == frontend.TypeShow && sec.PluginID == "" {
+				req.Recursive = true
+				req.Types = []frontend.MediaType{frontend.TypeEpisode}
+			}
+			page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), req)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			appendUnique(page.Items)
 			continue
 		}
 		q := frontend.BrowseQuery{Filter: frontend.Filter{Type: sec.Type, KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()}, Sort: frontend.SortAdded, Desc: true, Limit: 200}
@@ -1857,17 +2186,30 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 		if pr.User != nil {
 			q.Filter.MaxContentRating = pr.User.MaxContentRating
 		}
+		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
+			q.Filter.ExcludeGenres, q.Filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+		}
+		if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok && pr.User != nil {
+			var none bool
+			q.Filter, none = s.exp().MergeShareFilter(q.Filter, share.BrowseShareFilter(pr.User, q.Filter.Type))
+			if none {
+				continue
+			}
+		}
+		if q.Filter.Type == frontend.TypeEpisode {
+			child := q.Filter
+			q.Filter.ChildVisibility = &child
+		}
 		page, err := s.catalogBrowse(ctx, q)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
-		items = append(items, page.Items...)
+		appendUnique(s.openableTitles(withStoredPolicy(ctx), pr.User, page.Items, shelfContainsAll(ctx, page.Items)))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].DateAdded(s.now()).After(items[j].DateAdded(s.now()))
 	})
-	items = s.openableTitles(withStoredPolicy(ctx), pr.User, items, shelfContainsAll(ctx, items))
 	total := min(len(items), 200)
 	start := min(max(pr.Start, 0), total)
 	end := start + min(size, total-start)

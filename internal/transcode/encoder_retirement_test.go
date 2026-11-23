@@ -131,6 +131,48 @@ func TestEncoderRetirementRetainsStalledStopAndShutdown(t *testing.T) {
 	assertEncoderPending(t, outcome)
 }
 
+type fencedRetirementProcess struct {
+	Process
+	done, entered, release chan struct{}
+}
+
+func (p *fencedRetirementProcess) Done() <-chan struct{} { return p.done }
+func (p *fencedRetirementProcess) Stop() {
+	close(p.entered)
+	<-p.release
+}
+
+// A fence may enter Stop before ordinary cleanup notices process exit. The
+// exit and ordinary-stop tickets must not release that independent caller.
+func TestEncoderRetirementJoinsIndependentFence(t *testing.T) {
+	m := newTestManager(t, newFakeRunner(), config.Transcode{})
+	m.encoderTimeout = 20 * time.Millisecond
+	release, unblock := encoderLatch()
+	joinEncoderResources(t, m, unblock)
+	life, err := m.reserveEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := life.runWork(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &fencedRetirementProcess{done: make(chan struct{}), entered: make(chan struct{}), release: release}
+	life.fenceProcess(p, work[2])
+	life.finishWork() // admitted start has returned
+	life.seal()
+	encoderSignal(t, p.entered)
+	close(p.done)
+	work[0].finish() // process-exit watcher returned
+	work[1].finish() // no ordinary Stop is needed after observed exit
+	if err := m.Close(); !errors.Is(err, core.ErrEncoderPending) {
+		t.Fatalf("stalled fence shutdown=%v", err)
+	}
+	assertEncoderPending(t, life)
+	unblock()
+	encoderSignal(t, life.EncoderDone())
+}
+
 func TestEncoderRetirementLateStartCannotPublish(t *testing.T) {
 	for _, startErr := range []error{nil, errors.New("returned process with failure")} {
 		t.Run(fmt.Sprint(startErr), func(t *testing.T) {

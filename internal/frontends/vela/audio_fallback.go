@@ -21,15 +21,22 @@ func (i *instance) audioFallback(w http.ResponseWriter, r *http.Request) {
 		i.unavailable(w, r)
 		return
 	}
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.ended.IsZero() || s.plan["channelId"] != nil || s.plan["purpose"] == "preview" {
+	s.commandActive = true
+	defer func() { s.commandActive = false; s.mu.Unlock() }()
+	if !s.ended.IsZero() || s.plan["channelId"] != nil || s.plan["live"] != nil || s.plan["purpose"] == "preview" {
 		problem(w, 409, "conflict", "session_ended")
 		return
 	}
 	id := r.PathValue("id")
 	if r.Method == http.MethodDelete {
-		if err := audio.StopAudioFallback(r.Context(), i.access(r, v), id, r.PathValue("audioId")); err != nil {
+		var err error
+		if !s.port(w, func() { err = audio.StopAudioFallback(r.Context(), i.access(r, v), id, r.PathValue("audioId")) }) {
+			return
+		}
+		if err != nil {
 			fail(w, err, r)
 			return
 		}
@@ -54,7 +61,11 @@ func (i *instance) audioFallback(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_audio_track")
 		return
 	}
-	result, err := audio.StartAudioFallback(r.Context(), i.access(r, v), id, track, pos)
+	var result frontend.AudioFallbackResult
+	var err error
+	if !s.port(w, func() { result, err = audio.StartAudioFallback(r.Context(), i.access(r, v), id, track, pos) }) {
+		return
+	}
 	if err != nil {
 		fail(w, err, r)
 		return
