@@ -26,8 +26,43 @@ export function compareUpdateVersions(a: string, b: string): number | null {
 // Ajouter les nouveautés ici à chaque livraison, de la plus récente à la plus ancienne.
 export const REMIX_UPDATES = [
   {
-    id: "2026-11-22-ibroadcast-original",
+    id: "2026-11-23-instant-screens-continue",
     version: "current",
+    date: "2026-11-23",
+    title: [
+      "Écrans Plex immédiats, listes légères et « Continuer à regarder » complet",
+      "Instant Plex screens, light lists and a complete Continue Watching",
+    ],
+    items: [
+      [
+        "Sur Plex et Plezy, l’accueil et la vue Recommandé des bibliothèques s’affichent tout de suite : la dernière version construite est servie, puis mise à jour en arrière-plan, y compris juste après un visionnage. Un spectateur restreint ou un changement de droits attend toujours un écran à jour. Réglage « Écrans immédiats » (PSE_INSTANT_SCREENS), actif par défaut.",
+        "On Plex and Plezy, Home and the libraries’ Recommended view show at once: the last built version is served, then updated in the background, including right after a viewing. A restricted viewer or a change of rights always waits for an up-to-date screen. Setting “Instant screens” (PSE_INSTANT_SCREENS), on by default.",
+      ],
+      [
+        "Les bibliothèques, rangées et collections n’affichent plus que ce qui est déjà en base : aucune fiche TMDB complétée, aucune écriture du catalogue et aucun préchauffage debrid pendant le défilement. Les détails ne partent qu’à l’ouverture d’une fiche ou à la lecture (réglage Listes légères, actif par défaut).",
+        "Libraries, rows and collections now only show what is already stored: no TMDB detail fetched, no catalogue write and no debrid warm-up while browsing. Details load only when a title is opened or played (Light lists setting, on by default).",
+      ],
+      [
+        "« Continuer à regarder » liste toutes les séries en cours, sans plafond, et s’affiche instantanément : l’épisode suivant de chaque série est calculé à l’avance (à chaque visionnage, et quand un nouvel épisode sort) au lieu d’être recherché à chaque affichage. Les droits, le contrôle parental, les masquages et les favoris ne changent pas ; « séries examinées » ne sert plus que de repli le temps du premier remplissage.",
+        "Continue watching lists every show in progress, with no cap, and appears instantly: each show’s next episode is computed ahead of time (on every viewing, and when a new episode is released) instead of being searched on every display. Access rights, parental controls, hidden items and favorites are unchanged; “shows examined” is now only a fallback during the first fill.",
+      ],
+      [
+        "Les nouvelles saisons et les nouveaux épisodes, sortis après votre dernier visionnage dans la fenêtre des nouveaux épisodes, passent en tête de « Continuer à regarder », comme dans Nuvio ; le reste suit, de la dernière lecture la plus récente à la plus ancienne. Les épisodes des séries jamais ouvertes dans Ether sont complétés en arrière-plan (20 séries toutes les 5 minutes, en pause pendant une lecture), puis revérifiés 4 fois par jour, et toutes les 30 minutes pour les séries encore diffusées, pour qu’aucune série en cours ne manque.",
+        "New seasons and new episodes, released after your last viewing within the new-episode window, come first in Continue Watching, as in Nuvio; the rest follows, from the most recently watched to the oldest. Episodes of shows never opened in Ether are filled in the background (20 shows every 5 minutes, paused during playback), then checked again 4 times a day, and every 30 minutes for shows still airing, so that no show in progress is missing.",
+      ],
+      [
+        "Dans Jellyfin, une liste de tous les épisodes ne parcourt plus chaque série des bibliothèques Remix : le serveur ne se bloque plus. Les saisons et les épisodes s’ouvrent depuis la fiche de la série.",
+        "In Jellyfin, a list of every episode no longer walks each series of the Remix libraries, so the server no longer stalls. Seasons and episodes open from the series page.",
+      ],
+      [
+        "Sans musique personnelle, ou quand sa synchronisation échoue, la musique n’est plus rechargée au démarrage et toutes les heures : ses sources de lecture ne sont plus remises à zéro sans raison.",
+        "Without personal music, or when its sync fails, music is no longer reloaded at startup and every hour: its playback sources are no longer reset for no reason.",
+      ],
+    ],
+  },
+  {
+    id: "2026-11-22-ibroadcast-original",
+    version: "0.2.37-remix.127.1",
     date: "2026-11-22",
     title: ["iBroadcast en qualité originale", "Original-quality iBroadcast"],
     items: [

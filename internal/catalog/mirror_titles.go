@@ -179,7 +179,7 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 		if err := pair(`SELECT key,country FROM catalog_countries WHERE key IN (`+ph+`) ORDER BY country`, func(t *core.Title, v string) { t.Countries = append(t.Countries, v) }); err != nil {
 			return nil, err
 		}
-		crows, err := m.db.QueryContext(ctx, `SELECT c.key,c.person_tmdb,c.name,c.role,c.kind,c.thumb,COALESCE(p.imdb,''),c.provider_id FROM catalog_credits c LEFT JOIN catalog_people p ON p.person_tmdb=c.person_tmdb WHERE c.key IN (`+ph+`) ORDER BY c.kind,c.ord`, args...)
+		crows, err := m.db.QueryContext(ctx, `SELECT c.key,c.person_tmdb,c.name,c.role,c.kind,c.thumb,COALESCE(p.imdb,''),c.provider_id FROM catalog_credits c LEFT JOIN catalog_people p ON p.person_tmdb=c.person_tmdb WHERE c.key IN (`+ph+`)`+pseListCredits(ctx)+` ORDER BY c.kind,c.ord`, args...) // PSE-HOOK: listes légères, réalisateurs seuls — voir docs/pse/FORK.fr.md
 		if err != nil {
 			return nil, err
 		}

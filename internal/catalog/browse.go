@@ -85,7 +85,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 			items[i] = cloneTitle(ent.page.Items[i])
 		}
 		c.cacheMu.RUnlock()
-		c.kickMovieYears(items)
+		c.kickMovieYears(ctx, items) // PSE-HOOK: listes légères, ctx transmis — voir docs/pse/FORK.fr.md
 		return core.Page{Items: items, Total: ent.page.Total}, nil
 	}
 	if ent, ok := c.browseCache[rkey]; rank != nil && pageCacheable && !q.SortLastViewed && ok && ent.gen == gen && ent.minute == minBucket {
@@ -98,7 +98,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if err := c.finishRankPage(ctx, cand, items, partial); err != nil {
 			return core.Page{}, err
 		}
-		c.kickMovieYears(items)
+		c.kickMovieYears(ctx, items)
 		return core.Page{Items: items, Total: ent.page.Total}, nil
 	}
 	cntEnt, hasCnt := c.countCache[ckey]
@@ -172,7 +172,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if q.NoTotal {
 			total = offset + len(items)
 		}
-		c.kickMovieYears(items)
+		c.kickMovieYears(ctx, items)
 		return core.Page{Items: items, Total: total}, nil
 	}
 	if q.Filter.CollectionMembers != 0 {
@@ -191,7 +191,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		if items == nil {
 			items = []core.Title{}
 		}
-		c.kickMovieYears(items)
+		c.kickMovieYears(ctx, items)
 		return core.Page{Items: items, Total: total}, nil
 	}
 	pageWhere, pageArgs := where, args
@@ -354,7 +354,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		c.browseCache[key] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total}, gen: gen, minute: minBucket, partial: partial}
 		c.cacheMu.Unlock()
 	}
-	c.kickMovieYears(items)
+	c.kickMovieYears(ctx, items)
 	return core.Page{Items: items, Total: total}, nil
 }
 

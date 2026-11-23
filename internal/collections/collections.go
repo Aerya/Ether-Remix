@@ -489,6 +489,7 @@ func (s *Service) build(ctx context.Context, row *specRow) (*memberSet, error) {
 	// The evaluation is shared, so it must not die with the first caller.
 	bk := buildKey{row.id, row.rawSpec}
 	return s.flights.DoDetached(ctx, bk, func(ctx context.Context) (*memberSet, error) {
+		ctx = pseFullBuild(ctx) // PSE-HOOK: listes légères, construction complète — voir docs/pse/FORK.fr.md
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		ms, err := s.buildNow(ctx, row)

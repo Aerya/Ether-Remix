@@ -69,6 +69,9 @@ func activityParentKey(r *http.Request) frontend.RatingKey {
 
 func (i *instance) libraryActivity(w http.ResponseWriter, r *http.Request, latest bool) {
 	r = withJellyfinListFiles(withBrowseMemo(withListMediaEstimate(withSeriesStudioCache(r))))
+	if latest {
+		r = frontend.PSEListRequest(r) // PSE-HOOK: listes légères, base seule — voir docs/pse/FORK.fr.md
+	}
 	viewer, _, err := i.viewer(r)
 	if err != nil || viewer == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)

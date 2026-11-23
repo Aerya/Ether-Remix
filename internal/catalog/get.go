@@ -86,6 +86,9 @@ func (c *Catalog) fresh(st *storedTitle) bool {
 
 // Get returns a title from the mirror, fetching on demand when missing/stale.
 func (c *Catalog) Get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if pseListOnly(ctx) { // PSE-HOOK: listes légères, lecture de la base seule — voir docs/pse/FORK.fr.md
+		return c.pseListGet(ctx, key)
+	}
 	t, err := c.get(ctx, key)
 	if err == nil && !c.visibleTitle(t) {
 		return nil, core.ErrNotFound
@@ -93,7 +96,7 @@ func (c *Catalog) Get(ctx context.Context, key core.RatingKey) (*core.Title, err
 	// A season none of whose episodes has aired is not listed (seasonsOfShow)
 	// and must not open directly either.
 	if t != nil {
-		c.kickMovieYears([]core.Title{*t})
+		c.kickMovieYears(ctx, []core.Title{*t})
 	}
 	return t, err
 }
@@ -121,7 +124,7 @@ func (c *Catalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Titl
 	if !c.visibleTitle(&stored.t) {
 		return nil, core.ErrNotFound
 	}
-	c.kickMovieYears([]core.Title{stored.t})
+	c.kickMovieYears(ctx, []core.Title{stored.t})
 	return &stored.t, nil
 }
 
@@ -692,7 +695,13 @@ func (c *Catalog) Grandchildren(ctx context.Context, key core.RatingKey) ([]core
 		return items, nil
 	}
 	c.cacheMu.RUnlock()
-	seasons, err := c.Children(ctx, key)
+	var seasons []core.Title
+	var err error
+	if pseListOnly(ctx) { // PSE-HOOK: listes légères, saisons déjà en base — voir docs/pse/FORK.fr.md
+		seasons, err = c.seasonsOfShow(ctx, key.TMDB())
+	} else {
+		seasons, err = c.Children(ctx, key)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -709,8 +718,10 @@ func (c *Catalog) Grandchildren(ctx context.Context, key core.RatingKey) ([]core
 		}
 		return []core.Title{}, nil
 	}
-	if err := c.loadSeasons(ctx, key.TMDB(), seasons); err != nil {
-		return nil, err
+	if !pseListOnly(ctx) { // PSE-HOOK: listes légères, aucune saison complétée — voir docs/pse/FORK.fr.md
+		if err := c.loadSeasons(ctx, key.TMDB(), seasons); err != nil {
+			return nil, err
+		}
 	}
 	// Bound the season IN like every other key IN in the package, however
 	// many seasons a show has. Seasons arrive in listing order, so chunk
@@ -729,7 +740,7 @@ func (c *Catalog) Grandchildren(ctx context.Context, key core.RatingKey) ([]core
 		}
 		out = append(out, chunk...)
 	}
-	if c.writeGen.Load() == gen {
+	if c.writeGen.Load() == gen && !pseListOnly(ctx) { // PSE-HOOK: une liste légère n'alimente pas le cache complet
 		stored := make([]core.Title, len(out))
 		for i := range out {
 			stored[i] = cloneTitle(out[i])

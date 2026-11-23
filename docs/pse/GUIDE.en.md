@@ -102,6 +102,8 @@ References from searches and imports are automatically stored in a shared index,
 | `PSE_PLAYABLE_FILTER` | *(none)* | Releases that count, e.g. `lang=fr,multi;min=1080;codec=hevc,h264;cached=1`. Languages: `fr` (any French dub: FRENCH, TRUEFRENCH, VFF, VFQ, VFi, VF, VOF, VF2), `vff`, `vfq`/`qc`, `multi`, `en`, `vostfr` (French subtitles announced), `vo` (no dub announced)… Changing the filter recomputes the catalogue at startup, without reindexing. |
 | `PSE_POSTER_REFRESH_HOURS` | `24` | With a poster provider (PostersPlus, XRDB, RPDB…), delay in hours (1 to 168) after which apps fetch its posters again. Ether used 6 hours. |
 | `PSE_LIBRARY_SORT` | `release` | Movies and Shows library order when opened: `release` (release date, newest first) or `title` (A → Z). A sort chosen in the app still wins. |
+| `PSE_LIGHT_LISTS` | `on` | A library, row, collection or Stremio catalogue only shows what is already stored: no TMDB detail fetched, no catalogue write, no debrid warm-up. Details load only when a title is opened or played. `off` restores Ether's behaviour. |
+| `PSE_INSTANT_SCREENS` | `on` | Plex: an already built Home or Recommended view is served at once, then rebuilt in the background (up to 12 h old), even after a viewing or a layout change. Never for a restricted viewer, nor after a change of rights or settings. `off` restores Ether's behaviour. |
 | `PSE_FRENCH` | `off` | `on` enables the French-language catalogue: Movies and Shows pages, Home rows (including Trending), collections and similar titles. Upcoming collections, the watchlist and Continue Watching are left alone. |
 | `PSE_FRENCH_COUNTRIES` | `FR` | Countries whose digital or physical release counts (ISO codes). `FR,CA` adds Canada, not always dubbed in French. |
 | `PSE_FRENCH_RELEASES` | `french,multi` | Indexed release languages that count (`vfq` for Québec French only, `vff`…). |
@@ -122,7 +124,7 @@ References from searches and imports are automatically stored in a shared index,
 | `PSE_MUSIC_PLAYLISTS_HOURS` | `6` | How often Deezer and Last.fm playlists are re-imported, from 1 to 168 hours. |
 | `PSE_MUSIC_CHARTS` | `FR,WW` | Deezer charts added as playlists for every viewer: FR, WW (worldwide), US, UK, BE, CA, DE, ES, IT, BR, NL, NG. Empty: none. |
 | `PSE_MUSIC_DISCOVER` | `on` | Per-viewer “Discoveries” playlist: about fifty tracks by artists close to their plays and playlists. |
-| `PSE_CONTINUE_SCAN_LIMIT` | `200` | Continue Watching: history shows examined, 20 to 1000 (at most 100 on Plex). |
+| `PSE_CONTINUE_SCAN_LIMIT` | `200` | Continue Watching: history shows examined, 20 to 1000 (at most 100 on Plex). Now only used as a fallback while the "next up" table is not yet filled for a viewer. |
 | `PSE_CONTINUE_WATCH_DAYS` | `0` | Last-watched period in days, 0 to 3650; 0 = unlimited. A new episode keeps an older show listed. |
 | `PSE_CONTINUE_NEW_DAYS` | `60` | New-episodes window in days, 0 to 365; 0 turns it off. |
 | `PSE_CONTINUE_MAX_MOVIES` | `0` | Maximum movies in the row, 0 to 200; 0 = the app’s limit. |
@@ -137,7 +139,7 @@ References from searches and imports are automatically stored in a shared index,
 
 Full Plex Media Server history import also fills recent activity using original dates, without duplicates. Run the full-history import again to complete an earlier import; newer local watched states remain authoritative.
 
-Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing, unless the next unwatched episode was released within the new-episodes window (60 days by default): the show is then ranked by that release date, even if it was last watched long ago. 200 shows from the history are examined (at most 100 on Plex, instead of 50). A weekly season the viewer has not started falls back to its former rank 60 days after the next episode’s release. Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
+Unfinished series stay in Continue Watching even after months without playback, with their next episode. Items are ordered by last viewing, unless the next unwatched episode was released within the new-episodes window (60 days by default): the show is then ranked by that release date, even if it was last watched long ago. Every started show is listed: each show's next episode is kept in a table (`pse_continue_next`), updated every 30 s from the history and every 30 min for episodes released since, and filled at first start in batches from the full history. The row reads that table without scanning the history or the episodes; until it is filled for a viewer, the former computation applies and `PSE_CONTINUE_SCAN_LIMIT` (200 shows, at most 100 on Plex) bounds it. A weekly season the viewer has not started falls back to its former rank 60 days after the next episode’s release. Plex retains its 40-item limit and viewer hide preferences. Selection reads only the current viewer’s history, without scanning other accounts’ history.
 
 ### Connecting Scrob
 

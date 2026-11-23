@@ -55,6 +55,10 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 	var err error
 	run := pseContinueFrom(ctx)                           // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
 	historyLimit := run.historyLimit(c.ShowOnDeck != nil) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
+
+	if out, ok := c.pseAppendFromTable(ctx, viewer, run, titles, state); ok { // PSE-HOOK: séries lues depuis la table « à suivre » — voir docs/pse/FORK.fr.md
+		return out
+	}
 	if source, ok := c.State.(interface {
 		ContinueSeriesHistory(context.Context, int64, int) ([]core.HistoryEntry, error)
 	}); ok {
@@ -319,6 +323,10 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 	}
 	sort.SliceStable(titles, func(i, j int) bool {
 		a, b := run.rankOf(titles[i].Key, state), run.rankOf(titles[j].Key, state) // PSE-HOOK: réglages de Continuer à regarder — voir docs/pse/FORK.fr.md
+		// PSE-HOOK: nouveaux épisodes en tête — voir docs/pse/FORK.fr.md
+		if na, nb := run.isNew(titles[i].Key), run.isNew(titles[j].Key); na != nb {
+			return na
+		}
 		if !a.Equal(b) {
 			return a.After(b)
 		}
